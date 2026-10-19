@@ -1,0 +1,4163 @@
+{
+    "schema": "durable-workflow.activity-metadata-projection.v1",
+    "scope": "constructed_loaded_model_projection_not_executed_workflows",
+    "reference_workflow": "2.5.22",
+    "reference_source": "908e2db9b4337ceae52ebe5fc5e64f3de8e5338b",
+    "projector_sha256": {
+        "Workflow\\V2\\Support\\RunActivityView": "e47b5420f353a82a3e23946d108663ec79e478e217482495ce5b95c14fc67afe",
+        "Workflow\\V2\\Support\\ActivitySnapshot": "4ca26cd0e08d1cf6e131c7a21234f1fb1889bd615bca196ac8e5fdde87ef67da",
+        "Workflow\\V2\\Support\\ActivityAttemptSnapshots": "63b135d20207668963747b50a5a195b2fb0187b285d29b36d7f68136c05055db",
+        "Workflow\\V2\\Support\\HeartbeatProgress": "57d326fbee217142f1f4ecaf02a657047f4f4e9348d179d7b2b4d04ee4683010",
+        "Workflow\\V2\\Support\\ParallelChildGroup": "5a6dec40fe73d388543bcf2e733bf21424a466713e01eda9a62fae0936ad55e5"
+    },
+    "cases": [
+        {
+            "name": "empty",
+            "input": {
+                "events": [],
+                "executions": []
+            },
+            "expected": []
+        },
+        {
+            "name": "scheduled_attempt_zero",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:01.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "idempotency_key": "original-key",
+                                "sequence": 1,
+                                "type": "fixture.echo",
+                                "class": "FixtureActivity",
+                                "status": "pending",
+                                "attempt_count": 1,
+                                "retry_policy": {
+                                    "max_attempts": 2,
+                                    "backoff": []
+                                },
+                                "queue": "fixture-queue",
+                                "connection": "fixture-connection"
+                            }
+                        }
+                    }
+                ],
+                "executions": []
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "original-key",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": null,
+                    "worker_attempt_id": null,
+                    "status": "pending",
+                    "attempt_count": 0,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": "fixture-connection",
+                    "queue": "fixture-queue",
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": null,
+                    "closed_at": null,
+                    "attempts": []
+                }
+            ]
+        },
+        {
+            "name": "running_attempt_and_lease",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:01.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "idempotency_key": "original-key",
+                                "sequence": 1,
+                                "type": "fixture.echo",
+                                "class": "FixtureActivity",
+                                "status": "pending",
+                                "attempt_count": 1,
+                                "retry_policy": {
+                                    "max_attempts": 2,
+                                    "backoff": []
+                                },
+                                "queue": "fixture-queue",
+                                "connection": "fixture-connection"
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 2,
+                        "event_type": "ActivityStarted",
+                        "recorded_at": "2026-10-15T10:00:02.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            },
+                            "activity_attempt": {
+                                "id": "attempt-1",
+                                "attempt_number": 1,
+                                "worker_attempt_id": "worker-attempt-1"
+                            },
+                            "task": {
+                                "id": "task-1",
+                                "attempt_count": 1,
+                                "lease_owner": "worker-1",
+                                "lease_expires_at": "2026-10-15T10:00:32.123456Z"
+                            }
+                        }
+                    }
+                ],
+                "executions": [
+                    {
+                        "id": "activity-1",
+                        "sequence": 1,
+                        "activity_type": "fixture.echo",
+                        "activity_class": "FixtureActivity",
+                        "status": "running",
+                        "attempt_count": 1,
+                        "current_attempt_id": "attempt-1",
+                        "payload_codec": "avro",
+                        "retry_policy": {
+                            "max_attempts": 2,
+                            "backoff": []
+                        },
+                        "queue": "fixture-queue",
+                        "connection": "fixture-connection",
+                        "created_at": "2026-10-15T10:00:01.123456Z",
+                        "started_at": "2026-10-15T10:00:02.123456Z",
+                        "attempts": [
+                            {
+                                "id": "attempt-1",
+                                "worker_attempt_id": "worker-attempt-1",
+                                "activity_execution_id": "activity-1",
+                                "workflow_task_id": "task-1",
+                                "attempt_number": 1,
+                                "status": "running",
+                                "lease_owner": "worker-1",
+                                "started_at": "2026-10-15T10:00:02.123456Z",
+                                "lease_expires_at": "2026-10-15T10:00:32.123456Z"
+                            }
+                        ]
+                    }
+                ]
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "original-key",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled",
+                        "ActivityStarted"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": "attempt-1",
+                    "worker_attempt_id": "worker-attempt-1",
+                    "status": "running",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": "fixture-connection",
+                    "queue": "fixture-queue",
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": "2026-10-15T10:00:02.123456Z",
+                    "closed_at": null,
+                    "attempts": [
+                        {
+                            "id": "attempt-1",
+                            "worker_attempt_id": "worker-attempt-1",
+                            "attempt_number": 1,
+                            "status": "running",
+                            "task_id": "task-1",
+                            "lease_owner": "worker-1",
+                            "lease_expires_at": "2026-10-15T10:00:32.123456Z",
+                            "started_at": "2026-10-15T10:00:02.123456Z",
+                            "last_heartbeat_at": null,
+                            "last_heartbeat_progress": null,
+                            "closed_at": null,
+                            "can_continue": true,
+                            "cancel_requested": false,
+                            "stop_reason": null
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "heartbeat_progress_int64_and_unicode",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:01.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "idempotency_key": "original-key",
+                                "sequence": 1,
+                                "type": "fixture.echo",
+                                "class": "FixtureActivity",
+                                "status": "pending",
+                                "attempt_count": 1,
+                                "retry_policy": {
+                                    "max_attempts": 2,
+                                    "backoff": []
+                                },
+                                "queue": "fixture-queue",
+                                "connection": "fixture-connection"
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 2,
+                        "event_type": "ActivityStarted",
+                        "recorded_at": "2026-10-15T10:00:02.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            },
+                            "activity_attempt": {
+                                "id": "attempt-1",
+                                "attempt_number": 1,
+                                "worker_attempt_id": "worker-attempt-1"
+                            },
+                            "task": {
+                                "id": "task-1",
+                                "attempt_count": 1,
+                                "lease_owner": "worker-1",
+                                "lease_expires_at": "2026-10-15T10:00:32.123456Z"
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 3,
+                        "event_type": "ActivityHeartbeatRecorded",
+                        "recorded_at": "2026-10-15T10:00:03.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity_attempt_id": "attempt-1",
+                            "heartbeat_at": "2026-10-15T10:00:03.123456Z",
+                            "progress": {
+                                "message": "  進捗 λ \t",
+                                "current": "9007199254740993",
+                                "total": "9007199254740994",
+                                "unit": " items ",
+                                "unknown": true,
+                                "details": {
+                                    "z": null,
+                                    "int64": 9007199254740993,
+                                    "boolean": false,
+                                    "text": " 日本語λ ",
+                                    "bad key": "drop",
+                                    "nested": [
+                                        "drop"
+                                    ]
+                                }
+                            },
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            },
+                            "lease_expires_at": "2026-10-15T10:00:33.123456Z"
+                        }
+                    }
+                ],
+                "executions": []
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "original-key",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled",
+                        "ActivityStarted",
+                        "ActivityHeartbeatRecorded"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": "attempt-1",
+                    "worker_attempt_id": "worker-attempt-1",
+                    "status": "running",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": "fixture-connection",
+                    "queue": "fixture-queue",
+                    "last_heartbeat_at": "2026-10-15T10:00:03.123456Z",
+                    "last_heartbeat_progress": {
+                        "message": "進捗 λ",
+                        "current": 9007199254740993,
+                        "total": 9007199254740994,
+                        "unit": "items",
+                        "details": {
+                            "boolean": false,
+                            "int64": 9007199254740993,
+                            "text": "日本語λ",
+                            "z": null
+                        }
+                    },
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": "2026-10-15T10:00:02.123456Z",
+                    "closed_at": null,
+                    "attempts": [
+                        {
+                            "id": "attempt-1",
+                            "worker_attempt_id": "worker-attempt-1",
+                            "attempt_number": 1,
+                            "status": "running",
+                            "task_id": "task-1",
+                            "lease_owner": "worker-1",
+                            "lease_expires_at": "2026-10-15T10:00:33.123456Z",
+                            "started_at": "2026-10-15T10:00:02.123456Z",
+                            "last_heartbeat_at": "2026-10-15T10:00:03.123456Z",
+                            "last_heartbeat_progress": {
+                                "message": "進捗 λ",
+                                "current": 9007199254740993,
+                                "total": 9007199254740994,
+                                "unit": "items",
+                                "details": {
+                                    "boolean": false,
+                                    "int64": 9007199254740993,
+                                    "text": "日本語λ",
+                                    "z": null
+                                }
+                            },
+                            "closed_at": null,
+                            "can_continue": true,
+                            "cancel_requested": false,
+                            "stop_reason": null
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "expired_lease_is_advisory_metadata",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:01.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "idempotency_key": "original-key",
+                                "sequence": 1,
+                                "type": "fixture.echo",
+                                "class": "FixtureActivity",
+                                "status": "pending",
+                                "attempt_count": 1,
+                                "retry_policy": {
+                                    "max_attempts": 2,
+                                    "backoff": []
+                                },
+                                "queue": "fixture-queue",
+                                "connection": "fixture-connection"
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 2,
+                        "event_type": "ActivityStarted",
+                        "recorded_at": "2026-10-15T10:00:02.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            },
+                            "activity_attempt": {
+                                "id": "attempt-1",
+                                "attempt_number": 1,
+                                "worker_attempt_id": "worker-attempt-1"
+                            },
+                            "task": {
+                                "id": "task-1",
+                                "attempt_count": 1,
+                                "lease_owner": "worker-1",
+                                "lease_expires_at": "2026-10-15T10:00:32.123456Z"
+                            }
+                        }
+                    }
+                ],
+                "executions": [
+                    {
+                        "id": "activity-1",
+                        "sequence": 1,
+                        "activity_type": "fixture.echo",
+                        "activity_class": "FixtureActivity",
+                        "status": "running",
+                        "attempt_count": 1,
+                        "current_attempt_id": "attempt-1",
+                        "payload_codec": "avro",
+                        "retry_policy": {
+                            "max_attempts": 2,
+                            "backoff": []
+                        },
+                        "queue": "fixture-queue",
+                        "connection": "fixture-connection",
+                        "created_at": "2026-10-15T10:00:01.123456Z",
+                        "started_at": "2026-10-15T10:00:02.123456Z",
+                        "attempts": [
+                            {
+                                "id": "attempt-1",
+                                "worker_attempt_id": "worker-attempt-1",
+                                "activity_execution_id": "activity-1",
+                                "workflow_task_id": "task-1",
+                                "attempt_number": 1,
+                                "status": "running",
+                                "lease_owner": "worker-1",
+                                "started_at": "2026-10-15T10:00:02.123456Z",
+                                "lease_expires_at": "2020-01-01T00:00:00.000001Z"
+                            }
+                        ]
+                    }
+                ]
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "original-key",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled",
+                        "ActivityStarted"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": "attempt-1",
+                    "worker_attempt_id": "worker-attempt-1",
+                    "status": "running",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": "fixture-connection",
+                    "queue": "fixture-queue",
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": "2026-10-15T10:00:02.123456Z",
+                    "closed_at": null,
+                    "attempts": [
+                        {
+                            "id": "attempt-1",
+                            "worker_attempt_id": "worker-attempt-1",
+                            "attempt_number": 1,
+                            "status": "running",
+                            "task_id": "task-1",
+                            "lease_owner": "worker-1",
+                            "lease_expires_at": "2026-10-15T10:00:32.123456Z",
+                            "started_at": "2026-10-15T10:00:02.123456Z",
+                            "last_heartbeat_at": null,
+                            "last_heartbeat_progress": null,
+                            "closed_at": null,
+                            "can_continue": true,
+                            "cancel_requested": false,
+                            "stop_reason": null
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "mutable_pending_fallback",
+            "input": {
+                "events": [],
+                "executions": [
+                    {
+                        "id": "activity-1",
+                        "sequence": 1,
+                        "activity_type": "fixture.echo",
+                        "activity_class": "FixtureActivity",
+                        "status": "pending",
+                        "attempt_count": 1,
+                        "current_attempt_id": null,
+                        "payload_codec": "avro",
+                        "retry_policy": {
+                            "max_attempts": 2,
+                            "backoff": []
+                        },
+                        "queue": "fixture-queue",
+                        "connection": "fixture-connection",
+                        "created_at": "2026-10-15T10:00:01.123456Z",
+                        "started_at": null,
+                        "attempts": []
+                    }
+                ]
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "activity-1",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "mutable_open_fallback",
+                    "diagnostic_only": true,
+                    "history_event_types": [],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": "pending",
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": null,
+                    "worker_attempt_id": null,
+                    "status": "pending",
+                    "attempt_count": 0,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": "fixture-connection",
+                    "queue": "fixture-queue",
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": null,
+                    "closed_at": null,
+                    "attempts": []
+                }
+            ]
+        },
+        {
+            "name": "mutable_running_fallback_and_synthetic_attempt",
+            "input": {
+                "events": [],
+                "executions": [
+                    {
+                        "id": "activity-1",
+                        "sequence": 1,
+                        "activity_type": "fixture.echo",
+                        "activity_class": "FixtureActivity",
+                        "status": "running",
+                        "attempt_count": 1,
+                        "current_attempt_id": "attempt-1",
+                        "payload_codec": "avro",
+                        "retry_policy": {
+                            "max_attempts": 2,
+                            "backoff": []
+                        },
+                        "queue": "fixture-queue",
+                        "connection": "fixture-connection",
+                        "created_at": "2026-10-15T10:00:01.123456Z",
+                        "started_at": "2026-10-15T10:00:02.123456Z",
+                        "attempts": []
+                    }
+                ]
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "activity-1",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "mutable_open_fallback",
+                    "diagnostic_only": true,
+                    "history_event_types": [],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": "running",
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": "attempt-1",
+                    "worker_attempt_id": null,
+                    "status": "running",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": "fixture-connection",
+                    "queue": "fixture-queue",
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": "2026-10-15T10:00:02.123456Z",
+                    "closed_at": null,
+                    "attempts": [
+                        {
+                            "id": "attempt-1",
+                            "attempt_number": 1,
+                            "status": "running",
+                            "task_id": null,
+                            "lease_owner": null,
+                            "lease_expires_at": null,
+                            "started_at": "2026-10-15T10:00:02.123456Z",
+                            "last_heartbeat_at": null,
+                            "last_heartbeat_progress": null,
+                            "closed_at": null,
+                            "can_continue": true,
+                            "cancel_requested": false,
+                            "stop_reason": null
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "mutable_completed_is_unsupported",
+            "input": {
+                "events": [],
+                "executions": [
+                    {
+                        "id": "activity-1",
+                        "sequence": 1,
+                        "activity_type": "fixture.echo",
+                        "activity_class": "FixtureActivity",
+                        "status": "completed",
+                        "attempt_count": 1,
+                        "current_attempt_id": "attempt-1",
+                        "payload_codec": "avro",
+                        "retry_policy": {
+                            "max_attempts": 2,
+                            "backoff": []
+                        },
+                        "queue": "fixture-queue",
+                        "connection": "fixture-connection",
+                        "created_at": "2026-10-15T10:00:01.123456Z",
+                        "started_at": "2026-10-15T10:00:02.123456Z",
+                        "attempts": [],
+                        "closed_at": "2026-10-15T10:00:04.123456Z",
+                        "result": "unread-inline-value"
+                    }
+                ]
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "activity-1",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "unsupported_terminal_without_history",
+                    "diagnostic_only": true,
+                    "history_event_types": [],
+                    "history_unsupported_reason": "terminal_activity_row_without_typed_history",
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": "completed",
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": "attempt-1",
+                    "worker_attempt_id": null,
+                    "status": "unsupported",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": "fixture-connection",
+                    "queue": "fixture-queue",
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": "2026-10-15T10:00:02.123456Z",
+                    "closed_at": null,
+                    "attempts": [
+                        {
+                            "id": "attempt-1",
+                            "attempt_number": 1,
+                            "status": "completed",
+                            "task_id": null,
+                            "lease_owner": null,
+                            "lease_expires_at": null,
+                            "started_at": "2026-10-15T10:00:02.123456Z",
+                            "last_heartbeat_at": null,
+                            "last_heartbeat_progress": null,
+                            "closed_at": "2026-10-15T10:00:04.123456Z",
+                            "can_continue": false,
+                            "cancel_requested": false,
+                            "stop_reason": "attempt_closed"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "mutable_failed_is_unsupported",
+            "input": {
+                "events": [],
+                "executions": [
+                    {
+                        "id": "activity-1",
+                        "sequence": 1,
+                        "activity_type": "fixture.echo",
+                        "activity_class": "FixtureActivity",
+                        "status": "failed",
+                        "attempt_count": 1,
+                        "current_attempt_id": "attempt-1",
+                        "payload_codec": "avro",
+                        "retry_policy": {
+                            "max_attempts": 2,
+                            "backoff": []
+                        },
+                        "queue": "fixture-queue",
+                        "connection": "fixture-connection",
+                        "created_at": "2026-10-15T10:00:01.123456Z",
+                        "started_at": "2026-10-15T10:00:02.123456Z",
+                        "attempts": [],
+                        "closed_at": "2026-10-15T10:00:04.123456Z",
+                        "result": "unread-inline-value"
+                    }
+                ]
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "activity-1",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "unsupported_terminal_without_history",
+                    "diagnostic_only": true,
+                    "history_event_types": [],
+                    "history_unsupported_reason": "terminal_activity_row_without_typed_history",
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": "failed",
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": "attempt-1",
+                    "worker_attempt_id": null,
+                    "status": "unsupported",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": "fixture-connection",
+                    "queue": "fixture-queue",
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": "2026-10-15T10:00:02.123456Z",
+                    "closed_at": null,
+                    "attempts": [
+                        {
+                            "id": "attempt-1",
+                            "attempt_number": 1,
+                            "status": "failed",
+                            "task_id": null,
+                            "lease_owner": null,
+                            "lease_expires_at": null,
+                            "started_at": "2026-10-15T10:00:02.123456Z",
+                            "last_heartbeat_at": null,
+                            "last_heartbeat_progress": null,
+                            "closed_at": "2026-10-15T10:00:04.123456Z",
+                            "can_continue": false,
+                            "cancel_requested": false,
+                            "stop_reason": "attempt_closed"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "mutable_cancelled_is_unsupported",
+            "input": {
+                "events": [],
+                "executions": [
+                    {
+                        "id": "activity-1",
+                        "sequence": 1,
+                        "activity_type": "fixture.echo",
+                        "activity_class": "FixtureActivity",
+                        "status": "cancelled",
+                        "attempt_count": 1,
+                        "current_attempt_id": "attempt-1",
+                        "payload_codec": "avro",
+                        "retry_policy": {
+                            "max_attempts": 2,
+                            "backoff": []
+                        },
+                        "queue": "fixture-queue",
+                        "connection": "fixture-connection",
+                        "created_at": "2026-10-15T10:00:01.123456Z",
+                        "started_at": "2026-10-15T10:00:02.123456Z",
+                        "attempts": [],
+                        "closed_at": "2026-10-15T10:00:04.123456Z",
+                        "result": "unread-inline-value"
+                    }
+                ]
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "activity-1",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "unsupported_terminal_without_history",
+                    "diagnostic_only": true,
+                    "history_event_types": [],
+                    "history_unsupported_reason": "terminal_activity_row_without_typed_history",
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": "cancelled",
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": "attempt-1",
+                    "worker_attempt_id": null,
+                    "status": "unsupported",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": "fixture-connection",
+                    "queue": "fixture-queue",
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": "2026-10-15T10:00:02.123456Z",
+                    "closed_at": null,
+                    "attempts": [
+                        {
+                            "id": "attempt-1",
+                            "attempt_number": 1,
+                            "status": "cancelled",
+                            "task_id": null,
+                            "lease_owner": null,
+                            "lease_expires_at": null,
+                            "started_at": "2026-10-15T10:00:02.123456Z",
+                            "last_heartbeat_at": null,
+                            "last_heartbeat_progress": null,
+                            "closed_at": "2026-10-15T10:00:04.123456Z",
+                            "can_continue": false,
+                            "cancel_requested": true,
+                            "stop_reason": "activity_cancelled"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "history_completed_without_mutable_row",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:01.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "idempotency_key": "original-key",
+                                "sequence": 1,
+                                "type": "fixture.echo",
+                                "class": "FixtureActivity",
+                                "status": "pending",
+                                "attempt_count": 1,
+                                "retry_policy": {
+                                    "max_attempts": 2,
+                                    "backoff": []
+                                },
+                                "queue": "fixture-queue",
+                                "connection": "fixture-connection"
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 2,
+                        "event_type": "ActivityStarted",
+                        "recorded_at": "2026-10-15T10:00:02.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            },
+                            "activity_attempt": {
+                                "id": "attempt-1",
+                                "attempt_number": 1,
+                                "worker_attempt_id": "worker-attempt-1"
+                            },
+                            "task": {
+                                "id": "task-1",
+                                "attempt_count": 1,
+                                "lease_owner": "worker-1",
+                                "lease_expires_at": "2026-10-15T10:00:32.123456Z"
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 3,
+                        "event_type": "ActivityHeartbeatRecorded",
+                        "recorded_at": "2026-10-15T10:00:03.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity_attempt_id": "attempt-1",
+                            "heartbeat_at": "2026-10-15T10:00:03.123456Z",
+                            "progress": {
+                                "message": "  進捗 λ \t",
+                                "current": "9007199254740993",
+                                "total": "9007199254740994",
+                                "unit": " items ",
+                                "unknown": true,
+                                "details": {
+                                    "z": null,
+                                    "int64": 9007199254740993,
+                                    "boolean": false,
+                                    "text": " 日本語λ ",
+                                    "bad key": "drop",
+                                    "nested": [
+                                        "drop"
+                                    ]
+                                }
+                            },
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            },
+                            "lease_expires_at": "2026-10-15T10:00:33.123456Z"
+                        }
+                    },
+                    {
+                        "sequence": 4,
+                        "event_type": "ActivityCompleted",
+                        "recorded_at": "2026-10-15T10:00:04.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity_attempt_id": "attempt-1",
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            },
+                            "result": {
+                                "codec": "avro",
+                                "blob": "not-decoded-in-metadata"
+                            }
+                        }
+                    }
+                ],
+                "executions": []
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "original-key",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled",
+                        "ActivityStarted",
+                        "ActivityHeartbeatRecorded",
+                        "ActivityCompleted"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": "attempt-1",
+                    "worker_attempt_id": "worker-attempt-1",
+                    "status": "completed",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": "fixture-connection",
+                    "queue": "fixture-queue",
+                    "last_heartbeat_at": "2026-10-15T10:00:03.123456Z",
+                    "last_heartbeat_progress": {
+                        "message": "進捗 λ",
+                        "current": 9007199254740993,
+                        "total": 9007199254740994,
+                        "unit": "items",
+                        "details": {
+                            "boolean": false,
+                            "int64": 9007199254740993,
+                            "text": "日本語λ",
+                            "z": null
+                        }
+                    },
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": "2026-10-15T10:00:02.123456Z",
+                    "closed_at": "2026-10-15T10:00:04.123456Z",
+                    "attempts": [
+                        {
+                            "id": "attempt-1",
+                            "worker_attempt_id": "worker-attempt-1",
+                            "attempt_number": 1,
+                            "status": "completed",
+                            "task_id": "task-1",
+                            "lease_owner": "worker-1",
+                            "lease_expires_at": null,
+                            "started_at": "2026-10-15T10:00:02.123456Z",
+                            "last_heartbeat_at": "2026-10-15T10:00:03.123456Z",
+                            "last_heartbeat_progress": {
+                                "message": "進捗 λ",
+                                "current": 9007199254740993,
+                                "total": 9007199254740994,
+                                "unit": "items",
+                                "details": {
+                                    "boolean": false,
+                                    "int64": 9007199254740993,
+                                    "text": "日本語λ",
+                                    "z": null
+                                }
+                            },
+                            "closed_at": "2026-10-15T10:00:04.123456Z",
+                            "can_continue": false,
+                            "cancel_requested": false,
+                            "stop_reason": "attempt_closed"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "history_failed_without_mutable_row",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:01.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "idempotency_key": "original-key",
+                                "sequence": 1,
+                                "type": "fixture.echo",
+                                "class": "FixtureActivity",
+                                "status": "pending",
+                                "attempt_count": 1,
+                                "retry_policy": {
+                                    "max_attempts": 2,
+                                    "backoff": []
+                                },
+                                "queue": "fixture-queue",
+                                "connection": "fixture-connection"
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 2,
+                        "event_type": "ActivityStarted",
+                        "recorded_at": "2026-10-15T10:00:02.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            },
+                            "activity_attempt": {
+                                "id": "attempt-1",
+                                "attempt_number": 1,
+                                "worker_attempt_id": "worker-attempt-1"
+                            },
+                            "task": {
+                                "id": "task-1",
+                                "attempt_count": 1,
+                                "lease_owner": "worker-1",
+                                "lease_expires_at": "2026-10-15T10:00:32.123456Z"
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 3,
+                        "event_type": "ActivityHeartbeatRecorded",
+                        "recorded_at": "2026-10-15T10:00:03.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity_attempt_id": "attempt-1",
+                            "heartbeat_at": "2026-10-15T10:00:03.123456Z",
+                            "progress": {
+                                "message": "  進捗 λ \t",
+                                "current": "9007199254740993",
+                                "total": "9007199254740994",
+                                "unit": " items ",
+                                "unknown": true,
+                                "details": {
+                                    "z": null,
+                                    "int64": 9007199254740993,
+                                    "boolean": false,
+                                    "text": " 日本語λ ",
+                                    "bad key": "drop",
+                                    "nested": [
+                                        "drop"
+                                    ]
+                                }
+                            },
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            },
+                            "lease_expires_at": "2026-10-15T10:00:33.123456Z"
+                        }
+                    },
+                    {
+                        "sequence": 4,
+                        "event_type": "ActivityFailed",
+                        "recorded_at": "2026-10-15T10:00:04.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity_attempt_id": "attempt-1",
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            },
+                            "result": {
+                                "codec": "avro",
+                                "blob": "not-decoded-in-metadata"
+                            }
+                        }
+                    }
+                ],
+                "executions": []
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "original-key",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled",
+                        "ActivityStarted",
+                        "ActivityHeartbeatRecorded",
+                        "ActivityFailed"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": "attempt-1",
+                    "worker_attempt_id": "worker-attempt-1",
+                    "status": "failed",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": "fixture-connection",
+                    "queue": "fixture-queue",
+                    "last_heartbeat_at": "2026-10-15T10:00:03.123456Z",
+                    "last_heartbeat_progress": {
+                        "message": "進捗 λ",
+                        "current": 9007199254740993,
+                        "total": 9007199254740994,
+                        "unit": "items",
+                        "details": {
+                            "boolean": false,
+                            "int64": 9007199254740993,
+                            "text": "日本語λ",
+                            "z": null
+                        }
+                    },
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": "2026-10-15T10:00:02.123456Z",
+                    "closed_at": "2026-10-15T10:00:04.123456Z",
+                    "attempts": [
+                        {
+                            "id": "attempt-1",
+                            "worker_attempt_id": "worker-attempt-1",
+                            "attempt_number": 1,
+                            "status": "failed",
+                            "task_id": "task-1",
+                            "lease_owner": "worker-1",
+                            "lease_expires_at": null,
+                            "started_at": "2026-10-15T10:00:02.123456Z",
+                            "last_heartbeat_at": "2026-10-15T10:00:03.123456Z",
+                            "last_heartbeat_progress": {
+                                "message": "進捗 λ",
+                                "current": 9007199254740993,
+                                "total": 9007199254740994,
+                                "unit": "items",
+                                "details": {
+                                    "boolean": false,
+                                    "int64": 9007199254740993,
+                                    "text": "日本語λ",
+                                    "z": null
+                                }
+                            },
+                            "closed_at": "2026-10-15T10:00:04.123456Z",
+                            "can_continue": false,
+                            "cancel_requested": false,
+                            "stop_reason": "attempt_closed"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "history_expired_without_mutable_row",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:01.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "idempotency_key": "original-key",
+                                "sequence": 1,
+                                "type": "fixture.echo",
+                                "class": "FixtureActivity",
+                                "status": "pending",
+                                "attempt_count": 1,
+                                "retry_policy": {
+                                    "max_attempts": 2,
+                                    "backoff": []
+                                },
+                                "queue": "fixture-queue",
+                                "connection": "fixture-connection"
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 2,
+                        "event_type": "ActivityStarted",
+                        "recorded_at": "2026-10-15T10:00:02.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            },
+                            "activity_attempt": {
+                                "id": "attempt-1",
+                                "attempt_number": 1,
+                                "worker_attempt_id": "worker-attempt-1"
+                            },
+                            "task": {
+                                "id": "task-1",
+                                "attempt_count": 1,
+                                "lease_owner": "worker-1",
+                                "lease_expires_at": "2026-10-15T10:00:32.123456Z"
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 3,
+                        "event_type": "ActivityHeartbeatRecorded",
+                        "recorded_at": "2026-10-15T10:00:03.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity_attempt_id": "attempt-1",
+                            "heartbeat_at": "2026-10-15T10:00:03.123456Z",
+                            "progress": {
+                                "message": "  進捗 λ \t",
+                                "current": "9007199254740993",
+                                "total": "9007199254740994",
+                                "unit": " items ",
+                                "unknown": true,
+                                "details": {
+                                    "z": null,
+                                    "int64": 9007199254740993,
+                                    "boolean": false,
+                                    "text": " 日本語λ ",
+                                    "bad key": "drop",
+                                    "nested": [
+                                        "drop"
+                                    ]
+                                }
+                            },
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            },
+                            "lease_expires_at": "2026-10-15T10:00:33.123456Z"
+                        }
+                    },
+                    {
+                        "sequence": 4,
+                        "event_type": "ActivityTimedOut",
+                        "recorded_at": "2026-10-15T10:00:04.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity_attempt_id": "attempt-1",
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            },
+                            "result": {
+                                "codec": "avro",
+                                "blob": "not-decoded-in-metadata"
+                            }
+                        }
+                    }
+                ],
+                "executions": []
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "original-key",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled",
+                        "ActivityStarted",
+                        "ActivityHeartbeatRecorded",
+                        "ActivityTimedOut"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": "attempt-1",
+                    "worker_attempt_id": "worker-attempt-1",
+                    "status": "failed",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": "fixture-connection",
+                    "queue": "fixture-queue",
+                    "last_heartbeat_at": "2026-10-15T10:00:03.123456Z",
+                    "last_heartbeat_progress": {
+                        "message": "進捗 λ",
+                        "current": 9007199254740993,
+                        "total": 9007199254740994,
+                        "unit": "items",
+                        "details": {
+                            "boolean": false,
+                            "int64": 9007199254740993,
+                            "text": "日本語λ",
+                            "z": null
+                        }
+                    },
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": "2026-10-15T10:00:02.123456Z",
+                    "closed_at": "2026-10-15T10:00:04.123456Z",
+                    "attempts": [
+                        {
+                            "id": "attempt-1",
+                            "worker_attempt_id": "worker-attempt-1",
+                            "attempt_number": 1,
+                            "status": "expired",
+                            "task_id": "task-1",
+                            "lease_owner": "worker-1",
+                            "lease_expires_at": null,
+                            "started_at": "2026-10-15T10:00:02.123456Z",
+                            "last_heartbeat_at": "2026-10-15T10:00:03.123456Z",
+                            "last_heartbeat_progress": {
+                                "message": "進捗 λ",
+                                "current": 9007199254740993,
+                                "total": 9007199254740994,
+                                "unit": "items",
+                                "details": {
+                                    "boolean": false,
+                                    "int64": 9007199254740993,
+                                    "text": "日本語λ",
+                                    "z": null
+                                }
+                            },
+                            "closed_at": "2026-10-15T10:00:04.123456Z",
+                            "can_continue": false,
+                            "cancel_requested": false,
+                            "stop_reason": "attempt_expired"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "history_cancelled_without_mutable_row",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:01.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "idempotency_key": "original-key",
+                                "sequence": 1,
+                                "type": "fixture.echo",
+                                "class": "FixtureActivity",
+                                "status": "pending",
+                                "attempt_count": 1,
+                                "retry_policy": {
+                                    "max_attempts": 2,
+                                    "backoff": []
+                                },
+                                "queue": "fixture-queue",
+                                "connection": "fixture-connection"
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 2,
+                        "event_type": "ActivityStarted",
+                        "recorded_at": "2026-10-15T10:00:02.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            },
+                            "activity_attempt": {
+                                "id": "attempt-1",
+                                "attempt_number": 1,
+                                "worker_attempt_id": "worker-attempt-1"
+                            },
+                            "task": {
+                                "id": "task-1",
+                                "attempt_count": 1,
+                                "lease_owner": "worker-1",
+                                "lease_expires_at": "2026-10-15T10:00:32.123456Z"
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 3,
+                        "event_type": "ActivityHeartbeatRecorded",
+                        "recorded_at": "2026-10-15T10:00:03.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity_attempt_id": "attempt-1",
+                            "heartbeat_at": "2026-10-15T10:00:03.123456Z",
+                            "progress": {
+                                "message": "  進捗 λ \t",
+                                "current": "9007199254740993",
+                                "total": "9007199254740994",
+                                "unit": " items ",
+                                "unknown": true,
+                                "details": {
+                                    "z": null,
+                                    "int64": 9007199254740993,
+                                    "boolean": false,
+                                    "text": " 日本語λ ",
+                                    "bad key": "drop",
+                                    "nested": [
+                                        "drop"
+                                    ]
+                                }
+                            },
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            },
+                            "lease_expires_at": "2026-10-15T10:00:33.123456Z"
+                        }
+                    },
+                    {
+                        "sequence": 4,
+                        "event_type": "ActivityCancelled",
+                        "recorded_at": "2026-10-15T10:00:04.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity_attempt_id": "attempt-1",
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            },
+                            "result": {
+                                "codec": "avro",
+                                "blob": "not-decoded-in-metadata"
+                            }
+                        }
+                    }
+                ],
+                "executions": []
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "original-key",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled",
+                        "ActivityStarted",
+                        "ActivityHeartbeatRecorded",
+                        "ActivityCancelled"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": "attempt-1",
+                    "worker_attempt_id": "worker-attempt-1",
+                    "status": "cancelled",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": "fixture-connection",
+                    "queue": "fixture-queue",
+                    "last_heartbeat_at": "2026-10-15T10:00:03.123456Z",
+                    "last_heartbeat_progress": {
+                        "message": "進捗 λ",
+                        "current": 9007199254740993,
+                        "total": 9007199254740994,
+                        "unit": "items",
+                        "details": {
+                            "boolean": false,
+                            "int64": 9007199254740993,
+                            "text": "日本語λ",
+                            "z": null
+                        }
+                    },
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": "2026-10-15T10:00:02.123456Z",
+                    "closed_at": "2026-10-15T10:00:04.123456Z",
+                    "attempts": [
+                        {
+                            "id": "attempt-1",
+                            "worker_attempt_id": "worker-attempt-1",
+                            "attempt_number": 1,
+                            "status": "cancelled",
+                            "task_id": "task-1",
+                            "lease_owner": "worker-1",
+                            "lease_expires_at": null,
+                            "started_at": "2026-10-15T10:00:02.123456Z",
+                            "last_heartbeat_at": "2026-10-15T10:00:03.123456Z",
+                            "last_heartbeat_progress": {
+                                "message": "進捗 λ",
+                                "current": 9007199254740993,
+                                "total": 9007199254740994,
+                                "unit": "items",
+                                "details": {
+                                    "boolean": false,
+                                    "int64": 9007199254740993,
+                                    "text": "日本語λ",
+                                    "z": null
+                                }
+                            },
+                            "closed_at": "2026-10-15T10:00:04.123456Z",
+                            "can_continue": false,
+                            "cancel_requested": true,
+                            "stop_reason": "attempt_cancelled"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "typed_terminal_wins_stale_running_rows_and_clears_lease",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:01.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "idempotency_key": "original-key",
+                                "sequence": 1,
+                                "type": "fixture.echo",
+                                "class": "FixtureActivity",
+                                "status": "pending",
+                                "attempt_count": 1,
+                                "retry_policy": {
+                                    "max_attempts": 2,
+                                    "backoff": []
+                                },
+                                "queue": "fixture-queue",
+                                "connection": "fixture-connection"
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 2,
+                        "event_type": "ActivityStarted",
+                        "recorded_at": "2026-10-15T10:00:02.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            },
+                            "activity_attempt": {
+                                "id": "attempt-1",
+                                "attempt_number": 1,
+                                "worker_attempt_id": "worker-attempt-1"
+                            },
+                            "task": {
+                                "id": "task-1",
+                                "attempt_count": 1,
+                                "lease_owner": "worker-1",
+                                "lease_expires_at": "2026-10-15T10:00:32.123456Z"
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 4,
+                        "event_type": "ActivityCompleted",
+                        "recorded_at": "2026-10-15T10:00:04.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity_attempt_id": "attempt-1",
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            }
+                        }
+                    }
+                ],
+                "executions": [
+                    {
+                        "id": "activity-1",
+                        "sequence": 1,
+                        "activity_type": "fixture.echo",
+                        "activity_class": "FixtureActivity",
+                        "status": "running",
+                        "attempt_count": 1,
+                        "current_attempt_id": "attempt-1",
+                        "payload_codec": "avro",
+                        "retry_policy": {
+                            "max_attempts": 2,
+                            "backoff": []
+                        },
+                        "queue": "fixture-queue",
+                        "connection": "fixture-connection",
+                        "created_at": "2026-10-15T10:00:01.123456Z",
+                        "started_at": "2026-10-15T10:00:02.123456Z",
+                        "attempts": [
+                            {
+                                "id": "attempt-1",
+                                "worker_attempt_id": "worker-attempt-1",
+                                "activity_execution_id": "activity-1",
+                                "workflow_task_id": "task-1",
+                                "attempt_number": 1,
+                                "status": "running",
+                                "lease_owner": "worker-1",
+                                "started_at": "2026-10-15T10:00:02.123456Z",
+                                "lease_expires_at": "2026-10-15T10:00:32.123456Z"
+                            }
+                        ]
+                    }
+                ]
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "original-key",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled",
+                        "ActivityStarted",
+                        "ActivityCompleted"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": "attempt-1",
+                    "worker_attempt_id": "worker-attempt-1",
+                    "status": "completed",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": "fixture-connection",
+                    "queue": "fixture-queue",
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": "2026-10-15T10:00:02.123456Z",
+                    "closed_at": "2026-10-15T10:00:04.123456Z",
+                    "attempts": [
+                        {
+                            "id": "attempt-1",
+                            "worker_attempt_id": "worker-attempt-1",
+                            "attempt_number": 1,
+                            "status": "completed",
+                            "task_id": "task-1",
+                            "lease_owner": "worker-1",
+                            "lease_expires_at": null,
+                            "started_at": "2026-10-15T10:00:02.123456Z",
+                            "last_heartbeat_at": null,
+                            "last_heartbeat_progress": null,
+                            "closed_at": "2026-10-15T10:00:04.123456Z",
+                            "can_continue": false,
+                            "cancel_requested": false,
+                            "stop_reason": "attempt_closed"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "typed_open_wins_stale_terminal_row",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:01.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "idempotency_key": "original-key",
+                                "sequence": 1,
+                                "type": "fixture.echo",
+                                "class": "FixtureActivity",
+                                "status": "pending",
+                                "attempt_count": 1,
+                                "retry_policy": {
+                                    "max_attempts": 2,
+                                    "backoff": []
+                                },
+                                "queue": "fixture-queue",
+                                "connection": "fixture-connection"
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 2,
+                        "event_type": "ActivityStarted",
+                        "recorded_at": "2026-10-15T10:00:02.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            },
+                            "activity_attempt": {
+                                "id": "attempt-1",
+                                "attempt_number": 1,
+                                "worker_attempt_id": "worker-attempt-1"
+                            },
+                            "task": {
+                                "id": "task-1",
+                                "attempt_count": 1,
+                                "lease_owner": "worker-1",
+                                "lease_expires_at": "2026-10-15T10:00:32.123456Z"
+                            }
+                        }
+                    }
+                ],
+                "executions": [
+                    {
+                        "id": "activity-1",
+                        "sequence": 1,
+                        "activity_type": "fixture.echo",
+                        "activity_class": "FixtureActivity",
+                        "status": "completed",
+                        "attempt_count": 1,
+                        "current_attempt_id": "attempt-1",
+                        "payload_codec": "avro",
+                        "retry_policy": {
+                            "max_attempts": 2,
+                            "backoff": []
+                        },
+                        "queue": "fixture-queue",
+                        "connection": "fixture-connection",
+                        "created_at": "2026-10-15T10:00:01.123456Z",
+                        "started_at": "2026-10-15T10:00:02.123456Z",
+                        "attempts": [
+                            {
+                                "id": "attempt-1",
+                                "worker_attempt_id": "worker-attempt-1",
+                                "activity_execution_id": "activity-1",
+                                "workflow_task_id": "task-1",
+                                "attempt_number": 1,
+                                "status": "completed",
+                                "lease_owner": "worker-1",
+                                "started_at": "2026-10-15T10:00:02.123456Z",
+                                "lease_expires_at": "2026-10-15T10:00:32.123456Z",
+                                "closed_at": "2026-10-15T10:00:04.123456Z"
+                            }
+                        ],
+                        "closed_at": "2026-10-15T10:00:04.123456Z"
+                    }
+                ]
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "original-key",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled",
+                        "ActivityStarted"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": "attempt-1",
+                    "worker_attempt_id": "worker-attempt-1",
+                    "status": "running",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": "fixture-connection",
+                    "queue": "fixture-queue",
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": "2026-10-15T10:00:02.123456Z",
+                    "closed_at": null,
+                    "attempts": [
+                        {
+                            "id": "attempt-1",
+                            "worker_attempt_id": "worker-attempt-1",
+                            "attempt_number": 1,
+                            "status": "running",
+                            "task_id": "task-1",
+                            "lease_owner": "worker-1",
+                            "lease_expires_at": "2026-10-15T10:00:32.123456Z",
+                            "started_at": "2026-10-15T10:00:02.123456Z",
+                            "last_heartbeat_at": null,
+                            "last_heartbeat_progress": null,
+                            "closed_at": "2026-10-15T10:00:04.123456Z",
+                            "can_continue": false,
+                            "cancel_requested": false,
+                            "stop_reason": "activity_closed"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "retry_pending_preserves_first_attempt",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:01.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "idempotency_key": "original-key",
+                                "sequence": 1,
+                                "type": "fixture.echo",
+                                "class": "FixtureActivity",
+                                "status": "pending",
+                                "attempt_count": 1,
+                                "retry_policy": {
+                                    "max_attempts": 2,
+                                    "backoff": []
+                                },
+                                "queue": "fixture-queue",
+                                "connection": "fixture-connection"
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 2,
+                        "event_type": "ActivityStarted",
+                        "recorded_at": "2026-10-15T10:00:02.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            },
+                            "activity_attempt": {
+                                "id": "attempt-1",
+                                "attempt_number": 1,
+                                "worker_attempt_id": "worker-attempt-1"
+                            },
+                            "task": {
+                                "id": "task-1",
+                                "attempt_count": 1,
+                                "lease_owner": "worker-1",
+                                "lease_expires_at": "2026-10-15T10:00:32.123456Z"
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 3,
+                        "event_type": "ActivityHeartbeatRecorded",
+                        "recorded_at": "2026-10-15T10:00:03.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity_attempt_id": "attempt-1",
+                            "heartbeat_at": "2026-10-15T10:00:03.123456Z",
+                            "progress": {
+                                "message": "  進捗 λ \t",
+                                "current": "9007199254740993",
+                                "total": "9007199254740994",
+                                "unit": " items ",
+                                "unknown": true,
+                                "details": {
+                                    "z": null,
+                                    "int64": 9007199254740993,
+                                    "boolean": false,
+                                    "text": " 日本語λ ",
+                                    "bad key": "drop",
+                                    "nested": [
+                                        "drop"
+                                    ]
+                                }
+                            },
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            },
+                            "lease_expires_at": "2026-10-15T10:00:33.123456Z"
+                        }
+                    },
+                    {
+                        "sequence": 4,
+                        "event_type": "ActivityRetryScheduled",
+                        "recorded_at": "2026-10-15T10:00:04.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "retry_after_attempt": 1,
+                            "activity_attempt_id": "attempt-1",
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "status": "pending",
+                                "attempt_count": 1,
+                                "started_at": "2026-10-15T10:00:02.123456Z"
+                            }
+                        }
+                    }
+                ],
+                "executions": []
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "original-key",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled",
+                        "ActivityStarted",
+                        "ActivityHeartbeatRecorded",
+                        "ActivityRetryScheduled"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": "attempt-1",
+                    "worker_attempt_id": "worker-attempt-1",
+                    "status": "pending",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": "fixture-connection",
+                    "queue": "fixture-queue",
+                    "last_heartbeat_at": "2026-10-15T10:00:03.123456Z",
+                    "last_heartbeat_progress": {
+                        "message": "進捗 λ",
+                        "current": 9007199254740993,
+                        "total": 9007199254740994,
+                        "unit": "items",
+                        "details": {
+                            "boolean": false,
+                            "int64": 9007199254740993,
+                            "text": "日本語λ",
+                            "z": null
+                        }
+                    },
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": "2026-10-15T10:00:02.123456Z",
+                    "closed_at": null,
+                    "attempts": [
+                        {
+                            "id": "attempt-1",
+                            "worker_attempt_id": "worker-attempt-1",
+                            "attempt_number": 1,
+                            "status": "failed",
+                            "task_id": "task-1",
+                            "lease_owner": "worker-1",
+                            "lease_expires_at": null,
+                            "started_at": "2026-10-15T10:00:02.123456Z",
+                            "last_heartbeat_at": "2026-10-15T10:00:03.123456Z",
+                            "last_heartbeat_progress": {
+                                "message": "進捗 λ",
+                                "current": 9007199254740993,
+                                "total": 9007199254740994,
+                                "unit": "items",
+                                "details": {
+                                    "boolean": false,
+                                    "int64": 9007199254740993,
+                                    "text": "日本語λ",
+                                    "z": null
+                                }
+                            },
+                            "closed_at": "2026-10-15T10:00:04.123456Z",
+                            "can_continue": false,
+                            "cancel_requested": false,
+                            "stop_reason": "attempt_closed"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "retry_completed_two_distinct_attempts",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:01.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "idempotency_key": "original-key",
+                                "sequence": 1,
+                                "type": "fixture.echo",
+                                "class": "FixtureActivity",
+                                "status": "pending",
+                                "attempt_count": 1,
+                                "retry_policy": {
+                                    "max_attempts": 2,
+                                    "backoff": []
+                                },
+                                "queue": "fixture-queue",
+                                "connection": "fixture-connection"
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 2,
+                        "event_type": "ActivityStarted",
+                        "recorded_at": "2026-10-15T10:00:02.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            },
+                            "activity_attempt": {
+                                "id": "attempt-1",
+                                "attempt_number": 1,
+                                "worker_attempt_id": "worker-attempt-1"
+                            },
+                            "task": {
+                                "id": "task-1",
+                                "attempt_count": 1,
+                                "lease_owner": "worker-1",
+                                "lease_expires_at": "2026-10-15T10:00:32.123456Z"
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 3,
+                        "event_type": "ActivityHeartbeatRecorded",
+                        "recorded_at": "2026-10-15T10:00:03.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity_attempt_id": "attempt-1",
+                            "heartbeat_at": "2026-10-15T10:00:03.123456Z",
+                            "progress": {
+                                "message": "  進捗 λ \t",
+                                "current": "9007199254740993",
+                                "total": "9007199254740994",
+                                "unit": " items ",
+                                "unknown": true,
+                                "details": {
+                                    "z": null,
+                                    "int64": 9007199254740993,
+                                    "boolean": false,
+                                    "text": " 日本語λ ",
+                                    "bad key": "drop",
+                                    "nested": [
+                                        "drop"
+                                    ]
+                                }
+                            },
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "attempt_count": 1
+                            },
+                            "lease_expires_at": "2026-10-15T10:00:33.123456Z"
+                        }
+                    },
+                    {
+                        "sequence": 4,
+                        "event_type": "ActivityRetryScheduled",
+                        "recorded_at": "2026-10-15T10:00:04.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "retry_after_attempt": 1,
+                            "activity_attempt_id": "attempt-1",
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-1",
+                                "status": "pending",
+                                "attempt_count": 1,
+                                "started_at": "2026-10-15T10:00:02.123456Z"
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 5,
+                        "event_type": "ActivityStarted",
+                        "recorded_at": "2026-10-15T10:00:05.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-2",
+                                "attempt_count": 2
+                            },
+                            "activity_attempt": {
+                                "id": "attempt-2",
+                                "attempt_number": 2,
+                                "worker_attempt_id": "worker-attempt-2"
+                            },
+                            "task": {
+                                "attempt_count": 2,
+                                "lease_owner": "worker-2",
+                                "lease_expires_at": "2026-10-15T10:00:35.123456Z"
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 6,
+                        "event_type": "ActivityCompleted",
+                        "recorded_at": "2026-10-15T10:00:06.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "attempt-2",
+                                "attempt_count": 2
+                            },
+                            "activity_attempt_id": "attempt-2",
+                            "task": {
+                                "attempt_count": 2
+                            }
+                        }
+                    }
+                ],
+                "executions": []
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "original-key",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled",
+                        "ActivityStarted",
+                        "ActivityHeartbeatRecorded",
+                        "ActivityRetryScheduled",
+                        "ActivityCompleted"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": "attempt-2",
+                    "worker_attempt_id": "worker-attempt-2",
+                    "status": "completed",
+                    "attempt_count": 2,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": "fixture-connection",
+                    "queue": "fixture-queue",
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": {
+                        "message": "進捗 λ",
+                        "current": 9007199254740993,
+                        "total": 9007199254740994,
+                        "unit": "items",
+                        "details": {
+                            "boolean": false,
+                            "int64": 9007199254740993,
+                            "text": "日本語λ",
+                            "z": null
+                        }
+                    },
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": "2026-10-15T10:00:05.123456Z",
+                    "closed_at": "2026-10-15T10:00:06.123456Z",
+                    "attempts": [
+                        {
+                            "id": "attempt-1",
+                            "worker_attempt_id": "worker-attempt-1",
+                            "attempt_number": 1,
+                            "status": "failed",
+                            "task_id": "task-1",
+                            "lease_owner": "worker-1",
+                            "lease_expires_at": null,
+                            "started_at": "2026-10-15T10:00:02.123456Z",
+                            "last_heartbeat_at": "2026-10-15T10:00:03.123456Z",
+                            "last_heartbeat_progress": {
+                                "message": "進捗 λ",
+                                "current": 9007199254740993,
+                                "total": 9007199254740994,
+                                "unit": "items",
+                                "details": {
+                                    "boolean": false,
+                                    "int64": 9007199254740993,
+                                    "text": "日本語λ",
+                                    "z": null
+                                }
+                            },
+                            "closed_at": "2026-10-15T10:00:04.123456Z",
+                            "can_continue": false,
+                            "cancel_requested": false,
+                            "stop_reason": "attempt_closed"
+                        },
+                        {
+                            "id": "attempt-2",
+                            "worker_attempt_id": "worker-attempt-2",
+                            "attempt_number": 2,
+                            "status": "completed",
+                            "task_id": "task-1",
+                            "lease_owner": "worker-2",
+                            "lease_expires_at": null,
+                            "started_at": "2026-10-15T10:00:05.123456Z",
+                            "last_heartbeat_at": null,
+                            "last_heartbeat_progress": null,
+                            "closed_at": "2026-10-15T10:00:06.123456Z",
+                            "can_continue": false,
+                            "cancel_requested": false,
+                            "stop_reason": "attempt_closed"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "prestart_cancel_has_no_attempt",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:01.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "idempotency_key": "original-key",
+                                "sequence": 1,
+                                "type": "fixture.echo",
+                                "class": "FixtureActivity",
+                                "status": "pending",
+                                "attempt_count": 1,
+                                "retry_policy": {
+                                    "max_attempts": 2,
+                                    "backoff": []
+                                },
+                                "queue": "fixture-queue",
+                                "connection": "fixture-connection"
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 2,
+                        "event_type": "ActivityCancelled",
+                        "recorded_at": "2026-10-15T10:00:02.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity"
+                        }
+                    }
+                ],
+                "executions": []
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "original-key",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled",
+                        "ActivityCancelled"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": null,
+                    "worker_attempt_id": null,
+                    "status": "cancelled",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": "fixture-connection",
+                    "queue": "fixture-queue",
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": null,
+                    "closed_at": "2026-10-15T10:00:02.123456Z",
+                    "attempts": []
+                }
+            ]
+        },
+        {
+            "name": "synthetic_current_attempt_from_snapshot",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityStarted",
+                        "recorded_at": "2026-10-15T10:00:01.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "attempt_id": "synthetic-1",
+                                "attempt_count": 3
+                            }
+                        }
+                    }
+                ],
+                "executions": [
+                    {
+                        "id": "activity-1",
+                        "sequence": 1,
+                        "activity_type": "fixture.echo",
+                        "activity_class": "FixtureActivity",
+                        "status": "running",
+                        "attempt_count": 3,
+                        "current_attempt_id": "synthetic-1",
+                        "payload_codec": "avro",
+                        "retry_policy": {
+                            "max_attempts": 2,
+                            "backoff": []
+                        },
+                        "queue": "fixture-queue",
+                        "connection": "fixture-connection",
+                        "created_at": "2026-10-15T10:00:01.123456Z",
+                        "started_at": "2026-10-15T10:00:02.123456Z",
+                        "attempts": []
+                    }
+                ]
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "activity-1",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityStarted"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": "synthetic-1",
+                    "worker_attempt_id": null,
+                    "status": "running",
+                    "attempt_count": 3,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": null,
+                    "queue": null,
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": null,
+                    "started_at": "2026-10-15T10:00:01.123456Z",
+                    "closed_at": null,
+                    "attempts": [
+                        {
+                            "id": "synthetic-1",
+                            "worker_attempt_id": null,
+                            "attempt_number": 3,
+                            "status": "running",
+                            "task_id": "task-1",
+                            "lease_owner": null,
+                            "lease_expires_at": null,
+                            "started_at": "2026-10-15T10:00:01.123456Z",
+                            "last_heartbeat_at": null,
+                            "last_heartbeat_progress": null,
+                            "closed_at": null,
+                            "can_continue": true,
+                            "cancel_requested": false,
+                            "stop_reason": null
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "synthetic_attempt_with_pending_execution_row",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityStarted",
+                        "recorded_at": "2026-10-15T10:00:01.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "status": "running",
+                                "attempt_count": 3
+                            }
+                        }
+                    }
+                ],
+                "executions": [
+                    {
+                        "id": "activity-1",
+                        "sequence": 1,
+                        "activity_type": "fixture.echo",
+                        "activity_class": "FixtureActivity",
+                        "status": "pending",
+                        "attempt_count": 3,
+                        "current_attempt_id": "synthetic-2",
+                        "payload_codec": "avro",
+                        "retry_policy": {
+                            "max_attempts": 2,
+                            "backoff": []
+                        },
+                        "queue": "fixture-queue",
+                        "connection": "fixture-connection",
+                        "created_at": "2026-10-15T10:00:01.123456Z",
+                        "started_at": "2026-10-15T10:00:02.123456Z",
+                        "attempts": []
+                    }
+                ]
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "activity-1",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityStarted"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": "synthetic-2",
+                    "worker_attempt_id": null,
+                    "status": "running",
+                    "attempt_count": 3,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": null,
+                    "queue": null,
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": null,
+                    "started_at": "2026-10-15T10:00:01.123456Z",
+                    "closed_at": null,
+                    "attempts": [
+                        {
+                            "id": "synthetic-2",
+                            "attempt_number": 3,
+                            "status": "running",
+                            "task_id": null,
+                            "lease_owner": null,
+                            "lease_expires_at": null,
+                            "started_at": "2026-10-15T10:00:01.123456Z",
+                            "last_heartbeat_at": null,
+                            "last_heartbeat_progress": null,
+                            "closed_at": null,
+                            "can_continue": false,
+                            "cancel_requested": false,
+                            "stop_reason": null
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "local_attempt_is_independent_of_workflow_claim_counter",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:01.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "execution_mode": "local",
+                            "activity": {
+                                "id": "activity-1",
+                                "execution_mode": "local",
+                                "attempt_count": 1
+                            }
+                        }
+                    },
+                    {
+                        "sequence": 2,
+                        "event_type": "ActivityCompleted",
+                        "recorded_at": "2026-10-15T10:00:02.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "execution_mode": "local",
+                            "activity": {
+                                "id": "activity-1",
+                                "execution_mode": "local",
+                                "attempt_count": 1
+                            },
+                            "task": {
+                                "attempt_count": 7
+                            }
+                        }
+                    }
+                ],
+                "executions": []
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "activity-1",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": "local",
+                    "local_activity": true,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled",
+                        "ActivityCompleted"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": null,
+                    "worker_attempt_id": null,
+                    "status": "completed",
+                    "attempt_count": 1,
+                    "retry_policy": null,
+                    "connection": null,
+                    "queue": null,
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": null,
+                    "closed_at": "2026-10-15T10:00:02.123456Z",
+                    "attempts": []
+                }
+            ]
+        },
+        {
+            "name": "reused_external_result_is_not_resolved",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityCompleted",
+                        "recorded_at": "2026-10-15T10:00:01.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "reused_from_run_id": "previous-run",
+                            "reused_activity_execution_id": "previous-activity",
+                            "reused_recorded_at": "2026-10-14T09:00:00.000001Z",
+                            "result": {
+                                "codec": "avro",
+                                "external_storage": {
+                                    "schema": "durable-workflow.v2.external-payload-reference.v1",
+                                    "uri": "file:///activity-metadata-object-never-created",
+                                    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                    "size_bytes": 8388608,
+                                    "codec": "avro"
+                                }
+                            },
+                            "activity": {
+                                "id": "activity-1",
+                                "arguments": {
+                                    "codec": "avro",
+                                    "external_storage": {
+                                        "schema": "durable-workflow.v2.external-payload-reference.v1",
+                                        "uri": "file:///activity-metadata-object-never-created",
+                                        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                        "size_bytes": 8388608,
+                                        "codec": "avro"
+                                    }
+                                },
+                                "result": {
+                                    "codec": "avro",
+                                    "external_storage": {
+                                        "schema": "durable-workflow.v2.external-payload-reference.v1",
+                                        "uri": "file:///activity-metadata-object-never-created",
+                                        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                        "size_bytes": 8388608,
+                                        "codec": "avro"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                ],
+                "executions": []
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "activity-1",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityCompleted"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": "previous-run",
+                    "reused_activity_execution_id": "previous-activity",
+                    "reused_recorded_at": "2026-10-14T09:00:00.000001Z",
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": null,
+                    "worker_attempt_id": null,
+                    "status": "completed",
+                    "attempt_count": 1,
+                    "retry_policy": null,
+                    "connection": null,
+                    "queue": null,
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": null,
+                    "started_at": null,
+                    "closed_at": "2026-10-15T10:00:01.123456Z",
+                    "attempts": []
+                }
+            ]
+        },
+        {
+            "name": "mutable_external_payloads_are_not_resolved",
+            "input": {
+                "events": [],
+                "executions": [
+                    {
+                        "id": "activity-1",
+                        "sequence": 1,
+                        "activity_type": "fixture.echo",
+                        "activity_class": "FixtureActivity",
+                        "status": "running",
+                        "attempt_count": 1,
+                        "current_attempt_id": "attempt-1",
+                        "payload_codec": "avro",
+                        "retry_policy": {
+                            "max_attempts": 2,
+                            "backoff": []
+                        },
+                        "queue": "fixture-queue",
+                        "connection": "fixture-connection",
+                        "created_at": "2026-10-15T10:00:01.123456Z",
+                        "started_at": "2026-10-15T10:00:02.123456Z",
+                        "attempts": [],
+                        "arguments": "dw-external-payload:v1:eyJjb2RlYyI6ImF2cm8iLCJleHRlcm5hbF9zdG9yYWdlIjp7ImNvZGVjIjoiYXZybyIsInNjaGVtYSI6ImR1cmFibGUtd29ya2Zsb3cudjIuZXh0ZXJuYWwtcGF5bG9hZC1yZWZlcmVuY2UudjEiLCJzaGEyNTYiOiJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIiwic2l6ZV9ieXRlcyI6ODM4ODYwOCwidXJpIjoiZmlsZTovLy9hY3Rpdml0eS1tZXRhZGF0YS1vYmplY3QtbmV2ZXItY3JlYXRlZCJ9fQ==",
+                        "result": "dw-external-payload:v1:eyJjb2RlYyI6ImF2cm8iLCJleHRlcm5hbF9zdG9yYWdlIjp7ImNvZGVjIjoiYXZybyIsInNjaGVtYSI6ImR1cmFibGUtd29ya2Zsb3cudjIuZXh0ZXJuYWwtcGF5bG9hZC1yZWZlcmVuY2UudjEiLCJzaGEyNTYiOiJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIiwic2l6ZV9ieXRlcyI6ODM4ODYwOCwidXJpIjoiZmlsZTovLy9hY3Rpdml0eS1tZXRhZGF0YS1vYmplY3QtbmV2ZXItY3JlYXRlZCJ9fQ=="
+                    }
+                ]
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "activity-1",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "mutable_open_fallback",
+                    "diagnostic_only": true,
+                    "history_event_types": [],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": "running",
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": "attempt-1",
+                    "worker_attempt_id": null,
+                    "status": "running",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": "fixture-connection",
+                    "queue": "fixture-queue",
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": "2026-10-15T10:00:02.123456Z",
+                    "closed_at": null,
+                    "attempts": [
+                        {
+                            "id": "attempt-1",
+                            "attempt_number": 1,
+                            "status": "running",
+                            "task_id": null,
+                            "lease_owner": null,
+                            "lease_expires_at": null,
+                            "started_at": "2026-10-15T10:00:02.123456Z",
+                            "last_heartbeat_at": null,
+                            "last_heartbeat_progress": null,
+                            "closed_at": null,
+                            "can_continue": true,
+                            "cancel_requested": false,
+                            "stop_reason": null
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "nested_parallel_and_selection_path",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:01.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "parallel_group_path": [
+                                {
+                                    "parallel_group_id": "all-activities:1:2",
+                                    "parallel_group_kind": "activity",
+                                    "parallel_group_base_sequence": 1,
+                                    "parallel_group_size": 2,
+                                    "parallel_group_index": 1
+                                },
+                                {
+                                    "invalid": true
+                                },
+                                {
+                                    "parallel_group_id": "select-calls:3:2",
+                                    "parallel_group_kind": "call",
+                                    "parallel_group_mode": "select",
+                                    "parallel_group_base_sequence": 3,
+                                    "parallel_group_size": 2,
+                                    "parallel_group_index": 0,
+                                    "selection_member_key": "winner",
+                                    "selection_member_index": 0,
+                                    "selection_member_kind": "activity"
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "executions": []
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "activity-1",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [
+                        {
+                            "parallel_group_id": "all-activities:1:2",
+                            "parallel_group_kind": "activity",
+                            "parallel_group_base_sequence": 1,
+                            "parallel_group_size": 2,
+                            "parallel_group_index": 1
+                        },
+                        {
+                            "parallel_group_id": "select-calls:3:2",
+                            "parallel_group_kind": "call",
+                            "parallel_group_mode": "select",
+                            "parallel_group_base_sequence": 3,
+                            "parallel_group_size": 2,
+                            "parallel_group_index": 0,
+                            "selection_member_key": "winner",
+                            "selection_member_index": 0,
+                            "selection_member_kind": "activity"
+                        }
+                    ],
+                    "attempt_id": null,
+                    "worker_attempt_id": null,
+                    "status": "pending",
+                    "attempt_count": 0,
+                    "retry_policy": null,
+                    "connection": null,
+                    "queue": null,
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": null,
+                    "closed_at": null,
+                    "attempts": []
+                }
+            ]
+        },
+        {
+            "name": "mutable_parallel_path",
+            "input": {
+                "events": [],
+                "executions": [
+                    {
+                        "id": "activity-1",
+                        "sequence": 1,
+                        "activity_type": "fixture.echo",
+                        "activity_class": "FixtureActivity",
+                        "status": "running",
+                        "attempt_count": 1,
+                        "current_attempt_id": "attempt-1",
+                        "payload_codec": "avro",
+                        "retry_policy": {
+                            "max_attempts": 2,
+                            "backoff": []
+                        },
+                        "queue": "fixture-queue",
+                        "connection": "fixture-connection",
+                        "created_at": "2026-10-15T10:00:01.123456Z",
+                        "started_at": "2026-10-15T10:00:02.123456Z",
+                        "attempts": [],
+                        "parallel_group_path": [
+                            {
+                                "parallel_group_id": "all-activities:1:2",
+                                "parallel_group_kind": "activity",
+                                "parallel_group_base_sequence": 1,
+                                "parallel_group_size": 2,
+                                "parallel_group_index": 1
+                            },
+                            {
+                                "parallel_group_id": "select-calls:3:2",
+                                "parallel_group_kind": "call",
+                                "parallel_group_mode": "select",
+                                "parallel_group_base_sequence": 3,
+                                "parallel_group_size": 2,
+                                "parallel_group_index": 0,
+                                "selection_member_key": "winner",
+                                "selection_member_index": 0,
+                                "selection_member_kind": "activity"
+                            }
+                        ]
+                    }
+                ]
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "activity-1",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "mutable_open_fallback",
+                    "diagnostic_only": true,
+                    "history_event_types": [],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": "running",
+                    "parallel_group_kind": "call",
+                    "parallel_group_id": "select-calls:3:2",
+                    "parallel_group_base_sequence": 3,
+                    "parallel_group_size": 2,
+                    "parallel_group_index": 0,
+                    "parallel_group_path": [
+                        {
+                            "parallel_group_id": "all-activities:1:2",
+                            "parallel_group_kind": "activity",
+                            "parallel_group_base_sequence": 1,
+                            "parallel_group_size": 2,
+                            "parallel_group_index": 1
+                        },
+                        {
+                            "parallel_group_id": "select-calls:3:2",
+                            "parallel_group_kind": "call",
+                            "parallel_group_mode": "select",
+                            "parallel_group_base_sequence": 3,
+                            "parallel_group_size": 2,
+                            "parallel_group_index": 0,
+                            "selection_member_key": "winner",
+                            "selection_member_index": 0,
+                            "selection_member_kind": "activity"
+                        }
+                    ],
+                    "attempt_id": "attempt-1",
+                    "worker_attempt_id": null,
+                    "status": "running",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": "fixture-connection",
+                    "queue": "fixture-queue",
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": "2026-10-15T10:00:02.123456Z",
+                    "closed_at": null,
+                    "attempts": [
+                        {
+                            "id": "attempt-1",
+                            "attempt_number": 1,
+                            "status": "running",
+                            "task_id": null,
+                            "lease_owner": null,
+                            "lease_expires_at": null,
+                            "started_at": "2026-10-15T10:00:02.123456Z",
+                            "last_heartbeat_at": null,
+                            "last_heartbeat_progress": null,
+                            "closed_at": null,
+                            "can_continue": true,
+                            "cancel_requested": false,
+                            "stop_reason": null
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "mutable_single_parallel_group_object",
+            "input": {
+                "events": [],
+                "executions": [
+                    {
+                        "id": "activity-1",
+                        "sequence": 1,
+                        "activity_type": "fixture.echo",
+                        "activity_class": "FixtureActivity",
+                        "status": "running",
+                        "attempt_count": 1,
+                        "current_attempt_id": "attempt-1",
+                        "payload_codec": "avro",
+                        "retry_policy": {
+                            "max_attempts": 2,
+                            "backoff": []
+                        },
+                        "queue": "fixture-queue",
+                        "connection": "fixture-connection",
+                        "created_at": "2026-10-15T10:00:01.123456Z",
+                        "started_at": "2026-10-15T10:00:02.123456Z",
+                        "attempts": [],
+                        "parallel_group_path": {
+                            "parallel_group_id": "all-activities:1:2",
+                            "parallel_group_kind": "activity",
+                            "parallel_group_base_sequence": 1,
+                            "parallel_group_size": 2,
+                            "parallel_group_index": 1
+                        }
+                    }
+                ]
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "activity-1",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "mutable_open_fallback",
+                    "diagnostic_only": true,
+                    "history_event_types": [],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": "running",
+                    "parallel_group_kind": "activity",
+                    "parallel_group_id": "all-activities:1:2",
+                    "parallel_group_base_sequence": 1,
+                    "parallel_group_size": 2,
+                    "parallel_group_index": 1,
+                    "parallel_group_path": [
+                        {
+                            "parallel_group_id": "all-activities:1:2",
+                            "parallel_group_kind": "activity",
+                            "parallel_group_base_sequence": 1,
+                            "parallel_group_size": 2,
+                            "parallel_group_index": 1
+                        }
+                    ],
+                    "attempt_id": "attempt-1",
+                    "worker_attempt_id": null,
+                    "status": "running",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": "fixture-connection",
+                    "queue": "fixture-queue",
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:01.123456Z",
+                    "started_at": "2026-10-15T10:00:02.123456Z",
+                    "closed_at": null,
+                    "attempts": [
+                        {
+                            "id": "attempt-1",
+                            "attempt_number": 1,
+                            "status": "running",
+                            "task_id": null,
+                            "lease_owner": null,
+                            "lease_expires_at": null,
+                            "started_at": "2026-10-15T10:00:02.123456Z",
+                            "last_heartbeat_at": null,
+                            "last_heartbeat_progress": null,
+                            "closed_at": null,
+                            "can_continue": true,
+                            "cancel_requested": false,
+                            "stop_reason": null
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "php_millisecond_rounding_then_missing_sequence",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:01.123001Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "z",
+                            "sequence": 2,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity"
+                        }
+                    },
+                    {
+                        "sequence": 2,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:01.123999Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "a",
+                            "sequence": 2,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity"
+                        }
+                    },
+                    {
+                        "sequence": 3,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:03.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "first",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity"
+                        }
+                    },
+                    {
+                        "sequence": 4,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:04.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "string-sequence",
+                            "sequence": "1",
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity"
+                        }
+                    }
+                ],
+                "executions": []
+            },
+            "expected": [
+                {
+                    "id": "first",
+                    "idempotency_key": "first",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": null,
+                    "worker_attempt_id": null,
+                    "status": "pending",
+                    "attempt_count": 0,
+                    "retry_policy": null,
+                    "connection": null,
+                    "queue": null,
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:03.123456Z",
+                    "started_at": null,
+                    "closed_at": null,
+                    "attempts": []
+                },
+                {
+                    "id": "z",
+                    "idempotency_key": "z",
+                    "sequence": 2,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": null,
+                    "worker_attempt_id": null,
+                    "status": "pending",
+                    "attempt_count": 0,
+                    "retry_policy": null,
+                    "connection": null,
+                    "queue": null,
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:01.123001Z",
+                    "started_at": null,
+                    "closed_at": null,
+                    "attempts": []
+                },
+                {
+                    "id": "a",
+                    "idempotency_key": "a",
+                    "sequence": 2,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": null,
+                    "worker_attempt_id": null,
+                    "status": "pending",
+                    "attempt_count": 0,
+                    "retry_policy": null,
+                    "connection": null,
+                    "queue": null,
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:01.123999Z",
+                    "started_at": null,
+                    "closed_at": null,
+                    "attempts": []
+                },
+                {
+                    "id": "string-sequence",
+                    "idempotency_key": "string-sequence",
+                    "sequence": null,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": null,
+                    "worker_attempt_id": null,
+                    "status": "pending",
+                    "attempt_count": 0,
+                    "retry_policy": null,
+                    "connection": null,
+                    "queue": null,
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:04.123456Z",
+                    "started_at": null,
+                    "closed_at": null,
+                    "attempts": []
+                }
+            ]
+        },
+        {
+            "name": "rounded_millisecond_tie_uses_id",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:01.123001Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "z",
+                            "sequence": 2,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity"
+                        }
+                    },
+                    {
+                        "sequence": 2,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:01.123400Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "a",
+                            "sequence": 2,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity"
+                        }
+                    }
+                ],
+                "executions": []
+            },
+            "expected": [
+                {
+                    "id": "a",
+                    "idempotency_key": "a",
+                    "sequence": 2,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": null,
+                    "worker_attempt_id": null,
+                    "status": "pending",
+                    "attempt_count": 0,
+                    "retry_policy": null,
+                    "connection": null,
+                    "queue": null,
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:01.123400Z",
+                    "started_at": null,
+                    "closed_at": null,
+                    "attempts": []
+                },
+                {
+                    "id": "z",
+                    "idempotency_key": "z",
+                    "sequence": 2,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": null,
+                    "worker_attempt_id": null,
+                    "status": "pending",
+                    "attempt_count": 0,
+                    "retry_policy": null,
+                    "connection": null,
+                    "queue": null,
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:01.123001Z",
+                    "started_at": null,
+                    "closed_at": null,
+                    "attempts": []
+                }
+            ]
+        },
+        {
+            "name": "php_decimal_pre_rounding_near_half_millisecond",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:01.123001Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "z",
+                            "sequence": 2,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity"
+                        }
+                    },
+                    {
+                        "sequence": 2,
+                        "event_type": "ActivityScheduled",
+                        "recorded_at": "2026-10-15T10:00:01.123498Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "a",
+                            "sequence": 2,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity"
+                        }
+                    }
+                ],
+                "executions": []
+            },
+            "expected": [
+                {
+                    "id": "z",
+                    "idempotency_key": "z",
+                    "sequence": 2,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": null,
+                    "worker_attempt_id": null,
+                    "status": "pending",
+                    "attempt_count": 0,
+                    "retry_policy": null,
+                    "connection": null,
+                    "queue": null,
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:01.123001Z",
+                    "started_at": null,
+                    "closed_at": null,
+                    "attempts": []
+                },
+                {
+                    "id": "a",
+                    "idempotency_key": "a",
+                    "sequence": 2,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityScheduled"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": null,
+                    "worker_attempt_id": null,
+                    "status": "pending",
+                    "attempt_count": 0,
+                    "retry_policy": null,
+                    "connection": null,
+                    "queue": null,
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": "2026-10-15T10:00:01.123498Z",
+                    "started_at": null,
+                    "closed_at": null,
+                    "attempts": []
+                }
+            ]
+        },
+        {
+            "name": "unrelated_and_missing_identity_history_ignored",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "WorkflowStarted",
+                        "payload": [],
+                        "recorded_at": "2026-10-15T10:00:01.123456Z"
+                    },
+                    {
+                        "sequence": 2,
+                        "event_type": "ActivityScheduled",
+                        "payload": [],
+                        "recorded_at": "2026-10-15T10:00:02.123456Z"
+                    }
+                ],
+                "executions": []
+            },
+            "expected": []
+        },
+        {
+            "name": "stored_progress_reader_preserves_more_than_write_limit",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityHeartbeatRecorded",
+                        "recorded_at": "2026-10-15T10:00:01.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "progress": {
+                                "message": " ",
+                                "current": "1e3",
+                                "total": "12.50",
+                                "unit": " batches ",
+                                "details": {
+                                    "entry-0": 0,
+                                    "entry-1": 1,
+                                    "entry-2": 2,
+                                    "entry-3": 3,
+                                    "entry-4": 4,
+                                    "entry-5": 5,
+                                    "entry-6": 6,
+                                    "entry-7": 7,
+                                    "entry-8": 8,
+                                    "entry-9": 9,
+                                    "entry-10": 10,
+                                    "entry-11": 11,
+                                    "entry-12": 12,
+                                    "entry-13": 13,
+                                    "entry-14": 14,
+                                    "entry-15": 15,
+                                    "entry-16": 16,
+                                    "entry-17": 17,
+                                    "entry-18": 18,
+                                    "entry-19": 19,
+                                    "entry-20": 20,
+                                    "entry-21": 21,
+                                    "entry-22": 22,
+                                    "entry-23": 23
+                                }
+                            },
+                            "activity_attempt": {
+                                "id": "attempt-1",
+                                "attempt_number": "2"
+                            }
+                        }
+                    }
+                ],
+                "executions": []
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "activity-1",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityHeartbeatRecorded"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": "attempt-1",
+                    "worker_attempt_id": null,
+                    "status": "running",
+                    "attempt_count": 1,
+                    "retry_policy": null,
+                    "connection": null,
+                    "queue": null,
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": {
+                        "current": 1000,
+                        "total": 12.5,
+                        "unit": "batches",
+                        "details": {
+                            "entry-0": 0,
+                            "entry-1": 1,
+                            "entry-10": 10,
+                            "entry-11": 11,
+                            "entry-12": 12,
+                            "entry-13": 13,
+                            "entry-14": 14,
+                            "entry-15": 15,
+                            "entry-16": 16,
+                            "entry-17": 17,
+                            "entry-18": 18,
+                            "entry-19": 19,
+                            "entry-2": 2,
+                            "entry-20": 20,
+                            "entry-21": 21,
+                            "entry-22": 22,
+                            "entry-23": 23,
+                            "entry-3": 3,
+                            "entry-4": 4,
+                            "entry-5": 5,
+                            "entry-6": 6,
+                            "entry-7": 7,
+                            "entry-8": 8,
+                            "entry-9": 9
+                        }
+                    },
+                    "created_at": null,
+                    "started_at": null,
+                    "closed_at": null,
+                    "attempts": [
+                        {
+                            "id": "attempt-1",
+                            "worker_attempt_id": null,
+                            "attempt_number": 2,
+                            "status": "running",
+                            "task_id": "task-1",
+                            "lease_owner": null,
+                            "lease_expires_at": null,
+                            "started_at": null,
+                            "last_heartbeat_at": null,
+                            "last_heartbeat_progress": {
+                                "current": 1000,
+                                "total": 12.5,
+                                "unit": "batches",
+                                "details": {
+                                    "entry-0": 0,
+                                    "entry-1": 1,
+                                    "entry-10": 10,
+                                    "entry-11": 11,
+                                    "entry-12": 12,
+                                    "entry-13": 13,
+                                    "entry-14": 14,
+                                    "entry-15": 15,
+                                    "entry-16": 16,
+                                    "entry-17": 17,
+                                    "entry-18": 18,
+                                    "entry-19": 19,
+                                    "entry-2": 2,
+                                    "entry-20": 20,
+                                    "entry-21": 21,
+                                    "entry-22": 22,
+                                    "entry-23": 23,
+                                    "entry-3": 3,
+                                    "entry-4": 4,
+                                    "entry-5": 5,
+                                    "entry-6": 6,
+                                    "entry-7": 7,
+                                    "entry-8": 8,
+                                    "entry-9": 9
+                                }
+                            },
+                            "closed_at": null,
+                            "can_continue": true,
+                            "cancel_requested": false,
+                            "stop_reason": null
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}

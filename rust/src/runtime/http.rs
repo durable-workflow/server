@@ -130,6 +130,10 @@ pub fn router(runtime: Runtime) -> Router {
             get(history),
         )
         .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/activities",
+            get(activities),
+        )
+        .route(
             "/api/workflows/{workflow_id}/runs/{run_id}/activities/{activity_id}/result",
             get(activity_result),
         )
@@ -426,7 +430,9 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
         }
         return matches!(
             parts.as_slice(),
-            [_] | [_, "cancel"] | [_, "runs", _] | [_, "runs", _, "history" | "cancel"]
+            [_] | [_, "cancel"]
+                | [_, "runs", _]
+                | [_, "runs", _, "history" | "cancel" | "activities"]
         );
     }
     if let Some(path) = path.strip_prefix("/api/worker/") {
@@ -791,6 +797,13 @@ async fn describe_run(
 struct HistoryQuery {
     page_size: Option<i64>,
     next_page_token: Option<String>,
+}
+
+async fn activities(
+    Extension(runtime): Extension<Runtime>,
+    Path((workflow_id, run_id)): Path<(String, String)>,
+) -> Result<Json<Value>> {
+    runtime.activities(&workflow_id, &run_id).await.map(Json)
 }
 
 async fn history(

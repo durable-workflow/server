@@ -27,6 +27,14 @@ Updated October 19, 2026.
   Main brings PHP Server 2.9.4 and Workflow 2.6.2. It changes no native,
   shared harness or fixture path, and the shared matrix keeps its frozen
   published PHP 2.5.14, embedded and SDK actors.
+- **#476 source.** The activity metadata listing now reads history, executions
+  and attempts from one consistent read-only snapshot on every database family,
+  takes the codec permit only after its reads, and gives a synthetic attempt no
+  stop reason when its execution row is pending, as released `RunActivityView`
+  does. Controls cover SQLite, PostgreSQL 17, MySQL 8.0 and MariaDB 10.11, and
+  the projection corpus has a released-projector case for the pending row.
+  Remaining listing gaps are the 413 read budget for long-heartbeat or wide
+  runs, six-digit activity timestamps and NULL-row tolerance.
 - **Diagnosed failure.** Shared run [39092116973](https://github.com/durable-workflow/server/actions/runs/39092116973)
   failed `execution-and-codec` step 9 with exit code 255. The same step
   reproduced locally at `543ed0485` with the exact published image and failed the
