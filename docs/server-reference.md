@@ -625,6 +625,21 @@ signal, query, update, cancel, terminate, repair, and archive; they only forward
 when `{runId}` is the current run and reject historical-run commands with `409`
 and `reason: "historical_run_command_rejected"`.
 
+An update `request_id` identifies a retained update command within the workflow
+instance, rather than a new operation selected by the URL's update name. Retrying
+that key returns the original receipt, including its `update_name`, `run_id`, and
+`update_id`, without creating another update. This can return a receipt from an
+earlier run after continue-as-new. Historical-run command routes still refuse
+before receipt lookup.
+
+Retained receipts do not verify equality with newly submitted arguments. Keep
+one key for retries of the same logical operation and use a new key for a new
+operation; inspect the returned identity before treating it as the requested
+update. `wait_for: "accepted"` confirms admission, while `wait_for: "completed"`
+requests the retained completion result. This PHP admission correction is
+tracked in [#493](https://github.com/durable-workflow/server/issues/493); older
+affected releases can return HTTP 500 when a key is reused for another name.
+
 Workflow starts fail closed with `409` / `reason: "task_queue_draining"`
 when the requested task queue has been explicitly drained and no active worker
 cohort remains to claim new work. The response includes
