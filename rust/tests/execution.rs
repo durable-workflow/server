@@ -40,6 +40,9 @@ mod namespaces;
 #[path = "execution/named_timers.rs"]
 mod named_timers;
 
+#[path = "execution/named_signal_timeouts.rs"]
+mod named_signal_timeouts;
+
 #[path = "execution/selected_run_signals.rs"]
 mod selected_run_signals;
 
@@ -58,6 +61,30 @@ mod version_markers;
 #[path = "execution/activity_deadlines.rs"]
 mod activity_deadlines;
 
+#[path = "execution/activity_metadata.rs"]
+mod activity_metadata;
+#[path = "execution/activity_results.rs"]
+mod activity_results;
+
+#[path = "execution/history_budget.rs"]
+mod history_budget;
+#[path = "execution/run_observation.rs"]
+mod run_observation;
+#[path = "execution/run_observation_active_summaries.rs"]
+mod run_observation_active_summaries;
+#[path = "execution/run_observation_children.rs"]
+mod run_observation_children;
+#[path = "execution/run_observation_conditions.rs"]
+mod run_observation_conditions;
+#[path = "execution/run_observation_signals.rs"]
+mod run_observation_signals;
+#[path = "execution/run_observation_summaries.rs"]
+mod run_observation_summaries;
+#[path = "execution/run_observation_timers.rs"]
+mod run_observation_timers;
+#[path = "execution/run_observation_updates.rs"]
+mod run_observation_updates;
+
 #[path = "execution/waiting_history.rs"]
 mod waiting_history;
 
@@ -69,6 +96,33 @@ mod selections;
 
 #[path = "execution/condition_occurrences.rs"]
 mod condition_occurrences;
+
+#[path = "execution/timed_signal_waits.rs"]
+mod timed_signal_waits;
+
+#[path = "execution/timed_condition_waits.rs"]
+mod timed_condition_waits;
+
+#[path = "execution/parallel_all.rs"]
+mod parallel_all;
+
+#[path = "execution/workflow_failures.rs"]
+mod workflow_failures;
+
+#[path = "execution/terminal_updates.rs"]
+mod terminal_updates;
+
+#[path = "execution/cooperative_updates.rs"]
+mod cooperative_updates;
+
+#[path = "execution/cooperative_children.rs"]
+mod cooperative_children;
+
+#[path = "execution/cooperative_child_resume.rs"]
+mod cooperative_child_resume;
+
+#[path = "execution/cooperative_child_independent.rs"]
+mod cooperative_child_independent;
 
 #[path = "execution/query_arguments.rs"]
 mod query_arguments;
@@ -421,6 +475,47 @@ impl TestDatabase {
                 sqlx::raw_sql(statement).execute(&pool).await.unwrap();
                 pool.close().await;
             }
+        }
+    }
+
+    async fn timer_cancellation_belongs_to(&self, task_id: &str) -> bool {
+        const QUERY: &str = "SELECT COUNT(*) FROM workflow_history_events WHERE event_type='TimerCancelled' AND workflow_task_id=$1 AND workflow_command_id IS NULL";
+        macro_rules! check {
+            ($pool:expr,$query:expr) => {{
+                let pool = $pool;
+                let count: i64 = sqlx::query_scalar($query)
+                    .bind(task_id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                count == 1
+            }};
+        }
+        match self {
+            Self::Sqlite(dir) => check!(
+                sqlx::SqlitePool::connect(&format!(
+                    "sqlite://{}",
+                    dir.path().join("runtime.sqlite").display()
+                ))
+                .await
+                .unwrap(),
+                QUERY
+            ),
+            Self::Postgres { options, .. } => check!(
+                sqlx::postgres::PgPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap(),
+                QUERY
+            ),
+            Self::MySql { options, .. } => check!(
+                sqlx::mysql::MySqlPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap(),
+                "SELECT COUNT(*) FROM workflow_history_events WHERE event_type='TimerCancelled' AND workflow_task_id=? AND workflow_command_id IS NULL"
+            ),
         }
     }
 
@@ -1470,7 +1565,7 @@ async fn mismatched_child_cancellation_rolls_back_original_child_and_parent() {
     }
 }
 
-async fn update_worker(app: &Router, worker: &str) {
+async fn update_worker(app: &Router, worker: &str) -> Value {
     let (status, body) = request(app, "POST", "/api/worker/register", json!({
         "worker_id":worker,"task_queue":"test","runtime":"php","supported_workflow_types":["echo"],
         "supported_activity_types":[],"capabilities":["workflow_updates"],"workflow_command_contracts":{"echo":{
@@ -1478,6 +1573,7 @@ async fn update_worker(app: &Router, worker: &str) {
             "updates":["set"],"update_validators":[],"update_contracts":[{"name":"set","parameters":[{"name":"value","type":"int","required":true,"variadic":false,"default_available":false,"allows_null":false}]}]
         }}})).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
+    body["server_capabilities"].clone()
 }
 
 async fn open_update_wait(app: &Router, worker: &str) {
@@ -1514,7 +1610,17 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
         json!(["accepted", "completed"]),
         "ordinary published clients discover the implemented update wait stages"
     );
-    update_worker(&a, "update-a").await;
+    let capabilities = update_worker(&a, "update-a").await;
+    assert_eq!(
+        capabilities,
+        discovery.1["worker_protocol"]["server_capabilities"]
+    );
+    let complete_command = capabilities["supported_workflow_task_commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|command| command.as_str() == Some("complete_update"))
+        .expect("worker discovery must permit the accepted update's completion");
     update_worker(&b, "update-b").await;
     let started = start(&a, "durable-update").await;
     let path = format!(
@@ -1591,14 +1697,23 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
             .await
             .is_null()
     );
-    let old = poll(&a, "update-a", "workflow").await;
+    let polled = request(
+        &a,
+        "POST",
+        "/api/worker/workflow-tasks/poll",
+        json!({"worker_id":"update-a","task_queue":"test","timeout_seconds":0}),
+    )
+    .await;
+    assert_eq!(polled.0, StatusCode::OK);
+    assert_eq!(polled.1["server_capabilities"], capabilities);
+    let old = polled.1["task"].clone();
     assert_eq!(old["workflow_update_id"], admitted.1["update_id"]);
     assert_eq!(old["history_events"].as_array().unwrap().len(), 4);
     let complete_path = format!(
         "/api/worker/workflow-tasks/{}/complete",
         old["task_id"].as_str().unwrap()
     );
-    let commands = json!([{"type":"complete_update","update_id":admitted.1["update_id"],"result":envelope(Payload::Long(9007199254740993))}]);
+    let commands = json!([{"type":complete_command,"update_id":admitted.1["update_id"],"result":envelope(Payload::Long(9007199254740993))}]);
     let original = completion(&old, commands.clone());
     for (field, value) in [
         ("lease_owner", json!("wrong")),
@@ -1797,7 +1912,19 @@ async fn failed_updates_preserve_terminal_identity_and_parent_continuation_after
     let second = database.open().await.unwrap();
     let a = router(first.clone());
     let b = router(second.clone());
-    update_worker(&a, "failure-author").await;
+    let capabilities = update_worker(&a, "failure-author").await;
+    let discovery = request(&b, "GET", "/api/cluster/info", Value::Null).await;
+    assert_eq!(discovery.0, StatusCode::OK);
+    assert_eq!(
+        capabilities,
+        discovery.1["worker_protocol"]["server_capabilities"]
+    );
+    let fail_command = capabilities["supported_workflow_task_commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|command| command.as_str() == Some("fail_update"))
+        .expect("worker discovery must permit the accepted update's failure");
     let started = start(&a, "failed-update-parent").await;
     open_update_wait(&a, "failure-author").await;
     let path = "/api/workflows/failed-update-parent/update/set";
@@ -1829,7 +1956,7 @@ async fn failed_updates_preserve_terminal_identity_and_parent_continuation_after
     );
     let failed = completion(
         &task,
-        json!([{"type":"fail_update","update_id":admitted.1["update_id"],
+        json!([{"type":fail_command,"update_id":admitted.1["update_id"],
         "message":"original failure λ","exception_type":"ValueError","exception_class":"builtins.ValueError","non_retryable":true,
         "result":"ignored by PHP failure normalization","extra":{"ignored":true}}]),
     );

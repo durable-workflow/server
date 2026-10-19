@@ -20,19 +20,39 @@ function record(event, details = {}) {
 }
 function exchange(method, path, headers, body = Buffer.alloc(0)) {
   return new Promise((resolve, reject) => {
+    const started = Date.now() / 1000;
+    let response, size = 0, timedOut = false, settled = false;
+    const fail = error => {
+      if (settled) return;
+      settled = true;
+      error.observerExchange = {
+        phase: response ? 'response' : 'request', started_at: started, failed_at: Date.now() / 1000,
+        headers_received: response !== undefined, status: response?.statusCode ?? null, received_bytes: size,
+        response_complete: response?.complete ?? null, response_aborted: response?.aborted ?? null,
+        timed_out: timedOut, error_name: String(error.name ?? '').slice(0, 64),
+        error_code: typeof error.code === 'string' ? error.code.slice(0, 64) : null,
+      };
+      reject(error);
+    };
     const request = http.request(new URL(path, upstream), {method, headers: {...headers, host: upstream.host}}, incoming => {
+      response = incoming;
       const chunks = [];
-      let size = 0;
       incoming.on('data', chunk => {
         size += chunk.length;
         if (size > 2 * 1024 * 1024) incoming.destroy(Error('Observer response limit exceeded'));
         else chunks.push(chunk);
       });
-      incoming.on('error', reject);
-      incoming.on('end', () => resolve({status: incoming.statusCode, headers: incoming.headers, bytes: Buffer.concat(chunks)}));
+      incoming.on('error', fail);
+      incoming.on('end', () => {
+        settled = true;
+        resolve({status: incoming.statusCode, headers: incoming.headers, bytes: Buffer.concat(chunks)});
+      });
     });
-    request.setTimeout(35_000, () => request.destroy(Error('Observer exchange timeout')));
-    request.on('error', reject);
+    request.setTimeout(35_000, () => {
+      timedOut = true;
+      request.destroy(Error('Observer exchange timeout'));
+    });
+    request.on('error', fail);
     request.end(body);
   });
 }
@@ -47,6 +67,11 @@ function json(reply) {
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const server = http.createServer(async (request, response) => {
   const path = new URL(request.url, upstream).pathname;
+  let upstreamStarted = false;
+  const forward = (...arguments_) => {
+    upstreamStarted = true;
+    return exchange(...arguments_);
+  };
   try {
     const chunks = [];
     let size = 0;
@@ -65,15 +90,15 @@ const server = http.createServer(async (request, response) => {
       const workflowPath = path.replace(/\/query\/[^/]+$/, '');
       if (workflowPath.includes('/runs/')) historyPath = workflowPath + '/history';
       else {
-        const description = await exchange('GET', workflowPath, {...headers, 'content-length': '0'});
+        const description = await forward('GET', workflowPath, {...headers, 'content-length': '0'});
         if (description.status !== 200 || typeof json(description).run_id !== 'string') throw Error('Original run unavailable');
         historyPath = workflowPath + '/runs/' + encodeURIComponent(json(description).run_id) + '/history';
       }
-      const snapshot = await exchange('GET', historyPath, {...headers, 'content-length': '0'});
+      const snapshot = await forward('GET', historyPath, {...headers, 'content-length': '0'});
       if (snapshot.status !== 200) throw Error('Original history unavailable');
       before = sha(Buffer.from(JSON.stringify(json(snapshot))));
     }
-    const reply = await exchange(request.method, request.url, headers, body);
+    const reply = await forward(request.method, request.url, headers, body);
     if (path === '/api/cluster/info' && request.method === 'GET') {
       record('discovery', {status: reply.status,
         query_task_authority: json(reply).worker_protocol?.server_capabilities?.query_task_authority === true});
@@ -122,7 +147,7 @@ const server = http.createServer(async (request, response) => {
       record('deregistered', {status: reply.status});
     }
     if (query) {
-      const snapshot = await exchange('GET', historyPath, {...headers, 'content-length': '0'});
+      const snapshot = await forward('GET', historyPath, {...headers, 'content-length': '0'});
       if (snapshot.status !== 200) throw Error('Original history disappeared');
       const after = sha(Buffer.from(JSON.stringify(json(snapshot))));
       if (after !== before) throw Error('Query changed the original workflow history');
@@ -131,9 +156,21 @@ const server = http.createServer(async (request, response) => {
     response.writeHead(reply.status, reply.headers);
     response.end(reply.bytes);
   } catch (error) {
-    const details = {method: request.method, path, message: String(error).slice(0, 1024)};
-    record('observer-error', details);
-    console.error(JSON.stringify({event: 'observer-error', ...details}));
+    const details = {method: request.method, path, message: String(error).slice(0, 1024),
+      upstream_started: upstreamStarted,
+      error_code: typeof error.code === 'string' ? error.code.slice(0, 64) : null,
+      ...(error.observerExchange ? {upstream: error.observerExchange} : {}),
+      downstream: {request_complete: request.complete, request_aborted: request.aborted,
+        response_destroyed: response.destroyed, response_ended: response.writableEnded}};
+    // SDK shutdown may cancel a new poll while its request body is still being
+    // sent. This request never reached the Server and cannot claim a task.
+    // Completed requests, upstream failures and terminal submissions still
+    // invalidate the observation, regardless of peer disconnect state.
+    const event = request.method === 'POST' && path === '/api/worker/query-tasks/poll'
+      && !upstreamStarted && !request.complete && request.aborted && error.code === 'ECONNRESET'
+      ? 'poll-disconnected' : 'observer-error';
+    record(event, details);
+    console.error(JSON.stringify({event, ...details}));
     response.destroy(error);
   }
 });

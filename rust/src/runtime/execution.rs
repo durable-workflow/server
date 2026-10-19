@@ -1,7 +1,7 @@
 //! Runtime database selection without duplicating durable transitions.
 use super::{Result, mysql::MySqlStorage, postgres::PostgresStorage, refuse, sqlite, store::Store};
 use axum::http::StatusCode;
-use serde_json::Value;
+use serde_json::{Value, json};
 use sqlx::{MySql, Postgres, Sqlite, mysql::MySqlConnectOptions, postgres::PgConnectOptions};
 use std::{
     sync::{
@@ -151,8 +151,10 @@ impl Runtime {
         let external = super::ExternalPayloadConfig::from_env()?;
         let queries = super::QueryTaskConfig::from_env()?;
         let limit = super::memo_limits::configured_limit()?;
+        let history_budget = super::history_budget::Config::from_env()?;
         let mut store = Store::new(sqlite::open(database).await?);
         store.memo_size_limit = limit;
+        store.history_budget = history_budget;
         Self::from_storage(Storage::Sqlite(store), token, external, queries).await
     }
 
@@ -161,8 +163,10 @@ impl Runtime {
         let external = super::ExternalPayloadConfig::from_env()?;
         let queries = super::QueryTaskConfig::from_env()?;
         let limit = super::memo_limits::configured_limit()?;
+        let history_budget = super::history_budget::Config::from_env()?;
         let mut store = Store::new(PostgresStorage::open(options).await?.into_pool());
         store.memo_size_limit = limit;
+        store.history_budget = history_budget;
         Self::from_storage(Storage::Postgres(store), token, external, queries).await
     }
 
@@ -171,8 +175,10 @@ impl Runtime {
         let external = super::ExternalPayloadConfig::from_env()?;
         let queries = super::QueryTaskConfig::from_env()?;
         let limit = super::memo_limits::configured_limit()?;
+        let history_budget = super::history_budget::Config::from_env()?;
         let mut store = Store::new(MySqlStorage::open(options).await?.into_pool());
         store.memo_size_limit = limit;
+        store.history_budget = history_budget;
         Self::from_storage(Storage::MySql(store), token, external, queries).await
     }
 
@@ -334,6 +340,15 @@ impl Runtime {
         }
     }
     delegate!(describe_schedule(schedule: &str) -> Result<Value>);
+    delegate!(activity_result(workflow_id: &str, run_id: &str, activity_id: &str) -> Result<Value>);
+    delegate!(
+        run_observation(
+            workflow_id: &str,
+            run_id: Option<&str>,
+            options: &super::run_observation::Options,
+            key: &str,
+        ) -> Result<Value>
+    );
     delegate!(schedule_history(schedule: &str, after: i64, limit: i64) -> Result<Value>);
     delegate!(edit_schedule(schedule: &str, operation: &str, context: Value) -> Result<Value>);
     delegate!(trigger_schedule(schedule: &str, context: Value) -> Result<Value>);
@@ -635,6 +650,43 @@ impl Runtime {
                     .await
             }
         }
+    }
+    delegate!(
+        activity_metadata_input(
+            workflow_id: &str,
+            run_id: &str,
+        ) -> Result<(Vec<Value>, Vec<Value>)>
+    );
+    pub(crate) async fn activities(&self, workflow_id: &str, run_id: &str) -> Result<Value> {
+        // Writers take this permit while holding the writer transaction. Finish
+        // every read before taking it so a listing can never wait on a writer
+        // that is itself waiting on the permit.
+        let (events, executions) = self.activity_metadata_input(workflow_id, run_id).await?;
+        let permit = self
+            .signal_codec
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| {
+                refuse(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "activity_metadata_unavailable",
+                )
+            })?;
+        let workflow_id = workflow_id.to_owned();
+        let run_id = run_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            json!({"workflow_id":workflow_id,"run_id":run_id,
+                "activities":super::activity_metadata::project(&events,&executions)})
+        })
+        .await
+        .map_err(|_| {
+            refuse(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "activity_metadata_unavailable",
+            )
+        })
     }
     delegate!(
         history(

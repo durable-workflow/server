@@ -648,6 +648,9 @@ endpoint to load a page starting at the event. A missing reference reports
 `recent_failures_truncated` indicates that more than ten failure records exist.
 These references load event metadata without decoding the complete run history.
 
+For a terminal run whose projected history-size counter disagrees with its
+retained events, use the [selected-run summary repair procedure](terminal-summary-recovery.md).
+
 For a ready workflow task, debug findings also explain delivery eligibility.
 `workflow_build_draining` identifies the required drained build and queue.
 Resume that build and start or restart a compatible workflow worker. Resume
@@ -1298,8 +1301,14 @@ built-in token or signature credentials are not required for readiness.
 
 ### Docker
 
+The PHP image uses a source allowlist for BuildKit. It excludes local environment
+files, credentials, Git metadata, cached configuration, databases and storage data.
+The root `.env.example` template and directory scaffolding remain available;
+the build creates a fresh empty SQLite file. Supply deployment credentials
+through runtime environment variables or secrets.
+
 ```bash
-docker build -t durable-workflow-server .
+DOCKER_BUILDKIT=1 docker build -t durable-workflow-server .
 export DW_AUTH_TOKEN=dev-token
 docker volume create durable-workflow-sqlite
 

@@ -1,4 +1,5 @@
 //! Fenced heartbeat progress used by real cleanup activities.
+use super::transaction::Transaction;
 use super::{
     Result,
     backend::Backend,
@@ -8,7 +9,7 @@ use super::{
 };
 use axum::http::StatusCode;
 use serde_json::{Value, json};
-use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Transaction, Type};
+use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
 impl<DB: Backend> Store<DB>
 where
@@ -266,12 +267,14 @@ where
             .bind(task_id)
             .execute(&mut *tx)
             .await?;
+        tx.summary_changed(&run_id);
         Self::query("UPDATE workflow_runs SET last_progress_at=$1 WHERE id=$2")
             .bind(DB::bind_time(at))
             .bind(&run_id)
             .execute(&mut *tx)
             .await?;
         let mut payload = Self::activity_payload(&activity)?;
+        payload["activity"]["last_heartbeat_at"] = json!(at);
         payload["activity_attempt_id"] = json!(attempt_id);
         payload["attempt_number"] = json!(DB::number(&attempt, "attempt_number")?);
         payload["progress"] = progress;

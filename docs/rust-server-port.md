@@ -2,54 +2,1079 @@
 
 [Server #325](https://github.com/durable-workflow/server/issues/325) owns the
 rewrite and its acceptance evidence. PHP remains the default published runtime.
-The unpublished Rust crate has an Avro foundation and an opt-in SQLite/PostgreSQL/MySQL HTTP
-execution slice. Full runtime parity, migration, performance improvement and
-cutover remain unqualified.
+The unpublished crate in [`rust/`](../rust/README.md) is an opt-in development
+runtime (`DW_RUST_EXPERIMENTAL=1`) with official Avro encoding and SQLite,
+PostgreSQL and MySQL/MariaDB storage. Full runtime parity, the backup-first
+in-place upgrade, performance qualification and cutover remain open.
 
-The delivered foundation is [#463](https://github.com/durable-workflow/server/pull/463),
-at `0934c46d`, whole tree `98775e68`, native tree `a633a639`. It includes the
-earlier #455/#458 foundation and #457 consumers. Exact fresh-main
-[38738455163](https://github.com/durable-workflow/server/actions/runs/38738455163)
-passes all 13 jobs across six databases. Each execution summary independently
-passes 29 comparisons, 20 exit records and 125 native HTTP tests. Required
-PHP/source and boundary checks pass. Earlier failed originals remain failed;
-these source results qualify no later tree, image or complete query family.
-The merged native development runtime enables memo upserts, while full external
-transport discovery stays unadvertised. Frozen published PHP, embedded and SDK tuples
-remain separate from current PHP release work. Representative timer, signal,
-query, update, activity, cancellation, namespace and recovery checks do not
-establish complete parity for those families. The original failed records remain
-failed; later qualifying runs are separate observations.
+Read this log top to bottom: current state and next action, the surface
+inventory, design decisions, then the detailed checkpoint history. Each
+checkpoint stays exact to the source it names. A pass at one tree does not
+qualify a later tree.
 
-## Work order and current status
+## Current state
 
-The next independent qualification stages are:
+Updated October 19, 2026.
 
-- [#460](https://github.com/durable-workflow/server/pull/460) is isolated on
-  query main with read-only inventory, queue binding, external-reference
-  metadata and bounded inline Avro inspection. Integration `870b733a`, native
-  tree `180e0104`, needs fresh exact-tree qualification. It includes no pending
-  metadata/result endpoint or worker capability change. Earlier combined
-  source `03b3bd3c` separately passes stopped published PHP 2.8.5 originals on
-  SQLite DELETE, MySQL 8.4 and PostgreSQL 17: six pending runs, nine inline
-  argument frames and three bound timer jobs. That component has no populated
-  workflow outputs or activity results. Backup, quiescence, complete
-  representation and takeover remain false. See the
-  [upgrade bounds and remaining gates](rust-server-upgrade.md).
-- Activity metadata #476 candidate `062ce91a` retains its original SQLite
-  recorder failure and five passing network originals. Exactly one same-SHA,
-  unchanged-budget SQLite-only repeat is running; the other five were not
-  rerun. Its original peer/poll phase/cause remain unknown.
-- Targeted result #470 candidate `d83a3cb9` retains a MySQL 8.4 preadmission
-  image-pull failure and a PostgreSQL 17 renewal observer failure. A separate
-  diagnostic runner `01046823` passes fresh local PostgreSQL originals using
-  the exact d83 binary. It does not reproduce, explain or replace the CI
-  failure. Both endpoint branches remain separate from this inspector.
+- **Open native PRs.** [#478](https://github.com/durable-workflow/server/pull/478)
+  (run observation and cooperative cancellation), [#476](https://github.com/durable-workflow/server/pull/476)
+  (run activity metadata listing) and [#460](https://github.com/durable-workflow/server/pull/460)
+  (read-only inspection of an existing PHP database). All three are drafts.
+  The latest merged native slice is [#470](https://github.com/durable-workflow/server/pull/470).
+- **#478 source.** The branch now combines the October 18 head `543ed0485`, the
+  separately prepared [independent child cancellation](contracts/child-independent-cancellation.md)
+  component `15e14fb50`, current main `1682e1de` and a harness correction.
+  Main brings PHP Server 2.9.4 and Workflow 2.6.2. It changes no native,
+  shared harness or fixture path, and the shared matrix keeps its frozen
+  published PHP 2.5.14, embedded and SDK actors.
+- **#476 source.** The activity metadata listing now reads history, executions
+  and attempts from one consistent read-only snapshot on every database family,
+  takes the codec permit only after its reads, and gives a synthetic attempt no
+  stop reason when its execution row is pending, as released `RunActivityView`
+  does. Controls cover SQLite, PostgreSQL 17, MySQL 8.0 and MariaDB 10.11, and
+  the projection corpus has a released-projector case for the pending row.
+  Remaining listing gaps are the 413 read budget for long-heartbeat or wide
+  runs, six-digit activity timestamps and NULL-row tolerance.
+- **#460 source.** Read-only inspection of an existing PHP database now refuses
+  PostgreSQL triggers and rules like other unknown catalog objects, measures
+  every SQLite queue text value before transfer and refuses values over 4 KiB,
+  bounds MySQL and MariaDB lock waits and statement time on the server, and
+  reports the published payload tables it does not scan yet. It still grants no
+  takeover, backup or quiescence claim.
+- **Diagnosed failure.** Shared run [39092116973](https://github.com/durable-workflow/server/actions/runs/39092116973)
+  failed `execution-and-codec` step 9 with exit code 255. The same step
+  reproduced locally at `543ed0485` with the exact published image and failed the
+  same way. `restart.php prepare` against the published PHP reference received
+  the documented worker-poll refusal (HTTP 503, `backend_lock_pressure`,
+  `task: null`, retry after one second) while that reference shared its SQLite
+  file with the maintenance loop. The harness treated the refusal as fatal.
+  Native preparation had passed. The harness now honors only that documented
+  refusal, with bounded retries reported in the restart output.
+- **Not yet diagnosed.** Earlier failed originals on this branch include six
+  `Compare published query deadlines and installed Worker authority` jobs
+  across MariaDB, MySQL, PostgreSQL and SQLite, three
+  `Compare corrected markers, ranges, clocks and activity expiry` jobs and one
+  MySQL three-runtime recovery job. The MySQL recovery job also runs
+  `restart.php` against PHP, so it may share this cause. The others are
+  timing-sensitive cohorts and need local reproduction before any change.
+- **Combined checks so far.** 80 library tests (18 existing ignores) and 272
+  SQLite execution tests pass. The new lock-pressure decision test passes.
+  The full local step 9 run and the hosted six-database matrix for the
+  combined head are recorded on #478.
+- **Next action.** Qualify and merge #478. Then bring #476 forward with its
+  review findings fixed (codec permit taken before reads, PostgreSQL
+  statement snapshots, read budget, timestamp precision), followed by #460.
+  Reproduce the timing-sensitive cohort failures locally or on disposable
+  hosts until each has a diagnosed cause.
 
-## Earlier qualification stages
+## Known gaps found in review
 
-The following entries preserve earlier components and failed originals. Their
-pending descriptions are historical, not the current disposition above.
+These are confirmed differences from the published PHP reference. Each one
+needs a contract fixture before its correction.
+
+- **Child completion while the parent has an open workflow task.** Published
+  Workflow records the child resolution and reuses the parent's existing ready
+  or leased workflow task (`WorkflowExecutor::dispatchParentResumeTasks`).
+  Native resolution refuses the child's completion with
+  `409 child_parent_task_conflict` unless the parent has a cooperative
+  cancellation request. A child that finishes while its parent has a pending
+  signal resume is therefore refused instead of resolved. The fix must also
+  confirm that the parent's existing task observes the new resolution or is
+  followed by another resume.
+
+## Contract and verification inventory
+
+The status column summarizes bounded native source and its recorded component
+evidence. The current checkpoint above identifies the admitted head and any
+separately prepared source. A listed implementation or earlier passing cohort
+does not establish full parity, current-head qualification or release readiness.
+
+| Surface | Current authority and reusable checks | Port status |
+| --- | --- | --- |
+| Control plane, namespaces, authorization, errors, visibility | `resources/platform-protocol-specs/control-plane-api.openapi.yaml`, `docs/contracts/auth-composition.md`, `routes/api.php`, Feature control-plane/auth/namespace tests; namespace and principal-attribution published runners | Bounded listing/CLI metadata, named workflow/activity/timer routes, role-token admission and namespace fences exist. PR478 adds [selected/current run observation](contracts/workflow-run-observation.md) and transactional summaries. Broader visibility, namespace and principal-authorization parity remains open. |
+| Worker registration, sessions, leases, fencing, retries, timeouts, heartbeats, routing, affinity, backpressure, versioning | Worker OpenAPI and stream AsyncAPI in `resources/platform-protocol-specs/`; Feature worker/activity/prepared-local/cancellation tests; activity, heartbeat and worker-versioning published runners | Registration incarnations, exact-attempt leases, recovery, retry/heartbeat/deadline controls and fenced shutdown have source and scoped consumer evidence. Full fleet, session, routing, affinity, backpressure and policy compatibility remains open. |
+| Avro values, external task inputs/results, payload storage and reclamation | `docs/contracts/external-task-{input,result}.md`, `external-payload-storage.md`, external payload OpenAPI; `regression-corpus-policy.json`, `tests/Fixtures/CodecRegression/`, payload Feature tests | Official Avro encoding/decoding, opaque task envelopes, versioned external transport, retained inputs/results and completion uploads exist. Codec, authority, external-value and targeted activity-result controls have separate evidence. Complete ingress, provider, reclamation and installed-consumer parity remains open. |
+| Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Bounded completion, failure, sequential child outcomes, duplicate receipts, direct cancellation and cooperative root cleanup exist. PR478 includes [terminal update closure](contracts/terminal-update-closure.md), [cooperative child abandonment](contracts/cooperative-child-abandon.md), actual resume associations and [independent child root cancellation](contracts/child-independent-cancellation.md). Child retry/parallel/other close-policy families, wider cancellation propagation, cleanup replay and continuation transfer remain open. |
+| Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Source covers durable timers, bounded schedules, typed signals/queries/updates, memo limits and bounded mixed selections. PR478 adds timed signal/condition waits, named signal waits and flat/nested activity/timer all barriers. Wider grouped leaves and selection shapes, queued control routing, policies, search and saga families remain open. |
+| Local activities, cancellation scopes, worker sessions, streams, service catalog/Nexus, bridge adapters, standalone activities, debugging and repair | `routes/api.php`, `docs/contracts/`, worker/control-plane specifications, corresponding Feature tests and Nexus runner | Scoped native repair and diagnostics exist. Local-activity execution, cancellation scopes, sessions, streams, Nexus/catalog, bridge and standalone-activity compatibility remain required work. No unpublished package telemetry or stored-job contract is adopted by these slices. |
+| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published cohorts cover workflow/activity (#401), parent/child (#408), timer authors (#411), signals (#415), queries (#422), successful/failed updates (#424/#427), named namespaces (#429), selected-run signals (#434) and subsequent corrected marker/range and authority slices. Each retains its exact source/tuple and failures. CLI reads have bounded coverage. Remaining SDK families, broader CLI, native Waterline/Sample App and browser acceptance remain open; published PHP consumers do not qualify native. |
+| SQL schema and stored representations | `database/migrations/`, Workflow package `src/migrations/`, model casts, `Workflow\\Serializers\\Serializer`, queue job payloads, exported history and credential digests | [Representation checkpoints](rust-server-storage-audit.md) recorded; complete mapping and executable migration tests pending |
+| Images, architecture, bootstrap, configuration, readiness, metrics and graceful shutdown | `Dockerfile`, `docker/`, `config/`, `docker-compose*.yml`, `k8s/helm/`, `docs/server-reference.md`, small-cluster/multi-region validation docs | Published PHP remains the default. Native bootstrap, health/readiness, configuration and shutdown foundations exist. Qualified native publication, both architectures, full configuration/metrics compatibility, Compose/Helm consumers and operational cutover remain open. |
+| Backup and in-place upgrade | `docs/self-hosted-backup-and-restore.md`, [PHP ownership/refusal controls](php-database-ownership.md), external payload backup holds; last PHP image writes, all PHP roles stop, Rust takes over same DB sequentially | Ownership/refusal controls and isolated migration preparation exist. Backup-first native takeover with pending work, interrupted migration, external payload preservation and PHP refusal still need complete qualification on SQLite, MariaDB/MySQL and PostgreSQL. No mixed fleet or PHP rollback is permitted. |
+| Throughput, memory, CPU, latency, backlog/drain, idle mixed long polls | `benchmarks/capacity/v1/` and `scripts/benchmark/`; repeated runs and drift checks using frozen artifacts | The [diagnostic PHP reference](../benchmarks/server-port/v1/php-observations-2026-10-09.md) and scoped comparison observations are recorded. Complete matched throughput/memory/idle-poll proof, repeated measurements, drift checks and CPU-load deadline health remain release gates. Source checks and functional comparisons make no performance claim. |
+
+Ordinary PHP, Rust and embedded runs use independent databases. Never connect
+different engines to one database concurrently. SQLite multi-node qualification
+must state its shared-file topology and locking limits; existing single-node
+support is not evidence of multi-node safety.
+
+## Decisions
+
+- Shared fixtures are expectations reviewed against public contracts, not PHP
+  recordings promoted to expected behavior. The recorder keeps raw observations;
+  the comparator checks the declared fixture projection. Coverage is explicit.
+- The HTTP adapter uses the published PHP SDK and its official Avro codec. The
+  embedded adapter executes real Workflow jobs and persisted history. Neither
+  counts an accepted start as completion or substitutes mocked execution.
+- Generated run/activity/attempt identifiers may differ between independent
+  databases. Compare their relationships with bijective aliases; retain actual
+  IDs in raw evidence. Preserve workflow IDs, event order, command sequences,
+  attempt counts and decoded values. Wall-clock observations remain raw.
+- The first Rust foundation uses Apache's official Avro single-object
+  reader/writer with the immutable schema. The first HTTP/storage slice uses
+  Axum/Tokio and SQLx with selected features and native transactions. Avoid
+  unnecessary dependencies and code generation. Record
+  clean and incremental compile time plus target-directory size for the first
+  runtime slice. Use one task-owned Cargo target directory, low debug information
+  for development, bounded build concurrency and cleanup after qualification.
+- Evaluate [Kache](https://github.com/kunobi-ninja/kache) in a task-local runtime
+  before choosing the Rust build setup. Use an explicit cache budget and local
+  storage; measure physical disk blocks across cache and targets together. Keep
+  cache and build outputs under one container mount so cross-mount copying does
+  not erase sharing. Use a per-run compiler wrapper and scoped cleanup.
+  The [first real crate measurements](../rust/build-observations-2026-10-09.md)
+  observed native clean builds around 22 seconds and 182 MiB targets. Kache
+  restored a fresh target in 3.5 seconds but added cold-build time and retained
+  disk; native no-op/comment-edit builds were faster in-place. Keep it optional.
+  Full-server build cost and any disk-saving claim remain pending.
+- Tokio tasks are [cooperatively scheduled](https://docs.rs/tokio/latest/tokio/task/coop/index.html).
+  Potentially expensive replay, decoding and synchronous database operations
+  need bounded work away from the async request executor. `spawn_blocking` needs
+  an explicit CPU concurrency limit, and a started blocking job cannot be
+  aborted. Preserve durable fencing and cancellation checks around that work;
+  qualify timer, lease and cancellation deadlines under CPU-heavy load.
+
+## Checkpoint history
+
+Newest checkpoints first. Each entry is exact to the source, tree and runs it
+names, including unsuccessful observations.
+
+Current checkpoint, October 18:
+
+- Separately prepared [independent child cancellation](contracts/child-independent-cancellation.md)
+  is tested at `54bb8c61d`, runtime `024620b570757ae3d2142b01cbad74c674ea2911`
+  and tests `37403b5d13c3fe9fa70c70670fd4e2b07e4551df`. An existing sequential
+  child with both `abandon` policies can receive its own operator root request
+  in the default namespace. Its root, lineage and original deadline are separate
+  from its parent's request. Child completion, failure and maintenance expiry
+  resolve the original parent atomically with the child's canonical cancellation.
+  Actual ready/leased parent root tasks and their claims remain unchanged. Closed
+  parents are not resumed, missing waits stay missing, and a forced parent-write
+  failure rolls back both histories, the child failure and its original claim.
+  Parent and child duplicate receipts retain their own identities and deadlines;
+  duplicate child completions append no history and expired attempts stay fenced.
+  Eleven focused controls, 80 library tests, all 272 SQLite execution tests and
+  ten applicable controls on each of PostgreSQL 17.11 and MySQL 8.0.46 pass.
+  The library retains 18 existing ignores; the isolated SQLite profile entry runs
+  through its passing parent. The network selections exclude the separate
+  SQLite-only forced parent-write control. The final SQLite, PostgreSQL and
+  MySQL durations are 263.37, 16.95 and 31.77 seconds, respectively, without a
+  performance claim. One identical test binary serves all three selections.
+  Published PHP 8.3.35 / Workflow 2.5.32 matches 36 final captured wait states
+  using 36 real projector updates: 20 SQLite, eight PostgreSQL and eight MySQL.
+  The projector/model hashes match `78075b6f`; earlier focused captures overlap.
+  First tests `b7213de21` have six harness compile errors, corrected before the
+  runtime counterfactual. Tests-first `9bec16f64` then retains ten actual failures
+  at the old incoming-link refusal and the passing unsupported-policy control.
+  Initial implementation `c26b87d40` passes eleven focused and 272 SQLite tests.
+  The assertion-only follow-up adds explicit parent receipts and duplicate child
+  completions, then passes the final checks above with identical runtime bytes.
+  Both network databases have zero test databases before clean SIGTERM/exit0
+  without OOM. Formatting and diff checks pass. This source is not yet PR478's
+  admitted head and does not explain its failed predecessors. No PHP/Composer,
+  schema, shared profile, budget, frozen actor, preview or catalog adoption occurs.
+  Combined hosted/analyzer, installed consumer, wider propagation and release
+  gates remain separate; all stopped scopes stay stopped.
+- PR478 now combines the accepted-update cancellation closure, sequential child
+  abandonment and existing child-resume association components through `8dd8e899b`.
+  Runtime `bfb7361d37e2027a978a398d9a59189b21dff6c0` and tests
+  `c52c26e70169ccdf741ff328828a02326824abc2` are byte-identical to tested
+  implementation `8e8a9b8fb`. The final local selection passes 80 library,
+  261 SQLite execution and 23 applicable cooperative controls on each of
+  PostgreSQL 17.11 and MySQL 8.0.46, with the exclusions below. This integration
+  checkpoint changes only this log. Admitted head `543ed0485` has exact
+  [PHP/source39092117015](https://github.com/durable-workflow/server/actions/runs/39092117015),
+  [Sonar39092117005](https://github.com/durable-workflow/server/actions/runs/39092117005)
+  and [boundary39092116998](https://github.com/durable-workflow/server/actions/runs/39092116998)
+  PASS. Its Sonar app reports 1.2% new duplication under the unchanged 3% limit,
+  with zero OPEN/CONFIRMED findings. The
+  [shared39092116973](https://github.com/durable-workflow/server/actions/runs/39092116973)
+  original remains pending at 03:26 UTC, with seven jobs SUCCESS and six live.
+  Component checks do not establish its result, installed acceptance,
+  independent review or promotion.
+  Qualified stable main `964f9e3d5` and Workflow 2.5.32 remain the PHP source.
+  General's preview #486 is separate and unmerged. No RC references, PHP or
+  Composer changes, frozen tuples, profiles, budgets or expectations are adopted.
+- Preceding head `3d68a5fe3` retains its terminal failed
+  [shared run 39086884181](https://github.com/durable-workflow/server/actions/runs/39086884181):
+  twelve jobs succeed and `execution-and-codec` job117557316718 fails at
+  `Compare published query deadlines and installed Worker authority`. All
+  thirteen originals are terminal. The assertion, target implementation/client
+  and cause remain unknown. Its exact PHP/source, Sonar and boundary checks
+  pass only at that head. The
+  [terminal receipt](https://github.com/durable-workflow/server/pull/478#issuecomment-6244885792)
+  preserves the failure. The later cancellation components neither explain it
+  nor establish a fix. Remote native logs and artifacts remain unretrieved;
+  the stopped inspector and installed observation recipe remain stopped.
+- The [child cancellation resume association](contracts/child-cancellation-resume-link.md)
+  is tested at `8e8a9b8fb`, runtime `bfb7361d37e2027a978a398d9a59189b21dff6c0`
+  and tests `c52c26e70169ccdf741ff328828a02326824abc2`. A completed, failed or
+  directly cancelled child retains its original wait and associates it with
+  the actual existing ready or leased root cancellation resume. The task ID,
+  payload, owner, attempt and expiry remain unchanged. A cold claim updates the
+  associated status; missing waits stay missing. An update-only claim remains
+  unavailable as a root resume, with the original deadline and accepted-update
+  closure preserved. Ordinary parent conflicts and update admission are unchanged.
+  Nine focused controls, 80 library tests, 261 SQLite execution tests and
+  23 applicable cooperative controls on each of PostgreSQL 17.11 and MySQL
+  8.0.46 pass. The library retains 18 existing ignores, and the isolated SQLite
+  profile entry runs through its passing parent. Network selections exclude
+  three separate SQLite-only write faults. The new forced association-write
+  failure rolls back both histories, child call/outcome/failure and the original
+  parent claim. Published PHP 8.3.35 / Workflow 2.5.32 independently matches
+  31 final wait snapshots using 31 actual projector updates in a separate
+  migrated in-memory database. Projector and wait-model hashes match `78075b6f`;
+  the reference script is committed. Earlier focused captures overlap these
+  final states and are not additional distinct qualification.
+  Tests-first `dd8b8bda6` retains seven actual failures and the passing missing-row
+  control. Candidate `d502287fa` retains six passes and three fixture failures:
+  a new cancel command on a closed child correctly refuses `run_not_active`,
+  and an update requested while a child is open correctly refuses
+  `update_snapshot_busy`. The corrected control accepts its update at the
+  supported signal wait before starting the child from that wait's real timer
+  resume. Runtime bytes are unchanged by those fixture corrections. Both final
+  network databases have zero test databases before clean SIGTERM/exit0/noOOM.
+  This is scoped source/model validation, separate from failed admitted `3d68`
+  and the new combined hosted qualification.
+  No PHP/Composer/schema, shared runner/profile, frozen actor, budget, catalog,
+  stopped recipe or held-major adoption occurs. General's separate PHP Nexus
+  preview window awaits its own exact qualified handoff before combination.
+- The [cooperative child abandonment](contracts/cooperative-child-abandon.md) component
+  is tested at `3f87a8524`, runtime `9cd7e90357caf9ea30d0a7cb0756c6935e85d732`
+  and tests `694ba3b8d5f0163802ca97ef6dc52dfa96f71d80`. The existing
+  default-namespace sequential child stays independent when its parent finishes
+  cooperative cancellation. Its original worker, attempt, lease expiry, claim
+  payload and typed result survive parent completion, failure and deadline
+  cleanup. The canonical `child` delivery rejects a resolution recorded before
+  the original root request, permits a later resolution, and reuses the existing
+  parent cleanup task. Incoming child cancellation and other policies remain
+  refused. Ordinary completion still guards pending durable operations.
+  Tests-first `71eee90e6` retains six actual failures at the old link refusal.
+  Implementation `3f87a8524` passes seven focused controls, 80 library tests with
+  18 existing ignores, 252 SQLite execution tests with the isolated profile entry exercised
+  by its passing parent, and fifteen applicable cooperative controls each on
+  PostgreSQL 17.11 and MySQL 8.0.46. The network selections exclude two separate
+  SQLite-only write-failure controls. Published PHP 8.3.35 / Workflow 2.5.32
+  independently matches all 26 final canonical delivery/policy captures with
+  zero database queries, using the committed history-only model reference.
+  Its validator, child policy and models match published source `78075b6f`.
+  Review follow-up `da16ffbc9`, tests `1e9426a379743e07d331c7548e1d6282e5ef47d4`,
+  replaces two absent-field comparisons with seven named summary fields and
+  explicit presence checks. All seven focused controls pass again. Production
+  runtime and published-PHP model bytes remain identical to `3f87a8524`.
+  The first network selections each retain eleven passes and four failures in
+  the new snapshot fixture's integer decoder. Explicit test-query casts correct
+  that fixture; runtime logic is unchanged. The first PHP invocation stopped
+  before comparison because public history omits event IDs; the reference now
+  reads captured stored IDs. Review `304d2e099` retains six passes and one failed
+  assumption that a present summary timestamp could not be null. The follow-up
+  preserves nullable values while checking actual field presence. These unsuccessful selections remain separate from
+  the final results. Both final network databases have no test databases before
+  clean SIGTERM, exit0 and no OOM. Formatting and diff checks pass.
+  This component result is separate from admitted `3d68a5fe3`; combined hosted/analyzer,
+  installed SDK, wider propagation, review and release gates remain open. No
+  package, schema, frozen tuple, runner/profile, budget or observation recipe
+  changes.
+- Cooperative-update implementation `cff0fd253`, runtime tree
+  `e5c31381ba0eefa83bb8bbc90102fdbbea48ecc4` and tests
+  `8b17933aadff7893d92ba0e9139f9fb39de6d1c6`, closes accepted updates when an
+  otherwise supported cooperative root cancellation finishes. Its existing
+  closer runs after WorkflowCancelled in that same transaction. Completion and
+  failure retain root cancellation precedence and the actual terminal task
+  snapshot. Maintenance uses the original deadline without inventing a task.
+  That update-only component leaves children, active activities, open-wait
+  request guards and update admission unchanged. The tests-first `a5860b284`
+  retains four actual failures at
+  the preceding accepted-update refusal. Final source passes all four focused
+  controls, 80 library tests with 18 existing ignores, and 245 SQLite execution
+  tests with the isolated profile entry exercised through its passing parent.
+  PostgreSQL 17.11 and fresh MySQL 8.0.46 each pass sixteen actual controls,
+  excluding both separate SQLite-only write-failure controls. Root identity and
+  deadline, original update/command/message identities, cold receipts, stale
+  attempts, terminal order and forced-write rollback of both outcomes and summary
+  are checked. Published PHP 8.3.35 / Workflow 2.5.32 independently matches 26
+  captured closer outcomes, including focused/full selection overlap, using
+  390 reference queries. The closer, executor and history model match exact
+  published source `78075b6f`. Formatting and diff checks pass.
+  An earlier candidate retained incorrect expectations that delivery fields
+  stayed null and that the first post-reopen read waited for maintenance. Those
+  fixture corrections leave the runtime unchanged. A separate incomplete build
+  lacked its sibling fixture bind. Neither is a passing original. The first
+  512 MiB MySQL database passed nine cooperative controls, then Docker recorded
+  OOM/exit137 and the terminal group failed with two passes and five connection
+  errors. The fresh sixteen-case result uses a 768 MiB database with unchanged
+  binary, deadlines and assertions; it does not rescue that failed original or
+  explain the unrelated hosted MariaDB failure. The two final databases contain
+  no test databases before clean SIGTERM and exit0 without OOM. This remains
+  a component result rather than later whole-head qualification.
+  Combined hosted/analyzer, installed SDK, wider propagation and release gates
+  stay open. No schema, package, frozen tuple, shared profile or budget changes.
+- The preceding `3d68a5fe3` integrated named-signal source `d449fca29`, retaining
+  runtime tree `33a92133f1926b0f0e11163af082e5f7c0a6c23c` and tests
+  `c3cdccc984a1447956e1d5346596b00786a82bec`. The separately recorded local
+  component controls below cover that code. Named ordinary/timed signal waits
+  and the lifetime correction remain in the new candidate. The terminal combined
+  result above retains its failure under unchanged profiles and budgets.
+- The preceding `b025c8c30` original
+  [shared run 39082779792](https://github.com/durable-workflow/server/actions/runs/39082779792)
+  is terminal FAILURE: twelve jobs pass and one MariaDB job fails. Metadata
+  identifies its failed step as `Compare published query deadlines and installed
+  Worker authority`. The failing assertion, implementation/client and cause are
+  unknown. Its TLS verification is skipped, not passed. Native bootstrap/source,
+  the ordinary three-runtime/recovery comparison and the other listed comparison
+  steps pass in that job's metadata. Those narrower results do not override the
+  failed qualification. PHP/source, Sonar and boundary checks pass only at b025.
+  The [failure receipt](https://github.com/durable-workflow/server/pull/478#issuecomment-6244205805)
+  and original remain retained. Neither a source fix nor recovery of that failure
+  is claimed by the later namespace component.
+- Preceding observation head `0c8eafc9` retains its original
+  [shared run 39078215426](https://github.com/durable-workflow/server/actions/runs/39078215426),
+  now terminal with all thirteen jobs passing. Its exact PHP/source, Sonar
+  app/workflow and public boundary also pass. This is a job/check metadata
+  readback, without remote log or artifact retrieval.
+- The b025 candidate integrated separately prepared failure and terminal-update
+  source from `1540bd0c4`, runtime tree
+  `2ec0d0e9c98dfb2e0e22fdc1b15b9d849f9c4397`. Its component results below
+  remain scoped to that source; the failed combined qualification above remains
+  separate from local controls and the earlier 0c8 pass.
+- The prepared named-signal component admits a single ordinary
+  `open_signal_wait` command with an absent or null timeout in named namespaces.
+  Non-null signal timeouts and completions combining a named signal wait with
+  another command retain their existing refusal.
+  Tests-first `63f55fd50` fails both new positive controls with the original 422
+  admission refusal while preserving the batch-refusal control. Final tested
+  `9dc90d50e`, runtime tree `4179c82b858f00f2a249b42a7d110cacba7b5313`,
+  passes 80 library tests with 18 existing ignores and all 236 SQLite execution
+  tests. The isolated profile child retains its direct-entry ignore and runs
+  through its passing parent. PostgreSQL 17.11 and MySQL 8.0.46 each pass seven
+  applicable controls, excluding the separate SQLite-only projection trigger.
+  Buffered and later signal delivery preserve their original wait, signal,
+  command and history identities across cold pools. Typed int64, Unicode, null
+  and false survive application. Another namespace cannot signal, complete,
+  observe or poll the original work. Duplicate completions add no history.
+  Published PHP 2.8.7 / Workflow 2.5.32 independently matches eleven counter
+  snapshots, six liveness classifications and four open-wait views per database,
+  with zero reference queries. Formatting and diff checks pass. The component
+  also removes the valid redundant `PHP_CONNECTION` trait lifetime reported on
+  `b025c8c30`; fresh analyzer disposition remains pending. Combined hosted
+  qualification, installed native/browser acceptance and release gates stay
+  separate. No package, schema, catalog or frozen fixture changes are included.
+- The next prepared namespace component extends the same single signal wait to
+  its existing zero/positive timeout contract. A named signal wait must remain
+  the sole command in its completion. Timer maintenance already uses the run's
+  stored namespace; only the
+  admission guard changes. Tests-first `ce1ffe993` retains five actual failures
+  at the old named-command refusal. Tested `56f19d543`, runtime tree
+  `33a92133f1926b0f0e11163af082e5f7c0a6c23c`, passes 80 library tests with
+  18 existing ignores and all 241 SQLite execution tests, with the isolated
+  profile entry exercised through its passing parent. Fourteen actual network
+  controls pass on each of PostgreSQL 17.11 and MySQL 8.0.46; both separate
+  SQLite-only forced-write controls are excluded from those totals.
+  Immediate/durable firing retains the original timer, wait, resume identity and
+  planned deadline across cold pools. Buffered input creates no timeout, while
+  later signal application cancels the original timer and preserves typed values.
+  Foreign namespaces cannot claim or complete the resume. Invalid timeouts and
+  failed projection writes leave the original attempt usable. Duplicate
+  completions add no history. Independent published PHP 2.8.7 / Workflow 2.5.32
+  agrees on counters and wait projections across 60 captured snapshots, including
+  37 active classifications and 20 open-wait views, with zero reference queries.
+  Twelve of those active cases also pass the separate external-wait classifier.
+  Formatting and diff checks pass. This source includes the earlier untimed and
+  lifetime corrections without carrying their earlier qualification forward.
+  Combined hosted, installed native/browser, broader named signal-wait batches
+  and release gates remain separate; no package, schema, catalog or frozen tuple
+  is adopted.
+- The preceding observation head `a15b87977` has all 13 jobs passing in
+  [shared run 39072054431](https://github.com/durable-workflow/server/actions/runs/39072054431),
+  plus its exact PHP/source, Sonar and public-boundary checks. Newer prepared
+  source includes separately qualified PHP main `964f9e3d5`, timed waits and
+  activity/timer barriers. Its local component results below do not carry the
+  a15 result forward. Fresh combined hosted qualification is required.
+- Query authority is merged at `0934c46d`, whole tree `98775e68`. Its separate
+  [merged-main qualification](https://github.com/durable-workflow/server/actions/runs/38738455163)
+  passes. That result applies to the query tree.
+- Targeted activity-result inspection is merged through #470. Candidate
+  `512ba635c`, whole tree `9249997b`, matches the tested synthetic merge tree.
+  [All 13 shared jobs](https://github.com/durable-workflow/server/actions/runs/38762453794)
+  pass. The recorded six-artifact audit confirms 29 passing comparisons,
+  20 successful profile statuses and 129 native execution tests per database
+  configuration. SQLite also records 77 library passes with the existing
+  18 explicit ignores. The separate main run above remains its own gate.
+- [Metadata-only activity listing #476](https://github.com/durable-workflow/server/pull/476)
+  is still a draft. Its earlier [13-job qualification](https://github.com/durable-workflow/server/actions/runs/38773360007)
+  passes at tested merge `146e27a6`, tree `34a0caeb`. Independent readback of
+  all six retained summaries confirms 29 passing comparisons, 20 zero-exit
+  profile statuses and 133 native execution tests per database configuration.
+  SQLite also records 78 library passes with 18 explicit ignores. The installed
+  SDK consumer then completed 24 originals on independent published PHP and
+  native databases across all six configurations and two namespaces, with
+  96 matching metadata snapshots. These use public SDK task primitives, not
+  workflow callbacks. The integrated `d30a7687` candidate has a separate
+  [qualification run](https://github.com/durable-workflow/server/actions/runs/38787311689)
+  with all 13 jobs passing. Its independent retained-summary review remains
+  open. Earlier unsuccessful originals remain unsuccessful.
+- [Read-only upgrade inspection #460](https://github.com/durable-workflow/server/pull/460)
+  remains a draft at `7066a50e`. Qualification and review are incomplete, so
+  the candidate is not being promoted. No backup, migration or takeover
+  authority follows from inspection.
+- [Waterline consumer #477](https://github.com/durable-workflow/server/pull/477)
+  provides the separate real-backend browser recipe. Forty published-PHP
+  selections pass across five values, two namespaces, two widths and both
+  themes. Its [profile](../scripts/conformance/activity-result-browser/profile.json)
+  pins the published Server, Waterline, SDK and browser identities. The
+  observation includes forty selected result requests, eighty wrong-selector
+  refusals, exact typed dialogs, restored focus and unchanged histories. The
+  viewer stopped with exit 137 and no OOM; graceful viewer shutdown is not
+  established. Native bounded run observation, discovery and positive native
+  browser acceptance remain open.
+- [Bounded run observation #478](https://github.com/durable-workflow/server/pull/478)
+  now implements current and selected reads under the
+  [existing PHP contract](contracts/workflow-run-observation.md). Local SQLite
+  validation passes 78 library and 134 execution tests, with the existing
+  18 library ignores; five focused HTTP controls also pass on PostgreSQL 17
+  and MySQL 8.0. Missing summaries/waits remain explicit, and constructed
+  retained projections are separate from genuine retry/failure execution.
+  Its first [hosted MariaDB job](https://github.com/durable-workflow/server/actions/runs/38783984695/job/116596418338)
+  fails during bootstrap with exit 101; the assertion log remains unavailable.
+  Independent reproduction on that MariaDB image found all five observation
+  controls returning 503: `COALESCE(MAX(sequence), 0)` promotes the unsigned
+  ceiling to DECIMAL. The reader now keeps nullable integer `MAX(sequence)`
+  and supplies zero in Rust for an empty history. Empty/pruned history coverage
+  also asserts the zero ceiling and absence of a continuation token. The corrected
+  local source passes all 134 MariaDB execution tests and five focused SQLite
+  observation tests. This does not supply the missing original hosted assertion.
+  The corrected `ce8c8fd6` [hosted run](https://github.com/durable-workflow/server/actions/runs/38790367885)
+  failed at query-authority and existing-PHP-MySQL comparison steps; their
+  assertion logs remain unavailable. The later `a510043c`
+  [run](https://github.com/durable-workflow/server/actions/runs/38793158995)
+  passes all 13 jobs, without explaining or replacing those earlier failures.
+  The separate [installed observation recipe](../scripts/conformance/server-parity/run-observation-consumer.md)
+  now exercises nine real task lifecycle stages, current/selected reads,
+  retry waits and fixed-window continuation with the pinned published SDK.
+  Published-PHP originals exposed a terminal summary undercount
+  ([#479](https://github.com/durable-workflow/server/issues/479)). The PHP
+  attribution correction is merged through
+  [#480](https://github.com/durable-workflow/server/pull/480). Release preparation
+  [#482](https://github.com/durable-workflow/server/pull/482) is merged at
+  `f2775db7`, matching the fully qualified candidate tree `493f4331`.
+  Immutable tag `2.8.6` points there. The normal image/chart publication and all
+  `f2775db7` fresh-main checks pass. Four completed/failed × default/named originals
+  against the exact published amd64 image pass 72 observation responses and
+  eight consumed failure-cursor pages with installed PHP SDK 2.4.2. Independent
+  canonical budget recomputation agrees with all four summaries. The
+  [delivery receipt](https://github.com/durable-workflow/server/issues/479#issuecomment-6202298825)
+  records the identities and limits; #479 is closed. The README recovery link
+  is merged through [#483](https://github.com/durable-workflow/server/pull/483).
+  The separate recipe extension at `83bb5c35` verifies selected-run repair of
+  completed and failed originals on published PHP, retaining the original
+  failures and deadline. Four fresh completed/failed × default/named controls
+  pass with the corrected helper overlaid. Those earlier source and repair
+  results remain separate from the published-image result and native parity.
+  The exact native artifact download timed out before any installed native
+  original began. Independent retained-artifact review, full differential reads,
+  projection production and native browser acceptance remain open. PHP-issued cursor
+  compatibility remains an explicit migration gate.
+- The next observation slice produces activity wait rows in the authored
+  scheduling transaction. Typed claim, retry, completion, failure, timeout and
+  cancellation events update the same wait identity; retry follows its new
+  task. Reads and later events do not recreate a missing wait. The initial
+  HTTP regression failed with zero waits after a real schedule. The correction
+  passes 136 SQLite execution tests, including projection-write rollback, and
+  then eight focused SQLite controls after adding the absent-projection case.
+  Seven focused controls also pass on PostgreSQL 17 and MySQL 8.0; the separate
+  forced-write rollback control is SQLite-specific. These checks cover actual
+  retry/heartbeat/terminal execution, duplicate requests, cold reads, namespace
+  refusal and unchanged history around observation. This source is not yet
+  qualified through shared fixtures or an installed native artifact. Summary
+  production, other wait families and complete observation parity remain open.
+- Ordinary authored timers now create their canonical wait alongside the timer
+  task, with the recorded schedule time and planned fire time. Typed fire and
+  cancellation events close the existing row in their own transaction. Missing
+  rows remain unavailable instead of being rebuilt by events or reads. The
+  initial real scheduling regression observed zero waits where one was required.
+  Before the fixture budget correction below, all 141 SQLite execution tests
+  pass. PostgreSQL 17 passes nine observation
+  controls, both existing timer tests and the cancellation recovery control.
+  These include cold two-node firing in both namespaces, unchanged history
+  around reads and missing-row behavior. Atomic scheduling/cancellation after
+  a failed projection write has separate SQLite controls. Initial MySQL timer
+  controls failed because initial schema creation consumed the execution budget,
+  with the failure recorded before the scheduled fire time. The fixtures now
+  start their unchanged 15/35-second budgets after initial database bootstrap;
+  admission, cold recovery and both namespaces retain the original deadline.
+  The final four new and two existing timer controls pass on SQLite. PostgreSQL
+  17 and MySQL 8 each pass the two applicable new controls, two existing timer
+  controls and cancellation recovery. The earlier full SQLite result is not a
+  repeat against the corrected fixture source. This does not
+  provide summary production, other wait families or installed native acceptance.
+- Ordinary signal waits now follow their typed opening, receipt, application
+  and terminal events in the same transaction. Receipt resolves an existing
+  wait before worker application; a buffered receipt that predates the wait
+  resolves it at application. Missing rows stay missing. The initial scheduling
+  regression failed with zero projected waits. The first implementation batch
+  passed three controls and exposed the existing named-namespace admission
+  refusal in the fourth. That gate is retained and tested explicitly, so the
+  positive component scope is the default namespace. All 146 SQLite execution
+  tests pass, including projection-write rollback and stored cancellation.
+  PostgreSQL 17 and MySQL 8 each pass six signal controls, including cold
+  recovery, selected-run guards and waiting-history behavior.
+  Named signal-wait admission, signal timeouts, other wait families and complete
+  native observation remain open.
+- Ordinary condition waits now follow the existing opening and satisfaction
+  events in the same transaction. Receipt alone leaves the condition open;
+  application resolves its authored identity. A later occurrence retains its
+  own identity, and missing projections are not recreated. Both already admitted
+  namespaces are covered; timeout admission is unchanged. The initial regression
+  failed with a retained opening event and zero observed waits. The first full
+  SQLite batch passed 149 of 150 execution tests, and PostgreSQL passed seven
+  of eight component controls. Both failures came from the new fixture reusing
+  a globally reserved workflow ID across namespaces. Giving the originals
+  distinct IDs preserves that refusal and all runtime code. Final source passes
+  all four new SQLite controls and eight controls each on PostgreSQL 17 and
+  MySQL 8.0.46. No final full 150-test SQLite repeat is claimed.
+  The controls cover repeated occurrences across cold runtime pools, receipt versus
+  satisfaction, duplicate completion, missing rows, persisted cancellation and
+  unchanged history. Projection-write rollback is a separate SQLite control.
+  Condition timeouts and scope cancellation remain outside this component.
+- Terminal completion, continuation and cancellation now store closed summaries
+  in their owning transaction. A failed summary write rolls back completion.
+  History counters use contiguous retained events in bounded batches, with
+  PHP-compatible JSON accounting that preserves database key order. Eighteen
+  fixed encoding cases pass against the actual published PHP 2.8.6 image and
+  its installed Workflow 2.5.22 counter. The first native byte-count baseline
+  and both initial terminal regressions failed before implementation.
+  An initial continuation fixture combined commands outside the existing
+  admitted contract; replacing those commands with supported memo upserts
+  preserves that refusal. Final native source passes all 153 SQLite execution
+  tests and four focused controls each on PostgreSQL 17 and MySQL 8.0.46.
+  These include completion/cancellation in both namespaces, cold connections,
+  duplicate completion and refused repeat cancellation, continuation across
+  history pages, activity failures and fan-out. Published PHP independently
+  agrees with event, byte and fan-out counters for nine actual native originals
+  per database, 27 total. Reference verification issues no database queries.
+  Earlier library checks passed 79 with 18 ignored; their source is unchanged.
+  Active summaries, imported/pruned-history production, configurable budget
+  policy, shared differential and installed native/browser acceptance stay open.
+
+- The next summary component commits workflow-task liveness after all mutations
+  in the owning transaction. Claims and lease renewal update summaries without
+  adding history; failure and explicit repair preserve the original task/run
+  identities. A failed summary write rolls back the lease and attempt counter.
+  Both initial regressions failed before implementation. The first implementation
+  passes 79 library tests with 18 explicit ignores and all 155 SQLite execution
+  tests. The first MySQL control rejected a test-only year-2099 timestamp;
+  replacing it with the admitted run deadline preserves production behavior and
+  timing budgets. The active classifier covers task-only native histories.
+  Wait families, compatibility/fleet and transport metadata remain unavailable
+  until their classifiers are qualified; the earlier ready summary is removed
+  atomically rather than retained as current liveness. Reads never repair it.
+  Final component `4d3a2468` passes 27 observation controls plus the original-task
+  repair control on SQLite, and four focused controls each on PostgreSQL 17.11
+  and MySQL 8.0.46. Published PHP independently matches 28 stored counter
+  snapshots and 12 actual ready/leased task classifications across those three
+  databases, with zero reference queries and the original observation clock.
+  This is not a repeated full 156-test execution run. The earlier full 155-test
+  result remains attached to `17657d04`.
+  Full published-PHP observation, installed native/browser and shared differential
+  qualification remain separate from this component.
+
+- Ordinary condition and direct-signal summaries are implemented on the next
+  component. Condition receipt and task claim retain waiting liveness until
+  application. Direct signal receipt produces ready task liveness, with buffered
+  receipt and cold-node application covered separately. Summary refresh compares
+  every open projection with complete typed history. Missing or inconsistent
+  projections stay unavailable without read repair. Summary-write failures roll
+  back both wait creation and signal receipt with their task/history mutations.
+  The three initial summary assertions failed on the preceding implementation.
+  At `2f8607398`, 79 library tests pass with 18 ignored and all 158 SQLite
+  execution tests pass. Five focused controls pass on each of PostgreSQL 17.11
+  and MySQL 8.0.46. Published Server 2.8.6 / Workflow 2.5.22 independently agrees
+  on 34 history-counter snapshots and 21 external-wait liveness snapshots across
+  the three databases, with zero reference queries. An initial reference-harness
+  timestamp omission was corrected using the original stored event timestamp.
+  These are counter/classifier comparisons; the full published observation API
+  and installed native/browser remain separate gates. Activity, timer, child,
+  update, timeout, compatibility and transport summary classifiers remain open.
+
+- The following component adds ordinary timer summaries. Scheduling stores
+  timer liveness and counters in the same transaction as the timer, task and
+  retained wait. Actual firing across cold pools changes liveness to ready
+  workflow work, and claiming that work changes it to leased workflow work.
+  Default and named namespace controls preserve their original execution
+  deadline. A summary-write failure rolls back scheduling. Missing wait rows
+  or changed projection deadlines make a later summary refresh unavailable;
+  repeated observations do not repair the projection or add history.
+  The test-first source passed one existing timer control and failed four
+  summary assertions. The initial implementation passed five controls. An added
+  consistency fixture first failed compilation because it used formatted SQL
+  with the literal-SQL test helper. Its correction changes only fixture SQL.
+  At `b11a6daa3`, all 79 library tests pass with 18 existing ignores, and all
+  160 SQLite execution tests pass. Three focused timer controls pass on each
+  of PostgreSQL 17.11 and MySQL 8.0.46. Installed Server 2.8.6 / Workflow 2.5.22
+  independently matches 38 history-counter snapshots and 18 actual timer
+  classifications across the three databases, with zero reference queries.
+  Timeout, selection and parallel timer summaries remain separate work, as do
+  full published observation API, installed native/browser and shared
+  differential qualification. The native controls do not claim an externally
+  leased timer transition.
+
+- Ordinary activity summaries are the next component. Complete typed history
+  identifies the activity, attempt and retry task, and every open retained wait
+  must match those identities and the mutable source state. Scheduling, claim,
+  heartbeat, retry and terminal activity transitions refresh the stored summary
+  in their owning transaction. A failed summary write rolls back the original
+  claim and attempt creation. Missing or inconsistent retained waits remain
+  unavailable after refresh, without read repair. Positive controls cover both
+  namespaces and real completion and failure after a retry, with cold readback.
+  Both added summary assertions fail on preceding source `5cd374587`; the
+  initial implementation `c0d3a9910` passes all nine observation controls.
+  Final source `988d36f38` includes the inconsistent-metadata assertion and
+  bounded attempt arithmetic. Its exact native tree
+  `83bc3ff4b0362724860a35831affbda99ecd570e` passes 79 library checks with
+  18 existing ignores and all 161 SQLite execution checks. Three activity
+  controls pass on each of PostgreSQL 17.11 and MySQL 8.0.46. Installed
+  Server 2.8.6 / Workflow 2.5.22 agrees with 54 counter snapshots and 24
+  activity classifications across the three databases, with zero reference
+  queries (SQLite 34/8; PostgreSQL and MySQL 10/8 each).
+  Local, parallel, timeout and concurrent open-family activity summaries remain
+  unavailable pending their own controls. Published observation API, installed
+  native/browser, hosted combined-source and performance gates stay separate.
+
+- Source follow-through for the Sonar findings consolidates the four ordinary
+  wait projectors under one database implementation, sharing projection identity
+  and external-wait closure handling. History counting, task classification and
+  wait timing have separate helpers. Seven redundant constant lifetimes and the
+  single-namespace test loop are simplified. The analyzer's 4.2% duplication
+  failure on `0551089c3` remains its actual result; the profile and 3% threshold
+  are unchanged. At `ce2be116d`, all 79 library checks pass with 18 existing
+  ignores and all 161 SQLite execution checks pass. The 32-test observation
+  selection passes with each of PostgreSQL 17.11 and MySQL 8.0.46: each selection
+  contains 21 tests using that network database and 11 explicit SQLite fixtures.
+  Installed Server 2.8.6 / Workflow 2.5.22 agrees on 100 history-counter
+  comparisons (34 SQLite, 33 per network database) and 93 classifier comparisons
+  (30 task, 21 external wait, 18 timer and 24 activity), all with zero reference
+  queries. Formatting and diff checks pass. The integrated `fbeb03408` analysis
+  passes at 2.2% new duplication under the unchanged 3% threshold, and the eleven
+  previous findings are closed as fixed. One activity-summary complexity finding
+  remains at that head. Its transition-validation helper is extracted in the
+  following child component; a fresh analyzer result remains required.
+
+- Ordinary sequential child waits now retain the original call, child instance,
+  run and link identities in the scheduling transaction. Completion and direct
+  cancellation resolve that same row and associate it with the original parent
+  task through ready and leased states. Summary refresh validates complete typed
+  history and retained identities; missing or mismatched rows become unavailable
+  without changing business resumption or repairing projections on reads.
+  Published child-result precedence and the stored task-problem flag are retained,
+  including a cancelled earlier child followed by a new child. Existing child
+  admission remains default-only, sequential and without retry/timeout options.
+  The classifier bounds retained child snapshots to 100; broader child families
+  and concurrent wait-family precedence remain unqualified.
+  Four initial controls fail against the preceding runtime. The expanded installed
+  PHP check separately reproduces a task-problem flag mismatch at `0a7aa238a`;
+  `2e7195c12` corrects it without changing task liveness priority. Two observation
+  fixtures incorrectly compared the read timestamp across separate reads; their
+  failures remain recorded and the corrected assertions preserve durable wait
+  fields and the stored summary timestamp. The optional reference collector also
+  needed serialized writes after ten of 46 records interleaved during concurrent
+  tests. This was an evidence-collection failure, not a native execution pass for
+  the reference comparison.
+  Final tested source `dc8a1467e`, native tree
+  `8e3617c1cc185b43856b033130b6b455300bcc32`, passes 79 library checks with
+  18 existing ignores and all 167 SQLite execution checks. PostgreSQL 17.11 passes
+  38 observation selections: 25 use PostgreSQL and 13 are explicit SQLite
+  fixtures. MySQL 8.0.46 passes the six changed child controls: four use MySQL
+  and two are explicit SQLite fixtures. The preceding `93cd9e30c` MySQL selection
+  separately passes all 38 controls; it does not qualify the later flag correction.
+  Installed Server 2.8.6 / Workflow 2.5.22 agrees on 103 history-counter snapshots
+  and 110 classifier comparisons (38 task, 14 external, 12 timer, 16 activity and
+  30 child), including twelve open-child-wait comparisons. Child checks execute
+  62 reference queries per database against empty in-memory mutable-child tables;
+  the other classifiers execute zero queries. Formatting and diff checks pass.
+  These component results do not establish full published observation API,
+  installed native/browser or fresh combined-head qualification.
+
+- Accepted updates now create a retained wait in their admission transaction,
+  binding the original update, command and workflow task. Claims expose that
+  task's actual metadata. Successful and failed application resolve the same
+  wait, clear its task association, and restore the original external wait.
+  Active summaries validate typed update history and retained identities before
+  applying the published update precedence over signal and condition waits.
+  Missing or inconsistent projections become unavailable after refresh without
+  read repair or loss of the business completion. Admission and completion
+  projection failures roll back the original transition and leave its retry
+  usable. Existing default-only update admission and its 64-update bound remain
+  unchanged; broader queued, validator, timeout and namespace behavior is separate.
+  Three initial controls at `5af485643` fail against the preceding runtime.
+  The first implementation `0fe347fbf` fails admission by referencing a column
+  absent from the retained-wait schema; `ab762266d` corrects the query without a
+  schema change. The reference fixture initially lacked the empty command table
+  needed by PHP's ordering query, and the prior external-only comparator omitted
+  update precedence. Those failed comparisons remain separate from the corrected
+  update comparator, which also checks restoration of the external wait.
+  The expanded final native source `28d4af66a`, tree
+  `3a644a6bd97f65cc1870d9a88ec120429b5195bc`, passes 79 library tests with
+  18 existing ignores and all 172 SQLite execution tests. Five focused controls
+  pass on each of PostgreSQL 17.11 and MySQL 8.0.46: four use the network database
+  and one is an explicit SQLite rollback fixture. Final comparison source
+  `0c2605dac` has the same native tree. Installed Server 2.8.6 / Workflow 2.5.22
+  agrees on 79 counter snapshots (57 SQLite, 11 per network database) and 94
+  classifier comparisons: 34 task, nine external wait, six timer, eight activity,
+  ten child and 27 update. Update comparisons also cover 18 open waits and execute
+  twelve reference queries per database against empty mutable command tables;
+  mutable update rows are absent. The child comparison executes 62 queries;
+  the other classifiers execute zero. Formatting, PHP syntax and diff checks pass.
+  These are source/component results, not full observation API equivalence,
+  installed native/browser acceptance or a performance claim. The preceding
+  `8a0b244b3` PHP/source and Sonar checks pass independently; its Sonar analysis
+  has zero open PR issues at 2.2% duplication under the unchanged 3% threshold.
+  The remaining activity complexity finding is fixed on that head. Fresh checks
+  of the combined update component remain required.
+- The next observation component preserves the existing configurable history
+  budget in stored summaries, workflow-task delivery and subsequent task-history
+  pages. All six settings use the published DW-primary/legacy resolution and
+  integer casts. Disabled dimensions, warning clamps, recommendation precedence
+  and ordered dimensions share one classifier. Task delivery uses complete
+  stored counters or a canonical paged fallback, independently of page size or
+  active-liveness support. Missing retained history refuses the original claim
+  atomically. No schema, history, admission or enforced execution limit is added.
+  The preceding `e64b1ba44` runtime fails both the configured-warning control and
+  the missing task-budget metadata control. Its separate Sonar check passes at
+  2.1% duplication with no new issues under the unchanged 3% threshold.
+  Initial local fixtures incorrectly used a named version marker and expected
+  an identical duplicate-completion acknowledgement. They now preserve the
+  existing named timer scope and `already_completed` receipt. A mixed local
+  build linked the earlier counterfactual library; its 172-pass/two-failure
+  selection is not candidate qualification. Cleaning only this task's native
+  package artifacts produces the new runtime library. The first PostgreSQL
+  fixture exposed an integer-width mismatch in its own reader. Once that reader
+  was corrected, `15bc99ded` also exposed the assumption in the new task-history
+  route: 503 on pagination. `a939b2dc8` uses the existing database adapter for that
+  sequence without changing schema. Final `a939b2dc8`, native tree
+  `01813fcd25c1300edf9156c01f7a6c8c7f253833`, passes 80 library tests with the
+  18 existing ignores and all 174 SQLite execution tests. Both focused budget
+  controls pass on PostgreSQL 17.11 and MySQL 8.0.46. The profile control invokes
+  six isolated configuration processes per database; its child entry is ignored
+  only when invoked independently. Twelve workflows complete per database in
+  default and named namespaces, retaining complete counters across restart,
+  single-event task pages, missing/incomplete summaries and duplicate receipts.
+  Installed Server 2.8.6 / Workflow 2.5.22 agrees on 22 policy fixtures and
+  201 counter/budget snapshots: 144 configured snapshots across three databases
+  plus 57 existing SQLite counters. Configured snapshots include 72 task
+  deliveries and 72 stored summaries. All 64 SQLite liveness classifications
+  also agree: 22 task, nine external, six timer, eight activity, ten child and
+  nine update. Child and update classifiers perform 62 and twelve reference
+  queries respectively; the counter/budget and other classifiers perform zero.
+  Formatting and changed PHP syntax checks pass. Full network matrices,
+  published-HTTP/native SDK/browser qualification and performance remain open.
+- The admitted mixed activity/timer selection now retains an active summary
+  through either winner, a pending or leased loser, workflow replay blocking,
+  repair and activity deadline retries. The summary reader binds
+  `SelectionResolved` to the member's physical event ID, typed identity and
+  original selection metadata. Invalid winner attribution or a missing wait
+  removes summary availability without read repair. Retained open waits follow
+  the published timestamp/identity order. Published activity-first liveness
+  remains independent of which member wins. No admission or schema changes.
+  Three augmented existing selection controls fail against `a121f95e5` with
+  unavailable summaries; its invalid-batch control still passes. Implementation
+  `58112fa7a`, native tree `6b240b24b8bdf99db53b83bf00937d0af9086785`, passes
+  80 library tests with 18 existing ignores and all 177 SQLite execution tests.
+  Seven focused selection controls pass on SQLite; six pass on each of
+  PostgreSQL 17.11 and MySQL 8.0.46. The explicit SQLite fixture additionally
+  checks projection-write rollback, physical winner corruption and missing
+  loser waits. Real deadline controls retain their original one-second activity
+  limits and three/four-second timers.
+  Installed Server 2.8.6 / Workflow 2.5.22 agrees on 125 counter snapshots
+  (81 SQLite and 22 per network database), 64 existing SQLite classifiers and
+  69 selection snapshots with 69 open waits. Selection checks include liveness,
+  task-problem state, wait identity, order and labels, separately from complete
+  current-wait deadline/API comparison. Selection references execute zero
+  queries; existing child/update references retain 62/twelve queries.
+  Initial reference fixtures lacked empty update/failure relations and handled
+  only ready retry labels. Exporting all retained tasks also exposed old
+  single-open-task fixture assumptions. The corrected comparators distinguish
+  retained tasks from open tasks and match the installed ready/leased retry
+  behavior. Full Rust formatting, all seven comparator syntax checks and diff
+  checks pass. The separate README-only main `384578ef` is included without
+  changing the tested native tree. Full hosted/installed qualification remains
+  pending, and wider parallel/timeout shapes remain separate.
+- Command discovery now lists the already admitted `complete_update` and
+  `fail_update` handlers alongside the existing command set. Registration,
+  polling and cluster discovery share that metadata. Both existing durable
+  update controls now choose their actual completion command from advertised
+  metadata before exercising the original receipt, fencing, cold-reopen,
+  int64 result, failure identity and parent continuation checks. Both fail at
+  missing discovery against prior source `e95d31eb4`, whose runtime source is
+  unchanged from `a15b87977`. Implementation `3e1b61182`, native tree
+  `82b9435281a125e1389119e5d5d46001ac69950a`, passes both controls and full Rust
+  formatting. The only runtime change adds the two command names; admission,
+  task execution, schema and package/catalog identities are unchanged. This is
+  a focused source result. Full matrices and consumer acceptance remain separate.
+- Direct signal waits now implement the [published timeout contract](contracts/timed-signal-waits.md)
+  within their existing default-namespace admission. Null/absent, immediate zero
+  and positive durable timeouts retain their distinct behavior. Buffered input
+  wins before timer creation. Firing retains the original wait/timer identities,
+  authored sequence and planned deadline; input application cancels a pending
+  matching timeout between cursor advancement and `SignalApplied`. Late input
+  receives a new occurrence, and receipt before firing remains received even
+  when application happens later. One retained signal wait supplies the timeout
+  and timer-task metadata. Condition timeouts remain separate.
+  The shared cancellation payload now copies original scheduled timer-kind,
+  wait/group metadata and planned time for immediate and cooperative cancellation.
+  Prior-source controls `00e658050` fail twice at timeout-field admission and
+  once at missing selection metadata, with runtime unchanged from `3f72750f1`.
+  Implementation `cb5f6226a`, runtime source tree
+  `5bfb3d9d27d6347ef42639c055803ba9b0f7fdd4`, passes 80 library tests with the
+  existing 18 ignores and 192 SQLite execution tests. The one marked-ignored
+  history-budget helper is invoked by its passing isolated-process parent.
+  Fourteen timed-signal controls cover cold expiry, buffered/delivered input,
+  competing drivers, original identity/deadline, unrelated timers, whole-batch
+  validation, lease fencing, cancellation, missing projections and projection
+  rollback. Twelve non-SQLite-specific controls plus the shared cancellation
+  regression pass on each of PostgreSQL 17.11 and MySQL 8.0.46.
+  Published Server 2.8.6 / Workflow 2.5.22 agrees on nine three-database liveness
+  and history-counter snapshots, and nine current-wait snapshots containing
+  three open waits. Those reference checks execute zero queries. The new
+  [wait comparator](../rust/tests/reference/timed_external_waits.php) calls the
+  published current-wait projector, preserving its seconds-formatted wire dates;
+  its initial handwritten microsecond-date expectation failed and was corrected
+  without a runtime change. Existing SQLite references still pass 81 counters
+  and the task/external/timer/activity/child/update/selection classifiers.
+  No schema, package, catalog, frozen tuple or shared-runner change is included.
+  Hosted whole-source, installed-consumer and native browser gates remain open.
+- Condition waits now implement their [published timeout contract](contracts/timed-condition-waits.md)
+  in the existing default and named namespaces. Immediate and positive expiry
+  retain each physical wait's identity, logical occurrence metadata and authored
+  deadline. A fired condition stays open until worker application or terminal
+  history; later input cannot satisfy that expired physical wait. Applying input
+  before expiry records `SignalApplied`, `ConditionWaitSatisfied`, then matching
+  `TimerCancelled`. Reopening may retain the logical occurrence while authoring
+  a new physical wait and timer. Buffered input does not suppress condition-timer
+  creation. Projections retain one condition row and refuse inconsistent state
+  without read repair.
+  The shared timeout-cancellation path also corrects the physical history
+  relationship: worker application links `TimerCancelled` to its workflow task,
+  with no workflow-command foreign key, matching published `TimerCancellation`.
+  Prior-source contract commit `0d8f3f4d2` fails both timeout admission controls
+  and the corrected physical-SQL relationship assertion. Its earlier attempt to
+  inspect that foreign key through the public history DTO was an invalid fixture
+  and is not defect evidence.
+  Implementation `d4adf36bc`, runtime source tree
+  `1a3e30250c2b84fda95c79e374bf36a4e50b91be`, passes 80 library tests with 18
+  existing ignores. The initial full execution run has 204 passes and two old
+  expectations that a positive condition timeout is unsupported. Test-only
+  correction `76e1f8fe2` preserves those whole-batch refusal controls using an
+  invalid negative timeout; the full SQLite suite then passes all 206 tests.
+  The isolated history-budget child remains invoked by its passing parent.
+  Fourteen condition controls cover cold expiry, default/named isolation,
+  physical reopen, late and claimed input, buffered input, competing drivers,
+  fencing, cancellation, invalid batches and projection rollback. Eleven
+  applicable condition controls, twelve direct-signal controls and the shared
+  selection-cancellation control pass on each of PostgreSQL 17.11 and MySQL
+  8.0.46. Full Rust formatting and changed PHP syntax pass.
+  Published Server 2.8.6 / Workflow 2.5.22 agrees on all 75 new three-database
+  counter/current-wait snapshots, including 69 open wait members and 69
+  nonterminal liveness snapshots, with zero reference queries. Condition snapshots
+  record actual clock bounds around each read and require agreement at both;
+  the earlier seconds-only fixture failed because it could precede an immediate
+  deadline, and remains an unsuccessful fixture attempt. Existing 81 counter
+  snapshots and all seven prior classifier helpers also pass. The relevant
+  published wait/bridge/timer classes are unchanged in Workflow 2.5.32; its
+  summary-projector change only wraps summary upserts in a SQLite transaction.
+  Separately qualified PHP main `964f9e3d5` is integrated at `7a9efe0a6`,
+  retaining published Server 2.8.7 / Helm 0.1.175 metadata. This component does
+  not adopt a new native catalog, stored-job property or frozen tuple. Fresh
+  combined hosted, installed-consumer, browser and promotion gates remain open.
+
+- Activity/timer `all()/parallel()` now follows the
+  [published barrier contract](contracts/parallel-all-groups.md), including nested
+  paths, complete atomic batches through 100 leaves, original sequences and
+  member identities. Terminal outcomes can coalesce a ready workflow wakeup;
+  outcomes arriving during an older lease retain later work. All-groups emit
+  no selection winner. Retry, terminal failure, expiry, root cancellation,
+  cold nodes, invalid groups and projection rollback retain existing fences
+  and receipts. Child/signal/condition groups and installed workers remain
+  separate qualification gates.
+  Contract/source `803caebc0` fails both admission controls on the preceding
+  runtime. Published full-member comparison exposed two clock/order defects.
+  Native now uses the published rounded-millisecond opening key and original
+  wait ID, including the half-millisecond boundary. A wait's opening clock now
+  matches its actual scheduled/started history event; authored deadlines keep
+  their earlier scheduling clock. Original IDs and stored times are not
+  normalized by the comparison. Corrected ordering control `7219f99ea`
+  fails on runtime `5256f5b3`; stored-precision control `52df52bac` finds
+  37 mismatched opening clocks on runtime `7f4d8e6f`.
+  Final implementation `27e988389`, runtime tree
+  `42800bd8e61d6318424e9a62594c0714285fa0d6`, passes 80 library tests
+  with 18 existing ignores, all 216 SQLite execution tests and 16 focused
+  controls on each of PostgreSQL 17.11 and MySQL 8.0.46. The network selection
+  includes nine barrier controls and seven existing selection controls.
+  The SQLite profile child remains invoked by its passing parent.
+  Published Server 2.8.7 / Workflow 2.5.32 agrees on 61 three-database counter,
+  liveness/task-problem and complete current-wait-member snapshots, including
+  224 bounded members, with zero queries. Both actual read-clock bounds must
+  agree. Existing 25 timed-wait, 44 network-selection and 81 SQLite counter
+  snapshots plus all seven existing classifier helpers also pass.
+  Earlier fixture failures remain unsuccessful: terminal history uses
+  `output`, the 100-member audit must follow history pagination, storage faults
+  return 503, and retained attempt widths differ across network databases.
+  A seconds-only opening-clock assertion was replaced by an exact stored-time
+  comparison. A candidate run reused an older library while switching worktrees
+  sharing a Cargo target; its binary lacked the new ordering query. The final
+  checks follow package-output cleanup and a fresh build from one unchanged
+  implementation checkout. Earlier component passes do not qualify those fixes.
+  No PHP package, native catalog, frozen tuple or shared-runner change belongs
+  to this component. Fresh combined hosted and full consumer/promotion gates
+  remain separate.
+
+- The existing published [workflow failure command](contracts/workflow-failure-command.md)
+  now has ordinary native source implementation. It remains distinct from task
+  failure/retry. One transaction closes the run and originating task as failed,
+  clears the task lease expiry, writes a new terminal failure and retains the
+  original leased-task snapshot. Structured exception precedence, properties
+  and int64 values survive. Original completion receipts retain duplicate,
+  conflict, namespace and stale-attempt fences; no automatic task retry follows.
+  Root cooperative cancellation keeps precedence and its original deadline.
+  Nonterminal commands retain authored order before the terminal command,
+  including when that terminal is placed between selection members.
+  Uncaught activity attribution requires the exact latest ActivityFailed boundary.
+  Failed sequential children retain the original call/link and new terminal
+  failure ID, resolve one parent wakeup, and permit a caught failure followed by
+  another sequential child. Parent-notification faults roll back the full transition.
+  Child failure payloads omit workflow-only flags and absent nullable diagnostics.
+  Update-owned task closure and broader child policies remain separate limits.
+  Contract/control `ed17d8d18` fails both initial admission controls before
+  implementation. Placement control `ae9117dbe` fails before filtering terminal
+  commands from group validation. Stricter controls `387b18c2c` fail on the
+  missing task snapshot and extra child failure flag; independent published-PHP
+  checks reject both shapes too. Corrected fixture assertions use the actual
+  cancellation-cleanup field and canonical activity failure ID. The first full
+  run retained 224 passes/one wrong-field assertion; a later partial local run
+  was intentionally retired before correcting the identity fixture, with no
+  qualification claim. Earlier fixture and hosted failures remain separate.
+  Final implementation `d4fb326e0440c1b35c20b6adc3b4044b197bf916`, runtime tree
+  `df2633238cf4cb7e23db02785a919ed1573d3f2a`, passes 80 library and 226 SQLite
+  execution tests. Eighteen existing library ignores remain; the directly ignored
+  SQLite profile child is invoked by its passing parent. Each of PostgreSQL 17.11
+  and MySQL 8.0.46 passes 32 controls: nine applicable new failure controls, twelve
+  timed-signal and eleven timed-condition controls. Rustfmt, PHP syntax and diff
+  checks pass. One unchanged checkout supplies the final builds.
+  Published Server 2.8.7 / Workflow 2.5.32 agrees on fifteen workflow-failure
+  payloads, twelve child payloads and thirty history-budget snapshots with zero
+  reference queries. Twelve child liveness/task-problem snapshots and six open
+  waits agree using empty mutable child tables (72 reference queries); six task
+  snapshots agree with zero queries. JSON object member order is ignored, while
+  array order, keys, scalar types and original durable identities remain exact.
+  The selected immutable PHP image index is
+  `27c08e15c86e897703c2bab87dcf61847946b379876b15d0a3a491bc91cf30cd`.
+  Eight reported native maintainability findings receive focused source cleanup:
+  external-wait validation/timeout liveness and signal-timeout projection are
+  extracted into helpers, and six redundant static lifetime annotations are
+  removed. Existing projection, transaction and three-database timed-wait controls
+  pass. Quality settings and thresholds are unchanged; fresh analyzer disposition
+  is pending. No PHP package, schema, catalog, stored-job or frozen tuple changes
+  belong to this component. Combined CI, installed consumers and promotion remain
+  separate gates. Ephemeral compiler and database resources were retired after audit.
+
+- [Accepted updates now close with their original run](contracts/terminal-update-closure.md)
+  on direct cancellation, ordinary workflow completion and workflow failure.
+  Original update/command/request identities and completed receipts survive.
+  Each still-accepted update gets one application-category, non-retryable failure,
+  UpdateCompleted event and forward-only cursor advancement. Its workflow sequence
+  stays absent because no update step was applied. The run, task, update, failure,
+  history and cursor changes share one transaction. Old leased update attempts
+  cannot replace the outcome after closure. An unrelated active run stays intact.
+  Ordering uses command sequence (non-null first), accepted time and update ID.
+  Missing-command fixture rows use the update itself
+  as the failure source without inventing a command or cursor event. This does
+  not qualify legacy database takeover or widen normal update admission.
+  Tests-first `cbbd6dc59` rejects both ready/leased cancellation controls at the
+  existing 422 propagation guard. Initial expanded controls also retain their
+  unsuccessful outcomes: a zero-time condition reached the busy update-snapshot
+  guard, a zero-time poll observed no resume, and a legacy fixture
+  omitted the schema's required command-link value. Corrected controls use the
+  original future deadline, ordinary long polling and explicit missing-command IDs.
+  A strict published-PHP comparison then exposed an actual missing task snapshot
+  field. The history model reads Eloquent's protected storage connection property.
+  Native snapshots now retain the standard `sqlite`, `pgsql` or `mysql` label.
+  This is existing diagnostic metadata, not queue-routing authority. PHP source
+  inspection and a real method invocation independently confirm that decision.
+  Implementation `58fcc366576673ec5f7e475e18a73da1e0e8223e`, runtime tree
+  `2ec0d0e9c98dfb2e0e22fdc1b15b9d849f9c4397`, passes 80 library and 234 SQLite
+  execution tests. Eighteen library ignores remain, and the directly ignored
+  SQLite profile child is exercised by its passing parent. PostgreSQL 17.11 and
+  MySQL 8.0.46 each pass sixteen controls: seven applicable new terminal-update
+  controls and nine workflow-failure regressions. Rustfmt, PHP syntax and diff
+  checks pass. All final builds use one unchanged source checkout.
+  The exact published Server 2.8.7 / Workflow 2.5.32 closer runs in its own
+  migrated in-memory PHP database, seeded from pre-closure source inputs.
+  Twelve captured closures across the three native database families agree on
+  payloads, command/task snapshots, failure relationships, update state and cursor
+  history (180 reference queries). Only the newly generated failure ID is mapped
+  between independent databases. Timestamp spelling preserves the same instant,
+  and JSON object order is ignored while types and list order remain exact.
+  Ten workflow-failure and eight child payloads also agree. History-budget checks
+  pass for twelve update and twenty failure snapshots with zero queries. Eight
+  child-classifier snapshots/four open waits agree using empty mutable child tables
+  (48 reference queries), and four task snapshots agree with zero queries.
+  Set `DW_TEST_TERMINAL_UPDATES_REFERENCE` when running `terminal_updates::` and
+  use the [published-PHP comparator](../rust/tests/reference/terminal_updates.php).
+  The PHP image index remains `27c08e15c86e897703c2bab87dcf61847946b379876b15d0a3a491bc91cf30cd`.
+  Cooperative-cancellation propagation, continuation transfer and update-owned
+  terminal commands keep their existing refusals and separate gates. No PHP
+  package/schema/catalog/frozen tuple or shared-runner change belongs to this
+  component. Fresh combined checks/analysis and installed-consumer acceptance
+  remain separate. Task compiler/database resources and the new PHP reference
+  image were retired after the checks.
+
+The separate installed-SDK observation
+[checkpoint](https://github.com/durable-workflow/server/pull/478#issuecomment-6205832785)
+remains aggregate FAILURE: completed/default and completed/named originals pass
+execute/cold reads, while both failed originals are refused at `fail_workflow`.
+Their cold attempts also fail after abrupt exception persistence leaves the
+identity files incomplete. That qualification is retired and stopped. The
+ordinary source implementation above does not rerun that recipe or change the
+recorded failed originals.
+
+The preserved `c0b14c15` [shared run](https://github.com/durable-workflow/server/actions/runs/38806818394)
+is terminal with 12 passing jobs and one failure in the existing-PHP PostgreSQL
+job at the published-query comparison step. The assertion and cause remain
+unknown. The component checks above do not explain or replace that result.
+The preserved `fbeb03408` [shared run](https://github.com/durable-workflow/server/actions/runs/38824463438)
+also ends with twelve passing jobs and one MariaDB 10.11 failure, at the
+published-query/installed-Worker comparison. Its assertion and cause remain
+unknown. The older `0551089c3` [shared run](https://github.com/durable-workflow/server/actions/runs/38820665798)
+has twelve passing jobs and one failure at the markers/ranges/clocks/activity
+expiry comparison, likewise without an established assertion or cause.
+
+Next, qualify the combined observation source and finish active wait-summary and
+remaining wait production. Independent retained-artifact
+reviews remain incomplete. Native Waterline acceptance then needs
+qualified discovery, followed by the same
+unmodified browser recipe. Keep the incomplete inspector review separate.
+No native release, database takeover or full-family parity is claimed.
+
+The earlier installed result checkpoint at `d83a3cb9` remains separate:
+normally installed SDK 2.4.2 completed ten fresh native originals across both
+namespaces, covering null, false, exact typed values, external results and a
+genuine two-attempt retry. Forty processes preserved the original budgets,
+history prefixes and closed-parent reads. Stopped state had ten completed
+runs/activities, 32 completed tasks, twelve attempts, 64 events and zero repairs.
+API SIGTERM exited zero without OOM. Its original hosted MySQL image-pull and
+PostgreSQL renewal-observer failures remain failed; later observations do not
+explain or replace them.
+
+The earlier foundation stages remain separately qualified as follows:
 
 - Merged [#445](https://github.com/durable-workflow/server/pull/445),
   [#446](https://github.com/durable-workflow/server/pull/446),
@@ -209,15 +1234,6 @@ does not qualify the no-status expiry branch, revised Rust consumer or a new
 all-database combined tree. Earlier PHP component checks remain scoped to
 their original fixture source.
 
-The separately prepared [#460](https://github.com/durable-workflow/server/pull/460)
-adds read-only upgrade source inspection. Its original SQLite gate failed the
-existing fresh-upload 100 ms control before inventory admission. The revised
-control preserves that stalled request limit and checks shared capacity with
-a new normal-policy request. The original stays failed. CLI process controls
-refuse pipes and directories without waiting for a writer. Catalog/count
-inspection grants no backup, quiescence, complete representation or takeover
-authority; later prepared source components require independent qualification.
-
 Full transport discovery stays unadvertised. Complete batch workflow semantics,
 memo/query reference ingress, upload allowances, automatic result policy, S3,
 cleanup/backup/restart and full database/consumer qualification remain open.
@@ -229,17 +1245,16 @@ Broader runtime/operational parity, safe sequential PHP database takeover,
 matched performance measurements and release/cutover preparation remain #325
 requirements. No native release or deployment is qualified.
 
-Inspector `58542a5e` passes hosted run `38754495860` across all six databases,
-but promotion is held for a separate constructed path-replacement control.
-After its header check, SQLite can reopen a substituted WAL file and create
-sidecars on a writable mount before refusing the catalog. Main-file bytes stay
-exact. The correction enforces the documented kernel read-only mount for the
-source and resolved parent directory at the CLI boundary, before SQLite opens.
-It retains SQLite locking, header/journal refusal and the original overall
-30-second budget. Hosted CLI controls use read-only and writable aliases of the
-same private fixture to prove writable refusal and actual valid/malformed Avro
-decoding. New exact-source acceptance is still required; the older passes do
-not establish the corrected boundary or takeover safety.
+Targeted-result candidate `d83a3cb9` fails two independent hosted boundaries in
+run `38746470760`: MySQL 8.4 image pull times out before admission, and the
+PostgreSQL 17 CPU-health renewal observer exits without its failed-call detail.
+The other five execution archives independently show 29 passing comparisons,
+20 zero profile statuses and 129 native execution tests each. Those successes
+do not qualify the failed cells. A fresh local PostgreSQL 17 diagnostic passes
+on the exact optimized binary, without explaining the hosted renewal failure.
+The next runner adds bounded original-call renewal diagnostics and upstream
+query-response/client-state diagnostics. Native code and original deadlines
+remain unchanged; all-database acceptance is a new gate.
 
 Completed local raw archives, transport journals and databases have been deleted.
 Historical retention descriptions below do not guarantee that those bytes are
@@ -2556,64 +3571,13 @@ by MariaDB/MySQL. Fixture/probe/pressure deadlines, resource limits, SDK/native
 code, frozen tuples and semantic assertions are unchanged. Fresh exact-source
 full-matrix qualification remains required; earlier failed records stay held.
 
-## Contract and verification inventory
+<a id="evidence-and-next-action"></a>
 
-| Surface | Current authority and reusable checks | Port status |
-| --- | --- | --- |
-| Control plane, namespaces, authorization, errors, visibility | `resources/platform-protocol-specs/control-plane-api.openapi.yaml`, `docs/contracts/auth-composition.md`, `routes/api.php`, Feature control-plane/auth/namespace tests; namespace and principal-attribution published runners | Bounded default listing/CLI metadata, two named echo/activity namespaces, legacy admission and a separate exact-role token profile; broader visibility/namespace families and principal authorization pending |
-| Worker registration, sessions, leases, fencing, retries, timeouts, heartbeats, routing, affinity, backpressure, versioning | Worker OpenAPI and stream AsyncAPI in `resources/platform-protocol-specs/`; Feature worker/activity/prepared-local/cancellation tests; activity, heartbeat and worker-versioning published runners | Bounded PHP registration, polling, completion/fencing, activity retries and cleanup heartbeat; broader fleet, routing, affinity and timeout policies pending |
-| Avro values, external task inputs/results, payload storage and reclamation | `docs/contracts/external-task-{input,result}.md`, `external-payload-storage.md`, external payload OpenAPI; `regression-corpus-policy.json`, `tests/Fixtures/CodecRegression/`, payload Feature tests | PHP/embedded echo slice; Rust codec foundation in #329, full ingress and external payloads pending |
-| Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Bounded authored completion, activity retry/failure, direct children/cancellation and root cooperative cleanup; broader propagation, replay and continuation semantics pending |
-| Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Bounded durable sleep, repeated signals, state queries/updates and two UTC schedule cases; broader policies, search attributes, memo and sagas pending |
-| Local activities, cancellation scopes, worker sessions, streams, service catalog/Nexus, bridge adapters, standalone activities, debugging and repair | `routes/api.php`, `docs/contracts/`, worker/control-plane specifications, corresponding Feature tests and Nexus runner | Pending; not omitted from parity |
-| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published SDK and canonical embedded directions: #401 nine workflow/activity, #408 nine parent/child, #411 timer authors, #415 nine signals, #422 nine queries, #424 nine successful updates and #427 nine failed updates. Current default query/update/signal families pass all six configurations on #427 main; the original frozen-PHP SQLite cancellation failure remains immutable. #429 paired named-namespace and #434 selected-run signal profiles pass all six final-head and fresh-main configurations. A separate corrected marker/range cohort is next. CLI 2.2.0 list/describe/history has bounded coverage; broader SDK families, CLI commands, Waterline and Sample App remain pending |
-| SQL schema and stored representations | `database/migrations/`, Workflow package `src/migrations/`, model casts, `Workflow\\Serializers\\Serializer`, queue job payloads, exported history and credential digests | [Representation checkpoints](rust-server-storage-audit.md) recorded; complete mapping and executable migration tests pending |
-| Images, architecture, bootstrap, configuration, readiness, metrics and graceful shutdown | `Dockerfile`, `docker/`, `config/`, `docker-compose*.yml`, `k8s/helm/`, `docs/server-reference.md`, small-cluster/multi-region validation docs | Pending |
-| Backup and in-place upgrade | `docs/self-hosted-backup-and-restore.md`, external payload backup holds; last PHP image writes, all PHP roles stop, Rust takes over same DB sequentially | Pending on SQLite, MariaDB/MySQL, PostgreSQL |
-| Throughput, memory, CPU, latency, backlog/drain, idle mixed long polls | `benchmarks/capacity/v1/` and `scripts/benchmark/`; repeated runs and drift checks using frozen artifacts | [Diagnostic PHP reference recorded](../benchmarks/server-port/v1/php-observations-2026-10-09.md); matched comparison and full qualification pending |
+## Earlier evidence milestones
 
-Ordinary PHP, Rust and embedded runs use independent databases. Never connect
-different engines to one database concurrently. SQLite multi-node qualification
-must state its shared-file topology and locking limits; existing single-node
-support is not evidence of multi-node safety.
-
-## Decisions
-
-- Shared fixtures are expectations reviewed against public contracts, not PHP
-  recordings promoted to expected behavior. The recorder keeps raw observations;
-  the comparator checks the declared fixture projection. Coverage is explicit.
-- The HTTP adapter uses the published PHP SDK and its official Avro codec. The
-  embedded adapter executes real Workflow jobs and persisted history. Neither
-  counts an accepted start as completion or substitutes mocked execution.
-- Generated run/activity/attempt identifiers may differ between independent
-  databases. Compare their relationships with bijective aliases; retain actual
-  IDs in raw evidence. Preserve workflow IDs, event order, command sequences,
-  attempt counts and decoded values. Wall-clock observations remain raw.
-- The first Rust foundation uses Apache's official Avro single-object
-  reader/writer with the immutable schema. The first HTTP/storage slice uses
-  Axum/Tokio and SQLx with selected features and native transactions. Avoid
-  unnecessary dependencies and code generation. Record
-  clean and incremental compile time plus target-directory size for the first
-  runtime slice. Use one task-owned Cargo target directory, low debug information
-  for development, bounded build concurrency and cleanup after qualification.
-- Evaluate [Kache](https://github.com/kunobi-ninja/kache) in a task-local runtime
-  before choosing the Rust build setup. Use an explicit cache budget and local
-  storage; measure physical disk blocks across cache and targets together. Keep
-  cache and build outputs under one container mount so cross-mount copying does
-  not erase sharing. Use a per-run compiler wrapper and scoped cleanup.
-  The [first real crate measurements](../rust/build-observations-2026-10-09.md)
-  observed native clean builds around 22 seconds and 182 MiB targets. Kache
-  restored a fresh target in 3.5 seconds but added cold-build time and retained
-  disk; native no-op/comment-edit builds were faster in-place. Keep it optional.
-  Full-server build cost and any disk-saving claim remain pending.
-- Tokio tasks are [cooperatively scheduled](https://docs.rs/tokio/latest/tokio/task/coop/index.html).
-  Potentially expensive replay, decoding and synchronous database operations
-  need bounded work away from the async request executor. `spawn_blocking` needs
-  an explicit CPU concurrency limit, and a started blocking job cannot be
-  aborted. Preserve durable fencing and cancellation checks around that work;
-  qualify timer, lease and cancellation deadlines under CPU-heavy load.
-
-## Evidence and next action
+The sequence below preserves earlier implementation and qualification history.
+The current checkpoint at the top of this log owns the next action and open
+gates; historical passes remain specific to their recorded sources and tuples.
 
 [PR #340](https://github.com/durable-workflow/server/pull/340) widens the corpus
 into one/repeated signal deliveries. The published SDK authors signal-derived
@@ -3106,51 +4070,55 @@ requires fresh normal and six-database qualification. The preceding `3409a776`
 component pass, its MySQL-only retry, and all failed originals remain their
 separate records; none qualifies this integration or a native release.
 
-Upgrade preparation now includes a non-executing queue-command reader under
-`runtime::upgrade::queue`. The released token parser recognizes only the tested
-V2 job/Carbon subset under explicit byte, depth and token limits. Published
-class fixtures preserve original task IDs, a Unicode queue and microsecond
-delay fields. Malformed and unqualified representations are refused. This is
-an independently tested decoder, not a source-row migration or takeover path.
-A pure binding validator now checks one genuine published PHP 2.8.2 pending
-timer envelope against its original task/run. Twelve focused decoder/binding
-controls pass. The source database has Laravel transport queue `default` and
-SDK queue `upgrade-source`; its rounded transport wakeup does not replace the
-canonical microsecond timer availability. Borrowed source rows retain their
-original state and a separate leased activity.
+The separate activity-result candidate now has installed consumer evidence on
+all three database families: 48 originals and 192 author/activity/reader/cold
+process phases match published PHP for null, false, typed int64/null/Unicode maps
+and a 2 MiB external value, in default and named namespaces. It reuses an audited
+optimized native binary without compiling locally. This is endpoint/client
+qualification, not a performance or discovery claim.
 
-The separate `upgrade-queue-inspect` command now scans every database-queue row
-inside the existing read-only observation. Bounded pages and transfer limits
-precede canonical joins. Unknown representations, orphaned/foreign bindings
-and skipped nonpositive IDs refuse before a success report. Local native checks
-pass 93 library cases with 18 existing database/subprocess ignores and the
-process refusal control for both inspection commands. Actual published-source
-CLI and fresh all-database integration remain pending. Complete stored-state
-validation, restored backup verification and sequential takeover stay open.
+The next installed retry probe initially required a terminal `ActivityFailed`
+event for a retry. That PHP original remains failed. Correcting the fixture to
+the canonical `ActivityRetryScheduled` event produces four fresh SQLite passes,
+two per implementation. Eight actual callbacks, four failure submissions and
+four completions preserve their original 30-second observation budgets and
+authored retry policies. Separate parent/cold readers preserve the scheduled
+history prefix and exact typed result. Stopped SQL states match: two completed
+runs, two completed activities at attempt2, eight completed tasks and sixteen
+events per implementation, with zero repairs. Both APIs exit0 without OOM.
+Listing, unrelated-object isolation, embedded outcome checks, all-database
+installed retry consumers and Waterline acceptance remain open; discovery stays
+unadvertised. Raw phase data and dependencies are deleted after immediate audit.
 
-The separate #460 source preparation now recognizes canonical PHP stored
-external-reference metadata under a 64 KiB bound, using a fixture emitted by
-released Workflow 2.5.20 serializer classes. Four focused groups cover preserved
-fields, format separation, malformed/duplicate fields, codec and integer bounds.
-All 97 local library tests pass, with 18 existing database/subprocess cases
-explicitly ignored. This reader is not yet wired to source-row scanning or
-conversion and fetches no object. Registry/provider binding, restored backup
-bytes, complete representation coverage and sequential takeover remain open.
+The next operator read slice is the existing PHP targeted activity-result
+endpoint from #439/#440. Its [contract](contracts/workflow-activity-result-inspection.md)
+and separate fixture/profile define canonical history selection, exact ownership,
+null versus absence, explicit unavailable states and opaque external transport
+before native implementation. The selected published PHP reference is separate
+from every frozen actor. Native discovery and Waterline consumption remain pending.
 
-The next preparation connects that decoder to `upgrade-payload-inspect`, a
-separate read-only root-column scan. It reports bounded counts and affected row
-IDs for unsupported metadata, with no provider fetch, payload/URI output or
-takeover authority. New controls cover all four columns, pagination, omitted
-diagnostics, oversized values, source identity and byte preservation. Existing
-inventory and queue inspection behavior is unchanged. Exact local and hosted
-qualification belongs to #460; constructed source rows are not executed workflows.
+The native targeted route now reads one latest canonical activity snapshot after
+literal namespace/workflow/run binding. Its state and envelope projection never
+uses the mutable activity result. Focused HTTP tests preserve null, false, int64,
+Unicode and closed-parent results, refuse foreign identities and worker roles,
+distinguish missing/pruned history and follow genuine retry/failure/cancellation
+outcomes. All three original route controls fail the preceding runtime. Earlier
+fixture setup failures used a wrong retry field and a globally reserved workflow
+ID, and do not count as runtime counterfactuals. The first MySQL candidate exposed
+a missing dialect-template registration, corrected before its four passing
+controls. Those same four cases pass SQLite, MySQL 8.4 and PostgreSQL 17. The
+SQLite execution suite passes 117 cases. Library checks pass 72 cases with the
+existing 18 database/subprocess ignores.
 
-The corrected preparation passes 101 library cases and the CLI filesystem
-refusal test, with 18 existing database/subprocess ignores. Fifteen separate CLI
-controls on SQLite DELETE, MySQL 8.4 and PostgreSQL 17 inspect metadata, refuse
-unsupported/malformed/oversized references and accept explicit restoration.
-Network readers have SELECT-only authority; each source fingerprint is unchanged.
-The first MySQL fixture ID overflow and prototype reserved SQL alias remain failed
-observations. The fixture ID and alias are corrected, and the shared upgrade
-profile now exercises the new scan. Hosted integration and every takeover gate
-remain pending.
+Separate normally installed PHP SDK 2.4.2 processes complete eight fresh originals
+per target on published PHP 2.8.3 and native SQLite. Default and named namespaces
+each preserve null, false, the typed map and a 2,796,296-byte external value.
+Every original completes one activity and its original parent within its initial
+30-second observation budget. Cold readers retain history sequence 5 and exact
+decoded values after the different parent output commits. Stopped-state audits
+find 48 events and 24 completed first-attempt tasks per target, zero repairs and
+no ready backlog. Both APIs stop with explicit SIGTERM, exit 0 and no OOM.
+The external producer uses explicit upload/protocol completion. This does not
+qualify automatic Worker uploads. Capability discovery, metadata-only listing,
+unrelated-object isolation, all-database installed consumers, embedded negative
+controls and Waterline acceptance remain open.

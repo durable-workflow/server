@@ -65,6 +65,14 @@ pub fn router(runtime: Runtime) -> Router {
             post(super::schedule_http::trigger),
         )
         .route("/api/workflows/{workflow_id}", get(describe_current))
+        .route(
+            "/api/workflows/{workflow_id}/observation",
+            get(super::run_observation::current),
+        )
+        .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/observation",
+            get(super::run_observation::selected),
+        )
         .route("/api/workflows/{workflow_id}/runs", get(list_runs))
         .route("/api/workflows/{workflow_id}/cancel", post(cancel_current))
         .route("/api/workflows/{workflow_id}/repair", post(repair_current))
@@ -120,6 +128,14 @@ pub fn router(runtime: Runtime) -> Router {
         .route(
             "/api/workflows/{workflow_id}/runs/{run_id}/history",
             get(history),
+        )
+        .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/activities",
+            get(activities),
+        )
+        .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/activities/{activity_id}/result",
+            get(activity_result),
         )
         .route("/api/worker/register", post(register))
         .route("/api/worker/heartbeat", post(worker_heartbeat))
@@ -393,6 +409,15 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
         let parts: Vec<_> = path.split('/').collect();
         if matches!(
             parts.as_slice(),
+            [_, "observation"] | [_, "runs", _, "observation"]
+        ) {
+            return method == "GET";
+        }
+        if matches!(parts.as_slice(), [_, "runs", _, "activities", _, "result"]) {
+            return method == "GET";
+        }
+        if matches!(
+            parts.as_slice(),
             [_, "signal", _] | [_, "runs", _, "signal", _]
         ) {
             return method == "POST";
@@ -405,7 +430,9 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
         }
         return matches!(
             parts.as_slice(),
-            [_] | [_, "cancel"] | [_, "runs", _] | [_, "runs", _, "history" | "cancel"]
+            [_] | [_, "cancel"]
+                | [_, "runs", _]
+                | [_, "runs", _, "history" | "cancel" | "activities"]
         );
     }
     if let Some(path) = path.strip_prefix("/api/worker/") {
@@ -501,6 +528,17 @@ async fn cluster() -> Json<Value> {
         "auth_composition_contract": auth_composition,
         "payload_codec": "avro", "qualified_for_php_takeover": false}),
     )
+}
+
+async fn activity_result(
+    Extension(runtime): Extension<Runtime>,
+    Path((workflow_id, run_id, activity_id)): Path<(String, String, String)>,
+) -> Result<Json<Value>> {
+    Ok(Json(
+        runtime
+            .activity_result(&workflow_id, &run_id, &activity_id)
+            .await?,
+    ))
 }
 
 async fn start(
@@ -759,6 +797,13 @@ async fn describe_run(
 struct HistoryQuery {
     page_size: Option<i64>,
     next_page_token: Option<String>,
+}
+
+async fn activities(
+    Extension(runtime): Extension<Runtime>,
+    Path((workflow_id, run_id)): Path<(String, String)>,
+) -> Result<Json<Value>> {
+    runtime.activities(&workflow_id, &run_id).await.map(Json)
 }
 
 async fn history(

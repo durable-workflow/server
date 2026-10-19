@@ -1,5 +1,6 @@
 //! Atomic first continuation slice. Related children, pending messages/updates,
 //! typed visibility and streams require separate transfer qualification.
+use super::transaction::Transaction;
 use super::{
     Result,
     backend::Backend,
@@ -8,7 +9,7 @@ use super::{
 };
 use axum::http::StatusCode;
 use serde_json::{Value, json};
-use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Transaction, Type};
+use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
 pub(super) fn validate(command: &Value) -> Result<()> {
     reject_fields(command, &["type", "arguments", "workflow_type", "queue"])?;

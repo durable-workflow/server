@@ -9,7 +9,10 @@ use RuntimeException;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\HistoryBudget;
+use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\RunTimelineProjector;
 
 final class WorkerTerminalEventAttribution
@@ -62,6 +65,7 @@ final class WorkerTerminalEventAttribution
             throw new RuntimeException('Completed workflow task did not have a server-authenticated principal.');
         }
 
+        $previousSize = HistoryBudget::sizeOfEvent($event);
         $payload = is_array($event->payload) ? $event->payload : [];
         $command = is_array($payload['command'] ?? null) ? $payload['command'] : [];
 
@@ -79,6 +83,38 @@ final class WorkerTerminalEventAttribution
 
         /** @var WorkflowRun $run */
         $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)->findOrFail($runId);
+        $this->adjustSummaryBudget($run, HistoryBudget::sizeOfEvent($event) - $previousSize);
         RunTimelineProjector::projectWorkerTerminalEvent($run, $event);
+    }
+
+    private function adjustSummaryBudget(WorkflowRun $run, int $byteDelta): void
+    {
+        if ($byteDelta === 0) {
+            return;
+        }
+
+        /** @var WorkflowRunSummary|null $summary */
+        $summary = ConfiguredV2Models::query('run_summary_model', WorkflowRunSummary::class)
+            ->lockForUpdate()->find($run->id);
+
+        // The bridge has already counted the terminal event. Adjust only its
+        // changed bytes, without rebuilding history or legitimizing an absent
+        // or incomplete projection. The caller holds the completion transaction.
+        if (! $summary instanceof WorkflowRunSummary
+            || $summary->projection_schema_version !== RunSummaryProjector::SCHEMA_VERSION
+            || ! HistoryBudget::hasCompleteSummary($run, $summary)) {
+            return;
+        }
+
+        $budget = HistoryBudget::fromCounters(
+            (int) $summary->history_event_count,
+            (int) $summary->history_size_bytes + $byteDelta,
+            (int) $summary->history_fan_out,
+        );
+        $summary->forceFill([
+            'history_size_bytes' => $budget['history_size_bytes'],
+            'continue_as_new_recommended' => $budget['continue_as_new_recommended'],
+            'history_budget_pressure' => $budget['pressure'],
+        ])->save();
     }
 }

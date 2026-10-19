@@ -356,6 +356,41 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a disposable PostgreSQL; run the qualification_ tests explicitly"]
+    async fn qualification_read_snapshot_hides_later_commits_and_refuses_writes() {
+        let database = Database::new().await;
+        let mut writer = database.connection().await;
+        sqlx::query("CREATE TABLE snapshot_probe (id BIGINT PRIMARY KEY)")
+            .execute(&mut writer)
+            .await
+            .unwrap();
+        let mut reader = database.connection().await;
+        let mut read = reader
+            .begin_with(<Postgres as super::super::backend::Backend>::READ_SNAPSHOT_BEGIN)
+            .await
+            .unwrap();
+        let count = "SELECT COUNT(*) FROM snapshot_probe";
+        let before: i64 = sqlx::query_scalar(count).fetch_one(&mut *read).await.unwrap();
+        sqlx::query("INSERT INTO snapshot_probe VALUES (1)")
+            .execute(&mut writer)
+            .await
+            .unwrap();
+        let during: i64 = sqlx::query_scalar(count).fetch_one(&mut *read).await.unwrap();
+        assert_eq!((before, during), (0, 0));
+        assert!(
+            sqlx::query("INSERT INTO snapshot_probe VALUES (2)")
+                .execute(&mut *read)
+                .await
+                .is_err()
+        );
+        read.rollback().await.unwrap();
+        let after: i64 = sqlx::query_scalar(count).fetch_one(&mut reader).await.unwrap();
+        assert_eq!(after, 1);
+        drop((reader, writer));
+        database.remove().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable PostgreSQL; run the qualification_ tests explicitly"]
     async fn qualification_concurrent_bootstrap_and_reopen() {
         let db = Database::new().await;
         let (a, b, c) = tokio::join!(

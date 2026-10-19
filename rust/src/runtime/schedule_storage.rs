@@ -1,4 +1,5 @@
 //! PHP-layout schedule rows and durable audit pages.
+use super::transaction::Transaction;
 use super::{
     Result,
     backend::Backend,
@@ -8,7 +9,7 @@ use super::{
 };
 use axum::http::StatusCode;
 use serde_json::{Value, json};
-use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Transaction, Type};
+use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
 impl<DB: Backend> Store<DB>
 where
