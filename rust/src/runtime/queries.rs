@@ -495,15 +495,13 @@ where
                     config,
                 )
                 .await?;
+                // A live lease belongs to the poll that claimed it. Published PHP replays
+                // it only to a matching poll_request_id, which native does not advertise,
+                // so a later poll from the same worker is an independent slot.
                 if existing_proof
                     .as_deref()
                     .is_some_and(|proof| task["registration_incarnation"] == proof)
                 {
-                    if existing_owner == owner {
-                        let delivered = Self::query_delivery(&task);
-                        tx.commit().await?;
-                        return Ok(QueryClaim::Task(delivered));
-                    }
                     continue;
                 }
             }
