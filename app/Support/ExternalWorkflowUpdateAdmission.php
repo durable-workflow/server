@@ -2,6 +2,7 @@
 
 namespace App\Support;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Throwable;
@@ -82,7 +83,7 @@ class ExternalWorkflowUpdateAdmission
             }
 
             $requestId = $this->requestId($commandContext);
-            $duplicate = $this->duplicateForRequest($run, $updateName, $requestId);
+            $duplicate = $this->duplicateForRequest($run, $requestId);
 
             if ($duplicate !== null) {
                 return $this->resultPayload(
@@ -215,25 +216,26 @@ class ExternalWorkflowUpdateAdmission
     /**
      * @return array{command: WorkflowCommand, update: WorkflowUpdate}|null
      */
-    private function duplicateForRequest(WorkflowRun $run, string $updateName, ?string $requestId): ?array
+    private function duplicateForRequest(WorkflowRun $run, ?string $requestId): ?array
     {
         if ($requestId === null) {
             return null;
         }
 
+        // Request IDs identify retained commands across this instance's runs
+        // and update names, matching the command ledger's unique scope.
         /** @var Collection<int, WorkflowCommand> $commands */
         $commands = WorkflowCommand::query()
-            ->where('workflow_run_id', $run->id)
+            ->where('workflow_instance_id', $run->workflow_instance_id)
             ->where('command_type', CommandType::Update->value)
+            ->where(static function (Builder $query) use ($requestId): void {
+                $query->where('request_id', $requestId)->orWhereNull('request_id');
+            })
             ->orderByDesc('command_sequence')
             ->orderByDesc('created_at')
             ->get();
 
         foreach ($commands as $command) {
-            if ($command->targetName() !== $updateName) {
-                continue;
-            }
-
             if ($this->requestIdFromStoredContext($command->context) !== $requestId) {
                 continue;
             }
