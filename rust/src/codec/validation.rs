@@ -78,6 +78,9 @@ impl<'de> Visitor<'de> for InlineSeed<'_> {
     fn visit_string<E: de::Error>(self, _: String) -> Result<(), E> {
         Ok(())
     }
+    fn visit_bytes<E: de::Error>(self, _: &[u8]) -> Result<(), E> {
+        Ok(())
+    }
     fn visit_byte_buf<E: de::Error>(self, _: Vec<u8>) -> Result<(), E> {
         Ok(())
     }
@@ -148,6 +151,9 @@ impl<'de> Deserialize<'de> for Validated {
                 Ok(Validated)
             }
             fn visit_str<E: de::Error>(self, _: &str) -> Result<Validated, E> {
+                Ok(Validated)
+            }
+            fn visit_bytes<E: de::Error>(self, _: &[u8]) -> Result<Validated, E> {
                 Ok(Validated)
             }
             fn visit_byte_buf<E: de::Error>(self, _: Vec<u8>) -> Result<Validated, E> {

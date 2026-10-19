@@ -165,14 +165,12 @@ async fn payload_cli_refuses_writable_sources_and_checks_mounted_payloads() {
             .unwrap();
         connection.close().await.unwrap();
         let before = std::fs::read(&path).unwrap();
-        let refused = Command::new(env!("CARGO_BIN_EXE_durable-workflow-server"))
-            .env_clear()
-            .env("DW_RUST_EXPERIMENTAL", "1")
-            .env("DB_CONNECTION", "sqlite")
-            .env("DB_DATABASE", &path)
-            .arg("upgrade-payload-inspect")
-            .output()
-            .unwrap();
+        let refused = {
+            let path = path.clone();
+            tokio::task::spawn_blocking(move || payload_inspection(&path).output().unwrap())
+                .await
+                .unwrap()
+        };
         assert!(!refused.status.success());
         assert!(refused.stdout.is_empty());
         assert!(
@@ -187,26 +185,10 @@ async fn payload_cli_refuses_writable_sources_and_checks_mounted_payloads() {
             continue;
         };
         let source = readonly.join(path.strip_prefix(writable).unwrap());
-        let mut child = Command::new(env!("CARGO_BIN_EXE_durable-workflow-server"))
-            .env_clear()
-            .env("DW_RUST_EXPERIMENTAL", "1")
-            .env("DB_CONNECTION", "sqlite")
-            .env("DB_DATABASE", &source)
-            .arg("upgrade-payload-inspect")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while child.try_wait().unwrap().is_none() {
-            if Instant::now() >= deadline {
-                child.kill().unwrap();
-                child.wait().unwrap();
-                panic!("payload inspection did not retire its process");
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        let output = child.wait_with_output().unwrap();
+        let output =
+            tokio::task::spawn_blocking(move || bounded_output(payload_inspection(&source)))
+                .await
+                .unwrap();
         assert_eq!(
             output.status.success(),
             expected == "inspected",
@@ -236,4 +218,35 @@ async fn payload_cli_refuses_writable_sources_and_checks_mounted_payloads() {
         }
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
+}
+
+fn payload_inspection(database: &std::path::Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_durable-workflow-server"));
+    command
+        .env_clear()
+        .env("DW_RUST_EXPERIMENTAL", "1")
+        .env("DB_CONNECTION", "sqlite")
+        .env("DB_DATABASE", database)
+        .arg("upgrade-payload-inspect");
+    command
+}
+
+// Waiting on a child is synchronous. Callers in async tests run this on the
+// blocking pool so the runtime's worker threads stay free.
+fn bounded_output(mut command: Command) -> std::process::Output {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("payload inspection did not retire its process");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    child.wait_with_output().unwrap()
 }
