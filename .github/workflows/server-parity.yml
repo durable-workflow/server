@@ -363,6 +363,17 @@ jobs:
             -v "$PWD/mysql-tls:/tls" --entrypoint openssl "$image" req -x509 -newkey rsa:2048 \
             -nodes -sha256 -days 1 -keyout /tls/untrusted.key -out /tls/untrusted.crt -subj /CN=untrusted-development-ca \
             >> parity-evidence/tls-certificate-generation.txt 2>&1
+      - name: Fetch locked Rust dependencies
+        # A registry or network failure belongs to this step, not to the
+        # offline native builds and tests that follow.
+        run: |
+          set -euo pipefail
+          mkdir -p cargo-home
+          docker run --rm --user="$(id -u):$(id -g)" --cpus=2 --memory=2g --memory-swap=2g \
+            -e CARGO_HOME=/cargo -e CARGO_NET_RETRY=10 \
+            -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -w /source/rust \
+            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            cargo fetch --locked
       - name: Bootstrap independent published PHP and native MySQL databases
         run: |
           set -euo pipefail
@@ -403,7 +414,7 @@ jobs:
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
             -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
             mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 -c \
-            'cargo test --locked --lib runtime::mysql:: -- --ignored --skip runtime::mysql::tests::bootstrap_child --nocapture --test-threads=2 > /evidence/mysql-tests.txt && cargo test --locked --test execution -- --nocapture --test-threads=2 > /evidence/mysql-execution-tests.txt && cargo build --locked'
+            'cargo test --locked --offline --lib runtime::mysql:: -- --ignored --skip runtime::mysql::tests::bootstrap_child --nocapture --test-threads=2 > /evidence/mysql-tests.txt && cargo test --locked --offline --test execution -- --nocapture --test-threads=2 > /evidence/mysql-execution-tests.txt && cargo build --locked --offline'
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
@@ -823,6 +834,17 @@ jobs:
           name: corrected-marker-adapters
           path: corrected-marker-adapters
           digest-mismatch: error
+      - name: Fetch locked Rust dependencies
+        # A registry or network failure belongs to this step, not to the
+        # offline native builds and tests that follow.
+        run: |
+          set -euo pipefail
+          mkdir -p cargo-home
+          docker run --rm --user="$(id -u):$(id -g)" --cpus=2 --memory=2g --memory-swap=2g \
+            -e CARGO_HOME=/cargo -e CARGO_NET_RETRY=10 \
+            -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -w /source/rust \
+            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            cargo fetch --locked
       - name: Bootstrap independent published PHP and native PostgreSQL databases
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
@@ -862,7 +884,7 @@ jobs:
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
             -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
             mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 -c \
-            'cargo test --locked --lib runtime::postgres::tests::qualification_ -- --ignored --nocapture > /evidence/postgres-tests.txt && cargo test --locked --test execution -- --nocapture > /evidence/postgres-execution-tests.txt && cargo build --locked'
+            'cargo test --locked --offline --lib runtime::postgres::tests::qualification_ -- --ignored --nocapture > /evidence/postgres-tests.txt && cargo test --locked --offline --test execution -- --nocapture > /evidence/postgres-execution-tests.txt && cargo build --locked --offline'
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
@@ -1316,6 +1338,17 @@ jobs:
           name: corrected-marker-adapters
           path: corrected-marker-adapters
           digest-mismatch: error
+      - name: Fetch locked Rust dependencies
+        # A registry or network failure belongs to this step, not to the
+        # offline native builds and tests that follow.
+        run: |
+          set -euo pipefail
+          mkdir -p cargo-home
+          docker run --rm --user="$(id -u):$(id -g)" --cpus=2 --memory=2g --memory-swap=2g \
+            -e CARGO_HOME=/cargo -e CARGO_NET_RETRY=10 \
+            -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -w /source/rust \
+            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            cargo fetch --locked
       - name: Execute official Rust codec and cross-decode with published PHP
         run: |
           set -euo pipefail
@@ -1326,7 +1359,7 @@ jobs:
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
             -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
             mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 -c \
-            'cargo test --locked --all-targets > /evidence/rust-tests.txt && cargo build --locked && cargo run --locked --example codec-fixtures -- ../tests/Fixtures/ServerParity/Codec/v1.json > /evidence/rust-codec.json'
+            'cargo test --locked --offline --all-targets > /evidence/rust-tests.txt && cargo build --locked --offline && cargo run --locked --offline --example codec-fixtures -- ../tests/Fixtures/ServerParity/Codec/v1.json > /evidence/rust-codec.json'
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
           docker run --rm --user="$(id -u):$(id -g)" --network=none --entrypoint php \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
