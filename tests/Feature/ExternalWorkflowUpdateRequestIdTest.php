@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
 
 class ExternalWorkflowUpdateRequestIdTest extends TestCase
 {
@@ -113,6 +114,57 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
 
         $this->assertNotSame($first->json('update_id'), $second->json('update_id'));
         $this->assertDatabaseCount('workflow_updates', 2);
+    }
+
+    public static function terminalTransitions(): iterable
+    {
+        yield 'closed original' => ['complete_workflow'];
+        yield 'continue-as-new successor' => ['continue_as_new'];
+    }
+
+    #[DataProvider('terminalTransitions')]
+    public function test_completed_receipt_survives_real_task_closure_or_continuation(string $transition): void
+    {
+        $this->startRemote('retained-terminal');
+        $original = $this->postJson('/api/workflows/retained-terminal/update/add', [
+            'input' => [17], 'request_id' => 'retained-key',
+        ], $this->apiHeaders())->assertAccepted();
+        $runId = $original->json('run_id');
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'retained-default', 'task_queue' => 'retained-default',
+        ], $this->workerHeaders())->assertOk()->assertJsonPath('task.run_id', $runId);
+        $value = ['count' => 17, 'nil' => null, 'label' => 'café'];
+        $closing = $transition === 'continue_as_new'
+            ? ['type' => $transition, 'arguments' => Serializer::serializeWithCodec('avro', [])]
+            : ['type' => $transition, 'result' => Serializer::serializeWithCodec('avro', $value)];
+        $this->postJson('/api/worker/workflow-tasks/'.$poll->json('task.task_id').'/complete', [
+            'lease_owner' => $poll->json('task.lease_owner'),
+            'workflow_task_attempt' => $poll->json('task.workflow_task_attempt'),
+            'commands' => [
+                ['type' => 'complete_update', 'update_id' => $original->json('update_id'),
+                    'result' => Serializer::serializeWithCodec('avro', $value)],
+                $closing,
+            ],
+        ], $this->workerHeaders())->assertOk()->assertJsonPath('recorded', true)->assertJsonPath('run_status', 'completed');
+        $this->assertDatabaseCount('workflow_runs', $transition === 'continue_as_new' ? 2 : 1);
+        $before = $this->durableRows();
+
+        $this->postJson('/api/workflows/retained-terminal/update/other', [
+            'input' => [99], 'request_id' => 'retained-key',
+        ], $this->apiHeaders())->assertOk()
+            ->assertJsonPath('update_id', $original->json('update_id'))
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('update_name', 'add')
+            ->assertJsonPath('update_status', 'completed')
+            ->assertJsonPath('result', $value);
+
+        $this->assertSame($before, $this->durableRows());
+        if ($transition === 'continue_as_new') {
+            $this->postJson('/api/workflows/retained-terminal/runs/'.$runId.'/update/other', [
+                'input' => [99], 'request_id' => 'retained-key',
+            ], $this->apiHeaders())->assertStatus(409)->assertJsonPath('reason', 'historical_run_command_rejected');
+            $this->assertSame($before, $this->durableRows());
+        }
     }
 
     private function startRemote(string $workflowId, string $namespace = 'default'): void
