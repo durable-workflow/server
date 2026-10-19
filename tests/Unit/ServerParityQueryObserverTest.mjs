@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import net from 'node:net';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {mkdtempSync, readFileSync, rmSync} from 'node:fs';
@@ -15,8 +16,10 @@ test('observer preserves bytes and diagnoses refused dates and truncated upstrea
   const date = '2026-02-28';
   let overrides = {};
   let truncated = false;
+  let upstreamRequests = 0;
   let original;
   const upstream = http.createServer(async (request, response) => {
+    upstreamRequests++;
     for await (const _chunk of request) { /* Drain this constructed poll body. */ }
     original = JSON.stringify({task: {
       query_task_id: 'original-query', query_task_attempt: 1,
@@ -101,5 +104,36 @@ test('observer preserves bytes and diagnoses refused dates and truncated upstrea
   assert.equal(failure.downstream.response_destroyed, false);
   assert.equal(failure.downstream.response_ended, false);
   assert.ok(JSON.stringify(failure).length < 2048);
+  assert.doesNotMatch(readFileSync(journal, 'utf8') + diagnostic, /never-retain-this/);
+  const disconnect = async path => {
+    const countBefore = readFileSync(journal, 'utf8').trim().split('\n').length;
+    const socket = net.createConnection(ready.port, '127.0.0.1');
+    socket.on('error', () => {});
+    socket.resume();
+    await once(socket, 'connect');
+    const closed = new Promise(resolve => socket.once('close', resolve));
+    socket.end(`POST ${path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4096\r\nConnection: close\r\n\r\nnever-retain-this-request-body`);
+    await closed;
+    const deadline = Date.now() + 500;
+    while (true) {
+      const entries = readFileSync(journal, 'utf8').trim().split('\n').map(JSON.parse);
+      if (entries.length > countBefore) return entries.at(-1);
+      assert.ok(Date.now() < deadline, 'Observer must record the actual disconnected request');
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
+  };
+  const forwarded = upstreamRequests;
+  const abandoned = await disconnect('/api/worker/query-tasks/poll');
+  assert.equal(abandoned.event, 'poll-disconnected', JSON.stringify(abandoned));
+  assert.equal(failure.upstream_started, true);
+  assert.equal(abandoned.upstream_started, false);
+  assert.equal(abandoned.error_code, 'ECONNRESET');
+  assert.equal(abandoned.downstream.request_complete, false);
+  assert.equal(abandoned.downstream.request_aborted, true);
+  assert.equal(upstreamRequests, forwarded, 'Incomplete poll never reached the upstream');
+  const terminal = await disconnect('/api/worker/query-tasks/original-query/complete');
+  assert.equal(terminal.event, 'observer-error', 'Interrupted result submissions remain fatal');
+  assert.equal(terminal.upstream_started, false);
+  assert.equal(upstreamRequests, forwarded);
   assert.doesNotMatch(readFileSync(journal, 'utf8') + diagnostic, /never-retain-this/);
 });
