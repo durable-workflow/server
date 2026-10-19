@@ -1,7 +1,7 @@
 # Run activity metadata projection
 
 `v1.json` records the metadata-only output of released Workflow 2.5.22
-`RunActivityView::activitiesForRun(..., decodePayloads: false)` for 31
+`RunActivityView::activitiesForRun(..., decodePayloads: false)` for 32
 constructed, fully loaded model collections. These are projection inputs,
 not histories claimed to have been produced by executed workflows.
 

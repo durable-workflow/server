@@ -550,7 +550,7 @@ fn synthetic_attempt(state: &Value, row: &Value) -> Option<Value> {
         Some("activity_cancelled")
     } else if matches!(string(&status), Some("completed" | "failed")) {
         Some("attempt_closed")
-    } else if status == "pending" {
+    } else if status == "pending" || row["status"] == "pending" {
         None
     } else if !can_continue {
         Some("stale_attempt")
@@ -803,7 +803,7 @@ mod tests {
         ))
         .unwrap();
         let cases = fixture["cases"].as_array().unwrap();
-        assert_eq!(cases.len(), 31);
+        assert_eq!(cases.len(), 32);
         for case in cases {
             let input = &case["input"];
             assert_eq!(

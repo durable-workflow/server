@@ -30,7 +30,9 @@ where
                 "reason":"run_not_found","message":"Workflow run not found."}),
         };
         // A read transaction does not take the runtime's writer-admission lock.
-        let mut tx = self.pool.begin().await?;
+        // History, executions and attempts must come from one committed state;
+        // PostgreSQL's default READ COMMITTED would give each statement its own.
+        let mut tx = self.pool.begin_with(DB::READ_SNAPSHOT_BEGIN).await?;
         let run = Self::query("SELECT id,workflow_instance_id,namespace FROM workflow_runs WHERE id=$1 AND workflow_instance_id=$2 AND namespace=$3")
             .bind(run_id).bind(workflow_id).bind(self.namespace.as_ref())
             .fetch_optional(&mut *tx).await?.ok_or_else(missing)?;
@@ -141,5 +143,40 @@ where
         }
         tx.commit().await?;
         Ok((events, executions))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::backend::Backend;
+    use serde_json::json;
+    use sqlx::Sqlite;
+
+    fn start(workflow_id: &str) -> serde_json::Value {
+        json!({"workflow_id":workflow_id,"workflow_type":"echo","task_queue":"test",
+            "input":{"codec":"avro","blob":"wwHioz3/VYAiNwA="}})
+    }
+
+    #[tokio::test]
+    async fn sqlite_metadata_snapshot_ignores_commits_after_its_first_read() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = super::super::Runtime::open(
+            directory.path().join("snapshot.sqlite").to_str().unwrap(),
+            "test-token".into(),
+        )
+        .await
+        .unwrap();
+        runtime.start(start("snapshot-first")).await.unwrap();
+        let pool = runtime.sqlite_pool();
+        let count = "SELECT COUNT(*) FROM workflow_history_events";
+        let mut read = pool.begin_with(Sqlite::READ_SNAPSHOT_BEGIN).await.unwrap();
+        let before: i64 = sqlx::query_scalar(count).fetch_one(&mut *read).await.unwrap();
+        // A real runtime write commits on another WAL connection meanwhile.
+        runtime.start(start("snapshot-second")).await.unwrap();
+        let during: i64 = sqlx::query_scalar(count).fetch_one(&mut *read).await.unwrap();
+        assert_eq!(during, before);
+        read.rollback().await.unwrap();
+        let after: i64 = sqlx::query_scalar(count).fetch_one(pool).await.unwrap();
+        assert!(after > before);
     }
 }

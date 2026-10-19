@@ -644,6 +644,10 @@ impl Runtime {
         ) -> Result<(Vec<Value>, Vec<Value>)>
     );
     pub(crate) async fn activities(&self, workflow_id: &str, run_id: &str) -> Result<Value> {
+        // Writers take this permit while holding the writer transaction. Finish
+        // every read before taking it so a listing can never wait on a writer
+        // that is itself waiting on the permit.
+        let (events, executions) = self.activity_metadata_input(workflow_id, run_id).await?;
         let permit = self
             .signal_codec
             .clone()
@@ -655,7 +659,6 @@ impl Runtime {
                     "activity_metadata_unavailable",
                 )
             })?;
-        let (events, executions) = self.activity_metadata_input(workflow_id, run_id).await?;
         let workflow_id = workflow_id.to_owned();
         let run_id = run_id.to_owned();
         tokio::task::spawn_blocking(move || {

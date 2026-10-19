@@ -169,6 +169,11 @@ $add('prestart_cancel_has_no_attempt', [$scheduled, metadataEvent('ActivityCance
 $add('synthetic_current_attempt_from_snapshot', [metadataEvent('ActivityStarted', 1, [
     'activity' => ['id' => 'activity-1', 'attempt_id' => 'synthetic-1', 'attempt_count' => 3],
 ])], [metadataExecution(['current_attempt_id' => 'synthetic-1', 'attempt_count' => 3])]);
+// A pending execution row ends the synthetic attempt check even when typed
+// history reports running without naming the row's current attempt.
+$add('synthetic_attempt_with_pending_execution_row', [metadataEvent('ActivityStarted', 1, [
+    'activity' => ['id' => 'activity-1', 'status' => 'running', 'attempt_count' => 3],
+])], [metadataExecution(['status' => 'pending', 'current_attempt_id' => 'synthetic-2', 'attempt_count' => 3])]);
 $add('local_attempt_is_independent_of_workflow_claim_counter', [metadataEvent('ActivityScheduled', 1, [
     'execution_mode' => 'local', 'activity' => ['id' => 'activity-1', 'execution_mode' => 'local', 'attempt_count' => 1],
 ]), metadataEvent('ActivityCompleted', 2, ['execution_mode' => 'local',

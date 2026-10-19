@@ -2838,6 +2838,110 @@
             ]
         },
         {
+            "name": "synthetic_attempt_with_pending_execution_row",
+            "input": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "event_type": "ActivityStarted",
+                        "recorded_at": "2026-10-15T10:00:01.123456Z",
+                        "workflow_task_id": "task-1",
+                        "payload": {
+                            "activity_execution_id": "activity-1",
+                            "sequence": 1,
+                            "activity_type": "fixture.echo",
+                            "activity_class": "FixtureActivity",
+                            "activity": {
+                                "id": "activity-1",
+                                "status": "running",
+                                "attempt_count": 3
+                            }
+                        }
+                    }
+                ],
+                "executions": [
+                    {
+                        "id": "activity-1",
+                        "sequence": 1,
+                        "activity_type": "fixture.echo",
+                        "activity_class": "FixtureActivity",
+                        "status": "pending",
+                        "attempt_count": 3,
+                        "current_attempt_id": "synthetic-2",
+                        "payload_codec": "avro",
+                        "retry_policy": {
+                            "max_attempts": 2,
+                            "backoff": []
+                        },
+                        "queue": "fixture-queue",
+                        "connection": "fixture-connection",
+                        "created_at": "2026-10-15T10:00:01.123456Z",
+                        "started_at": "2026-10-15T10:00:02.123456Z",
+                        "attempts": []
+                    }
+                ]
+            },
+            "expected": [
+                {
+                    "id": "activity-1",
+                    "idempotency_key": "activity-1",
+                    "sequence": 1,
+                    "type": "fixture.echo",
+                    "class": "FixtureActivity",
+                    "execution_mode": null,
+                    "local_activity": false,
+                    "history_authority": "typed_history",
+                    "diagnostic_only": false,
+                    "history_event_types": [
+                        "ActivityStarted"
+                    ],
+                    "history_unsupported_reason": null,
+                    "reused_from_run_id": null,
+                    "reused_activity_execution_id": null,
+                    "reused_recorded_at": null,
+                    "row_status": null,
+                    "parallel_group_kind": null,
+                    "parallel_group_id": null,
+                    "parallel_group_base_sequence": null,
+                    "parallel_group_size": null,
+                    "parallel_group_index": null,
+                    "parallel_group_path": [],
+                    "attempt_id": "synthetic-2",
+                    "worker_attempt_id": null,
+                    "status": "running",
+                    "attempt_count": 3,
+                    "retry_policy": {
+                        "max_attempts": 2,
+                        "backoff": []
+                    },
+                    "connection": null,
+                    "queue": null,
+                    "last_heartbeat_at": null,
+                    "last_heartbeat_progress": null,
+                    "created_at": null,
+                    "started_at": "2026-10-15T10:00:01.123456Z",
+                    "closed_at": null,
+                    "attempts": [
+                        {
+                            "id": "synthetic-2",
+                            "attempt_number": 3,
+                            "status": "running",
+                            "task_id": null,
+                            "lease_owner": null,
+                            "lease_expires_at": null,
+                            "started_at": "2026-10-15T10:00:01.123456Z",
+                            "last_heartbeat_at": null,
+                            "last_heartbeat_progress": null,
+                            "closed_at": null,
+                            "can_continue": false,
+                            "cancel_requested": false,
+                            "stop_reason": null
+                        }
+                    ]
+                }
+            ]
+        },
+        {
             "name": "local_attempt_is_independent_of_workflow_claim_counter",
             "input": {
                 "events": [
