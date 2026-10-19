@@ -2,23 +2,138 @@
 
 [Server #325](https://github.com/durable-workflow/server/issues/325) owns the
 rewrite and its acceptance evidence. PHP remains the default published runtime.
-The unpublished Rust crate has an Avro foundation and an opt-in SQLite/PostgreSQL/MySQL HTTP
-execution slice. Full runtime parity, migration, performance improvement and
-cutover remain unqualified.
+The unpublished crate in [`rust/`](../rust/README.md) is an opt-in development
+runtime (`DW_RUST_EXPERIMENTAL=1`) with official Avro encoding and SQLite,
+PostgreSQL and MySQL/MariaDB storage. Full runtime parity, the backup-first
+in-place upgrade, performance qualification and cutover remain open.
 
-The latest merged API slice is targeted activity-result inspection in
-[#470](https://github.com/durable-workflow/server/pull/470), at `6194913f`.
-Its candidate passed all 13 shared jobs across six database configurations and
-the applicable PHP/source and public-boundary checks. The separate
-[merged-main run](https://github.com/durable-workflow/server/actions/runs/38773062581)
-now passes all 13 jobs. Its artifact download timed out, so the independent
-bounded-summary readback is still pending. Native result discovery remains unadvertised.
-Earlier failed observations remain failed, and a candidate pass does not qualify
-a later tree. Frozen published PHP, embedded and SDK tuples remain separate
-from current PHP release work. Representative family checks do not establish
-complete parity or release readiness.
+Read this log top to bottom: current state and next action, the surface
+inventory, design decisions, then the detailed checkpoint history. Each
+checkpoint stays exact to the source it names. A pass at one tree does not
+qualify a later tree.
 
-## Work order and current status
+## Current state
+
+Updated October 19, 2026.
+
+- **Open native PRs.** [#478](https://github.com/durable-workflow/server/pull/478)
+  (run observation and cooperative cancellation), [#476](https://github.com/durable-workflow/server/pull/476)
+  (run activity metadata listing) and [#460](https://github.com/durable-workflow/server/pull/460)
+  (read-only inspection of an existing PHP database). All three are drafts.
+  The latest merged native slice is [#470](https://github.com/durable-workflow/server/pull/470).
+- **#478 source.** The branch now combines the October 18 head `543ed0485`, the
+  separately prepared [independent child cancellation](contracts/child-independent-cancellation.md)
+  component `15e14fb50`, current main `1682e1de` and a harness correction.
+  Main brings PHP Server 2.9.4 and Workflow 2.6.2. It changes no native,
+  shared harness or fixture path, and the shared matrix keeps its frozen
+  published PHP 2.5.14, embedded and SDK actors.
+- **Diagnosed failure.** Shared run [39092116973](https://github.com/durable-workflow/server/actions/runs/39092116973)
+  failed `execution-and-codec` step 9 with exit code 255. The same step
+  reproduced locally at `543ed0485` with the exact published image and failed the
+  same way. `restart.php prepare` against the published PHP reference received
+  the documented worker-poll refusal (HTTP 503, `backend_lock_pressure`,
+  `task: null`, retry after one second) while that reference shared its SQLite
+  file with the maintenance loop. The harness treated the refusal as fatal.
+  Native preparation had passed. The harness now honors only that documented
+  refusal, with bounded retries reported in the restart output.
+- **Not yet diagnosed.** Earlier failed originals on this branch include six
+  `Compare published query deadlines and installed Worker authority` jobs
+  across MariaDB, MySQL, PostgreSQL and SQLite, three
+  `Compare corrected markers, ranges, clocks and activity expiry` jobs and one
+  MySQL three-runtime recovery job. The MySQL recovery job also runs
+  `restart.php` against PHP, so it may share this cause. The others are
+  timing-sensitive cohorts and need local reproduction before any change.
+- **Combined checks so far.** 80 library tests (18 existing ignores) and 272
+  SQLite execution tests pass. The new lock-pressure decision test passes.
+  The full local step 9 run and the hosted six-database matrix for the
+  combined head are recorded on #478.
+- **Next action.** Qualify and merge #478. Then bring #476 forward with its
+  review findings fixed (codec permit taken before reads, PostgreSQL
+  statement snapshots, read budget, timestamp precision), followed by #460.
+  Reproduce the timing-sensitive cohort failures locally or on disposable
+  hosts until each has a diagnosed cause.
+
+## Known gaps found in review
+
+These are confirmed differences from the published PHP reference. Each one
+needs a contract fixture before its correction.
+
+- **Child completion while the parent has an open workflow task.** Published
+  Workflow records the child resolution and reuses the parent's existing ready
+  or leased workflow task (`WorkflowExecutor::dispatchParentResumeTasks`).
+  Native resolution refuses the child's completion with
+  `409 child_parent_task_conflict` unless the parent has a cooperative
+  cancellation request. A child that finishes while its parent has a pending
+  signal resume is therefore refused instead of resolved. The fix must also
+  confirm that the parent's existing task observes the new resolution or is
+  followed by another resume.
+
+## Contract and verification inventory
+
+The status column summarizes bounded native source and its recorded component
+evidence. The current checkpoint above identifies the admitted head and any
+separately prepared source. A listed implementation or earlier passing cohort
+does not establish full parity, current-head qualification or release readiness.
+
+| Surface | Current authority and reusable checks | Port status |
+| --- | --- | --- |
+| Control plane, namespaces, authorization, errors, visibility | `resources/platform-protocol-specs/control-plane-api.openapi.yaml`, `docs/contracts/auth-composition.md`, `routes/api.php`, Feature control-plane/auth/namespace tests; namespace and principal-attribution published runners | Bounded listing/CLI metadata, named workflow/activity/timer routes, role-token admission and namespace fences exist. PR478 adds [selected/current run observation](contracts/workflow-run-observation.md) and transactional summaries. Broader visibility, namespace and principal-authorization parity remains open. |
+| Worker registration, sessions, leases, fencing, retries, timeouts, heartbeats, routing, affinity, backpressure, versioning | Worker OpenAPI and stream AsyncAPI in `resources/platform-protocol-specs/`; Feature worker/activity/prepared-local/cancellation tests; activity, heartbeat and worker-versioning published runners | Registration incarnations, exact-attempt leases, recovery, retry/heartbeat/deadline controls and fenced shutdown have source and scoped consumer evidence. Full fleet, session, routing, affinity, backpressure and policy compatibility remains open. |
+| Avro values, external task inputs/results, payload storage and reclamation | `docs/contracts/external-task-{input,result}.md`, `external-payload-storage.md`, external payload OpenAPI; `regression-corpus-policy.json`, `tests/Fixtures/CodecRegression/`, payload Feature tests | Official Avro encoding/decoding, opaque task envelopes, versioned external transport, retained inputs/results and completion uploads exist. Codec, authority, external-value and targeted activity-result controls have separate evidence. Complete ingress, provider, reclamation and installed-consumer parity remains open. |
+| Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Bounded completion, failure, sequential child outcomes, duplicate receipts, direct cancellation and cooperative root cleanup exist. PR478 includes [terminal update closure](contracts/terminal-update-closure.md), [cooperative child abandonment](contracts/cooperative-child-abandon.md), actual resume associations and [independent child root cancellation](contracts/child-independent-cancellation.md). Child retry/parallel/other close-policy families, wider cancellation propagation, cleanup replay and continuation transfer remain open. |
+| Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Source covers durable timers, bounded schedules, typed signals/queries/updates, memo limits and bounded mixed selections. PR478 adds timed signal/condition waits, named signal waits and flat/nested activity/timer all barriers. Wider grouped leaves and selection shapes, queued control routing, policies, search and saga families remain open. |
+| Local activities, cancellation scopes, worker sessions, streams, service catalog/Nexus, bridge adapters, standalone activities, debugging and repair | `routes/api.php`, `docs/contracts/`, worker/control-plane specifications, corresponding Feature tests and Nexus runner | Scoped native repair and diagnostics exist. Local-activity execution, cancellation scopes, sessions, streams, Nexus/catalog, bridge and standalone-activity compatibility remain required work. No unpublished package telemetry or stored-job contract is adopted by these slices. |
+| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published cohorts cover workflow/activity (#401), parent/child (#408), timer authors (#411), signals (#415), queries (#422), successful/failed updates (#424/#427), named namespaces (#429), selected-run signals (#434) and subsequent corrected marker/range and authority slices. Each retains its exact source/tuple and failures. CLI reads have bounded coverage. Remaining SDK families, broader CLI, native Waterline/Sample App and browser acceptance remain open; published PHP consumers do not qualify native. |
+| SQL schema and stored representations | `database/migrations/`, Workflow package `src/migrations/`, model casts, `Workflow\\Serializers\\Serializer`, queue job payloads, exported history and credential digests | [Representation checkpoints](rust-server-storage-audit.md) recorded; complete mapping and executable migration tests pending |
+| Images, architecture, bootstrap, configuration, readiness, metrics and graceful shutdown | `Dockerfile`, `docker/`, `config/`, `docker-compose*.yml`, `k8s/helm/`, `docs/server-reference.md`, small-cluster/multi-region validation docs | Published PHP remains the default. Native bootstrap, health/readiness, configuration and shutdown foundations exist. Qualified native publication, both architectures, full configuration/metrics compatibility, Compose/Helm consumers and operational cutover remain open. |
+| Backup and in-place upgrade | `docs/self-hosted-backup-and-restore.md`, [PHP ownership/refusal controls](php-database-ownership.md), external payload backup holds; last PHP image writes, all PHP roles stop, Rust takes over same DB sequentially | Ownership/refusal controls and isolated migration preparation exist. Backup-first native takeover with pending work, interrupted migration, external payload preservation and PHP refusal still need complete qualification on SQLite, MariaDB/MySQL and PostgreSQL. No mixed fleet or PHP rollback is permitted. |
+| Throughput, memory, CPU, latency, backlog/drain, idle mixed long polls | `benchmarks/capacity/v1/` and `scripts/benchmark/`; repeated runs and drift checks using frozen artifacts | The [diagnostic PHP reference](../benchmarks/server-port/v1/php-observations-2026-10-09.md) and scoped comparison observations are recorded. Complete matched throughput/memory/idle-poll proof, repeated measurements, drift checks and CPU-load deadline health remain release gates. Source checks and functional comparisons make no performance claim. |
+
+Ordinary PHP, Rust and embedded runs use independent databases. Never connect
+different engines to one database concurrently. SQLite multi-node qualification
+must state its shared-file topology and locking limits; existing single-node
+support is not evidence of multi-node safety.
+
+## Decisions
+
+- Shared fixtures are expectations reviewed against public contracts, not PHP
+  recordings promoted to expected behavior. The recorder keeps raw observations;
+  the comparator checks the declared fixture projection. Coverage is explicit.
+- The HTTP adapter uses the published PHP SDK and its official Avro codec. The
+  embedded adapter executes real Workflow jobs and persisted history. Neither
+  counts an accepted start as completion or substitutes mocked execution.
+- Generated run/activity/attempt identifiers may differ between independent
+  databases. Compare their relationships with bijective aliases; retain actual
+  IDs in raw evidence. Preserve workflow IDs, event order, command sequences,
+  attempt counts and decoded values. Wall-clock observations remain raw.
+- The first Rust foundation uses Apache's official Avro single-object
+  reader/writer with the immutable schema. The first HTTP/storage slice uses
+  Axum/Tokio and SQLx with selected features and native transactions. Avoid
+  unnecessary dependencies and code generation. Record
+  clean and incremental compile time plus target-directory size for the first
+  runtime slice. Use one task-owned Cargo target directory, low debug information
+  for development, bounded build concurrency and cleanup after qualification.
+- Evaluate [Kache](https://github.com/kunobi-ninja/kache) in a task-local runtime
+  before choosing the Rust build setup. Use an explicit cache budget and local
+  storage; measure physical disk blocks across cache and targets together. Keep
+  cache and build outputs under one container mount so cross-mount copying does
+  not erase sharing. Use a per-run compiler wrapper and scoped cleanup.
+  The [first real crate measurements](../rust/build-observations-2026-10-09.md)
+  observed native clean builds around 22 seconds and 182 MiB targets. Kache
+  restored a fresh target in 3.5 seconds but added cold-build time and retained
+  disk; native no-op/comment-edit builds were faster in-place. Keep it optional.
+  Full-server build cost and any disk-saving claim remain pending.
+- Tokio tasks are [cooperatively scheduled](https://docs.rs/tokio/latest/tokio/task/coop/index.html).
+  Potentially expensive replay, decoding and synchronous database operations
+  need bounded work away from the async request executor. `spawn_blocking` needs
+  an explicit CPU concurrency limit, and a started blocking job cannot be
+  aborted. Preserve durable fencing and cancellation checks around that work;
+  qualify timer, lease and cancellation deadlines under CPU-heavy load.
+
+## Checkpoint history
+
+Newest checkpoints first. Each entry is exact to the source, tree and runs it
+names, including unsuccessful observations.
 
 Current checkpoint, October 18:
 
@@ -3441,68 +3556,6 @@ gives SQLite and PostgreSQL the same bounded 25-minute job limit already used
 by MariaDB/MySQL. Fixture/probe/pressure deadlines, resource limits, SDK/native
 code, frozen tuples and semantic assertions are unchanged. Fresh exact-source
 full-matrix qualification remains required; earlier failed records stay held.
-
-## Contract and verification inventory
-
-The status column summarizes bounded native source and its recorded component
-evidence. The current checkpoint above identifies the admitted head and any
-separately prepared source. A listed implementation or earlier passing cohort
-does not establish full parity, current-head qualification or release readiness.
-
-| Surface | Current authority and reusable checks | Port status |
-| --- | --- | --- |
-| Control plane, namespaces, authorization, errors, visibility | `resources/platform-protocol-specs/control-plane-api.openapi.yaml`, `docs/contracts/auth-composition.md`, `routes/api.php`, Feature control-plane/auth/namespace tests; namespace and principal-attribution published runners | Bounded listing/CLI metadata, named workflow/activity/timer routes, role-token admission and namespace fences exist. PR478 adds [selected/current run observation](contracts/workflow-run-observation.md) and transactional summaries. Broader visibility, namespace and principal-authorization parity remains open. |
-| Worker registration, sessions, leases, fencing, retries, timeouts, heartbeats, routing, affinity, backpressure, versioning | Worker OpenAPI and stream AsyncAPI in `resources/platform-protocol-specs/`; Feature worker/activity/prepared-local/cancellation tests; activity, heartbeat and worker-versioning published runners | Registration incarnations, exact-attempt leases, recovery, retry/heartbeat/deadline controls and fenced shutdown have source and scoped consumer evidence. Full fleet, session, routing, affinity, backpressure and policy compatibility remains open. |
-| Avro values, external task inputs/results, payload storage and reclamation | `docs/contracts/external-task-{input,result}.md`, `external-payload-storage.md`, external payload OpenAPI; `regression-corpus-policy.json`, `tests/Fixtures/CodecRegression/`, payload Feature tests | Official Avro encoding/decoding, opaque task envelopes, versioned external transport, retained inputs/results and completion uploads exist. Codec, authority, external-value and targeted activity-result controls have separate evidence. Complete ingress, provider, reclamation and installed-consumer parity remains open. |
-| Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Bounded completion, failure, sequential child outcomes, duplicate receipts, direct cancellation and cooperative root cleanup exist. PR478 includes [terminal update closure](contracts/terminal-update-closure.md), [cooperative child abandonment](contracts/cooperative-child-abandon.md) and actual resume associations. [Independent child root cancellation](contracts/child-independent-cancellation.md) is separately prepared. Child retry/parallel/other close-policy families, wider cancellation propagation, cleanup replay and continuation transfer remain open. |
-| Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Source covers durable timers, bounded schedules, typed signals/queries/updates, memo limits and bounded mixed selections. PR478 adds timed signal/condition waits, named signal waits and flat/nested activity/timer all barriers. Wider grouped leaves and selection shapes, queued control routing, policies, search and saga families remain open. |
-| Local activities, cancellation scopes, worker sessions, streams, service catalog/Nexus, bridge adapters, standalone activities, debugging and repair | `routes/api.php`, `docs/contracts/`, worker/control-plane specifications, corresponding Feature tests and Nexus runner | Scoped native repair and diagnostics exist. Local-activity execution, cancellation scopes, sessions, streams, Nexus/catalog, bridge and standalone-activity compatibility remain required work. No unpublished package telemetry or stored-job contract is adopted by these slices. |
-| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published cohorts cover workflow/activity (#401), parent/child (#408), timer authors (#411), signals (#415), queries (#422), successful/failed updates (#424/#427), named namespaces (#429), selected-run signals (#434) and subsequent corrected marker/range and authority slices. Each retains its exact source/tuple and failures. CLI reads have bounded coverage. Remaining SDK families, broader CLI, native Waterline/Sample App and browser acceptance remain open; published PHP consumers do not qualify native. |
-| SQL schema and stored representations | `database/migrations/`, Workflow package `src/migrations/`, model casts, `Workflow\\Serializers\\Serializer`, queue job payloads, exported history and credential digests | [Representation checkpoints](rust-server-storage-audit.md) recorded; complete mapping and executable migration tests pending |
-| Images, architecture, bootstrap, configuration, readiness, metrics and graceful shutdown | `Dockerfile`, `docker/`, `config/`, `docker-compose*.yml`, `k8s/helm/`, `docs/server-reference.md`, small-cluster/multi-region validation docs | Published PHP remains the default. Native bootstrap, health/readiness, configuration and shutdown foundations exist. Qualified native publication, both architectures, full configuration/metrics compatibility, Compose/Helm consumers and operational cutover remain open. |
-| Backup and in-place upgrade | `docs/self-hosted-backup-and-restore.md`, [PHP ownership/refusal controls](php-database-ownership.md), external payload backup holds; last PHP image writes, all PHP roles stop, Rust takes over same DB sequentially | Ownership/refusal controls and isolated migration preparation exist. Backup-first native takeover with pending work, interrupted migration, external payload preservation and PHP refusal still need complete qualification on SQLite, MariaDB/MySQL and PostgreSQL. No mixed fleet or PHP rollback is permitted. |
-| Throughput, memory, CPU, latency, backlog/drain, idle mixed long polls | `benchmarks/capacity/v1/` and `scripts/benchmark/`; repeated runs and drift checks using frozen artifacts | The [diagnostic PHP reference](../benchmarks/server-port/v1/php-observations-2026-10-09.md) and scoped comparison observations are recorded. Complete matched throughput/memory/idle-poll proof, repeated measurements, drift checks and CPU-load deadline health remain release gates. Source checks and functional comparisons make no performance claim. |
-
-Ordinary PHP, Rust and embedded runs use independent databases. Never connect
-different engines to one database concurrently. SQLite multi-node qualification
-must state its shared-file topology and locking limits; existing single-node
-support is not evidence of multi-node safety.
-
-## Decisions
-
-- Shared fixtures are expectations reviewed against public contracts, not PHP
-  recordings promoted to expected behavior. The recorder keeps raw observations;
-  the comparator checks the declared fixture projection. Coverage is explicit.
-- The HTTP adapter uses the published PHP SDK and its official Avro codec. The
-  embedded adapter executes real Workflow jobs and persisted history. Neither
-  counts an accepted start as completion or substitutes mocked execution.
-- Generated run/activity/attempt identifiers may differ between independent
-  databases. Compare their relationships with bijective aliases; retain actual
-  IDs in raw evidence. Preserve workflow IDs, event order, command sequences,
-  attempt counts and decoded values. Wall-clock observations remain raw.
-- The first Rust foundation uses Apache's official Avro single-object
-  reader/writer with the immutable schema. The first HTTP/storage slice uses
-  Axum/Tokio and SQLx with selected features and native transactions. Avoid
-  unnecessary dependencies and code generation. Record
-  clean and incremental compile time plus target-directory size for the first
-  runtime slice. Use one task-owned Cargo target directory, low debug information
-  for development, bounded build concurrency and cleanup after qualification.
-- Evaluate [Kache](https://github.com/kunobi-ninja/kache) in a task-local runtime
-  before choosing the Rust build setup. Use an explicit cache budget and local
-  storage; measure physical disk blocks across cache and targets together. Keep
-  cache and build outputs under one container mount so cross-mount copying does
-  not erase sharing. Use a per-run compiler wrapper and scoped cleanup.
-  The [first real crate measurements](../rust/build-observations-2026-10-09.md)
-  observed native clean builds around 22 seconds and 182 MiB targets. Kache
-  restored a fresh target in 3.5 seconds but added cold-build time and retained
-  disk; native no-op/comment-edit builds were faster in-place. Keep it optional.
-  Full-server build cost and any disk-saving claim remain pending.
-- Tokio tasks are [cooperatively scheduled](https://docs.rs/tokio/latest/tokio/task/coop/index.html).
-  Potentially expensive replay, decoding and synchronous database operations
-  need bounded work away from the async request executor. `spawn_blocking` needs
-  an explicit CPU concurrency limit, and a started blocking job cannot be
-  aborted. Preserve durable fencing and cancellation checks around that work;
-  qualify timer, lease and cancellation deadlines under CPU-heavy load.
 
 <a id="evidence-and-next-action"></a>
 
