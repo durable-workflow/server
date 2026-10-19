@@ -57,7 +57,7 @@ async fn named_signal_waits_keep_both_original_runs_and_foreign_polls_isolated()
             "int"
         );
         let timed = scoped(&app,namespaces[index],"POST",&format!("/api/worker/workflow-tasks/{}/complete",task["task_id"].as_str().unwrap()),
-            completion(&task,json!([{"type":"open_condition_wait","condition_key":"data:0","condition_definition_fingerprint":fingerprint,"timeout_seconds":1}]))).await;
+            completion(&task,json!([{"type":"open_condition_wait","condition_key":"data:0","condition_definition_fingerprint":fingerprint,"timeout_seconds":-1}]))).await;
         assert_eq!(timed.0, StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(
             scoped(&app, namespaces[index], "GET", &history_path, Value::Null).await,

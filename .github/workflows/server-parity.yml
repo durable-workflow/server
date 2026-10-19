@@ -1360,9 +1360,11 @@ jobs:
               -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
               "$image" artisan server:bootstrap --force >> parity-evidence/bootstrap.txt
           done
+          # The API server and the CPU-limited maintenance loop share one published PHP
+          # SQLite file. Let SQLite serialize their writers instead of refusing at 5 s.
           docker run -d --name "$RESOURCE_SCOPE-server" --network "$RESOURCE_SCOPE" --network-alias=parity-server \
             --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
-            -v "$PWD/parity-state:/state" -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/php.sqlite \
+            -v "$PWD/parity-state:/state" -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/php.sqlite -e DB_SQLITE_BUSY_TIMEOUT=30000 \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token "$image"
           for target in server rust; do
             ready=0
@@ -1383,7 +1385,7 @@ jobs:
           export DW_PARITY_CLI_PHAR=/source/parity-consumers/dw.phar
           docker run -d --name "$RESOURCE_SCOPE-php-maintenance" --network "$RESOURCE_SCOPE" \
             --user=1000:1000 --cpus=0.25 --memory=256m --memory-swap=256m --entrypoint sh \
-            -v "$PWD/parity-state:/state" -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/php.sqlite \
+            -v "$PWD/parity-state:/state" -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/php.sqlite -e DB_SQLITE_BUSY_TIMEOUT=30000 \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
             "$image" -c 'while :; do php artisan workflow:v2:repair-pass --json; php artisan schedule:evaluate --limit=100 --json; sleep 1; done'
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \

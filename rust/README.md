@@ -48,6 +48,9 @@ remain acceptance gates in the [port log](../docs/rust-server-port.md).
 The development update slice supports original declarations and primitive
 positional contracts, immutable request-ID receipts, routed SDK update tasks,
 normal lease/attempt and registration fences, and durable exact Avro results.
+Registration, polling and cluster discovery advertise `complete_update` and
+`fail_update` so workers can negotiate those already admitted commands before
+completing an accepted update.
 Updates require a quiescent committed wait; busy workflow/control queues are
 refused explicitly. Each run is bounded to 64 updates, arguments to 64 KiB,
 results to 256 KiB and completion waits to 30 seconds. A timed-out wait leaves
@@ -56,6 +59,26 @@ result and cannot change arguments or append history. Validators, failed update
 tasks, concurrent queued routing and complete update compatibility remain
 unqualified; shared database qualification for the representative update slice
 is recorded in the port log.
+Direct cancellation, ordinary workflow completion, workflow failure and supported
+cooperative root cancellation now
+[fail their still-accepted updates atomically](../docs/contracts/terminal-update-closure.md).
+The original update and command identities, failure receipt and forward-only
+message cursor survive cold retries. Previously completed updates remain intact,
+and old update leases cannot apply after closure. Cooperative cleanup preserves
+its original root identity and deadline. It closes accepted updates only when
+that run closes, including maintenance expiry. Validated sequential children
+with `abandon` operation and parent-close policies can receive their own
+[independent cancellation request](../docs/contracts/child-independent-cancellation.md).
+They retain their own root identity and resolve their parent atomically at
+closure. Other child policies, active activities and open waits retain their
+request guards. This does not widen update admission,
+wider cooperative propagation or continuation transfer. For source controls,
+set `DW_TEST_TERMINAL_UPDATES_REFERENCE` when running `terminal_updates::` or
+`cooperative_updates::`.
+The [PHP comparator](tests/reference/terminal_updates.php) executes the published
+closer in its own migrated in-memory database using captured original inputs.
+It requires `DB_CONNECTION=sqlite` and `DB_DATABASE=:memory:` and checks the
+resolved application configuration before providers boot.
 The development schema is version 4, with separate registration-incarnation
 authority and shutdown receipts. Fenced shutdown repairs original workflow tasks
 and commits their accepted repair history with the receipt. Re-registering the
@@ -241,13 +264,61 @@ This is not qualification of throughput, CPU-heavy deadlines or multi-node HA.
 Implemented paths cover health/schema readiness, limited capability discovery,
 workflow start/describe/paginated history, worker registration/heartbeat/removal,
 workflow/activity polling, workflow lease renewal and both completion paths.
-Admitted commands are `schedule_activity`, `start_timer`, `open_condition_wait`,
-`open_signal_wait` and `complete_workflow`;
+Admitted commands include `schedule_activity`, `start_timer`, `start_child_workflow`,
+`open_condition_wait`, `open_signal_wait`, `record_version_marker`,
+`complete_workflow`, `fail_workflow`, `continue_as_new`, `complete_update` and `fail_update`;
 unsupported effects/options are refused before batch mutation. Published PHP
 workers replay the persisted activity result and complete the workflow normally.
 Discovery marks the runtime as development, advertises the admitted commands
 and sets the major unimplemented worker capabilities to false. Accepted protocol
 headers identify transport shapes, not a full protocol conformance claim.
+Direct signal waits in default and named namespaces accept an optional
+`timeout_seconds`: null/absence waits indefinitely, zero resolves immediately,
+and a positive integer retains a durable timer and its original deadline.
+Buffered input wins before scheduling; application cancels a pending timeout
+with the original timer/wait metadata. The [timed-signal contract](../docs/contracts/timed-signal-waits.md)
+describes resume identities and retained waits. Named namespaces admit
+`open_signal_wait` only as the sole command in a completion. Installed-consumer
+acceptance remains a separate gate.
+Condition waits accept the same optional timeout in their existing default and
+named namespaces. Each physical wait owns its timer identity and authored
+deadline. Applying a signal satisfies the condition wait before cancelling its
+pending timer; firing leaves the wait open until the worker applies the outcome.
+Buffered input does not skip condition-timer creation. The
+[condition contract](../docs/contracts/timed-condition-waits.md) records these
+differences and physical reopen behavior.
+For the focused source reference, set `DW_TEST_TIMED_SIGNAL_REFERENCE` to a
+writable JSONL path when running `cargo test --test execution timed_signal_waits::`.
+The [PHP comparator](tests/reference/timed_external_waits.php) compares those
+captured waits with an explicitly selected published Workflow installation.
+Set `DW_TEST_TIMED_CONDITION_REFERENCE` when running the corresponding
+`timed_condition_waits::` source tests. Their snapshots retain real clock bounds
+around each read; the comparator requires the published current-wait DTO and
+liveness to agree at both bounds without changing product timestamps.
+Activity/timer `all()/parallel()` barriers retain flat or nested group paths
+through actual member completion, retry, failure, expiry and cancellation.
+Each represented barrier must arrive complete within the existing 100-command
+batch limit. Ready workflow wakeups can coalesce; later outcomes retain a
+wakeup while an earlier snapshot is leased. All-groups do not create selection
+winners. The [barrier contract](../docs/contracts/parallel-all-groups.md)
+records sequence and clock provenance. Child/signal/condition groups and
+installed-worker acceptance remain separate gates.
+Set `DW_TEST_PARALLEL_ALL_REFERENCE` when running the `parallel_all::`
+source tests. The [published PHP comparator](tests/reference/parallel_all.php)
+checks liveness, task problems and every field of the bounded current-wait
+members using original history and their retained metadata.
+The [workflow failure command](../docs/contracts/workflow-failure-command.md)
+closes a run and its originating task as failed with one durable terminal failure
+and a fenced completion receipt. Cooperative cancellation retains precedence.
+Failed sequential children retain their original call and propagate the terminal
+failure ID to one parent resume, including when an earlier activity failed.
+The parent can catch that outcome and start another sequential child. Existing
+update-owned task guards and broader child policies remain separate limits.
+Set `DW_TEST_WORKFLOW_FAILURE_REFERENCE` when running the `workflow_failures::`
+source controls. The [pure PHP reference](tests/reference/workflow_failure.php)
+compares failure payloads with the published bridge and FailureFactory; existing
+history-budget, child and task helpers compare their captured projections.
+These source comparisons do not qualify an installed worker or retired consumer recipe.
 Queries admit a quiescent committed snapshot, including completed runs, through
 the published worker query protocol. An active/ready workflow task returns
 `query_snapshot_busy`; concurrent workflow/query routing remains unqualified.

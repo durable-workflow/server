@@ -1,0 +1,20 @@
+[
+  {"name":"null-root","event_type":"WorkflowStarted","payload_json":"null"},
+  {"name":"empty-object","event_type":"WorkflowStarted","payload_json":"{}"},
+  {"name":"empty-array","event_type":"WorkflowStarted","payload_json":"[]"},
+  {"name":"unicode-slashes-controls","event_type":"SignalReceived","payload_json":"{\"message\":\"日本語 λ 😀 / \\t\\r\\n\\b\\f\\u0000\\u000b\\u2028\\u2029\",\"literal\":\"\\\\u2028\"}"},
+  {"name":"signed-integers","event_type":"WorkflowStarted","payload_json":"{\"values\":[-9223372036854775808,9007199254740993,9223372036854775807]}"},
+  {"name":"unsigned-overflow","event_type":"WorkflowStarted","payload_json":"{\"values\":[9223372036854775808,18446744073709551615]}"},
+  {"name":"whole-doubles","event_type":"WorkflowStarted","payload_json":"{\"values\":[0.0,-0.0,1.0,-1.0,1000000.0]}"},
+  {"name":"decimal-thresholds","event_type":"WorkflowStarted","payload_json":"{\"values\":[1e-4,1e-5,1e16,1e17,1e20,1e21]}"},
+  {"name":"fractional-exponents","event_type":"WorkflowStarted","payload_json":"{\"values\":[1.25e-5,-1.25e-5,1.2345678901234567,1.2345678901234567e17,1.0000000000000002]}"},
+  {"name":"double-extremes","event_type":"WorkflowStarted","payload_json":"{\"values\":[1.7976931348623157e308,2.2250738585072014e-308,5e-324,-5e-324]}"},
+  {"name":"ordered-numeric-object","event_type":"WorkflowStarted","payload_json":"{\"0\":\"zero\",\"1\":{\"0\":false,\"1\":null}}"},
+  {"name":"non-list-numeric-object","event_type":"WorkflowStarted","payload_json":"{\"0\":1,\"2\":2}"},
+  {"name":"lexical-numeric-order","event_type":"WorkflowStarted","payload_json":"{\"0\":0,\"1\":1,\"10\":10,\"2\":2,\"3\":3,\"4\":4,\"5\":5,\"6\":6,\"7\":7,\"8\":8,\"9\":9}"},
+  {"name":"leading-zero-and-negative-keys","event_type":"WorkflowStarted","payload_json":"{\"-1\":1,\"00\":0,\"01\":1}"},
+  {"name":"nested-empty-shapes","event_type":"WorkflowStarted","payload_json":"{\"array\":[{},[],{\"0\":{}}],\"empty\":{},\"false\":false}"},
+  {"name":"escaped-keys","event_type":"WorkflowStarted","payload_json":"{\"line\\u2028/\\t\":\"value\",\"quote\\\"\\\\\":\"value\"}"},
+  {"name":"storage-numeric-order","event_type":"WorkflowStarted","payload_json":"{\"0\":0,\"1\":1,\"2\":2,\"3\":3,\"4\":4,\"5\":5,\"6\":6,\"7\":7,\"8\":8,\"9\":9,\"10\":10}"},
+  {"name":"repeated-key-position","event_type":"WorkflowStarted","payload_json":"{\"0\":\"old\",\"1\":\"kept\",\"0\":\"replacement\"}"}
+]

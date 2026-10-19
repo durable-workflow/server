@@ -10,6 +10,7 @@ use DurableWorkflow\Worker\WorkflowContext;
 use DurableWorkflow\Worker\Replayer;
 
 require __DIR__.'/vendor/autoload.php';
+require __DIR__.'/lock-pressure-transport.php';
 
 function assertRestart(bool $condition, string $message): void
 {
@@ -90,8 +91,11 @@ assertRestart($argc === 4, 'Usage: restart.php prepare|finish URL RECEIPT');
 $restartContractPath = __DIR__.'/../../../tests/Fixtures/ServerParityProfiles/current-activity-restart.json';
 $restartContract = json_decode(file_get_contents($restartContractPath), true, flags: JSON_THROW_ON_ERROR);
 $restartContractHash = hash_file('sha256', $restartContractPath);
-$client = new Client($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
-$value = ['message' => 'restart λ', 'count' => 9007199254740993];
+// The published PHP reference shares its SQLite file with a maintenance loop, and
+// its documented answer to a contended claim is a retryable poll refusal.
+$transport = new LockPressurePollRetryTransport();
+$client = new Client($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null, transport: $transport);
+$value =['message' => 'restart λ', 'count' => 9007199254740993];
 
 if ($phase === 'prepare') {
     $signalDefinition = (new Worker($client, 'restart-v1'))
@@ -227,7 +231,8 @@ if ($phase === 'prepare') {
         'pending_terminal_resume' => ['run_id' => $terminalHandle->selectedRunId, 'task_id' => $terminalFailure['next_task_id'],
             'failure_id' => $terminalHistory[4]['payload']['failure_id']],
         'pending_child' => ['parent_run_id' => $parentHandle->selectedRunId, 'child_run_id' => $childTask['run_id'],
-            'task_id' => $childTask['task_id'], 'lease_expires_at' => $childTask['lease_expires_at']]], JSON_THROW_ON_ERROR).PHP_EOL;
+            'task_id' => $childTask['task_id'], 'lease_expires_at' => $childTask['lease_expires_at']],
+        'lock_pressure_poll_retries' => $transport->retries], JSON_THROW_ON_ERROR).PHP_EOL;
     exit(0);
 }
 
@@ -551,4 +556,5 @@ echo json_encode(['phase' => $phase, 'outcome' => 'pass', 'run_id' => $execution
     'signal_recovered' => true, 'signal_history' => $signalHistory, 'child_recovered' => true,
     'stale_child_claim_refused' => true, 'child_claim' => $recoveredChild, 'child_completion' => $childCompletion,
     'child_duplicate' => $childDuplicate, 'parent_duplicate' => $parentDuplicate,
-    'parent_history' => $parentHistory, 'child_history' => $childHistory], JSON_THROW_ON_ERROR).PHP_EOL;
+    'parent_history' => $parentHistory, 'child_history' => $childHistory,
+    'lock_pressure_poll_retries' => $transport->retries], JSON_THROW_ON_ERROR).PHP_EOL;
