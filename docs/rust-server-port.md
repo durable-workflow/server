@@ -77,10 +77,32 @@ needs a contract fixture before its correction.
   or leased workflow task (`WorkflowExecutor::dispatchParentResumeTasks`).
   Native resolution refuses the child's completion with
   `409 child_parent_task_conflict` unless the parent has a cooperative
-  cancellation request. A child that finishes while its parent has a pending
-  signal resume is therefore refused instead of resolved. The fix must also
-  confirm that the parent's existing task observes the new resolution or is
-  followed by another resume.
+  cancellation request. Current native admission keeps this path latent:
+  updates are refused with `update_snapshot_busy` and signals create no resume
+  while the parent waits on a child, because only signal and condition waits
+  count as open waits. Widening update or signal admission at child waits must
+  first replace the refusal with PHP's reuse, and confirm that the parent's
+  existing task observes the new resolution or is followed by another resume.
+- **Update admission outside signal and condition waits.** Native updates
+  require a quiescent signal or condition wait and refuse other states with
+  `update_snapshot_busy`, so a parent waiting on a child cannot accept one.
+  Published `WorkflowStub` update admission rejects only a non-current selected
+  run, an inactive run, an unknown update, invalid arguments, blocked execution
+  or structural limits. This needs a reviewed contract decision and fixtures
+  before either implementation changes.
+- **Timer firing under the CPU deadline profile on slower hosts.** In local
+  MySQL 8.0 cells, where eight dense readers saturate the one-CPU database and
+  the one-CPU native server, one of six runs fired the three-second timer
+  1.177 seconds after its deadline, past the one-second canonical bound. Hosted
+  runners passed all six database cells. The bound stays as declared. Next,
+  measure how CPU-bound codec work on the single server CPU delays native timer
+  dispatch, and keep timer, lease and cleanup deadlines inside the bound.
+- **Renewal observer window.** The CPU profile's activity heartbeat timeout
+  equals its 2-second request timeout. After this harness change, the post-claim
+  run read and status read can still consume the first window on a slow host,
+  and native then correctly fences the attempt. A heartbeat timeout comfortably
+  above the request timeout, still inside the 9-second load wave, needs its own
+  reviewed profile change.
 
 ## Contract and verification inventory
 
