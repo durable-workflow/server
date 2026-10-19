@@ -151,7 +151,7 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
         $before = $this->durableRows();
 
         $this->postJson('/api/workflows/retained-terminal/update/other', [
-            'input' => [99], 'request_id' => 'retained-key',
+            'input' => [99], 'request_id' => 'retained-key', 'wait_for' => 'completed',
         ], $this->apiHeaders())->assertOk()
             ->assertJsonPath('update_id', $original->json('update_id'))
             ->assertJsonPath('run_id', $runId)
