@@ -274,6 +274,7 @@ where
             .execute(&mut *tx)
             .await?;
         let mut payload = Self::activity_payload(&activity)?;
+        payload["activity"]["last_heartbeat_at"] = json!(at);
         payload["activity_attempt_id"] = json!(attempt_id);
         payload["attempt_number"] = json!(DB::number(&attempt, "attempt_number")?);
         payload["progress"] = progress;
