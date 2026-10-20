@@ -177,7 +177,7 @@ async fn scoped_hints_require_original_opt_in_and_a_new_ready_identity() {
         let result = held.await.unwrap();
         assert_eq!(result.0, StatusCode::OK, "{scenario}: {}", result.1);
         assert_eq!(
-            result.1["poll_status"], "timeout",
+            result.1["poll_status"], "empty",
             "{scenario}: {}",
             result.1
         );
@@ -216,7 +216,7 @@ async fn activity_admission_wakes_other_polls_but_same_kind_claim_wins() {
         json!({"lease_owner":"mixed","activity_attempt_id":activity["activity_attempt_id"],"result":envelope(Payload::Null)})).await.0,StatusCode::OK);
         let result = held.await.unwrap();
         assert_eq!(result.0, StatusCode::OK, "{}", result.1);
-        assert_eq!(result.1["poll_status"], "task");
+        assert_eq!(result.1["poll_status"], "leased");
         assert!(result.1["task"].is_object());
         runtime.close().await;
         database.remove().await;
@@ -311,7 +311,7 @@ async fn zero_timeout_polls_keep_the_existing_empty_reply() {
         )
         .await;
         assert_eq!(result.0, StatusCode::OK, "{}", result.1);
-        assert_eq!(result.1["poll_status"], "timeout");
+        assert_eq!(result.1["poll_status"], "empty");
         assert_eq!(result.1.get("task"), Some(&Value::Null));
     }
     runtime.close().await;

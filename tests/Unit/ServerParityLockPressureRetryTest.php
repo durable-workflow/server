@@ -50,6 +50,30 @@ final class ServerParityLockPressureRetryTest extends TestCase
         }
     }
 
+    public function test_documented_operation_refusals_are_retried_and_polls_keep_their_rules(): void
+    {
+        $deferred = ['reason' => 'backend_lock_pressure', 'outcome' => 'deferred', 'retryable' => true, 'retry_after_seconds' => 1];
+        $complete = 'http://parity-server:8080/api/worker/workflow-tasks/task/complete';
+        $start = 'http://parity-server:8080/api/workflows';
+        self::assertSame(1.0, \lockPressureOperationRetryDelay('POST', $complete, 503, $deferred, 0, 0.0));
+        self::assertSame(1.0, \lockPressureOperationRetryDelay('POST', $start, 503,
+            ['reason' => 'backend_lock_pressure', 'retryable' => true, 'retry_after_seconds' => 1], 0, 0.0));
+        self::assertSame(1.0, \lockPressureOperationRetryDelay('POST', self::POLL, 503, $this->refusal(), 0, 0.0));
+        foreach ([
+            [$complete, 503, array_replace($deferred, ['retryable' => false])],
+            [$complete, 503, array_diff_key($deferred, ['retryable' => true])],
+            [$complete, 503, array_replace($deferred, ['reason' => 'backend_unavailable'])],
+            [$complete, 409, $deferred],
+            [$complete, 503, null],
+            // A poll refusal still needs task null, even through this entry point.
+            [self::POLL, 503, $deferred],
+        ] as $index => [$uri, $status, $response]) {
+            self::assertNull(\lockPressureOperationRetryDelay('POST', $uri, $status, $response, 0, 0.0), (string) $index);
+        }
+        self::assertNull(\lockPressureOperationRetryDelay('POST', $complete, 503, $deferred, 15, 0.0));
+        self::assertNull(\lockPressureOperationRetryDelay('POST', $complete, 503, $deferred, 2, 29.5));
+    }
+
     public function test_retries_stop_at_the_attempt_and_wait_budgets(): void
     {
         self::assertNull(\lockPressurePollRetryDelay('POST', self::POLL, 503, $this->refusal(), 15, 0.0));

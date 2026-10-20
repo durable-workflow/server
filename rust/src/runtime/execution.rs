@@ -25,6 +25,10 @@ enum Storage {
 #[path = "query_codec_tests.rs"]
 mod query_codec_tests;
 
+#[cfg(test)]
+#[path = "transition_codec_tests.rs"]
+mod transition_codec_tests;
+
 #[derive(Clone)]
 pub struct Runtime {
     storage: Arc<Storage>,
@@ -32,6 +36,10 @@ pub struct Runtime {
     pub(crate) role_tokens: [Option<Arc<str>>; 3],
     scheduler: Arc<TimerScheduler>,
     signal_codec: Arc<Semaphore>,
+    // Codec work done while holding the transition lock takes this permit,
+    // never `signal_codec`, so a transition never queues behind reads for
+    // codec capacity.
+    transition_codec: Arc<Semaphore>,
     pub(super) external: Arc<super::ExternalPayloadConfig>,
     queries: Arc<super::QueryTaskConfig>,
 }
@@ -194,6 +202,7 @@ impl Runtime {
             role_tokens: [None, None, None],
             scheduler: Arc::new(TimerScheduler::new()),
             signal_codec: Arc::new(Semaphore::new(1)),
+            transition_codec: Arc::new(Semaphore::new(1)),
             external: Arc::new(external),
             queries: Arc::new(queries),
         };
@@ -262,6 +271,7 @@ impl Runtime {
             role_tokens: self.role_tokens.clone(),
             scheduler: self.scheduler.clone(),
             signal_codec: self.signal_codec.clone(),
+            transition_codec: self.transition_codec.clone(),
             external: self.external.clone(),
             queries: self.queries.clone(),
         }
@@ -376,7 +386,7 @@ impl Runtime {
                         name,
                         body,
                         prepared,
-                        self.signal_codec.clone(),
+                        self.transition_codec.clone(),
                     )
                     .await
             }
@@ -388,7 +398,7 @@ impl Runtime {
                         name,
                         body,
                         prepared,
-                        self.signal_codec.clone(),
+                        self.transition_codec.clone(),
                     )
                     .await
             }
@@ -400,7 +410,7 @@ impl Runtime {
                         name,
                         body,
                         prepared,
-                        self.signal_codec.clone(),
+                        self.transition_codec.clone(),
                     )
                     .await
             }
@@ -421,7 +431,7 @@ impl Runtime {
                         run_id,
                         body,
                         context,
-                        self.signal_codec.clone(),
+                        self.transition_codec.clone(),
                     )
                     .await
             }
@@ -432,7 +442,7 @@ impl Runtime {
                         run_id,
                         body,
                         context,
-                        self.signal_codec.clone(),
+                        self.transition_codec.clone(),
                     )
                     .await
             }
@@ -443,7 +453,7 @@ impl Runtime {
                         run_id,
                         body,
                         context,
-                        self.signal_codec.clone(),
+                        self.transition_codec.clone(),
                     )
                     .await
             }
@@ -658,9 +668,8 @@ impl Runtime {
         ) -> Result<(Vec<Value>, Vec<Value>)>
     );
     pub(crate) async fn activities(&self, workflow_id: &str, run_id: &str) -> Result<Value> {
-        // Writers take this permit while holding the writer transaction. Finish
-        // every read before taking it so a listing can never wait on a writer
-        // that is itself waiting on the permit.
+        // Finish every read before taking the codec permit, so a listing never
+        // holds codec capacity while it waits on the database.
         let (events, executions) = self.activity_metadata_input(workflow_id, run_id).await?;
         let permit = self
             .signal_codec
@@ -700,7 +709,7 @@ impl Runtime {
     delegate!(worker_heartbeat(body: Value) -> Result<Value>);
     delegate!(deregister(worker_id: &str) -> Result<Value>);
     pub(crate) async fn deregister_fenced(&self, worker_id: &str, body: Value) -> Result<Value> {
-        let codec = self.signal_codec.clone();
+        let codec = self.transition_codec.clone();
         match &*self.storage {
             Storage::Sqlite(store) => store.deregister_fenced(worker_id, body, codec).await,
             Storage::Postgres(store) => store.deregister_fenced(worker_id, body, codec).await,
@@ -761,17 +770,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .complete_workflow(task_id, body, self.signal_codec.clone(), external)
+                    .complete_workflow(task_id, body, self.transition_codec.clone(), external)
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .complete_workflow(task_id, body, self.signal_codec.clone(), external)
+                    .complete_workflow(task_id, body, self.transition_codec.clone(), external)
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .complete_workflow(task_id, body, self.signal_codec.clone(), external)
+                    .complete_workflow(task_id, body, self.transition_codec.clone(), external)
                     .await
             }
         }
@@ -817,7 +826,7 @@ impl Runtime {
                         run_id,
                         reason,
                         budget,
-                        self.signal_codec.clone(),
+                        self.transition_codec.clone(),
                     )
                     .await
             }
@@ -828,7 +837,7 @@ impl Runtime {
                         run_id,
                         reason,
                         budget,
-                        self.signal_codec.clone(),
+                        self.transition_codec.clone(),
                     )
                     .await
             }
@@ -839,7 +848,7 @@ impl Runtime {
                         run_id,
                         reason,
                         budget,
-                        self.signal_codec.clone(),
+                        self.transition_codec.clone(),
                     )
                     .await
             }

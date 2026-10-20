@@ -72,11 +72,15 @@ macro_rules! column {
     };
 }
 
-const COLUMNS: [Column; 4] = [
+const COLUMNS: [Column; 8] = [
     column!("workflow_runs", "arguments", "payload_codec"),
     column!("workflow_runs", "output", "output_payload_codec"),
     column!("activity_executions", "arguments", "payload_codec"),
     column!("activity_executions", "result", "payload_codec"),
+    column!("workflow_commands", "payload", "payload_codec"),
+    column!("workflow_signal_records", "arguments", "payload_codec"),
+    column!("workflow_updates", "arguments", "payload_codec"),
+    column!("workflow_updates", "result", "payload_codec"),
 ];
 
 #[derive(Default, Serialize)]
@@ -218,9 +222,10 @@ where
         "references_metadata_supported":references_supported,
         "diagnostics":diagnostics, "diagnostics_omitted":omitted,
         "inline_values_verified":inline_supported, "nested_payloads_verified":false,
-        // Published migrations also give these tables codec-tagged payloads.
+        // These tables also hold codec-tagged payloads; takeover refuses a
+        // source with any of their rows, since native lacks the features.
         "other_root_payload_columns_verified":false,
-        "unscanned_payload_codec_tables":["workflow_commands","workflow_signal_records","workflow_updates"],
+        "unscanned_payload_codec_tables":["workflow_durable_stream_items","workflow_inbound_stream_items","workflow_update_validation_tasks"],
         "inline_validation_limits":{"encoded_frame_bytes":65536,"traversal_depth":64,
             "traversal_visits":16384,"scalar_allocation_bytes":apache_avro::util::max_allocation_bytes(apache_avro::util::DEFAULT_MAX_ALLOCATION_BYTES)},
         "provider_bytes_verified":false, "registry_binding_verified":false,

@@ -406,7 +406,11 @@ async fn payload_scan_validates_inline_pages_and_reports_late_bad_values_without
     assert_eq!(report["payload_inspection"]["other_root_payload_columns_verified"], false);
     assert_eq!(
         report["payload_inspection"]["unscanned_payload_codec_tables"],
-        json!(["workflow_commands", "workflow_signal_records", "workflow_updates"])
+        json!([
+            "workflow_durable_stream_items",
+            "workflow_inbound_stream_items",
+            "workflow_update_validation_tasks"
+        ])
     );
     assert_eq!(report["payload_inspection"]["diagnostics"], json!([]));
     for (table, column, count) in [
@@ -1041,6 +1045,15 @@ async fn takeover_refusals_leave_the_php_database_unchanged() {
         (
             "INSERT INTO runtime_external_payloads(id,namespace,storage_uri,storage_uri_sha256,codec,sha256,size_bytes) VALUES ('p','default','s3://b/k','x','avro','y',1)",
             "upgrade_source_external_payloads_unsupported",
+        ),
+        // Features native lacks: their rows would be left behind unread.
+        (
+            "INSERT INTO runtime_credentials(id,subject,roles,tenant,token_prefix,token_hash) VALUES ('c','worker','[]','default','dw_','h')",
+            "upgrade_source_runtime_credentials_unsupported",
+        ),
+        (
+            "INSERT INTO workflow_messages(workflow_instance_id,direction,channel,stream_key,sequence) VALUES ('w','inbound','c','k',1)",
+            "upgrade_source_message_streams_unsupported",
         ),
     ] {
         let (_directory, path) = php297_layout().await;
