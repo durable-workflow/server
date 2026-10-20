@@ -113,9 +113,11 @@ with a recorded recipe:
 - PHP's registration incarnations and tokens are copied into native's
   incarnation table, so a running SDK worker's fenced deregistration still
   matches. The PHP table and column are then removed.
-- `queue_delivery_reference` describes PHP's database queue delivery, which
-  native does not use. It is removed after its values are checked against
-  the queue inspection's timer bindings.
+- `queue_delivery_reference` is optional lookup metadata for PHP's database
+  queue delivery, and PHP itself grants it no task authority. Native does not
+  use PHP's queue, and the queue inspection has already bound every queued
+  job to its durable task row, so the column is removed and the takeover
+  report counts the references it held.
 - Service calls are not part of native yet, so a source with service calls
   is refused before any change, and `call_deadline_at` is removed only from
   an empty table.
