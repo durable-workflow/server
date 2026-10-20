@@ -16,6 +16,11 @@ use Workflow\V2\Support\TaskTraceCarrier;
 /** Optional observations after the poller's original claim and history fences. */
 final class WorkflowObservabilityPoll
 {
+    public static function filterOptionalDelivered(mixed $wire): ?array
+    {
+        return is_array($wire) ? self::filterDelivered($wire) : null;
+    }
+
     /** Reapply current privacy settings to a validated cached poll response. */
     public static function filterDelivered(array $wire): array
     {
@@ -287,21 +292,22 @@ final class WorkflowObservabilityPoll
             return false;
         }
         foreach ($entry as $key => $value) {
-            if ($key === 'context') {
-                continue;
-            }
-            if ($key === 'sequence') {
-                if (! is_int($value) || $value < 1) {
-                    return false;
-                }
-            } elseif ($key !== 'child_task_id' || $value !== null) {
-                if (! self::identity($value)) {
-                    return false;
-                }
+            if (! self::validEntryField($key, $value)) {
+                return false;
             }
         }
 
         return true;
+    }
+
+    private static function validEntryField(string $key, mixed $value): bool
+    {
+        return match ($key) {
+            'context' => true,
+            'sequence' => is_int($value) && $value > 0,
+            'child_task_id' => $value === null || self::identity($value),
+            default => self::identity($value),
+        };
     }
 
     private static function normalizeLinks(mixed $value, string $taskId, mixed $runId, mixed $namespace): ?array

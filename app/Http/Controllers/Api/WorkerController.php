@@ -4410,7 +4410,7 @@ class WorkerController
         }
 
         return WorkerProtocol::json([
-            'task' => is_array($poll['task']) ? WorkflowObservabilityPoll::filterDelivered($poll['task']) : null,
+            'task' => WorkflowObservabilityPoll::filterOptionalDelivered($poll['task']),
             'poll_status' => $poll['poll_status'],
         ]);
     }

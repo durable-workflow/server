@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Throwable;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -49,22 +50,26 @@ final class WorkflowObservabilityTransitions
                 $producers = WorkflowObservability::enabled() ? self::producers($request) : [];
 
                 foreach (['child_workflow', 'continue_as_new'] as $kind) {
-                    $selected = $links->where('link_type', $kind)->values();
-                    $contexts = $producers[$kind] ?? [];
-                    foreach ($selected as $index => $link) {
-                        $expectedEvent = $kind === 'child_workflow' ? 'ChildWorkflowScheduled' : 'WorkflowContinuedAsNew';
-                        $event = $events->first(static fn (WorkflowHistoryEvent $event): bool => $event->event_type->value === $expectedEvent
-                            && ($event->payload['workflow_link_id'] ?? null) === $link->id);
-                        if ($event === null) {
-                            continue;
-                        }
-                        $context = count($contexts) === $selected->count() ? ($contexts[$index] ?? null) : null;
-                        self::writeOrigin($link, $parent, $context ?? $inherited);
-                    }
+                    self::applyKind($kind, $links, $events, $producers[$kind] ?? [], $parent, $inherited);
                 }
             });
         } catch (Throwable) {
             // Missing metadata or unavailable observation storage cannot replace completion.
+        }
+    }
+
+    private static function applyKind(
+        string $kind, Collection $links, Collection $events, array $contexts, WorkflowRun $parent, ?array $inherited,
+    ): void {
+        $selected = $links->where('link_type', $kind)->values();
+        $expectedEvent = $kind === 'child_workflow' ? 'ChildWorkflowScheduled' : 'WorkflowContinuedAsNew';
+        foreach ($selected as $index => $link) {
+            $event = $events->first(static fn (WorkflowHistoryEvent $event): bool => $event->event_type->value === $expectedEvent
+                && ($event->payload['workflow_link_id'] ?? null) === $link->id);
+            if ($event !== null) {
+                $context = count($contexts) === $selected->count() ? ($contexts[$index] ?? null) : null;
+                self::writeOrigin($link, $parent, $context ?? $inherited);
+            }
         }
     }
 
