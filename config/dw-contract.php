@@ -889,7 +889,7 @@ return [
             'legacy' => 'WORKFLOW_V2_COMPATIBILITY_HEARTBEAT_TTL',
         ],
         'DW_V2_PIN_TO_RECORDED_FINGERPRINT' => [
-            'description' => 'When true (default), in-flight runs resolve their workflow class from the fingerprint recorded at WorkflowStarted.',
+            'description' => 'Prefer an eligible worker matching the recorded definition. If none remains, current code must validate strict replay. False removes only this source preference, not build pins or replay checks.',
             'default' => 'true',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_V2_PIN_TO_RECORDED_FINGERPRINT',
