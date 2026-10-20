@@ -242,7 +242,7 @@ function sdkQueryDirectionHttpObservation(array $fixture, array $options): array
         throw new RuntimeException('SDK query direction requires its evidence directory.');
     }
     $spec = $fixture['sdk_query_direction'];
-    $client = new Client($options['url'], namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
+    $client = parityClient($options['url'], namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
     $deadline = microtime(true) + 35;
     $runId = '';
     $phases = $actors = [];
@@ -262,7 +262,7 @@ function sdkQueryDirectionHttpObservation(array $fixture, array $options): array
                         if ($request['method'] === 'POST' && $request['path'] === '/api/worker/register'
                             && $request['status'] === 201 && ($request['response']['registered'] ?? null) === true
                             && ($request['request']['worker_id'] ?? null) === $options['workflow-id'].':original') {
-                            $startClient = new Client($author['url'], namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
+                            $startClient = parityClient($author['url'], namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
                             $runId = $startClient->startWorkflow($fixture['workflow_type'], $options['workflow-id'],
                                 $spec['task_queue'], [$fixture['input'], $fixture['signal_count']])->selectedRunId;
                             $observerStart = ['role' => 'observer', 'language' => 'php', 'pid' => getmypid(),
