@@ -11,8 +11,8 @@ measurement.
 [`server-port-multinode.compose.yml`](../../../scripts/perf/server-port-multinode.compose.yml)
 runs these services:
 
-- **Database.** One of MySQL 8.4, PostgreSQL 17 or SQLite. With SQLite, the
-  three nodes share one database file on one host.
+- **Database.** One of MySQL 8.4, MariaDB 10.11, PostgreSQL 17 or SQLite.
+  With SQLite, the three nodes share one database file on one host.
 - **Native nodes.** Three nodes with the same binary and configuration, one
   CPU and 512 MiB each. All three start together against the empty
   database, so bootstrap races too.
@@ -31,7 +31,7 @@ runs these services:
 ## Procedure
 
 [`run-server-port-multinode.sh`](../../../scripts/perf/run-server-port-multinode.sh)
-`OUTPUT_DIR mysql|postgres|sqlite` offers one-activity workflows at
+`OUTPUT_DIR mysql|mariadb|postgres|sqlite` offers one-activity workflows at
 0.5/s in three 180-second windows. Each window drains for up to 420 s, longer
 than the five-minute activity lease: an activity whose completion a killed node
 dropped is redelivered only when that lease expires. Two
@@ -68,7 +68,7 @@ for panics.
 ```sh
 # The locked SDK and an optimized binary, as the v2 README describes.
 export DW_PORT_SOURCE_ROOT=/abs/source DW_PORT_SDK_ROOT=/abs/sdk DW_PORT_NATIVE_BINARY=/abs/native/server
-for db in mysql postgres sqlite; do
+for db in mysql mariadb postgres sqlite; do
   bash scripts/perf/run-server-port-multinode.sh "results/$db" "$db"
 done
 ```

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Multi-node native kill/restart qualification on one database family.
 #
-#   run-server-port-multinode.sh OUTPUT_DIR mysql|postgres|sqlite [--smoke]
+#   run-server-port-multinode.sh OUTPUT_DIR mysql|mariadb|postgres|sqlite [--smoke]
 #
 # Three native nodes share one database behind HAProxy. Two published-SDK
 # workers and the offered workload reach them only through the balancer.
@@ -18,7 +18,7 @@ set -Eeuo pipefail
 out=$1
 db=$2
 mode=${3:-}
-case "$db" in mysql|postgres|sqlite) ;; *) echo "Choose mysql, postgres or sqlite." >&2; exit 2 ;; esac
+case "$db" in mysql|mariadb|postgres|sqlite) ;; *) echo "Choose mysql, mariadb, postgres or sqlite." >&2; exit 2 ;; esac
 case "$mode" in ""|--smoke) ;; *) echo "Unknown option $mode." >&2; exit 2 ;; esac
 : "${DW_PORT_SOURCE_ROOT:?Set the absolute source directory}"
 : "${DW_PORT_SDK_ROOT:?Set the normally installed SDK directory}"
@@ -55,10 +55,12 @@ export DW_MN_DB_PASSWORD DW_MN_DB_ROOT_PASSWORD
 case "$db" in
   mysql) export DW_MN_DB_CONNECTION=mysql DW_MN_DB_HOST=mysql DW_MN_DB_DATABASE=durable_workflow \
     DW_MN_DB_USERNAME=workflow; database=(mysql) ;;
+  mariadb) export DW_MN_DB_CONNECTION=mariadb DW_MN_DB_HOST=mariadb DW_MN_DB_DATABASE=durable_workflow \
+    DW_MN_DB_USERNAME=workflow; database=(mariadb) ;;
   postgres) export DW_MN_DB_CONNECTION=pgsql DW_MN_DB_HOST=postgres DW_MN_DB_DATABASE=durable_workflow \
     DW_MN_DB_USERNAME=workflow; database=(postgres) ;;
   sqlite) export DW_MN_DB_CONNECTION=sqlite DW_MN_DB_DATABASE=/state/native.sqlite; database=() ;;
-  *) echo "Choose mysql, postgres or sqlite." >&2; exit 2 ;;
+  *) echo "Choose mysql, mariadb, postgres or sqlite." >&2; exit 2 ;;
 esac
 
 project="dw-mn-$db-$(date -u +%Y%m%dt%H%M%S)"
@@ -177,6 +179,7 @@ SELECT 'duplicate_activity_completions', COUNT(*) FROM (SELECT activity_executio
 SELECT 'duplicate_history_sequences', COUNT(*) FROM (SELECT workflow_run_id, sequence FROM workflow_history_events GROUP BY workflow_run_id, sequence HAVING COUNT(*) > 1) d;"
 case "$db" in
   mysql) dc exec -T mysql sh -c 'MYSQL_PWD=$MYSQL_PASSWORD exec mysql -u"$MYSQL_USER" "$MYSQL_DATABASE" --batch --skip-column-names -e "$1"' audit "$audit_sql" ;;
+  mariadb) dc exec -T mariadb sh -c 'MYSQL_PWD=$MARIADB_PASSWORD exec mariadb -u"$MARIADB_USER" "$MARIADB_DATABASE" --batch --skip-column-names -e "$1"' audit "$audit_sql" ;;
   postgres) dc exec -T postgres psql -U workflow -d durable_workflow -At -F $'\t' -c "$audit_sql" ;;
   sqlite) dc --profile clients run --rm --no-deps -v "$DW_MN_STATE_DIR:/state" -e AUDIT_SQL="$audit_sql" probe -r '
     $pdo = new PDO("sqlite:/state/native.sqlite");

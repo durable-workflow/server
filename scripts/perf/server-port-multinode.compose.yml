@@ -1,6 +1,7 @@
 # Multi-node native qualification: three native nodes share one database
 # behind a load balancer, while run-server-port-multinode.sh kills and
-# restarts them. Choose exactly one database profile: mysql, postgres or sqlite.
+# restarts them. Choose exactly one database profile: mysql, mariadb, postgres or
+# sqlite.
 x-native: &native
   stop_signal: SIGTERM
   image: &php_image durableworkflow/server@sha256:944c384c9875fd82637dd2bdea74dcb881cf983a57599ba0e492bec706296549
@@ -70,6 +71,27 @@ services:
     restart: "no"
     healthcheck:
       test: [CMD-SHELL, "MYSQL_PWD=$$MYSQL_PASSWORD mysqladmin ping --silent -h 127.0.0.1 -u workflow"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  mariadb:
+    profiles: [mariadb]
+    # The digest the shared fixtures' MariaDB 10.11 jobs use.
+    image: mirror.gcr.io/library/mariadb@sha256:7db29378d4fdab73f8123bbc2b48905c90d1a4b00cf848b028f1e81e623257f2
+    environment:
+      MARIADB_DATABASE: durable_workflow
+      MARIADB_USER: workflow
+      # The driver generates both secrets for each run.
+      MARIADB_PASSWORD: ${DW_MN_DB_PASSWORD:?Run through run-server-port-multinode.sh}
+      MARIADB_ROOT_PASSWORD: ${DW_MN_DB_ROOT_PASSWORD:?Run through run-server-port-multinode.sh}
+    command: ["--innodb-flush-log-at-trx-commit=1", "--sync-binlog=1"]
+    cpus: 1
+    mem_limit: 1024m
+    memswap_limit: 1024m
+    restart: "no"
+    healthcheck:
+      test: [CMD, healthcheck.sh, --connect, --innodb_initialized]
       interval: 2s
       timeout: 3s
       retries: 30
