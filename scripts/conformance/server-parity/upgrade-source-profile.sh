@@ -211,6 +211,7 @@ if test "$backend" = sqlite; then
   # live database: its digest is the one the restored backup matched. Native
   # then resumes the originals, and PHP must refuse the upgraded file.
   cp "$state/database.sqlite" "$state/takeover.sqlite"
+  chmod 0666 "$state/takeover.sqlite"
   docker run --rm --name "$resource-takeover" --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
     --network none -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/takeover.sqlite -e DW_RUST_EXPERIMENTAL=1 \
     -e DW_UPGRADE_BACKUP_FINGERPRINT="$source_fingerprint" \
