@@ -101,14 +101,22 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
         $original = $this->postJson('/api/workflows/legacy-key/update/add', [
             'input' => [17], 'request_id' => 'retained-key',
         ], $this->apiHeaders())->assertAccepted();
-        DB::table('workflow_commands')->where('id', $original->json('command_id'))->update(['request_id' => $storedKey]);
+        DB::table('workflow_commands')->where('id', $original->json('command_id'))
+            ->update(['request_id' => $storedKey, 'intent_digest' => null]);
         $before = $this->durableRows();
 
-        $this->postJson('/api/workflows/legacy-key/update/'.$name, [
-            'input' => [99], 'request_id' => 'retained-key',
-        ], $this->apiHeaders())->assertAccepted()
-            ->assertJsonPath('update_id', $original->json('update_id'))
-            ->assertJsonPath('update_name', 'add');
+        $response = $this->postJson('/api/workflows/legacy-key/update/'.$name, [
+            'input' => [17], 'request_id' => 'retained-key',
+        ], $this->apiHeaders());
+        if ($name === 'add') {
+            $response->assertAccepted()
+                ->assertJsonPath('update_id', $original->json('update_id'))
+                ->assertJsonPath('update_name', 'add')
+                ->assertJsonPath('retained', true)
+                ->assertJsonPath('intent_verified', true);
+        } else {
+            $response->assertConflict()->assertJsonPath('reason', 'request_id_conflict');
+        }
 
         $this->assertSame($before, $this->durableRows());
         $this->assertSame($storedKey, DB::table('workflow_commands')->where('id', $original->json('command_id'))->value('request_id'));
@@ -140,13 +148,15 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
             $this->startRemote('proxy-request-key', $namespace);
         }
         $firstName = $definition === 'php' ? 'approve' : 'add';
-        $secondName = $definition === 'php' ? 'approve' : 'other';
+        $secondName = $sameReceipt ? $firstName : ($definition === 'php' ? 'approve' : 'other');
+        $firstInput = $definition === 'php' ? [true, 'original'] : [17];
         $first = $this->postJson('/api/workflows/proxy-request-key/update/'.$firstName, [
-            'input' => $definition === 'php' ? [true, 'original'] : [17], 'request_id' => $firstKey,
+            'input' => $firstInput, 'request_id' => $firstKey,
         ], [...$this->apiHeaders($namespace), 'X-Request-Id' => $firstHeader])->assertAccepted();
         $before = $this->durableRows();
         $second = $this->postJson('/api/workflows/proxy-request-key/update/'.$secondName, [
-            'input' => $definition === 'php' ? [false, 'changed'] : [99], 'request_id' => $secondKey,
+            'input' => $sameReceipt ? $firstInput : ($definition === 'php' ? [false, 'changed'] : [99]),
+            'request_id' => $secondKey,
         ], [...$this->apiHeaders($namespace), 'X-Request-Id' => $secondHeader])->assertAccepted();
 
         if ($sameReceipt) {
@@ -171,11 +181,11 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
             'input' => [true, 'original'], 'request_id' => 'caller-key',
         ], [...$this->apiHeaders(), 'X-Request-Id' => 'proxy-a'])->assertAccepted();
         DB::table('workflow_commands')->where('id', $original->json('command_id'))
-            ->update(['request_id' => 'legacy-proxy']);
+            ->update(['request_id' => 'legacy-proxy', 'intent_digest' => null]);
         $before = $this->durableRows();
 
         $this->postJson('/api/workflows/available-legacy-key/update/approve', [
-            'input' => [false, 'changed'], 'request_id' => 'caller-key',
+            'input' => [true, 'original'], 'request_id' => 'caller-key',
         ], [...$this->apiHeaders(), 'X-Request-Id' => 'proxy-b'])->assertAccepted()
             ->assertJsonPath('update_id', $original->json('update_id'));
         $this->assertSame($before, $this->durableRows());
@@ -291,8 +301,8 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
         $before = $this->durableRows();
         config()->set('workflows.v2.structural_limits.pending_update_count', 0);
         config()->set('workflows.v2.structural_limits.payload_size_bytes', 0);
-        $this->postJson('/api/workflows/limited-update/update/other', [
-            'input' => [99], 'request_id' => 'over-limit',
+        $this->postJson('/api/workflows/limited-update/update/add', [
+            'input' => [17], 'request_id' => 'over-limit',
         ], $this->apiHeaders($namespace))->assertStatus(409)
             ->assertJsonPath('command_id', $response->json('command_id'))
             ->assertJsonPath('structural_limit_kind', $kind)
@@ -334,8 +344,8 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
         $this->assertDatabaseCount('workflow_runs', $transition === 'continue_as_new' ? 2 : 1);
         $before = $this->durableRows();
 
-        $this->postJson('/api/workflows/retained-terminal/update/other', [
-            'input' => [99], 'request_id' => 'retained-key', 'wait_for' => 'completed',
+        $this->postJson('/api/workflows/retained-terminal/update/add', [
+            'input' => [17], 'request_id' => 'retained-key', 'wait_for' => 'completed',
         ], $this->apiHeaders())->assertOk()
             ->assertJsonPath('update_id', $original->json('update_id'))
             ->assertJsonPath('run_id', $runId)
@@ -393,7 +403,7 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
     private function durableRows(): array
     {
         $snapshot = [];
-        foreach (['workflow_commands', 'workflow_updates', 'workflow_runs', 'workflow_tasks', 'workflow_history_events'] as $table) {
+        foreach (['workflow_instances', 'workflow_commands', 'workflow_updates', 'workflow_runs', 'workflow_tasks', 'workflow_history_events'] as $table) {
             $snapshot[$table] = DB::table($table)->orderBy('id')->get()->map(static fn (object $row): array => (array) $row)->all();
         }
 

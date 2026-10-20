@@ -109,7 +109,8 @@ class WorkflowUpdateValidationTaskTest extends TestCase
         $this->postJson('/api/workflows/wf-validator-approved/update/approve', [
             'input' => [false], 'request_id' => 'approved-request', 'wait_for' => 'accepted',
         ], [...$this->apiHeaders(), 'X-Request-Id' => 'different-proxy'])
-            ->assertAccepted()->assertJsonPath('update_id', $response->json('update_id'));
+            ->assertConflict()->assertJsonPath('reason', 'request_id_conflict')
+            ->assertJsonPath('retained_command_id', $response->json('command_id'));
         foreach ($before as $table => $rows) {
             $this->assertEquals($rows, DB::table($table)->orderBy('id')->get()->toArray());
         }
@@ -154,6 +155,9 @@ class WorkflowUpdateValidationTaskTest extends TestCase
         $response->assertStatus(422)
             ->assertJsonPath('reason', 'update_validator_rejected')
             ->assertJsonPath('update_status', 'rejected')
+            ->assertJsonPath('request_id', 'rejected-request')
+            ->assertJsonPath('retained', false)
+            ->assertJsonPath('intent_verified', true)
             ->assertJsonPath('validation_errors.approved.0', 'must be true');
         $this->assertSame(0, $this->historyCount($run, HistoryEventType::UpdateAccepted));
         $this->assertSame(1, $this->historyCount($run, HistoryEventType::UpdateRejected));
@@ -162,6 +166,25 @@ class WorkflowUpdateValidationTaskTest extends TestCase
             WorkflowTask::query()->where('workflow_run_id', $run->id)->count(),
         );
         $this->assertSame('rejected', WorkflowUpdate::query()->firstOrFail()->status->value);
+
+        $before = [];
+        foreach (['workflow_instances', 'workflow_runs', 'workflow_commands', 'workflow_updates', 'workflow_update_validation_tasks', 'workflow_tasks', 'workflow_history_events'] as $table) {
+            $before[$table] = DB::table($table)->orderBy('id')->get()->toArray();
+        }
+        $this->postJson('/api/workflows/wf-validator-rejected/update/approve', [
+            'input' => [false], 'request_id' => 'rejected-request',
+        ], [...$this->apiHeaders(), 'X-Request-Id' => 'new-proxy'])->assertStatus(422)
+            ->assertJsonPath('update_id', $response->json('update_id'))
+            ->assertJsonPath('retained', true)
+            ->assertJsonPath('intent_verified', true);
+        $this->postJson('/api/workflows/wf-validator-rejected/update/approve', [
+            'input' => [true], 'request_id' => 'rejected-request',
+        ], $this->apiHeaders())->assertConflict()
+            ->assertJsonPath('reason', 'request_id_conflict')
+            ->assertJsonPath('retained_command_id', $response->json('command_id'));
+        foreach ($before as $table => $rows) {
+            $this->assertEquals($rows, DB::table($table)->orderBy('id')->get()->toArray());
+        }
     }
 
     public function test_lost_worker_is_replaced_and_stale_completion_is_fenced(): void
