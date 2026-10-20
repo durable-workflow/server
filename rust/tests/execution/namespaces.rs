@@ -377,6 +377,7 @@ async fn named_namespaces_preserve_original_runs_and_global_workflow_id_reservat
         ("GET", path.clone(), "run_not_found"),
         ("GET", format!("{path}/history"), "run_not_found"),
         ("POST", format!("{path}/cancel"), "instance_not_found"),
+        ("POST", format!("{path}/terminate"), "instance_not_found"),
     ] {
         let (status, body) = scoped(
             &app,

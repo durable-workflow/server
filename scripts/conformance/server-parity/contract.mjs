@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {checkChildCancellation} from './child-cancellation-contract.mjs';
 import {checkActivityRetry} from './retry-contract.mjs';
 import {checkTerminalActivityFailure} from './failure-contract.mjs';
-import {checkImmediateCancellation} from './cancellation-contract.mjs';
+import {checkImmediateCancellation, immediateCommand} from './cancellation-contract.mjs';
 import {checkCooperativeCancellation} from './cooperative-contract.mjs';
 import {checkSchedule, scheduledWorkflowIdentity} from './schedule-contract.mjs';
 import {checkVisibility} from './visibility-contract.mjs';
@@ -74,7 +74,8 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   equal(observation.namespace, fixture.namespace ?? 'default', 'namespace');
   equal(observation.task_queue, fixture.sdk_update_direction?.task_queue ?? fixture.sdk_query_direction?.task_queue ?? fixture.sdk_signal_direction?.task_queue ?? fixture.sdk_timer_author?.task_queue ?? fixture.sdk_child_direction?.parent_queue ?? fixture.sdk_direction?.workflow_queue ?? 'server-parity-v1', 'task queue');
   const cancelled = Boolean(fixture.immediate_cancellation || fixture.cooperative_cancellation);
-  equal(observation.status, cancelled ? 'cancelled' : 'completed', 'actual durable terminal state');
+  const closedAs = fixture.immediate_cancellation ? immediateCommand(fixture).closed : 'cancelled';
+  equal(observation.status, cancelled ? closedAs : 'completed', 'actual durable terminal state');
   equal(observation.payload_codec, 'avro', 'payload codec');
   const output = cancelled ? null : fixture.output ?? fixture.signal_value ?? fixture.input;
   const typedOutput = cancelled ? {type: 'null', value: null} : fixture.typed_output ?? fixture.typed_signal_value ?? fixture.typed_value;

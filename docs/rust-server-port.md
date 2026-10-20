@@ -94,6 +94,19 @@ contract fixture before its correction.
   leases makes published PHP release its workflow *and* activity task leases.
   Native releases only the workflow task leases. This needs a fixture with a
   leased activity before the correction.
+- **Python worker shutdown after a late synchronous query handler (not yet
+  diagnosed).** In the SQLite query-authority cohort on #515's run
+  39431491496, the published Python SDK 2.5.15 client in `late-handler-sync`
+  mode failed against native. Its 6-second handler returned and was fenced
+  with `query_execution_budget_expired` after one claim. The SDK's query thread
+  then did not stop within the 5-second shutdown budget. Forty local
+  repetitions of that case alone passed. Find what holds the query thread
+  after the fence before changing either side.
+- **Terminating a child run.** Published Workflow resolves the parent with
+  `ChildRunTerminated` and the `terminated` child call status. Native refuses
+  this with `422 termination_propagation_not_available` until the parent-side
+  wait, child summary and failure projections for `ChildRunTerminated` have a
+  fixture.
 
 ## Contract and verification inventory
 
@@ -195,6 +208,30 @@ October 20, worker listing:
   published PHP 2.5.14, embedded PHP and native for `worker-listing` and
   `namespace-isolation`. All three targets passed and the comparison passed.
   Native integration tests pass on SQLite, PostgreSQL, MySQL and MariaDB.
+
+October 20, immediate termination:
+
+- **Source.** Native serves `POST /api/workflows/{id}/terminate` and its
+  selected-run form. Published Workflow runs cancel and terminate through one
+  `attemptTerminalCommand`, so native now does the same. Terminate records
+  `TerminateRequested` and `WorkflowTerminated`, the `terminated` status,
+  closed reason, failure category and propagation kind, and
+  `WorkflowTerminatedException`. It cancels open tasks, activities and timers
+  exactly as cancel does. A late activity outcome is refused with
+  `run_terminated`. The response carries the `terminate` control-plane
+  contract, which matches cancel's.
+- **Refused.** Terminating a child run returns
+  `422 termination_propagation_not_available` and changes nothing (see known
+  gaps). The other propagation refusals are cancel's.
+- **Fixtures.** `terminate-before-claim`, `terminate-pending-timer` and
+  `terminate-leased-activity` reuse the cancellation workflows with
+  `immediate_cancellation.command = "terminate"`. The shared contract and its
+  runner unit tests check the termination identity in place of cancellation's.
+- **Local evidence.** A local copy of the SQLite parity step recorded published
+  PHP 2.5.14 over HTTP, embedded PHP and native for the three cancel and three
+  terminate fixtures. All six passed on each target, and the comparison passed.
+  Native integration tests for both commands pass on SQLite, PostgreSQL and
+  MySQL.
 
 October 19, before #478, #476, #494 and #460 merged:
 
