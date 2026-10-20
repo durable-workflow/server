@@ -16,6 +16,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowUpdate;
+use Workflow\V2\Support\CommandIntent;
 use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\UpdateWaitPolicy;
 use Workflow\V2\Support\WorkflowExecutionGate;
@@ -43,7 +44,9 @@ final class ValidatedExternalWorkflowUpdateAdmission extends ExternalWorkflowUpd
         string $waitFor = UpdateWaitPolicy::WAIT_FOR_ACCEPTED,
         ?int $waitTimeoutSeconds = null,
     ): ?array {
-        $retained = $this->retainedReceipt($namespace, $workflowId, $commandContext, $waitFor, $waitTimeoutSeconds);
+        $retained = $this->retainedReceipt(
+            $namespace, $workflowId, $updateName, $arguments, $commandContext, $waitFor, $waitTimeoutSeconds,
+        );
         if ($retained !== null) {
             return $retained;
         }
@@ -376,6 +379,7 @@ final class ValidatedExternalWorkflowUpdateAdmission extends ExternalWorkflowUpd
                 $commandContext->attributes(),
                 [
                     'command_type' => CommandType::Update->value,
+                    'intent_digest' => CommandIntent::digest(CommandType::Update, $updateName, $arguments),
                     'target_scope' => 'instance',
                     'status' => CommandStatus::Rejected->value,
                     'outcome' => CommandOutcome::RejectedInvalidArguments->value,
@@ -482,6 +486,9 @@ final class ValidatedExternalWorkflowUpdateAdmission extends ExternalWorkflowUpd
 
         return array_merge($validationResult, [
             'accepted' => false,
+            'request_id' => $command?->requestId(),
+            'retained' => false,
+            'intent_verified' => $command?->intentDigest() !== null,
             'command_id' => $command?->id,
             'workflow_command_id' => $command?->id,
             'command_status' => CommandStatus::Rejected->value,
