@@ -407,7 +407,8 @@ jobs:
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
             "$image" artisan server:bootstrap --force > parity-evidence/published-bootstrap.txt
-          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --cpus=2 --memory=2g --memory-swap=2g \
+          # Compiling the library tests peaks near 2.5 GB; a 2 GB limit OOM-killed rustc (exit 101).
+          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --cpus=2 --memory=4g --memory-swap=4g \
             -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
             -e DW_TEST_MYSQL_URL=mysql://root:parity-disposable-password@parity-mysql:3306/php_ref \
             -e DW_EXECUTION_MYSQL_URL=mysql://root:parity-disposable-password@parity-mysql:3306/php_ref \
@@ -882,7 +883,8 @@ jobs:
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
             "$image" artisan server:bootstrap --force > parity-evidence/published-bootstrap.txt
-          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --cpus=2 --memory=2g --memory-swap=2g \
+          # Compiling the library tests peaks near 2.5 GB; a 2 GB limit OOM-killed rustc (exit 101).
+          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --cpus=2 --memory=4g --memory-swap=4g \
             -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
             -e DW_TEST_POSTGRES_URL=postgres://parity:parity-disposable-password@parity-pg:5432/php_ref \
             -e DW_EXECUTION_POSTGRES_URL=postgres://parity:parity-disposable-password@parity-pg:5432/php_ref \
@@ -1363,7 +1365,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p cargo-home rust-target parity-evidence
-          docker run --rm --user="$(id -u):$(id -g)" --cpus=2 --memory=2g --memory-swap=2g \
+          # Compiling the library tests peaks near 2.5 GB; a 2 GB limit OOM-killed rustc (exit 101).
+          docker run --rm --user="$(id -u):$(id -g)" --cpus=2 --memory=4g --memory-swap=4g \
             -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
             -e DW_UPGRADE_TEST_WRITABLE=/evidence -e DW_UPGRADE_TEST_READONLY=/source/parity-evidence \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
