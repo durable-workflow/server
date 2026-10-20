@@ -103,13 +103,24 @@ cgroup_dir() {
 }
 
 # One-second cumulative CPU and current memory for every project container.
+# Container names are refreshed every few seconds, so each pass reads only
+# cgroup files and stays well under a second.
 sample() {
+  local pass=0
+  declare -A names=()
   while :; do
+    if (( pass % 5 == 0 )); then
+      names=()
+      while read -r id name; do names[$id]=$name; done < <(docker ps --no-trunc \
+        --filter "label=com.docker.compose.project=$project" \
+        --format '{{.ID}} {{.Label "com.docker.compose.service"}}')
+    fi
+    pass=$((pass + 1))
     now=$(date -u +%s.%N)
-    for id in $(docker ps -q --no-trunc --filter "label=com.docker.compose.project=$project"); do
+    for id in "${!names[@]}"; do
       dir=$(cgroup_dir "$id")
       test -r "$dir/cpu.stat" || continue
-      name=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$id" 2>/dev/null || echo unknown)
+      name=${names[$id]}
       usage=$(awk '/^usage_usec/ {print $2}' "$dir/cpu.stat")
       memory=$(cat "$dir/memory.current")
       oom=$(awk '/^oom_kill/ {print $2}' "$dir/memory.events")

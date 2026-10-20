@@ -76,6 +76,8 @@ def summarize(directory):
         by_time[at][name] = memory
     result = {"identity": identity, "windows": {}, "idle": {}}
     for name, (start, end) in sorted(marks.items(), key=lambda item: item[1][0]):
+        if name == "sdk-worker-stop":
+            continue
         entry = {"seconds": round(end - start, 1), "health": health_between(directory / "health.log", start, end)}
         components = sorted({n for _, n, _, _, _ in samples})
         entry["cpu_core_seconds"] = {n: usage_between(samples, n, start, end) for n in components}
