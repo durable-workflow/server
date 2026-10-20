@@ -17,6 +17,7 @@ driver=scripts/perf/run-server-port-matched.sh
 bash "$driver" PROFILE results/smoke-native native --smoke   # setup check only
 bash "$driver" PROFILE results/php php
 bash "$driver" PROFILE results/native native
+bash "$driver" PROFILE results/idle-native native --idle-only   # idle polls only
 docker run --rm -v "$PWD/results:/data" -v "$PWD/scripts/perf:/scripts:ro" python:3 \
   python -I /scripts/summarize-server-port-matched.py /data/php /data/native
 ```

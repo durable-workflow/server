@@ -2,12 +2,14 @@
 # Run one implementation of a server-port matched development comparison on a
 # dedicated host, following the profile's workload, windows and idle checks.
 #
-#   run-server-port-matched.sh PROFILE OUTPUT_DIR php|native [--smoke]
+#   run-server-port-matched.sh PROFILE OUTPUT_DIR php|native [--smoke|--idle-only]
 #
 # Set DW_PORT_SOURCE_ROOT, DW_PORT_SDK_ROOT and DW_PORT_NATIVE_BINARY as the
 # v2 README describes. Run php and native sequentially, each into its own
 # output directory, never together. --smoke shortens every window to five
 # seconds and one repetition to check the setup; it is never a measurement.
+# --idle-only runs only the idle long-poll windows, without the SDK worker or
+# offered work, to compare idle cost on its own.
 # The output keeps raw probe results, one-second cgroup samples, health
 # observations, window markers, machine facts and the final database audit.
 set -Eeuo pipefail
@@ -16,6 +18,7 @@ profile=$(realpath "$1")
 out=$2
 impl=$3
 smoke=${4:-}
+case "$smoke" in ""|--smoke|--idle-only) ;; *) echo "Unknown option $smoke." >&2; exit 2 ;; esac
 test "$impl" = php || test "$impl" = native || { echo "Choose php or native." >&2; exit 2; }
 : "${DW_PORT_SOURCE_ROOT:?Set the absolute source directory}"
 : "${DW_PORT_SDK_ROOT:?Set the normally installed SDK directory}"
@@ -73,7 +76,7 @@ jq -n --arg impl "$impl" --arg project "$project" --arg profile "$profile" \
   --arg filesystem "$(df -T "$(docker info --format '{{.DockerRootDir}}')" | awk 'NR==2 {print $2}')" \
   --arg cpu_model "$(awk -F': ' '/model name/ {print $2; exit}' /proc/cpuinfo)" \
   '{implementation:$impl,compose_project:$project,profile:$profile,profile_sha256:$profile_sha,source_revision:$source,
-    native_binary_sha256:$binary,smoke:($smoke=="--smoke"),machine:{kernel:$kernel,logical_cpus:($cpus|tonumber),
+    native_binary_sha256:$binary,smoke:($smoke=="--smoke"),idle_only:($smoke=="--idle-only"),machine:{kernel:$kernel,logical_cpus:($cpus|tonumber),
     physical_memory_bytes:($memory|tonumber),cpu_model:$cpu_model,docker:$docker,cgroup_driver:$cgroup,
     docker_storage_driver:$storage,docker_root_filesystem:$filesystem}}' > "$out/identity.json"
 
@@ -162,25 +165,28 @@ docker run -d --name "$project-health" --label "com.docker.compose.project=$proj
   "while :; do for path in health ready; do printf '%s %s ' \"\$(date -u +%s.%N)\" \$path; \
    curl -s -o /dev/null -w '%{http_code} %{time_total}\n' --max-time 2 $DW_PORT_RUNTIME_URL/api/\$path || echo 'error -'; done; sleep 1; done" \
   > /dev/null 2>> "$out/run.log"
-dc --profile clients up -d sdk-worker >> "$out/run.log" 2>&1
+if test "$smoke" != --idle-only; then
+  dc --profile clients up -d sdk-worker >> "$out/run.log" 2>&1
 
-window setup "${rates[0]}" 5
-window warmup "${rates[0]}" "$warmup"
-low=${rates[0]}
-phases=("low-before:$low")
-for rate in "${rates[@]:1}"; do phases+=("rate-$rate:$rate"); done
-phases+=("low-after:$low")
-for phase in "${phases[@]}"; do
-  for repeat in $(seq 1 "$repeats"); do
-    window "${phase%%:*}-$repeat" "${phase##*:}" "$offer"
+  window setup "${rates[0]}" 5
+  window warmup "${rates[0]}" "$warmup"
+  low=${rates[0]}
+  phases=("low-before:$low")
+  for rate in "${rates[@]:1}"; do phases+=("rate-$rate:$rate"); done
+  phases+=("low-after:$low")
+  for phase in "${phases[@]}"; do
+    for repeat in $(seq 1 "$repeats"); do
+      window "${phase%%:*}-$repeat" "${phase##*:}" "$offer"
+    done
   done
-done
+
+  mark sdk-worker-stop start
+  dc --profile clients stop -t 30 sdk-worker >> "$out/run.log" 2>&1
+  docker inspect --format '{{.State.ExitCode}}' "$(dc --profile clients ps -a -q sdk-worker)" > "$out/sdk-worker-exit.txt"
+  mark sdk-worker-stop end
+fi
 
 # Idle long polls with no work and no SDK worker, as the profile requires.
-mark sdk-worker-stop start
-dc --profile clients stop -t 30 sdk-worker >> "$out/run.log" 2>&1
-docker inspect --format '{{.State.ExitCode}}' "$(dc --profile clients ps -a -q sdk-worker)" > "$out/sdk-worker-exit.txt"
-mark sdk-worker-stop end
 for count in $idle_counts; do
   for repeat in $(seq 1 "$idle_repeats"); do
     sleep 10
