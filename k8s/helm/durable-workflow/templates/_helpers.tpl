@@ -467,8 +467,12 @@ not depend on regular resources Helm or Argo create afterward.
   value: {{ . | quote }}
 {{- end }}
 {{- with .Values.externalDatabase.sslMode }}
-- name: DB_SSL_MODE
+- name: DB_SSLMODE
   value: {{ . | quote }}
+{{- end }}
+{{- if .Values.externalDatabase.tls.existingSecret }}
+- name: DB_SSLROOTCERT
+  value: {{ include "durable-workflow.databaseTlsCaPath" . | quote }}
 {{- end }}
 - name: REDIS_HOST
   value: {{ .Values.externalRedis.host | quote }}

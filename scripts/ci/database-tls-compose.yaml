@@ -1,0 +1,121 @@
+x-database: &database
+  user: "${TLS_TEST_UID}:${TLS_TEST_GID}"
+  cpus: 1
+  mem_limit: 1g
+  memswap_limit: 1g
+  volumes:
+    - "${TLS_TEST_ROOT}/certs:/certs:ro"
+
+services:
+  tls-pg:
+    <<: *database
+    image: postgres:17.11
+    environment: &postgres
+      PGDATA: /tmp/pgdata
+      POSTGRES_USER: dw_tls
+      POSTGRES_DB: dw_tls
+      POSTGRES_PASSWORD: bounded-fixture
+    tmpfs: ["/tmp/pgdata:rw,uid=${TLS_TEST_UID},gid=${TLS_TEST_GID},size=384m"]
+    command: ["postgres", "-c", "ssl=on", "-c", "ssl_cert_file=/certs/server.pem", "-c", "ssl_key_file=/certs/server.key"]
+    networks:
+      default:
+        aliases: [wrong-pg]
+    healthcheck: &pg-health
+      test: ["CMD", "pg_isready", "-U", "dw_tls", "-d", "dw_tls"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+
+  tls-mysql:
+    <<: *database
+    image: mysql:8.0.46
+    environment: &mysql
+      MYSQL_ROOT_PASSWORD: bounded-root-fixture
+      MYSQL_DATABASE: dw_tls
+      MYSQL_USER: dw_tls
+      MYSQL_PASSWORD: bounded-fixture
+    tmpfs: ["/var/lib/mysql:rw,uid=${TLS_TEST_UID},gid=${TLS_TEST_GID},size=768m"]
+    command: ["--ssl-ca=/certs/ca.pem", "--ssl-cert=/certs/server.pem", "--ssl-key=/certs/server.key", "--innodb-buffer-pool-size=64M", "--innodb-redo-log-capacity=64M", "--performance-schema=OFF"]
+    networks:
+      default:
+        aliases: [wrong-mysql]
+    healthcheck: &mysql-health
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_PASSWORD mysql --protocol=tcp -h127.0.0.1 -udw_tls dw_tls -e 'SELECT 1'"]
+      interval: 2s
+      timeout: 2s
+      retries: 90
+
+  tls-maria:
+    <<: *database
+    image: mariadb:10.11.19
+    environment:
+      MARIADB_ROOT_PASSWORD: bounded-root-fixture
+      MARIADB_DATABASE: dw_tls
+      MARIADB_USER: dw_tls
+      MARIADB_PASSWORD: bounded-fixture
+    tmpfs: ["/var/lib/mysql:rw,uid=${TLS_TEST_UID},gid=${TLS_TEST_GID},size=768m"]
+    command: ["--ssl-ca=/certs/ca.pem", "--ssl-cert=/certs/server.pem", "--ssl-key=/certs/server.key", "--innodb-buffer-pool-size=64M"]
+    networks:
+      default:
+        aliases: [wrong-maria]
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MARIADB_PASSWORD mariadb --protocol=tcp -h127.0.0.1 -udw_tls dw_tls -e 'SELECT 1'"]
+      interval: 2s
+      timeout: 2s
+      retries: 90
+
+  plain-pg:
+    <<: *database
+    profiles: [plaintext]
+    image: postgres:17.11
+    environment: *postgres
+    tmpfs: ["/tmp/pgdata:rw,uid=${TLS_TEST_UID},gid=${TLS_TEST_GID},size=384m"]
+    command: ["postgres", "-c", "ssl=off"]
+    healthcheck: *pg-health
+
+  plain-mysql:
+    <<: *database
+    profiles: [plaintext]
+    image: mysql:8.0.46
+    environment: *mysql
+    tmpfs: ["/var/lib/mysql:rw,uid=${TLS_TEST_UID},gid=${TLS_TEST_GID},size=768m"]
+    command: ["--skip-ssl", "--default-authentication-plugin=mysql_native_password", "--innodb-buffer-pool-size=64M", "--innodb-redo-log-capacity=64M", "--performance-schema=OFF"]
+    healthcheck: *mysql-health
+
+  redis:
+    image: redis:7-alpine
+    user: "${TLS_TEST_UID}:${TLS_TEST_GID}"
+    cpus: 0.5
+    mem_limit: 128m
+    memswap_limit: 128m
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  php:
+    image: "${TLS_TEST_IMAGE}"
+    entrypoint: []
+    user: "${TLS_TEST_UID}:${TLS_TEST_GID}"
+    cpus: 1
+    mem_limit: 768m
+    memswap_limit: 768m
+    working_dir: /work
+    volumes:
+      - "${TLS_TEST_ROOT}/app:/work"
+      - "${TLS_TEST_ROOT}/certs:/certs:ro"
+    environment:
+      HOME: /tmp
+      COMPOSER_HOME: /tmp/composer
+      APP_CONFIG_CACHE: /tmp/config.php
+      APP_ENV: local
+      APP_KEY: base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      DB_DATABASE: dw_tls
+      DB_USERNAME: dw_tls
+      DB_PASSWORD: bounded-fixture
+      QUEUE_CONNECTION: database
+      CACHE_STORE: redis
+      REDIS_HOST: redis
+      DW_AUTH_TOKEN: database-tls-fixture-token

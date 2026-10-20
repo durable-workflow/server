@@ -102,6 +102,10 @@ externalDatabase:
   # raw managed endpoint.
   socket: ""
   sslMode: ""
+  # Pre-create this CA bundle Secret before Helm's bootstrap hook runs.
+  tls:
+    existingSecret: ""
+    caKey: "ca.crt"
   # Credentials. existingSecret takes precedence over auth.{username,password}.
   existingSecret: ""
   existingSecretUsernameKey: "DB_USERNAME"

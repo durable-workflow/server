@@ -32,6 +32,10 @@ if ($expected !== 'refused' && ($database['status'] ?? '') === 'ok') {
     }
 }
 
+$certificateVerified = $expected === 'verified';
+if ($expected === 'plaintext') {
+    $certificateVerified = null;
+}
 $valid = $expected === 'refused'
     ? $response->getStatusCode() === 503
         && ($database['status'] ?? '') === 'unavailable'
@@ -39,8 +43,8 @@ $valid = $expected === 'refused'
     : $response->getStatusCode() === 200
         && ($database['status'] ?? '') === 'ok'
         && ($tls['encrypted'] ?? null) === ($expected !== 'plaintext')
-        && ($tls['ca_verified'] ?? null) === ($expected === 'plaintext' ? null : $expected === 'verified')
-        && ($tls['hostname_verified'] ?? null) === ($expected === 'plaintext' ? null : $expected === 'verified')
+        && ($tls['ca_verified'] ?? null) === $certificateVerified
+        && ($tls['hostname_verified'] ?? null) === $certificateVerified
         && ($transport['encrypted'] ?? null) === ($expected !== 'plaintext')
         && ($tls['scope'] ?? '') === 'php_to_configured_database_endpoint';
 

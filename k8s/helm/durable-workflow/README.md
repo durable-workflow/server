@@ -132,6 +132,38 @@ Driver, or any GitOps secret bridge that produces a Kubernetes `Secret`.
 | `ServiceAccount` (`*`) | Namespace-scoped SA for every workload. | `serviceAccount.create: false` |
 | `NetworkPolicy` (`*-server`) | Optional ingress allow-list to the API. | `networkPolicy.enabled: false` (default) |
 
+## Database TLS
+
+For an authenticated encrypted database connection, pre-create a CA bundle
+Secret in the release namespace and select `verify-full`:
+
+```yaml
+externalDatabase:
+  sslMode: verify-full
+  tls:
+    existingSecret: workflow-database-ca
+    caKey: ca.crt
+```
+
+The chart sets `DB_SSLMODE` and mounts that Secret read-only at
+`/etc/durable-workflow/database-tls/ca.pem`, referenced by `DB_SSLROOTCERT`.
+The API server, worker, scheduler and bootstrap/migration Job all receive the
+same trust bundle. The Secret must already exist when the pre-install or
+pre-upgrade hook starts; the chart does not create it. The `database-tls`
+volume name and `/etc/durable-workflow/database-tls` mount path are reserved
+when this option is enabled. Existing application extra volumes are retained.
+
+Use the database certificate's DNS name as `externalDatabase.host`. `require`
+requires encryption but does not guarantee the server's identity. PostgreSQL
+also supports `verify-ca`; MySQL/MariaDB refuse that mode and require
+`verify-full` for certificate verification. The complete mode and failure
+contract is in [Database TLS](../../../docs/server-reference.md#database-tls).
+
+CA files update through the Secret volume rather than a `subPath` mount.
+After rotating trust, restart all persistent PHP roles to replace existing
+connections, then check `/api/ready` and run a workflow canary. Poolers need
+independent TLS configuration on their database-facing leg.
+
 ## Engine invariants the chart enforces
 
 These come from the engine, not the chart. Changing them silently breaks the

@@ -74,10 +74,16 @@ final class DatabaseTlsConfiguration
         $mode = $config['sslmode'] ?? null;
         $network = in_array($config['driver'] ?? null, ['pgsql', 'mysql', 'mariadb'], true);
         $required = in_array($mode, ['require', 'verify-ca', 'verify-full'], true);
+        $encrypted = null;
+        if ($required) {
+            $encrypted = true;
+        } elseif ($mode === 'disable') {
+            $encrypted = false;
+        }
 
         return [
             'mode' => $network ? $mode : null,
-            'encrypted' => $required ? true : ($mode === 'disable' ? false : null),
+            'encrypted' => $encrypted,
             'ca_verified' => $required ? in_array($mode, ['verify-ca', 'verify-full'], true) : null,
             'hostname_verified' => $required ? $mode === 'verify-full' : null,
             'evidence' => $required ? 'successful_driver_enforced_connection' : 'not_verified',

@@ -112,6 +112,10 @@ jobs:
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      TLS_TEST_IMAGE: durable-workflow-server-phpunit-base
+      TLS_TEST_PROJECT: dw-server-tls-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+      TLS_TEST_ROOT: ${{ runner.temp }}/dw-server-tls-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
 
     steps:
       - name: Require central action policy preflight
@@ -297,6 +301,16 @@ jobs:
           docker rm -f "${DW_FIRST_RUN_SCOPE}-server" "${DW_FIRST_RUN_SCOPE}-bootstrap" >/dev/null 2>&1 || true
           docker volume rm -f "${DW_FIRST_RUN_SCOPE}-database" >/dev/null 2>&1 || true
           docker image rm durable-workflow-server-context-candidate >/dev/null 2>&1 || true
+
+      - name: Verify required database TLS and certificate refusals
+        run: timeout 600s bash scripts/ci/qualify-database-tls.sh
+
+      - name: Clean up database TLS fixtures
+        if: ${{ always() }}
+        run: |
+          docker ps -aq --filter "label=com.docker.compose.project=$TLS_TEST_PROJECT" | xargs -r docker rm -f
+          docker network ls -q --filter "label=com.docker.compose.project=$TLS_TEST_PROJECT" | xargs -r docker network rm
+          rm -rf -- "$TLS_TEST_ROOT"
 
       - name: Clean up test services
         if: always()

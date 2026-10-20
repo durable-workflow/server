@@ -61,6 +61,11 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Check database CA mounts and bootstrap configuration
+        run: |
+          python3 -m pip install PyYAML==6.0.2
+          python3 scripts/ci/test_database_tls_chart.py
+
       - name: Render every CI fixture
         run: |
           mkdir -p rendered
