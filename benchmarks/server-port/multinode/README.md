@@ -75,3 +75,7 @@ done
 
 `--smoke` runs one 20-second window to check the setup. It is never a
 qualification.
+
+## Results
+
+- [2026-10-20](results-2026-10-20.md): MySQL, PostgreSQL and SQLite passed.
