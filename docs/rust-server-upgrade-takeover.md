@@ -103,13 +103,24 @@ marker exists.
 
 Native's frozen physical layout predates the current PHP release, so step 3
 alone does not yield a database native accepts. PHP 2.8.0 adds its own
-`workflow_worker_registration_incarnations` table, a `call_deadline_at`
-column on `workflow_service_calls` and a changed `workflow_worker_registrations`
-(`rust/upgrade/php-2.8.0/`). Before takeover is implemented, native's schema
-moves to the layout of the release takeover starts from, and native reads
-PHP's incarnation table instead of keeping a second one. A fresh native
-database then has the same PHP layout, and takeover only adds native relations
-and converts data.
+`workflow_worker_registration_incarnations` table, a `registration_token`
+column on `workflow_worker_registrations` and a `call_deadline_at` column on
+`workflow_service_calls` (`rust/upgrade/php-2.8.0/`). Server 2.9.7, with Core
+2.7.2, also adds `workflow_tasks.queue_delivery_reference`. Native keeps its
+own layout, and step 4 converts each qualified PHP release's layout to it
+with a recorded recipe:
+
+- PHP's registration incarnations and tokens are copied into native's
+  incarnation table, so a running SDK worker's fenced deregistration still
+  matches. The PHP table and column are then removed.
+- `queue_delivery_reference` describes PHP's database queue delivery, which
+  native does not use. It is removed after its values are checked against
+  the queue inspection's timer bindings.
+- Service calls are not part of native yet, so a source with service calls
+  is refused before any change, and `call_deadline_at` is removed only from
+  an empty table.
+
+A release whose layout has no recipe is refused by step 1.
 
 ## Tests
 
