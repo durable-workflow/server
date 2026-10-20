@@ -323,10 +323,11 @@ final class ServerWorkflowControlPlane implements RuntimeSignalControlPlane, Wor
             return $result;
         }
 
-        $runId = data_get($result, 'run.run_id') ?? $result['workflow_run_id'] ?? $options['run_id'] ?? null;
-        $run = WorkflowRun::query()->where('namespace', $namespace)->where('workflow_instance_id', $instanceId)
-            ->when(is_string($runId), static fn ($query) => $query->whereKey($runId))
-            ->orderByDesc('run_number')->first();
+        $runId = data_get($result, 'run.run_id') ?? $result['resolved_run_id'] ?? $result['run_id']
+            ?? $result['workflow_run_id'] ?? $options['run_id'] ?? null;
+        $run = is_string($runId)
+            ? NamespaceWorkflowScope::run($namespace, $instanceId, $runId)
+            : NamespaceWorkflowScope::currentRun($namespace, $instanceId);
         if ($run instanceof WorkflowRun) {
             $result['definition_routing'] = $this->definitionRouting->inspect($run);
         }
