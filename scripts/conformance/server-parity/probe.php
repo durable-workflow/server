@@ -71,7 +71,6 @@ function observedChildTransport(array &$polls, array &$completions, array &$acti
     // Observe real published transport I/O. No response or request is changed,
     // and authentication headers are never retained.
     $stack = HandlerStack::create();
-    $stack->unshift(LockPressurePollRetries::middleware(), 'lock_pressure_poll_retry');
     $stack->push(static function (callable $handler) use (&$polls, &$completions, &$activityPolls, &$activityOutcomes, $afterCompletion, &$scheduleReceipts): callable {
         return static function (RequestInterface $request, array $options) use ($handler, &$polls, &$completions, &$activityPolls, &$activityOutcomes, $afterCompletion, &$scheduleReceipts) {
             return $handler($request, $options)->then(static function (ResponseInterface $response) use ($request, &$polls, &$completions, &$activityPolls, &$activityOutcomes, $afterCompletion, &$scheduleReceipts): ResponseInterface {
@@ -108,6 +107,7 @@ function observedChildTransport(array &$polls, array &$completions, array &$acti
             });
         };
     });
+    $stack->push(LockPressurePollRetries::middleware(), 'lock_pressure_poll_retry');
 
     return new Psr18Transport(client: new GuzzleClient(['http_errors' => false, 'handler' => $stack]));
 }

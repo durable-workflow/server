@@ -46,7 +46,6 @@ function namespaceHttpRun(Client $client, string $workflowId, string $runId): ar
 function namespaceTransport(array &$receipts, ?Closure $beforeCompletion = null): Psr18Transport
 {
     $stack = HandlerStack::create();
-    $stack->unshift(LockPressurePollRetries::middleware(), 'lock_pressure_poll_retry');
     $stack->push(static function (callable $handler) use (&$receipts, $beforeCompletion): callable {
         return static function (RequestInterface $request, array $options) use ($handler, &$receipts, $beforeCompletion) {
             $path = $request->getUri()->getPath();
@@ -68,6 +67,7 @@ function namespaceTransport(array &$receipts, ?Closure $beforeCompletion = null)
             });
         };
     });
+    $stack->push(LockPressurePollRetries::middleware(), 'lock_pressure_poll_retry');
 
     return new Psr18Transport(client: new NamespaceHttp(['http_errors' => false, 'handler' => $stack,
         'connect_timeout' => 1, 'timeout' => 5]));

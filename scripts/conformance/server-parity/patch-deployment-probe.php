@@ -101,7 +101,6 @@ function patchHttpPhase(array $fixture, array $options): array
     $worker = $handle = null;
     $requests = $diagnostics = [];
     $stack = HandlerStack::create();
-    $stack->unshift(LockPressurePollRetries::middleware(), 'lock_pressure_poll_retry');
     $stack->push(static function (callable $handler) use (&$worker, &$requests, $phase, $fixture): callable {
         return static function (RequestInterface $request, array $transportOptions) use ($handler, &$worker, &$requests, $phase, $fixture) {
             return $handler($request, $transportOptions)->then(static function (ResponseInterface $response) use ($request, &$worker, &$requests, $phase, $fixture): ResponseInterface {
@@ -128,6 +127,7 @@ function patchHttpPhase(array $fixture, array $options): array
             });
         };
     });
+    $stack->push(LockPressurePollRetries::middleware(), 'lock_pressure_poll_retry');
     $client = parityClient($options['url'], namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null,
         transport: new Psr18Transport(client: new GuzzleClient(['http_errors' => false, 'handler' => $stack])));
     if ($phase === 'replacement') {

@@ -19,9 +19,11 @@ require_once __DIR__.'/lock-pressure-retry.php';
  * (see lockPressureOperationRetryDelay and lockPressurePollRetryDelay for the
  * exact conditions). This Guzzle middleware retries only that refusal, below the SDK transport, so
  * the transport keeps every capability the SDK checks (bounded requests,
- * payload transfer). It stops within the request's own timeout. Push it
- * innermost (HandlerStack::unshift) so recording middleware sees only the final
- * reply and observations stay comparable across targets. Retries are reported
+ * payload transfer). It stops within the request's own timeout. Push it after
+ * any recording middleware (HandlerStack::push), which makes it innermost:
+ * Guzzle wraps the stack in reverse, so unshift would put it outermost and let
+ * recorders see each refused attempt. Recorders then see only the final reply
+ * and observations stay comparable across targets. Retries are reported
  * once on stderr when the process exits.
  */
 final class LockPressurePollRetries
@@ -80,7 +82,7 @@ final class LockPressurePollRetries
     public static function transport(): Psr18Transport
     {
         $stack = HandlerStack::create();
-        $stack->unshift(self::middleware(), 'lock_pressure_poll_retry');
+        $stack->push(self::middleware(), 'lock_pressure_poll_retry');
 
         return new Psr18Transport(client: new GuzzleClient(['http_errors' => false, 'handler' => $stack]));
     }

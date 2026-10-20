@@ -26,7 +26,6 @@ require_once __DIR__.'/lock-pressure-middleware.php';
 function cooperativeObservedTransport(array &$traffic): Psr18Transport
 {
     $stack = HandlerStack::create();
-    $stack->unshift(LockPressurePollRetries::middleware(), 'lock_pressure_poll_retry');
     $stack->push(static function (callable $handler) use (&$traffic): callable {
         return static function (RequestInterface $request, array $options) use ($handler, &$traffic) {
             return $handler($request, $options)->then(static function (ResponseInterface $response) use ($request, &$traffic): ResponseInterface {
@@ -44,6 +43,7 @@ function cooperativeObservedTransport(array &$traffic): Psr18Transport
             });
         };
     });
+    $stack->push(LockPressurePollRetries::middleware(), 'lock_pressure_poll_retry');
 
     return new Psr18Transport(client: new GuzzleClient(['http_errors' => false, 'handler' => $stack]));
 }
