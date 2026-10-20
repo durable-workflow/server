@@ -153,7 +153,7 @@ jq -e --arg layout "$layout" '.status=="fingerprinted" and .source_layout==$layo
   and .php_quiescence_verified==false and .stored_representation_compatibility_verified==false' "$evidence/fingerprint.json" >/dev/null
 source_fingerprint=$(jq -r .fingerprint "$evidence/fingerprint.json")
 fingerprint "$database" > "$evidence/fingerprint-repeat.json" 2>> "$evidence/fingerprint.stderr"
-test "$(jq -r .fingerprint "$evidence/fingerprint-repeat.json")" = "$source_fingerprint"
+[[ "$(jq -r .fingerprint "$evidence/fingerprint-repeat.json")" == "$source_fingerprint" ]]
 # Back up the stopped source and restore it into a separate database, as the
 # backup procedure does. The restored copy must fingerprint equal, and one
 # changed row in it must change the fingerprint.
@@ -161,8 +161,10 @@ restored=upgrade_restore_ref${label:+_$label}
 case "$backend" in
   mysql)
     mysql_admin() {
-      docker run --rm -i --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint "$1" "$MYSQL_IMAGE" \
-        -h "$host" -uroot -p"$password" "${@:2}"
+      local tool=$1
+      shift
+      docker run --rm -i --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint "$tool" "$MYSQL_IMAGE" \
+        -h "$host" -uroot -p"$password" "$@"
     }
     mysql_admin mysqldump --single-transaction --quick --no-tablespaces "$database" > "$state/backup.sql" 2> "$evidence/backup.stderr"
     printf '%s\n' "$RESOURCE_SCOPE" > "$evidence/restore-owned.txt"
@@ -172,8 +174,10 @@ case "$backend" in
     change_restored() { mysql_admin mysql "$restored" -e 'UPDATE jobs SET attempts=attempts+1' 2>> "$evidence/backup.stderr"; } ;;
   pgsql)
     pg_admin() {
+      local tool=$1
+      shift
       docker run --rm -i --user=1000:1000 --network "$RESOURCE_SCOPE" -e PGPASSWORD="$password" \
-        --entrypoint "$1" "$POSTGRES_IMAGE" -h "$host" -U parity "${@:2}"
+        --entrypoint "$tool" "$POSTGRES_IMAGE" -h "$host" -U parity "$@"
     }
     pg_admin pg_dump -Fc -d "$database" > "$state/backup.dump" 2> "$evidence/backup.stderr"
     printf '%s\n' "$RESOURCE_SCOPE" > "$evidence/restore-owned.txt"
@@ -190,9 +194,10 @@ case "$backend" in
     change_restored() {
       php_run -r '(new PDO("sqlite:/state/restored.sqlite"))->exec("UPDATE jobs SET attempts=attempts+1") === 1 || exit(1);'
     } ;;
+  *) exit 2 ;;
 esac
 fingerprint "$restored" > "$evidence/restored-fingerprint.json" 2>> "$evidence/fingerprint.stderr"
-test "$(jq -r .fingerprint "$evidence/restored-fingerprint.json")" = "$source_fingerprint"
+[[ "$(jq -r .fingerprint "$evidence/restored-fingerprint.json")" == "$source_fingerprint" ]]
 change_restored
 fingerprint "$restored" > "$evidence/changed-fingerprint.json" 2>> "$evidence/fingerprint.stderr"
 changed_fingerprint=$(jq -r .fingerprint "$evidence/changed-fingerprint.json")
