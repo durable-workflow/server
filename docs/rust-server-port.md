@@ -26,13 +26,13 @@ Updated October 19, 2026, after merging #460.
 - **Shared-suite reliability.** Each 13-job run still tends to show one
   intermittent failure in a step its change does not touch, and qualification
   records classify each one. Diagnosed and corrected: published PHP SQLite
-  reference lock pressure, and CPU observer client timing. Diagnosed, decision
-  pending: the query-authority deadline-boundary replay (see known gaps).
+  reference lock pressure, CPU observer client timing, and native replay of a
+  live query lease to a fresh poll, which published PHP never does without a
+  matching poll request id.
   Not yet diagnosed: one native-test failure in `execution-and-codec` step 8 on
   main's post-#478 run, which four local repetitions under the CI limits did
   not reproduce.
-- **Next action.** Decide the query deadline-boundary replay contract and add
-  its fixture. Then correct native timer dispatch under CPU load with a
+- **Next action.** Correct native timer dispatch under CPU load with a
   deadline-health control. Then continue the remaining parity families, the
   backup-first in-place takeover and the performance baseline on disposable
   hosts.
@@ -74,16 +74,6 @@ contract fixture before its correction.
   and native then correctly fences the attempt. A heartbeat timeout comfortably
   above the request timeout, still inside the 9-second load wave, needs its own
   reviewed profile change.
-- **Query replay at the deadline boundary.** Both implementations replay a live
-  query lease to its owner on a fresh poll without a request id. The installed
-  Rust query client cancels a late handler at its view of the query deadline and
-  polls again. Native can answer that poll a fraction of a millisecond before
-  the stored microsecond expiry and replay the task, so the client records a
-  second claim. Published PHP's request overhead keeps it past the deadline in
-  practice. One of six local SQLite cohort runs failed this way. Decide whether
-  native stops replaying a lease with less than a minimum delivery budget left,
-  or whether the fixture counts a boundary replay as the same claim, then add the
-  fixture before changing either side.
 
 - **A valid workflow task claim held by a stale worker.** Published PHP
   refuses a request whose lease is otherwise valid when its owner's
