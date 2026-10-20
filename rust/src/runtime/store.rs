@@ -121,6 +121,14 @@ where
             .await
             .map(|inner| Transaction::new(inner, self.history_budget))
     }
+    // Reads that change nothing use one consistent read-only snapshot instead
+    // of the transition lock, so they neither wait for nor delay transitions.
+    pub(super) async fn begin_read(&self) -> Result<Transaction<'static, DB>> {
+        Ok(Transaction::new(
+            self.pool.begin_with(DB::READ_SNAPSHOT_BEGIN).await?,
+            self.history_budget,
+        ))
+    }
     pub(crate) async fn start(
         &self,
         body: Value,
@@ -1255,7 +1263,7 @@ where
 
     pub(crate) async fn task_history(&self, task_id: &str, body: Value) -> Result<Value> {
         let after = super::http::decode_cursor(body["next_history_page_token"].as_str());
-        let mut tx = self.begin().await?;
+        let mut tx = self.begin_read().await?;
         let task = self.task_row(&mut tx, task_id).await?;
         if DB::string(&task, "task_type")? != "workflow" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
