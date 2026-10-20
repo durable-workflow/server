@@ -119,6 +119,7 @@ while ($pending !== [] && microtime(true) < $deadline) {
 
 $verified = 0;
 $attemptsByWorkflow = [];
+$repairedWorkflows = [];
 foreach ($completed as $id => $execution) {
     try {
         if ($execution->output !== $blob) {
@@ -132,7 +133,10 @@ foreach ($completed as $id => $execution) {
         }
         $types = array_column($events, 'event_type');
         $counts = array_count_values($types);
-        $allowed = ['StartAccepted', 'WorkflowStarted', 'ActivityScheduled', 'ActivityStarted', 'ActivityCompleted', 'WorkflowCompleted'];
+        // A worker that dies holding a workflow task lease leaves the task to
+        // the server's expired-lease recovery, which records RepairRequested.
+        $allowed = ['StartAccepted', 'WorkflowStarted', 'ActivityScheduled', 'ActivityStarted', 'ActivityCompleted',
+            'WorkflowCompleted', 'RepairRequested'];
         if (($unexpected = array_diff(array_keys($counts), $allowed)) !== []) {
             throw new MultinodeVerificationFailure('unexpected events '.implode(',', $unexpected));
         }
@@ -151,6 +155,9 @@ foreach ($completed as $id => $execution) {
             throw new MultinodeVerificationFailure('events out of order');
         }
         $attemptsByWorkflow[count($starts)] = ($attemptsByWorkflow[count($starts)] ?? 0) + 1;
+        if (($counts['RepairRequested'] ?? 0) > 0) {
+            $repairedWorkflows[$id] = $counts['RepairRequested'];
+        }
         $verified++;
     } catch (Throwable $error) {
         $errors[] = $id.': verification: '.$error->getMessage();
@@ -174,6 +181,7 @@ echo json_encode([
     'completed' => count($completed),
     'verified' => $verified,
     'activity_attempts_per_workflow' => $attemptsByWorkflow,
+    'repairs_by_workflow' => (object) $repairedWorkflows,
     'retries' => $retries,
     'errors' => $errors,
     'outcome' => $errors === [] && $verified === $planned ? 'pass' : 'fail',

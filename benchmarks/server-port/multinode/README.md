@@ -52,7 +52,10 @@ Each window passes only if every planned workflow completed, with:
 - contiguous history sequences;
 - exactly one `WorkflowStarted`, `ActivityScheduled`, `ActivityCompleted` and
   `WorkflowCompleted`, in that order;
-- an `ActivityCompleted` from the last attempt that started.
+- an `ActivityCompleted` from the last attempt that started;
+- no other events except `ActivityStarted` and `RepairRequested`. The server
+  records `RepairRequested` when it recovers the expired lease of a worker
+  that died holding a workflow task; the workload counts these recoveries.
 
 Afterwards the database audit must find:
 
@@ -78,4 +81,4 @@ qualification.
 
 ## Results
 
-- [2026-10-20](results-2026-10-20.md): MySQL, PostgreSQL and SQLite passed.
+- [2026-10-20](results-2026-10-20.md): MySQL, MariaDB, PostgreSQL and SQLite passed.
