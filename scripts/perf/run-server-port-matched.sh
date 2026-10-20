@@ -125,9 +125,11 @@ sample() {
       dir=$(cgroup_dir "$id")
       [[ -r $dir/cpu.stat ]] || continue
       name=${names[$id]}
-      usage=$(awk '/^usage_usec/ {print $2}' "$dir/cpu.stat")
-      memory=$(cat "$dir/memory.current")
-      oom=$(awk '/^oom_kill/ {print $2}' "$dir/memory.events")
+      # A probe container can exit between the check and the reads. Skip it
+      # instead of letting errexit end the sampler for the rest of the run.
+      usage=$(awk '/^usage_usec/ {print $2}' "$dir/cpu.stat" 2>/dev/null) || continue
+      memory=$(cat "$dir/memory.current" 2>/dev/null) || continue
+      oom=$(awk '/^oom_kill/ {print $2}' "$dir/memory.events" 2>/dev/null) || continue
       printf '%s\t%s\t%s\t%s\t%s\n' "$now" "$name" "$usage" "$memory" "$oom"
     done >> "$out/samples.tsv"
     sleep 1
