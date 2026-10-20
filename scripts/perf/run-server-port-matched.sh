@@ -144,12 +144,13 @@ host_state start
 dc "${profiles[@]}" up -d --wait "${services[@]}" >> "$out/run.log" 2>&1
 sample & samplers+=($!)
 network="${project}_default"
-image=$(dc config --format json | jq -r '.services.probe.image')
+image=$(dc --profile clients config --format json | jq -r '.services.probe.image')
+test "$image" != null || { log "no probe image in the Compose configuration"; exit 1; }
 docker run -d --name "$project-health" --label "com.docker.compose.project=$project-observer" \
   --network "$network" --user 1000:1000 --cpus 0.1 --memory 64m --entrypoint sh "$image" -c \
   "while :; do for path in health ready; do printf '%s %s ' \"\$(date -u +%s.%N)\" \$path; \
    curl -s -o /dev/null -w '%{http_code} %{time_total}\n' --max-time 2 $DW_PORT_RUNTIME_URL/api/\$path || echo 'error -'; done; sleep 1; done" \
-  > /dev/null
+  > /dev/null 2>> "$out/run.log"
 dc --profile clients up -d sdk-worker >> "$out/run.log" 2>&1
 
 window setup "${rates[0]}" 5
