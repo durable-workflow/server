@@ -28,6 +28,7 @@ class HealthControllerTest extends TestCase
 
     public function test_readiness_refuses_a_connected_database_that_cannot_execute_bound_reads(): void
     {
+        $originalDefault = config('database.default');
         $pdo = DB::connection()->getPdo();
         DB::extend('broken_bound_reads', static fn (array $config): SQLiteConnection => new class($pdo, ':memory:', '', $config) extends SQLiteConnection
         {
@@ -45,10 +46,17 @@ class HealthControllerTest extends TestCase
             'database.default' => 'broken_bound_reads',
         ]);
 
-        $this->getJson('/api/ready')
-            ->assertStatus(503)
-            ->assertJsonPath('checks.database.status', 'unavailable')
-            ->assertJsonPath('checks.database.reason', 'database_query_failed');
+        try {
+            $this->getJson('/api/ready')
+                ->assertStatus(503)
+                ->assertJsonPath('checks.database.status', 'unavailable')
+                ->assertJsonPath('checks.database.reason', 'database_query_failed');
+        } finally {
+            // RefreshDatabase must roll back its original connection, not
+            // this wrapper around the same PDO. In-memory suites reuse it.
+            config(['database.default' => $originalDefault]);
+            DB::purge('broken_bound_reads');
+        }
     }
 
     public function test_health_check_returns_serving_when_database_is_available(): void

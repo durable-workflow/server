@@ -103,7 +103,7 @@ final class ServerReadiness
                 $queryAttempted = true;
                 $row = $connection->selectOne('SELECT ? AS readiness_probe', [1], useReadPdo: false);
                 if ((string) ($row->readiness_probe ?? '') !== '1') {
-                    throw new \RuntimeException('The database did not return the readiness probe value.');
+                    throw new \UnexpectedValueException('The database did not return the readiness probe value.');
                 }
             }
 
@@ -116,10 +116,15 @@ final class ServerReadiness
                     : 'The database connection is available. Write capacity has not been verified.',
             ];
         } catch (\Throwable $exception) {
+            $reason = $queryAttempted ? 'database_query_failed' : null;
+            if (BackendUnavailable::is($exception)) {
+                $reason = 'backend_unavailable';
+            }
+
             return [
                 'status' => 'unavailable',
                 'message' => $exception->getMessage(),
-                'reason' => BackendUnavailable::is($exception) ? 'backend_unavailable' : ($queryAttempted ? 'database_query_failed' : null),
+                'reason' => $reason,
             ];
         }
     }
