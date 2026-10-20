@@ -93,7 +93,7 @@ class DatabaseStorageExhaustedTest extends TestCase
         $this->getJson('/api/ready')
             ->assertOk()
             ->assertJsonPath('checks.database.status', 'ok')
-            ->assertJsonPath('checks.database.check_scope', 'connection_only')
+            ->assertJsonPath('checks.database.check_scope', 'bound_read_query')
             ->assertJsonPath('checks.database.write_capacity_verified', false);
     }
 
