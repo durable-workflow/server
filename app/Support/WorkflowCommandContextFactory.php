@@ -26,7 +26,7 @@ final class WorkflowCommandContextFactory
         $context = CommandContext::controlPlane()->with([
             'caller' => $this->callerMetadata($request),
             'auth' => $this->authMetadata($principal, $request, $defaultAuthStatus, $defaultAuthMethod),
-            'request' => $this->requestMetadata($request),
+            'request' => $this->requestMetadata($request, $commandName),
             'server' => [
                 'operation_id' => (string) Str::ulid(),
                 'namespace' => $request->attributes->get('namespace'),
@@ -203,7 +203,7 @@ final class WorkflowCommandContextFactory
     /**
      * @return array<string, mixed>
      */
-    private function requestMetadata(Request $request): array
+    private function requestMetadata(Request $request, string $commandName): array
     {
         $path = '/'.ltrim($request->path(), '/');
         $headers = array_filter([
@@ -223,7 +223,9 @@ final class WorkflowCommandContextFactory
             JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
         );
 
-        $requestId = $headers['x_request_id'] ?? $this->bodyRequestId($request);
+        $requestId = $commandName === 'update'
+            ? $this->bodyRequestId($request)
+            : ($headers['x_request_id'] ?? $this->bodyRequestId($request));
 
         return array_filter([
             'method' => $request->method(),

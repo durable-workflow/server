@@ -29,6 +29,7 @@ use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\ServiceExecutionContract;
 use Workflow\V2\Support\TypeRegistry;
+use Workflow\V2\Support\UpdateRequestIdentity;
 use Workflow\V2\Support\WorkerHistoryPayloadContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
@@ -115,6 +116,10 @@ final class WorkflowPackageApiFloor
         // validation for external workers.
         [RunCommandContract::class, 'forRun'],
         [RunCommandContract::class, 'signalContract'],
+        // Update receipts require caller-key lookup before any new admission.
+        // A stale package must refuse at boot instead of failing a request.
+        [UpdateRequestIdentity::class, 'fromContext'],
+        [UpdateRequestIdentity::class, 'find'],
         [TypeRegistry::class, 'resolveWorkflowClass'],
         [WorkflowDefinition::class, 'hasSignal'],
         [WorkflowDefinition::class, 'signalContract'],

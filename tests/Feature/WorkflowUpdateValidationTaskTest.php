@@ -11,6 +11,7 @@ use App\Support\ServerWorkflowControlPlane;
 use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowUpdateValidationTaskBroker;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
 use Workflow\Serializers\CodecRegistry;
@@ -100,6 +101,18 @@ class WorkflowUpdateValidationTaskTest extends TestCase
             ->assertJsonPath('update_id', $response->json('update_id'));
         $this->assertSame(1, $this->historyCount($run, HistoryEventType::UpdateAccepted));
         $this->assertSame(1, WorkflowUpdateValidationTask::query()->firstOrFail()->attempt_count);
+
+        $before = [];
+        foreach (['workflow_commands', 'workflow_updates', 'workflow_update_validation_tasks', 'workflow_history_events'] as $table) {
+            $before[$table] = DB::table($table)->orderBy('id')->get()->toArray();
+        }
+        $this->postJson('/api/workflows/wf-validator-approved/update/approve', [
+            'input' => [false], 'request_id' => 'approved-request', 'wait_for' => 'accepted',
+        ], [...$this->apiHeaders(), 'X-Request-Id' => 'different-proxy'])
+            ->assertAccepted()->assertJsonPath('update_id', $response->json('update_id'));
+        foreach ($before as $table => $rows) {
+            $this->assertEquals($rows, DB::table($table)->orderBy('id')->get()->toArray());
+        }
 
         $completion = $broker->approve(
             'default',
