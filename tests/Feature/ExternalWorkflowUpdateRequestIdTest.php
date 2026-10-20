@@ -27,7 +27,7 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
     }
 
     #[DataProvider('namespaces')]
-    public function test_request_id_reused_for_another_declared_name_returns_original_without_mutation(string $namespace): void
+    public function test_request_id_reused_for_another_declared_name_conflicts_without_mutation(string $namespace): void
     {
         $this->startRemote('retained-original', $namespace);
         $original = $this->postJson('/api/workflows/retained-original/update/add', [
@@ -38,17 +38,16 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
         $this->postJson('/api/workflows/retained-original/update/other', [
             'input' => [99], 'request_id' => 'retained-key', 'wait_for' => 'accepted',
         ], $this->apiHeaders($namespace))
-            ->assertAccepted()
-            ->assertJsonPath('update_id', $original->json('update_id'))
-            ->assertJsonPath('command_id', $original->json('command_id'))
-            ->assertJsonPath('run_id', $original->json('run_id'))
-            ->assertJsonPath('update_name', 'add')
-            ->assertJsonPath('update_status', 'accepted');
+            ->assertConflict()
+            ->assertJsonPath('reason', 'request_id_conflict')
+            ->assertJsonPath('request_id', 'retained-key')
+            ->assertJsonPath('retained_command_id', $original->json('command_id'))
+            ->assertJsonPath('retained_command_type', 'update');
 
         $this->assertSame($before, $this->durableRows());
     }
 
-    public function test_same_name_changed_arguments_keeps_existing_receipt(): void
+    public function test_same_name_changed_arguments_conflicts_without_mutation(): void
     {
         $this->startRemote('same-name');
         $original = $this->postJson('/api/workflows/same-name/update/add', [
@@ -58,9 +57,32 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
 
         $this->postJson('/api/workflows/same-name/update/add', [
             'input' => [99], 'request_id' => 'retained-key',
-        ], $this->apiHeaders())->assertAccepted()
-            ->assertJsonPath('update_id', $original->json('update_id'));
+        ], $this->apiHeaders())->assertConflict()
+            ->assertJsonPath('reason', 'request_id_conflict')
+            ->assertJsonPath('retained_command_id', $original->json('command_id'));
 
+        $this->assertSame($before, $this->durableRows());
+    }
+
+    public function test_same_intent_reports_the_original_key_and_verified_retained_receipt(): void
+    {
+        $this->startRemote('same-intent');
+        $first = $this->postJson('/api/workflows/same-intent/update/add', [
+            'input' => [17], 'request_id' => 'caller-key',
+        ], [...$this->apiHeaders(), 'X-Request-Id' => 'proxy-a'])->assertAccepted()
+            ->assertJsonPath('request_id', 'caller-key')
+            ->assertJsonPath('retained', false)
+            ->assertJsonPath('intent_verified', true);
+        $before = $this->durableRows();
+
+        $this->postJson('/api/workflows/same-intent/update/add', [
+            'input' => ['amount' => 17], 'request_id' => 'caller-key',
+        ], [...$this->apiHeaders(), 'X-Request-Id' => 'proxy-b'])->assertAccepted()
+            ->assertJsonPath('command_id', $first->json('command_id'))
+            ->assertJsonPath('update_id', $first->json('update_id'))
+            ->assertJsonPath('request_id', 'caller-key')
+            ->assertJsonPath('retained', true)
+            ->assertJsonPath('intent_verified', true);
         $this->assertSame($before, $this->durableRows());
     }
 
