@@ -412,31 +412,38 @@ version-1/version-2/version-3 development schemas are refused without conversion
 needed old development data separately; this unpublished slice supplies no
 older-development converter. Use a new isolated file for version 4.
 
-This refusal is not the upgrade mechanism. A stopped PHP SQLite database can
-be taken over with the development `upgrade-takeover` command, following the
-[takeover design](../docs/rust-server-upgrade-takeover.md):
+This refusal is not the upgrade mechanism. A stopped PHP SQLite or PostgreSQL
+database can be taken over with the development `upgrade-takeover` command,
+following the [takeover design](../docs/rust-server-upgrade-takeover.md):
 
 1. Run PHP Server 2.5.14 or later, which refuses a Rust-owned database, and
    stop every PHP role.
-2. Run `upgrade-fingerprint` on the source, mounted read-only. Back the file
-   up, restore the backup to a separate path, and fingerprint that too. The
-   digests must be equal.
+2. Run `upgrade-fingerprint` on the source: a SQLite file mounted read-only,
+   or PostgreSQL through a read-only role. Back the database up (a file copy,
+   or `pg_dump`), restore the backup separately, and fingerprint that too.
+   The digests must be equal.
 3. Run `upgrade-takeover` with `DW_UPGRADE_BACKUP_FINGERPRINT` set to that
    digest and the original queue settings (`DW_RUST_UPGRADE_QUEUE_*`, as for
-   `upgrade-queue-inspect`).
+   `upgrade-queue-inspect`). PostgreSQL uses the owner's `DB_*` settings.
 
 Inspection, the fingerprint check, the conversion of the recorded PHP release
 layout, the native relations, the migration ledger and native's own startup
-verification all happen in one exclusive transaction. A refusal or an
-interruption leaves the PHP file unchanged. The command refuses:
+verification all happen in one transaction. SQLite holds the file
+exclusively; PostgreSQL takes native's bootstrap lock and locks every table
+before reading, and refuses with `upgrade_source_in_use` if a session still
+holds one after five seconds. A refusal leaves the PHP database unchanged. An
+interrupted takeover commits nothing: rerun it with the same digest. On
+SQLite, the rerun lets SQLite roll back the journal the interrupted run left,
+and the fingerprint check then proves the file is the backed-up one. The
+command refuses:
 
 - a digest that differs, so any write after the backup stops it;
 - unrecognized queued jobs, external payloads and service calls;
 - a layout other than the frozen one, PHP 2.8.0 or PHP 2.9.7, or a database
   native already owns.
 
-PostgreSQL and MySQL/MariaDB takeover, nested payload columns and multi-node
-qualification remain open. **Never connect PHP to a Rust development database.**
+MySQL/MariaDB takeover, nested payload columns and multi-node qualification
+remain open. **Never connect PHP to a Rust development database.**
 Named namespace isolation and configured worker/operator/admin roles have
 representative shared qualification. Principal/custom-provider credentials and
 the full authorization contract remain open. Broader timer/signal semantics, failure/retry policy, cancellation and the rest of the API also

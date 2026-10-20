@@ -936,6 +936,71 @@ async fn takeover_converts_a_php_297_database_that_native_then_opens() {
 }
 
 #[tokio::test]
+#[ignore = "only invoked as a real subprocess by the takeover interruption test"]
+async fn sqlite_takeover_child() {
+    let path = std::env::var("DW_TAKEOVER_TEST_DATABASE").unwrap();
+    let fingerprint = std::env::var("DW_TAKEOVER_TEST_FINGERPRINT").unwrap();
+    // Parks just before the commit, where the parent kills this process.
+    let report = takeover::take_over_sqlite(&path, &fingerprint, &queue_config()).await;
+    panic!("takeover returned instead of parking: {report:?}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn takeover_killed_before_commit_leaves_php_data_and_can_be_rerun() {
+    use std::os::unix::process::ExitStatusExt;
+    let (directory, path) = php297_layout().await;
+    let fingerprint = backup_fingerprint(&path).await;
+    let original = std::fs::read(&path).unwrap();
+    let receipt = directory.path().join("boundary");
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "runtime::upgrade::tests::sqlite_takeover_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("DW_TAKEOVER_TEST_DATABASE", &path)
+        .env("DW_TAKEOVER_TEST_FINGERPRINT", &fingerprint)
+        .env("DW_TAKEOVER_TEST_RECEIPT", &receipt)
+        .spawn()
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while !receipt.exists() && tokio::time::Instant::now() < deadline {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("child exited before the commit point: {status}");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    if !receipt.exists() {
+        child.kill().unwrap();
+        child.wait().unwrap();
+        panic!("child did not reach the commit point");
+    }
+    child.kill().unwrap();
+    assert_eq!(child.wait().unwrap().signal(), Some(9));
+    // Either SQLite had not written the file yet, or its rollback journal
+    // still holds the original pages. Read-only inspection never recovers it.
+    if Path::new(&format!("{path}-journal")).exists() {
+        reason(
+            inspect_sqlite(&path).await,
+            "upgrade_source_sqlite_journal_unqualified",
+        );
+    } else {
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+    // Rerunning with the same verified fingerprint rolls the journal back,
+    // finds the backed-up PHP database and takes it over.
+    let report = takeover::take_over_sqlite(&path, &fingerprint, &queue_config())
+        .await
+        .unwrap();
+    assert_eq!(report["status"], "taken_over", "{report}");
+    assert_eq!(report["fingerprint"], fingerprint.as_str());
+    let runtime = crate::runtime::Runtime::open(&path, "test-token".into()).await.unwrap();
+    runtime.close().await;
+}
+
+#[tokio::test]
 async fn takeover_of_the_frozen_layout_adds_only_native_relations() {
     let (_directory, path) = php_layout().await;
     mutate(&path, "DELETE FROM jobs").await;

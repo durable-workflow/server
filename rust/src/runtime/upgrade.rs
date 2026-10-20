@@ -452,7 +452,16 @@ pub(super) async fn open_sqlite_file(
                 "upgrade_source_sqlite_journal_unqualified",
             ));
         }
-        for suffix in ["-wal", "-shm", "-journal"] {
+        // A killed takeover leaves its rollback journal. Takeover opens the
+        // file writable, so SQLite rolls that journal back before anything is
+        // read, and the fingerprint then proves the result is the backed-up
+        // PHP database. Read-only opens never attempt that recovery.
+        let sidecars: &[&str] = if writable {
+            &["-wal", "-shm"]
+        } else {
+            &["-wal", "-shm", "-journal"]
+        };
+        for suffix in sidecars {
             if tokio::fs::try_exists(format!("{path}{suffix}")).await? {
                 return Err(refuse(
                     StatusCode::CONFLICT,
@@ -566,47 +575,77 @@ async fn inspect_postgres_inner(
 ) -> Result<Value> {
     queue_config(queues)?;
     let deadline = Instant::now() + BUDGET;
-    let mut connection = timeout_at(
+    let connection = timeout_at(
         deadline,
         PgConnection::connect_with(&postgres::source_options(options)),
     )
     .await
     .map_err(|_| expired())??;
-    let result = timeout_at(deadline, async {
+    bounded(connection, deadline, async |connection| {
         let mut tx = connection
             .begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .await?;
-        let (catalog, layout) = postgres::php_source_catalog(&mut tx).await?;
-        let tables: Vec<String> = catalog
-            .iter()
-            .filter(|(kind, _, data)| kind == "relation" && data.0["kind"] == "r")
-            .map(|(_, name, _)| name.clone())
-            .collect();
-        let counts = count_tables!(tx, tables, '"');
-        let queue_inspection = match queues {
-            Some(config) => {
-                Some(queue_scan::inspect::<sqlx::Postgres>(&mut *tx, config, counts["jobs"]).await?)
-            }
-            None => None,
-        };
-        let payload_inspection = if payloads {
-            Some(payload_scan::inspect::<sqlx::Postgres>(&mut *tx, &counts).await?)
-        } else {
-            None
-        };
+        let report = postgres_inventory(&mut tx, queues, payloads).await;
         tx.rollback().await?;
-        report(
-            "pgsql",
-            &catalog,
-            layout,
-            counts,
-            queue_inspection,
-            payload_inspection,
-        )
+        report
     })
     .await
-    .map_err(|_| expired())
-    .and_then(|result| result);
+}
+
+/// The PostgreSQL inspection report, read inside the caller's transaction.
+pub(super) async fn postgres_inventory(
+    tx: &mut PgConnection,
+    queues: Option<&QueueSourceConfig<'_>>,
+    payloads: bool,
+) -> Result<Value> {
+    let (catalog, layout) = postgres::php_source_catalog(&mut *tx).await?;
+    let tables: Vec<String> = catalog
+        .iter()
+        .filter(|(kind, _, data)| kind == "relation" && data.0["kind"] == "r")
+        .map(|(_, name, _)| name.clone())
+        .collect();
+    let counts = count_tables!(tx, tables, '"');
+    let queue_inspection = match queues {
+        Some(config) => {
+            Some(queue_scan::inspect::<sqlx::Postgres>(&mut *tx, config, counts["jobs"]).await?)
+        }
+        None => None,
+    };
+    let payload_inspection = if payloads {
+        Some(payload_scan::inspect::<sqlx::Postgres>(&mut *tx, &counts).await?)
+    } else {
+        None
+    };
+    report(
+        "pgsql",
+        &catalog,
+        layout,
+        counts,
+        queue_inspection,
+        payload_inspection,
+    )
+}
+
+/// The frozen migration from its ownership marker on, then the incarnation
+/// migration: what a fresh native bootstrap adds after the frozen PHP layout.
+pub(super) fn native_relations(frozen: &str, marker: &str, incarnations: &str) -> Result<String> {
+    let start = frozen
+        .find(marker)
+        .ok_or_else(|| refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"))?;
+    Ok(format!("{}\n{incarnations}", &frozen[start..]))
+}
+
+/// Runs work on a dedicated source connection within the deadline, then
+/// closes the connection whatever the work returned.
+pub(super) async fn bounded<C: Connection>(
+    mut connection: C,
+    deadline: Instant,
+    work: impl AsyncFnOnce(&mut C) -> Result<Value>,
+) -> Result<Value> {
+    let result = timeout_at(deadline, work(&mut connection))
+        .await
+        .map_err(|_| expired())
+        .and_then(|result| result);
     close(connection.close()).await?;
     result
 }

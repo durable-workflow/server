@@ -53,6 +53,12 @@ case "$backend" in
   *) ;;
 esac
 fi
+if [[ $backend == pgsql && -f "$evidence/takeover-owned.txt" && "$(cat "$evidence/takeover-owned.txt")" == "$RESOURCE_SCOPE" ]]; then
+  docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" -e PGPASSWORD="$password" \
+    --entrypoint psql "$POSTGRES_IMAGE" -h "${DW_PARITY_UPGRADE_DB_HOST:-parity-pg}" -U parity -d postgres -v ON_ERROR_STOP=1 \
+    -c "DROP DATABASE IF EXISTS upgrade_takeover_ref${label:+_$label}" \
+    >> "$evidence/database-cleanup.txt" 2>&1
+fi
 if test -f "$evidence/roles-owned.txt" && test "$(cat "$evidence/roles-owned.txt")" = "$RESOURCE_SCOPE"; then
   if test "$backend" = mysql; then
     docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint mysql "$MYSQL_IMAGE" \

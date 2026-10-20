@@ -52,9 +52,10 @@ else
   chmod 0666 "$state/database.sqlite"
 fi
 printf '%s\n' "$RESOURCE_SCOPE" > "$evidence/database-owned.txt"
-# SQLite also takes over a copy and resumes the originals, so its timer is short.
+# SQLite and PostgreSQL also take over a copy and resume the originals, so
+# their timer is short.
 timer_seconds=600
-if test "$backend" = sqlite; then timer_seconds=60; fi
+if [[ $backend == sqlite || $backend == pgsql ]]; then timer_seconds=60; fi
 configuration=("${admin[@]}" -e DB_DATABASE="$database" -e DW_AUTH_TOKEN=upgrade-fixture-token
   -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DB_SQLITE_JOURNAL_MODE=DELETE)
 php_run() {
@@ -205,28 +206,44 @@ change_restored
 fingerprint "$restored" > "$evidence/changed-fingerprint.json" 2>> "$evidence/fingerprint.stderr"
 changed_fingerprint=$(jq -r .fingerprint "$evidence/changed-fingerprint.json")
 [[ $changed_fingerprint =~ ^sha256:[0-9a-f]{64}$ && $changed_fingerprint != "$source_fingerprint" ]]
-if test "$backend" = sqlite; then
-  # Backup-first takeover of a copy of the stopped source, as an operator's
-  # live database: its digest is the one the restored backup matched. Native
-  # then resumes the originals, and PHP must refuse the upgraded file.
-  cp "$state/database.sqlite" "$state/takeover.sqlite"
+# Backup-first takeover of a copy of the stopped source, as an operator's
+# live database: its digest is the one the restored backup matched. Native
+# then resumes the originals, and PHP must refuse the upgraded database.
+target=()
+case "$backend" in
+  sqlite)
+    cp "$state/database.sqlite" "$state/takeover.sqlite"
+    target=(-e DB_CONNECTION=sqlite -e DB_DATABASE=/state/takeover.sqlite)
+    target_network=none ;;
+  pgsql)
+    # The same backup restored once more, taken over with the owner role.
+    takeover_database=upgrade_takeover_ref${label:+_$label}
+    printf '%s\n' "$RESOURCE_SCOPE" > "$evidence/takeover-owned.txt"
+    pg_admin createdb "$takeover_database" 2>> "$evidence/backup.stderr"
+    pg_admin pg_restore --no-owner --exit-on-error -d "$takeover_database" < "$state/backup.dump" 2>> "$evidence/backup.stderr"
+    target=(-e DB_CONNECTION=pgsql -e DB_HOST="$host" -e DB_DATABASE="$takeover_database"
+      -e DB_USERNAME=parity -e DB_PASSWORD="$password")
+    target_network=$RESOURCE_SCOPE ;;
+  *) ;;
+esac
+if (( ${#target[@]} )); then
   docker run --rm --name "$resource-takeover" --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
-    --network none -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/takeover.sqlite -e DW_RUST_EXPERIMENTAL=1 \
+    --network "$target_network" "${target[@]}" -e DW_RUST_EXPERIMENTAL=1 \
     -e DW_UPGRADE_BACKUP_FINGERPRINT="$source_fingerprint" \
     -e DW_RUST_UPGRADE_QUEUE_CONNECTION=database -e DW_RUST_UPGRADE_QUEUE_DEFAULT_CONNECTION=database \
     -e DW_RUST_UPGRADE_QUEUE_DEFAULT_QUEUE=default \
     -v "$PWD/$state:/state" -v "$PWD/rust-target:/target:ro" \
     --entrypoint /target/debug/durable-workflow-server "$rust_image" upgrade-takeover \
     > "$evidence/takeover.json" 2> "$evidence/takeover.stderr"
-  jq -e --arg layout "$layout" --arg fingerprint "$source_fingerprint" '.status=="taken_over"
-    and .source_layout==$layout and .fingerprint==$fingerprint and .backup_fingerprint_matched==true
+  jq -e --arg backend "$backend" --arg layout "$layout" --arg fingerprint "$source_fingerprint" '.status=="taken_over"
+    and .backend==$backend and .source_layout==$layout and .fingerprint==$fingerprint
+    and .backup_fingerprint_matched==true
     and .converted.incarnations_copied==(if $layout=="frozen" then 0 else 1 end)
     and .stored_representation_compatibility_verified==false' "$evidence/takeover.json" >/dev/null
   docker run -d --name "$resource-native" --network "$RESOURCE_SCOPE" --network-alias parity-upgrade-native \
     --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m -e DW_RUST_EXPERIMENTAL=1 \
     -e DW_BIND_ADDRESS=0.0.0.0:8080 -e DW_AUTH_DRIVER=token -e DW_AUTH_TOKEN=upgrade-fixture-token \
-    -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/takeover.sqlite \
-    -v "$PWD/$state:/state" -v "$PWD/rust-target:/target:ro" \
+    "${target[@]}" -v "$PWD/$state:/state" -v "$PWD/rust-target:/target:ro" \
     --entrypoint /target/debug/durable-workflow-server "$rust_image" > "$evidence/native-container.txt"
   ready=0
   for attempt in $(seq 1 30); do
@@ -244,11 +261,10 @@ if test "$backend" = sqlite; then
     and .timer.events[-1]=="WorkflowCompleted"' "$evidence/resume.json" >/dev/null
   docker stop --signal SIGTERM --time 10 "$resource-native" >/dev/null
   if docker run --rm --name "$resource-control" --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
-    --network none -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/takeover.sqlite -e DW_AUTH_TOKEN=upgrade-fixture-token \
+    --network "$target_network" "${target[@]}" -e DW_AUTH_TOKEN=upgrade-fixture-token \
     -e CACHE_STORE=file -e QUEUE_CONNECTION=database -v "$PWD/$state:/state" --entrypoint php "$image" \
     artisan server:assert-php-database > "$evidence/php-refusal.txt" 2>&1; then exit 1; fi
   grep -q php_database_refused "$evidence/php-refusal.txt"
-  sqlite_takeover=true
 fi
 snapshot > "$evidence/after.json"
 cmp "$evidence/before.json" "$evidence/after.json"

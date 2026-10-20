@@ -143,11 +143,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             use durable_workflow_server::runtime::upgrade::{
                 queue_binding::QueueSourceConfig, takeover,
             };
-            if backend != "sqlite" {
+            if backend != "sqlite" && backend != "pgsql" {
                 eprintln!("upgrade_takeover_backend_unqualified");
                 return Err("upgrade takeover refused".into());
             }
-            let path = env::var("DB_DATABASE").map_err(|_| "DB_DATABASE is required")?;
             let fingerprint = env::var("DW_UPGRADE_BACKUP_FINGERPRINT")
                 .map_err(|_| "DW_UPGRADE_BACKUP_FINGERPRINT is required")?;
             // The original Laravel queue transport, as for upgrade-queue-inspect.
@@ -164,7 +163,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 default_connection: &default_connection,
                 default_queue: &default_queue,
             };
-            return match takeover::take_over_sqlite(&path, &fingerprint, &queues).await {
+            let result = if backend == "pgsql" {
+                takeover::take_over_postgres(postgres_options()?, &fingerprint, &queues).await
+            } else {
+                let path = env::var("DB_DATABASE").map_err(|_| "DB_DATABASE is required")?;
+                takeover::take_over_sqlite(&path, &fingerprint, &queues).await
+            };
+            return match result {
                 Ok(report) => {
                     println!("{report}");
                     Ok(())
