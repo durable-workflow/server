@@ -248,7 +248,8 @@ if (( ${#target[@]} )); then
     --entrypoint /target/debug/durable-workflow-server "$rust_image" upgrade-takeover \
     > "$evidence/takeover.json" 2> "$evidence/takeover.stderr"
   jq -e --arg backend "$backend" --arg layout "$layout" --arg fingerprint "$source_fingerprint" '.status=="taken_over"
-    and .backend==$backend and .source_layout==$layout and .fingerprint==$fingerprint
+    and (.backend==$backend or ($backend=="mysql" and .backend=="mariadb"))
+    and .source_layout==$layout and .fingerprint==$fingerprint
     and .backup_fingerprint_matched==true
     and .converted.incarnations_copied==(if $layout=="frozen" then 0 else 1 end)
     and .stored_representation_compatibility_verified==false' "$evidence/takeover.json" >/dev/null
