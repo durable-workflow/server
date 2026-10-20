@@ -489,13 +489,15 @@ pub async fn prepare_sqlite_source(path: &str) -> Result<Value> {
                     .filename(path)
                     .create_if_missing(false)
                     .foreign_keys(false)
-                    .busy_timeout(Duration::ZERO)
+                    .busy_timeout(Duration::from_secs(2))
                     .journal_mode(sqlx::sqlite::SqliteJournalMode::Delete),
             ),
         )
         .await
         .map_err(|_| expired())?;
-        // Leaving WAL needs the only connection; SQLite answers busy otherwise.
+        // Leaving WAL needs the only connection. SQLite answers busy when another
+        // still has the file after a short wait, which also covers a writer
+        // that is just closing.
         let mut connection = match opened {
             Ok(connection) => connection,
             Err(sqlx::Error::Database(error))
