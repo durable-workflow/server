@@ -143,7 +143,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             use durable_workflow_server::runtime::upgrade::{
                 queue_binding::QueueSourceConfig, takeover,
             };
-            if backend != "sqlite" && backend != "pgsql" {
+            if !matches!(backend.as_str(), "sqlite" | "pgsql" | "mysql" | "mariadb") {
                 eprintln!("upgrade_takeover_backend_unqualified");
                 return Err("upgrade takeover refused".into());
             }
@@ -165,6 +165,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             };
             let result = if backend == "pgsql" {
                 takeover::take_over_postgres(postgres_options()?, &fingerprint, &queues).await
+            } else if backend != "sqlite" {
+                takeover::take_over_mysql(mysql_options()?, &fingerprint, &queues).await
             } else {
                 let path = env::var("DB_DATABASE").map_err(|_| "DB_DATABASE is required")?;
                 takeover::take_over_sqlite(&path, &fingerprint, &queues).await

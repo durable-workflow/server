@@ -511,46 +511,68 @@ async fn inspect_mysql_inner(
 ) -> Result<Value> {
     queue_config(queues)?;
     let deadline = Instant::now() + BUDGET;
-    let (mut connection, backend) = mysql_source(options, deadline, false, 30).await?;
-    let result = timeout_at(deadline, async {
+    let (connection, backend) = mysql_source(options, deadline, false, 30).await?;
+    bounded(connection, deadline, async |connection| {
         let mut tx = connection.begin_with("START TRANSACTION READ ONLY").await?;
-        let (catalog, layout) = mysql::php_source_catalog(&mut tx).await?;
-        let tables: Vec<String> = catalog.iter().map(|(name, _)| name.clone()).collect();
-        let counts = count_tables!(tx, tables, '`');
-        let queue_inspection = match queues {
-            Some(config) => {
-                Some(queue_scan::inspect::<sqlx::MySql>(&mut *tx, config, counts["jobs"]).await?)
-            }
-            None => None,
-        };
-        let payload_inspection = if payloads {
-            Some(payload_scan::inspect::<sqlx::MySql>(&mut *tx, &counts).await?)
-        } else {
-            None
-        };
-        // MySQL's metadata is not an MVCC snapshot. Refuse a changed visible
-        // catalog rather than joining counts to a different schema.
-        if mysql::php_source_catalog(&mut tx).await?.0 != catalog {
-            return Err(refuse(
-                StatusCode::CONFLICT,
-                "upgrade_source_catalog_changed",
-            ));
-        }
+        let report = mysql_inventory(&mut tx, backend, queues, payloads, false).await;
         tx.rollback().await?;
-        report(
-            backend,
-            &catalog,
-            layout,
-            counts,
-            queue_inspection,
-            payload_inspection,
-        )
+        report
     })
     .await
-    .map_err(|_| expired())
-    .and_then(|result| result);
-    close(connection.close()).await?;
-    result
+}
+
+/// The PHP source catalog, or with `fenced` the catalog of a source whose
+/// takeover marker is all that has been written, with that marker set aside.
+pub(super) async fn mysql_source_catalog(
+    connection: &mut MySqlConnection,
+    fenced: bool,
+) -> Result<(Vec<(String, String)>, &'static str)> {
+    if fenced {
+        mysql::fenced_source_catalog(connection).await
+    } else {
+        mysql::php_source_catalog(connection).await
+    }
+}
+
+/// The MySQL or MariaDB inspection report, read inside the caller's
+/// transaction.
+pub(super) async fn mysql_inventory(
+    tx: &mut MySqlConnection,
+    backend: &str,
+    queues: Option<&QueueSourceConfig<'_>>,
+    payloads: bool,
+    fenced: bool,
+) -> Result<Value> {
+    let (catalog, layout) = mysql_source_catalog(&mut *tx, fenced).await?;
+    let tables: Vec<String> = catalog.iter().map(|(name, _)| name.clone()).collect();
+    let counts = count_tables!(tx, tables, '`');
+    let queue_inspection = match queues {
+        Some(config) => {
+            Some(queue_scan::inspect::<sqlx::MySql>(&mut *tx, config, counts["jobs"]).await?)
+        }
+        None => None,
+    };
+    let payload_inspection = if payloads {
+        Some(payload_scan::inspect::<sqlx::MySql>(&mut *tx, &counts).await?)
+    } else {
+        None
+    };
+    // MySQL's metadata is not an MVCC snapshot. Refuse a changed visible
+    // catalog rather than joining counts to a different schema.
+    if mysql_source_catalog(&mut *tx, fenced).await?.0 != catalog {
+        return Err(refuse(
+            StatusCode::CONFLICT,
+            "upgrade_source_catalog_changed",
+        ));
+    }
+    report(
+        backend,
+        &catalog,
+        layout,
+        counts,
+        queue_inspection,
+        payload_inspection,
+    )
 }
 
 pub async fn inspect_postgres(options: PgConnectOptions) -> Result<Value> {

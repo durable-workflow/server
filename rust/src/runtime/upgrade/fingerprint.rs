@@ -8,8 +8,8 @@
 //! per-table row counts leave the database. The fingerprint grants nothing:
 //! every compatibility, backup, quiescence and takeover flag stays false.
 use super::{
-    Result, bounded, expired, mysql, mysql_source, open_sqlite_source, postgres, readonly_source,
-    refuse, schema,
+    Result, bounded, expired, mysql_source, mysql_source_catalog, open_sqlite_source, postgres,
+    readonly_source, refuse, schema,
 };
 use axum::http::StatusCode;
 use futures_util::TryStreamExt;
@@ -17,8 +17,8 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use sqlx::{
-    AssertSqlSafe, Connection, PgConnection, Row, SqliteConnection, mysql::MySqlConnectOptions,
-    postgres::PgConnectOptions,
+    AssertSqlSafe, Connection, MySqlConnection, PgConnection, Row, SqliteConnection,
+    mysql::MySqlConnectOptions, postgres::PgConnectOptions,
 };
 use std::{collections::BTreeMap, time::Duration};
 use tokio::time::{Instant, timeout, timeout_at};
@@ -249,38 +249,46 @@ pub async fn fingerprint_mysql(options: MySqlConnectOptions) -> Result<Value> {
         let mut tx = connection
             .begin_with("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
             .await?;
-        let (catalog, layout) = mysql::php_source_catalog(&mut tx).await?;
-        let mut digest = Digest::new(backend, &catalog)?;
-        for (table, _) in &catalog {
-            let table = identifier(table)?;
-            let columns: Vec<(String, String)> = sqlx::query_as("SELECT CAST(COLUMN_NAME AS CHAR),CAST(DATA_TYPE AS CHAR) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? ORDER BY ORDINAL_POSITION")
-                .bind(table).fetch_all(&mut *tx).await?;
-            let key: Vec<String> = sqlx::query_scalar("SELECT CAST(COLUMN_NAME AS CHAR) FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND CONSTRAINT_NAME='PRIMARY' ORDER BY ORDINAL_POSITION")
-                .bind(table).fetch_all(&mut *tx).await?;
-            let (names, kinds): (Vec<String>, Vec<String>) = columns.into_iter().unzip();
-            digest.table(table, &names);
-            // Binary values render as hex literals; everything else as its
-            // quoted string form.
-            let sql = row_select(&format!("`{table}`"), &names, &key, '`', |c, index| {
-                match kinds[index].to_ascii_lowercase().as_str() {
-                    "binary" | "varbinary" | "tinyblob" | "blob" | "mediumblob" | "longblob" | "bit" => format!(
-                        "CAST(IF(`{c}` IS NULL,'NULL',CONCAT('X''',HEX(`{c}`),'''')) AS CHAR CHARACTER SET utf8mb4)"
-                    ),
-                    _ => format!("CAST(QUOTE(`{c}`) AS CHAR CHARACTER SET utf8mb4)"),
-                }
-            })?;
-            hash_rows!(tx, digest, table, sql, names.len());
-        }
-        // MySQL's metadata is not an MVCC snapshot. Refuse a catalog that
-        // changed while the rows were read.
-        if mysql::php_source_catalog(&mut tx).await?.0 != catalog {
-            return Err(refuse(
-                StatusCode::CONFLICT,
-                "upgrade_source_catalog_changed",
-            ));
-        }
+        let report = mysql_digest(&mut tx, backend, false).await;
         tx.rollback().await?;
-        Ok(digest.report(backend, layout))
+        report
     })
     .await
+}
+
+/// The MySQL or MariaDB fingerprint report, read inside the caller's
+/// consistent snapshot. With `fenced`, a takeover's own marker is set aside,
+/// so the digest is the one the backup had.
+pub(super) async fn mysql_digest(tx: &mut MySqlConnection, backend: &str, fenced: bool) -> Result<Value> {
+    let (catalog, layout) = mysql_source_catalog(&mut *tx, fenced).await?;
+    let mut digest = Digest::new(backend, &catalog)?;
+    for (table, _) in &catalog {
+        let table = identifier(table)?;
+        let columns: Vec<(String, String)> = sqlx::query_as("SELECT CAST(COLUMN_NAME AS CHAR),CAST(DATA_TYPE AS CHAR) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? ORDER BY ORDINAL_POSITION")
+            .bind(table).fetch_all(&mut *tx).await?;
+        let key: Vec<String> = sqlx::query_scalar("SELECT CAST(COLUMN_NAME AS CHAR) FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND CONSTRAINT_NAME='PRIMARY' ORDER BY ORDINAL_POSITION")
+            .bind(table).fetch_all(&mut *tx).await?;
+        let (names, kinds): (Vec<String>, Vec<String>) = columns.into_iter().unzip();
+        digest.table(table, &names);
+        // Binary values render as hex literals; everything else as its
+        // quoted string form.
+        let sql = row_select(&format!("`{table}`"), &names, &key, '`', |c, index| {
+            match kinds[index].to_ascii_lowercase().as_str() {
+                "binary" | "varbinary" | "tinyblob" | "blob" | "mediumblob" | "longblob" | "bit" => format!(
+                    "CAST(IF(`{c}` IS NULL,'NULL',CONCAT('X''',HEX(`{c}`),'''')) AS CHAR CHARACTER SET utf8mb4)"
+                ),
+                _ => format!("CAST(QUOTE(`{c}`) AS CHAR CHARACTER SET utf8mb4)"),
+            }
+        })?;
+        hash_rows!(tx, digest, table, sql, names.len());
+    }
+    // MySQL's metadata is not an MVCC snapshot. Refuse a catalog that
+    // changed while the rows were read.
+    if mysql_source_catalog(&mut *tx, fenced).await?.0 != catalog {
+        return Err(refuse(
+            StatusCode::CONFLICT,
+            "upgrade_source_catalog_changed",
+        ));
+    }
+    Ok(digest.report(backend, layout))
 }

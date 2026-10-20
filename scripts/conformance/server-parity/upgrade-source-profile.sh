@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# A separate published PHP cohort; inventory is not migration or SDK takeover.
+# A separate published PHP cohort: inventory and refusals, a verified backup,
+# and the takeover of a restored copy that native then resumes.
 set -euo pipefail
 test "$#" = 1 || exit 2
 backend=$1
@@ -52,10 +53,9 @@ else
   chmod 0666 "$state/database.sqlite"
 fi
 printf '%s\n' "$RESOURCE_SCOPE" > "$evidence/database-owned.txt"
-# SQLite and PostgreSQL also take over a copy and resume the originals, so
-# their timer is short.
-timer_seconds=600
-if [[ $backend == sqlite || $backend == pgsql ]]; then timer_seconds=60; fi
+# Every backend also takes over a copy and resumes the originals, so the
+# timer is short.
+timer_seconds=60
 configuration=("${admin[@]}" -e DB_DATABASE="$database" -e DW_AUTH_TOKEN=upgrade-fixture-token
   -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DB_SQLITE_JOURNAL_MODE=DELETE)
 php_run() {
@@ -223,6 +223,16 @@ case "$backend" in
     pg_admin pg_restore --no-owner --exit-on-error -d "$takeover_database" < "$state/backup.dump" 2>> "$evidence/backup.stderr"
     target=(-e DB_CONNECTION=pgsql -e DB_HOST="$host" -e DB_DATABASE="$takeover_database"
       -e DB_USERNAME=parity -e DB_PASSWORD="$password")
+    target_network=$RESOURCE_SCOPE ;;
+  mysql)
+    # The same backup restored once more, taken over as root, which can see
+    # every session (the PROCESS privilege).
+    takeover_database=upgrade_takeover_ref${label:+_$label}
+    printf '%s\n' "$RESOURCE_SCOPE" > "$evidence/takeover-owned.txt"
+    mysql_admin mysql -e "CREATE DATABASE $takeover_database CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci" 2>> "$evidence/backup.stderr"
+    mysql_admin mysql "$takeover_database" < "$state/backup.sql" 2>> "$evidence/backup.stderr"
+    target=(-e DB_CONNECTION=mysql -e DB_HOST="$host" -e DB_DATABASE="$takeover_database"
+      -e DB_USERNAME=root -e DB_PASSWORD="$password")
     target_network=$RESOURCE_SCOPE ;;
   *) ;;
 esac
