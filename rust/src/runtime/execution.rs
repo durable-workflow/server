@@ -289,6 +289,7 @@ impl Runtime {
     delegate!(describe_namespace(name: &str) -> Result<Value>);
     delegate!(create_namespace(body: Value) -> Result<Value>);
     delegate!(set_external_policy(name: &str, body: Value) -> Result<Value>);
+    delegate!(update_namespace(name: &str, body: Value) -> Result<Value>);
     delegate!(
         upload_external_local(
             local: crate::external_payload::LocalStorage,

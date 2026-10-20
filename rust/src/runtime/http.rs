@@ -29,7 +29,10 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/namespaces",
             get(list_namespaces).post(create_namespace),
         )
-        .route("/api/namespaces/{namespace}", get(describe_namespace))
+        .route(
+            "/api/namespaces/{namespace}",
+            get(describe_namespace).put(update_namespace),
+        )
         .route(
             "/api/namespaces/{namespace}/external-storage",
             axum::routing::put(super::external_transport::set_policy),
@@ -268,9 +271,8 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         &["worker"]
     } else if path.starts_with("/api/workers/")
         || path == "/api/namespaces" && request.method() == Method::POST
-        || path.starts_with("/api/namespaces/")
-            && path.ends_with("/external-storage")
-            && request.method() == Method::PUT
+        // Updating a namespace or its external storage needs an admin.
+        || path.starts_with("/api/namespaces/") && request.method() == Method::PUT
     {
         &["admin"]
     } else {
@@ -464,6 +466,13 @@ async fn describe_namespace(
     Path(namespace): Path<String>,
 ) -> Result<Json<Value>> {
     Ok(Json(runtime.describe_namespace(&namespace).await?))
+}
+async fn update_namespace(
+    Extension(runtime): Extension<Runtime>,
+    Path(namespace): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.update_namespace(&namespace, body).await?))
 }
 async fn create_namespace(
     Extension(runtime): Extension<Runtime>,
