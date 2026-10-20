@@ -1,5 +1,6 @@
 //! Read-only PHP source inventory. This command never grants takeover authority.
 pub mod external_reference;
+pub mod fingerprint;
 mod payload_scan;
 pub mod queue;
 pub mod queue_binding;
@@ -189,65 +190,68 @@ pub async fn inspect_sqlite_cli(
 ) -> Result<Value> {
     timeout(BUDGET, async {
         queue_config(queues)?;
-        if path.is_empty() || path.contains(['?', ':']) {
-            return Err(refuse(
-                StatusCode::BAD_REQUEST,
-                "upgrade_source_file_required",
-            ));
-        }
-        #[cfg(unix)]
-        {
-            use std::os::fd::AsRawFd;
-            // SQLite resolves symlinks before locating its sidecars. Check the
-            // resolved parent as well: a file-only read-only bind mount can
-            // still have a writable directory beside it.
-            let resolved = tokio::fs::canonicalize(path).await?;
-            let mut options = tokio::fs::OpenOptions::new();
-            options.read(true).custom_flags(libc::O_NONBLOCK);
-            let file = options.open(&resolved).await?;
-            if !file.metadata().await?.is_file() {
-                return Err(refuse(
-                    StatusCode::BAD_REQUEST,
-                    "upgrade_source_regular_file_required",
-                ));
-            }
-            let parent = options
-                .open(resolved.parent().ok_or_else(|| {
-                    refuse(StatusCode::BAD_REQUEST, "upgrade_source_file_required")
-                })?)
-                .await?;
-            for descriptor in [&file, &parent] {
-                let mut filesystem = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-                // fstatvfs uses this live descriptor's mount. Only read the
-                // returned structure after success.
-                if unsafe { libc::fstatvfs(descriptor.as_raw_fd(), filesystem.as_mut_ptr()) } != 0 {
-                    return Err(std::io::Error::last_os_error().into());
-                }
-                let filesystem = unsafe { filesystem.assume_init() };
-                if filesystem.f_flag & libc::ST_RDONLY == 0 {
-                    return Err(refuse(
-                        StatusCode::CONFLICT,
-                        "upgrade_source_readonly_filesystem_required",
-                    ));
-                }
-            }
-            return inspect_sqlite_inner(
-                resolved.to_str().ok_or_else(|| {
-                    refuse(StatusCode::BAD_REQUEST, "upgrade_source_file_required")
-                })?,
-                queues,
-                payloads,
-            )
-            .await;
-        }
-        #[cfg(not(unix))]
-        return Err(refuse(
-            StatusCode::CONFLICT,
-            "upgrade_source_readonly_filesystem_unavailable",
-        ));
+        let resolved = readonly_source(path).await?;
+        inspect_sqlite_inner(&resolved, queues, payloads).await
     })
     .await
     .map_err(|_| expired())?
+}
+
+/// Resolves a CLI source file and requires that it and its directory are on a
+/// kernel read-only mount.
+pub(super) async fn readonly_source(path: &str) -> Result<String> {
+    if path.is_empty() || path.contains(['?', ':']) {
+        return Err(refuse(
+            StatusCode::BAD_REQUEST,
+            "upgrade_source_file_required",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        // SQLite resolves symlinks before locating its sidecars. Check the
+        // resolved parent as well: a file-only read-only bind mount can
+        // still have a writable directory beside it.
+        let resolved = tokio::fs::canonicalize(path).await?;
+        let mut options = tokio::fs::OpenOptions::new();
+        options.read(true).custom_flags(libc::O_NONBLOCK);
+        let file = options.open(&resolved).await?;
+        if !file.metadata().await?.is_file() {
+            return Err(refuse(
+                StatusCode::BAD_REQUEST,
+                "upgrade_source_regular_file_required",
+            ));
+        }
+        let parent = options
+            .open(resolved.parent().ok_or_else(|| {
+                refuse(StatusCode::BAD_REQUEST, "upgrade_source_file_required")
+            })?)
+            .await?;
+        for descriptor in [&file, &parent] {
+            let mut filesystem = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+            // fstatvfs uses this live descriptor's mount. Only read the
+            // returned structure after success.
+            if unsafe { libc::fstatvfs(descriptor.as_raw_fd(), filesystem.as_mut_ptr()) } != 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            let filesystem = unsafe { filesystem.assume_init() };
+            if filesystem.f_flag & libc::ST_RDONLY == 0 {
+                return Err(refuse(
+                    StatusCode::CONFLICT,
+                    "upgrade_source_readonly_filesystem_required",
+                ));
+            }
+        }
+        return Ok(resolved
+            .to_str()
+            .ok_or_else(|| refuse(StatusCode::BAD_REQUEST, "upgrade_source_file_required"))?
+            .to_owned());
+    }
+    #[cfg(not(unix))]
+    return Err(refuse(
+        StatusCode::CONFLICT,
+        "upgrade_source_readonly_filesystem_unavailable",
+    ));
 }
 
 async fn inspect_sqlite_inner(
@@ -257,6 +261,45 @@ async fn inspect_sqlite_inner(
 ) -> Result<Value> {
     queue_config(queues)?;
     let deadline = Instant::now() + BUDGET;
+    let mut connection = open_sqlite_source(path, deadline).await?;
+    let result = timeout_at(deadline, async {
+        let mut tx = connection.begin().await?;
+        let catalog = schema::php_source_catalog(&mut tx).await?;
+        let tables: Vec<String> = catalog
+            .iter()
+            .filter(|(kind, _, _, _)| kind == "table")
+            .map(|(_, name, _, _)| name.clone())
+            .collect();
+        let counts = count_tables!(tx, tables, '"');
+        let queue_inspection = match queues {
+            Some(config) => {
+                Some(queue_scan::inspect::<sqlx::Sqlite>(&mut *tx, config, counts["jobs"]).await?)
+            }
+            None => None,
+        };
+        let payload_inspection = if payloads {
+            Some(payload_scan::inspect::<sqlx::Sqlite>(&mut *tx, &counts).await?)
+        } else {
+            None
+        };
+        tx.rollback().await?;
+        report(
+            "sqlite",
+            &catalog,
+            counts,
+            queue_inspection,
+            payload_inspection,
+        )
+    })
+    .await
+    .map_err(|_| expired())
+    .and_then(|result| result);
+    close(connection.close()).await?;
+    result
+}
+
+/// Opens a qualified rollback-journal source file read-only.
+pub(super) async fn open_sqlite_source(path: &str, deadline: Instant) -> Result<SqliteConnection> {
     if path.is_empty() || path.contains(['?', ':']) {
         return Err(refuse(
             StatusCode::BAD_REQUEST,
@@ -307,7 +350,7 @@ async fn inspect_sqlite_inner(
     })
     .await
     .map_err(|_| expired())??;
-    let mut connection = timeout_at(
+    let connection = timeout_at(
         deadline,
         SqliteConnection::connect_with(
             &SqliteConnectOptions::new()
@@ -319,40 +362,7 @@ async fn inspect_sqlite_inner(
     )
     .await
     .map_err(|_| expired())??;
-    let result = timeout_at(deadline, async {
-        let mut tx = connection.begin().await?;
-        let catalog = schema::php_source_catalog(&mut tx).await?;
-        let tables: Vec<String> = catalog
-            .iter()
-            .filter(|(kind, _, _, _)| kind == "table")
-            .map(|(_, name, _, _)| name.clone())
-            .collect();
-        let counts = count_tables!(tx, tables, '"');
-        let queue_inspection = match queues {
-            Some(config) => {
-                Some(queue_scan::inspect::<sqlx::Sqlite>(&mut *tx, config, counts["jobs"]).await?)
-            }
-            None => None,
-        };
-        let payload_inspection = if payloads {
-            Some(payload_scan::inspect::<sqlx::Sqlite>(&mut *tx, &counts).await?)
-        } else {
-            None
-        };
-        tx.rollback().await?;
-        report(
-            "sqlite",
-            &catalog,
-            counts,
-            queue_inspection,
-            payload_inspection,
-        )
-    })
-    .await
-    .map_err(|_| expired())
-    .and_then(|result| result);
-    close(connection.close()).await?;
-    result
+    Ok(connection)
 }
 
 pub async fn inspect_mysql(options: MySqlConnectOptions) -> Result<Value> {

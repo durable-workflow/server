@@ -132,11 +132,43 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     | "upgrade-inspect"
                     | "upgrade-queue-inspect"
                     | "upgrade-payload-inspect"
+                    | "upgrade-fingerprint"
             )
         {
             return Err("unknown development command".into());
         }
         let backend = env::var("DB_CONNECTION").unwrap_or_default();
+        if command == "upgrade-fingerprint" {
+            use durable_workflow_server::runtime::upgrade::fingerprint;
+            let result = match backend.as_str() {
+                "sqlite" => {
+                    let path = env::var("DB_DATABASE").map_err(|_| "DB_DATABASE is required")?;
+                    fingerprint::fingerprint_sqlite_cli(&path).await
+                }
+                "mysql" | "mariadb" => fingerprint::fingerprint_mysql(mysql_options()?).await,
+                "pgsql" => fingerprint::fingerprint_postgres(postgres_options()?).await,
+                _ => {
+                    return Err(
+                        "upgrade fingerprint requires DB_CONNECTION=sqlite, pgsql, mysql or mariadb"
+                            .into(),
+                    );
+                }
+            };
+            return match result {
+                Ok(report) => {
+                    println!("{report}");
+                    Ok(())
+                }
+                Err(error) => {
+                    let reason = match error {
+                        RuntimeError::Refused { reason, .. } => reason,
+                        _ => "upgrade_fingerprint_unavailable",
+                    };
+                    eprintln!("{reason}");
+                    Err("upgrade source fingerprint refused".into())
+                }
+            };
+        }
         if matches!(
             command.as_str(),
             "upgrade-inspect" | "upgrade-queue-inspect" | "upgrade-payload-inspect"

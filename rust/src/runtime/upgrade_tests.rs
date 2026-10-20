@@ -725,3 +725,93 @@ async fn read_only_source_file_can_be_inspected_without_write_permissions() {
     );
     assert_eq!(std::fs::read(&path).unwrap(), before);
 }
+
+#[tokio::test]
+async fn fingerprint_matches_a_byte_copy_and_changes_with_any_row() {
+    let (directory, path) = php_layout().await;
+    let before = tokio::fs::read(&path).await.unwrap();
+    let first = fingerprint::fingerprint_sqlite(&path).await.unwrap();
+    assert_eq!(first["status"], "fingerprinted");
+    assert_eq!(first["table_rows"]["jobs"], 1);
+    for flag in [
+        "source_mutated",
+        "takeover_allowed",
+        "backup_verified",
+        "php_quiescence_verified",
+        "stored_representation_compatibility_verified",
+    ] {
+        assert_eq!(first[flag], false, "{flag}");
+    }
+    assert!(!first.to_string().contains("private-payload"), "{first}");
+    assert_eq!(tokio::fs::read(&path).await.unwrap(), before);
+    assert_eq!(
+        fingerprint::fingerprint_sqlite(&path).await.unwrap()["fingerprint"],
+        first["fingerprint"]
+    );
+    let copy = directory.path().join("copy.sqlite");
+    tokio::fs::copy(&path, &copy).await.unwrap();
+    let copy = copy.to_str().unwrap();
+    assert_eq!(
+        fingerprint::fingerprint_sqlite(copy).await.unwrap()["fingerprint"],
+        first["fingerprint"]
+    );
+    let mut seen = vec![first["fingerprint"].clone()];
+    for statement in [
+        "UPDATE jobs SET attempts=1",
+        "UPDATE jobs SET reserved_at=7",
+        "UPDATE jobs SET reserved_at=0",
+        "UPDATE jobs SET payload='private-payload-λ '",
+        "INSERT INTO migrations(migration,batch) VALUES ('extra',1)",
+    ] {
+        mutate(copy, statement).await;
+        let changed = fingerprint::fingerprint_sqlite(copy).await.unwrap()["fingerprint"].clone();
+        assert!(!seen.contains(&changed), "{statement}");
+        seen.push(changed);
+    }
+    // The digest describes contents, so restoring earlier values restores it.
+    mutate(
+        copy,
+        "UPDATE jobs SET attempts=0,reserved_at=NULL,payload='private-payload-λ'; DELETE FROM migrations",
+    )
+    .await;
+    assert_eq!(
+        fingerprint::fingerprint_sqlite(copy).await.unwrap()["fingerprint"],
+        first["fingerprint"]
+    );
+}
+
+#[tokio::test]
+async fn fingerprint_ignores_physical_row_order_but_not_storage_class() {
+    let (_first_directory, first) = php_layout().await;
+    let (_second_directory, second) = php_layout().await;
+    mutate(&first, "INSERT INTO migrations(id,migration,batch) VALUES (5,'a',1),(3,'b',1)").await;
+    mutate(&second, "INSERT INTO migrations(id,migration,batch) VALUES (3,'b',1)").await;
+    mutate(&second, "INSERT INTO migrations(id,migration,batch) VALUES (5,'a',1)").await;
+    let one = fingerprint::fingerprint_sqlite(&first).await.unwrap();
+    assert_eq!(
+        fingerprint::fingerprint_sqlite(&second).await.unwrap()["fingerprint"],
+        one["fingerprint"]
+    );
+    // A text value is not the same row as an equal-looking blob.
+    mutate(&second, "UPDATE migrations SET migration=CAST('a' AS BLOB) WHERE id=5").await;
+    assert_ne!(
+        fingerprint::fingerprint_sqlite(&second).await.unwrap()["fingerprint"],
+        one["fingerprint"]
+    );
+}
+
+#[tokio::test]
+async fn fingerprint_refuses_an_owned_or_unknown_source() {
+    let (_directory, path) = php_layout().await;
+    mutate(&path, "CREATE TABLE dw_server_schema(engine TEXT)").await;
+    reason(
+        fingerprint::fingerprint_sqlite(&path).await,
+        "upgrade_source_already_owned",
+    );
+    let (_directory, path) = php_layout().await;
+    mutate(&path, "ALTER TABLE jobs ADD COLUMN unexpected TEXT").await;
+    reason(
+        fingerprint::fingerprint_sqlite(&path).await,
+        "upgrade_source_catalog_unqualified",
+    );
+}

@@ -100,7 +100,8 @@ inspect_source() {
 }
 snapshot() {
   if test "$backend" = sqlite; then
-    find "$state" -maxdepth 1 -type f -print0 | sort -z | xargs -0 -r sha256sum
+    # The source file and any sidecar it gains; the restored copy lives beside it.
+    find "$state" -maxdepth 1 -type f -name 'database.sqlite*' -print0 | sort -z | xargs -0 -r sha256sum
   else
     local helper=mysql
     if test "$backend" = pgsql; then helper=postgres; fi
@@ -132,6 +133,64 @@ jq -e '.status=="inspected" and (.payload_inspection.columns|length)==4
   and .payload_inspection.registry_binding_verified==false
   and .source_mutated==false and .takeover_allowed==false and .backup_verified==false
   and .php_quiescence_verified==false and .stored_representation_compatibility_verified==false' "$evidence/payload-inspection.json" >/dev/null
+fingerprint() {
+  local target=$1
+  docker run --rm --name "$resource-inspect" --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
+    --network "$RESOURCE_SCOPE" "${reader[@]}" -e DB_DATABASE="$target" -e DW_RUST_EXPERIMENTAL=1 \
+    -v "$PWD/$state:/state:ro" -v "$PWD/rust-target:/target:ro" \
+    --entrypoint /target/debug/durable-workflow-server "$rust_image" upgrade-fingerprint
+}
+fingerprint "$database" > "$evidence/fingerprint.json" 2> "$evidence/fingerprint.stderr"
+jq -e '.status=="fingerprinted" and (.fingerprint|test("^sha256:[0-9a-f]{64}$"))
+  and (.table_rows|length)==50 and .table_rows.workflow_runs==2 and .table_rows.jobs==1
+  and .source_mutated==false and .takeover_allowed==false and .backup_verified==false
+  and .php_quiescence_verified==false and .stored_representation_compatibility_verified==false' "$evidence/fingerprint.json" >/dev/null
+source_fingerprint=$(jq -r .fingerprint "$evidence/fingerprint.json")
+fingerprint "$database" > "$evidence/fingerprint-repeat.json" 2>> "$evidence/fingerprint.stderr"
+test "$(jq -r .fingerprint "$evidence/fingerprint-repeat.json")" = "$source_fingerprint"
+# Back up the stopped source and restore it into a separate database, as the
+# backup procedure does. The restored copy must fingerprint equal, and one
+# changed row in it must change the fingerprint.
+restored=upgrade_restore_ref
+case "$backend" in
+  mysql)
+    mysql_admin() {
+      docker run --rm -i --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint "$1" "$MYSQL_IMAGE" \
+        -h "$host" -uroot -p"$password" "${@:2}"
+    }
+    mysql_admin mysqldump --single-transaction --quick --no-tablespaces "$database" > "$state/backup.sql" 2> "$evidence/backup.stderr"
+    printf '%s\n' "$RESOURCE_SCOPE" > "$evidence/restore-owned.txt"
+    mysql_admin mysql -e "CREATE DATABASE $restored CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci" 2>> "$evidence/backup.stderr"
+    mysql_admin mysql "$restored" < "$state/backup.sql" 2>> "$evidence/backup.stderr"
+    mysql_admin mysql -e "GRANT SELECT ON $restored.* TO 'upgrade_source_reader'@'%'" 2>> "$evidence/backup.stderr"
+    change_restored() { mysql_admin mysql "$restored" -e 'UPDATE jobs SET attempts=attempts+1' 2>> "$evidence/backup.stderr"; } ;;
+  pgsql)
+    pg_admin() {
+      docker run --rm -i --user=1000:1000 --network "$RESOURCE_SCOPE" -e PGPASSWORD="$password" \
+        --entrypoint "$1" "$POSTGRES_IMAGE" -h "$host" -U parity "${@:2}"
+    }
+    pg_admin pg_dump -Fc -d "$database" > "$state/backup.dump" 2> "$evidence/backup.stderr"
+    printf '%s\n' "$RESOURCE_SCOPE" > "$evidence/restore-owned.txt"
+    pg_admin createdb "$restored" 2>> "$evidence/backup.stderr"
+    pg_admin pg_restore --no-owner --exit-on-error -d "$restored" < "$state/backup.dump" 2>> "$evidence/backup.stderr"
+    pg_admin psql -d "$restored" -v ON_ERROR_STOP=1 -c "GRANT CONNECT ON DATABASE $restored TO upgrade_source_reader" \
+      -c 'GRANT USAGE ON SCHEMA public TO upgrade_source_reader' \
+      -c 'GRANT SELECT ON ALL TABLES IN SCHEMA public TO upgrade_source_reader' > /dev/null 2>> "$evidence/backup.stderr"
+    change_restored() { pg_admin psql -d "$restored" -v ON_ERROR_STOP=1 -c 'UPDATE jobs SET attempts=attempts+1' > /dev/null 2>> "$evidence/backup.stderr"; } ;;
+  sqlite)
+    # A stopped SQLite installation is backed up by copying its file.
+    cp "$state/database.sqlite" "$state/restored.sqlite"
+    restored=/state/restored.sqlite
+    change_restored() {
+      php_run -r '(new PDO("sqlite:/state/restored.sqlite"))->exec("UPDATE jobs SET attempts=attempts+1") === 1 || exit(1);'
+    } ;;
+esac
+fingerprint "$restored" > "$evidence/restored-fingerprint.json" 2>> "$evidence/fingerprint.stderr"
+test "$(jq -r .fingerprint "$evidence/restored-fingerprint.json")" = "$source_fingerprint"
+change_restored
+fingerprint "$restored" > "$evidence/changed-fingerprint.json" 2>> "$evidence/fingerprint.stderr"
+changed_fingerprint=$(jq -r .fingerprint "$evidence/changed-fingerprint.json")
+[[ $changed_fingerprint =~ ^sha256:[0-9a-f]{64}$ && $changed_fingerprint != "$source_fingerprint" ]]
 snapshot > "$evidence/after.json"
 cmp "$evidence/before.json" "$evidence/after.json"
 refusal() {
@@ -163,9 +222,12 @@ git diff --cached --quiet
 jq -n --arg revision "$revision" --arg native "$native_tree" \
   --arg image "$image" --arg backend "$backend" --arg binary "$binary_sha256" \
   --slurpfile inventory "$evidence/inspection.json" --slurpfile originals "$evidence/originals.json" \
+  --slurpfile fingerprint "$evidence/fingerprint.json" \
   '{outcome:"pass",scope:"read_only_source_inventory_and_refusals",backend:$backend,
     runner_revision:$revision,native_tree:$native,native_binary_sha256:$binary,php_image:$image,
     original_runs:2,source_state_unchanged_by_inspection:true,
+    source_fingerprint:$fingerprint[0].fingerprint,restored_backup_fingerprint_equal:true,
+    changed_restored_row_changes_fingerprint:true,
     catalog_sha256:$inventory[0].catalog_sha256,table_count:($inventory[0].table_rows|length),
     originals:($originals[0].originals|to_entries|map({kind:.key,workflow_id:.value.workflow_id,
       run_id:.value.run_id,history_events:(.value.history|length),activity_attempt_id:.value.activity_task.activity_attempt_id})),
