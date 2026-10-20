@@ -152,7 +152,11 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/worker/registrations/{worker_id}/deregister",
             post(deregister_fenced),
         )
-        .route("/api/workers/{worker_id}", delete(deregister))
+        .route("/api/workers", get(list_workers))
+        .route(
+            "/api/workers/{worker_id}",
+            get(describe_worker).delete(deregister),
+        )
         .route("/api/worker/workflow-tasks/poll", post(poll_workflow))
         .route(
             "/api/worker/workflow-tasks/{task_id}/deliver-cancellation",
@@ -274,7 +278,7 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         &["worker", "operator", "admin"]
     } else if worker {
         &["worker"]
-    } else if path.starts_with("/api/workers/")
+    } else if path.starts_with("/api/workers/") && request.method() != Method::GET
         || path == "/api/namespaces" && request.method() == Method::POST
         || path.starts_with("/api/namespaces/")
             && path.ends_with("/external-storage")
@@ -412,6 +416,13 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     // Further families require their own shared namespace fixtures.
     if path == "/api/workflows" {
         return method == "POST";
+    }
+    if path == "/api/workers"
+        || path
+            .strip_prefix("/api/workers/")
+            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+    {
+        return method == "GET";
     }
     if let Some(path) = path.strip_prefix("/api/workflows/") {
         let parts: Vec<_> = path.split('/').collect();
@@ -931,6 +942,24 @@ async fn worker_heartbeat(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     runtime.worker_heartbeat(body).await.map(Json)
+}
+async fn list_workers(
+    Extension(runtime): Extension<Runtime>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Value>> {
+    runtime
+        .list_workers(
+            query.get("task_queue").map(String::as_str),
+            query.get("status").map(String::as_str),
+        )
+        .await
+        .map(Json)
+}
+async fn describe_worker(
+    Extension(runtime): Extension<Runtime>,
+    Path(worker_id): Path<String>,
+) -> Result<Json<Value>> {
+    runtime.describe_worker(&worker_id).await.map(Json)
 }
 async fn deregister(
     Extension(runtime): Extension<Runtime>,

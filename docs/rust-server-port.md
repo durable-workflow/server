@@ -14,29 +14,75 @@ qualify a later tree.
 
 ## Current state
 
-Updated October 19, 2026, after merging #460.
+Updated October 20, 2026.
 
-- **Merged native slices.** [#478](https://github.com/durable-workflow/server/pull/478)
-  (run observation, timed waits, `all` barriers, terminal update closure and
-  cooperative cancellation with abandoned and independently cancelled
-  children), [#476](https://github.com/durable-workflow/server/pull/476)
-  (run activity metadata listing), [#494](https://github.com/durable-workflow/server/pull/494)
-  (CPU deadline-health observer timing) and [#460](https://github.com/durable-workflow/server/pull/460)
-  (read-only inspection of an existing PHP database). No native PR is open.
-- **Shared-suite reliability.** Each 13-job run still tends to show one
-  intermittent failure in a step its change does not touch, and qualification
-  records classify each one. Diagnosed and corrected: published PHP SQLite
-  reference lock pressure, and CPU observer client timing. Diagnosed, decision
-  pending: the query-authority deadline-boundary replay (see known gaps).
-  Not yet diagnosed: one native-test failure in `execution-and-codec` step 8 on
-  main's post-#478 run, which four local repetitions under the CI limits did
-  not reproduce.
-- **Next action.** Decide the query deadline-boundary replay contract and add
-  its fixture. Then correct native timer dispatch under CPU load with a
-  deadline-health control. Then continue the remaining parity families, the
-  backup-first in-place takeover and the performance baseline on disposable
-  hosts.
+- **Merged on October 20.**
+  - [#507](https://github.com/durable-workflow/server/pull/507) gives codec work under the transition lock its own permit.
+  - [#508](https://github.com/durable-workflow/server/pull/508) keeps explicit worker command declarations.
+  - [#509](https://github.com/durable-workflow/server/pull/509) reports poll statuses as the worker protocol does.
+  - [#516](https://github.com/durable-workflow/server/pull/516) lets held long polls wait without the transition lock.
+  - [#517](https://github.com/durable-workflow/server/pull/517) designs the backup-first takeover.
 
+  Main's 13-job parity run passed at `ee88ac6ba`.
+- **Also merged.** [#515](https://github.com/durable-workflow/server/pull/515)
+  retries the PHP reference's lock-pressure refusals in the probes, after
+  passing all 13 parity jobs.
+- **Open, qualifying on main with #515.** Each of these failed or deferred parity only in
+  steps #515 corrects or that it doesn't touch.
+  - The query pair: [#499](https://github.com/durable-workflow/server/pull/499),
+    then [#510](https://github.com/durable-workflow/server/pull/510).
+  - The backup-first takeover stack: [#523](https://github.com/durable-workflow/server/pull/523)
+    (fingerprint), [#529](https://github.com/durable-workflow/server/pull/529)
+    (layouts) and [#532](https://github.com/durable-workflow/server/pull/532),
+    [#533](https://github.com/durable-workflow/server/pull/533) and
+    [#536](https://github.com/durable-workflow/server/pull/536) (SQLite,
+    PostgreSQL and MySQL/MariaDB takeover). Then
+    [#538](https://github.com/durable-workflow/server/pull/538) (SQLite WAL
+    preparation) and [#539](https://github.com/durable-workflow/server/pull/539)
+    (a PHP-accepted signal and an expired PHP lease resumed under native, plus
+    refusal of unsupported features).
+  - Immediate termination, and worker listing with registration facts.
+- **Parity surface.** With this branch, native serves 63 of published PHP's 173 API
+  routes. The missing families are listed below under "API surface still
+  missing".
+- **Next action.** Run parity once on each stack top (#510,
+  #539 and the worker listing branch) and merge each stack. Then port history
+  export, a large bundle the CLI and both SDKs use for replay. Multi-node
+  qualification and packaging the native binary into the server image remain
+  open gates.
+
+## API surface still missing
+
+These published PHP 2.9.8 routes have no native handler yet, by family. The
+CLI and Waterline use the first group.
+
+- **Used by the CLI or Waterline.**
+  - Schedule listing, update and backfill.
+  - Task queues and their build IDs.
+  - Namespace update, delete and external storage.
+  - Search attributes.
+  - `system` repair, retention and activity-timeout passes, metrics and
+    operator dashboards.
+  - Storage test.
+  - Activities (standalone).
+- **Worker protocol features.**
+  - Worker sessions.
+  - Update validation tasks.
+  - Prepared local activities.
+  - Cancellation scopes.
+  - Activity cancellation acknowledgement.
+- **Run operations.**
+  - History export.
+  - Archive.
+  - Redrive.
+  - Imports from embedded v2 and Waterline v1.
+- **Other families.**
+  - Message streams.
+  - Service catalogs and endpoints.
+  - Nexus operations.
+  - Runtime credentials.
+  - Deployments.
+  - Bridge adapters.
 ## Known gaps found in review
 
 These are confirmed differences from the published PHP reference and open
@@ -85,6 +131,11 @@ contract fixture before its correction.
   or whether the fixture counts a boundary replay as the same claim, then add the
   fixture before changing either side.
 
+- **History retention.** Published PHP's worker heartbeat runs an inline
+  history retention pass, and the default namespace retention is bounded at
+  30 days, so PHP prunes old closed runs. Native has no retention yet. Its
+  heartbeat omits PHP's `retention` report rather than claim a pass. The
+  `system/retention` endpoints are absent too.
 - **Python worker shutdown after a late synchronous query handler (not yet
   diagnosed).** In the SQLite query-authority cohort on #515's run
   39431491496, the published Python SDK 2.5.15 client in `late-handler-sync`
@@ -93,6 +144,22 @@ contract fixture before its correction.
   then did not stop within the 5-second shutdown budget. Forty local
   repetitions of that case alone passed. Find what holds the query thread
   after the fence before changing either side.
+- **Workflow definition evolution (PHP main after #525, not yet released).**
+  Current PHP routes a run whose recorded workflow definition is gone to a
+  replacement definition that passes strict replay. It then reports
+  `definition_routing` on task queues and run diagnostics. It also records
+  each worker's protocol version under `_worker_protocol_version` in its
+  stored process metrics. That entry shows up in the worker listing. Native
+  follows the frozen published reference, which has none of this. Port it
+  with its own fixture once it is published.
+- **Trace context (Workflow #773 / workflow#788, not yet published).** A
+  Workflow minor will add nullable `observability_context` columns on runs,
+  commands and tasks, plus an entry in schedule metadata. Native-owned
+  databases are unaffected. A Server release carrying the columns is a new
+  takeover source layout, which native refuses with
+  `upgrade_source_catalog_unqualified` until its recipe lands. The recipe must
+  also refuse rows that carry trace context until native implements the
+  contract. The boundary is agreed on #325.
 - **Terminating a child run.** Published Workflow resolves the parent with
   `ChildRunTerminated` and the `terminated` child call status. Native refuses
   this with `422 termination_propagation_not_available` until the parent-side
@@ -165,6 +232,56 @@ support is not evidence of multi-node safety.
 
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
 names, including unsuccessful observations.
+
+October 20, worker listing:
+
+- **Source.** Native serves `GET /api/workers` and `GET /api/workers/{id}`,
+  as published PHP's WorkerManagementController does:
+  - the summary fields;
+  - the `task_queue` and `status` filters, with stale workers hidden unless
+    asked for;
+  - the stale window;
+  - `404 worker_not_found`.
+
+  Operators may read these; only `DELETE` needs an admin. Named namespaces may
+  read them.
+- **Registration facts.** Registration and heartbeat now keep what PHP keeps:
+  - capacities, defaulting to 100, 100 and 10;
+  - task slots, bounded by those capacities;
+  - normalized process metrics;
+  - the heartbeat cadence;
+  - workflow definition fingerprints.
+
+  Re-registering an active worker with a changed fingerprint is refused with
+  `409 workflow_definition_changed`. Omitting an advertised one is refused with
+  `409 workflow_definition_fingerprint_missing`, and neither refusal changes
+  the registration. Omitting the fingerprints keeps the advertised one. A
+  heartbeat changes only what it reports. Its acknowledgement carries the
+  configured cadence and stale window.
+- **A replaced worker's activity leases.** A new process registering a
+  worker_id that holds activity leases now releases them at once, as PHP
+  does. Its running attempts close as `expired`, and the tasks return to
+  ready, so the next claim is attempt 2 of the same task. This holds even under
+  a one-attempt retry policy, since PHP checks no policy at claim time. Before
+  this, native left the task leased for the five-minute activity lease. The
+  expired attempt's completion now gets PHP's whole stale receipt:
+  `409 stale_attempt`, `recorded: false`, and the activity, attempt and task
+  statuses.
+- **Fixtures.**
+  - `worker-listing` registers two workers through the unchanged published
+    SDK. It then lists, filters, describes and refuses them, and
+    re-registers and deregisters them.
+  - `worker-replacement-activity-lease` replaces a worker holding an activity
+    lease, then completes the original and the replacement attempts.
+
+  The contracts check each HTTP target against the reviewed facts. Embedded
+  mode is explicitly inapplicable.
+- **Local evidence.** A local copy of the SQLite parity step recorded
+  published PHP 2.5.14, embedded PHP and native for both fixtures and
+  `namespace-isolation`. All three targets passed and the comparison passed.
+  Before the release, native failed the replacement fixture: its second claim
+  found no task. Native integration tests pass on SQLite, PostgreSQL, MySQL
+  and MariaDB.
 
 October 20, immediate termination:
 

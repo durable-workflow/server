@@ -55,6 +55,9 @@ mod worker_contracts;
 #[path = "execution/worker_deregistration.rs"]
 mod worker_deregistration;
 
+#[path = "execution/worker_listing.rs"]
+mod worker_listing;
+
 #[path = "execution/worker_pressure.rs"]
 mod worker_pressure;
 
