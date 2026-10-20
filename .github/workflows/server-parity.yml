@@ -1671,6 +1671,7 @@ jobs:
       - name: Back up, take over and resume a published PHP 2.9.7 upgrade source
         timeout-minutes: 8
         env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           DW_PARITY_UPGRADE_LABEL: php297
           DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.9.7
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:30c34c5f3256a812fbccbe505a068309b58b0c14d01ffff0465d88604cb36d50
@@ -1679,6 +1680,7 @@ jobs:
         if: always()
         timeout-minutes: 3
         env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           DW_PARITY_UPGRADE_LABEL: php297
           DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.9.7
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:30c34c5f3256a812fbccbe505a068309b58b0c14d01ffff0465d88604cb36d50
