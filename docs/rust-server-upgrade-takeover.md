@@ -67,7 +67,7 @@ with any other writer.
 | --- | --- | --- |
 | SQLite | `BEGIN EXCLUSIVE` on the database file | Fingerprint, marker, native relations and conversions commit in one transaction. |
 | PostgreSQL | Native's bootstrap advisory key, then `LOCK TABLE … IN ACCESS EXCLUSIVE MODE` on every table, with a short lock wait. The later DDL needs that mode anyway, so no lock is upgraded while another session waits. | DDL is transactional, so everything commits in one transaction. |
-| MySQL and MariaDB | To be qualified: `LOCK TABLES … WRITE` on every relation, or a check that no other session uses the database, repeated after the marker is written | DDL commits implicitly, so the marker records a step journal (below). |
+| MySQL and MariaDB | Native's bootstrap lock and a check that no other session uses the database (which needs the `PROCESS` privilege), repeated after the marker is written. `LOCK TABLES` cannot be used: under it MySQL refuses to create or drop any table it does not hold. | DDL commits implicitly, so the marker records a step journal (below). |
 
 On SQLite and PostgreSQL, a PHP connection that slipped past the stop blocks on
 these locks, and a write it committed earlier changes the fingerprint. Neither
@@ -81,13 +81,27 @@ The operator reruns `upgrade-takeover` with the same fingerprint. A killed
 SQLite takeover leaves a rollback journal; read-only inspection refuses it,
 and the rerun lets SQLite roll it back before the fingerprint check.
 
-MySQL and MariaDB commit DDL implicitly, so there the marker is written first,
-with state `takeover`, the fingerprint and the step list. Native startup
-refuses state `takeover`. Each step is idempotent and records its completion
-in the marker. Rerunning `upgrade-takeover` with the same fingerprint resumes
-after the last recorded step; a different fingerprint is refused. The final
-step sets state `ready` and the native schema version. The PHP fence refuses
-the database from the first step, because the marker exists.
+MySQL and MariaDB commit DDL implicitly, so there native's marker table is
+written first, with one row `('rust-takeover:<layout>', <completed steps>,
+<fingerprint digest>)`. Native startup refuses it with
+`native_takeover_incomplete`. The sessions and the fingerprint are checked
+again with the marker set aside, then each step runs and records its
+completion in that row; row changes commit with their step, and DDL steps
+check what is left to do. Rerunning `upgrade-takeover` with the same
+fingerprint resumes after the last recorded step; a different fingerprint is
+refused. The ledger and native's final marker `('rust-development', 4,
+<checksum>)` commit together. The PHP fence refuses the database from the
+first step, because the marker table exists.
+
+## SQLite sources in WAL mode
+
+PHP Server keeps SQLite in WAL mode, and a read-only SQLite open can still
+create WAL and shared-memory sidecars, so inspection, fingerprint and takeover
+require the rollback journal. With PHP stopped, `upgrade-prepare-sqlite` opens
+the file as its only connection and switches it to the rollback journal.
+SQLite first checkpoints every committed WAL frame into the file, so the stored
+rows are unchanged. The command refuses while another process holds the file,
+and runs before the fingerprint and the backup.
 
 ## Steps
 
@@ -142,8 +156,6 @@ acknowledged signal and an expired lease. The tests check:
 
 ## Open questions
 
-- Whether MySQL and MariaDB can create the native relations while
-  `LOCK TABLES` holds every existing one, or need the session check instead.
 - Whether the declared column types print identically after a restore into
   another minor server version. Until that is shown, the restore check uses
   the same server version as the source.
