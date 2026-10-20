@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {checkObservation, compareRecords as compareCorpusRecords} from '../../scripts/conformance/server-parity/contract.mjs';
 import {parseDatabaseResourceLimits} from '../../scripts/conformance/server-parity/database-resource-contract.mjs';
+import {immediateCommand} from '../../scripts/conformance/server-parity/cancellation-contract.mjs';
 import './ServerParityCrossKindPollWakeTest.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/one-activity.json', import.meta.url)));
@@ -10,8 +11,8 @@ const reviewed = {'one-activity.json': fixture};
 const retryFixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/activity-retry.json', import.meta.url)));
 const exhaustedFixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/activity-failure-exhausted.json', import.meta.url)));
 const filteredFixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/activity-failure-filtered.json', import.meta.url)));
-const cancellationFixtures = ['before-claim', 'pending-timer', 'leased-activity'].map(phase =>
-  JSON.parse(readFileSync(new URL(`../Fixtures/ServerParity/cancel-${phase}.json`, import.meta.url))));
+const cancellationFixtures = ['cancel', 'terminate'].flatMap(command => ['before-claim', 'pending-timer', 'leased-activity'].map(phase =>
+  JSON.parse(readFileSync(new URL(`../Fixtures/ServerParity/${command}-${phase}.json`, import.meta.url)))));
 const nulCancellationFixtures = ['leading', 'interior'].map(position =>
   JSON.parse(readFileSync(new URL(`../Fixtures/ServerParity/cancel-${position}-nul-reason.json`, import.meta.url))));
 const compareRecords = records => compareCorpusRecords(records, {'one-activity.json': 'fixture-sha'}, reviewed);
@@ -70,10 +71,11 @@ test('database memory receipt rejects missing, inexact, unknown or swap-enabled 
 function cancellationObservation(fixture, mode = 'http') {
   const raw = observation();
   const {phase} = fixture.immediate_cancellation;
+  const closing = immediateCommand(fixture);
   const reason = mode === 'http'
     ? fixture.immediate_cancellation.http_reason ?? fixture.immediate_cancellation.reason
     : fixture.immediate_cancellation.reason;
-  Object.assign(raw, {mode, workflow_type: fixture.workflow_type, status: 'cancelled',
+  Object.assign(raw, {mode, workflow_type: fixture.workflow_type, status: closing.closed,
     input: [fixture.input], typed_input: {type: 'list', value: [fixture.typed_value]},
     output: null, typed_output: {type: 'null', value: null}});
   raw.events = raw.events.slice(0, 2);
@@ -87,7 +89,7 @@ function cancellationObservation(fixture, mode = 'http') {
     {payload: {...structuredClone(activityBase), activity_attempt_id: 'cancel-attempt', attempt_number: 1, task: {id: 'cancel-task', lease_owner: 'cancel-owner'}},
       decoded: {activity_arguments: [fixture.input]}, typed_decoded: {activity_arguments: {type: 'list', value: [fixture.typed_value]}}});
   const common = {workflow_instance_id: raw.workflow_id, workflow_run_id: raw.run_id, workflow_command_id: 'cancel-command', reason};
-  raw.events.push({payload: {...common, command_type: 'cancel'}, decoded: {}, typed_decoded: {}});
+  raw.events.push({payload: {...common, command_type: closing.name}, decoded: {}, typed_decoded: {}});
   if (phase === 'pending_timer') raw.events.push({payload: {...raw.events[2].payload, cancelled_at: '2026-01-01T00:00:04Z'}, decoded: {}, typed_decoded: {}});
   if (phase === 'leased_activity') raw.events.push({payload: {...structuredClone(activityBase), workflow_command_id: 'cancel-command',
     activity_attempt_id: 'cancel-attempt', attempt_number: 1,
@@ -95,27 +97,27 @@ function cancellationObservation(fixture, mode = 'http') {
     activity_attempt: {id: 'cancel-attempt', activity_execution_id: 'cancel-activity', task_id: 'cancel-task',
       lease_owner: 'cancel-owner', status: 'cancelled', closed_at: '2026-01-01T00:00:05Z'}},
     decoded: {activity_arguments: [fixture.input]}, typed_decoded: {activity_arguments: {type: 'list', value: [fixture.typed_value]}}});
-  raw.events.push({payload: {...common, failure_id: 'cancel-failure', failure_category: 'cancelled', closed_reason: 'cancelled',
-    exception_class: 'Workflow\\V2\\Exceptions\\WorkflowCancelledException', message:
+  raw.events.push({payload: {...common, failure_id: 'cancel-failure', failure_category: closing.closed, closed_reason: closing.closed,
+    exception_class: closing.exception, message:
       fixture.immediate_cancellation.diagnostic_encoding === 'json_string_literal_if_nul' && reason.includes('\0')
-        ? JSON.stringify(`Workflow cancelled: ${reason}`) : `Workflow cancelled: ${reason}`}, decoded: {}, typed_decoded: {}});
+        ? JSON.stringify(`Workflow ${closing.closed}: ${reason}`) : `Workflow ${closing.closed}: ${reason}`}, decoded: {}, typed_decoded: {}});
   raw.events = raw.events.map((event, index) => ({...event, sequence: index + 1, event_type: fixture.expected_events[index], timestamp: `2026-01-01T00:00:0${index}Z`}));
-  Object.assign(raw.execution, {closed_reason: 'cancelled', closed_at: raw.events.at(-1).timestamp});
+  Object.assign(raw.execution, {closed_reason: closing.closed, closed_at: raw.events.at(-1).timestamp});
   const history = raw.events.map(({decoded, typed_decoded, ...event}) => event);
-  const accepted = {command_id: 'cancel-command', command_status: 'accepted', outcome: 'cancelled', command_sequence: 2,
+  const accepted = {command_id: 'cancel-command', command_status: 'accepted', outcome: closing.closed, command_sequence: 2,
     workflow_id: raw.workflow_id, run_id: raw.run_id, target_scope: fixture.immediate_cancellation.receipt_target_scope[mode]};
-  const stale = {status: 409, response: {reason: 'run_cancelled', outcome: 'ignored', cancel_requested: true, can_continue: false,
+  const stale = {status: 409, response: {reason: `run_${closing.closed}`, outcome: 'ignored', cancel_requested: true, can_continue: false,
     lease_owner: 'cancel-owner', lease_expires_at: null, recorded: false, task_id: 'cancel-task', activity_attempt_id: 'cancel-attempt',
     activity_status: 'cancelled', attempt_status: 'cancelled', task_status: 'cancelled'}};
-  raw.cancellation = {before: history.slice(0, history.findIndex(event => event.event_type === 'CancelRequested')),
+  raw.cancellation = {before: history.slice(0, history.findIndex(event => event.event_type === closing.requested)),
     accepted: {status: 200, response: accepted}, duplicate: {status: 409, response: {...accepted,
       command_id: 'rejected-cancel', command_sequence: 3, command_status: 'rejected', rejection_reason: 'run_not_active'}},
     history_before_duplicate: history, history_after_duplicate: history, fresh_history: history,
-    fresh_execution: {id: raw.run_id, status: 'cancelled', output: null, cancelled: true},
-    outcome: {type: 'DurableWorkflow\\Exception\\WorkflowCancelled', message: reason}, remaining_tasks: {workflow: null, activity: null},
+    fresh_execution: {id: raw.run_id, status: closing.closed, output: null, cancelled: closing.name === 'cancel', terminated: closing.name === 'terminate'},
+    outcome: {type: closing.sdk, message: reason}, remaining_tasks: {workflow: null, activity: null},
     late_completion: phase === 'leased_activity' ? stale : null, redelivered_task_ids: phase === 'leased_activity' ? ['cancel-task'] : [],
     failures: [{id: 'cancel-failure', workflow_run_id: raw.run_id, source_kind: 'workflow_run', source_id: raw.run_id,
-      propagation_kind: 'cancelled', failure_category: 'cancelled', exception_class: raw.events.at(-1).payload.exception_class,
+      propagation_kind: closing.closed, failure_category: closing.closed, exception_class: raw.events.at(-1).payload.exception_class,
       message: raw.events.at(-1).payload.message, handled: false}], tasks: [{id: 'cancel-task', status: 'cancelled', lease_expires_at: null}],
     attempts: [{id: 'cancel-attempt', workflow_task_id: 'cancel-task', status: 'cancelled', lease_expires_at: null}]};
   raw.workflow_polls = phase === 'before_claim' ? [] : [{}];
@@ -177,6 +179,19 @@ for (const fixture of cancellationFixtures) {
     ['rewritten history', raw => { raw.cancellation.fresh_history.at(-1).payload.message = 'changed'; }],
     ['wrong typed result', raw => { raw.cancellation.outcome.type = 'RuntimeException'; }],
     ['remaining work', raw => { raw.cancellation.remaining_tasks.workflow = {task_id: 'new'}; }],
+  ]) test(`${fixture.id} rejects ${label}`, () => {
+    const raw = cancellationObservation(fixture);
+    mutate(raw);
+    assert.throws(() => checkObservation(fixture, raw, 'test-one-activity'));
+  });
+}
+for (const fixture of cancellationFixtures.filter(fixture => fixture.immediate_cancellation.command === 'terminate')) {
+  for (const [label, mutate] of [
+    ['a cancel command', raw => { raw.events.find(event => event.event_type === 'TerminateRequested').payload.command_type = 'cancel'; }],
+    ['a cancelled failure category', raw => { raw.events.at(-1).payload.failure_category = 'cancelled'; }],
+    ['the cancellation exception', raw => { raw.events.at(-1).payload.exception_class = 'Workflow\\V2\\Exceptions\\WorkflowCancelledException'; }],
+    ['a cancelled run', raw => { raw.status = 'cancelled'; }],
+    ['a cancelled SDK outcome', raw => { raw.cancellation.outcome.type = 'DurableWorkflow\\Exception\\WorkflowCancelled'; }],
   ]) test(`${fixture.id} rejects ${label}`, () => {
     const raw = cancellationObservation(fixture);
     mutate(raw);

@@ -13,6 +13,8 @@ pub struct QueryTaskConfig {
     pub lease_timeout_seconds: i64,
     pub receipt_ttl_seconds: i64,
     pub worker_stale_after_seconds: i64,
+    /// The worker heartbeat cadence advertised on registration and heartbeat.
+    pub worker_heartbeat_interval_seconds: i64,
     pub poll_timeout_seconds: i64,
 }
 
@@ -23,6 +25,7 @@ impl Default for QueryTaskConfig {
             lease_timeout_seconds: 60,
             receipt_ttl_seconds: 180,
             worker_stale_after_seconds: 30,
+            worker_heartbeat_interval_seconds: 10,
             poll_timeout_seconds: 5,
         }
     }
@@ -85,6 +88,8 @@ impl QueryTaskConfig {
                 heartbeat.saturating_mul(3).max(30),
             )?
             .max(1),
+            // PHP clamps the advertised cadence to one second through an hour.
+            worker_heartbeat_interval_seconds: heartbeat.clamp(1, 3600),
             poll_timeout_seconds: integer(
                 "DW_QUERY_TASK_POLL_TIMEOUT",
                 "WORKFLOW_SERVER_QUERY_TASK_POLL_TIMEOUT",

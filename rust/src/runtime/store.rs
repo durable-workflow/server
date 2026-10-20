@@ -796,7 +796,11 @@ where
         Ok(())
     }
 
-    pub(crate) async fn register(&self, body: Value) -> Result<Value> {
+    pub(crate) async fn register(
+        &self,
+        body: Value,
+        config: &super::QueryTaskConfig,
+    ) -> Result<Value> {
         let worker_id = text(&body, "worker_id")?;
         let queue = text(&body, "task_queue")?;
         for field in ["supported_workflow_types", "supported_activity_types"] {
@@ -813,6 +817,7 @@ where
             }
         }
         let runtime = text(&body, "runtime")?;
+        let registration = super::worker_management::Registration::parse(&body)?;
         let supplied_contracts = body
             .get("workflow_command_contracts")
             .map(|contracts| {
@@ -821,8 +826,25 @@ where
             .transpose()?;
         let token = super::worker_incarnations::token().await?;
         let mut tx = self.begin().await?;
-        let previous = Self::query("SELECT worker_id,workflow_command_contracts FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
+        let previous = Self::query("SELECT worker_id,status,workflow_command_contracts,workflow_definition_fingerprints FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
             .bind(self.namespace.as_ref()).bind(worker_id).fetch_optional(&mut *tx).await?;
+        // Only an active registration guards its workflow definitions.
+        let current = match &previous {
+            Some(worker) if DB::optional_string(worker, "status")?.as_deref() == Some("active") => {
+                Some(
+                    DB::optional_document_row(worker, "workflow_definition_fingerprints")?
+                        .unwrap_or(Value::Null),
+                )
+            }
+            _ => None,
+        };
+        let supported_types: Vec<String> = body["supported_workflow_types"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|t| t.as_str().map(str::to_owned))
+            .collect();
+        let fingerprints = registration.reconcile(current.as_ref(), &supported_types)?;
         let contracts = match supplied_contracts {
             Some(contracts) => contracts,
             None => {
@@ -842,6 +864,8 @@ where
             // and lease release commit together; failure restores the old attempt.
             Self::query("UPDATE workflow_tasks SET status='ready',leased_at=NULL,lease_owner=NULL,lease_expires_at=NULL WHERE namespace=$1 AND lease_owner=$2 AND task_type='workflow' AND status='leased'")
                 .bind(self.namespace.as_ref()).bind(worker_id).execute(&mut *tx).await?;
+            Self::release_replaced_activity_leases(&mut tx, self.namespace.as_ref(), worker_id)
+                .await?;
         }
         Self::query(DB::WORKER_REGISTRATION_SQL)
             .bind(self.namespace.as_ref())
@@ -861,25 +885,21 @@ where
             .await?;
         Self::query("UPDATE workflow_worker_registrations SET status='active',workflow_command_contracts=$1 WHERE worker_id=$2 AND namespace=$3")
             .bind(DB::document(&contracts)).bind(worker_id).bind(self.namespace.as_ref()).execute(&mut *tx).await?;
+        Self::record_registration(
+            &mut tx,
+            self.namespace.as_ref(),
+            worker_id,
+            &registration,
+            &fingerprints,
+        )
+        .await?;
         self.rotate_incarnation(&mut tx, worker_id, &token).await?;
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(
             json!({"worker_id": worker_id, "registration_token":token, "registered": true, "namespace": self.namespace.as_ref(), "task_queue": queue,
-            "runtime": body["runtime"], "build_id": body["build_id"], "heartbeat_interval_seconds": 10,
+            "runtime": body["runtime"], "build_id": body["build_id"], "heartbeat_interval_seconds": config.worker_heartbeat_interval_seconds,
             "status": "active", "capabilities": body["capabilities"], "capability_manifest": body["capability_manifest"]}),
-        )
-    }
-
-    pub(crate) async fn worker_heartbeat(&self, body: Value) -> Result<Value> {
-        let worker_id = text(&body, "worker_id")?;
-        let result = Self::query("UPDATE workflow_worker_registrations SET last_heartbeat_at=$1 WHERE worker_id=$2 AND namespace=$3")
-            .bind(DB::bind_time(now())).bind(worker_id).bind(self.namespace.as_ref()).execute(&self.pool).await?;
-        if DB::affected(result) != 1 {
-            return Err(refuse(StatusCode::NOT_FOUND, "worker_not_registered"));
-        }
-        Ok(
-            json!({"worker_id": worker_id, "heartbeat_recorded": true, "acknowledged":true, "heartbeat_interval_seconds": 10}),
         )
     }
 
@@ -2191,7 +2211,28 @@ where
         if DB::string(&attempt, "status")? != "running"
             || DB::number(&attempt, "attempt_number")? != DB::number(&task, "attempt_count")?
         {
-            return Err(refuse(StatusCode::CONFLICT, "stale_attempt"));
+            // Published PHP's stale completion receipt: nothing is recorded,
+            // and the owner of that attempt learns where its work stands.
+            let mut receipt = json!({"task_id": task_id, "activity_attempt_id": attempt_id,
+                "outcome": "completed", "recorded": false, "reason": "stale_attempt", "next_task_id": null});
+            let owner = text(&body, "lease_owner")?;
+            if DB::optional_string(&attempt, "lease_owner")?.as_deref() == Some(owner) {
+                let activity = Self::query("SELECT status FROM activity_executions WHERE id=$1")
+                    .bind(DB::string(&attempt, "activity_execution_id")?)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+                receipt["lease_owner"] = json!(owner);
+                receipt["activity_status"] = match activity {
+                    Some(activity) => json!(DB::string(&activity, "status")?),
+                    None => Value::Null,
+                };
+                receipt["attempt_status"] = json!(DB::string(&attempt, "status")?);
+                receipt["task_status"] = json!(DB::string(&task, "status")?);
+            }
+            return Err(super::RuntimeError::Protocol {
+                status: StatusCode::CONFLICT,
+                response: receipt,
+            });
         }
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
