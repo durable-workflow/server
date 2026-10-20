@@ -13,6 +13,8 @@ use Workflow\V2\Support\TaskCompatibility;
 
 final class WorkflowDefinitionRouting
 {
+    public const ENTRY_VALIDATION_CAPABILITY = 'workflow_entry_arguments_validation';
+
     /** @return array<string, mixed> */
     public function forWorker(
         WorkflowRun $run,
@@ -44,6 +46,10 @@ final class WorkflowDefinitionRouting
             }
         }
 
+        if (! in_array(self::ENTRY_VALIDATION_CAPABILITY, $worker->capabilities ?? [], true)) {
+            return [...$decision, 'allowed' => false, 'status' => 'entry_validation_unavailable'];
+        }
+
         // Match the embedded resolver: prefer the recorded source if it is
         // available, otherwise let the current definition validate replay.
         // This never changes the run's original fingerprint or build pin.
@@ -63,7 +69,7 @@ final class WorkflowDefinitionRouting
             $requiredCompatibility ??= TaskCompatibility::resolve($task, $run);
         }
         $context = $this->context($run, $taskQueue, $requiredCompatibility);
-        $matching = $changed = $missing = 0;
+        $matching = $changed = $missing = $unsafeReplacement = 0;
         $examples = [];
 
         foreach ($this->eligibleWorkers($run, (string) $context['task_queue'], $context['required_build_id']) as $worker) {
@@ -74,6 +80,9 @@ final class WorkflowDefinitionRouting
                 $matching++;
             } else {
                 $changed++;
+                if (! in_array(self::ENTRY_VALIDATION_CAPABILITY, $worker->capabilities ?? [], true)) {
+                    $unsafeReplacement++;
+                }
             }
             if (count($examples) < 10) {
                 $examples[] = ['worker_id' => $worker->worker_id, 'fingerprint' => $fingerprint];
@@ -86,14 +95,16 @@ final class WorkflowDefinitionRouting
             ! $context['pinning_enabled'] => 'pinning_disabled',
             $context['recorded_fingerprint'] === null => 'recorded_definition_missing',
             $matching > 0 => 'matching_definition_available',
-            $changed > 0 => 'replay_required',
+            $changed > $unsafeReplacement => 'replay_required',
+            $unsafeReplacement > 0 => 'entry_validation_unavailable',
             $missing > 0 => 'worker_definition_missing',
             default => 'no_eligible_worker',
         };
         $runnable = ! $run->status->isTerminal() && $task instanceof WorkflowTask;
         $blocked = $runnable && $context['worker_pinned'] && $context['pinning_enabled']
-            && in_array($status, ['recorded_definition_missing', 'worker_definition_missing', 'no_eligible_worker'], true);
+            && in_array($status, ['recorded_definition_missing', 'worker_definition_missing', 'no_eligible_worker', 'entry_validation_unavailable'], true);
         $resolution = match (true) {
+            $blocked && $status === 'entry_validation_unavailable' => 'Upgrade the replacement worker SDK to an implementation advertising workflow_entry_arguments_validation, or restore the recorded definition. The current replacement cannot safely refuse incompatible entry input.',
             $blocked => 'Register a fresh worker for the original namespace, task queue, workflow type, build and replay capabilities with its definition fingerprint. Do not rewrite the run history.',
             $status === 'replay_required' => 'Current workers may replay the original history. Use versioned branches for command changes; incompatible replay still refuses.',
             default => 'Recorded build, namespace, type and replay-capability guards remain in force.',
@@ -102,6 +113,7 @@ final class WorkflowDefinitionRouting
         return [...$context, 'status' => $status, 'blocked' => $blocked, 'runnable_task' => $runnable,
             'eligible_worker_count' => $eligible, 'matching_worker_count' => $matching,
             'changed_worker_count' => $changed, 'missing_fingerprint_count' => $missing,
+            'entry_validation_unavailable_count' => $unsafeReplacement,
             'workers' => $examples, 'workers_truncated' => $eligible > count($examples),
             'resolution' => $resolution,
         ];

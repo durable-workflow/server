@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\WorkerRegistration;
 use App\Support\WorkflowReplayEligibility;
+use App\Support\WorkflowDefinitionRouting;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Testing\TestResponse;
@@ -62,6 +63,24 @@ class WorkflowDefinitionEvolutionTest extends TestCase
         $this->poll('replacement-worker')->assertOk()
             ->assertJsonPath('task.run_id', $run->id)
             ->assertJsonPath('task.task_id', $task->id);
+    }
+
+    public function test_legacy_replacement_cannot_gain_unsafe_default_fallback(): void
+    {
+        [$run, $task] = $this->original();
+        $this->deleteJson('/api/workers/original-worker', [], $this->apiHeaders())->assertOk();
+        $this->worker('legacy-replacement', 'definition-v2', ['capabilities' => []]);
+        $this->poll('legacy-replacement')->assertOk()->assertJsonPath('task', null);
+        self::assertSame(0, $task->fresh()->attempt_count);
+        $this->getJson('/api/workflows/definition-original', $this->apiHeaders())->assertOk()
+            ->assertJsonPath('definition_routing.status', 'entry_validation_unavailable')
+            ->assertJsonPath('definition_routing.blocked', true)
+            ->assertJsonPath('definition_routing.entry_validation_unavailable_count', 1);
+        $this->worker('safe-replacement', 'definition-v2');
+        $this->getJson('/api/workflows/definition-original', $this->apiHeaders())->assertOk()
+            ->assertJsonPath('definition_routing.status', 'replay_required')
+            ->assertJsonPath('definition_routing.blocked', false);
+        $this->poll('safe-replacement')->assertOk()->assertJsonPath('task.run_id', $run->id);
     }
 
     public function test_default_keeps_the_matching_registered_peer_preference(): void
@@ -252,6 +271,55 @@ class WorkflowDefinitionEvolutionTest extends TestCase
         return [['terminal'], ['leased'], ['future']];
     }
 
+    #[DataProvider('entryFailureTypes')]
+    public function test_entry_binding_failure_preserves_the_original_until_supported_repair(string $failureType): void
+    {
+        [$run, $task, $started] = $this->original();
+        $original = [$started->getRawOriginal('payload'), $run->getRawOriginal('run_deadline_at'), $run->getRawOriginal('execution_deadline_at')];
+        $claim = $this->poll('original-worker')->assertOk();
+        $failure = [
+            'lease_owner' => $claim->json('task.lease_owner'),
+            'workflow_task_attempt' => $claim->json('task.workflow_task_attempt'),
+            'failure' => [
+                'type' => $failureType,
+                'reason' => 'workflow_entry_arguments_mismatch',
+                'message' => 'The recorded input cannot bind to the deployed entry.',
+            ],
+        ];
+
+        $this->postJson('/api/worker/workflow-tasks/'.$task->id.'/fail', [
+            ...$failure, 'lease_owner' => 'another-worker',
+        ], $this->workerHeaders())->assertConflict();
+        self::assertSame(TaskStatus::Leased, $task->fresh()->status);
+
+        $this->postJson('/api/worker/workflow-tasks/'.$task->id.'/fail', $failure, $this->workerHeaders())
+            ->assertOk()->assertJsonPath('recorded', true)->assertJsonPath('next_task_id', null);
+        self::assertSame(TaskStatus::Failed, $task->fresh()->status);
+        self::assertTrue($task->fresh()->payload['replay_blocked'] ?? false);
+        self::assertSame('workflow_entry_arguments_mismatch', $task->fresh()->payload['failure_reason']);
+        self::assertSame(1, WorkflowTask::query()->where('workflow_run_id', $run->id)->count());
+        self::assertNotContains($run->fresh()->status->value, ['failed', 'completed']);
+        $this->poll('original-worker')->assertOk()->assertJsonPath('task', null);
+
+        $this->postJson('/api/workflows/definition-original/repair', [
+            'request_id' => 'entry-compatible-repair',
+        ], $this->apiHeaders())->assertOk();
+        $this->poll('original-worker')->assertOk()->assertJsonPath('task.task_id', $task->id);
+        self::assertSame(1, $task->fresh()->repair_count);
+        self::assertSame($original, [
+            $started->fresh()->getRawOriginal('payload'), $run->fresh()->getRawOriginal('run_deadline_at'), $run->fresh()->getRawOriginal('execution_deadline_at'),
+        ]);
+    }
+
+    public static function entryFailureTypes(): array
+    {
+        return [
+            'PHP' => ['DurableWorkflow\\Exception\\WorkflowEntryArgumentsMismatch'],
+            'Python' => ['WorkflowEntryArgumentsMismatchError'],
+            'Rust' => ['WorkflowEntryArgumentsMismatch'],
+        ];
+    }
+
     private function original(): array
     {
         $this->worker('original-worker', 'definition-v1');
@@ -273,6 +341,7 @@ class WorkflowDefinitionEvolutionTest extends TestCase
     {
         $this->postJson('/api/worker/register', [
             'worker_id' => $id, 'task_queue' => self::QUEUE, 'runtime' => 'python', 'sdk_version' => '2.6.1',
+            'capabilities' => [WorkflowDefinitionRouting::ENTRY_VALIDATION_CAPABILITY],
             'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             'supported_workflow_types' => [self::TYPE],
             'workflow_definition_fingerprints' => [self::TYPE => $fingerprint],

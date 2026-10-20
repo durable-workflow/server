@@ -161,6 +161,7 @@ class WorkerController
         'version_marker_kind_mismatch',
         'version_marker_sequence_invalid',
         'version_range_invalid',
+        'workflow_entry_arguments_mismatch',
         'workflow_nondeterministic',
     ];
 

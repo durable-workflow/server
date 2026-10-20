@@ -422,7 +422,12 @@ Existing runs retain their original definition fingerprint, build pin, history
 and deadlines. By default, the Server prefers a fresh eligible worker with the
 recorded definition. When that definition is no longer available in the run's
 namespace, queue, workflow type and build, a replacement definition can claim
-the original task and must pass the SDK's strict replay checks. Use versioned
+the original task only when it advertises `workflow_entry_arguments_validation`,
+and must pass the SDK's strict replay checks. This worker capability declares
+pre-entry refusal without failing the business run; older worker implementations
+do not gain it from their runtime or protocol version. `entry_validation_unavailable`
+in `definition_routing` identifies a replacement that needs an SDK upgrade.
+Use versioned
 branches such as `get_version` for changes to durable commands. A different
 source fingerprint alone is not proof of incompatible replay.
 
