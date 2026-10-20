@@ -15,8 +15,10 @@ always false. This note says what makes each one true.
 Takeover is an explicit command, never a side effect of starting the server.
 Native startup keeps refusing a PHP or unknown database.
 
-1. The operator stops every PHP write-capable role: HTTP, bootstrap and
-   migration, queue workers and the scheduler.
+1. The installation runs Server 2.5.14 or later, the first release with the
+   ownership fence, so any PHP role that restarts later refuses the upgraded
+   database. The operator then stops every PHP write-capable role: HTTP,
+   bootstrap and migration, queue workers and the scheduler.
 2. `upgrade-fingerprint` prints a digest of the database's complete logical
    contents (below).
 3. The operator takes a backup with the
@@ -29,7 +31,8 @@ Native startup keeps refusing a PHP or unknown database.
    after the backup, by PHP or anything else, changes the digest and stops the
    takeover before any mutation.
 5. Native starts normally on the upgraded database. PHP refuses it from the
-   marker onward ([PHP ownership checks](php-database-ownership.md)).
+   marker onward ([PHP ownership checks](php-database-ownership.md)). Earlier
+   PHP releases lack that check, which is why step 1 requires 2.5.14.
 
 There is no PHP rollback after step 4. Recovery restores the verified backup
 into a new database for a PHP installation, with the data boundary of that
