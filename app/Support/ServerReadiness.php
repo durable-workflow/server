@@ -5,6 +5,8 @@ namespace App\Support;
 use App\Auth\AuthException;
 use App\Auth\ConfiguredAuthProvider;
 use App\Contracts\AuthProvider;
+use App\Database\DatabaseTlsConfiguration;
+use App\Database\DatabaseTlsRefused;
 use App\Models\WorkflowNamespace;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -111,13 +113,16 @@ final class ServerReadiness
                 'status' => 'ok',
                 'check_scope' => $probeQuery ? 'bound_read_query' : 'connection_only',
                 'write_capacity_verified' => false,
+                'tls' => DatabaseTlsConfiguration::snapshot($connection->getConfig()),
                 'message' => $probeQuery
                     ? 'The primary database connection can execute a bound read query. Write capacity has not been verified.'
                     : 'The database connection is available. Write capacity has not been verified.',
             ];
         } catch (\Throwable $exception) {
             $reason = $queryAttempted ? 'database_query_failed' : null;
-            if (BackendUnavailable::is($exception)) {
+            if ($exception instanceof DatabaseTlsRefused) {
+                $reason = $exception->reason;
+            } elseif (BackendUnavailable::is($exception)) {
                 $reason = 'backend_unavailable';
             }
 

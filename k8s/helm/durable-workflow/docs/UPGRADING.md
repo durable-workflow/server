@@ -67,6 +67,26 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.2.0
+
+Database TLS settings now affect the PHP connection. An old `sslMode` setting
+that was previously ignored can cause a bootstrap or readiness refusal when
+the database cannot meet that requirement. Check the complete mode contract in
+[Database TLS](../README.md#database-tls) before applying the new chart.
+
+For `verify-full`, create a CA bundle Secret before the bootstrap hook runs and
+set `externalDatabase.tls.existingSecret` and `caKey`. The same read-only CA
+mount is present in the API server, worker, migration Job and scheduler.
+`DB_SSLMODE` and `DB_SSLROOTCERT` are canonical; `DB_SSL_MODE` and
+`DB_SSL_ROOT_CERT` aliases remain accepted. Conflicting aliases/URL settings,
+missing verifying CAs and unsupported driver modes refuse rather than
+downgrade. MySQL/MariaDB support `disable`, `require` and `verify-full`.
+
+The optional trust-bundle values are new. No database migration or package
+dependency change is required by TLS enforcement. Verify readiness, certificate
+identity and a workflow canary before returning traffic; preserve the earlier
+stop-first upgrade boundaries below when crossing them from an older release.
+
 ### 0.1.183
 
 Server 2.9.7 uses Core's corrected caller-key update receipts. New update rows
