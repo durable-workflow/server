@@ -46,14 +46,13 @@ final class WorkflowDefinitionRouting
             }
         }
 
-        if (! in_array(self::ENTRY_VALIDATION_CAPABILITY, $worker->capabilities ?? [], true)) {
-            return [...$decision, 'allowed' => false, 'status' => 'entry_validation_unavailable'];
-        }
-
         // Match the embedded resolver: prefer the recorded source if it is
         // available, otherwise let the current definition validate replay.
         // This never changes the run's original fingerprint or build pin.
-        return [...$decision, 'allowed' => true, 'status' => 'replay_required'];
+        $entryValidation = in_array(self::ENTRY_VALIDATION_CAPABILITY, $worker->capabilities ?? [], true);
+
+        return [...$decision, 'allowed' => $entryValidation,
+            'status' => $entryValidation ? 'replay_required' : 'entry_validation_unavailable'];
     }
 
     /** @return array<string, mixed> */
