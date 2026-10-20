@@ -513,6 +513,12 @@ async fn health(Extension(runtime): Extension<Runtime>) -> Response {
 
 async fn ready(Extension(runtime): Extension<Runtime>) -> Response {
     let ready = runtime.schema_ready().await;
+    let mut database = json!({"status": if ready { "ok" } else { "failed" },
+        "mode": "schema_read", "write_capacity_verified": false});
+    // As PHP does, only a reachable database reports what its TLS guarantees.
+    if ready {
+        database["tls"] = crate::database_tls::current();
+    }
     (
         if ready {
             StatusCode::OK
@@ -521,8 +527,7 @@ async fn ready(Extension(runtime): Extension<Runtime>) -> Response {
         },
         Json(json!({
         "status": if ready { "ready" } else { "not_ready" }, "development": true,
-        "checks": {"database": {"status": if ready { "ok" } else { "failed" },
-            "mode": "schema_read", "write_capacity_verified": false}},
+        "checks": {"database": database},
         "qualification": "unpublished_execution_slice"})),
     )
         .into_response()
