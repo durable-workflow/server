@@ -129,6 +129,9 @@ mod query_arguments;
 #[path = "execution/query_authority.rs"]
 mod query_authority;
 
+#[path = "execution/query_poll_requests.rs"]
+mod query_poll_requests;
+
 #[path = "execution/cross_kind_poll.rs"]
 mod cross_kind_poll;
 

@@ -421,6 +421,7 @@ where
             "terminal_receipt",
             "registration_incarnation",
             "legacy_refusal_at",
+            "poll_request_id",
         ] {
             delivered
                 .as_object_mut()
@@ -439,6 +440,11 @@ where
     ) -> Result<QueryClaim> {
         let owner = text(body, "worker_id")?;
         let queue = text(body, "task_queue")?;
+        let request_id = body
+            .get("poll_request_id")
+            .filter(|value| !value.is_null())
+            .map(|_| text(body, "poll_request_id"))
+            .transpose()?;
         let mut tx = self.begin().await?;
         let worker = Self::query("SELECT * FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2 AND status='active'")
             .bind(self.namespace.as_ref()).bind(owner)
@@ -495,13 +501,20 @@ where
                     config,
                 )
                 .await?;
-                // A live lease belongs to the poll that claimed it. Published PHP replays
-                // it only to a matching poll_request_id, which native does not advertise,
-                // so a later poll from the same worker is an independent slot.
+                // A live lease belongs to the poll request that claimed it. As in
+                // published PHP, only a retry of that same request receives it
+                // again; any other poll from the same worker is an independent slot.
                 if existing_proof
                     .as_deref()
                     .is_some_and(|proof| task["registration_incarnation"] == proof)
                 {
+                    if existing_owner == owner
+                        && request_id.is_some_and(|id| task["poll_request_id"] == id)
+                    {
+                        let delivered = Self::query_delivery(&task);
+                        tx.commit().await?;
+                        return Ok(QueryClaim::Task(delivered));
+                    }
                     continue;
                 }
             }
@@ -520,6 +533,7 @@ where
             }
             task["lease_expires_at"] = json!(authority::wire(expires));
             task["registration_incarnation"] = json!(proof);
+            task["poll_request_id"] = request_id.map_or(Value::Null, |id| json!(id));
             Self::put_query(&mut tx, &key, &task, authority::expiration(&task)?).await?;
             tx.commit().await?;
             return Ok(QueryClaim::Task(Self::query_delivery(&task)));
