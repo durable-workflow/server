@@ -297,6 +297,21 @@ October 20, immediate termination:
   Native integration tests for both commands pass on SQLite, PostgreSQL and
   MySQL.
 
+October 20, namespace update:
+
+- **Source.** Native serves `PUT /api/namespaces/{name}`, as published PHP's
+  NamespaceController::update does. A description replaces the stored one
+  only when given. Retention follows PHP's rules: a forever namespace becoming
+  bounded needs `retention_days`; forever refuses days; bounded refuses null
+  days; days run 1–365. A missing namespace is `404 namespace_not_found`.
+  Only an admin may update a namespace. Native still has no retention pass,
+  so the stored retention is not enforced yet.
+- **Checks.** The `namespace-isolation` probe now updates its first
+  namespace at the end through the published SDK, and updates a missing one.
+  The contract checks both. Locally, published PHP 2.5.14, embedded PHP and
+  native passed, and the comparison passed. A native test covers the
+  retention rules on SQLite.
+
 October 19, before #478, #476, #494 and #460 merged:
 
 - **Open native PRs.** [#478](https://github.com/durable-workflow/server/pull/478)
