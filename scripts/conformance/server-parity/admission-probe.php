@@ -8,6 +8,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\StartOptions;
 use Workflow\V2\WorkflowStub;
 use Workflow\WorkflowOptions;
+require_once __DIR__.'/lock-pressure-middleware.php';
 
 function parityAdmissionToken(string $auth): string
 {
@@ -86,7 +87,7 @@ function finishHttpAdmission(Client $client, array $fixture, string $workflowId,
         throw $error;
     } finally {
         if (isset($definition['cleanup_auth'])) {
-            $cleanupClient = new Client($url, namespace: $namespace, token: parityAdmissionToken($definition['cleanup_auth']));
+            $cleanupClient = parityClient($url, namespace: $namespace, token: parityAdmissionToken($definition['cleanup_auth']));
             $state['cleanup_auth'] = $definition['cleanup_auth'];
             $state['cleanup'] = $cleanupClient->cancelWorkflow($peerId, $definition['cleanup_reason'], $peer->selectedRunId);
         } else {

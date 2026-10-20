@@ -64,6 +64,7 @@ require $sdkAutoload;
 
 require __DIR__.'/observation-values.php';
 require __DIR__.'/probe-failure.php';
+require_once __DIR__.'/lock-pressure-middleware.php';
 
 function observedChildTransport(array &$polls, array &$completions, array &$activityPolls, array &$activityOutcomes, ?Closure $afterCompletion = null, ?array &$scheduleReceipts = null): Psr18Transport
 {
@@ -106,6 +107,7 @@ function observedChildTransport(array &$polls, array &$completions, array &$acti
             });
         };
     });
+    $stack->push(LockPressurePollRetries::middleware(), 'lock_pressure_poll_retry');
 
     return new Psr18Transport(client: new GuzzleClient(['http_errors' => false, 'handler' => $stack]));
 }
@@ -114,7 +116,7 @@ function observedChildTransport(array &$polls, array &$completions, array &$acti
 // client in an independent PHP process so this probe's worker keeps polling.
 if ($mode === 'query') {
     try {
-        $client = new Client($options['url'], namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null);
+        $client = parityClient($options['url'], namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null);
         $result = $client->queryWorkflow($workflowId, $fixture['query_name'], $fixture['query_arguments'], $options['run-id']);
         echo json_encode(['result' => $result, 'typed_result' => typedValue($result)], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n";
         exit(0);
@@ -142,9 +144,9 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     } : null;
     $transport = isset($fixture['child_count']) || isset($fixture['child_cancellation']) || isset($fixture['retry_policy']) || isset($fixture['schedule'])
         ? observedChildTransport($workflowPolls, $workflowCompletions, $activityPolls, $activityOutcomes, $afterCompletion, $scheduleReceipts) : null;
-    $client = new Client($url, namespace: $namespace, transport: $transport, token: getenv('DW_PARITY_TOKEN') ?: null);
+    $client = parityClient($url, namespace: $namespace, transport: $transport, token: getenv('DW_PARITY_TOKEN') ?: null);
     $workerClient = ($fixture['auth_profile'] ?? null) === 'role_tokens'
-        ? new Client($url, namespace: $namespace, token: parityAdmissionToken('worker')) : $client;
+        ? parityClient($url, namespace: $namespace, token: parityAdmissionToken('worker')) : $client;
     $handle = null;
     $deliveries = [];
     $queries = [];
