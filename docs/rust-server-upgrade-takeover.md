@@ -66,7 +66,7 @@ with any other writer.
 | Backend | Exclusion | Atomicity |
 | --- | --- | --- |
 | SQLite | `BEGIN EXCLUSIVE` on the database file | Fingerprint, marker, native relations and conversions commit in one transaction. |
-| PostgreSQL | `LOCK TABLE … IN EXCLUSIVE MODE` on every relation, then the native advisory key | DDL is transactional, so everything commits in one transaction. |
+| PostgreSQL | Native's bootstrap advisory key, then `LOCK TABLE … IN ACCESS EXCLUSIVE MODE` on every table, with a short lock wait. The later DDL needs that mode anyway, so no lock is upgraded while another session waits. | DDL is transactional, so everything commits in one transaction. |
 | MySQL and MariaDB | To be qualified: `LOCK TABLES … WRITE` on every relation, or a check that no other session uses the database, repeated after the marker is written | DDL commits implicitly, so the marker records a step journal (below). |
 
 On SQLite and PostgreSQL, a PHP connection that slipped past the stop blocks on
@@ -75,18 +75,19 @@ leaves a mixed state.
 
 ## Marker and interruption
 
-The marker is written first in each takeover transaction, with state
-`takeover`, the fingerprint and the step list. Native startup refuses state
-`takeover`. Each step is idempotent and records its completion in the marker.
-Rerunning `upgrade-takeover` with the same fingerprint resumes after the last
-recorded step; a different fingerprint is refused. The final step sets state
-`ready` and the native schema version.
+On SQLite and PostgreSQL the marker commits with everything else, so an
+interruption leaves the database unchanged PHP and nothing needs a journal.
+The operator reruns `upgrade-takeover` with the same fingerprint. A killed
+SQLite takeover leaves a rollback journal; read-only inspection refuses it,
+and the rerun lets SQLite roll it back before the fingerprint check.
 
-On SQLite and PostgreSQL an interruption rolls the whole transaction back, so
-the database is either unchanged PHP or fully native. On MySQL and MariaDB the
-step journal makes each committed DDL step visible, and resumption continues
-from it. The PHP fence refuses the database from the first step, because the
-marker exists.
+MySQL and MariaDB commit DDL implicitly, so there the marker is written first,
+with state `takeover`, the fingerprint and the step list. Native startup
+refuses state `takeover`. Each step is idempotent and records its completion
+in the marker. Rerunning `upgrade-takeover` with the same fingerprint resumes
+after the last recorded step; a different fingerprint is refused. The final
+step sets state `ready` and the native schema version. The PHP fence refuses
+the database from the first step, because the marker exists.
 
 ## Steps
 
