@@ -2,8 +2,6 @@
 
 namespace App\Support;
 
-use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Throwable;
 use Workflow\Serializers\Serializer;
@@ -27,6 +25,7 @@ use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\StructuralLimits;
 use Workflow\V2\Support\UpdateCommandGate;
+use Workflow\V2\Support\UpdateRequestIdentity;
 use Workflow\V2\Support\UpdateWaitPolicy;
 use Workflow\V2\Support\WorkflowExecutionGate;
 use Workflow\V2\Support\WorkflowTaskPayload;
@@ -78,12 +77,8 @@ class ExternalWorkflowUpdateAdmission
                 return null;
             }
 
-            if (! $this->shouldHandle($run, $updateName)) {
-                return null;
-            }
-
             $requestId = $this->requestId($commandContext);
-            $duplicate = $this->duplicateForRequest($run, $requestId);
+            $duplicate = $this->duplicateForRequest($instance, $commandContext);
 
             if ($duplicate !== null) {
                 return $this->resultPayload(
@@ -93,6 +88,10 @@ class ExternalWorkflowUpdateAdmission
                     false,
                     $waitTimeoutSeconds,
                 );
+            }
+
+            if (! $this->shouldHandle($run, $updateName)) {
+                return null;
             }
 
             $validated = $this->validatedArgumentsForRun($run, $updateName, $arguments);
@@ -197,6 +196,39 @@ class ExternalWorkflowUpdateAdmission
         return $this->validatedArgumentsForRun($run, $updateName, $arguments);
     }
 
+    /**
+     * A retained caller key precedes new validator or workflow execution.
+     * Namespace and selected-run authorization remain the controller's guard.
+     *
+     * @return array<string, mixed>|null
+     */
+    protected function retainedReceipt(
+        string $namespace,
+        string $workflowId,
+        CommandContext $context,
+        string $waitFor,
+        ?int $waitTimeoutSeconds,
+    ): ?array {
+        if ($this->requestId($context) === null) {
+            return null;
+        }
+        $result = $this->mutations->run(fn (): ?array => DB::transaction(function () use (
+            $namespace, $workflowId, $context, $waitFor, $waitTimeoutSeconds,
+        ): ?array {
+            $instance = WorkflowInstance::query()->where('namespace', $namespace)->lockForUpdate()->find($workflowId);
+            $duplicate = $instance instanceof WorkflowInstance ? $this->duplicateForRequest($instance, $context) : null;
+
+            return $duplicate === null ? null : $this->resultPayload(
+                $duplicate['command'], $duplicate['update'], $waitFor, false, $waitTimeoutSeconds,
+            );
+        }));
+
+        return ($result['update_status'] ?? null) === UpdateStatus::Accepted->value
+            && $waitFor === UpdateWaitPolicy::WAIT_FOR_COMPLETED
+            ? $this->waitForCompletion($result, $waitTimeoutSeconds)
+            : $result;
+    }
+
     private function shouldHandle(WorkflowRun $run, string $updateName): bool
     {
         if (! in_array($run->status, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true)) {
@@ -216,44 +248,14 @@ class ExternalWorkflowUpdateAdmission
     /**
      * @return array{command: WorkflowCommand, update: WorkflowUpdate}|null
      */
-    private function duplicateForRequest(WorkflowRun $run, ?string $requestId): ?array
+    private function duplicateForRequest(WorkflowInstance $instance, CommandContext $context): ?array
     {
-        if ($requestId === null) {
-            return null;
-        }
+        $command = UpdateRequestIdentity::find($instance, $context->attributes()['context']);
+        $update = $command instanceof WorkflowCommand
+            ? WorkflowUpdate::query()->where('workflow_command_id', $command->id)->first()
+            : null;
 
-        // Request IDs identify retained commands across this instance's runs
-        // and update names, matching the command ledger's unique scope.
-        /** @var Collection<int, WorkflowCommand> $commands */
-        $commands = WorkflowCommand::query()
-            ->where('workflow_instance_id', $run->workflow_instance_id)
-            ->where('command_type', CommandType::Update->value)
-            ->where(static function (Builder $query) use ($requestId): void {
-                $query->where('request_id', $requestId)->orWhereNull('request_id');
-            })
-            ->orderByDesc('command_sequence')
-            ->orderByDesc('created_at')
-            ->get();
-
-        foreach ($commands as $command) {
-            if ($this->requestIdFromStoredContext($command->context) !== $requestId) {
-                continue;
-            }
-
-            /** @var WorkflowUpdate|null $update */
-            $update = WorkflowUpdate::query()
-                ->where('workflow_command_id', $command->id)
-                ->first();
-
-            if ($update instanceof WorkflowUpdate) {
-                return [
-                    'command' => $command,
-                    'update' => $update,
-                ];
-            }
-        }
-
-        return null;
+        return $update instanceof WorkflowUpdate ? ['command' => $command, 'update' => $update] : null;
     }
 
     private function wakeWorkflowTask(WorkflowRun $run, WorkflowUpdate $update): void
@@ -450,6 +452,9 @@ class ExternalWorkflowUpdateAdmission
             'wait_timeout_seconds' => $waitTimeoutSeconds,
             'accepted' => $command->status === CommandStatus::Accepted,
             'status' => $this->statusCode($command, $update, $outcome, $updateStatus),
+            ...($command->status === CommandStatus::Rejected ? $command->payloadValues([
+                'structural_limit_kind', 'structural_limit_value', 'structural_limit_configured',
+            ]) : []),
         ];
     }
 

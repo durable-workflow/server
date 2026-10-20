@@ -39,6 +39,20 @@ added without a TTL, admission, scan, or cardinality contract.
   as `GITHUB_RUN_ID` and `RUNNER_NAME` belong in `summary.json` provenance, not
   in Prometheus labels that create new series for every soak.
 
+## Retention and projection drift
+
+Runs with a committed `details_pruned_at` marker retain their root row while
+their history and detail projections are removed. Core excludes these marked
+runs from missing run-summary drift, rebuild eligibility and missing-summary
+age. The drift report's total still counts retained run rows. A fully pruned
+population must not create a projection warning or false backlog age.
+
+Unmarked legacy absence remains a real missing-projection finding. An empty
+history alone does not prove intentional pruning, and rebuilding cannot restore
+retention-deleted history. Retention and rebuild maintenance should leave a
+marked run without recreating its deleted summary. Check `/api/system/health`,
+`/api/system/metrics` and `/api/system/operator-metrics` after an upgrade.
+
 ## Cache Inventory
 
 | Policy ID | Prefix | Owner | Growth Bound |

@@ -43,6 +43,11 @@ final class ValidatedExternalWorkflowUpdateAdmission extends ExternalWorkflowUpd
         string $waitFor = UpdateWaitPolicy::WAIT_FOR_ACCEPTED,
         ?int $waitTimeoutSeconds = null,
     ): ?array {
+        $retained = $this->retainedReceipt($namespace, $workflowId, $commandContext, $waitFor, $waitTimeoutSeconds);
+        if ($retained !== null) {
+            return $retained;
+        }
+
         $validation = $this->preAdmissionValidation(
             $namespace,
             $workflowId,
