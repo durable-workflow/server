@@ -385,7 +385,7 @@ where
         }
     }
 
-    pub(super) async fn query_worker_proof<'e, E>(
+    async fn query_worker_proof<'e, E>(
         executor: E,
         namespace: &str,
         owner: &str,
@@ -435,6 +435,36 @@ where
         }
         delivered["server_time"] = json!(authority::wire(authority::now()));
         delivered
+    }
+
+    /// Whether a held query poll should claim again. `proof` is the
+    /// registration this poll belongs to.
+    async fn query_poll_ready(
+        &self,
+        body: &Value,
+        config: &QueryTaskConfig,
+        proof: &str,
+    ) -> Result<bool> {
+        let owner = text(body, "worker_id")?;
+        // The claim refuses a replaced, removed or stale registration.
+        if Self::query_worker_proof(&self.pool, self.namespace.as_ref(), owner, config)
+            .await?
+            .as_deref()
+            != Some(proof)
+        {
+            return Ok(true);
+        }
+        let at = super::store::now();
+        let query_now = authority::wire(at);
+        Ok(Self::query(DB::POLL_WAKE_QUERIES_SQL)
+            .bind(at.timestamp())
+            .bind(self.namespace.as_ref())
+            .bind(text(body, "task_queue")?)
+            .bind(query_now.clone())
+            .bind(query_now)
+            .fetch_optional(&self.pool)
+            .await?
+            .is_some())
     }
 
     async fn claim_query(

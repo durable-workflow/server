@@ -338,7 +338,7 @@ impl Backend for Postgres {
         let mut tx = pool.begin().await?;
         // The first single-namespace slice serializes its durable transitions
         // across independent pools/processes. Held long polls wait without it
-        // (poll_readiness.rs). Throughput/idle cost remain unqualified.
+        // (Store::task_poll_ready). Throughput/idle cost remain unqualified.
         sqlx::query("SELECT pg_advisory_xact_lock(4924501473315676163)")
             .execute(&mut *tx)
             .await?;

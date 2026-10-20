@@ -29,7 +29,7 @@ pool without a transaction.
 A held long poll takes the lock for its first probe, and afterwards only when
 a lock-free read finds something to claim or refuse: an eligible task (or
 query), a receipt for the poll's own request ID, or a removed, moved or
-replaced registration (`poll_readiness.rs`). The read runs at once when a
+replaced registration (`Store::task_poll_ready` and `Store::query_poll_ready`). The read runs at once when a
 commit on the same node wakes the poll. Otherwise it runs 50 ms after a probe
 and then at doubling intervals up to 250 ms, so a poll observes work committed
 by another server process within 250 ms. An idle poll therefore neither waits

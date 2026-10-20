@@ -967,6 +967,43 @@ where
         }
     }
 
+    /// Whether a held workflow or activity poll should claim again.
+    async fn task_poll_ready(&self, body: &Value, kind: &str) -> Result<bool> {
+        let worker_id = text(body, "worker_id")?;
+        let queue = text(body, "task_queue")?;
+        // The claim refuses a removed or moved registration.
+        let registration = Self::query(
+            "SELECT task_queue FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2",
+        )
+        .bind(worker_id)
+        .bind(self.namespace.as_ref())
+        .fetch_optional(&self.pool)
+        .await?;
+        match registration {
+            Some(row) if DB::string(&row, "task_queue")? == queue => {}
+            _ => return Ok(true),
+        }
+        // A concurrent poll with the same request ID may have claimed already;
+        // the claim replays its receipt.
+        if let Some(request_id) = body.get("poll_request_id").and_then(Value::as_str)
+            && Self::query("SELECT task_id FROM dw_poll_receipts WHERE worker_id=$1 AND kind=$2 AND request_id=$3 AND namespace=$4")
+                .bind(worker_id).bind(kind).bind(request_id).bind(self.namespace.as_ref())
+                .fetch_optional(&self.pool).await?.is_some()
+        {
+            return Ok(true);
+        }
+        let at = now();
+        Ok(Self::query(DB::TASK_CANDIDATES_SQL)
+            .bind(self.namespace.as_ref())
+            .bind(queue)
+            .bind(kind)
+            .bind(DB::bind_time(at))
+            .bind(DB::bind_time(at))
+            .fetch_optional(&self.pool)
+            .await?
+            .is_some())
+    }
+
     async fn claim(
         &self,
         body: &Value,
