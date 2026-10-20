@@ -1,0 +1,44 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "terminate-leased-activity",
+  "workflow_type": "parity.v1.cancel_leased_activity",
+  "input": {
+    "message": "cancel λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "cancel λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "immediate_cancellation": {
+    "command": "terminate",
+    "phase": "leased_activity",
+    "receipt_target_scope": {"http": "instance", "embedded": "run"},
+    "reason": "parity cancellation λ"
+  },
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "ActivityScheduled",
+    "ActivityStarted",
+    "TerminateRequested",
+    "ActivityCancelled",
+    "WorkflowTerminated"
+  ],
+  "contract": "Immediate selected-run termination shares the published cancellation implementation and records the termination identity: TerminateRequested and WorkflowTerminated, the terminated run status, closed reason and failure category, and WorkflowTerminatedException. Open tasks, activities and timers are cancelled as for cancellation, and a late activity outcome is refused with run_terminated. Repeating termination is refused with run_not_active and unchanged history. These fixtures reuse the cancellation fixtures' workflows. Terminating a child run is not qualified."
+}
