@@ -53,17 +53,14 @@ async fn query_lease_replays_only_to_the_poll_request_that_claimed_it() {
                 json!({"input":envelope(Payload::Array(vec![Payload::Long(1)]))})).await
         })
     };
-    let claim = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            let task = poll_with(&app, "request-worker", Some("first")).await;
-            if !task.is_null() {
-                break task;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("query is admitted");
+    // One waiting poll claims it. Repeating an ID that already got an empty
+    // answer would only get that answer again.
+    let (status, claimed) = request(&app, "POST", "/api/worker/query-tasks/poll",
+        json!({"worker_id":"request-worker","task_queue":"test","timeout_seconds":5,
+            "poll_request_id":"first"})).await;
+    assert_eq!(status, StatusCode::OK, "{claimed}");
+    let claim = claimed["task"].clone();
+    assert!(claim.is_object(), "query is admitted: {claimed}");
     assert!(claim.get("poll_request_id").is_none(), "{claim}");
 
     assert_replay(&claim, &poll_with(&app, "request-worker", Some("first")).await);
@@ -88,6 +85,120 @@ async fn query_lease_replays_only_to_the_poll_request_that_claimed_it() {
     assert_eq!(finish.0, StatusCode::OK, "{}", finish.1);
     assert_eq!(waiting.await.unwrap().0, StatusCode::OK);
     assert!(poll_with(&app, "request-worker", Some("first")).await.is_null());
+    runtime.close().await;
+    database.remove().await;
+}
+
+async fn poll_waiting(app: &Router, request_id: &str, timeout: u64) -> (Value, std::time::Duration) {
+    let started = std::time::Instant::now();
+    let (status, response) = request(app, "POST", "/api/worker/query-tasks/poll",
+        json!({"worker_id":"request-worker","task_queue":"test","timeout_seconds":timeout,
+            "poll_request_id":request_id})).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    (response, started.elapsed())
+}
+
+// One workflow that a "request-worker" can be queried about, plus a helper
+// that admits one query and returns its pending caller.
+async fn queryable(name: &str) -> (TestDatabase, Runtime, Router, String) {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    query_worker(&app, "request-worker").await;
+    let started = start(&app, name).await;
+    let workflow_task = poll(&app, "request-worker", "workflow").await;
+    let completed = finish_task(
+        &app,
+        &workflow_task,
+        json!([{"type":"complete_workflow","result":envelope(Payload::Long(7))}]),
+    )
+    .await;
+    assert_eq!(completed.0, StatusCode::OK, "{}", completed.1);
+    let path = format!("/api/workflows/{name}/runs/{}/query/state", started["run_id"].as_str().unwrap());
+    (database, runtime, app, path)
+}
+
+fn admit_query(app: &Router, path: &str) -> tokio::task::JoinHandle<(StatusCode, Value)> {
+    let app = app.clone();
+    let path = path.to_owned();
+    tokio::spawn(async move {
+        request(&app, "POST", &path, json!({"input":envelope(Payload::Array(vec![Payload::Long(1)]))})).await
+    })
+}
+
+async fn finish_query(app: &Router, task: &Value) {
+    let finish = request(
+        app,
+        "POST",
+        &format!("/api/worker/query-tasks/{}/complete", task["query_task_id"].as_str().unwrap()),
+        json!({"lease_owner":"request-worker","query_task_attempt":task["query_task_attempt"],
+            "result_envelope":envelope(Payload::Long(7))}),
+    )
+    .await;
+    assert_eq!(finish.0, StatusCode::OK, "{}", finish.1);
+}
+
+#[tokio::test]
+async fn a_retried_empty_poll_request_returns_its_remembered_answer() {
+    let (database, runtime, app, path) = queryable("remembered-empty-query").await;
+    let (first, _) = poll_waiting(&app, "empty-first", 0).await;
+    assert!(first["task"].is_null(), "{first}");
+    let waiting = admit_query(&app, &path);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // The retry gets the original's answer, even though a query now waits.
+    let (retry, _) = poll_waiting(&app, "empty-first", 0).await;
+    assert!(retry["task"].is_null(), "{retry}");
+    assert_eq!(retry["poll_status"], first["poll_status"]);
+    let (fresh, _) = poll_waiting(&app, "empty-fresh", 5).await;
+    assert!(fresh["task"].is_object(), "{fresh}");
+    finish_query(&app, &fresh["task"]).await;
+    assert_eq!(waiting.await.unwrap().0, StatusCode::OK);
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn a_newer_poll_request_ends_an_older_waiting_poll() {
+    let (database, runtime, app, _) = queryable("superseded-query-poll").await;
+    let older = {
+        let app = app.clone();
+        tokio::spawn(async move { poll_waiting(&app, "older", 10).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let (newer, _) = poll_waiting(&app, "newer", 0).await;
+    assert!(newer["task"].is_null(), "{newer}");
+    let (ended, elapsed) = older.await.unwrap();
+    assert!(ended["task"].is_null(), "{ended}");
+    assert!(elapsed < std::time::Duration::from_secs(3), "the older poll ended early: {elapsed:?}");
+    // Its retry keeps the same answer instead of waiting again.
+    let (retry, elapsed) = poll_waiting(&app, "older", 10).await;
+    assert!(retry["task"].is_null(), "{retry}");
+    assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn duplicate_polls_with_one_request_id_share_one_claim() {
+    let (database, runtime, app, path) = queryable("shared-query-claim").await;
+    let polls: Vec<_> = (0..2)
+        .map(|_| {
+            let app = app.clone();
+            tokio::spawn(async move { poll_waiting(&app, "shared", 5).await })
+        })
+        .collect();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let waiting = admit_query(&app, &path);
+    let mut claims = vec![];
+    for poll in polls {
+        claims.push(poll.await.unwrap().0["task"].clone());
+    }
+    assert!(claims[0].is_object(), "{}", claims[0]);
+    assert_eq!(claims[0]["query_task_id"], claims[1]["query_task_id"]);
+    assert_eq!(claims[0]["query_task_attempt"], claims[1]["query_task_attempt"]);
+    assert_eq!(claims[0]["query_task_attempt"], 1);
+    finish_query(&app, &claims[0]).await;
+    assert_eq!(waiting.await.unwrap().0, StatusCode::OK);
     runtime.close().await;
     database.remove().await;
 }
