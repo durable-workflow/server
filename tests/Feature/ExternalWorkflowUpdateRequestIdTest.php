@@ -312,17 +312,23 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
 
     public static function terminalTransitions(): iterable
     {
-        yield 'closed original' => ['complete_workflow'];
-        yield 'continue-as-new successor' => ['continue_as_new'];
+        foreach (['complete_workflow', 'continue_as_new'] as $transition) {
+            yield $transition.' instance' => [$transition, false];
+            yield $transition.' explicit run' => [$transition, true];
+        }
     }
 
     #[DataProvider('terminalTransitions')]
-    public function test_completed_receipt_survives_real_task_closure_or_continuation(string $transition): void
+    public function test_completed_receipt_survives_real_task_closure_or_continuation(string $transition, bool $runTarget): void
     {
         $this->startRemote('retained-terminal');
-        $original = $this->postJson('/api/workflows/retained-terminal/update/add', [
+        $selectedRunId = DB::table('workflow_runs')->sole()->id;
+        $endpoint = '/api/workflows/retained-terminal'.($runTarget ? '/runs/'.$selectedRunId : '');
+        $original = $this->postJson($endpoint.'/update/add', [
             'input' => [17], 'request_id' => 'retained-key',
-        ], $this->apiHeaders())->assertAccepted();
+        ], $this->apiHeaders())->assertAccepted()
+            ->assertJsonPath('target_scope', $runTarget ? 'run' : 'instance')
+            ->assertJsonPath('requested_run_id', $runTarget ? $selectedRunId : null);
         $runId = $original->json('run_id');
         $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
             'worker_id' => 'retained-default', 'task_queue' => 'retained-default',
@@ -344,22 +350,57 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
         $this->assertDatabaseCount('workflow_runs', $transition === 'continue_as_new' ? 2 : 1);
         $before = $this->durableRows();
 
-        $this->postJson('/api/workflows/retained-terminal/update/add', [
+        $this->postJson($endpoint.'/update/add', [
             'input' => [17], 'request_id' => 'retained-key', 'wait_for' => 'completed',
         ], $this->apiHeaders())->assertOk()
             ->assertJsonPath('update_id', $original->json('update_id'))
             ->assertJsonPath('run_id', $runId)
             ->assertJsonPath('update_name', 'add')
             ->assertJsonPath('update_status', 'completed')
+            ->assertJsonPath('retained', true)
+            ->assertJsonPath('intent_verified', true)
             ->assertJsonPath('result', $value);
 
         $this->assertSame($before, $this->durableRows());
-        if ($transition === 'continue_as_new') {
+        if ($transition === 'continue_as_new' && ! $runTarget) {
             $this->postJson('/api/workflows/retained-terminal/runs/'.$runId.'/update/other', [
                 'input' => [99], 'request_id' => 'retained-key',
-            ], $this->apiHeaders())->assertStatus(409)->assertJsonPath('reason', 'historical_run_command_rejected');
+            ], $this->apiHeaders())->assertConflict()->assertJsonPath('reason', 'request_id_conflict');
             $this->assertSame($before, $this->durableRows());
         }
+    }
+
+    public function test_changing_an_instance_target_to_an_explicit_run_conflicts_without_mutation(): void
+    {
+        $this->startRemote('target-conflict');
+        $first = $this->postJson('/api/workflows/target-conflict/update/add', [
+            'input' => [17], 'request_id' => 'same-key',
+        ], $this->apiHeaders())->assertAccepted();
+        $before = $this->durableRows();
+        $this->postJson('/api/workflows/target-conflict/runs/'.$first->json('run_id').'/update/add', [
+            'input' => [17], 'request_id' => 'same-key',
+        ], $this->apiHeaders())->assertConflict()
+            ->assertJsonPath('reason', 'request_id_conflict')
+            ->assertJsonPath('conflict.0', 'target')
+            ->assertJsonPath('retained_command_id', $first->json('command_id'));
+        $this->assertSame($before, $this->durableRows());
+    }
+
+    public function test_missing_or_foreign_selected_runs_cannot_read_an_existing_receipt(): void
+    {
+        $this->startRemote('run-boundary');
+        $this->startRemote('another-instance');
+        $foreignRun = DB::table('workflow_runs')->where('workflow_instance_id', 'another-instance')->value('id');
+        $this->postJson('/api/workflows/run-boundary/update/add', [
+            'input' => [17], 'request_id' => 'same-key',
+        ], $this->apiHeaders())->assertAccepted();
+        $before = $this->durableRows();
+        foreach (['missing-run', $foreignRun] as $runId) {
+            $this->postJson('/api/workflows/run-boundary/runs/'.$runId.'/update/add', [
+                'input' => [17], 'request_id' => 'same-key',
+            ], $this->apiHeaders())->assertNotFound()->assertJsonPath('reason', 'run_not_found');
+        }
+        $this->assertSame($before, $this->durableRows());
     }
 
     private function startAvailablePhp(string $workflowId, string $namespace = 'default'): void
