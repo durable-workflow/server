@@ -12,9 +12,33 @@ use super::{
 use serde_json::Value;
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 use std::time::Duration;
+use tokio::{sync::futures::Notified, time::Instant};
 
-/// How often a held poll reads for work committed by another server process.
-pub(super) const READ_INTERVAL: Duration = Duration::from_millis(50);
+/// Paces a held poll's timed reads, which are how it observes another server
+/// process. The first read comes 50 ms after a probe, and each later one waits
+/// twice as long, up to 250 ms. A same-node wake reads at once and starts again
+/// from 50 ms. No wait runs past the poll's deadline.
+pub(super) struct ReadPace {
+    next: Duration,
+}
+
+impl ReadPace {
+    const FIRST: Duration = Duration::from_millis(50);
+    const LONGEST: Duration = Duration::from_millis(250);
+
+    pub(super) fn new() -> Self {
+        Self { next: Self::FIRST }
+    }
+
+    /// Returns at a same-node wake or when the next timed read is due.
+    pub(super) async fn wait(&mut self, wake: Notified<'_>, deadline: Instant) {
+        let pause = self.next.min(deadline.saturating_duration_since(Instant::now()));
+        tokio::select! {
+            _ = wake => self.next = Self::FIRST,
+            _ = tokio::time::sleep(pause) => self.next = (self.next * 2).min(Self::LONGEST),
+        }
+    }
+}
 
 impl<DB: Backend> Store<DB>
 where

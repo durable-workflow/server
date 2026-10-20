@@ -938,6 +938,7 @@ where
         // other server processes, claim only after a lock-free read finds
         // something to claim or refuse.
         let mut first = true;
+        let mut pace = super::poll_readiness::ReadPace::new();
         loop {
             // Register the notification before probing.
             let wake = self.wake.notified();
@@ -962,10 +963,7 @@ where
                     json!({"task":null,"poll_status":"task_queue_changed","server_capabilities":capabilities()}),
                 );
             }
-            tokio::select! {
-                _ = wake => {},
-                _ = tokio::time::sleep(super::poll_readiness::READ_INTERVAL) => {},
-            }
+            pace.wait(wake, deadline).await;
         }
     }
 

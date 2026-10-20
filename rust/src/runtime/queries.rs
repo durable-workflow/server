@@ -357,6 +357,7 @@ where
         // Only the first probe claims under the lock unconditionally; later
         // probes claim after a lock-free read finds something to claim or refuse.
         let mut first = true;
+        let mut pace = super::poll_readiness::ReadPace::new();
         loop {
             let wake = self.wake.notified();
             if std::mem::take(&mut first) || self.query_poll_ready(&body, config, &proof).await? {
@@ -380,10 +381,7 @@ where
                     json!({"task":null,"poll_status":"task_queue_changed","server_capabilities":super::store::capabilities()}),
                 );
             }
-            tokio::select! {
-                _ = wake => {},
-                _ = tokio::time::sleep(super::poll_readiness::READ_INTERVAL) => {},
-            }
+            pace.wait(wake, deadline).await;
         }
     }
 
