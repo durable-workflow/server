@@ -10,6 +10,7 @@ use App\Support\RedisReadinessProbeFailure;
 use App\Support\RedisReadinessProcess;
 use App\Support\ServerReadiness;
 use App\Support\ServerTopology;
+use Illuminate\Database\SQLiteConnection;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -24,6 +25,39 @@ class HealthControllerTest extends TestCase
 {
     use RefreshDatabase;
     use ServerTestHelpers;
+
+    public function test_readiness_refuses_a_connected_database_that_cannot_execute_bound_reads(): void
+    {
+        $originalDefault = config('database.default');
+        $pdo = DB::connection()->getPdo();
+        DB::extend('broken_bound_reads', static fn (array $config): SQLiteConnection => new class($pdo, ':memory:', '', $config) extends SQLiteConnection
+        {
+            public function select($query, $bindings = [], $useReadPdo = true, array $fetchUsing = [])
+            {
+                if ($bindings !== []) {
+                    throw new \PDOException('The connected database cannot execute bound statements.');
+                }
+
+                return parent::select($query, $bindings, $useReadPdo, $fetchUsing);
+            }
+        });
+        config([
+            'database.connections.broken_bound_reads' => ['driver' => 'broken_bound_reads'],
+            'database.default' => 'broken_bound_reads',
+        ]);
+
+        try {
+            $this->getJson('/api/ready')
+                ->assertStatus(503)
+                ->assertJsonPath('checks.database.status', 'unavailable')
+                ->assertJsonPath('checks.database.reason', 'database_query_failed');
+        } finally {
+            // RefreshDatabase must roll back its original connection, not
+            // this wrapper around the same PDO. In-memory suites reuse it.
+            config(['database.default' => $originalDefault]);
+            DB::purge('broken_bound_reads');
+        }
+    }
 
     public function test_health_check_returns_serving_when_database_is_available(): void
     {
@@ -122,6 +156,8 @@ class HealthControllerTest extends TestCase
         $response->assertOk()
             ->assertJsonPath('status', 'ready')
             ->assertJsonPath('checks.database.status', 'ok')
+            ->assertJsonPath('checks.database.check_scope', 'bound_read_query')
+            ->assertJsonPath('checks.database.write_capacity_verified', false)
             ->assertJsonPath('checks.migrations.status', 'ok')
             ->assertJsonPath('checks.migrations.operator_surface.available', true)
             ->assertJsonPath('checks.migrations.readiness_contract.version', 1)
