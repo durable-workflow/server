@@ -140,6 +140,11 @@ function finishHttpNamespaces(Client $admin, array $fixture, string $workflowId,
             $state['second_worker_heartbeat'] = $clients[1]->heartbeatWorker($state['worker_id']);
         }
     }
+    // Updates come last, so every earlier observation keeps the original metadata.
+    $state['updated'] = $admin->updateNamespace(strtoupper($names[0]), $definition['description'].' updated',
+        $definition['retention_days'] + 1)->raw;
+    $state['update_missing'] = namespaceReceipt('update-missing', static fn (): array => $admin->updateNamespace(
+        'missing-'.$names[0], 'missing', 7)->raw);
 
     return $state;
 }
