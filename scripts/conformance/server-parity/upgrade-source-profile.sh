@@ -11,9 +11,15 @@ docker network inspect "$RESOURCE_SCOPE" >/dev/null
 image=${DW_PARITY_UPGRADE_PHP_IMAGE:-ghcr.io/durable-workflow/server@sha256:cba7c4c6732529293ef6c2625a64785dcb21b4f7fe0013fdc74f1af466f534ac}
 [[ "$image" =~ ^ghcr.io/durable-workflow/server@sha256:[0-9a-f]{64}$ ]] || exit 2
 rust_image=mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
-resource="$RESOURCE_SCOPE-upgrade"
-state=parity-upgrade-source-state
-evidence=parity-evidence/upgrade-source
+# A labeled run observes another release beside the default one. Its state,
+# evidence, containers and databases are separate, and it names the layout
+# inspection must report for that release.
+label=${DW_PARITY_UPGRADE_LABEL:-}
+[[ $label =~ ^[a-z0-9]*$ ]] || exit 2
+layout=${DW_PARITY_UPGRADE_EXPECTED_LAYOUT:-php-2.8.0}
+resource="$RESOURCE_SCOPE-upgrade${label:+-$label}"
+state=parity-upgrade-source-state${label:+-$label}
+evidence=parity-evidence/upgrade-source${label:+-$label}
 test -f rust-target/debug/durable-workflow-server
 git diff --quiet
 git diff --cached --quiet
@@ -26,7 +32,7 @@ mkdir -p "$state" "$evidence"
 chmod a+rwx "$state" "$evidence"
 printf '%s\n' "$RESOURCE_SCOPE" > "$evidence/owner.txt"
 trap 'printf "%s\n" "$?" > "$evidence/profile-status.txt"' EXIT
-database=upgrade_source_ref
+database=upgrade_source_ref${label:+_$label}
 password=${DW_PARITY_UPGRADE_DB_PASSWORD:-parity-disposable-password}
 case "$backend" in
   mysql) host=${DW_PARITY_UPGRADE_DB_HOST:-parity-mysql}; admin=(-e DB_CONNECTION=mysql -e DB_HOST="$host" -e DB_USERNAME=root -e DB_PASSWORD="$password") ;;
@@ -37,7 +43,7 @@ esac
 if test "$backend" = mysql; then
   docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint mysql "$MYSQL_IMAGE" \
     -h "$host" -uroot -p"$password" \
-    -e 'CREATE DATABASE upgrade_source_ref CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci' > "$evidence/create.txt" 2>&1
+    -e "CREATE DATABASE $database CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci" > "$evidence/create.txt" 2>&1
 elif test "$backend" = pgsql; then
   docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" -e PGPASSWORD="$password" \
     --entrypoint createdb "$POSTGRES_IMAGE" -h "$host" -U parity "$database" > "$evidence/create.txt" 2>&1
@@ -110,7 +116,7 @@ snapshot() {
 }
 snapshot > "$evidence/before.json"
 inspect_source > "$evidence/inspection.json" 2> "$evidence/inspection.stderr"
-jq -e '.status=="inspected" and (.table_rows|length)==50 and .table_rows.workflow_runs==2
+jq -e --arg layout "$layout" '.status=="inspected" and .source_layout==$layout and (.table_rows|length)==50 and .table_rows.workflow_runs==2
   and .table_rows.activity_executions==1 and .catalog_visibility=="configured_role"
   and .source_mutated==false and .takeover_allowed==false and .backup_verified==false
   and .php_quiescence_verified==false and .stored_representation_compatibility_verified==false' "$evidence/inspection.json" >/dev/null
@@ -141,7 +147,7 @@ fingerprint() {
     --entrypoint /target/debug/durable-workflow-server "$rust_image" upgrade-fingerprint
 }
 fingerprint "$database" > "$evidence/fingerprint.json" 2> "$evidence/fingerprint.stderr"
-jq -e '.status=="fingerprinted" and (.fingerprint|test("^sha256:[0-9a-f]{64}$"))
+jq -e --arg layout "$layout" '.status=="fingerprinted" and .source_layout==$layout and (.fingerprint|test("^sha256:[0-9a-f]{64}$"))
   and (.table_rows|length)==50 and .table_rows.workflow_runs==2 and .table_rows.jobs==1
   and .source_mutated==false and .takeover_allowed==false and .backup_verified==false
   and .php_quiescence_verified==false and .stored_representation_compatibility_verified==false' "$evidence/fingerprint.json" >/dev/null
@@ -151,7 +157,7 @@ test "$(jq -r .fingerprint "$evidence/fingerprint-repeat.json")" = "$source_fing
 # Back up the stopped source and restore it into a separate database, as the
 # backup procedure does. The restored copy must fingerprint equal, and one
 # changed row in it must change the fingerprint.
-restored=upgrade_restore_ref
+restored=upgrade_restore_ref${label:+_$label}
 case "$backend" in
   mysql)
     mysql_admin() {
@@ -225,7 +231,7 @@ jq -n --arg revision "$revision" --arg native "$native_tree" \
   --slurpfile fingerprint "$evidence/fingerprint.json" \
   '{outcome:"pass",scope:"read_only_source_inventory_and_refusals",backend:$backend,
     runner_revision:$revision,native_tree:$native,native_binary_sha256:$binary,php_image:$image,
-    original_runs:2,source_state_unchanged_by_inspection:true,
+    original_runs:2,source_state_unchanged_by_inspection:true,source_layout:$inventory[0].source_layout,
     source_fingerprint:$fingerprint[0].fingerprint,restored_backup_fingerprint_equal:true,
     changed_restored_row_changes_fingerprint:true,
     catalog_sha256:$inventory[0].catalog_sha256,table_count:($inventory[0].table_rows|length),

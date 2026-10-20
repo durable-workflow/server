@@ -21,6 +21,44 @@ use tokio::time::{Instant, timeout, timeout_at};
 
 const BUDGET: Duration = Duration::from_secs(30);
 
+/// Published PHP layouts after the frozen one, oldest first. Each backend
+/// records one delta per layout, applied to the layout before it.
+pub(super) const SOURCE_LAYOUTS: [&str; 2] = ["php-2.8.0", "php-2.9.7"];
+
+/// Names the qualified layout `actual` matches exactly: the frozen layout, or
+/// one reached by applying the recorded deltas in order. Rows are compared in
+/// `order`, so only presentation order, never a definition, is normalized.
+pub(super) fn source_layout<T, K: Ord>(
+    actual: &[T],
+    frozen: Vec<T>,
+    deltas: [&str; 2],
+    order: impl Fn(&T) -> K,
+) -> Result<&'static str>
+where
+    T: Clone + PartialEq + DeserializeOwned,
+{
+    let sorted = |rows: &[T]| {
+        let mut rows = rows.to_vec();
+        rows.sort_by_key(&order);
+        rows
+    };
+    let actual = sorted(actual);
+    let mut layout = sorted(&frozen);
+    if actual == layout {
+        return Ok("frozen");
+    }
+    for (name, delta) in SOURCE_LAYOUTS.into_iter().zip(deltas) {
+        layout = sorted(&source_catalog_variant(&layout, delta)?);
+        if actual == layout {
+            return Ok(name);
+        }
+    }
+    Err(refuse(
+        StatusCode::CONFLICT,
+        "upgrade_source_catalog_unqualified",
+    ))
+}
+
 /// Exact published-catalog additions/replacements, applied only in memory.
 /// Neither unknown objects nor unmatched old definitions are discarded.
 pub(super) fn source_catalog_variant<T>(baseline: &[T], delta: &str) -> Result<Vec<T>>
@@ -101,6 +139,7 @@ async fn close(future: impl Future<Output = std::result::Result<(), sqlx::Error>
 fn report(
     backend: &str,
     catalog: &impl Serialize,
+    layout: &str,
     counts: BTreeMap<String, i64>,
     queue_inspection: Option<Value>,
     payload_inspection: Option<Value>,
@@ -112,6 +151,7 @@ fn report(
     let mut report = json!({
         "schema":"durable-workflow.rust-upgrade-source-inspection.v1",
         "status":"inspected", "backend":backend, "catalog_visibility":"configured_role",
+        "source_layout":layout,
         "catalog_sha256":digest, "table_rows":counts,
         "source_mutated":false, "takeover_allowed":false, "backup_verified":false,
         "php_quiescence_verified":false, "stored_representation_compatibility_verified":false
@@ -264,7 +304,7 @@ async fn inspect_sqlite_inner(
     let mut connection = open_sqlite_source(path, deadline).await?;
     let result = timeout_at(deadline, async {
         let mut tx = connection.begin().await?;
-        let catalog = schema::php_source_catalog(&mut tx).await?;
+        let (catalog, layout) = schema::php_source_catalog(&mut tx).await?;
         let tables: Vec<String> = catalog
             .iter()
             .filter(|(kind, _, _, _)| kind == "table")
@@ -286,6 +326,7 @@ async fn inspect_sqlite_inner(
         report(
             "sqlite",
             &catalog,
+            layout,
             counts,
             queue_inspection,
             payload_inspection,
@@ -415,7 +456,7 @@ async fn inspect_mysql_inner(
             .execute(&mut connection)
             .await?;
         let mut tx = connection.begin_with("START TRANSACTION READ ONLY").await?;
-        let catalog = mysql::php_source_catalog(&mut tx).await?;
+        let (catalog, layout) = mysql::php_source_catalog(&mut tx).await?;
         let tables: Vec<String> = catalog.iter().map(|(name, _)| name.clone()).collect();
         let counts = count_tables!(tx, tables, '`');
         let queue_inspection = match queues {
@@ -431,7 +472,7 @@ async fn inspect_mysql_inner(
         };
         // MySQL's metadata is not an MVCC snapshot. Refuse a changed visible
         // catalog rather than joining counts to a different schema.
-        if mysql::php_source_catalog(&mut tx).await? != catalog {
+        if mysql::php_source_catalog(&mut tx).await?.0 != catalog {
             return Err(refuse(
                 StatusCode::CONFLICT,
                 "upgrade_source_catalog_changed",
@@ -441,6 +482,7 @@ async fn inspect_mysql_inner(
         report(
             backend,
             &catalog,
+            layout,
             counts,
             queue_inspection,
             payload_inspection,
@@ -485,7 +527,7 @@ async fn inspect_postgres_inner(
         let mut tx = connection
             .begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .await?;
-        let catalog = postgres::php_source_catalog(&mut tx).await?;
+        let (catalog, layout) = postgres::php_source_catalog(&mut tx).await?;
         let tables: Vec<String> = catalog
             .iter()
             .filter(|(kind, _, data)| kind == "relation" && data.0["kind"] == "r")
@@ -507,6 +549,7 @@ async fn inspect_postgres_inner(
         report(
             "pgsql",
             &catalog,
+            layout,
             counts,
             queue_inspection,
             payload_inspection,

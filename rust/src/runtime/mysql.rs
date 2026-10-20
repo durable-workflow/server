@@ -181,7 +181,7 @@ async fn catalog(connection: &mut MySqlConnection) -> Result<Catalog> {
     Ok(result)
 }
 
-pub(super) async fn php_source_catalog(connection: &mut MySqlConnection) -> Result<Catalog> {
+pub(super) async fn php_source_catalog(connection: &mut MySqlConnection) -> Result<(Catalog, &'static str)> {
     let marked: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND LOWER(TABLE_NAME)='dw_server_schema'")
         .fetch_one(&mut *connection).await?;
     if marked != 0 {
@@ -206,7 +206,7 @@ pub(super) async fn php_source_catalog(connection: &mut MySqlConnection) -> Resu
         }
     }
     let flavor = Flavor::detect(connection).await?;
-    let mut expected: Catalog = flavor.expected()?.into_iter()
+    let expected: Catalog = flavor.expected()?.into_iter()
         .filter(|(table, _)| !super::upgrade::native_relation(table))
         .map(|(table, ddl)| (table, ddl.replace(
             ",\n  KEY `dw_workflow_tasks_poll` (`namespace`(64),`queue`(64),`task_type`(16),`status`(16),`available_at`)", "")))
@@ -214,23 +214,51 @@ pub(super) async fn php_source_catalog(connection: &mut MySqlConnection) -> Resu
     let mut actual = catalog(connection).await?;
     // MariaDB's information_schema collation ignores some underscores. Only
     // canonicalize catalog presentation; preserve every full definition.
-    expected.sort_by(|left, right| left.0.cmp(&right.0));
     actual.sort_by(|left, right| left.0.cmp(&right.0));
-    if actual != expected {
-        let delta = match flavor {
-            Flavor::MySql => include_str!("../../upgrade/php-2.8.0/mysql.json"),
-            Flavor::MariaDb => include_str!("../../upgrade/php-2.8.0/mariadb.json"),
-        };
-        let mut current = super::upgrade::source_catalog_variant(&expected, &canonical(delta))?;
-        current.sort_by(|left, right| left.0.cmp(&right.0));
-        if actual != current {
-            return Err(refuse(
-                StatusCode::CONFLICT,
-                "upgrade_source_catalog_unqualified",
-            ));
+    let deltas = match flavor {
+        Flavor::MySql => [
+            canonical(include_str!("../../upgrade/php-2.8.0/mysql.json")),
+            canonical(include_str!("../../upgrade/php-2.9.7/mysql.json")),
+        ],
+        Flavor::MariaDb => [
+            canonical(include_str!("../../upgrade/php-2.8.0/mariadb.json")),
+            canonical(include_str!("../../upgrade/php-2.9.7/mariadb.json")),
+        ],
+    };
+    let layout = super::upgrade::source_layout(
+        &actual,
+        expected.clone(),
+        [&deltas[0], &deltas[1]],
+        |row| row.0.clone(),
+    );
+    // Laravel's separate mariadb connection stores the backup hold owner as
+    // uuid rather than char(36); every release layout is otherwise the same.
+    let layout = match (layout, flavor) {
+        (Err(_), Flavor::MariaDb) => {
+            let driver = super::upgrade::source_catalog_variant(
+                &expected,
+                &canonical(include_str!("../../upgrade/mariadb-driver.json")),
+            )?;
+            match super::upgrade::source_layout(
+                &actual,
+                driver,
+                [&deltas[0], &deltas[1]],
+                |row| row.0.clone(),
+            )? {
+                "frozen" => "frozen+mariadb-driver",
+                "php-2.8.0" => "php-2.8.0+mariadb-driver",
+                "php-2.9.7" => "php-2.9.7+mariadb-driver",
+                _ => {
+                    return Err(refuse(
+                        StatusCode::CONFLICT,
+                        "upgrade_source_catalog_unqualified",
+                    ));
+                }
+            }
         }
-    }
-    Ok(actual)
+        (layout, _) => layout?,
+    };
+    Ok((actual, layout))
 }
 
 pub(super) fn source_options(options: MySqlConnectOptions) -> MySqlConnectOptions {

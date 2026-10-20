@@ -815,3 +815,43 @@ async fn fingerprint_refuses_an_owned_or_unknown_source() {
         "upgrade_source_catalog_unqualified",
     );
 }
+
+#[test]
+fn source_layout_names_the_release_each_recorded_delta_reaches() {
+    let rows = |rows: &[(&str, &str)]| -> Vec<(String, String)> {
+        rows.iter()
+            .map(|(name, ddl)| ((*name).to_owned(), (*ddl).to_owned()))
+            .collect()
+    };
+    let frozen = rows(&[("a", "1"), ("b", "2")]);
+    let deltas = [
+        r#"{"remove":[["a","1"]],"add":[["a","1 changed"]]}"#,
+        r#"{"remove":[],"add":[["c","3"]]}"#,
+    ];
+    let layout = |actual: &[(&str, &str)]| {
+        source_layout(&rows(actual), frozen.clone(), deltas, |row| row.0.clone())
+            .map(|layout| Value::from(layout))
+    };
+    assert_eq!(layout(&[("b", "2"), ("a", "1")]).unwrap(), "frozen");
+    assert_eq!(layout(&[("a", "1 changed"), ("b", "2")]).unwrap(), "php-2.8.0");
+    assert_eq!(
+        layout(&[("c", "3"), ("a", "1 changed"), ("b", "2")]).unwrap(),
+        "php-2.9.7"
+    );
+    // A later release's addition without the earlier change is no recorded layout.
+    reason(
+        layout(&[("a", "1"), ("b", "2"), ("c", "3")]),
+        "upgrade_source_catalog_unqualified",
+    );
+    reason(layout(&[("a", "1")]), "upgrade_source_catalog_unqualified");
+}
+
+#[tokio::test]
+async fn frozen_layout_is_reported_by_inspection_and_fingerprint() {
+    let (_directory, path) = php_layout().await;
+    assert_eq!(inspect_sqlite(&path).await.unwrap()["source_layout"], "frozen");
+    assert_eq!(
+        fingerprint::fingerprint_sqlite(&path).await.unwrap()["source_layout"],
+        "frozen"
+    );
+}

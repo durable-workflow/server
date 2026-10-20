@@ -67,7 +67,7 @@ async fn verify_catalog(connection: &mut SqliteConnection) -> Result<()> {
     Ok(())
 }
 
-pub(super) async fn php_source_catalog(connection: &mut SqliteConnection) -> Result<Catalog> {
+pub(super) async fn php_source_catalog(connection: &mut SqliteConnection) -> Result<(Catalog, &'static str)> {
     let owned: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='dw_server_schema' COLLATE NOCASE)",
     )
@@ -85,20 +85,16 @@ pub(super) async fn php_source_catalog(connection: &mut SqliteConnection) -> Res
         .cloned()
         .collect();
     let actual = catalog(connection).await?;
-    if actual != expected {
-        let mut current = super::upgrade::source_catalog_variant(
-            &expected,
+    let layout = super::upgrade::source_layout(
+        &actual,
+        expected,
+        [
             include_str!("../../upgrade/php-2.8.0/sqlite.json"),
-        )?;
-        current.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
-        if actual != current {
-            return Err(refuse(
-                StatusCode::CONFLICT,
-                "upgrade_source_catalog_unqualified",
-            ));
-        }
-    }
-    Ok(actual)
+            include_str!("../../upgrade/php-2.9.7/sqlite.json"),
+        ],
+        |row| (row.0.clone(), row.1.clone()),
+    )?;
+    Ok((actual, layout))
 }
 
 pub(super) async fn verify(connection: &mut SqliteConnection) -> Result<()> {

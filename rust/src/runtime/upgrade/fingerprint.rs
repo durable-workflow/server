@@ -59,7 +59,7 @@ impl Digest {
         }
     }
 
-    fn report(self, backend: &str) -> Value {
+    fn report(self, backend: &str, layout: &str) -> Value {
         let hex: String = self
             .hasher
             .finalize()
@@ -68,7 +68,8 @@ impl Digest {
             .collect();
         json!({
             "schema":"durable-workflow.rust-upgrade-source-fingerprint.v1",
-            "status":"fingerprinted", "backend":backend, "fingerprint":format!("sha256:{hex}"),
+            "status":"fingerprinted", "backend":backend, "source_layout":layout,
+            "fingerprint":format!("sha256:{hex}"),
             "table_rows":self.rows, "elapsed_ms":self.started.elapsed().as_millis() as u64,
             "source_mutated":false, "takeover_allowed":false, "backup_verified":false,
             "php_quiescence_verified":false, "stored_representation_compatibility_verified":false
@@ -134,7 +135,7 @@ pub async fn fingerprint_sqlite(path: &str) -> Result<Value> {
     let result = timeout_at(deadline, async {
         // One deferred read transaction keeps one snapshot of the file.
         let mut tx = connection.begin().await?;
-        let catalog = schema::php_source_catalog(&mut tx).await?;
+        let (catalog, layout) = schema::php_source_catalog(&mut tx).await?;
         let mut digest = Digest::new("sqlite", &catalog)?;
         for (_, table, _, _) in catalog.iter().filter(|(kind, _, _, _)| kind == "table") {
             let table = identifier(table)?;
@@ -167,7 +168,7 @@ pub async fn fingerprint_sqlite(path: &str) -> Result<Value> {
             hash_rows!(tx, digest, table, sql, columns.len());
         }
         tx.rollback().await?;
-        Ok(digest.report("sqlite"))
+        Ok(digest.report("sqlite", layout))
     })
     .await
     .map_err(|_| expired())
@@ -192,7 +193,7 @@ pub async fn fingerprint_postgres(options: PgConnectOptions) -> Result<Value> {
         sqlx::raw_sql("SET LOCAL TimeZone='UTC'; SET LOCAL DateStyle='ISO, YMD'; SET LOCAL IntervalStyle='postgres'; SET LOCAL extra_float_digits=1; SET LOCAL bytea_output='hex'")
             .execute(&mut *tx)
             .await?;
-        let catalog = postgres::php_source_catalog(&mut tx).await?;
+        let (catalog, layout) = postgres::php_source_catalog(&mut tx).await?;
         let mut digest = Digest::new("pgsql", &catalog)?;
         let tables: Vec<String> = catalog
             .iter()
@@ -218,7 +219,7 @@ pub async fn fingerprint_postgres(options: PgConnectOptions) -> Result<Value> {
             hash_rows!(tx, digest, table, sql, columns.len());
         }
         tx.rollback().await?;
-        Ok(digest.report("pgsql"))
+        Ok(digest.report("pgsql", layout))
     })
     .await
     .map_err(|_| expired())
@@ -259,7 +260,7 @@ pub async fn fingerprint_mysql(options: MySqlConnectOptions) -> Result<Value> {
         let mut tx = connection
             .begin_with("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
             .await?;
-        let catalog = mysql::php_source_catalog(&mut tx).await?;
+        let (catalog, layout) = mysql::php_source_catalog(&mut tx).await?;
         let mut digest = Digest::new(backend, &catalog)?;
         for (table, _) in &catalog {
             let table = identifier(table)?;
@@ -291,14 +292,14 @@ pub async fn fingerprint_mysql(options: MySqlConnectOptions) -> Result<Value> {
         }
         // MySQL's metadata is not an MVCC snapshot. Refuse a catalog that
         // changed while the rows were read.
-        if mysql::php_source_catalog(&mut tx).await? != catalog {
+        if mysql::php_source_catalog(&mut tx).await?.0 != catalog {
             return Err(refuse(
                 StatusCode::CONFLICT,
                 "upgrade_source_catalog_changed",
             ));
         }
         tx.rollback().await?;
-        Ok(digest.report(backend))
+        Ok(digest.report(backend, layout))
     })
     .await
     .map_err(|_| expired())
