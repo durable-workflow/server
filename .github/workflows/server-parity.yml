@@ -435,6 +435,8 @@ jobs:
         id: prepare_runtime_comparison
         run: |
           set -euo pipefail
+          # Bounded container log tails make a failure in this step diagnosable from its own log.
+          trap 'status=$?; echo "::group::Container log tails after failure"; for container in $(docker ps -a --filter "name=^${RESOURCE_SCOPE}-" --format "{{.Names}}"); do echo "== $container"; docker logs --tail 40 "$container" 2>&1 | cut -c1-400; done; echo "::endgroup::"; exit $status' ERR
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
           docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
@@ -907,6 +909,8 @@ jobs:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: |
           set -euo pipefail
+          # Bounded container log tails make a failure in this step diagnosable from its own log.
+          trap 'status=$?; echo "::group::Container log tails after failure"; for container in $(docker ps -a --filter "name=^${RESOURCE_SCOPE}-" --format "{{.Names}}"); do echo "== $container"; docker logs --tail 40 "$container" 2>&1 | cut -c1-400; done; echo "::endgroup::"; exit $status' ERR
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
           docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
@@ -1378,6 +1382,8 @@ jobs:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: |
           set -euo pipefail
+          # Bounded container log tails make a failure in this step diagnosable from its own log.
+          trap 'status=$?; echo "::group::Container log tails after failure"; for container in $(docker ps -a --filter "name=^${RESOURCE_SCOPE}-" --format "{{.Names}}"); do echo "== $container"; docker logs --tail 40 "$container" 2>&1 | cut -c1-400; done; echo "::endgroup::"; exit $status' ERR
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
           mkdir -p parity-state parity-evidence
           chmod 0777 parity-state parity-evidence
