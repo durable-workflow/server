@@ -31,13 +31,13 @@ class HealthControllerTest extends TestCase
         $pdo = DB::connection()->getPdo();
         DB::extend('broken_bound_reads', static fn (array $config): SQLiteConnection => new class($pdo, ':memory:', '', $config) extends SQLiteConnection
         {
-            public function select($query, $bindings = [], $useReadPdo = true)
+            public function select($query, $bindings = [], $useReadPdo = true, array $fetchUsing = [])
             {
                 if ($bindings !== []) {
                     throw new \PDOException('The connected database cannot execute bound statements.');
                 }
 
-                return parent::select($query, $bindings, $useReadPdo);
+                return parent::select($query, $bindings, $useReadPdo, $fetchUsing);
             }
         });
         config([
@@ -147,6 +147,8 @@ class HealthControllerTest extends TestCase
         $response->assertOk()
             ->assertJsonPath('status', 'ready')
             ->assertJsonPath('checks.database.status', 'ok')
+            ->assertJsonPath('checks.database.check_scope', 'bound_read_query')
+            ->assertJsonPath('checks.database.write_capacity_verified', false)
             ->assertJsonPath('checks.migrations.status', 'ok')
             ->assertJsonPath('checks.migrations.operator_surface.available', true)
             ->assertJsonPath('checks.migrations.readiness_contract.version', 1)

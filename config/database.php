@@ -98,6 +98,11 @@ return [
             'prefix_indexes' => true,
             'search_path' => 'public',
             'sslmode' => 'prefer',
+            // Keep native parameter binding without session-scoped statement
+            // names, so transaction poolers can safely change backend sessions.
+            'options' => extension_loaded('pdo_pgsql') ? [
+                (PHP_VERSION_ID >= 80500 ? Pdo\Pgsql::ATTR_DISABLE_PREPARES : PDO::PGSQL_ATTR_DISABLE_PREPARES) => true,
+            ] : [],
         ],
 
         'sqlsrv' => [
