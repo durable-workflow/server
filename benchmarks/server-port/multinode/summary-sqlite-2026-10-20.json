@@ -25,6 +25,7 @@
   },
   "windows": [
     {
+      "sdk_php": "2.0.10",
       "outcome": "pass",
       "planned_starts": 90,
       "accepted_starts": 90,
@@ -33,10 +34,12 @@
       "activity_attempts_per_workflow": {
         "1": 90
       },
+      "repairs_by_workflow": null,
       "retries": [],
       "errors": []
     },
     {
+      "sdk_php": "2.0.10",
       "outcome": "pass",
       "planned_starts": 90,
       "accepted_starts": 90,
@@ -45,10 +48,12 @@
       "activity_attempts_per_workflow": {
         "1": 90
       },
+      "repairs_by_workflow": null,
       "retries": [],
       "errors": []
     },
     {
+      "sdk_php": "2.0.10",
       "outcome": "pass",
       "planned_starts": 90,
       "accepted_starts": 90,
@@ -57,6 +62,7 @@
       "activity_attempts_per_workflow": {
         "1": 90
       },
+      "repairs_by_workflow": null,
       "retries": [],
       "errors": []
     }
