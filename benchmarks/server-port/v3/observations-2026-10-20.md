@@ -62,9 +62,15 @@ but only 93–96 of 120 close inside each window. Native sustains all three
 rates. The drift checks before and after agree for both implementations.
 
 Native's low-load latency is close to PHP's and higher than its own at 1/s.
-The lower October 14 low-rate tails (p95 up to 5 s) are gone, but the 0.25/s
-median (0.82–0.96 s) points to a remaining per-task wake or poll delay at low
-load. This needs its own stage breakdown before any latency claim.
+The lower October 14 low-rate tails (p95 up to 5 s) are gone. The probe's
+history stages show where the 0.25/s median (0.82–0.96 s) goes. In the first
+low-rate window, the client start alone takes 0.210 s to `WorkflowStarted`
+(0.008 s at 1/s, 0.065 s for PHP at 0.25/s). Activity scheduled to started
+takes 0.183 s (0.023 s at 1/s), and activity completed to workflow completed
+takes 0.297 s (0.173 s at 1/s). Each transition gets slower when the server
+is nearly idle, which points at waiting behind the SDK worker's idle poll
+transactions rather than at the work itself. That has not been measured
+directly yet.
 
 ## Component cost
 
