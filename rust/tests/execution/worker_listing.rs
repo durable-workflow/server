@@ -290,3 +290,64 @@ async fn named_namespaces_list_only_their_own_workers() {
     runtime.close().await;
     database.remove().await;
 }
+
+#[tokio::test]
+async fn a_replacement_registration_releases_the_activity_lease_at_once() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "replaced", json!(["echo"]), json!(["echo-activity"])).await;
+    let started = start(&app, "replaced-peer").await;
+    let task = poll(&app, "replaced", "workflow").await;
+    let scheduled = finish_task(
+        &app,
+        &task,
+        json!([{"type":"schedule_activity","activity_type":"echo-activity",
+        "arguments":envelope(Payload::Array(vec![Payload::Long(7)])),
+        "retry_policy":{"max_attempts":1,"backoff_seconds":[]}}]),
+    )
+    .await;
+    assert_eq!(scheduled.0, StatusCode::OK, "{}", scheduled.1);
+    let original = poll(&app, "replaced", "activity").await;
+    assert_eq!(original["attempt_number"], 1);
+    // The same worker_id registering again replaces a process that may have
+    // died holding the lease; the task does not wait out the activity lease.
+    register(&app, "replaced", json!(["echo"]), json!(["echo-activity"])).await;
+    let replacement = poll(&app, "replaced", "activity").await;
+    assert_eq!(replacement["task_id"], original["task_id"]);
+    assert_eq!(replacement["attempt_number"], 2);
+    assert_ne!(
+        replacement["activity_attempt_id"],
+        original["activity_attempt_id"]
+    );
+    let complete = |claim: &Value| {
+        json!({"activity_attempt_id":claim["activity_attempt_id"],"lease_owner":"replaced",
+            "result":envelope(Payload::Long(7))})
+    };
+    let path = format!(
+        "/api/worker/activity-tasks/{}/complete",
+        original["task_id"].as_str().unwrap()
+    );
+    let (status, stale) = request(&app, "POST", &path, complete(&original)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{stale}");
+    assert_eq!(
+        stale,
+        json!({"task_id":original["task_id"],"activity_attempt_id":original["activity_attempt_id"],
+        "outcome":"completed","recorded":false,"reason":"stale_attempt","next_task_id":null,
+        "lease_owner":"replaced","activity_status":"running","attempt_status":"expired","task_status":"leased"})
+    );
+    let (status, done) = request(&app, "POST", &path, complete(&replacement)).await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["recorded"], true);
+    let history = run_history(&app, &json!("replaced-peer"), &started["run_id"]).await;
+    let started_attempts: Vec<_> = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["event_type"] == "ActivityStarted")
+        .map(|event| event["payload"]["attempt_number"].clone())
+        .collect();
+    assert_eq!(started_attempts, vec![json!(1), json!(2)]);
+    runtime.close().await;
+    database.remove().await;
+}

@@ -864,6 +864,8 @@ where
             // and lease release commit together; failure restores the old attempt.
             Self::query("UPDATE workflow_tasks SET status='ready',leased_at=NULL,lease_owner=NULL,lease_expires_at=NULL WHERE namespace=$1 AND lease_owner=$2 AND task_type='workflow' AND status='leased'")
                 .bind(self.namespace.as_ref()).bind(worker_id).execute(&mut *tx).await?;
+            Self::release_replaced_activity_leases(&mut tx, self.namespace.as_ref(), worker_id)
+                .await?;
         }
         Self::query(DB::WORKER_REGISTRATION_SQL)
             .bind(self.namespace.as_ref())
@@ -2209,7 +2211,28 @@ where
         if DB::string(&attempt, "status")? != "running"
             || DB::number(&attempt, "attempt_number")? != DB::number(&task, "attempt_count")?
         {
-            return Err(refuse(StatusCode::CONFLICT, "stale_attempt"));
+            // Published PHP's stale completion receipt: nothing is recorded,
+            // and the owner of that attempt learns where its work stands.
+            let mut receipt = json!({"task_id": task_id, "activity_attempt_id": attempt_id,
+                "outcome": "completed", "recorded": false, "reason": "stale_attempt", "next_task_id": null});
+            let owner = text(&body, "lease_owner")?;
+            if DB::optional_string(&attempt, "lease_owner")?.as_deref() == Some(owner) {
+                let activity = Self::query("SELECT status FROM activity_executions WHERE id=$1")
+                    .bind(DB::string(&attempt, "activity_execution_id")?)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+                receipt["lease_owner"] = json!(owner);
+                receipt["activity_status"] = match activity {
+                    Some(activity) => json!(DB::string(&activity, "status")?),
+                    None => Value::Null,
+                };
+                receipt["attempt_status"] = json!(DB::string(&attempt, "status")?);
+                receipt["task_status"] = json!(DB::string(&task, "status")?);
+            }
+            return Err(super::RuntimeError::Protocol {
+                status: StatusCode::CONFLICT,
+                response: receipt,
+            });
         }
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;

@@ -90,10 +90,6 @@ contract fixture before its correction.
   30 days, so PHP prunes old closed runs. Native has no retention yet. Its
   heartbeat omits PHP's `retention` report rather than claim a pass. The
   `system/retention` endpoints are absent too.
-- **Activity leases of a replaced worker.** Re-registering a worker that holds
-  leases makes published PHP release its workflow *and* activity task leases.
-  Native releases only the workflow task leases. This needs a fixture with a
-  leased activity before the correction.
 - **Python worker shutdown after a late synchronous query handler (not yet
   diagnosed).** In the SQLite query-authority cohort on #515's run
   39431491496, the published Python SDK 2.5.15 client in `late-handler-sync`
@@ -200,14 +196,30 @@ October 20, worker listing:
   the registration. Omitting the fingerprints keeps the advertised one. A
   heartbeat changes only what it reports. Its acknowledgement carries the
   configured cadence and stale window.
-- **Fixture.** `worker-listing` registers two workers through the unchanged
-  published SDK. It then lists, filters, describes and refuses them, and
-  re-registers and deregisters them. The contract checks each HTTP target
-  against the reviewed facts. Embedded mode is explicitly inapplicable.
+- **A replaced worker's activity leases.** A new process registering a
+  worker_id that holds activity leases now releases them at once, as PHP
+  does. Its running attempts close as `expired`, and the tasks return to
+  ready, so the next claim is attempt 2 of the same task. This holds even under
+  a one-attempt retry policy, since PHP checks no policy at claim time. Before
+  this, native left the task leased for the five-minute activity lease. The
+  expired attempt's completion now gets PHP's whole stale receipt:
+  `409 stale_attempt`, `recorded: false`, and the activity, attempt and task
+  statuses.
+- **Fixtures.**
+  - `worker-listing` registers two workers through the unchanged published
+    SDK. It then lists, filters, describes and refuses them, and
+    re-registers and deregisters them.
+  - `worker-replacement-activity-lease` replaces a worker holding an activity
+    lease, then completes the original and the replacement attempts.
+
+  The contracts check each HTTP target against the reviewed facts. Embedded
+  mode is explicitly inapplicable.
 - **Local evidence.** A local copy of the SQLite parity step recorded
-  published PHP 2.5.14, embedded PHP and native for `worker-listing` and
+  published PHP 2.5.14, embedded PHP and native for both fixtures and
   `namespace-isolation`. All three targets passed and the comparison passed.
-  Native integration tests pass on SQLite, PostgreSQL, MySQL and MariaDB.
+  Before the release, native failed the replacement fixture: its second claim
+  found no task. Native integration tests pass on SQLite, PostgreSQL, MySQL
+  and MariaDB.
 
 October 20, immediate termination:
 

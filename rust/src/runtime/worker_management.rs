@@ -377,6 +377,37 @@ where
         .await
     }
 
+    /// A new process registering a worker_id that holds activity leases
+    /// replaces a process that may have died mid-task. As PHP does, close its
+    /// running attempts and return the tasks at once, rather than waiting out
+    /// the activity lease.
+    pub(super) async fn release_replaced_activity_leases(
+        tx: &mut Transaction<'_, DB>,
+        namespace: &str,
+        worker_id: &str,
+    ) -> Result<()> {
+        let tasks = Self::query("SELECT id,payload FROM workflow_tasks WHERE namespace=$1 AND task_type='activity' AND status='leased' AND lease_owner=$2 ORDER BY id")
+            .bind(namespace).bind(worker_id).fetch_all(&mut **tx).await?;
+        for task in tasks {
+            let task_id = DB::string(&task, "id")?;
+            let execution = DB::optional_document_row(&task, "payload")?
+                .and_then(|payload| payload["activity_execution_id"].as_str().map(str::to_owned))
+                .filter(|execution| !execution.is_empty());
+            if let Some(execution) = execution {
+                let attempt = Self::query("SELECT a.id FROM activity_attempts a JOIN activity_executions e ON e.id=a.activity_execution_id WHERE a.workflow_task_id=$1 AND a.activity_execution_id=$2 AND a.lease_owner=$3 AND a.status='running' ORDER BY a.attempt_number DESC LIMIT 1")
+                    .bind(&task_id).bind(&execution).bind(worker_id).fetch_optional(&mut **tx).await?;
+                if let Some(attempt) = attempt {
+                    Self::query("UPDATE activity_attempts SET status='expired',lease_expires_at=NULL,closed_at=COALESCE(closed_at,$1) WHERE id=$2")
+                        .bind(DB::bind_time(now())).bind(DB::string(&attempt, "id")?)
+                        .execute(&mut **tx).await?;
+                }
+            }
+            Self::query("UPDATE workflow_tasks SET status='ready',leased_at=NULL,lease_owner=NULL,lease_expires_at=NULL,last_claim_failed_at=NULL,last_claim_error=NULL WHERE id=$1")
+                .bind(&task_id).execute(&mut **tx).await?;
+        }
+        Ok(())
+    }
+
     async fn set_count(
         tx: &mut Transaction<'_, DB>,
         count: &Count,
