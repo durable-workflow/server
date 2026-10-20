@@ -142,6 +142,27 @@ support is not evidence of multi-node safety.
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
 names, including unsuccessful observations.
 
+October 20, concurrent MySQL and MariaDB bootstrap:
+
+- **Found by.** A multi-node smoke run started three nodes together on an
+  empty MySQL database. One node exited with `409 unsupported_rust_schema`.
+- **Cause.** MySQL commits DDL on its own. Between one node creating
+  `dw_server_schema` and recording its `rust-initializing` marker, another
+  node's read-only preflight, which runs before the bootstrap lock, saw an
+  empty marker table and refused. A node killed in the same window left a
+  database that no node could start on. PostgreSQL bootstraps inside one
+  locked transaction and SQLite in one file transaction, so neither has the
+  window.
+- **Source.** Preflight accepts an empty marker table when it is the only
+  table, and the node then waits for the bootstrap lock. Under the lock, a
+  missing marker is recorded before the migration runs.
+- **Checks.** The kill qualification has a `marker-table` phase. It kills a
+  bootstrapping child right after it creates the marker table and holds the
+  bootstrap lock. A concurrent start must still be waiting after one second,
+  then complete once the child is killed. Without the preflight change, it
+  refused at once. All 15 ignored MySQL qualification tests passed on MySQL
+  8.0 and MariaDB 10.11 locally.
+
 October 19, before #478, #476, #494 and #460 merged:
 
 - **Open native PRs.** [#478](https://github.com/durable-workflow/server/pull/478)
