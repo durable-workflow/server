@@ -101,6 +101,7 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
                 yield $definition.' '.$namespace.' omitted keys' => [$definition, $namespace, null, null, 'shared-proxy', 'shared-proxy', false];
                 yield $definition.' '.$namespace.' literal zero key' => [$definition, $namespace, '0', '0', 'proxy-a', 'proxy-b', true];
                 yield $definition.' '.$namespace.' maximum length key' => [$definition, $namespace, str_repeat('k', 255), str_repeat('k', 255), 'proxy-a', 'proxy-b', true];
+                yield $definition.' '.$namespace.' maximum Unicode key' => [$definition, $namespace, str_repeat('é', 255), str_repeat('é', 255), 'proxy-a', 'proxy-b', true];
                 yield $definition.' '.$namespace.' case sensitive key' => [$definition, $namespace, 'Caller', 'caller', 'proxy', 'proxy', false];
             }
         }
