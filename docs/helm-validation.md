@@ -127,16 +127,23 @@ touches `k8s/helm/**` or the chart smoke script. The harness has two jobs:
    - runs `helm upgrade` in place and re-checks readiness;
    - runs `helm uninstall` and asserts no chart-owned resources remain.
 
-The CI fixtures intentionally cover three shapes:
+The CI fixtures intentionally cover four shapes:
 
 | Fixture | Purpose |
 | --- | --- |
 | `ci/inline-secrets-values.yaml` | Smallest renderable chart — exercises secret rendering. |
 | `ci/existing-secrets-values.yaml` | GitOps / externally-managed-secret path. The chart renders no Secret resources of its own. |
 | `ci/ingress-and-hpa-values.yaml` | Optional templates: Ingress, HPA, NetworkPolicy, server + worker PDB. |
+| `ci/database-tls-values.yaml` | External CA Secret, canonical TLS settings and read-only mounts in every PHP role. |
 
-A chart change that affects rendered manifests must keep all three
+A chart change that affects rendered manifests must keep all four
 fixtures green, and the kind smoke must end with a clean uninstall.
+
+`scripts/ci/test_database_tls_chart.py` also checks both pre-install-hook and
+ordinary bootstrap ordering, CA path/key consistency, and preservation of
+application volumes with or without a database CA. A rendered mount proves
+wiring, not a successful authenticated connection; actual database handshake
+and published-image qualification remain separate checks.
 
 ## Distribution
 
