@@ -939,12 +939,12 @@ where
             let wake = self.wake.notified();
             if let Some(task) = self.claim(&body, kind, protocol_version).await? {
                 return Ok(
-                    json!({"task": task, "poll_status": "task", "server_capabilities": capabilities()}),
+                    json!({"task": task, "poll_status": "leased", "server_capabilities": capabilities()}),
                 );
             }
             if tokio::time::Instant::now() >= deadline {
                 return Ok(
-                    json!({"task": null, "poll_status": "timeout", "server_capabilities": capabilities()}),
+                    json!({"task": null, "poll_status": "empty", "server_capabilities": capabilities()}),
                 );
             }
             if self
