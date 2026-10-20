@@ -57,7 +57,7 @@ printf '%s\n' "$RESOURCE_SCOPE" > "$evidence/database-owned.txt"
 # timer is short.
 timer_seconds=60
 configuration=("${admin[@]}" -e DB_DATABASE="$database" -e DW_AUTH_TOKEN=upgrade-fixture-token
-  -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DB_SQLITE_JOURNAL_MODE=DELETE)
+  -e CACHE_STORE=file -e QUEUE_CONNECTION=database)
 php_run() {
   docker run --rm --name "$resource-control" --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
     --network "$RESOURCE_SCOPE" "${configuration[@]}" -v "$PWD/$state:/state" -v "$PWD:/source:ro" \
@@ -82,13 +82,27 @@ docker stop --signal SIGTERM --time 10 "$resource-php" >/dev/null
 docker inspect --format '{{json .State}}' "$resource-php" > "$evidence/stopped-state.json"
 jq -e '.Running==false and .ExitCode==0 and .OOMKilled==false' "$evidence/stopped-state.json" >/dev/null
 if test "$backend" = sqlite; then
+  # PHP Server keeps SQLite in WAL mode. Once PHP is stopped, the source is
+  # switched to the rollback journal the upgrade commands need, as an operator
+  # does first; its rows are unchanged.
+  [[ "$(od -An -tu1 -j18 -N2 "$state/database.sqlite" | tr -s ' ')" == " 2 2" ]]
+  docker run --rm --name "$resource-prepare" --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
+    --network none -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/database.sqlite -e DW_RUST_EXPERIMENTAL=1 \
+    -v "$PWD/$state:/state" -v "$PWD/rust-target:/target:ro" \
+    --entrypoint /target/debug/durable-workflow-server "$rust_image" upgrade-prepare-sqlite \
+    > "$evidence/prepare.json" 2> "$evidence/prepare.stderr"
+  jq -e '.status=="rollback_journal" and .previous_journal_mode=="wal" and .source_mutated==true' \
+    "$evidence/prepare.json" >/dev/null
+  [[ "$(od -An -tu1 -j18 -N2 "$state/database.sqlite" | tr -s ' ')" == " 1 1" ]]
+fi
+if test "$backend" = sqlite; then
   docker run --rm --name "$resource-control" --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
     --network=none -v "$PWD/$state:/state:ro" -v "$PWD:/source:ro" --entrypoint php "$image" \
     /source/scripts/conformance/server-parity/upgrade-source-sqlite-representations.php upgrade-source \
     > "$evidence/representations-comparison.json"
   jq -e '.outcome=="pass" and .source_mutated==false and .php_objects_executed==false
-    and (.runs|length)==2 and (.tasks|length)==4 and (.activities|length)==1
-    and (.history|length)==7 and (.queue_jobs|length)==1
+    and (.runs|length)==4 and (.tasks|length)==7 and (.activities|length)==1
+    and (.history|length)==13 and (.queue_jobs|length)==1
     and .queue_jobs[0].canonical_timer_task_match==true
     and all(.runs[]; .typed_arguments_match==true)
     and .backup_verified==false and .stored_representation_compatibility_verified==false
@@ -120,7 +134,7 @@ snapshot() {
 }
 snapshot > "$evidence/before.json"
 inspect_source > "$evidence/inspection.json" 2> "$evidence/inspection.stderr"
-jq -e --arg layout "$layout" '.status=="inspected" and .source_layout==$layout and (.table_rows|length)==50 and .table_rows.workflow_runs==2
+jq -e --arg layout "$layout" '.status=="inspected" and .source_layout==$layout and (.table_rows|length)==50 and .table_rows.workflow_runs==4
   and .table_rows.activity_executions==1 and .catalog_visibility=="configured_role"
   and .source_mutated==false and .takeover_allowed==false and .backup_verified==false
   and .php_quiescence_verified==false and .stored_representation_compatibility_verified==false' "$evidence/inspection.json" >/dev/null
@@ -131,10 +145,10 @@ jq -e '.status=="inspected" and .queue_inspection.status=="known_subset_bound"
   and .source_mutated==false and .takeover_allowed==false and .backup_verified==false
   and .php_quiescence_verified==false and .stored_representation_compatibility_verified==false' "$evidence/queue-inspection.json" >/dev/null
 inspect_source upgrade-payload-inspect > "$evidence/payload-inspection.json" 2> "$evidence/payload-inspection.stderr"
-jq -e '.status=="inspected" and (.payload_inspection.columns|length)==4
+jq -e '.status=="inspected" and (.payload_inspection.columns|length)==8
   and .payload_inspection.references_metadata_supported==true
   and ([.payload_inspection.columns[].counts.php_v1_references]|add)==0
-  and ([.payload_inspection.columns[].counts.avro_inline_values]|add)==3
+  and ([.payload_inspection.columns[].counts.avro_inline_values]|add)==11
   and ([.payload_inspection.columns[].counts.other_unvalidated]|add)==0
   and .payload_inspection.inline_values_verified==true
   and .payload_inspection.inline_validation_limits=={encoded_frame_bytes:65536,traversal_depth:64,traversal_visits:16384,scalar_allocation_bytes:65536}
@@ -152,7 +166,7 @@ fingerprint() {
 }
 fingerprint "$database" > "$evidence/fingerprint.json" 2> "$evidence/fingerprint.stderr"
 jq -e --arg layout "$layout" '.status=="fingerprinted" and .source_layout==$layout and (.fingerprint|test("^sha256:[0-9a-f]{64}$"))
-  and (.table_rows|length)==50 and .table_rows.workflow_runs==2 and .table_rows.jobs==1
+  and (.table_rows|length)==50 and .table_rows.workflow_runs==4 and .table_rows.jobs==1
   and .source_mutated==false and .takeover_allowed==false and .backup_verified==false
   and .php_quiescence_verified==false and .stored_representation_compatibility_verified==false' "$evidence/fingerprint.json" >/dev/null
 source_fingerprint=$(jq -r .fingerprint "$evidence/fingerprint.json")
@@ -271,7 +285,9 @@ if (( ${#target[@]} )); then
     "/source/$evidence/originals.json" 150 > "$evidence/resume.json" 2> "$evidence/resume.stderr"
   jq -e '.outcome=="pass" and .activity.stale_attempt_status==409
     and .activity.events[-1]=="WorkflowCompleted" and .timer.fired_after_seconds>=0
-    and .timer.events[-1]=="WorkflowCompleted"' "$evidence/resume.json" >/dev/null
+    and .timer.events[-1]=="WorkflowCompleted" and .signal.events[-1]=="WorkflowCompleted"
+    and .lease.attempt==2 and .lease.redelivered_after_seconds>=0 and .lease.stale_attempt_status==409
+    and .lease.events[-1]=="WorkflowCompleted"' "$evidence/resume.json" >/dev/null
   docker stop --signal SIGTERM --time 10 "$resource-native" >/dev/null
   if docker run --rm --name "$resource-control" --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
     --network "$target_network" "${target[@]}" -e DW_AUTH_TOKEN=upgrade-fixture-token \

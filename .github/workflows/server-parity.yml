@@ -377,6 +377,11 @@ jobs:
       - name: Bootstrap independent published PHP and native MySQL databases
         run: |
           set -euo pipefail
+          # Failed Rust tests are printed from their evidence files into this step's log.
+          rust_test_failures() {
+            bash scripts/conformance/server-parity/rust-test-failures.sh
+          }
+          trap rust_test_failures ERR
           mkdir -p cargo-home rust-target parity-evidence mysql-state
           chmod 0777 parity-evidence
           docker network create "$RESOURCE_SCOPE"
@@ -871,6 +876,11 @@ jobs:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: |
           set -euo pipefail
+          # Failed Rust tests are printed from their evidence files into this step's log.
+          rust_test_failures() {
+            bash scripts/conformance/server-parity/rust-test-failures.sh
+          }
+          trap rust_test_failures ERR
           mkdir -p cargo-home rust-target parity-evidence pg-state
           chmod 0777 parity-evidence
           docker network create "$RESOURCE_SCOPE"
@@ -1394,6 +1404,11 @@ jobs:
       - name: Execute official Rust codec and cross-decode with published PHP
         run: |
           set -euo pipefail
+          # Failed Rust tests are printed from their evidence files into this step's log.
+          rust_test_failures() {
+            bash scripts/conformance/server-parity/rust-test-failures.sh
+          }
+          trap rust_test_failures ERR
           mkdir -p cargo-home rust-target parity-evidence
           # Compiling the library tests peaks near 2.5 GB; a 2 GB limit OOM-killed rustc (exit 101).
           docker run --rm --user="$(id -u):$(id -g)" --cpus=2 --memory=4g --memory-swap=4g \
@@ -1656,6 +1671,7 @@ jobs:
       - name: Back up, take over and resume a published PHP 2.9.7 upgrade source
         timeout-minutes: 8
         env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           DW_PARITY_UPGRADE_LABEL: php297
           DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.9.7
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:30c34c5f3256a812fbccbe505a068309b58b0c14d01ffff0465d88604cb36d50
@@ -1664,6 +1680,7 @@ jobs:
         if: always()
         timeout-minutes: 3
         env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           DW_PARITY_UPGRADE_LABEL: php297
           DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.9.7
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:30c34c5f3256a812fbccbe505a068309b58b0c14d01ffff0465d88604cb36d50

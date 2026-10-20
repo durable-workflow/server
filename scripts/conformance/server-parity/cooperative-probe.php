@@ -21,6 +21,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\WorkflowStub;
 use Workflow\V2\StartOptions;
 use Workflow\WorkflowOptions;
+require_once __DIR__.'/lock-pressure-middleware.php';
 
 function cooperativeObservedTransport(array &$traffic): Psr18Transport
 {
@@ -42,6 +43,7 @@ function cooperativeObservedTransport(array &$traffic): Psr18Transport
             });
         };
     });
+    $stack->push(LockPressurePollRetries::middleware(), 'lock_pressure_poll_retry');
 
     return new Psr18Transport(client: new GuzzleClient(['http_errors' => false, 'handler' => $stack]));
 }
@@ -75,7 +77,7 @@ function httpCooperativeObservation(array $fixture, string $workflowId, string $
 {
     $traffic = [];
     $diagnostics = [];
-    $client = new Client($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null,
+    $client = parityClient($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null,
         transport: cooperativeObservedTransport($traffic), workerProtocolVersion: '1.20');
     $phase = $fixture['cooperative_cancellation']['phase'];
     $reason = $fixture['cooperative_cancellation']['reason'];
@@ -150,7 +152,7 @@ function httpCooperativeObservation(array $fixture, string $workflowId, string $
     } catch (WorkflowCancelled $error) {
         $outcome = ['type' => $error::class, 'message' => $error->getMessage()];
     }
-    $fresh = new Client($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null, workerProtocolVersion: '1.20');
+    $fresh = parityClient($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null, workerProtocolVersion: '1.20');
 
     return ['execution' => $execution->raw, 'workflow_id' => $execution->workflowId, 'run_id' => $execution->runId,
         'workflow_type' => $execution->workflowType, 'namespace' => $execution->namespace, 'task_queue' => $execution->taskQueue,

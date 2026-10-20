@@ -407,6 +407,130 @@ pub(super) async fn open_sqlite_source(path: &str, deadline: Instant) -> Result<
     open_sqlite_file(path, deadline, false).await
 }
 
+/// The file format version bytes of a SQLite header: rollback journal or WAL.
+const ROLLBACK_JOURNAL: [u8; 2] = [1, 1];
+const WRITE_AHEAD_LOG: [u8; 2] = [2, 2];
+
+/// The journal format bytes of a regular SQLite file, read without SQLite.
+async fn journal_format(path: &str) -> Result<[u8; 2]> {
+    let regular_file_required = || {
+        refuse(
+            StatusCode::BAD_REQUEST,
+            "upgrade_source_regular_file_required",
+        )
+    };
+    if !tokio::fs::metadata(path).await?.is_file() {
+        return Err(regular_file_required());
+    }
+    let mut options = tokio::fs::OpenOptions::new();
+    options.read(true);
+    // Tokio filesystem opens use blocking workers. A replaced FIFO must
+    // not strand one beyond the observation budget or prevent CLI exit.
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NONBLOCK);
+    let mut file = options.open(path).await?;
+    if !file.metadata().await?.is_file() {
+        return Err(regular_file_required());
+    }
+    let mut header = [0_u8; 20];
+    file.read_exact(&mut header).await?;
+    if &header[..16] != b"SQLite format 3\0" {
+        return Err(refuse(
+            StatusCode::CONFLICT,
+            "upgrade_source_sqlite_journal_unqualified",
+        ));
+    }
+    Ok([header[18], header[19]])
+}
+
+/// Whether a SQLite file has a WAL, shared-memory or rollback journal beside it.
+async fn sidecars(path: &str) -> Result<bool> {
+    for suffix in ["-wal", "-shm", "-journal"] {
+        if tokio::fs::try_exists(format!("{path}{suffix}")).await? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Prepares a stopped PHP SQLite source for the upgrade commands, which need
+/// the rollback journal. PHP Server's default is WAL: switching it makes
+/// SQLite checkpoint every committed WAL frame into the file first, so the
+/// stored rows are unchanged. A journal left by a crashed writer is rolled
+/// back the same way. Refuses while another process has the file open.
+pub async fn prepare_sqlite_source(path: &str) -> Result<Value> {
+    if path.is_empty() || path.contains(['?', ':']) {
+        return Err(refuse(
+            StatusCode::BAD_REQUEST,
+            "upgrade_source_file_required",
+        ));
+    }
+    let deadline = Instant::now() + BUDGET;
+    let previous = match timeout_at(deadline, journal_format(path))
+        .await
+        .map_err(|_| expired())??
+    {
+        WRITE_AHEAD_LOG => "wal",
+        ROLLBACK_JOURNAL => "delete",
+        _ => {
+            return Err(refuse(
+                StatusCode::CONFLICT,
+                "upgrade_source_sqlite_journal_unqualified",
+            ));
+        }
+    };
+    let switched = previous == "wal" || sidecars(path).await?;
+    if switched {
+        let in_use = || refuse(StatusCode::CONFLICT, "upgrade_source_in_use");
+        let opened = timeout_at(
+            deadline,
+            SqliteConnection::connect_with(
+                &SqliteConnectOptions::new()
+                    .filename(path)
+                    .create_if_missing(false)
+                    .foreign_keys(false)
+                    .busy_timeout(Duration::from_secs(2))
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Delete),
+            ),
+        )
+        .await
+        .map_err(|_| expired())?;
+        // Leaving WAL needs the only connection. SQLite answers busy when another
+        // still has the file after a short wait, which also covers a writer
+        // that is just closing.
+        let mut connection = match opened {
+            Ok(connection) => connection,
+            Err(sqlx::Error::Database(error))
+                if error
+                    .code()
+                    .and_then(|code| code.parse::<i32>().ok())
+                    .is_some_and(|code| code & 0xff == 5) =>
+            {
+                return Err(in_use());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&mut connection)
+            .await?;
+        close(connection.close()).await?;
+        if mode != "delete" {
+            return Err(in_use());
+        }
+    }
+    if journal_format(path).await? != ROLLBACK_JOURNAL || sidecars(path).await? {
+        return Err(refuse(
+            StatusCode::CONFLICT,
+            "upgrade_source_sqlite_journal_unqualified",
+        ));
+    }
+    Ok(json!({
+        "schema":"durable-workflow.rust-upgrade-sqlite-prepare.v1",
+        "status":"rollback_journal", "previous_journal_mode":previous,
+        "source_mutated":switched, "takeover_allowed":false, "backup_verified":false
+    }))
+}
+
 /// Opens a qualified rollback-journal source file, writable only for takeover.
 /// It keeps the rollback journal: native enables WAL itself after takeover.
 pub(super) async fn open_sqlite_file(
@@ -424,29 +548,9 @@ pub(super) async fn open_sqlite_file(
     // not open an unqualified WAL source or attempt journal recovery. Unlike
     // immutable=1 this preserves normal SQLite locking/change detection for
     // the supported rollback-journal source, rather than ignoring live WAL.
+    // A WAL source is first switched with upgrade-prepare-sqlite.
     timeout_at(deadline, async {
-        let regular_file_required = || {
-            refuse(
-                StatusCode::BAD_REQUEST,
-                "upgrade_source_regular_file_required",
-            )
-        };
-        if !tokio::fs::metadata(path).await?.is_file() {
-            return Err(regular_file_required());
-        }
-        let mut options = tokio::fs::OpenOptions::new();
-        options.read(true);
-        // Tokio filesystem opens use blocking workers. A replaced FIFO must
-        // not strand one beyond the observation budget or prevent CLI exit.
-        #[cfg(unix)]
-        options.custom_flags(libc::O_NONBLOCK);
-        let mut file = options.open(path).await?;
-        if !file.metadata().await?.is_file() {
-            return Err(regular_file_required());
-        }
-        let mut header = [0_u8; 20];
-        file.read_exact(&mut header).await?;
-        if &header[..16] != b"SQLite format 3\0" || header[18..20] != [1, 1] {
+        if journal_format(path).await? != ROLLBACK_JOURNAL {
             return Err(refuse(
                 StatusCode::CONFLICT,
                 "upgrade_source_sqlite_journal_unqualified",

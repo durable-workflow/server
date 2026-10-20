@@ -133,12 +133,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     | "upgrade-queue-inspect"
                     | "upgrade-payload-inspect"
                     | "upgrade-fingerprint"
+                    | "upgrade-prepare-sqlite"
                     | "upgrade-takeover"
             )
         {
             return Err("unknown development command".into());
         }
         let backend = env::var("DB_CONNECTION").unwrap_or_default();
+        if command == "upgrade-prepare-sqlite" {
+            if backend != "sqlite" {
+                return Err("upgrade-prepare-sqlite requires DB_CONNECTION=sqlite".into());
+            }
+            let path = env::var("DB_DATABASE").map_err(|_| "DB_DATABASE is required")?;
+            return match durable_workflow_server::runtime::upgrade::prepare_sqlite_source(&path).await
+            {
+                Ok(report) => {
+                    println!("{report}");
+                    Ok(())
+                }
+                Err(error) => {
+                    let reason = match error {
+                        RuntimeError::Refused { reason, .. } => reason,
+                        _ => "upgrade_prepare_unavailable",
+                    };
+                    eprintln!("{reason}");
+                    Err("SQLite source preparation refused".into())
+                }
+            };
+        }
         if command == "upgrade-takeover" {
             use durable_workflow_server::runtime::upgrade::{
                 queue_binding::QueueSourceConfig, takeover,

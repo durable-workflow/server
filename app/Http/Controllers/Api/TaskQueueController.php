@@ -10,6 +10,7 @@ use App\Support\DeploymentLifecycleService;
 use App\Support\TaskQueueAdmission;
 use App\Support\TaskQueueBuildIdRolloutSnapshot;
 use App\Support\TaskQueuePriorityFairnessSurface;
+use App\Support\WorkflowDefinitionRouting;
 use App\Support\WorkflowQueryTaskBroker;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -28,6 +29,7 @@ class TaskQueueController
         private readonly TaskQueueBuildIdRolloutSnapshot $buildIdRollouts,
         private readonly TaskQueuePriorityFairnessSurface $priorityFairness,
         private readonly DeploymentLifecycleService $deployments,
+        private readonly WorkflowDefinitionRouting $definitionRouting,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -67,22 +69,26 @@ class TaskQueueController
 
         $namespace = (string) $request->attributes->get('namespace');
 
-        return ControlPlaneProtocol::json(
-            $this->withAdmission(
+        $payload = $this->withAdmission(
+            $namespace,
+            $this->withRecentTaskFlow(
                 $namespace,
-                $this->withRecentTaskFlow(
+                $taskQueue,
+                StandaloneWorkerVisibility::queueDetail(
                     $namespace,
                     $taskQueue,
-                    StandaloneWorkerVisibility::queueDetail(
-                        $namespace,
-                        $taskQueue,
-                        WorkerRegistration::class,
-                        now(),
-                        $this->workerStaleAfterSeconds(),
-                    )->toArray(),
-                ),
+                    WorkerRegistration::class,
+                    now(),
+                    $this->workerStaleAfterSeconds(),
+                )->toArray(),
             ),
         );
+        $payload['definition_routing'] = $this->definitionRouting->forQueue($namespace, $taskQueue);
+        if ($payload['definition_routing']['blocked_sample_count'] > 0) {
+            $payload['repair']['needs_attention'] = true;
+        }
+
+        return ControlPlaneProtocol::json($payload);
     }
 
     /**
@@ -263,7 +269,7 @@ class TaskQueueController
     }
 
     /**
-     * @param array<string, mixed> $deployment
+     * @param  array<string, mixed>  $deployment
      * @return array<string, mixed>
      */
     private function buildIdLifecyclePayload(
@@ -351,7 +357,7 @@ class TaskQueueController
     }
 
     /**
-     * @param list<array<string, mixed>> $blockages
+     * @param  list<array<string, mixed>>  $blockages
      */
     private function orderBlockages(array &$blockages): void
     {
@@ -630,6 +636,7 @@ class TaskQueueController
             if ($attemptStatus === ActivityAttemptStatus::Running->value) {
                 $counts['running_count'] += $count;
                 $counts['open_count'] += $count;
+
                 continue;
             }
 
@@ -639,6 +646,7 @@ class TaskQueueController
             ) {
                 $counts['retrying_count'] += $count;
                 $counts['open_count'] += $count;
+
                 continue;
             }
 
@@ -646,6 +654,7 @@ class TaskQueueController
                 $counts['timed_out_count'] += $count;
                 $counts['expired_count'] += $count;
                 $counts['terminal_count'] += $count;
+
                 continue;
             }
 
@@ -656,18 +665,21 @@ class TaskQueueController
             ) {
                 $counts['timed_out_count'] += $count;
                 $counts['terminal_count'] += $count;
+
                 continue;
             }
 
             if ($attemptStatus === ActivityAttemptStatus::Failed->value) {
                 $counts['failed_count'] += $count;
                 $counts['terminal_count'] += $count;
+
                 continue;
             }
 
             if ($attemptStatus === ActivityAttemptStatus::Completed->value) {
                 $counts['completed_count'] += $count;
                 $counts['terminal_count'] += $count;
+
                 continue;
             }
 

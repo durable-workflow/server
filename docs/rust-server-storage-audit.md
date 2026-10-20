@@ -96,5 +96,7 @@ and takeover flag stays false.
    There is no mixed PHP/Rust fleet or PHP rollback after upgrade. Restoring a
    pre-upgrade backup is a separate recovery action with its own data boundary.
 
-All gates above remain open. HTTP export/import remains a supported deployment
+All gates above remain open. The [takeover design](rust-server-upgrade-takeover.md)
+proposes how the takeover command proves the backup, excludes other writers and
+resumes after interruption. HTTP export/import remains a supported deployment
 transfer surface, but it does not substitute for in-place upgrade qualification.

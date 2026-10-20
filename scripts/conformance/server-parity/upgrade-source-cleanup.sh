@@ -15,7 +15,7 @@ source=upgrade_source_ref${label:+_$label}
 restored=upgrade_restore_ref${label:+_$label}
 image=${DW_PARITY_UPGRADE_PHP_IMAGE:-ghcr.io/durable-workflow/server@sha256:cba7c4c6732529293ef6c2625a64785dcb21b4f7fe0013fdc74f1af466f534ac}
 [[ "$image" =~ ^ghcr.io/durable-workflow/server@sha256:[0-9a-f]{64}$ ]] || exit 2
-for role in author control inspect php takeover native resume; do
+for role in author control inspect php prepare takeover native resume; do
   if docker inspect "$resource-$role" >/dev/null 2>&1; then
     docker stop --signal SIGTERM --time 5 "$resource-$role" >/dev/null
     docker rm "$resource-$role" >/dev/null
