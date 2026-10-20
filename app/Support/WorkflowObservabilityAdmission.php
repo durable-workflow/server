@@ -15,6 +15,8 @@ final class WorkflowObservabilityAdmission
 
     private bool $runAttached = false;
 
+    private array $createdRuns = [];
+
     public function __construct(
         private readonly Request $request,
         private ?string $workflowId,
@@ -33,7 +35,7 @@ final class WorkflowObservabilityAdmission
             return;
         }
 
-        $run->setAttribute('observability_context', $this->carrier());
+        $this->attach($run, $this->carrier());
         $this->workflowId = $run->workflow_instance_id;
         $this->runAttached = true;
     }
@@ -62,7 +64,26 @@ final class WorkflowObservabilityAdmission
             return;
         }
 
-        $command->setAttribute('observability_context', $this->carrier());
+        $this->attach($command, $this->carrier());
+    }
+
+    public function rememberCreatedRun(WorkflowRun $run): void
+    {
+        if ($this->operation === 'workflow_complete' && $run->namespace === $this->namespace() && is_string($run->id)) {
+            $this->createdRuns[$run->id] = true;
+        }
+    }
+
+    public function createdRunIds(): array
+    {
+        return array_keys($this->createdRuns);
+    }
+
+    private function attach(Model $model, ?array $carrier): void
+    {
+        $attributes = $model->getAttributes();
+        $attributes['observability_context'] = $carrier === null ? null : json_encode($carrier, JSON_THROW_ON_ERROR);
+        $model->setRawAttributes($attributes);
     }
 
     private function namespace(): string

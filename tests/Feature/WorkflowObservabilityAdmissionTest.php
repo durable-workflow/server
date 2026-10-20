@@ -4,10 +4,12 @@ namespace Tests\Feature;
 
 use App\Models\WorkflowNamespace;
 use App\Support\WorkflowObservability;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Testing\TestResponse;
 use OpenTelemetry\API\Trace\Propagation\TraceContextPropagator;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Jobs\RunWorkflowTask;
@@ -51,6 +53,39 @@ class WorkflowObservabilityAdmissionTest extends TestCase
         foreach (['traceparent', 'private-value', 'observability_context'] as $excluded) {
             $this->assertStringNotContainsString($excluded, $history);
         }
+    }
+
+    public function test_discovery_exposes_the_exact_optional_capability_without_a_protocol_floor(): void
+    {
+        config(['server.worker_protocol.version' => '1.1']);
+        $this->getJson('/api/cluster/info')->assertOk()
+            ->assertJsonPath('worker_protocol.version', '1.1')
+            ->assertJsonPath('worker_protocol.server_capabilities.observability_context', [
+                'supported' => true, 'schema' => 'durable-workflow.trace-context', 'version' => 1,
+                'dispatch_schema' => 'durable-workflow.queue-trace', 'links_schema' => 'durable-workflow.trace-links',
+                'max_context_bytes' => 4096, 'max_links' => 32, 'max_links_bytes' => 4096,
+            ]);
+        config(['server.observability_context.enabled' => false]);
+        $this->getJson('/api/cluster/info')->assertOk()
+            ->assertJsonMissingPath('worker_protocol.server_capabilities.observability_context');
+    }
+
+    public static function carrierModels(): array
+    {
+        return ['runs' => [WorkflowRun::class], 'commands' => [WorkflowCommand::class], 'tasks' => [WorkflowTask::class]];
+    }
+
+    #[DataProvider('carrierModels')]
+    public function test_missing_actual_column_is_not_advertised_and_business_admission_survives(string $class): void
+    {
+        $model = new $class;
+        $model->getConnection()->getSchemaBuilder()->table($model->getTable(), static function (Blueprint $table): void {
+            $table->dropColumn('observability_context');
+        });
+        $this->getJson('/api/cluster/info')->assertOk()
+            ->assertJsonMissingPath('worker_protocol.server_capabilities.observability_context');
+        $this->start('legacy-schema', $this->carrier())->assertCreated();
+        $this->assertSame(1, WorkflowRun::query()->count());
     }
 
     public function test_default_empty_and_explicit_allowlist_control_baggage(): void
