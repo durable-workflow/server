@@ -86,7 +86,7 @@ function finishHttpAdmission(Client $client, array $fixture, string $workflowId,
         throw $error;
     } finally {
         if (isset($definition['cleanup_auth'])) {
-            $cleanupClient = new Client($url, namespace: $namespace, token: parityAdmissionToken($definition['cleanup_auth']));
+            $cleanupClient = parityClient($url, namespace: $namespace, token: parityAdmissionToken($definition['cleanup_auth']));
             $state['cleanup_auth'] = $definition['cleanup_auth'];
             $state['cleanup'] = $cleanupClient->cancelWorkflow($peerId, $definition['cleanup_reason'], $peer->selectedRunId);
         } else {
