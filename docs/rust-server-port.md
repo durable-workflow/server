@@ -152,6 +152,14 @@ contract fixture before its correction.
   stored process metrics. That entry shows up in the worker listing. Native
   follows the frozen published reference, which has none of this. Port it
   with its own fixture once it is published.
+- **Trace context (Workflow #773 / workflow#788, not yet published).** A
+  Workflow minor will add nullable `observability_context` columns on runs,
+  commands and tasks, plus an entry in schedule metadata. Native-owned
+  databases are unaffected. A Server release carrying the columns is a new
+  takeover source layout, which native refuses with
+  `upgrade_source_catalog_unqualified` until its recipe lands. The recipe must
+  also refuse rows that carry trace context until native implements the
+  contract. The boundary is agreed on #325.
 - **Terminating a child run.** Published Workflow resolves the parent with
   `ChildRunTerminated` and the `terminated` child call status. Native refuses
   this with `422 termination_propagation_not_available` until the parent-side
