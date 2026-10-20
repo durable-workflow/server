@@ -1,0 +1,130 @@
+{
+  "identity": {
+    "database": "postgres",
+    "compose_project": "dw-mn-postgres-20261020t204232",
+    "source_revision": "6b676949af70caf4f5b685d0466ccf278c1577c0",
+    "source_modified_files": 0,
+    "native_binary_sha256": "4c19c325cbd175d58d0b2710bb0450241f3760730514788eedf5185bab312e8f",
+    "smoke": false,
+    "schedule": {
+      "rate": 0.5,
+      "offer_seconds": 180,
+      "drain_seconds": 420,
+      "windows": 3,
+      "node_kill_every_seconds": 15,
+      "node_down_seconds": 4,
+      "worker_pause_every_seconds": 90,
+      "worker_pause_seconds": 70,
+      "workflow_task_lease_seconds": 60
+    },
+    "machine": {
+      "kernel": "5.15.0-198-generic",
+      "logical_cpus": 4,
+      "cpu_model": "Intel(R) Core(TM) i5-6500 CPU @ 3.20GHz"
+    }
+  },
+  "windows": [
+    {
+      "sdk_php": "2.5.3",
+      "outcome": "pass",
+      "planned_starts": 90,
+      "accepted_starts": 90,
+      "completed": 90,
+      "verified": 90,
+      "activity_attempts_per_workflow": {
+        "1": 90
+      },
+      "repairs_by_workflow": {},
+      "retries": [],
+      "errors": []
+    },
+    {
+      "sdk_php": "2.5.3",
+      "outcome": "pass",
+      "planned_starts": 90,
+      "accepted_starts": 90,
+      "completed": 90,
+      "verified": 90,
+      "activity_attempts_per_workflow": {
+        "1": 90
+      },
+      "repairs_by_workflow": {},
+      "retries": [],
+      "errors": []
+    },
+    {
+      "sdk_php": "2.5.3",
+      "outcome": "pass",
+      "planned_starts": 90,
+      "accepted_starts": 90,
+      "completed": 90,
+      "verified": 90,
+      "activity_attempts_per_workflow": {
+        "1": 90
+      },
+      "repairs_by_workflow": {},
+      "retries": [],
+      "errors": []
+    }
+  ],
+  "chaos": {
+    "kill": 24,
+    "pause": 3,
+    "start": 24,
+    "unpause": 3
+  },
+  "balancer": {
+    "requests": 4262,
+    "workflow_task_completions_409": 0,
+    "activity_task_completions_409": 0,
+    "responses_5xx": 0
+  },
+  "database_audit": {
+    "runs completed": 270,
+    "tasks activity completed": 270,
+    "tasks workflow completed": 540,
+    "attempts completed": 270,
+    "duplicate_workflow_completions": 0,
+    "duplicate_activity_completions": 0,
+    "duplicate_history_sequences": 0
+  },
+  "containers": {
+    "lb": {
+      "restarts": 0,
+      "oom_killed": false,
+      "exit_code": 0
+    },
+    "native-1": {
+      "restarts": 0,
+      "oom_killed": false,
+      "exit_code": 0
+    },
+    "native-2": {
+      "restarts": 0,
+      "oom_killed": false,
+      "exit_code": 0
+    },
+    "native-3": {
+      "restarts": 0,
+      "oom_killed": false,
+      "exit_code": 0
+    },
+    "postgres": {
+      "restarts": 0,
+      "oom_killed": false,
+      "exit_code": 0
+    },
+    "sdk-worker-1": {
+      "restarts": 0,
+      "oom_killed": false,
+      "exit_code": 0
+    },
+    "sdk-worker-2": {
+      "restarts": 0,
+      "oom_killed": false,
+      "exit_code": 0
+    }
+  },
+  "native_panics": 0,
+  "sdk_worker_exits": {}
+}

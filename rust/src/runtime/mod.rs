@@ -34,8 +34,8 @@ mod memo_limits;
 mod memos;
 pub mod mysql;
 mod namespaces;
-pub mod postgres;
 mod poll_readiness;
+pub mod postgres;
 mod previews;
 mod queries;
 mod query_authority;
@@ -66,6 +66,7 @@ mod wait_projection;
 mod wait_timeouts;
 mod worker_contracts;
 mod worker_incarnations;
+mod worker_management;
 mod workflow_failures;
 mod workflow_task_guard;
 
