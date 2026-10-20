@@ -11,6 +11,7 @@ pub(super) enum Operation<'a> {
     Observe,
     History,
     Cancel,
+    Terminate,
     Repair,
     Debug,
     Update,
@@ -90,6 +91,7 @@ impl Operation<'_> {
             ),
             Self::History => ("history", &["workflow_id", "run_id"], &["next_page_token"]),
             Self::Cancel => ("cancel", &["workflow_id"], &["outcome"]),
+            Self::Terminate => ("terminate", &["workflow_id"], &["outcome"]),
             Self::Repair => ("repair", &["workflow_id"], &["outcome"]),
             Self::Debug => ("debug", &["workflow_id"], &[]),
             Self::Update => (
@@ -136,7 +138,7 @@ impl Operation<'_> {
             ]);
             metadata["contract"]["rejection_reasons"] = json!(["control_plane_internal_error"]);
         }
-        if matches!(self, Self::Cancel | Self::Repair) {
+        if matches!(self, Self::Cancel | Self::Terminate | Self::Repair) {
             metadata["contract"]["rejection_fields"] =
                 json!(["workflow_id", "run_id", "reason", "message", "remediation"]);
             metadata["contract"]["rejection_reasons"] = json!(["v1_projection_read_only"]);
@@ -296,6 +298,8 @@ pub(super) async fn admission_response(request: Request, mut body: Value) -> Val
         | ("GET", ["api", "workflows", _, "runs", _, "observation"]) => Operation::Observe,
         ("POST", ["api", "workflows", _, "cancel"])
         | ("POST", ["api", "workflows", _, "runs", _, "cancel"]) => Operation::Cancel,
+        ("POST", ["api", "workflows", _, "terminate"])
+        | ("POST", ["api", "workflows", _, "runs", _, "terminate"]) => Operation::Terminate,
         ("POST", ["api", "workflows", _, "repair"])
         | ("POST", ["api", "workflows", _, "runs", _, "repair"]) => Operation::Repair,
         ("GET", ["api", "workflows", _, "debug"])
