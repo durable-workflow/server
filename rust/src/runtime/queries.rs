@@ -362,7 +362,7 @@ where
             let wake = self.wake.notified();
             if std::mem::take(&mut first) || self.query_poll_ready(&body, config, &proof).await? {
                 match self.claim_query(&body, config, &proof).await? {
-                    QueryClaim::Task(task) => return Ok(poll_result(Some(task), "task")),
+                    QueryClaim::Task(task) => return Ok(poll_result(Some(task), "leased")),
                     QueryClaim::StaleWorker => {
                         return Ok(poll_result(None, "stale_worker_registration"));
                     }
@@ -370,7 +370,7 @@ where
                 }
             }
             if tokio::time::Instant::now() >= deadline {
-                return Ok(poll_result(None, "timeout"));
+                return Ok(poll_result(None, "empty"));
             }
             if self
                 .poll_queue_changed(&body, "query", &mut cross_kind)
