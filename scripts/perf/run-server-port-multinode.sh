@@ -47,17 +47,23 @@ export DW_MN_HAPROXY_DIGEST=${DW_MN_HAPROXY_DIGEST:-094401c230b9bf01a6a4dc96e455
 export DW_MN_STATE_DIR="$out/state"
 mkdir -p "$DW_MN_STATE_DIR"
 chmod 0777 "$DW_MN_STATE_DIR"
+# Each run gets its own database secrets; the compose file requires them even
+# for profiles it does not start.
+secret() { od -An -N16 -tx1 /dev/urandom | tr -d ' \n'; }
+DW_MN_DB_PASSWORD=$(secret) DW_MN_DB_ROOT_PASSWORD=$(secret)
+export DW_MN_DB_PASSWORD DW_MN_DB_ROOT_PASSWORD
 case "$db" in
   mysql) export DW_MN_DB_CONNECTION=mysql DW_MN_DB_HOST=mysql DW_MN_DB_DATABASE=durable_workflow \
-    DW_MN_DB_USERNAME=workflow DW_MN_DB_PASSWORD=multinode-mysql; database=(mysql) ;;
+    DW_MN_DB_USERNAME=workflow; database=(mysql) ;;
   postgres) export DW_MN_DB_CONNECTION=pgsql DW_MN_DB_HOST=postgres DW_MN_DB_DATABASE=durable_workflow \
-    DW_MN_DB_USERNAME=workflow DW_MN_DB_PASSWORD=multinode-postgres; database=(postgres) ;;
+    DW_MN_DB_USERNAME=workflow; database=(postgres) ;;
   sqlite) export DW_MN_DB_CONNECTION=sqlite DW_MN_DB_DATABASE=/state/native.sqlite; database=() ;;
+  *) echo "Choose mysql, postgres or sqlite." >&2; exit 2 ;;
 esac
 
 project="dw-mn-$db-$(date -u +%Y%m%dt%H%M%S)"
 dc() { docker compose -p "$project" -f "$compose" --profile "$db" "$@"; }
-container() { dc --profile clients ps -a -q "$1"; }
+container() { local service=$1; dc --profile clients ps -a -q "$service"; }
 nodes=(native-1 native-2 native-3)
 
 stop_file="$out/.stop"
@@ -155,7 +161,7 @@ docker unpause "$(container sdk-worker-1)" >/dev/null 2>&1 || true
 # The balancer's request log shows what the chaos did: stale completions the
 # servers refused, and requests a killed node never answered.
 docker logs "$(container lb)" > "$out/lb.log" 2>&1 || true
-count() { grep -E "$1" "$out/lb.log" | grep -cE "/[0-9-]+ $2 " || true; }
+count() { local path=$1 status=$2; grep -E "$path" "$out/lb.log" | grep -cE "/[0-9-]+ $status " || true; }
 {
   printf 'requests\t%s\n' "$(grep -cE '"[A-Z]+ /api/' "$out/lb.log" || true)"
   printf 'workflow_task_completions_409\t%s\n' "$(count '/api/worker/workflow-tasks/[^ ]+/complete HTTP' 409)"
@@ -177,6 +183,7 @@ case "$db" in
     foreach (array_filter(array_map("trim", explode(";", getenv("AUDIT_SQL")))) as $sql) {
         foreach ($pdo->query($sql, PDO::FETCH_NUM) as $row) { echo implode("\t", $row), "\n"; }
     }' ;;
+  *) echo "Unknown database $db." >&2; exit 2 ;;
 esac > "$out/database-audit.tsv" 2>> "$out/run.log"
 for kind in workflow activity; do
   awk -F'\t' -v k="duplicate_${kind}_completions" '$1==k && $2!=0 {bad=1} END {exit bad}' "$out/database-audit.tsv" || failed=1

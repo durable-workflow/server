@@ -13,8 +13,13 @@ declare(strict_types=1);
 use Composer\InstalledVersions;
 use DurableWorkflow\Exception\ServerException;
 
-require dirname(__DIR__, 2).'/benchmarks/capacity/v1/bindings/php/capacity_adapter.php';
+require_once dirname(__DIR__, 2).'/benchmarks/capacity/v1/bindings/php/capacity_adapter.php';
 capacityAutoload();
+
+// A completed workflow whose output or history breaks the qualification.
+final class MultinodeVerificationFailure extends RuntimeException
+{
+}
 
 $rate = filter_var($argv[1] ?? null, FILTER_VALIDATE_FLOAT, ['options' => ['min_range' => 0.1, 'max_range' => 5.0]]);
 $duration = filter_var($argv[2] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 5, 'max_range' => 600]]);
@@ -117,33 +122,33 @@ $attemptsByWorkflow = [];
 foreach ($completed as $id => $execution) {
     try {
         if ($execution->output !== $blob) {
-            throw new RuntimeException('output differs');
+            throw new MultinodeVerificationFailure('output differs');
         }
         $history = $retrying('history', static fn () => $client->workflowHistory($id, $execution->runId), microtime(true) + 60);
         $events = $history['events'] ?? [];
         $sequences = array_column($events, 'sequence');
         if ($sequences !== range(1, count($events))) {
-            throw new RuntimeException('history sequences are not contiguous');
+            throw new MultinodeVerificationFailure('history sequences are not contiguous');
         }
         $types = array_column($events, 'event_type');
         $counts = array_count_values($types);
         $allowed = ['StartAccepted', 'WorkflowStarted', 'ActivityScheduled', 'ActivityStarted', 'ActivityCompleted', 'WorkflowCompleted'];
         if (($unexpected = array_diff(array_keys($counts), $allowed)) !== []) {
-            throw new RuntimeException('unexpected events '.implode(',', $unexpected));
+            throw new MultinodeVerificationFailure('unexpected events '.implode(',', $unexpected));
         }
         foreach (['WorkflowStarted', 'ActivityScheduled', 'ActivityCompleted', 'WorkflowCompleted'] as $once) {
             if (($counts[$once] ?? 0) !== 1) {
-                throw new RuntimeException($once.' recorded '.($counts[$once] ?? 0).' times');
+                throw new MultinodeVerificationFailure($once.' recorded '.($counts[$once] ?? 0).' times');
             }
         }
         $starts = array_values(array_filter($events, static fn (array $e): bool => $e['event_type'] === 'ActivityStarted'));
         $completion = array_values(array_filter($events, static fn (array $e): bool => $e['event_type'] === 'ActivityCompleted'))[0];
         if ($starts === [] || end($starts)['payload']['activity_attempt_id'] !== $completion['payload']['activity_attempt_id']) {
-            throw new RuntimeException('the completed activity attempt is not the last one started');
+            throw new MultinodeVerificationFailure('the completed activity attempt is not the last one started');
         }
         $order = array_values(array_intersect($types, ['WorkflowStarted', 'ActivityScheduled', 'ActivityCompleted', 'WorkflowCompleted']));
         if ($order !== ['WorkflowStarted', 'ActivityScheduled', 'ActivityCompleted', 'WorkflowCompleted']) {
-            throw new RuntimeException('events out of order');
+            throw new MultinodeVerificationFailure('events out of order');
         }
         $attemptsByWorkflow[count($starts)] = ($attemptsByWorkflow[count($starts)] ?? 0) + 1;
         $verified++;

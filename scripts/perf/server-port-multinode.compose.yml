@@ -60,15 +60,16 @@ services:
     environment:
       MYSQL_DATABASE: durable_workflow
       MYSQL_USER: workflow
-      MYSQL_PASSWORD: multinode-mysql
-      MYSQL_ROOT_PASSWORD: multinode-root
+      # The driver generates both secrets for each run.
+      MYSQL_PASSWORD: ${DW_MN_DB_PASSWORD:?Run through run-server-port-multinode.sh}
+      MYSQL_ROOT_PASSWORD: ${DW_MN_DB_ROOT_PASSWORD:?Run through run-server-port-multinode.sh}
     command: ["--innodb-flush-log-at-trx-commit=1", "--sync-binlog=1"]
     cpus: 1
     mem_limit: 1024m
     memswap_limit: 1024m
     restart: "no"
     healthcheck:
-      test: [CMD-SHELL, "MYSQL_PWD=multinode-mysql mysqladmin ping --silent -h 127.0.0.1 -u workflow"]
+      test: [CMD-SHELL, "MYSQL_PWD=$$MYSQL_PASSWORD mysqladmin ping --silent -h 127.0.0.1 -u workflow"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -79,7 +80,8 @@ services:
     environment:
       POSTGRES_DB: durable_workflow
       POSTGRES_USER: workflow
-      POSTGRES_PASSWORD: multinode-postgres
+      # The driver generates the secret for each run.
+      POSTGRES_PASSWORD: ${DW_MN_DB_PASSWORD:?Run through run-server-port-multinode.sh}
     cpus: 1
     mem_limit: 1024m
     memswap_limit: 1024m
