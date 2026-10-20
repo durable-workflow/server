@@ -875,10 +875,7 @@ async fn zero_is_immediate_and_later_policy_does_not_rebase_an_existing_query() 
     .await;
     assert_eq!(expired.0, StatusCode::GATEWAY_TIMEOUT, "{}", expired.1);
     assert_eq!(expired.1["reason"], "query_task_not_claimed");
-    assert_query_replay(
-        &original.claim,
-        poll(&changed, "authority-worker", "query").await,
-    );
+    assert!(poll(&changed, "authority-worker", "query").await.is_null());
     let complete_path = format!(
         "/api/worker/query-tasks/{}/complete",
         original.claim["query_task_id"].as_str().unwrap()
