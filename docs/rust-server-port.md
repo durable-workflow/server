@@ -24,10 +24,10 @@ Updated October 20, 2026.
   - [#517](https://github.com/durable-workflow/server/pull/517) designs the backup-first takeover.
 
   Main's 13-job parity run passed at `ee88ac6ba`.
-- **Open and qualified.** [#515](https://github.com/durable-workflow/server/pull/515)
-  retries the PHP reference's lock-pressure refusals in the probes. It passed
-  all 13 jobs and merges first.
-- **Open, waiting for #515.** Each of these failed or deferred parity only in
+- **Also merged.** [#515](https://github.com/durable-workflow/server/pull/515)
+  retries the PHP reference's lock-pressure refusals in the probes, after
+  passing all 13 parity jobs.
+- **Open, qualifying on main with #515.** Each of these failed or deferred parity only in
   steps #515 corrects or that it doesn't touch.
   - The query pair: [#499](https://github.com/durable-workflow/server/pull/499),
     then [#510](https://github.com/durable-workflow/server/pull/510).
@@ -45,7 +45,7 @@ Updated October 20, 2026.
 - **Parity surface.** With this branch, native serves 63 of published PHP's 173 API
   routes. The missing families are listed below under "API surface still
   missing".
-- **Next action.** Merge #515. Then run parity once on each stack top (#510,
+- **Next action.** Run parity once on each stack top (#510,
   #539 and the worker listing branch) and merge each stack. Then port history
   export, a large bundle the CLI and both SDKs use for replay. Multi-node
   qualification and packaging the native binary into the server image remain
