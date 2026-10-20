@@ -35,6 +35,7 @@ mod memos;
 pub mod mysql;
 mod namespaces;
 pub mod postgres;
+mod poll_readiness;
 mod previews;
 mod queries;
 mod query_authority;
