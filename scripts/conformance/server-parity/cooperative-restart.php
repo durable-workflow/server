@@ -8,7 +8,6 @@ use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Worker\CancellationDelivery;
 
 require __DIR__.'/vendor/autoload.php';
-require_once __DIR__.'/lock-pressure-transport.php';
 require __DIR__.'/observation-values.php';
 require __DIR__.'/cooperative-probe.php';
 
@@ -57,7 +56,7 @@ if ($mode === 'prepare') {
         $workflowId = 'root-restart-'.$outcome;
         $queue = 'root-restart-'.$outcome;
         $traffic = [];
-        $client = parityClient($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null,
+        $client = new Client($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null,
             transport: cooperativeObservedTransport($traffic), workerProtocolVersion: '1.20');
         $worker = $handle = $accepted = null;
         $guard = microtime(true) + 20;
@@ -119,7 +118,7 @@ $results = [];
 foreach (['deadline_expired', 'completed'] as $outcome) {
     $receipt = $receipts[$outcome];
     $traffic = [];
-    $client = parityClient($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null,
+    $client = new Client($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null,
         transport: cooperativeObservedTransport($traffic), workerProtocolVersion: '1.20');
     $handle = $client->workflowHandle($receipt['workflow_id'], $receipt['run_id']);
     $before = httpHistory($client, $receipt['workflow_id'], $receipt['run_id']);
@@ -189,7 +188,7 @@ foreach (['deadline_expired', 'completed'] as $outcome) {
     }
     $duplicate = $client->requestWorkflowCancellation($receipt['workflow_id'], 'post-terminal replacement', 3600, $receipt['run_id']);
     assertCooperativeRecovery($duplicate['duplicate'] === true && $duplicate['cancellation_request']['cleanup_deadline_at'] === $receipt['context']['cleanup_deadline_at'], 'Terminal duplicate changed the original budget.');
-    $fresh = parityClient($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null, workerProtocolVersion: '1.20');
+    $fresh = new Client($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null, workerProtocolVersion: '1.20');
     assertCooperativeRecovery(sameCooperativeValue($events, httpHistory($fresh, $receipt['workflow_id'], $receipt['run_id'])), 'Late calls or fresh reads changed terminal history.');
     try {
         $fresh->workflowHandle($receipt['workflow_id'], $receipt['run_id'])->resultOfSelectedRun(1);

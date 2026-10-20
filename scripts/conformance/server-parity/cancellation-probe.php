@@ -40,7 +40,7 @@ function cancellationReceipt(callable $submit): array
 function httpCancellationObservation(array $fixture, string $workflowId, string $namespace, string $queue, string $url): array
 {
     $polls = $completions = $activityPolls = $activityOutcomes = [];
-    $client = parityClient($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null,
+    $client = new Client($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null,
         transport: observedChildTransport($polls, $completions, $activityPolls, $activityOutcomes));
     $phase = $fixture['immediate_cancellation']['phase'];
     $reason = $fixture['immediate_cancellation']['reason'];
@@ -113,7 +113,7 @@ function httpCancellationObservation(array $fixture, string $workflowId, string 
             $task['activity_attempt_id'], $task['lease_owner'], $fixture['input']));
     }
     // A separate published Client reloads the same durable run and history.
-    $fresh = parityClient($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null);
+    $fresh = new Client($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null);
     $inspectionWorker = $workflowId.':inspection';
     $fresh->registerWorker($inspectionWorker, $queue, [$fixture['workflow_type']], ['parity.v1.cancel_activity']);
     $remaining = ['workflow' => $fresh->pollWorkflowTask($inspectionWorker, $queue, 0),

@@ -70,7 +70,7 @@ function selectedRunSignalHttpObservation(array $fixture, array $options): array
         if (! preg_match('#^http://127\.0\.0\.1:[0-9]+$#', $url)) {
             throw new RuntimeException('Selected-run control observer failed to bind.');
         }
-        $admin = parityClient($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
+        $admin = new Client($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
         foreach ($fixtures as $index => $runFixture) {
             $checkpoint('namespace_setup_'.$index);
             try {
@@ -84,7 +84,7 @@ function selectedRunSignalHttpObservation(array $fixture, array $options): array
             $state['administration'][] = ['created' => $created, 'namespace' => $namespace->raw];
             $paths[$index] = tempnam(sys_get_temp_dir(), 'parity-selected-run-');
             file_put_contents($paths[$index], json_encode($runFixture, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
-            $clients[$index] = parityClient($options['url'], namespace: $runFixture['namespace'], token: getenv('DW_PARITY_TOKEN') ?: null);
+            $clients[$index] = new Client($options['url'], namespace: $runFixture['namespace'], token: getenv('DW_PARITY_TOKEN') ?: null);
             $start = microtime(true);
             $deadline = $start + 35;
             $state['run_budgets'][$index] = ['started_at_unix' => $start, 'deadline_at_unix' => $deadline];

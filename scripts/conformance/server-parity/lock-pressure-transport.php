@@ -44,27 +44,3 @@ final class LockPressurePollRetryTransport implements Transport
         }
     }
 }
-
-/**
- * Creates an SDK client for a parity probe with the documented poll retry
- * applied to its transport, keeping any transport the caller supplies. Any
- * retries are reported once on stderr when the process exits, so recorded
- * observations stay comparable across targets.
- */
-function parityClient(mixed ...$arguments): \DurableWorkflow\Client
-{
-    static $transports = [];
-    $transport = new LockPressurePollRetryTransport($arguments['transport'] ?? null);
-    if ($transports === []) {
-        register_shutdown_function(static function () use (&$transports): void {
-            $retries = array_merge(...array_map(static fn (LockPressurePollRetryTransport $used): array => $used->retries, $transports));
-            if ($retries !== []) {
-                fwrite(STDERR, json_encode(['lock_pressure_poll_retries' => $retries], JSON_THROW_ON_ERROR).PHP_EOL);
-            }
-        });
-    }
-    $transports[] = $transport;
-    $arguments['transport'] = $transport;
-
-    return new \DurableWorkflow\Client(...$arguments);
-}

@@ -8,7 +8,7 @@ function finishHttpWaitingHistory(Client $admin, array $fixture, string $workflo
 {
     $definition = $fixture['waiting_for_history'];
     $requests = [];
-    $client = parityClient($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null,
+    $client = new Client($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null,
         transport: namespaceTransport($requests));
     $workerId = $workflowId.'-waiting-worker';
     $peerId = $workflowId.$definition['peer_suffix'];

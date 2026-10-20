@@ -98,7 +98,7 @@ function finishHttpNamespaces(Client $admin, array $fixture, string $workflowId,
             'before' => $before, 'after' => namespaceHttpRun($clients[0], $ids[0], $handles[0]->selectedRunId)];
     };
     foreach ($names as $index => $name) {
-        $clients[] = parityClient($url, namespace: $name, token: getenv('DW_PARITY_TOKEN') ?: null,
+        $clients[] = new Client($url, namespace: $name, token: getenv('DW_PARITY_TOKEN') ?: null,
             transport: namespaceTransport($state['worker_receipts'][$index], $index === 0 ? $beforeCompletion : null));
         $state['registrations'][] = $clients[$index]->registerWorker($state['worker_id'], $queue,
             [$definition['peer_workflow_type']], ['parity.v1.echo_activity']);

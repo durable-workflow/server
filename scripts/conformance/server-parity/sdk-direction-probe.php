@@ -73,7 +73,7 @@ function sdkDirectionHttpObservation(array $fixture, array $options, ?Closure $a
     $spec = $fixture[$directionKey];
     $childWorkflowId = $childRunId = '';
     $namespace = $fixture['namespace'] ?? 'default';
-    $client = parityClient($options['url'], namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null);
+    $client = new Client($options['url'], namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null);
     $deadline = $scenarioDeadline ?? microtime(true) + 35;
     $observerStart = null;
     try {
@@ -81,7 +81,7 @@ function sdkDirectionHttpObservation(array $fixture, array $options, ?Closure $a
         if (! preg_match('#^http://127\\.0\\.0\\.1:[0-9]+$#', $url)) {
             throw new RuntimeException('SDK observer did not bind its local port.');
         }
-        $startClient = $signalDirection ? parityClient($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null) : null;
+        $startClient = $signalDirection ? new Client($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null) : null;
         foreach ($spec['phase_order'] as $phase) {
             $language = $signalDirection ? $spec[in_array($phase, ['signal-1', 'signal-2'], true) ? 'client' : 'workflow']
                 : ($timerAuthor ? $spec['language'] : ($childDirection ? $spec[$phase === 'child' ? 'child' : 'parent']

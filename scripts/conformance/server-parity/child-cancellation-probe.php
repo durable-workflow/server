@@ -54,7 +54,7 @@ function finishHttpChildCancellation(Client $client, string $parentId, string $p
     $state['terminal_duplicate'] = cancellationReceipt(static fn (): array => $client->cancelWorkflow($id, 'post-parent-completion replacement', $runId));
     $state['child_history_after_terminal_duplicate'] = httpHistory($client, $id, $runId);
     $state['parent_history_after_terminal_duplicate'] = httpHistory($client, $parentId, $parentRunId);
-    $fresh = parityClient($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null);
+    $fresh = new Client($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null);
     $state['fresh_child'] = $fresh->describeWorkflow($id, $runId)->raw;
     $state['fresh_child_history'] = httpHistory($fresh, $id, $runId);
     $state['fresh_parent'] = $fresh->describeWorkflow($parentId, $parentRunId)->raw;
