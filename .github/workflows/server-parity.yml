@@ -377,7 +377,11 @@ jobs:
       - name: Bootstrap independent published PHP and native MySQL databases
         run: |
           set -euo pipefail
-          trap 'bash scripts/conformance/server-parity/rust-test-failures.sh' ERR
+          # Failed Rust tests are printed from their evidence files into this step's log.
+          rust_test_failures() {
+            bash scripts/conformance/server-parity/rust-test-failures.sh
+          }
+          trap rust_test_failures ERR
           mkdir -p cargo-home rust-target parity-evidence mysql-state
           chmod 0777 parity-evidence
           docker network create "$RESOURCE_SCOPE"
@@ -857,7 +861,11 @@ jobs:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: |
           set -euo pipefail
-          trap 'bash scripts/conformance/server-parity/rust-test-failures.sh' ERR
+          # Failed Rust tests are printed from their evidence files into this step's log.
+          rust_test_failures() {
+            bash scripts/conformance/server-parity/rust-test-failures.sh
+          }
+          trap rust_test_failures ERR
           mkdir -p cargo-home rust-target parity-evidence pg-state
           chmod 0777 parity-evidence
           docker network create "$RESOURCE_SCOPE"
@@ -1366,7 +1374,11 @@ jobs:
       - name: Execute official Rust codec and cross-decode with published PHP
         run: |
           set -euo pipefail
-          trap 'bash scripts/conformance/server-parity/rust-test-failures.sh' ERR
+          # Failed Rust tests are printed from their evidence files into this step's log.
+          rust_test_failures() {
+            bash scripts/conformance/server-parity/rust-test-failures.sh
+          }
+          trap rust_test_failures ERR
           mkdir -p cargo-home rust-target parity-evidence
           # Compiling the library tests peaks near 2.5 GB; a 2 GB limit OOM-killed rustc (exit 101).
           docker run --rm --user="$(id -u):$(id -g)" --cpus=2 --memory=4g --memory-swap=4g \
