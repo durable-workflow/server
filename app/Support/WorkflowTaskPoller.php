@@ -12,7 +12,6 @@ use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunTimerTask;
-use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
@@ -42,6 +41,7 @@ final class WorkflowTaskPoller
         private readonly PollRequestLeaseBinding $pollLeaseBindings,
         private readonly WorkflowUpdateValidationTaskBroker $updateValidationTasks,
         private readonly WorkflowTaskKindSelector $taskKindSelector,
+        private readonly WorkflowDefinitionRouting $definitionRouting,
     ) {}
 
     /**
@@ -749,7 +749,6 @@ final class WorkflowTaskPoller
                                 historyPageSize: $historyPageSize,
                                 acceptHistoryEncoding: $acceptHistoryEncoding,
                                 supportedWorkflowTypes: $supportedWorkflowTypes,
-                                workflowDefinitionFingerprints: $workflowDefinitionFingerprints,
                                 workerPollFence: $workerPollFence,
                             ),
                         ),
@@ -798,7 +797,6 @@ final class WorkflowTaskPoller
                                     historyPageSize: $historyPageSize,
                                     acceptHistoryEncoding: $acceptHistoryEncoding,
                                     supportedWorkflowTypes: $supportedWorkflowTypes,
-                                    workflowDefinitionFingerprints: $workflowDefinitionFingerprints,
                                     workerPollFence: $workerPollFence,
                                 ),
                             ),
@@ -968,7 +966,6 @@ final class WorkflowTaskPoller
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
         array $supportedWorkflowTypes = [],
-        array $workflowDefinitionFingerprints = [],
         array $workerPollFence = [],
     ): ?array {
         $readyTasks = $this->pollReplayEligibleReadyTasks(
@@ -1041,9 +1038,11 @@ final class WorkflowTaskPoller
             }
 
             if (! $this->matchesRecordedWorkflowDefinition(
+                $namespace,
+                $leaseOwner,
                 $runId,
-                $readyTask['workflow_type'] ?? null,
-                $workflowDefinitionFingerprints,
+                $taskQueue,
+                $effectiveCompatibility,
             )) {
                 continue;
             }
@@ -2325,63 +2324,25 @@ final class WorkflowTaskPoller
             ->where('worker_id', $workerId)
             ->first();
 
-        if (! $worker instanceof WorkerRegistration || ! WorkerPollFence::isFresh($worker)) {
-            return false;
-        }
-
-        $capabilities = is_array($worker->capabilities)
-            ? array_values(array_filter(
-                $worker->capabilities,
-                static fn (mixed $capability): bool => is_string($capability) && trim($capability) !== '',
-            ))
-            : [];
-
         $run = WorkflowRun::query()->where('namespace', $namespace)->find($runId);
-        if ($run instanceof WorkflowRun && is_string($run->cancellation_request_command_id)
-            && ! CooperativeCancellationPolicy::supports($capabilities, $protocolVersion)) {
-            return false;
-        }
-        if ($run instanceof WorkflowRun && is_string($run->cancellation_request_command_id)
-            && NexusCooperativeCancellationPolicy::requiresCapabilityForReplay($run)
-            && ! NexusCooperativeCancellationPolicy::supports($capabilities, $protocolVersion)) {
-            return false;
-        }
 
-        return PreparedLocalActivityPolicy::canReplayRun($runId, $capabilities, $protocolVersion)
-            && WorkflowMetadataCapabilityPolicy::canReplayRun(
-                $runId,
-                $capabilities,
-                $protocolVersion,
-            );
+        return $worker instanceof WorkerRegistration && $run instanceof WorkflowRun
+            && WorkflowReplayEligibility::allows($worker, $run, $protocolVersion);
     }
 
-    /** @param array<string, string> $workflowDefinitionFingerprints */
     private function matchesRecordedWorkflowDefinition(
+        string $namespace,
+        string $workerId,
         string $runId,
-        mixed $workflowType,
-        array $workflowDefinitionFingerprints,
+        string $taskQueue,
+        ?string $requiredCompatibility,
     ): bool {
-        $started = WorkflowHistoryEvent::query()
-            ->where('workflow_run_id', $runId)
-            ->where('event_type', 'WorkflowStarted')
-            ->orderBy('sequence')
-            ->first();
+        $run = WorkflowRun::query()->where('namespace', $namespace)->find($runId);
+        $worker = WorkerRegistration::query()->where('namespace', $namespace)
+            ->where('worker_id', $workerId)->first();
 
-        if (($started?->payload['workflow_definition_fingerprint_source'] ?? null) !== 'worker') {
-            return true;
-        }
-
-        $recorded = $this->nonEmptyString($started?->payload['workflow_definition_fingerprint'] ?? null);
-
-        if ($recorded === null) {
-            return false;
-        }
-
-        $advertised = is_string($workflowType)
-            ? $this->nonEmptyString($workflowDefinitionFingerprints[$workflowType] ?? null)
-            : null;
-
-        return $advertised !== null && hash_equals($recorded, $advertised);
+        return $run instanceof WorkflowRun && $worker instanceof WorkerRegistration
+            && $this->definitionRouting->forWorker($run, $worker, $taskQueue, $requiredCompatibility)['allowed'];
     }
 
     /**
