@@ -933,11 +933,17 @@ where
         } else {
             None
         };
+        // Only the first probe claims under the lock unconditionally. Later
+        // probes, on a same-node wake or a timed read that also observes
+        // other server processes, claim only after a lock-free read finds
+        // something to claim or refuse.
+        let mut first = true;
         loop {
-            // Register the notification before probing; periodic probing also
-            // observes work committed by an independent process.
+            // Register the notification before probing.
             let wake = self.wake.notified();
-            if let Some(task) = self.claim(&body, kind, protocol_version).await? {
+            if (std::mem::take(&mut first) || self.task_poll_ready(&body, kind).await?)
+                && let Some(task) = self.claim(&body, kind, protocol_version).await?
+            {
                 return Ok(
                     json!({"task": task, "poll_status": "task", "server_capabilities": capabilities()}),
                 );
@@ -956,7 +962,10 @@ where
                     json!({"task":null,"poll_status":"task_queue_changed","server_capabilities":capabilities()}),
                 );
             }
-            tokio::select! { _ = wake => {}, _ = tokio::time::sleep(Duration::from_millis(50)) => {} }
+            tokio::select! {
+                _ = wake => {},
+                _ = tokio::time::sleep(super::poll_readiness::READ_INTERVAL) => {},
+            }
         }
     }
 

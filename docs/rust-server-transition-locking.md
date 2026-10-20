@@ -26,6 +26,15 @@ read-only snapshot (`Store::begin_read()`, `READ_SNAPSHOT_BEGIN` in
 `backend.rs`). Control-plane reads such as describe and run history query the
 pool without a transaction.
 
+A held long poll takes the lock for its first probe, and afterwards only when
+a lock-free read finds something to claim or refuse: an eligible task (or
+query), a receipt for the poll's own request ID, or a removed, moved or
+replaced registration (`poll_readiness.rs`). The read runs at once when a
+commit on the same node wakes the poll, and otherwise every 50 ms, which is
+how a poll observes another server process. An idle poll therefore neither
+waits for the lock nor delays transitions, and an unrelated commit does not
+send every waiting poll to the lock.
+
 ## Measured cost
 
 Under the CPU deadline-health profile on a local MySQL 8.0 cell, per-step

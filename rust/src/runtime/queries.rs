@@ -354,14 +354,19 @@ where
         } else {
             None
         };
+        // Only the first probe claims under the lock unconditionally; later
+        // probes claim after a lock-free read finds something to claim or refuse.
+        let mut first = true;
         loop {
             let wake = self.wake.notified();
-            match self.claim_query(&body, config, &proof).await? {
-                QueryClaim::Task(task) => return Ok(poll_result(Some(task), "task")),
-                QueryClaim::StaleWorker => {
-                    return Ok(poll_result(None, "stale_worker_registration"));
+            if std::mem::take(&mut first) || self.query_poll_ready(&body, config, &proof).await? {
+                match self.claim_query(&body, config, &proof).await? {
+                    QueryClaim::Task(task) => return Ok(poll_result(Some(task), "task")),
+                    QueryClaim::StaleWorker => {
+                        return Ok(poll_result(None, "stale_worker_registration"));
+                    }
+                    QueryClaim::Empty => {}
                 }
-                QueryClaim::Empty => {}
             }
             if tokio::time::Instant::now() >= deadline {
                 return Ok(poll_result(None, "timeout"));
@@ -375,11 +380,14 @@ where
                     json!({"task":null,"poll_status":"task_queue_changed","server_capabilities":super::store::capabilities()}),
                 );
             }
-            tokio::select! { _ = wake => {}, _ = tokio::time::sleep(Duration::from_millis(50)) => {} }
+            tokio::select! {
+                _ = wake => {},
+                _ = tokio::time::sleep(super::poll_readiness::READ_INTERVAL) => {},
+            }
         }
     }
 
-    async fn query_worker_proof<'e, E>(
+    pub(super) async fn query_worker_proof<'e, E>(
         executor: E,
         namespace: &str,
         owner: &str,
