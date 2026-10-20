@@ -38,7 +38,7 @@ case "$backend" in
   *) exit 2 ;;
 esac
 fi
-if test -f "$evidence/restore-owned.txt" && test "$(cat "$evidence/restore-owned.txt")" = "$RESOURCE_SCOPE"; then
+if [[ -f "$evidence/restore-owned.txt" && "$(cat "$evidence/restore-owned.txt")" == "$RESOURCE_SCOPE" ]]; then
 case "$backend" in
   mysql)
     docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint mysql "$MYSQL_IMAGE" \

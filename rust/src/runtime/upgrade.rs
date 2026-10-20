@@ -137,6 +137,58 @@ async fn close(future: impl Future<Output = std::result::Result<(), sqlx::Error>
     Ok(())
 }
 
+/// A dedicated MySQL or MariaDB source connection, with its backend name.
+/// Lock waits stay short and transactions are repeatable reads. The client
+/// deadline drops the socket, but the server would keep a running statement,
+/// its metadata locks and its snapshot, so `statement_seconds` bounds each
+/// statement server-side; zero leaves that to the client deadline. With `utc`,
+/// TIMESTAMP values render in UTC.
+async fn mysql_source(
+    options: MySqlConnectOptions,
+    deadline: Instant,
+    utc: bool,
+    statement_seconds: u32,
+) -> Result<(MySqlConnection, &'static str)> {
+    let mut connection = timeout_at(
+        deadline,
+        MySqlConnection::connect_with(&mysql::source_options(options)),
+    )
+    .await
+    .map_err(|_| expired())??;
+    let setup = timeout_at(deadline, async {
+        let version: String = sqlx::query_scalar("SELECT VERSION()")
+            .fetch_one(&mut connection)
+            .await?;
+        let (backend, limit) = if version.contains("MariaDB") {
+            ("mariadb", format!("max_statement_time={statement_seconds}"))
+        } else {
+            let milliseconds = u64::from(statement_seconds) * 1000;
+            ("mysql", format!("max_execution_time={milliseconds}"))
+        };
+        let zone = if utc { "time_zone='+00:00'," } else { "" };
+        sqlx::query(AssertSqlSafe(format!(
+            "SET {zone}sql_quote_show_create=1,lock_wait_timeout=5,innodb_lock_wait_timeout=5,{limit}"
+        )))
+        .execute(&mut connection)
+        .await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            .execute(&mut connection)
+            .await?;
+        Ok(backend)
+    })
+    .await
+    .map_err(|_| expired())
+    .and_then(|result| result);
+    match setup {
+        Ok(backend) => Ok((connection, backend)),
+        Err(error) => {
+            // The setup failure explains more than a failed close would.
+            let _ = close(connection.close()).await;
+            Err(error)
+        }
+    }
+}
+
 fn report(
     backend: &str,
     catalog: &impl Serialize,
@@ -450,33 +502,8 @@ async fn inspect_mysql_inner(
 ) -> Result<Value> {
     queue_config(queues)?;
     let deadline = Instant::now() + BUDGET;
-    let mut connection = timeout_at(
-        deadline,
-        MySqlConnection::connect_with(&mysql::source_options(options)),
-    )
-    .await
-    .map_err(|_| expired())??;
+    let (mut connection, backend) = mysql_source(options, deadline, false, 30).await?;
     let result = timeout_at(deadline, async {
-        let version: String = sqlx::query_scalar("SELECT VERSION()")
-            .fetch_one(&mut connection)
-            .await?;
-        let backend = if version.contains("MariaDB") {
-            "mariadb"
-        } else {
-            "mysql"
-        };
-        // The client deadline drops the socket, but the server would keep a running
-        // statement, its metadata locks and its snapshot. Bound them server-side.
-        sqlx::query(if backend == "mariadb" {
-            "SET sql_quote_show_create=1,lock_wait_timeout=5,innodb_lock_wait_timeout=5,max_statement_time=30"
-        } else {
-            "SET sql_quote_show_create=1,lock_wait_timeout=5,innodb_lock_wait_timeout=5,max_execution_time=30000"
-        })
-        .execute(&mut connection)
-        .await?;
-        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-            .execute(&mut connection)
-            .await?;
         let mut tx = connection.begin_with("START TRANSACTION READ ONLY").await?;
         let (catalog, layout) = mysql::php_source_catalog(&mut tx).await?;
         let tables: Vec<String> = catalog.iter().map(|(name, _)| name.clone()).collect();
