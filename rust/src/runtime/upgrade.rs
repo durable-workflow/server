@@ -1,6 +1,7 @@
 //! Read-only PHP source inventory. This command never grants takeover authority.
 pub mod external_reference;
 pub mod fingerprint;
+pub mod takeover;
 mod payload_scan;
 pub mod queue;
 pub mod queue_binding;
@@ -304,33 +305,9 @@ async fn inspect_sqlite_inner(
     let mut connection = open_sqlite_source(path, deadline).await?;
     let result = timeout_at(deadline, async {
         let mut tx = connection.begin().await?;
-        let (catalog, layout) = schema::php_source_catalog(&mut tx).await?;
-        let tables: Vec<String> = catalog
-            .iter()
-            .filter(|(kind, _, _, _)| kind == "table")
-            .map(|(_, name, _, _)| name.clone())
-            .collect();
-        let counts = count_tables!(tx, tables, '"');
-        let queue_inspection = match queues {
-            Some(config) => {
-                Some(queue_scan::inspect::<sqlx::Sqlite>(&mut *tx, config, counts["jobs"]).await?)
-            }
-            None => None,
-        };
-        let payload_inspection = if payloads {
-            Some(payload_scan::inspect::<sqlx::Sqlite>(&mut *tx, &counts).await?)
-        } else {
-            None
-        };
+        let report = sqlite_inventory(&mut tx, queues, payloads).await;
         tx.rollback().await?;
-        report(
-            "sqlite",
-            &catalog,
-            layout,
-            counts,
-            queue_inspection,
-            payload_inspection,
-        )
+        report
     })
     .await
     .map_err(|_| expired())
@@ -339,8 +316,52 @@ async fn inspect_sqlite_inner(
     result
 }
 
+/// The SQLite inspection report, read inside the caller's transaction.
+pub(super) async fn sqlite_inventory(
+    tx: &mut SqliteConnection,
+    queues: Option<&QueueSourceConfig<'_>>,
+    payloads: bool,
+) -> Result<Value> {
+    let (catalog, layout) = schema::php_source_catalog(&mut *tx).await?;
+    let tables: Vec<String> = catalog
+        .iter()
+        .filter(|(kind, _, _, _)| kind == "table")
+        .map(|(_, name, _, _)| name.clone())
+        .collect();
+    let counts = count_tables!(tx, tables, '"');
+    let queue_inspection = match queues {
+        Some(config) => {
+            Some(queue_scan::inspect::<sqlx::Sqlite>(&mut *tx, config, counts["jobs"]).await?)
+        }
+        None => None,
+    };
+    let payload_inspection = if payloads {
+        Some(payload_scan::inspect::<sqlx::Sqlite>(&mut *tx, &counts).await?)
+    } else {
+        None
+    };
+    report(
+        "sqlite",
+        &catalog,
+        layout,
+        counts,
+        queue_inspection,
+        payload_inspection,
+    )
+}
+
 /// Opens a qualified rollback-journal source file read-only.
 pub(super) async fn open_sqlite_source(path: &str, deadline: Instant) -> Result<SqliteConnection> {
+    open_sqlite_file(path, deadline, false).await
+}
+
+/// Opens a qualified rollback-journal source file, writable only for takeover.
+/// It keeps the rollback journal: native enables WAL itself after takeover.
+pub(super) async fn open_sqlite_file(
+    path: &str,
+    deadline: Instant,
+    writable: bool,
+) -> Result<SqliteConnection> {
     if path.is_empty() || path.contains(['?', ':']) {
         return Err(refuse(
             StatusCode::BAD_REQUEST,
@@ -396,7 +417,8 @@ pub(super) async fn open_sqlite_source(path: &str, deadline: Instant) -> Result<
         SqliteConnection::connect_with(
             &SqliteConnectOptions::new()
                 .filename(path)
-                .read_only(true)
+                .read_only(!writable)
+                .journal_mode(sqlx::sqlite::SqliteJournalMode::Delete)
                 .create_if_missing(false)
                 .foreign_keys(false),
         ),

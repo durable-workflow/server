@@ -50,6 +50,9 @@ $expect($request('POST', '/api/worker/register', ['worker_id' => $worker, 'task_
 $value = [9007199254740993, null, 'upgradeλ'];
 $envelope = ['codec' => 'avro', 'blob' => Avro::serialize([$value])];
 $poll = ['worker_id' => $worker, 'task_queue' => $prefix, 'timeout_seconds' => 0];
+// A takeover run resumes this timer under native, so it may choose a shorter delay.
+$timerSeconds = (int) (getenv('DW_PARITY_UPGRADE_TIMER_SECONDS') ?: 600);
+$check($timerSeconds >= 30 && $timerSeconds <= 600, 'Unsupported original timer delay');
 $originals = [];
 foreach (['activity', 'timer'] as $kind) {
     $id = $prefix.'-'.$kind;
@@ -64,7 +67,7 @@ foreach (['activity', 'timer'] as $kind) {
         ? ['type' => 'schedule_activity', 'activity_type' => 'parity.upgrade_activity', 'arguments' => $envelope,
             'retry_policy' => ['max_attempts' => 1, 'backoff_seconds' => []],
             'start_to_close_timeout' => 600, 'schedule_to_close_timeout' => 900]
-        : ['type' => 'start_timer', 'delay_seconds' => 600];
+        : ['type' => 'start_timer', 'delay_seconds' => $timerSeconds];
     $expect($request('POST', '/api/worker/workflow-tasks/'.$task['task_id'].'/complete', [
         'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
         'commands' => [$command],

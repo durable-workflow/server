@@ -855,3 +855,137 @@ async fn frozen_layout_is_reported_by_inspection_and_fingerprint() {
         "frozen"
     );
 }
+
+/// The frozen test layout moved to PHP 2.9.7's, by the same column, table and
+/// index changes PHP's migrations make. Inspection must call it php-2.9.7.
+async fn php297_layout() -> (tempfile::TempDir, String) {
+    let (directory, path) = php_layout().await;
+    for statement in [
+        // The frozen test layout's private job is not a recognized delivery.
+        "DELETE FROM jobs",
+        r#"ALTER TABLE "workflow_worker_registrations" ADD COLUMN "registration_token" varchar"#,
+        r#"CREATE TABLE "workflow_worker_registration_incarnations" ("token" varchar not null, "namespace" varchar not null, "worker_id" varchar not null, "status" varchar not null, "recovered_workflow_task_count" integer not null default '0', "finished_at" datetime, "created_at" datetime, "updated_at" datetime, primary key ("token"))"#,
+        r#"CREATE INDEX "workflow_worker_registration_incarnations_finished_at_index" on "workflow_worker_registration_incarnations" ("finished_at")"#,
+        r#"CREATE INDEX "dw_worker_incarnation_scope_idx" on "workflow_worker_registration_incarnations" ("namespace", "worker_id")"#,
+        r#"ALTER TABLE "workflow_service_calls" ADD COLUMN "call_deadline_at" datetime"#,
+        r#"CREATE INDEX "wf_service_calls_deadline_idx" on "workflow_service_calls" ("status", "call_deadline_at")"#,
+        r#"ALTER TABLE "workflow_tasks" ADD COLUMN "queue_delivery_reference" text"#,
+    ] {
+        mutate(&path, statement).await;
+    }
+    (directory, path)
+}
+
+async fn backup_fingerprint(path: &str) -> String {
+    fingerprint::fingerprint_sqlite(path).await.unwrap()["fingerprint"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn takeover_converts_a_php_297_database_that_native_then_opens() {
+    let (_directory, path) = php297_layout().await;
+    assert_eq!(inspect_sqlite(&path).await.unwrap()["source_layout"], "php-2.9.7");
+    for statement in [
+        "INSERT INTO workflow_worker_registrations(worker_id,namespace,task_queue,runtime,registration_token,created_at,updated_at) VALUES ('current','default','q','php','0123456789abcdef0123456789abcdef','2026-10-20 09:00:00','2026-10-20 09:00:00')",
+        "INSERT INTO workflow_worker_registrations(worker_id,namespace,task_queue,runtime,created_at,updated_at) VALUES ('older','default','q','php','2026-10-20 09:00:00','2026-10-20 09:00:00')",
+        "INSERT INTO workflow_worker_registration_incarnations VALUES ('0123456789abcdef0123456789abcdef','default','current','active',0,NULL,'2026-10-20 09:00:00.000000','2026-10-20 09:00:00.000000')",
+        "INSERT INTO workflow_worker_registration_incarnations VALUES ('11111111111111111111111111111111','default','current','superseded',0,'2026-10-20 08:00:00.000000','2026-10-20 07:00:00.000000','2026-10-20 08:00:00.000000')",
+        "INSERT INTO workflow_worker_registration_incarnations VALUES ('22222222222222222222222222222222','default','gone','deregistered',3,'2026-10-20 08:30:00.000000','2026-10-20 07:00:00.000000','2026-10-20 08:30:00.000000')",
+    ] {
+        mutate(&path, statement).await;
+    }
+    let fingerprint = backup_fingerprint(&path).await;
+    let report = takeover::take_over_sqlite(&path, &fingerprint, &queue_config())
+        .await
+        .unwrap();
+    assert_eq!(report["status"], "taken_over", "{report}");
+    assert_eq!(report["source_layout"], "php-2.9.7");
+    assert_eq!(report["converted"]["incarnations_copied"], 3, "{report}");
+    assert_eq!(report["converted"]["incarnations_created"], 1, "{report}");
+    let mut connection = SqliteConnection::connect(&format!("sqlite://{path}")).await.unwrap();
+    let incarnations: Vec<(String, String, String, Option<i64>, Option<String>)> = sqlx::query_as(
+        "SELECT token,worker_id,status,recovered_workflow_task_count,finished_at FROM dw_worker_registration_incarnations ORDER BY worker_id,status",
+    )
+    .fetch_all(&mut connection)
+    .await
+    .unwrap();
+    assert_eq!(incarnations.len(), 4, "{incarnations:?}");
+    // The current worker keeps its PHP token; the retired ones keep their state.
+    assert!(incarnations.contains(&(
+        "0123456789abcdef0123456789abcdef".into(),
+        "current".into(),
+        "active".into(),
+        None,
+        None
+    )));
+    assert!(incarnations.iter().any(|row| row.1 == "gone" && row.2 == "deregistered" && row.3 == Some(3)));
+    assert!(incarnations.iter().any(|row| row.1 == "current" && row.2 == "superseded" && row.3.is_none() && row.4.is_some()));
+    assert!(incarnations.iter().any(|row| row.1 == "older" && row.2 == "active" && row.0.len() == 32));
+    connection.close().await.unwrap();
+    let runtime = crate::runtime::Runtime::open(&path, "test-token".into()).await.unwrap();
+    runtime.close().await;
+    let mut connection = SqliteConnection::connect(&format!("sqlite://{path}")).await.unwrap();
+    let marker: (String, i64) = sqlx::query_as("SELECT engine,version FROM dw_server_schema")
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+    assert_eq!(marker, ("rust-development".to_owned(), 4));
+    connection.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn takeover_of_the_frozen_layout_adds_only_native_relations() {
+    let (_directory, path) = php_layout().await;
+    mutate(&path, "DELETE FROM jobs").await;
+    let fingerprint = backup_fingerprint(&path).await;
+    let report = takeover::take_over_sqlite(&path, &fingerprint, &queue_config())
+        .await
+        .unwrap();
+    assert_eq!(report["source_layout"], "frozen", "{report}");
+    let runtime = crate::runtime::Runtime::open(&path, "test-token".into()).await.unwrap();
+    runtime.close().await;
+}
+
+#[tokio::test]
+async fn takeover_refusals_leave_the_php_database_unchanged() {
+    let (_directory, path) = php297_layout().await;
+    let fingerprint = backup_fingerprint(&path).await;
+    let original = std::fs::read(&path).unwrap();
+    reason(
+        takeover::take_over_sqlite(&path, &format!("sha256:{}", "0".repeat(64)), &queue_config()).await,
+        "upgrade_backup_fingerprint_mismatch",
+    );
+    reason(
+        takeover::take_over_sqlite(&path, "not-a-fingerprint", &queue_config()).await,
+        "upgrade_backup_fingerprint_required",
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    // A write after the backup changes the digest, so the old one is refused.
+    mutate(&path, "INSERT INTO migrations(migration,batch) VALUES ('after-backup',9)").await;
+    reason(
+        takeover::take_over_sqlite(&path, &fingerprint, &queue_config()).await,
+        "upgrade_backup_fingerprint_mismatch",
+    );
+    for (statement, expected) in [
+        (
+            "INSERT INTO workflow_service_calls(id,endpoint_name,service_name,operation_name,status,operation_mode) VALUES ('call','e','s','o','accepted','sync')",
+            "upgrade_source_service_calls_unsupported",
+        ),
+        (
+            "INSERT INTO runtime_external_payloads(id,namespace,storage_uri,storage_uri_sha256,codec,sha256,size_bytes) VALUES ('p','default','s3://b/k','x','avro','y',1)",
+            "upgrade_source_external_payloads_unsupported",
+        ),
+    ] {
+        let (_directory, path) = php297_layout().await;
+        mutate(&path, statement).await;
+        let fingerprint = backup_fingerprint(&path).await;
+        let before = std::fs::read(&path).unwrap();
+        reason(
+            takeover::take_over_sqlite(&path, &fingerprint, &queue_config()).await,
+            expected,
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before, "{expected}");
+    }
+}

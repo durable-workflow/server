@@ -16,7 +16,8 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use sqlx::{
-    AssertSqlSafe, Connection, MySqlConnection, PgConnection, Row, mysql::MySqlConnectOptions,
+    AssertSqlSafe, Connection, MySqlConnection, PgConnection, Row, SqliteConnection,
+    mysql::MySqlConnectOptions,
     postgres::PgConnectOptions,
 };
 use std::{collections::BTreeMap, time::Duration};
@@ -135,46 +136,52 @@ pub async fn fingerprint_sqlite(path: &str) -> Result<Value> {
     let result = timeout_at(deadline, async {
         // One deferred read transaction keeps one snapshot of the file.
         let mut tx = connection.begin().await?;
-        let (catalog, layout) = schema::php_source_catalog(&mut tx).await?;
-        let mut digest = Digest::new("sqlite", &catalog)?;
-        for (_, table, _, _) in catalog.iter().filter(|(kind, _, _, _)| kind == "table") {
-            let table = identifier(table)?;
-            let columns: Vec<String> =
-                sqlx::query_scalar("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
-                    .bind(table)
-                    .fetch_all(&mut *tx)
-                    .await?;
-            let key: Vec<String> =
-                sqlx::query_scalar("SELECT name FROM pragma_table_info(?1) WHERE pk>0 ORDER BY pk")
-                    .bind(table)
-                    .fetch_all(&mut *tx)
-                    .await?;
-            digest.table(table, &columns);
-            // quote() keeps the storage class: integers, text and blobs render
-            // exactly. Reals use 17 significant digits, which round-trip.
-            let select = columns
-                .iter()
-                .map(|column| {
-                    identifier(column).map(|c| {
-                        format!("CASE typeof(\"{c}\") WHEN 'real' THEN printf('%!.17g',\"{c}\") ELSE quote(\"{c}\") END")
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?
-                .join(",");
-            let sql = format!(
-                "SELECT {select} FROM \"{table}\" ORDER BY {}",
-                order(&key, columns.len(), '"')?
-            );
-            hash_rows!(tx, digest, table, sql, columns.len());
-        }
+        let report = sqlite_digest(&mut tx).await;
         tx.rollback().await?;
-        Ok(digest.report("sqlite", layout))
+        report
     })
     .await
     .map_err(|_| expired())
     .and_then(|result| result);
     close(connection.close()).await?;
     result
+}
+
+/// The SQLite fingerprint report, read inside the caller's transaction.
+pub(super) async fn sqlite_digest(tx: &mut SqliteConnection) -> Result<Value> {
+    let (catalog, layout) = schema::php_source_catalog(&mut *tx).await?;
+    let mut digest = Digest::new("sqlite", &catalog)?;
+    for (_, table, _, _) in catalog.iter().filter(|(kind, _, _, _)| kind == "table") {
+        let table = identifier(table)?;
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
+                .bind(table)
+                .fetch_all(&mut *tx)
+                .await?;
+        let key: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info(?1) WHERE pk>0 ORDER BY pk")
+                .bind(table)
+                .fetch_all(&mut *tx)
+                .await?;
+        digest.table(table, &columns);
+        // quote() keeps the storage class: integers, text and blobs render
+        // exactly. Reals use 17 significant digits, which round-trip.
+        let select = columns
+            .iter()
+            .map(|column| {
+                identifier(column).map(|c| {
+                    format!("CASE typeof(\"{c}\") WHEN 'real' THEN printf('%!.17g',\"{c}\") ELSE quote(\"{c}\") END")
+                })
+            })
+            .collect::<Result<Vec<_>>>()?
+            .join(",");
+        let sql = format!(
+            "SELECT {select} FROM \"{table}\" ORDER BY {}",
+            order(&key, columns.len(), '"')?
+        );
+        hash_rows!(tx, digest, table, sql, columns.len());
+    }
+    Ok(digest.report("sqlite", layout))
 }
 
 pub async fn fingerprint_postgres(options: PgConnectOptions) -> Result<Value> {

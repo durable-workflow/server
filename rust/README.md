@@ -412,10 +412,31 @@ version-1/version-2/version-3 development schemas are refused without conversion
 needed old development data separately; this unpublished slice supplies no
 older-development converter. Use a new isolated file for version 4.
 
-This refusal is not the upgrade mechanism. Backup-first conversion of PHP's
-stored representations and interrupted takeover remain required on all three
-database families. The PHP ownership fence is merged in source, while the frozen
-published PHP image still lacks it. **Never connect PHP to a Rust development database.**
+This refusal is not the upgrade mechanism. A stopped PHP SQLite database can
+be taken over with the development `upgrade-takeover` command, following the
+[takeover design](../docs/rust-server-upgrade-takeover.md):
+
+1. Run PHP Server 2.5.14 or later, which refuses a Rust-owned database, and
+   stop every PHP role.
+2. Run `upgrade-fingerprint` on the source, mounted read-only. Back the file
+   up, restore the backup to a separate path, and fingerprint that too. The
+   digests must be equal.
+3. Run `upgrade-takeover` with `DW_UPGRADE_BACKUP_FINGERPRINT` set to that
+   digest and the original queue settings (`DW_RUST_UPGRADE_QUEUE_*`, as for
+   `upgrade-queue-inspect`).
+
+Inspection, the fingerprint check, the conversion of the recorded PHP release
+layout, the native relations, the migration ledger and native's own startup
+verification all happen in one exclusive transaction. A refusal or an
+interruption leaves the PHP file unchanged. The command refuses:
+
+- a digest that differs, so any write after the backup stops it;
+- unrecognized queued jobs, external payloads and service calls;
+- a layout other than the frozen one, PHP 2.8.0 or PHP 2.9.7, or a database
+  native already owns.
+
+PostgreSQL and MySQL/MariaDB takeover, nested payload columns and multi-node
+qualification remain open. **Never connect PHP to a Rust development database.**
 Named namespace isolation and configured worker/operator/admin roles have
 representative shared qualification. Principal/custom-provider credentials and
 the full authorization contract remain open. Broader timer/signal semantics, failure/retry policy, cancellation and the rest of the API also
