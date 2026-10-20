@@ -40,7 +40,7 @@ final class ServerReadiness
                 : $this->cacheCheck();
 
         $checks = [
-            'database' => $this->databaseCheck(),
+            'database' => $this->databaseCheck(probeQuery: true),
             'migrations' => $this->migrationCheck(),
             'queue' => $queue,
             'default_namespace' => $this->defaultNamespaceCheck(),
@@ -93,22 +93,38 @@ final class ServerReadiness
         ]));
     }
 
-    private function databaseCheck(): array
+    private function databaseCheck(bool $probeQuery = false): array
     {
+        $queryAttempted = false;
         try {
-            DB::connection()->getPdo();
+            $connection = DB::connection();
+            $connection->getPdo();
+            if ($probeQuery) {
+                $queryAttempted = true;
+                $row = $connection->selectOne('SELECT ? AS readiness_probe', [1], useReadPdo: false);
+                if ((string) ($row->readiness_probe ?? '') !== '1') {
+                    throw new \UnexpectedValueException('The database did not return the readiness probe value.');
+                }
+            }
 
             return [
                 'status' => 'ok',
-                'check_scope' => 'connection_only',
+                'check_scope' => $probeQuery ? 'bound_read_query' : 'connection_only',
                 'write_capacity_verified' => false,
-                'message' => 'The database connection is available. Write capacity has not been verified.',
+                'message' => $probeQuery
+                    ? 'The primary database connection can execute a bound read query. Write capacity has not been verified.'
+                    : 'The database connection is available. Write capacity has not been verified.',
             ];
         } catch (\Throwable $exception) {
+            $reason = $queryAttempted ? 'database_query_failed' : null;
+            if (BackendUnavailable::is($exception)) {
+                $reason = 'backend_unavailable';
+            }
+
             return [
                 'status' => 'unavailable',
                 'message' => $exception->getMessage(),
-                'reason' => BackendUnavailable::is($exception) ? 'backend_unavailable' : null,
+                'reason' => $reason,
             ];
         }
     }
