@@ -57,7 +57,7 @@ printf '%s\n' "$RESOURCE_SCOPE" > "$evidence/database-owned.txt"
 # timer is short.
 timer_seconds=60
 configuration=("${admin[@]}" -e DB_DATABASE="$database" -e DW_AUTH_TOKEN=upgrade-fixture-token
-  -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DB_SQLITE_JOURNAL_MODE=DELETE)
+  -e CACHE_STORE=file -e QUEUE_CONNECTION=database)
 php_run() {
   docker run --rm --name "$resource-control" --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
     --network "$RESOURCE_SCOPE" "${configuration[@]}" -v "$PWD/$state:/state" -v "$PWD:/source:ro" \
@@ -81,6 +81,20 @@ docker run --rm --name "$resource-author" --user=1000:1000 --cpus=1 --memory=512
 docker stop --signal SIGTERM --time 10 "$resource-php" >/dev/null
 docker inspect --format '{{json .State}}' "$resource-php" > "$evidence/stopped-state.json"
 jq -e '.Running==false and .ExitCode==0 and .OOMKilled==false' "$evidence/stopped-state.json" >/dev/null
+if test "$backend" = sqlite; then
+  # PHP Server keeps SQLite in WAL mode. Once PHP is stopped, the source is
+  # switched to the rollback journal the upgrade commands need, as an operator
+  # does first; its rows are unchanged.
+  [[ "$(od -An -tu1 -j18 -N2 "$state/database.sqlite" | tr -s ' ')" == " 2 2" ]]
+  docker run --rm --name "$resource-prepare" --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
+    --network none -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/database.sqlite -e DW_RUST_EXPERIMENTAL=1 \
+    -v "$PWD/$state:/state" -v "$PWD/rust-target:/target:ro" \
+    --entrypoint /target/debug/durable-workflow-server "$rust_image" upgrade-prepare-sqlite \
+    > "$evidence/prepare.json" 2> "$evidence/prepare.stderr"
+  jq -e '.status=="rollback_journal" and .previous_journal_mode=="wal" and .source_mutated==true' \
+    "$evidence/prepare.json" >/dev/null
+  [[ "$(od -An -tu1 -j18 -N2 "$state/database.sqlite" | tr -s ' ')" == " 1 1" ]]
+fi
 if test "$backend" = sqlite; then
   docker run --rm --name "$resource-control" --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
     --network=none -v "$PWD/$state:/state:ro" -v "$PWD:/source:ro" --entrypoint php "$image" \

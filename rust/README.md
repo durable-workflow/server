@@ -418,6 +418,13 @@ over with the development `upgrade-takeover` command, following the
 
 1. Run PHP Server 2.5.14 or later, which refuses a Rust-owned database, and
    stop every PHP role.
+   PHP Server keeps SQLite in WAL mode, which the upgrade commands refuse. With
+   PHP stopped, run `upgrade-prepare-sqlite` on the source file (writable).
+   It has SQLite checkpoint every committed WAL frame into the file and switch
+   it to the rollback journal, refusing with `upgrade_source_in_use` while any
+   other process has the file open. The rows are unchanged; the backup below
+   is taken afterwards. A journal left by a crashed writer is rolled back the
+   same way.
 2. Run `upgrade-fingerprint` on the source: a SQLite file mounted read-only,
    or the database through a read-only account. Back the database up (a file
    copy, `pg_dump` or `mysqldump --single-transaction`), restore the backup
