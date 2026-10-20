@@ -940,7 +940,7 @@ class WorkerController
             $update['process_metrics'] = $this->normalizeProcessMetrics($validated['process_metrics']);
         }
         $update['process_metrics'] = [
-            ...($update['process_metrics'] ?? $worker->process_metrics ?? []),
+            ...(array_key_exists('process_metrics', $update) ? ($update['process_metrics'] ?? []) : ($worker->process_metrics ?? [])),
             WorkflowReplayEligibility::PROTOCOL_METRIC => WorkerProtocol::requestVersion($request),
         ];
 

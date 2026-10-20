@@ -749,7 +749,6 @@ final class WorkflowTaskPoller
                                 historyPageSize: $historyPageSize,
                                 acceptHistoryEncoding: $acceptHistoryEncoding,
                                 supportedWorkflowTypes: $supportedWorkflowTypes,
-                                workflowDefinitionFingerprints: $workflowDefinitionFingerprints,
                                 workerPollFence: $workerPollFence,
                             ),
                         ),
@@ -798,7 +797,6 @@ final class WorkflowTaskPoller
                                     historyPageSize: $historyPageSize,
                                     acceptHistoryEncoding: $acceptHistoryEncoding,
                                     supportedWorkflowTypes: $supportedWorkflowTypes,
-                                    workflowDefinitionFingerprints: $workflowDefinitionFingerprints,
                                     workerPollFence: $workerPollFence,
                                 ),
                             ),
@@ -968,7 +966,6 @@ final class WorkflowTaskPoller
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
         array $supportedWorkflowTypes = [],
-        array $workflowDefinitionFingerprints = [],
         array $workerPollFence = [],
     ): ?array {
         $readyTasks = $this->pollReplayEligibleReadyTasks(

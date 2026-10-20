@@ -25,18 +25,16 @@ final class WorkflowDefinitionRouting
         $advertised = self::stringValue($worker->workflow_definition_fingerprints[$run->workflow_type] ?? null);
         $decision['advertised_fingerprint'] = $advertised;
 
-        if (! $decision['worker_pinned']) {
-            return [...$decision, 'allowed' => true, 'status' => 'not_worker_pinned'];
-        }
-        if (! $decision['pinning_enabled']) {
-            return [...$decision, 'allowed' => true, 'status' => 'pinning_disabled'];
-        }
-        if ($recorded === null || $advertised === null) {
-            return [...$decision, 'allowed' => false, 'status' => $recorded === null
-                ? 'recorded_definition_missing' : 'worker_definition_missing'];
-        }
-        if (hash_equals($recorded, $advertised)) {
-            return [...$decision, 'allowed' => true, 'status' => 'matching_definition'];
+        $immediate = match (true) {
+            ! $decision['worker_pinned'] => ['allowed' => true, 'status' => 'not_worker_pinned'],
+            ! $decision['pinning_enabled'] => ['allowed' => true, 'status' => 'pinning_disabled'],
+            $recorded === null => ['allowed' => false, 'status' => 'recorded_definition_missing'],
+            $advertised === null => ['allowed' => false, 'status' => 'worker_definition_missing'],
+            hash_equals($recorded, $advertised) => ['allowed' => true, 'status' => 'matching_definition'],
+            default => null,
+        };
+        if ($immediate !== null) {
+            return [...$decision, ...$immediate];
         }
 
         foreach ($this->eligibleWorkers($run, $decision['task_queue'], $decision['required_build_id']) as $peer) {
@@ -95,16 +93,17 @@ final class WorkflowDefinitionRouting
         $runnable = ! $run->status->isTerminal() && $task instanceof WorkflowTask;
         $blocked = $runnable && $context['worker_pinned'] && $context['pinning_enabled']
             && in_array($status, ['recorded_definition_missing', 'worker_definition_missing', 'no_eligible_worker'], true);
+        $resolution = match (true) {
+            $blocked => 'Register a fresh worker for the original namespace, task queue, workflow type, build and replay capabilities with its definition fingerprint. Do not rewrite the run history.',
+            $status === 'replay_required' => 'Current workers may replay the original history. Use versioned branches for command changes; incompatible replay still refuses.',
+            default => 'Recorded build, namespace, type and replay-capability guards remain in force.',
+        };
 
         return [...$context, 'status' => $status, 'blocked' => $blocked, 'runnable_task' => $runnable,
             'eligible_worker_count' => $eligible, 'matching_worker_count' => $matching,
             'changed_worker_count' => $changed, 'missing_fingerprint_count' => $missing,
             'workers' => $examples, 'workers_truncated' => $eligible > count($examples),
-            'resolution' => $blocked
-                ? 'Register a fresh worker for the original namespace, task queue, workflow type, build and replay capabilities with its definition fingerprint. Do not rewrite the run history.'
-                : ($status === 'replay_required'
-                    ? 'Current workers may replay the original history. Use versioned branches for command changes; incompatible replay still refuses.'
-                    : 'Recorded build, namespace, type and replay-capability guards remain in force.'),
+            'resolution' => $resolution,
         ];
     }
 

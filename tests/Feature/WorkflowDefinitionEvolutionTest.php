@@ -173,6 +173,18 @@ class WorkflowDefinitionEvolutionTest extends TestCase
         self::assertSame(456, $worker->fresh()->process_metrics['memory_bytes']);
     }
 
+    public function test_explicit_null_clears_client_metrics_without_clearing_server_protocol(): void
+    {
+        $this->worker('original-worker', 'definition-v1', ['process_metrics' => ['memory_bytes' => 123]]);
+        $this->postJson('/api/worker/heartbeat', [
+            'worker_id' => 'original-worker', 'process_metrics' => null,
+        ], $this->workerHeaders())->assertOk();
+        $worker = WorkerRegistration::query()->where('worker_id', 'original-worker')->firstOrFail();
+        self::assertSame([
+            WorkflowReplayEligibility::PROTOCOL_METRIC => $this->workerHeaders()['X-Durable-Workflow-Protocol-Version'],
+        ], $worker->process_metrics);
+    }
+
     public function test_run_debug_queue_and_repair_distinguish_fallback_from_a_real_block(): void
     {
         [$run, $task] = $this->original();

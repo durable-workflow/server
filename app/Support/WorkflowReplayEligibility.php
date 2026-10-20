@@ -18,12 +18,9 @@ final class WorkflowReplayEligibility
         $capabilities = is_array($worker->capabilities) ? $worker->capabilities : [];
 
         if (is_string($run->cancellation_request_command_id)
-            && ! CooperativeCancellationPolicy::supports($capabilities, $protocolVersion)) {
-            return false;
-        }
-        if (is_string($run->cancellation_request_command_id)
-            && NexusCooperativeCancellationPolicy::requiresCapabilityForReplay($run)
-            && ! NexusCooperativeCancellationPolicy::supports($capabilities, $protocolVersion)) {
+            && (! CooperativeCancellationPolicy::supports($capabilities, $protocolVersion)
+                || (NexusCooperativeCancellationPolicy::requiresCapabilityForReplay($run)
+                    && ! NexusCooperativeCancellationPolicy::supports($capabilities, $protocolVersion)))) {
             return false;
         }
 
