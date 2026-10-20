@@ -157,6 +157,18 @@ export function checkNamespaces(fixture, observation, workflowId, checkRun) {
       assert.deepStrictEqual(refusal.request, original.request, 'foreign completion retains actual original command and claim body');
       assert.equal(original.status, 200, 'original namespace can still commit the authored completion');
     }
+    const updated = state.updated;
+    const created = state.administration[0].created;
+    assert.deepStrictEqual([updated.name, updated.description, updated.status, updated.retention_mode, updated.retention_days,
+      updated.external_payload_storage, updated.created_at],
+    [names[0], definition.description + ' updated', 'active', 'bounded', definition.retention_days + 1, null, created.created_at],
+    'a namespace update changes only its description and retention');
+    assert.ok(Date.parse(updated.updated_at) >= Date.parse(created.updated_at), 'the update advances updated_at');
+    const missing = state.update_missing;
+    const missingName = 'missing-' + names[0];
+    assert.equal(missing.status, 404, 'updating a missing namespace is refused');
+    assert.deepStrictEqual([missing.response.reason, missing.response.namespace, missing.response.message],
+      ['namespace_not_found', missingName, `Namespace [${missingName}] not found.`], 'missing namespace refusal');
   }
   return {namespaces: names, runs: projections};
 }

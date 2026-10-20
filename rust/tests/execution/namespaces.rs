@@ -611,3 +611,57 @@ async fn same_worker_id_isolated_claims_completion_and_deregistration_by_namespa
     runtime.close().await;
     database.remove().await;
 }
+
+#[tokio::test]
+async fn namespace_updates_follow_published_retention_rules() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    create(&app, "updated").await;
+    let update = |body: Value| {
+        let app = app.clone();
+        async move { scoped(&app, "default", "PUT", "/api/namespaces/UPDATED", body).await }
+    };
+    let (status, body) = update(json!({"description":"changed λ","retention_days":60})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["name"], "updated");
+    assert_eq!(body["description"], "changed λ");
+    assert_eq!(body["retention_mode"], "bounded");
+    assert_eq!(body["retention_days"], 60);
+    // A null description keeps the stored one.
+    let (status, body) = update(json!({"description":null,"retention_mode":"forever"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["description"], "changed λ");
+    assert_eq!(body["retention_mode"], "forever");
+    assert_eq!(body["retention_days"], Value::Null);
+    for refused in [
+        json!({"retention_mode":"bounded"}),
+        json!({"retention_mode":"forever","retention_days":7}),
+        json!({"retention_mode":"bounded","retention_days":null}),
+        json!({"retention_days":366}),
+        json!({"retention_mode":"sometimes"}),
+        json!({"description":"λ".repeat(1001)}),
+    ] {
+        let (status, body) = update(refused.clone()).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused} {body}");
+    }
+    let (status, body) = update(json!({"retention_mode":"bounded","retention_days":14})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["retention_days"], 14);
+    let (status, body) = scoped(&app, "default", "PUT", "/api/namespaces/missing", json!({})).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["reason"], "namespace_not_found");
+    assert_eq!(body["message"], "Namespace [missing] not found.");
+    let (_, described) = scoped(
+        &app,
+        "default",
+        "GET",
+        "/api/namespaces/updated",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(described["retention_days"], 14);
+    assert_eq!(described["description"], "changed λ");
+    runtime.close().await;
+    database.remove().await;
+}
