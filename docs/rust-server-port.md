@@ -98,6 +98,14 @@ contract fixture before its correction.
   then did not stop within the 5-second shutdown budget. Forty local
   repetitions of that case alone passed. Find what holds the query thread
   after the fence before changing either side.
+- **Workflow definition evolution (PHP main after #525, not yet released).**
+  Current PHP routes a run whose recorded workflow definition is gone to a
+  replacement definition that passes strict replay. It then reports
+  `definition_routing` on task queues and run diagnostics. It also records
+  each worker's protocol version under `_worker_protocol_version` in its
+  stored process metrics. That entry shows up in the worker listing. Native
+  follows the frozen published reference, which has none of this. Port it
+  with its own fixture once it is published.
 - **Terminating a child run.** Published Workflow resolves the parent with
   `ChildRunTerminated` and the `terminated` child call status. Native refuses
   this with `422 termination_propagation_not_available` until the parent-side
