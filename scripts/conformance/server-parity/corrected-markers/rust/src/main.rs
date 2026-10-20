@@ -11,6 +11,7 @@ use durable_workflow::{
 use serde_json::{json, Value};
 
 mod legacy_range;
+mod lock_pressure;
 mod memo_author;
 
 const WORKFLOW: &str = "parity.v1.corrected_markers";
@@ -221,7 +222,10 @@ async fn main() -> Result<()> {
         }
     })
     .await;
-    let deregistered = client.deregister_worker_registration(&worker_id).await;
+    let deregistered = lock_pressure::retrying("deregister", || {
+        client.deregister_worker_registration(&worker_id)
+    })
+    .await;
     let result = match outcome {
         Ok(result) => result,
         Err(_) => Err(Error::WorkerLoop(

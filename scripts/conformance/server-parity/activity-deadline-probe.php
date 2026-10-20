@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use DurableWorkflow\Client;
+require_once __DIR__.'/lock-pressure-middleware.php';
 
 require_once __DIR__.'/namespace-probe.php';
 require_once __DIR__.'/activity-deadline-poll.php';
@@ -34,7 +35,7 @@ function activityDeadlineHttpObservation(array $fixture, array $options): array
         if (!preg_match('#^http://127\.0\.0\.1:[0-9]+$#', $url)) {
             throw new RuntimeException('Activity deadline recorder did not bind its local port');
         }
-        $client = new Client($url, namespace:'default', token:getenv('DW_PARITY_TOKEN') ?: null);
+        $client = parityClient($url, namespace:'default', token:getenv('DW_PARITY_TOKEN') ?: null);
         $checkBudget = static function () use ($deadline): void {
             if (microtime(true) >= $deadline) {
                 throw new RuntimeException('Original activity deadline observation expired');

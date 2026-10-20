@@ -11,6 +11,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
 use Workflow\V2\WorkflowStub;
 use Workflow\WorkflowOptions;
+require_once __DIR__.'/lock-pressure-middleware.php';
 
 function namespaceSignalRunFixture(array $fixture, bool $peer): array
 {
@@ -158,7 +159,7 @@ function namespaceSignalHttpObservation(array $fixture, array $options): array
             throw new RuntimeException('Namespace control observer did not bind its local port.');
         }
         $checkpoint('client_setup');
-        $admin = new Client($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
+        $admin = parityClient($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
         foreach ($fixtures as $index => $runFixture) {
             try {
                 $checkpoint('namespace_describe', $runFixture['namespace']);
@@ -175,7 +176,7 @@ function namespaceSignalHttpObservation(array $fixture, array $options): array
             $state['administration'][] = ['created' => $created, 'namespace' => $namespace->raw];
             $paths[$index] = tempnam(sys_get_temp_dir(), 'parity-namespace-fixture-');
             file_put_contents($paths[$index], json_encode($runFixture, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
-            $clients[$index] = new Client($options['url'], namespace: $runFixture['namespace'], token: getenv('DW_PARITY_TOKEN') ?: null);
+            $clients[$index] = parityClient($options['url'], namespace: $runFixture['namespace'], token: getenv('DW_PARITY_TOKEN') ?: null);
             $start = microtime(true);
             $deadline = $start + 35;
             $state['run_budgets'][$index] = ['started_at_unix' => $start, 'deadline_at_unix' => $deadline];
