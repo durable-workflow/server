@@ -267,6 +267,29 @@ jobs:
         working-directory: release-source
         run: scripts/smoke-published-compose.sh
 
+      - name: Verify published image database TLS and certificate refusals
+        id: published_database_tls
+        if: ${{ always() && success() && steps.exact.outputs.exact_publish_outcome == 'success' }}
+        timeout-minutes: 10
+        env:
+          TLS_TEST_MODE: published
+          TLS_TEST_IMAGE: ${{ env.GHCR_IMAGE }}@${{ steps.exact.outputs.image_digest }}
+          TLS_TEST_PROJECT: dw-server-published-tls-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          TLS_TEST_ROOT: ${{ runner.temp }}/dw-server-tls-release-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: bash scripts/ci/qualify-database-tls.sh
+
+      - name: Clean up published image database TLS fixtures
+        if: always()
+        env:
+          TLS_TEST_PROJECT: dw-server-published-tls-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          TLS_TEST_ROOT: ${{ runner.temp }}/dw-server-tls-release-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: |
+          docker rm -f "$TLS_TEST_PROJECT-certificates" >/dev/null 2>&1 || true
+          docker ps -aq --filter "label=com.docker.compose.project=$TLS_TEST_PROJECT" | xargs -r docker rm -f >/dev/null 2>&1 || true
+          docker network ls -q --filter "label=com.docker.compose.project=$TLS_TEST_PROJECT" | xargs -r docker network rm >/dev/null 2>&1 || true
+          docker volume ls -q --filter "label=com.docker.compose.project=$TLS_TEST_PROJECT" | xargs -r docker volume rm -f >/dev/null 2>&1 || true
+          bash scripts/ci/cleanup-database-tls.sh
+
       - name: Clean up bare image first-run resources
         if: always()
         env:
