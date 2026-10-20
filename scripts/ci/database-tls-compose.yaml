@@ -3,6 +3,7 @@ x-database: &database
   cpus: 1
   mem_limit: 1g
   memswap_limit: 1g
+  ports: !override []
   volumes:
     - "${TLS_TEST_ROOT}/certs:/certs:ro"
 
@@ -14,7 +15,7 @@ services:
       PGDATA: /tmp/pgdata
       POSTGRES_USER: dw_tls
       POSTGRES_DB: dw_tls
-      POSTGRES_PASSWORD: bounded-fixture
+      POSTGRES_PASSWORD: "${TLS_TEST_PASSWORD:?Generate the fixture password.}"
     tmpfs: ["/tmp/pgdata:rw,uid=${TLS_TEST_UID},gid=${TLS_TEST_GID},size=384m"]
     command: ["postgres", "-c", "ssl=on", "-c", "ssl_cert_file=/certs/server.pem", "-c", "ssl_key_file=/certs/server.key"]
     networks:
@@ -30,10 +31,10 @@ services:
     <<: *database
     image: "${TLS_TEST_MYSQL_IMAGE:-mysql:8.0.46}"
     environment: &mysql
-      MYSQL_ROOT_PASSWORD: bounded-root-fixture
+      MYSQL_ROOT_PASSWORD: "${TLS_TEST_ROOT_PASSWORD:?Generate the fixture root password.}"
       MYSQL_DATABASE: dw_tls
       MYSQL_USER: dw_tls
-      MYSQL_PASSWORD: bounded-fixture
+      MYSQL_PASSWORD: "${TLS_TEST_PASSWORD:?Generate the fixture password.}"
     tmpfs: ["/var/lib/mysql:rw,uid=${TLS_TEST_UID},gid=${TLS_TEST_GID},size=768m"]
     command: ["--ssl-ca=/certs/ca.pem", "--ssl-cert=/certs/server.pem", "--ssl-key=/certs/server.key", "--innodb-buffer-pool-size=64M", "--innodb-redo-log-capacity=64M", "--performance-schema=OFF"]
     networks:
@@ -49,10 +50,10 @@ services:
     <<: *database
     image: "${TLS_TEST_MARIADB_IMAGE:-mariadb:10.11.19}"
     environment:
-      MARIADB_ROOT_PASSWORD: bounded-root-fixture
+      MARIADB_ROOT_PASSWORD: "${TLS_TEST_ROOT_PASSWORD:?Generate the fixture root password.}"
       MARIADB_DATABASE: dw_tls
       MARIADB_USER: dw_tls
-      MARIADB_PASSWORD: bounded-fixture
+      MARIADB_PASSWORD: "${TLS_TEST_PASSWORD:?Generate the fixture password.}"
     tmpfs: ["/var/lib/mysql:rw,uid=${TLS_TEST_UID},gid=${TLS_TEST_GID},size=768m"]
     command: ["--ssl-ca=/certs/ca.pem", "--ssl-cert=/certs/server.pem", "--ssl-key=/certs/server.key", "--innodb-buffer-pool-size=64M"]
     networks:
@@ -83,6 +84,7 @@ services:
     healthcheck: *mysql-health
 
   redis:
+    ports: !override []
     image: redis:7-alpine
     user: "${TLS_TEST_UID}:${TLS_TEST_GID}"
     cpus: 0.5
@@ -96,6 +98,7 @@ services:
       retries: 30
 
   php:
+    ports: !override []
     image: "${TLS_TEST_IMAGE}"
     entrypoint: []
     user: "${TLS_TEST_UID}:${TLS_TEST_GID}"
@@ -114,7 +117,7 @@ services:
       APP_KEY: base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
       DB_DATABASE: dw_tls
       DB_USERNAME: dw_tls
-      DB_PASSWORD: bounded-fixture
+      DB_PASSWORD: "${TLS_TEST_PASSWORD:?Generate the fixture password.}"
       QUEUE_CONNECTION: database
       CACHE_STORE: redis
       REDIS_HOST: redis

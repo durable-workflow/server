@@ -303,14 +303,19 @@ jobs:
           docker image rm durable-workflow-server-context-candidate >/dev/null 2>&1 || true
 
       - name: Verify required database TLS and certificate refusals
-        run: timeout 600s bash scripts/ci/qualify-database-tls.sh
+        timeout-minutes: 10
+        run: |
+          python3 scripts/ci/test_database_tls_cleanup.py
+          bash scripts/ci/qualify-database-tls.sh
 
       - name: Clean up database TLS fixtures
         if: ${{ always() }}
         run: |
-          docker ps -aq --filter "label=com.docker.compose.project=$TLS_TEST_PROJECT" | xargs -r docker rm -f
-          docker network ls -q --filter "label=com.docker.compose.project=$TLS_TEST_PROJECT" | xargs -r docker network rm
-          rm -rf -- "$TLS_TEST_ROOT"
+          docker rm -f "$TLS_TEST_PROJECT-certificates" >/dev/null 2>&1 || true
+          docker ps -aq --filter "label=com.docker.compose.project=$TLS_TEST_PROJECT" | xargs -r docker rm -f >/dev/null 2>&1 || true
+          docker network ls -q --filter "label=com.docker.compose.project=$TLS_TEST_PROJECT" | xargs -r docker network rm >/dev/null 2>&1 || true
+          docker volume ls -q --filter "label=com.docker.compose.project=$TLS_TEST_PROJECT" | xargs -r docker volume rm -f >/dev/null 2>&1 || true
+          bash scripts/ci/cleanup-database-tls.sh
 
       - name: Clean up test services
         if: always()
