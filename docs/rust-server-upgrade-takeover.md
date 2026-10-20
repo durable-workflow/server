@@ -101,6 +101,16 @@ marker exists.
    was already refused by step 1.
 5. Record the native migration ledger and set the marker to `ready`.
 
+Native's frozen physical layout predates the current PHP release, so step 3
+alone does not yield a database native accepts. PHP 2.8.0 adds its own
+`workflow_worker_registration_incarnations` table, a `call_deadline_at`
+column on `workflow_service_calls` and a changed `workflow_worker_registrations`
+(`rust/upgrade/php-2.8.0/`). Before takeover is implemented, native's schema
+moves to the layout of the release takeover starts from, and native reads
+PHP's incarnation table instead of keeping a second one. A fresh native
+database then has the same PHP layout, and takeover only adds native relations
+and converts data.
+
 ## Tests
 
 Each backend gets an upgrade fixture written by the last published PHP release
