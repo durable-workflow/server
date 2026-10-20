@@ -64,6 +64,8 @@ mod version_markers;
 #[path = "execution/activity_deadlines.rs"]
 mod activity_deadlines;
 
+#[path = "execution/lock_free_waiting.rs"]
+mod lock_free_waiting;
 #[path = "execution/read_snapshots.rs"]
 mod read_snapshots;
 
