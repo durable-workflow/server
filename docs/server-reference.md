@@ -1622,6 +1622,52 @@ overlay or with `kubectl scale`.
 
 ### Configuration
 
+#### Database TLS
+
+Set `DB_SSLMODE` on every PHP role: API server, queue worker, bootstrap/migration
+and scheduler. `DB_SSL_MODE` remains an accepted alias. PostgreSQL defaults to
+`prefer`; MySQL/MariaDB retain their existing connection defaults when no mode
+is set. These defaults do not guarantee an authenticated encrypted connection.
+
+| Mode | PostgreSQL | MySQL / MariaDB |
+| --- | --- | --- |
+| `disable` | No TLS. | No TLS; conflicting TLS options are refused. |
+| `allow`, `prefer` | Opportunistic TLS, with no encryption/identity guarantee. | Refused; select an explicit supported mode. |
+| `require` | Encryption required. | Encryption required with mysqlnd and OpenSSL. |
+| `verify-ca` | Encryption and a trusted certificate chain required. | Refused because PDO mysqlnd cannot provide chain-only verification independently of hostname verification. |
+| `verify-full` | Encryption, trusted chain and matching hostname required. | Encryption, trusted chain and matching hostname required. |
+
+For certificate verification, set `DB_SSLROOTCERT` to a readable CA bundle file
+inside each container. `DB_SSL_ROOT_CERT` is an alias. The existing
+`MYSQL_ATTR_SSL_CA` can supply the CA for an explicit MySQL/MariaDB
+`verify-full` connection. Conflicting canonical/alias/URL settings refuse
+startup rather than silently change the requested mode or CA. Required TLS
+uses an explicit TCP hostname; Unix socket connections are refused. PHP
+MySQL/MariaDB explicit TLS modes require PDO MySQL with mysqlnd and OpenSSL.
+
+```bash
+DB_CONNECTION=pgsql
+DB_HOST=database.example.com
+DB_SSLMODE=verify-full
+DB_SSLROOTCERT=/run/database-ca/ca.pem
+```
+
+Use the certificate's DNS hostname, not a substituted IP or unrelated alias.
+With Helm, set `externalDatabase.sslMode: verify-full` and
+`externalDatabase.tls.existingSecret` / `caKey`; the chart mounts the CA into
+all four roles. Create that Secret before installing or upgrading because the
+bootstrap hook runs before chart-managed ordinary resources.
+
+`/api/ready` reports `checks.database.tls` only after its connection succeeds.
+`encrypted`, `ca_verified` and `hostname_verified` describe the guarantee
+enforced by the selected driver mode. Opportunistic or unconfigured TLS is
+reported as unknown, not verified. `require` guarantees encryption, not server
+identity. Invalid configuration reports `database_tls_configuration_invalid`;
+a failed required connection reports `database_tls_connection_failed` and
+returns 503. The report covers PHP to its configured endpoint. If that endpoint
+is a pooler, qualify and configure its separate database connection too; a
+backend `pg_stat_ssl` result does not prove the client-to-pooler leg.
+
 #### PostgreSQL connection pooling
 
 The PostgreSQL connection uses native bound parameters without session-scoped
@@ -1653,7 +1699,8 @@ be unavailable. This remains a read probe: `write_capacity_verified=false`.
 Use an actual workflow canary to verify writes and the complete worker path.
 The runtime's lightweight bootstrap guard remains connection-only.
 
-All operator-facing configuration is via `DW_*` environment variables.
+Workflow runtime tuning uses `DW_*` environment variables. Database settings
+such as the `DB_*` TLS inputs above retain Laravel's configuration boundary.
 `config/dw-contract.php` is the authoritative machine-checkable contract;
 CI (`tests/Unit/EnvContractTest.php`) diffs it against `.env.example`,
 `docker-compose.yml`, and `k8s/secret.yaml` so the three surfaces cannot

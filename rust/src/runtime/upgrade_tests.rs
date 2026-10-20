@@ -955,34 +955,41 @@ async fn takeover_killed_before_commit_leaves_php_data_and_can_be_rerun() {
     use std::os::unix::process::ExitStatusExt;
     let (directory, path) = php297_layout().await;
     let fingerprint = backup_fingerprint(&path).await;
-    let original = std::fs::read(&path).unwrap();
+    let original = tokio::fs::read(&path).await.unwrap();
     let receipt = directory.path().join("boundary");
-    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "runtime::upgrade::tests::sqlite_takeover_child",
-            "--ignored",
-            "--nocapture",
-        ])
-        .env("DW_TAKEOVER_TEST_DATABASE", &path)
-        .env("DW_TAKEOVER_TEST_FINGERPRINT", &fingerprint)
-        .env("DW_TAKEOVER_TEST_RECEIPT", &receipt)
-        .spawn()
-        .unwrap();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-    while !receipt.exists() && tokio::time::Instant::now() < deadline {
-        if let Some(status) = child.try_wait().unwrap() {
-            panic!("child exited before the commit point: {status}");
+    // The child process is supervised on a blocking thread.
+    let (child_path, child_fingerprint) = (path.clone(), fingerprint.clone());
+    let status = tokio::task::spawn_blocking(move || {
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "runtime::upgrade::tests::sqlite_takeover_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("DW_TAKEOVER_TEST_DATABASE", &child_path)
+            .env("DW_TAKEOVER_TEST_FINGERPRINT", &child_fingerprint)
+            .env("DW_TAKEOVER_TEST_RECEIPT", &receipt)
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while !receipt.exists() && std::time::Instant::now() < deadline {
+            if let Some(status) = child.try_wait().unwrap() {
+                panic!("child exited before the commit point: {status}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    if !receipt.exists() {
+        if !receipt.exists() {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("child did not reach the commit point");
+        }
         child.kill().unwrap();
-        child.wait().unwrap();
-        panic!("child did not reach the commit point");
-    }
-    child.kill().unwrap();
-    assert_eq!(child.wait().unwrap().signal(), Some(9));
+        child.wait().unwrap()
+    })
+    .await
+    .unwrap();
+    assert_eq!(status.signal(), Some(9));
     // Either SQLite had not written the file yet, or its rollback journal
     // still holds the original pages. Read-only inspection never recovers it.
     if Path::new(&format!("{path}-journal")).exists() {
@@ -991,7 +998,7 @@ async fn takeover_killed_before_commit_leaves_php_data_and_can_be_rerun() {
             "upgrade_source_sqlite_journal_unqualified",
         );
     } else {
-        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), original);
     }
     // Rerunning with the same verified fingerprint rolls the journal back,
     // finds the backed-up PHP database and takes it over.
@@ -1087,7 +1094,9 @@ async fn wal_source() -> (tempfile::TempDir, String) {
         .unwrap();
     let copy = directory.path().join("wal.sqlite").to_str().unwrap().to_owned();
     for suffix in ["", "-wal", "-shm"] {
-        std::fs::copy(format!("{path}{suffix}"), format!("{copy}{suffix}")).unwrap();
+        tokio::fs::copy(format!("{path}{suffix}"), format!("{copy}{suffix}"))
+            .await
+            .unwrap();
     }
     writer.close().await.unwrap();
     (directory, copy)
