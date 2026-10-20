@@ -56,6 +56,7 @@ $result = ['codec' => 'avro', 'blob' => Avro::serialize(['resumed under native']
 $outcome = [];
 $activity = $originals['activity'];
 $timer = $originals['timer'];
+$signal = $originals['signal'];
 $complete = static function (array $claimed, string $operation) use ($expect, $request, $result): void {
     $expect($request('POST', '/api/worker/workflow-tasks/'.$claimed['task_id'].'/complete', ['lease_owner' => $claimed['lease_owner'],
         'workflow_task_attempt' => $claimed['workflow_task_attempt'],
@@ -77,20 +78,20 @@ $check(($completed['outcome'] ?? null) === 'completed' && ($completed['recorded'
 $replayed = $expect($request('POST', '/api/worker/activity-tasks/'.$task['task_id'].'/complete', $completion), 200, 'activity completion replay');
 $check(($replayed['recorded'] ?? null) === false, 'A replayed activity completion was recorded twice');
 
-// Each original workflow then gets one workflow task: the activity's at
-// once and the timer's at its deadline. On a slow host the timer is already
-// due, so either may be claimed first.
+// Each original workflow then gets one workflow task: the activity's and the
+// signal's at once, the timer's at its deadline. On a slow host the timer is
+// already due, so they may be claimed in any order.
 $original = $activity['history'];
 $claims = [];
 $until = max($deadline, microtime(true)) + 30;
-while (count($claims) < 2 && microtime(true) < $until) {
+while (count($claims) < 3 && microtime(true) < $until) {
     $claimed = $expect($request('POST', '/api/worker/workflow-tasks/poll', ['worker_id' => $worker, 'task_queue' => $queue,
         'timeout_seconds' => 5]), 200, 'workflow task claim')['task'] ?? null;
     if (! is_array($claimed)) {
         continue;
     }
     $run = $claimed['run_id'];
-    $check(in_array($run, [$activity['run_id'], $timer['run_id']], true) && ! isset($claims[$run]),
+    $check(in_array($run, [$activity['run_id'], $timer['run_id'], $signal['run_id']], true) && ! isset($claims[$run]),
         'An unexpected workflow task was claimed');
     $claims[$run] = true;
     if ($run === $activity['run_id']) {
@@ -98,12 +99,23 @@ while (count($claims) < 2 && microtime(true) < $until) {
             'Original activity history changed in the resumed task');
         $check(end($claimed['history_events'])['event_type'] === 'ActivityCompleted', 'Activity completion is missing from history');
         $complete($claimed, 'resumed workflow completion');
+    } elseif ($run === $signal['run_id']) {
+        // The signal PHP accepted is delivered from PHP's rows, with its arguments.
+        $check(array_slice($types($claimed['history_events']), 0, count($signal['history'])) === $types($signal['history']),
+            'Original signal history changed in the resumed task');
+        $received = array_values(array_filter($claimed['history_events'],
+            static fn (array $event): bool => $event['event_type'] === 'SignalReceived'));
+        $check(count($received) === 1 && json_encode($sorted($received[0]['payload']['arguments']), JSON_THROW_ON_ERROR)
+            === json_encode($sorted(end($signal['history'])['payload']['arguments']), JSON_THROW_ON_ERROR),
+            'The PHP-accepted signal arguments differ under native');
+        $complete($claimed, 'signal workflow completion');
     } else {
         $check(end($claimed['history_events'])['event_type'] === 'TimerFired', 'Timer firing is missing from history');
         $complete($claimed, 'timer workflow completion');
     }
 }
 $check(isset($claims[$activity['run_id']]), 'The resumed workflow task was not claimed');
+$check(isset($claims[$signal['run_id']]), 'The signal workflow task was not claimed');
 $check(isset($claims[$timer['run_id']]), 'The original timer did not fire under native');
 
 // The workflow task PHP already completed is a stale attempt.
@@ -124,6 +136,10 @@ $firedAt = (float) (new DateTimeImmutable($firedPublic[0]['timestamp']))->format
 $check($firedAt >= $deadline, 'The original timer fired before its deadline');
 $check($keep($timer['history'], $timerHistory) && end($timerHistory)['event_type'] === 'WorkflowCompleted',
     'The timer workflow did not complete on its original history');
+$signalHistory = $history($signal);
+$check($keep($signal['history'], $signalHistory) && end($signalHistory)['event_type'] === 'WorkflowCompleted',
+    'The signal workflow did not complete on its original history');
+$outcome['signal'] = ['run_id' => $signal['run_id'], 'events' => array_column($signalHistory, 'event_type')];
 $outcome['timer'] = ['run_id' => $timer['run_id'], 'fire_at' => $fireAt,
     'fired_after_seconds' => round($firedAt - $deadline, 3), 'events' => array_column($timerHistory, 'event_type')];
 echo json_encode(['outcome' => 'pass', 'scope' => 'native_resumes_published_php_originals_after_takeover'] + $outcome,

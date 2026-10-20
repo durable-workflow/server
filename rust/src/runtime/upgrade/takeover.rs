@@ -218,10 +218,46 @@ fn report(backend: &str, layout: &str, digest: &Value, inventory: &Value, conver
     })
 }
 
+/// Published PHP features native does not implement yet. A source holding any
+/// of their rows is refused, rather than taken over without them. Derived
+/// projections and PHP's own queue and poll bookkeeping are left in place.
+const UNSUPPORTED_FEATURES: [(&str, &[&str]); 7] = [
+    ("upgrade_source_runtime_credentials_unsupported", &["runtime_credentials"]),
+    (
+        "upgrade_source_message_streams_unsupported",
+        &[
+            "workflow_messages",
+            "workflow_durable_streams",
+            "workflow_durable_stream_items",
+            "workflow_inbound_streams",
+            "workflow_inbound_stream_items",
+        ],
+    ),
+    (
+        "upgrade_source_services_unsupported",
+        &["workflow_services", "workflow_service_endpoints", "workflow_service_operations"],
+    ),
+    ("upgrade_source_update_validation_unsupported", &["workflow_update_validation_tasks"]),
+    ("upgrade_source_worker_sessions_unsupported", &["workflow_worker_sessions"]),
+    ("upgrade_source_build_id_rollouts_unsupported", &["workflow_worker_build_id_rollouts"]),
+    (
+        "upgrade_source_search_attribute_definitions_unsupported",
+        &["search_attribute_definitions"],
+    ),
+];
+
 /// Takeover needs every inspection result it relies on, and refuses what
-/// native cannot represent yet: external payloads and service calls.
-/// Returns the qualified source layout.
+/// native cannot represent yet: external payloads, service calls and the
+/// other unsupported features above. Returns the qualified source layout.
 fn qualified(inventory: &Value) -> Result<&str> {
+    for (reason, tables) in UNSUPPORTED_FEATURES {
+        if tables
+            .iter()
+            .any(|table| inventory["table_rows"][*table].as_i64().unwrap_or(0) != 0)
+        {
+            return Err(refuse(StatusCode::CONFLICT, reason));
+        }
+    }
     if inventory["queue_inspection"]["status"] != "known_subset_bound" {
         return Err(refuse(
             StatusCode::CONFLICT,
