@@ -31,6 +31,23 @@ fn migrator() -> &'static Migrator {
     })
 }
 
+/// The native relations, indexes and ownership marker that a fresh
+/// bootstrap adds after the frozen PHP layout. Takeover applies them to a
+/// converted PHP database instead of running the whole migration.
+pub(super) fn native_relations_sql() -> Result<String> {
+    super::upgrade::native_relations(
+        include_str!("../../migrations/sqlite/0003_full_schema.sql"),
+        "CREATE TABLE dw_server_schema ",
+        include_str!("../../migrations/sqlite/0004_worker_incarnations.sql"),
+    )
+}
+
+/// The single native migration, which a takeover records as applied once
+/// conversion has produced its schema.
+pub(super) fn migration() -> &'static Migration {
+    migrator().iter().next().expect("one native SQLite migration")
+}
+
 type Catalog = Vec<(String, String, String, String)>;
 static EXPECTED: OnceCell<Catalog> = OnceCell::const_new();
 
@@ -67,7 +84,7 @@ async fn verify_catalog(connection: &mut SqliteConnection) -> Result<()> {
     Ok(())
 }
 
-pub(super) async fn php_source_catalog(connection: &mut SqliteConnection) -> Result<Catalog> {
+pub(super) async fn php_source_catalog(connection: &mut SqliteConnection) -> Result<(Catalog, &'static str)> {
     let owned: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='dw_server_schema' COLLATE NOCASE)",
     )
@@ -85,20 +102,16 @@ pub(super) async fn php_source_catalog(connection: &mut SqliteConnection) -> Res
         .cloned()
         .collect();
     let actual = catalog(connection).await?;
-    if actual != expected {
-        let mut current = super::upgrade::source_catalog_variant(
-            &expected,
+    let layout = super::upgrade::source_layout(
+        &actual,
+        expected,
+        [
             include_str!("../../upgrade/php-2.8.0/sqlite.json"),
-        )?;
-        current.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
-        if actual != current {
-            return Err(refuse(
-                StatusCode::CONFLICT,
-                "upgrade_source_catalog_unqualified",
-            ));
-        }
-    }
-    Ok(actual)
+            include_str!("../../upgrade/php-2.9.7/sqlite.json"),
+        ],
+        |row| (row.0.clone(), row.1.clone()),
+    )?;
+    Ok((actual, layout))
 }
 
 pub(super) async fn verify(connection: &mut SqliteConnection) -> Result<()> {

@@ -44,7 +44,7 @@ export function checkCrossKindPollWake(record, profile) {
   }
   const sweep = following[sweepIndex];
   assert.equal(sweep.http, 200);
-  assert(['task', 'leased'].includes(sweep.poll_status));
+  assert.equal(sweep.poll_status, 'leased', 'a claim reports leased, as the worker protocol requires');
   assert.equal(sweep.task_is_null, false);
   assert.equal(typeof sweep.task_id, 'string');
   assert(sweep.task_id.length > 0, 'the ordinary poll separately grants a task');

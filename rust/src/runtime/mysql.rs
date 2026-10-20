@@ -13,15 +13,19 @@ pub const VERSION: i64 = 4;
 type Catalog = Vec<(String, String)>;
 
 pub const MARKER_SQL: &str = "CREATE TABLE dw_server_schema (engine VARCHAR(64) NOT NULL PRIMARY KEY,version BIGINT NOT NULL,bootstrap_checksum VARBINARY(48) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin";
-pub const LEDGER_SQL: &str = "CREATE TABLE IF NOT EXISTS _sqlx_migrations (version BIGINT PRIMARY KEY,description TEXT NOT NULL,installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,success BOOLEAN NOT NULL,checksum BLOB NOT NULL,execution_time BIGINT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+/// The marker row of a takeover in progress: `rust-takeover:<layout>`, with
+/// the completed step count as its version and the backup fingerprint's
+/// digest as its checksum. Native startup refuses it and PHP sees the marker.
+pub(super) const TAKEOVER_ENGINE: &str = "rust-takeover:";
+pub const LEDGER_SQL: &str ="CREATE TABLE IF NOT EXISTS _sqlx_migrations (version BIGINT PRIMARY KEY,description TEXT NOT NULL,installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,success BOOLEAN NOT NULL,checksum BLOB NOT NULL,execution_time BIGINT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
 
 #[derive(Clone, Copy)]
-enum Flavor {
+pub(super) enum Flavor {
     MySql,
     MariaDb,
 }
 impl Flavor {
-    async fn detect(connection: &mut MySqlConnection) -> Result<Self> {
+    pub(super) async fn detect(connection: &mut MySqlConnection) -> Result<Self> {
         let version: String = sqlx::query_scalar("SELECT VERSION()")
             .fetch_one(connection)
             .await?;
@@ -72,7 +76,35 @@ impl Flavor {
             Self::MariaDb => include_str!("../../migrations/mariadb/0004_catalog.json"),
         }))?)
     }
-    fn checksum(self) -> &'static [u8] {
+    /// The single native migration, which a takeover records as applied.
+    pub(super) fn migration(self) -> &'static Migration {
+        self.migrator().iter().next().expect("one native MySQL migration")
+    }
+    /// The native relations a fresh bootstrap adds after the frozen PHP
+    /// layout, each created only if missing so a resumed takeover can repeat
+    /// them. The poll index on `workflow_tasks` is added separately.
+    pub(super) fn native_relations_sql(self) -> Result<String> {
+        let (frozen, incarnations) = match self {
+            Self::MySql => (
+                include_str!("../../migrations/mysql/0003_full_schema.sql"),
+                include_str!("../../migrations/mysql/0004_worker_incarnations.sql"),
+            ),
+            Self::MariaDb => (
+                include_str!("../../migrations/mariadb/0003_full_schema.sql"),
+                include_str!("../../migrations/mariadb/0004_worker_incarnations.sql"),
+            ),
+        };
+        Ok(super::upgrade::native_relations(
+            frozen,
+            "-- Native receipts are separate",
+            incarnations,
+        )?
+        .replace(
+            "CREATE TABLE dw_worker_registration_incarnations",
+            "CREATE TABLE IF NOT EXISTS dw_worker_registration_incarnations",
+        ))
+    }
+    pub(super) fn checksum(self) -> &'static [u8] {
         self.migrator().iter().next().unwrap().checksum.as_ref()
     }
 }
@@ -83,7 +115,7 @@ fn options(options: MySqlConnectOptions) -> MySqlConnectOptions {
         .collation("utf8mb4_unicode_ci")
         .timezone(Some("+00:00".into()))
 }
-async fn configure(connection: &mut MySqlConnection) -> Result<()> {
+pub(super) async fn configure(connection: &mut MySqlConnection) -> Result<()> {
     sqlx::query("SET sql_quote_show_create=1,lock_wait_timeout=5,innodb_lock_wait_timeout=5")
         .execute(connection)
         .await?;
@@ -181,7 +213,7 @@ async fn catalog(connection: &mut MySqlConnection) -> Result<Catalog> {
     Ok(result)
 }
 
-pub(super) async fn php_source_catalog(connection: &mut MySqlConnection) -> Result<Catalog> {
+pub(super) async fn php_source_catalog(connection: &mut MySqlConnection) -> Result<(Catalog, &'static str)> {
     let marked: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND LOWER(TABLE_NAME)='dw_server_schema'")
         .fetch_one(&mut *connection).await?;
     if marked != 0 {
@@ -205,32 +237,91 @@ pub(super) async fn php_source_catalog(connection: &mut MySqlConnection) -> Resu
             ));
         }
     }
+    let actual = catalog(connection).await?;
+    source_layout(connection, actual).await
+}
+
+/// The PHP source catalog of a database whose takeover has written its
+/// marker and nothing else yet: native's exact marker table, set aside.
+pub(super) async fn fenced_source_catalog(connection: &mut MySqlConnection) -> Result<(Catalog, &'static str)> {
     let flavor = Flavor::detect(connection).await?;
-    let mut expected: Catalog = flavor.expected()?.into_iter()
+    let marker = flavor
+        .expected()?
+        .into_iter()
+        .find(|(table, _)| table == "dw_server_schema");
+    let mut actual = catalog(connection).await?;
+    let position = actual.iter().position(|(table, _)| table == "dw_server_schema");
+    match position {
+        Some(position) if Some(&actual[position]) == marker.as_ref() => {
+            actual.remove(position);
+        }
+        _ => {
+            return Err(refuse(
+                StatusCode::CONFLICT,
+                "upgrade_takeover_marker_unqualified",
+            ));
+        }
+    }
+    source_layout(connection, actual).await
+}
+
+async fn source_layout(
+    connection: &mut MySqlConnection,
+    mut actual: Catalog,
+) -> Result<(Catalog, &'static str)> {
+    let flavor = Flavor::detect(connection).await?;
+    let expected: Catalog = flavor.expected()?.into_iter()
         .filter(|(table, _)| !super::upgrade::native_relation(table))
         .map(|(table, ddl)| (table, ddl.replace(
             ",\n  KEY `dw_workflow_tasks_poll` (`namespace`(64),`queue`(64),`task_type`(16),`status`(16),`available_at`)", "")))
         .collect();
-    let mut actual = catalog(connection).await?;
     // MariaDB's information_schema collation ignores some underscores. Only
     // canonicalize catalog presentation; preserve every full definition.
-    expected.sort_by(|left, right| left.0.cmp(&right.0));
     actual.sort_by(|left, right| left.0.cmp(&right.0));
-    if actual != expected {
-        let delta = match flavor {
-            Flavor::MySql => include_str!("../../upgrade/php-2.8.0/mysql.json"),
-            Flavor::MariaDb => include_str!("../../upgrade/php-2.8.0/mariadb.json"),
-        };
-        let mut current = super::upgrade::source_catalog_variant(&expected, &canonical(delta))?;
-        current.sort_by(|left, right| left.0.cmp(&right.0));
-        if actual != current {
-            return Err(refuse(
-                StatusCode::CONFLICT,
-                "upgrade_source_catalog_unqualified",
-            ));
+    let deltas = match flavor {
+        Flavor::MySql => [
+            canonical(include_str!("../../upgrade/php-2.8.0/mysql.json")),
+            canonical(include_str!("../../upgrade/php-2.9.7/mysql.json")),
+        ],
+        Flavor::MariaDb => [
+            canonical(include_str!("../../upgrade/php-2.8.0/mariadb.json")),
+            canonical(include_str!("../../upgrade/php-2.9.7/mariadb.json")),
+        ],
+    };
+    let layout = super::upgrade::source_layout(
+        &actual,
+        expected.clone(),
+        [&deltas[0], &deltas[1]],
+        |row| row.0.clone(),
+    );
+    // Laravel's separate mariadb connection stores the backup hold owner as
+    // uuid rather than char(36); every release layout is otherwise the same.
+    let layout = match (layout, flavor) {
+        (Err(_), Flavor::MariaDb) => {
+            let driver = super::upgrade::source_catalog_variant(
+                &expected,
+                &canonical(include_str!("../../upgrade/mariadb-driver.json")),
+            )?;
+            match super::upgrade::source_layout(
+                &actual,
+                driver,
+                [&deltas[0], &deltas[1]],
+                |row| row.0.clone(),
+            )? {
+                "frozen" => "frozen+mariadb-driver",
+                "php-2.8.0" => "php-2.8.0+mariadb-driver",
+                "php-2.9.7" => "php-2.9.7+mariadb-driver",
+                _ => {
+                    return Err(refuse(
+                        StatusCode::CONFLICT,
+                        "upgrade_source_catalog_unqualified",
+                    ));
+                }
+            }
         }
-    }
-    Ok(actual)
+        (layout, _) => layout?,
+    };
+    Ok((actual, layout))
 }
 
 pub(super) fn source_options(options: MySqlConnectOptions) -> MySqlConnectOptions {
@@ -294,7 +385,7 @@ pub(super) async fn verify_history(connection: &mut MySqlConnection) -> Result<(
     Ok(())
 }
 
-async fn verify(connection: &mut MySqlConnection, flavor: Flavor) -> Result<()> {
+pub(super) async fn verify(connection: &mut MySqlConnection, flavor: Flavor) -> Result<()> {
     history(connection, flavor, false).await?;
     if catalog(connection).await? != flavor.expected()? {
         return Err(refuse(
@@ -360,6 +451,9 @@ async fn preflight(connection: &mut MySqlConnection, flavor: Flavor) -> Result<(
     if engines == ["rust-initializing"] {
         verify_initializing(connection, flavor).await?;
         Ok(())
+    } else if engines.iter().any(|engine| engine.starts_with(TAKEOVER_ENGINE)) {
+        // An interrupted takeover resumes only through upgrade-takeover.
+        Err(refuse(StatusCode::CONFLICT, "native_takeover_incomplete"))
     } else {
         verify(connection, flavor).await
     }
@@ -1007,6 +1101,358 @@ mod tests {
                 );
                 connection.close().await.unwrap();
             }
+            db.remove().await;
+        }
+    }
+
+    use crate::runtime::upgrade::{fingerprint, queue_binding::QueueSourceConfig, takeover};
+
+    const TAKEOVER_QUEUES: QueueSourceConfig<'static> = QueueSourceConfig {
+        connection: "database",
+        default_connection: "database",
+        default_queue: "default",
+    };
+
+    /// The frozen PHP layout, or a release layout rebuilt from the recorded
+    /// deltas (each changed table exactly as that release's PHP created it).
+    async fn php_layout(db: &Database, release: Option<&str>) -> Flavor {
+        let mut connection = db.connection().await;
+        let flavor = Flavor::detect(&mut connection).await.unwrap();
+        let (frozen, deltas) = match flavor {
+            Flavor::MySql => (
+                include_str!("../../migrations/mysql/0003_full_schema.sql"),
+                [
+                    include_str!("../../upgrade/php-2.8.0/mysql.json"),
+                    include_str!("../../upgrade/php-2.9.7/mysql.json"),
+                ],
+            ),
+            Flavor::MariaDb => (
+                include_str!("../../migrations/mariadb/0003_full_schema.sql"),
+                [
+                    include_str!("../../upgrade/php-2.8.0/mariadb.json"),
+                    include_str!("../../upgrade/php-2.9.7/mariadb.json"),
+                ],
+            ),
+        };
+        let php = &frozen[..frozen.find("-- Native receipts are separate").unwrap()];
+        connection.execute(php).await.unwrap();
+        connection
+            .execute("SET FOREIGN_KEY_CHECKS=1; ALTER TABLE workflow_tasks DROP KEY dw_workflow_tasks_poll")
+            .await
+            .unwrap();
+        let releases = match release {
+            None => 0,
+            Some("php-2.8.0") => 1,
+            Some(_) => 2,
+        };
+        for delta in &deltas[..releases] {
+            let delta: Value = serde_json::from_str(delta).unwrap();
+            for added in delta["add"].as_array().unwrap() {
+                let (table, ddl) = (added[0].as_str().unwrap(), added[1].as_str().unwrap());
+                connection
+                    .execute(table_sql("DROP TABLE IF EXISTS ", table, "").unwrap())
+                    .await
+                    .unwrap();
+                connection.execute(AssertSqlSafe(ddl.to_owned())).await.unwrap();
+            }
+        }
+        connection.close().await.unwrap();
+        flavor
+    }
+
+    async fn backup_fingerprint(db: &Database) -> String {
+        fingerprint::fingerprint_mysql(db.options.clone())
+            .await
+            .unwrap()["fingerprint"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    /// The physical schema and the fingerprint of every PHP row.
+    async fn source_state(db: &Database) -> (Catalog, String) {
+        let mut connection = db.connection().await;
+        let schema = catalog(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+        (schema, backup_fingerprint(db).await)
+    }
+
+    async fn sessions_ended(db: &Database) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let mut connection = db.connection().await;
+            let others: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE DB=DATABASE() AND ID<>CONNECTION_ID()")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+            connection.close().await.unwrap();
+            if others == 0 {
+                return;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "a takeover session survived");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    fn takeover_refused(result: Result<Value>, expected: &str) {
+        match result {
+            Err(super::super::RuntimeError::Refused { reason, .. }) => assert_eq!(reason, expected),
+            Err(error) => panic!("unexpected takeover error: {error}"),
+            Ok(report) => panic!("takeover was accepted: {report}"),
+        }
+    }
+
+    async fn registrations(db: &Database) {
+        let mut connection = db.connection().await;
+        connection.execute(
+            "INSERT INTO workflow_worker_registrations(worker_id,namespace,task_queue,runtime,registration_token,created_at,updated_at) VALUES ('current','default','q','php','0123456789abcdef0123456789abcdef','2026-10-20 09:00:00','2026-10-20 09:00:00');
+             INSERT INTO workflow_worker_registrations(worker_id,namespace,task_queue,runtime,created_at,updated_at) VALUES ('older','default','q','php','2026-10-20 09:00:00','2026-10-20 09:00:00');
+             INSERT INTO workflow_worker_registration_incarnations VALUES ('0123456789abcdef0123456789abcdef','default','current','active',0,NULL,'2026-10-20 09:00:00','2026-10-20 09:00:00');
+             INSERT INTO workflow_worker_registration_incarnations VALUES ('11111111111111111111111111111111','default','current','superseded',0,'2026-10-20 08:00:00','2026-10-20 07:00:00','2026-10-20 08:00:00');
+             INSERT INTO workflow_worker_registration_incarnations VALUES ('22222222222222222222222222222222','default','gone','deregistered',3,'2026-10-20 08:30:00','2026-10-20 07:00:00','2026-10-20 08:30:00');",
+        )
+        .await
+        .unwrap();
+        connection.close().await.unwrap();
+    }
+
+    /// Native opens the database and holds the converted incarnations.
+    async fn converted(db: &Database) {
+        let storage = MySqlStorage::open(db.options.clone()).await.unwrap();
+        storage.close().await;
+        MySqlStorage::check(db.options.clone()).await.unwrap();
+        let mut connection = db.connection().await;
+        let incarnations: Vec<(String, String, String, Option<i64>, bool)> = sqlx::query_as(
+            "SELECT token,worker_id,status,recovered_workflow_task_count,finished_at IS NOT NULL FROM dw_worker_registration_incarnations ORDER BY worker_id,status",
+        )
+        .fetch_all(&mut connection)
+        .await
+        .unwrap();
+        connection.close().await.unwrap();
+        assert_eq!(incarnations.len(), 4, "{incarnations:?}");
+        assert!(incarnations.contains(&(
+            "0123456789abcdef0123456789abcdef".into(),
+            "current".into(),
+            "active".into(),
+            None,
+            false
+        )));
+        assert!(incarnations.contains(&(
+            "22222222222222222222222222222222".into(),
+            "gone".into(),
+            "deregistered".into(),
+            Some(3),
+            true
+        )));
+        assert!(incarnations.iter().any(|row| row.1 == "older" && row.2 == "active" && row.0.len() == 32));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an isolated MySQL/MariaDB create-database role"]
+    async fn qualification_takeover_converts_php_297_and_native_opens_it() {
+        let db = Database::new().await;
+        php_layout(&db, Some("php-2.9.7")).await;
+        registrations(&db).await;
+        let fingerprint = backup_fingerprint(&db).await;
+        let report = takeover::take_over_mysql(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES)
+            .await
+            .unwrap();
+        assert_eq!(report["status"], "taken_over", "{report}");
+        assert_eq!(report["source_layout"], "php-2.9.7");
+        assert_eq!(report["converted"]["incarnations_copied"], 3, "{report}");
+        assert_eq!(report["converted"]["incarnations_created"], 1, "{report}");
+        converted(&db).await;
+        takeover_refused(
+            takeover::take_over_mysql(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES).await,
+            "upgrade_source_already_owned",
+        );
+        db.remove().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an isolated MySQL/MariaDB create-database role"]
+    async fn qualification_takeover_converts_the_mariadb_driver_layout() {
+        let db = Database::new().await;
+        if let Flavor::MySql = php_layout(&db, Some("php-2.9.7")).await {
+            db.remove().await;
+            return;
+        }
+        // Laravel's mariadb connection stores the backup hold owner as uuid.
+        let mut connection = db.connection().await;
+        connection
+            .execute("ALTER TABLE runtime_external_payload_backup_hold MODIFY owner uuid DEFAULT NULL")
+            .await
+            .unwrap();
+        connection.close().await.unwrap();
+        let fingerprint = backup_fingerprint(&db).await;
+        let report = takeover::take_over_mysql(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES)
+            .await
+            .unwrap();
+        assert_eq!(report["source_layout"], "php-2.9.7+mariadb-driver", "{report}");
+        MySqlStorage::check(db.options.clone()).await.unwrap();
+        db.remove().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an isolated MySQL/MariaDB create-database role"]
+    async fn qualification_takeover_of_the_frozen_layout_adds_only_native_relations() {
+        let db = Database::new().await;
+        php_layout(&db, None).await;
+        let fingerprint = backup_fingerprint(&db).await;
+        let report = takeover::take_over_mysql(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES)
+            .await
+            .unwrap();
+        assert_eq!(report["source_layout"], "frozen", "{report}");
+        MySqlStorage::check(db.options.clone()).await.unwrap();
+        db.remove().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an isolated MySQL/MariaDB create-database role"]
+    async fn qualification_takeover_refusals_before_the_marker_leave_php_unchanged() {
+        let db = Database::new().await;
+        php_layout(&db, Some("php-2.9.7")).await;
+        let fingerprint = backup_fingerprint(&db).await;
+        let original = source_state(&db).await;
+        takeover_refused(
+            takeover::take_over_mysql(db.options.clone(), &format!("sha256:{}", "0".repeat(64)), &TAKEOVER_QUEUES).await,
+            "upgrade_backup_fingerprint_mismatch",
+        );
+        takeover_refused(
+            takeover::take_over_mysql(db.options.clone(), &format!("sha256:{}", "z".repeat(64)), &TAKEOVER_QUEUES).await,
+            "upgrade_backup_fingerprint_required",
+        );
+        // Any other session on the database refuses the takeover.
+        let php = db.connection().await;
+        takeover_refused(
+            takeover::take_over_mysql(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES).await,
+            "upgrade_source_in_use",
+        );
+        php.close().await.unwrap();
+        assert_eq!(source_state(&db).await, original);
+        // A write after the backup changes the digest, so the old one is refused.
+        let mut php = db.connection().await;
+        php.execute("INSERT INTO migrations(migration,batch) VALUES ('after-backup',9)")
+            .await
+            .unwrap();
+        php.close().await.unwrap();
+        let written = source_state(&db).await;
+        takeover_refused(
+            takeover::take_over_mysql(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES).await,
+            "upgrade_backup_fingerprint_mismatch",
+        );
+        assert_eq!(source_state(&db).await, written);
+        db.remove().await;
+        for (statement, expected) in [
+            (
+                "INSERT INTO workflow_service_calls(id,endpoint_name,service_name,operation_name,status,operation_mode) VALUES ('call','e','s','o','accepted','sync')",
+                "upgrade_source_service_calls_unsupported",
+            ),
+            (
+                "INSERT INTO runtime_external_payloads(id,namespace,storage_uri,storage_uri_sha256,codec,sha256,size_bytes) VALUES ('p','default','s3://b/k','x','avro','y',1)",
+                "upgrade_source_external_payloads_unsupported",
+            ),
+        ] {
+            let db = Database::new().await;
+            php_layout(&db, Some("php-2.9.7")).await;
+            let mut connection = db.connection().await;
+            connection.execute(statement).await.unwrap();
+            connection.close().await.unwrap();
+            let fingerprint = backup_fingerprint(&db).await;
+            let before = source_state(&db).await;
+            takeover_refused(
+                takeover::take_over_mysql(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES).await,
+                expected,
+            );
+            assert_eq!(source_state(&db).await, before, "{expected}");
+            db.remove().await;
+        }
+    }
+
+    // Named under bootstrap_child so the qualification run's existing skip of
+    // that subprocess helper also skips this one.
+    #[tokio::test]
+    #[ignore = "invoked only as a subprocess by the takeover interruption qualification"]
+    async fn bootstrap_child_takeover() {
+        let url = std::env::var("DW_TAKEOVER_TEST_DATABASE").unwrap();
+        let fingerprint = std::env::var("DW_TAKEOVER_TEST_FINGERPRINT").unwrap();
+        // Parks at DW_TAKEOVER_TEST_BOUNDARY, where the parent kills it.
+        let report = takeover::take_over_mysql(
+            MySqlConnectOptions::from_str(&url).unwrap(),
+            &fingerprint,
+            &TAKEOVER_QUEUES,
+        )
+        .await;
+        panic!("takeover returned instead of parking: {report:?}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "requires an isolated MySQL/MariaDB create-database role"]
+    async fn qualification_takeover_killed_at_each_step_resumes_with_the_same_fingerprint() {
+        use std::os::unix::process::ExitStatusExt;
+        for boundary in [
+            "before-marker-row",
+            "after-step-1",
+            "after-step-3",
+            "after-step-8",
+        ] {
+            let db = Database::new().await;
+            php_layout(&db, Some("php-2.9.7")).await;
+            registrations(&db).await;
+            let fingerprint = backup_fingerprint(&db).await;
+            let directory = tempfile::tempdir().unwrap();
+            let receipt = directory.path().join("boundary");
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runtime::mysql::tests::bootstrap_child_takeover",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("DW_TAKEOVER_TEST_DATABASE", &db.url)
+                .env("DW_TAKEOVER_TEST_FINGERPRINT", &fingerprint)
+                .env("DW_TAKEOVER_TEST_BOUNDARY", boundary)
+                .env("DW_TAKEOVER_TEST_RECEIPT", &receipt)
+                .spawn()
+                .unwrap();
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+            while !receipt.exists() && tokio::time::Instant::now() < deadline {
+                if let Some(status) = child.try_wait().unwrap() {
+                    panic!("child exited before {boundary}: {status}");
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            if !receipt.exists() {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("child did not reach {boundary}");
+            }
+            child.kill().unwrap();
+            assert_eq!(child.wait().unwrap().signal(), Some(9));
+            sessions_ended(&db).await;
+            // The marker already fences PHP, and native will not open the
+            // database until the takeover finishes.
+            let mut connection = db.connection().await;
+            let marked: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='dw_server_schema'")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+            connection.close().await.unwrap();
+            assert_eq!(marked, 1, "{boundary}");
+            assert!(MySqlStorage::open(db.options.clone()).await.is_err(), "{boundary}");
+            if boundary == "after-step-3" {
+                takeover_refused(
+                    takeover::take_over_mysql(db.options.clone(), &format!("sha256:{}", "0".repeat(64)), &TAKEOVER_QUEUES).await,
+                    "upgrade_backup_fingerprint_mismatch",
+                );
+            }
+            let report = takeover::take_over_mysql(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES)
+                .await
+                .unwrap();
+            assert_eq!(report["status"], "taken_over", "{boundary}: {report}");
+            assert_eq!(report["source_layout"], "php-2.9.7", "{boundary}");
+            converted(&db).await;
             db.remove().await;
         }
     }

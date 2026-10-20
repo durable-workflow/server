@@ -8,8 +8,8 @@
 //! per-table row counts leave the database. The fingerprint grants nothing:
 //! every compatibility, backup, quiescence and takeover flag stays false.
 use super::{
-    Result, close, expired, mysql, mysql_source, open_sqlite_source, postgres, readonly_source,
-    refuse, schema,
+    Result, bounded, expired, mysql_source, mysql_source_catalog, open_sqlite_source, postgres,
+    readonly_source, refuse, schema,
 };
 use axum::http::StatusCode;
 use futures_util::TryStreamExt;
@@ -17,8 +17,8 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use sqlx::{
-    AssertSqlSafe, Connection, PgConnection, Row, mysql::MySqlConnectOptions,
-    postgres::PgConnectOptions,
+    AssertSqlSafe, Connection, MySqlConnection, PgConnection, Row, SqliteConnection,
+    mysql::MySqlConnectOptions, postgres::PgConnectOptions,
 };
 use std::{collections::BTreeMap, time::Duration};
 use tokio::time::{Instant, timeout, timeout_at};
@@ -60,7 +60,7 @@ impl Digest {
         }
     }
 
-    fn report(self, backend: &str) -> Value {
+    fn report(self, backend: &str, layout: &str) -> Value {
         let hex: String = self
             .hasher
             .finalize()
@@ -69,7 +69,8 @@ impl Digest {
             .collect();
         json!({
             "schema":"durable-workflow.rust-upgrade-source-fingerprint.v1",
-            "status":"fingerprinted", "backend":backend, "fingerprint":format!("sha256:{hex}"),
+            "status":"fingerprinted", "backend":backend, "source_layout":layout,
+            "fingerprint":format!("sha256:{hex}"),
             "table_rows":self.rows, "elapsed_ms":self.started.elapsed().as_millis() as u64,
             "source_mutated":false, "takeover_allowed":false, "backup_verified":false,
             "php_quiescence_verified":false, "stored_representation_compatibility_verified":false
@@ -79,7 +80,7 @@ impl Digest {
 
 /// Names come from a catalog equal to a qualified PHP layout. Anything else is
 /// refused rather than quoted.
-fn identifier(name: &str) -> Result<&str> {
+pub(super) fn identifier(name: &str) -> Result<&str> {
     if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
         return Err(refuse(
             StatusCode::CONFLICT,
@@ -122,21 +123,6 @@ fn row_select(
     ))
 }
 
-/// Runs a read on a dedicated source connection within the deadline, then
-/// closes the connection whatever the read returned.
-async fn bounded_read<C: Connection>(
-    mut connection: C,
-    deadline: Instant,
-    read: impl AsyncFnOnce(&mut C) -> Result<Value>,
-) -> Result<Value> {
-    let result = timeout_at(deadline, read(&mut connection))
-        .await
-        .map_err(|_| expired())
-        .and_then(|result| result);
-    close(connection.close()).await?;
-    result
-}
-
 // Every rendered value is text, framed in column order.
 macro_rules! hash_rows {
     ($tx:ident, $digest:ident, $table:expr, $sql:expr, $width:expr) => {{
@@ -168,35 +154,41 @@ pub async fn fingerprint_sqlite_cli(path: &str) -> Result<Value> {
 pub async fn fingerprint_sqlite(path: &str) -> Result<Value> {
     let deadline = Instant::now() + BUDGET;
     let connection = open_sqlite_source(path, deadline).await?;
-    bounded_read(connection, deadline, async |connection| {
+    bounded(connection, deadline, async |connection| {
         // One deferred read transaction keeps one snapshot of the file.
         let mut tx = connection.begin().await?;
-        let catalog = schema::php_source_catalog(&mut tx).await?;
-        let mut digest = Digest::new("sqlite", &catalog)?;
-        for (_, table, _, _) in catalog.iter().filter(|(kind, _, _, _)| kind == "table") {
-            let table = identifier(table)?;
-            let columns: Vec<String> =
-                sqlx::query_scalar("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
-                    .bind(table)
-                    .fetch_all(&mut *tx)
-                    .await?;
-            let key: Vec<String> =
-                sqlx::query_scalar("SELECT name FROM pragma_table_info(?1) WHERE pk>0 ORDER BY pk")
-                    .bind(table)
-                    .fetch_all(&mut *tx)
-                    .await?;
-            digest.table(table, &columns);
-            // quote() keeps the storage class: integers, text and blobs render
-            // exactly. Reals use 17 significant digits, which round-trip.
-            let sql = row_select(&format!("\"{table}\""), &columns, &key, '"', |c, _| {
-                format!("CASE typeof(\"{c}\") WHEN 'real' THEN printf('%!.17g',\"{c}\") ELSE quote(\"{c}\") END")
-            })?;
-            hash_rows!(tx, digest, table, sql, columns.len());
-        }
+        let report = sqlite_digest(&mut tx).await;
         tx.rollback().await?;
-        Ok(digest.report("sqlite"))
+        report
     })
     .await
+}
+
+/// The SQLite fingerprint report, read inside the caller's transaction.
+pub(super) async fn sqlite_digest(tx: &mut SqliteConnection) -> Result<Value> {
+    let (catalog, layout) = schema::php_source_catalog(&mut *tx).await?;
+    let mut digest = Digest::new("sqlite", &catalog)?;
+    for (_, table, _, _) in catalog.iter().filter(|(kind, _, _, _)| kind == "table") {
+        let table = identifier(table)?;
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
+                .bind(table)
+                .fetch_all(&mut *tx)
+                .await?;
+        let key: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info(?1) WHERE pk>0 ORDER BY pk")
+                .bind(table)
+                .fetch_all(&mut *tx)
+                .await?;
+        digest.table(table, &columns);
+        // quote() keeps the storage class: integers, text and blobs render
+        // exactly. Reals use 17 significant digits, which round-trip.
+        let sql = row_select(&format!("\"{table}\""), &columns, &key, '"', |c, _| {
+            format!("CASE typeof(\"{c}\") WHEN 'real' THEN printf('%!.17g',\"{c}\") ELSE quote(\"{c}\") END")
+        })?;
+        hash_rows!(tx, digest, table, sql, columns.len());
+    }
+    Ok(digest.report("sqlite", layout))
 }
 
 pub async fn fingerprint_postgres(options: PgConnectOptions) -> Result<Value> {
@@ -207,37 +199,45 @@ pub async fn fingerprint_postgres(options: PgConnectOptions) -> Result<Value> {
     )
     .await
     .map_err(|_| expired())??;
-    bounded_read(connection, deadline, async |connection| {
+    bounded(connection, deadline, async |connection| {
         let mut tx = connection
             .begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .await?;
-        // Fixed text forms for timestamps, intervals, floats and bytes.
-        sqlx::raw_sql("SET LOCAL TimeZone='UTC'; SET LOCAL DateStyle='ISO, YMD'; SET LOCAL IntervalStyle='postgres'; SET LOCAL extra_float_digits=1; SET LOCAL bytea_output='hex'")
-            .execute(&mut *tx)
-            .await?;
-        let catalog = postgres::php_source_catalog(&mut tx).await?;
-        let mut digest = Digest::new("pgsql", &catalog)?;
-        let tables: Vec<String> = catalog
-            .iter()
-            .filter(|(kind, _, data)| kind == "relation" && data.0["kind"] == "r")
-            .map(|(_, name, _)| name.clone())
-            .collect();
-        for table in &tables {
-            let table = identifier(table)?;
-            let columns: Vec<String> = sqlx::query_scalar("SELECT column_name::text FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 ORDER BY ordinal_position")
-                .bind(table).fetch_all(&mut *tx).await?;
-            let key: Vec<String> = sqlx::query_scalar("SELECT a.attname::text FROM pg_index i CROSS JOIN LATERAL unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, position) JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.attnum WHERE i.indrelid=('public.'||quote_ident($1))::regclass AND i.indisprimary ORDER BY k.position")
-                .bind(table).fetch_all(&mut *tx).await?;
-            digest.table(table, &columns);
-            let sql = row_select(&format!("public.\"{table}\""), &columns, &key, '"', |c, _| {
-                format!("quote_nullable(\"{c}\")")
-            })?;
-            hash_rows!(tx, digest, table, sql, columns.len());
-        }
+        let report = postgres_digest(&mut tx).await;
         tx.rollback().await?;
-        Ok(digest.report("pgsql"))
+        report
     })
     .await
+}
+
+/// The PostgreSQL fingerprint report, read inside the caller's transaction.
+/// Its settings last until that transaction ends.
+pub(super) async fn postgres_digest(tx: &mut PgConnection) -> Result<Value> {
+    // Fixed text forms for timestamps, intervals, floats and bytes. Long table
+    // reads are expected, so only the client deadline bounds them.
+    sqlx::raw_sql("SET LOCAL TimeZone='UTC'; SET LOCAL DateStyle='ISO, YMD'; SET LOCAL IntervalStyle='postgres'; SET LOCAL extra_float_digits=1; SET LOCAL bytea_output='hex'; SET LOCAL statement_timeout=0")
+        .execute(&mut *tx)
+        .await?;
+    let (catalog, layout) = postgres::php_source_catalog(&mut *tx).await?;
+    let mut digest = Digest::new("pgsql", &catalog)?;
+    let tables: Vec<String> = catalog
+        .iter()
+        .filter(|(kind, _, data)| kind == "relation" && data.0["kind"] == "r")
+        .map(|(_, name, _)| name.clone())
+        .collect();
+    for table in &tables {
+        let table = identifier(table)?;
+        let columns: Vec<String> = sqlx::query_scalar("SELECT column_name::text FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 ORDER BY ordinal_position")
+            .bind(table).fetch_all(&mut *tx).await?;
+        let key: Vec<String> = sqlx::query_scalar("SELECT a.attname::text FROM pg_index i CROSS JOIN LATERAL unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, position) JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.attnum WHERE i.indrelid=('public.'||quote_ident($1))::regclass AND i.indisprimary ORDER BY k.position")
+            .bind(table).fetch_all(&mut *tx).await?;
+        digest.table(table, &columns);
+        let sql = row_select(&format!("public.\"{table}\""), &columns, &key, '"', |c, _| {
+            format!("quote_nullable(\"{c}\")")
+        })?;
+        hash_rows!(tx, digest, table, sql, columns.len());
+    }
+    Ok(digest.report("pgsql", layout))
 }
 
 pub async fn fingerprint_mysql(options: MySqlConnectOptions) -> Result<Value> {
@@ -245,42 +245,50 @@ pub async fn fingerprint_mysql(options: MySqlConnectOptions) -> Result<Value> {
     // TIMESTAMP values render in UTC. Long table reads are expected, but lock
     // waits stay short; the client deadline bounds the whole read.
     let (connection, backend) = mysql_source(options, deadline, true, 0).await?;
-    bounded_read(connection, deadline, async |connection| {
+    bounded(connection, deadline, async |connection| {
         let mut tx = connection
             .begin_with("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
             .await?;
-        let catalog = mysql::php_source_catalog(&mut tx).await?;
-        let mut digest = Digest::new(backend, &catalog)?;
-        for (table, _) in &catalog {
-            let table = identifier(table)?;
-            let columns: Vec<(String, String)> = sqlx::query_as("SELECT CAST(COLUMN_NAME AS CHAR),CAST(DATA_TYPE AS CHAR) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? ORDER BY ORDINAL_POSITION")
-                .bind(table).fetch_all(&mut *tx).await?;
-            let key: Vec<String> = sqlx::query_scalar("SELECT CAST(COLUMN_NAME AS CHAR) FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND CONSTRAINT_NAME='PRIMARY' ORDER BY ORDINAL_POSITION")
-                .bind(table).fetch_all(&mut *tx).await?;
-            let (names, kinds): (Vec<String>, Vec<String>) = columns.into_iter().unzip();
-            digest.table(table, &names);
-            // Binary values render as hex literals; everything else as its
-            // quoted string form.
-            let sql = row_select(&format!("`{table}`"), &names, &key, '`', |c, index| {
-                match kinds[index].to_ascii_lowercase().as_str() {
-                    "binary" | "varbinary" | "tinyblob" | "blob" | "mediumblob" | "longblob" | "bit" => format!(
-                        "CAST(IF(`{c}` IS NULL,'NULL',CONCAT('X''',HEX(`{c}`),'''')) AS CHAR CHARACTER SET utf8mb4)"
-                    ),
-                    _ => format!("CAST(QUOTE(`{c}`) AS CHAR CHARACTER SET utf8mb4)"),
-                }
-            })?;
-            hash_rows!(tx, digest, table, sql, names.len());
-        }
-        // MySQL's metadata is not an MVCC snapshot. Refuse a catalog that
-        // changed while the rows were read.
-        if mysql::php_source_catalog(&mut tx).await? != catalog {
-            return Err(refuse(
-                StatusCode::CONFLICT,
-                "upgrade_source_catalog_changed",
-            ));
-        }
+        let report = mysql_digest(&mut tx, backend, false).await;
         tx.rollback().await?;
-        Ok(digest.report(backend))
+        report
     })
     .await
+}
+
+/// The MySQL or MariaDB fingerprint report, read inside the caller's
+/// consistent snapshot. With `fenced`, a takeover's own marker is set aside,
+/// so the digest is the one the backup had.
+pub(super) async fn mysql_digest(tx: &mut MySqlConnection, backend: &str, fenced: bool) -> Result<Value> {
+    let (catalog, layout) = mysql_source_catalog(&mut *tx, fenced).await?;
+    let mut digest = Digest::new(backend, &catalog)?;
+    for (table, _) in &catalog {
+        let table = identifier(table)?;
+        let columns: Vec<(String, String)> = sqlx::query_as("SELECT CAST(COLUMN_NAME AS CHAR),CAST(DATA_TYPE AS CHAR) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? ORDER BY ORDINAL_POSITION")
+            .bind(table).fetch_all(&mut *tx).await?;
+        let key: Vec<String> = sqlx::query_scalar("SELECT CAST(COLUMN_NAME AS CHAR) FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND CONSTRAINT_NAME='PRIMARY' ORDER BY ORDINAL_POSITION")
+            .bind(table).fetch_all(&mut *tx).await?;
+        let (names, kinds): (Vec<String>, Vec<String>) = columns.into_iter().unzip();
+        digest.table(table, &names);
+        // Binary values render as hex literals; everything else as its
+        // quoted string form.
+        let sql = row_select(&format!("`{table}`"), &names, &key, '`', |c, index| {
+            match kinds[index].to_ascii_lowercase().as_str() {
+                "binary" | "varbinary" | "tinyblob" | "blob" | "mediumblob" | "longblob" | "bit" => format!(
+                    "CAST(IF(`{c}` IS NULL,'NULL',CONCAT('X''',HEX(`{c}`),'''')) AS CHAR CHARACTER SET utf8mb4)"
+                ),
+                _ => format!("CAST(QUOTE(`{c}`) AS CHAR CHARACTER SET utf8mb4)"),
+            }
+        })?;
+        hash_rows!(tx, digest, table, sql, names.len());
+    }
+    // MySQL's metadata is not an MVCC snapshot. Refuse a catalog that
+    // changed while the rows were read.
+    if mysql_source_catalog(&mut *tx, fenced).await?.0 != catalog {
+        return Err(refuse(
+            StatusCode::CONFLICT,
+            "upgrade_source_catalog_changed",
+        ));
+    }
+    Ok(digest.report(backend, layout))
 }

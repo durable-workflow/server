@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# A separate published PHP cohort; inventory is not migration or SDK takeover.
+# A separate published PHP cohort: inventory and refusals, a verified backup,
+# and the takeover of a restored copy that native then resumes.
 set -euo pipefail
 test "$#" = 1 || exit 2
 backend=$1
@@ -11,9 +12,15 @@ docker network inspect "$RESOURCE_SCOPE" >/dev/null
 image=${DW_PARITY_UPGRADE_PHP_IMAGE:-ghcr.io/durable-workflow/server@sha256:cba7c4c6732529293ef6c2625a64785dcb21b4f7fe0013fdc74f1af466f534ac}
 [[ "$image" =~ ^ghcr.io/durable-workflow/server@sha256:[0-9a-f]{64}$ ]] || exit 2
 rust_image=mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
-resource="$RESOURCE_SCOPE-upgrade"
-state=parity-upgrade-source-state
-evidence=parity-evidence/upgrade-source
+# A labeled run observes another release beside the default one. Its state,
+# evidence, containers and databases are separate, and it names the layout
+# inspection must report for that release.
+label=${DW_PARITY_UPGRADE_LABEL:-}
+[[ $label =~ ^[a-z0-9]*$ ]] || exit 2
+layout=${DW_PARITY_UPGRADE_EXPECTED_LAYOUT:-php-2.8.0}
+resource="$RESOURCE_SCOPE-upgrade${label:+-$label}"
+state=parity-upgrade-source-state${label:+-$label}
+evidence=parity-evidence/upgrade-source${label:+-$label}
 test -f rust-target/debug/durable-workflow-server
 git diff --quiet
 git diff --cached --quiet
@@ -26,7 +33,7 @@ mkdir -p "$state" "$evidence"
 chmod a+rwx "$state" "$evidence"
 printf '%s\n' "$RESOURCE_SCOPE" > "$evidence/owner.txt"
 trap 'printf "%s\n" "$?" > "$evidence/profile-status.txt"' EXIT
-database=upgrade_source_ref
+database=upgrade_source_ref${label:+_$label}
 password=${DW_PARITY_UPGRADE_DB_PASSWORD:-parity-disposable-password}
 case "$backend" in
   mysql) host=${DW_PARITY_UPGRADE_DB_HOST:-parity-mysql}; admin=(-e DB_CONNECTION=mysql -e DB_HOST="$host" -e DB_USERNAME=root -e DB_PASSWORD="$password") ;;
@@ -37,7 +44,7 @@ esac
 if test "$backend" = mysql; then
   docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint mysql "$MYSQL_IMAGE" \
     -h "$host" -uroot -p"$password" \
-    -e 'CREATE DATABASE upgrade_source_ref CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci' > "$evidence/create.txt" 2>&1
+    -e "CREATE DATABASE $database CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci" > "$evidence/create.txt" 2>&1
 elif test "$backend" = pgsql; then
   docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" -e PGPASSWORD="$password" \
     --entrypoint createdb "$POSTGRES_IMAGE" -h "$host" -U parity "$database" > "$evidence/create.txt" 2>&1
@@ -46,8 +53,11 @@ else
   chmod 0666 "$state/database.sqlite"
 fi
 printf '%s\n' "$RESOURCE_SCOPE" > "$evidence/database-owned.txt"
+# Every backend also takes over a copy and resumes the originals, so the
+# timer is short.
+timer_seconds=60
 configuration=("${admin[@]}" -e DB_DATABASE="$database" -e DW_AUTH_TOKEN=upgrade-fixture-token
-  -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DB_SQLITE_JOURNAL_MODE=DELETE)
+  -e CACHE_STORE=file -e QUEUE_CONNECTION=database)
 php_run() {
   docker run --rm --name "$resource-control" --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
     --network "$RESOURCE_SCOPE" "${configuration[@]}" -v "$PWD/$state:/state" -v "$PWD:/source:ro" \
@@ -65,20 +75,34 @@ for attempt in $(seq 1 30); do
 done
 test "$ready" = 1
 docker run --rm --name "$resource-author" --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
-  --network "$RESOURCE_SCOPE" -e DW_PARITY_TOKEN=upgrade-fixture-token -v "$PWD:/source:ro" --entrypoint php "$image" \
+  --network "$RESOURCE_SCOPE" -e DW_PARITY_TOKEN=upgrade-fixture-token -e DW_PARITY_UPGRADE_TIMER_SECONDS="$timer_seconds" -v "$PWD:/source:ro" --entrypoint php "$image" \
   /source/scripts/conformance/server-parity/upgrade-source-author.php http://parity-upgrade-php:8080 upgrade-source \
   > "$evidence/originals.json" 2> "$evidence/author.stderr"
 docker stop --signal SIGTERM --time 10 "$resource-php" >/dev/null
 docker inspect --format '{{json .State}}' "$resource-php" > "$evidence/stopped-state.json"
 jq -e '.Running==false and .ExitCode==0 and .OOMKilled==false' "$evidence/stopped-state.json" >/dev/null
 if test "$backend" = sqlite; then
+  # PHP Server keeps SQLite in WAL mode. Once PHP is stopped, the source is
+  # switched to the rollback journal the upgrade commands need, as an operator
+  # does first; its rows are unchanged.
+  [[ "$(od -An -tu1 -j18 -N2 "$state/database.sqlite" | tr -s ' ')" == " 2 2" ]]
+  docker run --rm --name "$resource-prepare" --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
+    --network none -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/database.sqlite -e DW_RUST_EXPERIMENTAL=1 \
+    -v "$PWD/$state:/state" -v "$PWD/rust-target:/target:ro" \
+    --entrypoint /target/debug/durable-workflow-server "$rust_image" upgrade-prepare-sqlite \
+    > "$evidence/prepare.json" 2> "$evidence/prepare.stderr"
+  jq -e '.status=="rollback_journal" and .previous_journal_mode=="wal" and .source_mutated==true' \
+    "$evidence/prepare.json" >/dev/null
+  [[ "$(od -An -tu1 -j18 -N2 "$state/database.sqlite" | tr -s ' ')" == " 1 1" ]]
+fi
+if test "$backend" = sqlite; then
   docker run --rm --name "$resource-control" --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
     --network=none -v "$PWD/$state:/state:ro" -v "$PWD:/source:ro" --entrypoint php "$image" \
     /source/scripts/conformance/server-parity/upgrade-source-sqlite-representations.php upgrade-source \
     > "$evidence/representations-comparison.json"
   jq -e '.outcome=="pass" and .source_mutated==false and .php_objects_executed==false
-    and (.runs|length)==2 and (.tasks|length)==4 and (.activities|length)==1
-    and (.history|length)==7 and (.queue_jobs|length)==1
+    and (.runs|length)==4 and (.tasks|length)==7 and (.activities|length)==1
+    and (.history|length)==13 and (.queue_jobs|length)==1
     and .queue_jobs[0].canonical_timer_task_match==true
     and all(.runs[]; .typed_arguments_match==true)
     and .backup_verified==false and .stored_representation_compatibility_verified==false
@@ -110,7 +134,7 @@ snapshot() {
 }
 snapshot > "$evidence/before.json"
 inspect_source > "$evidence/inspection.json" 2> "$evidence/inspection.stderr"
-jq -e '.status=="inspected" and (.table_rows|length)==50 and .table_rows.workflow_runs==2
+jq -e --arg layout "$layout" '.status=="inspected" and .source_layout==$layout and (.table_rows|length)==50 and .table_rows.workflow_runs==4
   and .table_rows.activity_executions==1 and .catalog_visibility=="configured_role"
   and .source_mutated==false and .takeover_allowed==false and .backup_verified==false
   and .php_quiescence_verified==false and .stored_representation_compatibility_verified==false' "$evidence/inspection.json" >/dev/null
@@ -121,10 +145,10 @@ jq -e '.status=="inspected" and .queue_inspection.status=="known_subset_bound"
   and .source_mutated==false and .takeover_allowed==false and .backup_verified==false
   and .php_quiescence_verified==false and .stored_representation_compatibility_verified==false' "$evidence/queue-inspection.json" >/dev/null
 inspect_source upgrade-payload-inspect > "$evidence/payload-inspection.json" 2> "$evidence/payload-inspection.stderr"
-jq -e '.status=="inspected" and (.payload_inspection.columns|length)==4
+jq -e '.status=="inspected" and (.payload_inspection.columns|length)==8
   and .payload_inspection.references_metadata_supported==true
   and ([.payload_inspection.columns[].counts.php_v1_references]|add)==0
-  and ([.payload_inspection.columns[].counts.avro_inline_values]|add)==3
+  and ([.payload_inspection.columns[].counts.avro_inline_values]|add)==11
   and ([.payload_inspection.columns[].counts.other_unvalidated]|add)==0
   and .payload_inspection.inline_values_verified==true
   and .payload_inspection.inline_validation_limits=={encoded_frame_bytes:65536,traversal_depth:64,traversal_visits:16384,scalar_allocation_bytes:65536}
@@ -141,8 +165,8 @@ fingerprint() {
     --entrypoint /target/debug/durable-workflow-server "$rust_image" upgrade-fingerprint
 }
 fingerprint "$database" > "$evidence/fingerprint.json" 2> "$evidence/fingerprint.stderr"
-jq -e '.status=="fingerprinted" and (.fingerprint|test("^sha256:[0-9a-f]{64}$"))
-  and (.table_rows|length)==50 and .table_rows.workflow_runs==2 and .table_rows.jobs==1
+jq -e --arg layout "$layout" '.status=="fingerprinted" and .source_layout==$layout and (.fingerprint|test("^sha256:[0-9a-f]{64}$"))
+  and (.table_rows|length)==50 and .table_rows.workflow_runs==4 and .table_rows.jobs==1
   and .source_mutated==false and .takeover_allowed==false and .backup_verified==false
   and .php_quiescence_verified==false and .stored_representation_compatibility_verified==false' "$evidence/fingerprint.json" >/dev/null
 source_fingerprint=$(jq -r .fingerprint "$evidence/fingerprint.json")
@@ -151,7 +175,7 @@ fingerprint "$database" > "$evidence/fingerprint-repeat.json" 2>> "$evidence/fin
 # Back up the stopped source and restore it into a separate database, as the
 # backup procedure does. The restored copy must fingerprint equal, and one
 # changed row in it must change the fingerprint.
-restored=upgrade_restore_ref
+restored=upgrade_restore_ref${label:+_$label}
 case "$backend" in
   mysql)
     mysql_admin() {
@@ -197,6 +221,80 @@ change_restored
 fingerprint "$restored" > "$evidence/changed-fingerprint.json" 2>> "$evidence/fingerprint.stderr"
 changed_fingerprint=$(jq -r .fingerprint "$evidence/changed-fingerprint.json")
 [[ $changed_fingerprint =~ ^sha256:[0-9a-f]{64}$ && $changed_fingerprint != "$source_fingerprint" ]]
+# Backup-first takeover of a copy of the stopped source, as an operator's
+# live database: its digest is the one the restored backup matched. Native
+# then resumes the originals, and PHP must refuse the upgraded database.
+target=()
+case "$backend" in
+  sqlite)
+    cp "$state/database.sqlite" "$state/takeover.sqlite"
+    chmod 0666 "$state/takeover.sqlite"
+    target=(-e DB_CONNECTION=sqlite -e DB_DATABASE=/state/takeover.sqlite)
+    target_network=none ;;
+  pgsql)
+    # The same backup restored once more, taken over with the owner role.
+    takeover_database=upgrade_takeover_ref${label:+_$label}
+    printf '%s\n' "$RESOURCE_SCOPE" > "$evidence/takeover-owned.txt"
+    pg_admin createdb "$takeover_database" 2>> "$evidence/backup.stderr"
+    pg_admin pg_restore --no-owner --exit-on-error -d "$takeover_database" < "$state/backup.dump" 2>> "$evidence/backup.stderr"
+    target=(-e DB_CONNECTION=pgsql -e DB_HOST="$host" -e DB_DATABASE="$takeover_database"
+      -e DB_USERNAME=parity -e DB_PASSWORD="$password")
+    target_network=$RESOURCE_SCOPE ;;
+  mysql)
+    # The same backup restored once more, taken over as root, which can see
+    # every session (the PROCESS privilege).
+    takeover_database=upgrade_takeover_ref${label:+_$label}
+    printf '%s\n' "$RESOURCE_SCOPE" > "$evidence/takeover-owned.txt"
+    mysql_admin mysql -e "CREATE DATABASE $takeover_database CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci" 2>> "$evidence/backup.stderr"
+    mysql_admin mysql "$takeover_database" < "$state/backup.sql" 2>> "$evidence/backup.stderr"
+    target=(-e DB_CONNECTION=mysql -e DB_HOST="$host" -e DB_DATABASE="$takeover_database"
+      -e DB_USERNAME=root -e DB_PASSWORD="$password")
+    target_network=$RESOURCE_SCOPE ;;
+  *) ;;
+esac
+if (( ${#target[@]} )); then
+  docker run --rm --name "$resource-takeover" --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
+    --network "$target_network" "${target[@]}" -e DW_RUST_EXPERIMENTAL=1 \
+    -e DW_UPGRADE_BACKUP_FINGERPRINT="$source_fingerprint" \
+    -e DW_RUST_UPGRADE_QUEUE_CONNECTION=database -e DW_RUST_UPGRADE_QUEUE_DEFAULT_CONNECTION=database \
+    -e DW_RUST_UPGRADE_QUEUE_DEFAULT_QUEUE=default \
+    -v "$PWD/$state:/state" -v "$PWD/rust-target:/target:ro" \
+    --entrypoint /target/debug/durable-workflow-server "$rust_image" upgrade-takeover \
+    > "$evidence/takeover.json" 2> "$evidence/takeover.stderr"
+  jq -e --arg backend "$backend" --arg layout "$layout" --arg fingerprint "$source_fingerprint" '.status=="taken_over"
+    and (.backend==$backend or ($backend=="mysql" and .backend=="mariadb"))
+    and .source_layout==$layout and .fingerprint==$fingerprint
+    and .backup_fingerprint_matched==true
+    and .converted.incarnations_copied==(if $layout=="frozen" then 0 else 1 end)
+    and .stored_representation_compatibility_verified==false' "$evidence/takeover.json" >/dev/null
+  docker run -d --name "$resource-native" --network "$RESOURCE_SCOPE" --network-alias parity-upgrade-native \
+    --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m -e DW_RUST_EXPERIMENTAL=1 \
+    -e DW_BIND_ADDRESS=0.0.0.0:8080 -e DW_AUTH_DRIVER=token -e DW_AUTH_TOKEN=upgrade-fixture-token \
+    "${target[@]}" -v "$PWD/$state:/state" -v "$PWD/rust-target:/target:ro" \
+    --entrypoint /target/debug/durable-workflow-server "$rust_image" > "$evidence/native-container.txt"
+  ready=0
+  for attempt in $(seq 1 30); do
+    if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+      -fsS http://parity-upgrade-native:8080/api/ready > "$evidence/native-readiness.json"; then ready=1; break; fi
+    sleep 1
+  done
+  [[ $ready == 1 ]]
+  docker run --rm --name "$resource-resume" --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
+    --network "$RESOURCE_SCOPE" -e DW_PARITY_TOKEN=upgrade-fixture-token -v "$PWD:/source:ro" --entrypoint php "$image" \
+    /source/scripts/conformance/server-parity/upgrade-takeover-resume.php http://parity-upgrade-native:8080 \
+    "/source/$evidence/originals.json" 150 > "$evidence/resume.json" 2> "$evidence/resume.stderr"
+  jq -e '.outcome=="pass" and .activity.stale_attempt_status==409
+    and .activity.events[-1]=="WorkflowCompleted" and .timer.fired_after_seconds>=0
+    and .timer.events[-1]=="WorkflowCompleted" and .signal.events[-1]=="WorkflowCompleted"
+    and .lease.attempt==2 and .lease.redelivered_after_seconds>=0 and .lease.stale_attempt_status==409
+    and .lease.events[-1]=="WorkflowCompleted"' "$evidence/resume.json" >/dev/null
+  docker stop --signal SIGTERM --time 10 "$resource-native" >/dev/null
+  if docker run --rm --name "$resource-control" --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
+    --network "$target_network" "${target[@]}" -e DW_AUTH_TOKEN=upgrade-fixture-token \
+    -e CACHE_STORE=file -e QUEUE_CONNECTION=database -v "$PWD/$state:/state" --entrypoint php "$image" \
+    artisan server:assert-php-database > "$evidence/php-refusal.txt" 2>&1; then exit 1; fi
+  grep -q php_database_refused "$evidence/php-refusal.txt"
+fi
 snapshot > "$evidence/after.json"
 cmp "$evidence/before.json" "$evidence/after.json"
 refusal() {
@@ -231,7 +329,7 @@ jq -n --arg revision "$revision" --arg native "$native_tree" \
   --slurpfile fingerprint "$evidence/fingerprint.json" \
   '{outcome:"pass",scope:"read_only_source_inventory_and_refusals",backend:$backend,
     runner_revision:$revision,native_tree:$native,native_binary_sha256:$binary,php_image:$image,
-    original_runs:2,source_state_unchanged_by_inspection:true,
+    original_runs:2,source_state_unchanged_by_inspection:true,source_layout:$inventory[0].source_layout,
     source_fingerprint:$fingerprint[0].fingerprint,restored_backup_fingerprint_equal:true,
     changed_restored_row_changes_fingerprint:true,
     catalog_sha256:$inventory[0].catalog_sha256,table_count:($inventory[0].table_rows|length),

@@ -220,6 +220,21 @@ jobs:
             done
             [ "$health" = healthy ]
           done
+          for mode in session transaction0 transaction200; do
+            pool_mode=transaction
+            prepared_statements=0
+            [ "$mode" != session ] || pool_mode=session
+            [ "$mode" != transaction200 ] || prepared_statements=200
+            docker run --detach \
+              --name "dw-server-pooler-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-$mode" \
+              --network "dw-server-feature-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+              --memory 128m --memory-swap 128m \
+              -e DB_HOST="dw-server-backup-pgsql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+              -e DB_NAME=postgres -e DB_USER=postgres -e DB_PASSWORD=pooler-disposable-password \
+              -e AUTH_TYPE=trust -e "POOL_MODE=$pool_mode" -e "MAX_PREPARED_STATEMENTS=$prepared_statements" \
+              -e DEFAULT_POOL_SIZE=2 -e MIN_POOL_SIZE=2 -e SERVER_ROUND_ROBIN=1 \
+              edoburu/pgbouncer@sha256:b17551c776ef7e5769ef80b956d20f85e2fd25dd8912d31d58f782aad495b711
+          done
           tar \
             --exclude=vendor \
             --exclude='*/vendor' \
@@ -236,6 +251,9 @@ jobs:
                 -e DW_TEST_COMPLETION_MYSQL_HOST="dw-server-backup-mysql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
                 -e DW_TEST_BACKUP_PGSQL_HOST="dw-server-backup-pgsql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
                 -e DW_TEST_COMPLETION_PGSQL_HOST="dw-server-backup-pgsql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+                -e DW_POOLER_TEST_HOST="dw-server-backup-pgsql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+                -e DW_POOLER_TEST_PORT=5432 -e DW_POOLER_TEST_DATABASE=postgres -e DW_POOLER_TEST_USER=postgres \
+                -e DW_POOLER_TEST_PREFIX="dw-server-pooler-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
                 -w /app \
                 --entrypoint sh \
                 durable-workflow-server-corpus-validator \
@@ -283,6 +301,9 @@ jobs:
       - name: Clean up test services
         if: always()
         run: |
+          for mode in session transaction0 transaction200; do
+            docker rm -f "dw-server-pooler-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-$mode" >/dev/null 2>&1 || true
+          done
           docker rm -f \
             "dw-server-s3-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
             "dw-server-backup-mysql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \

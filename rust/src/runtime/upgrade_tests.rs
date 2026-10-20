@@ -406,7 +406,11 @@ async fn payload_scan_validates_inline_pages_and_reports_late_bad_values_without
     assert_eq!(report["payload_inspection"]["other_root_payload_columns_verified"], false);
     assert_eq!(
         report["payload_inspection"]["unscanned_payload_codec_tables"],
-        json!(["workflow_commands", "workflow_signal_records", "workflow_updates"])
+        json!([
+            "workflow_durable_stream_items",
+            "workflow_inbound_stream_items",
+            "workflow_update_validation_tasks"
+        ])
     );
     assert_eq!(report["payload_inspection"]["diagnostics"], json!([]));
     for (table, column, count) in [
@@ -814,4 +818,341 @@ async fn fingerprint_refuses_an_owned_or_unknown_source() {
         fingerprint::fingerprint_sqlite(&path).await,
         "upgrade_source_catalog_unqualified",
     );
+}
+
+#[test]
+fn source_layout_names_the_release_each_recorded_delta_reaches() {
+    let rows = |rows: &[(&str, &str)]| -> Vec<(String, String)> {
+        rows.iter()
+            .map(|(name, ddl)| ((*name).to_owned(), (*ddl).to_owned()))
+            .collect()
+    };
+    let frozen = rows(&[("a", "1"), ("b", "2")]);
+    let deltas = [
+        r#"{"remove":[["a","1"]],"add":[["a","1 changed"]]}"#,
+        r#"{"remove":[],"add":[["c","3"]]}"#,
+    ];
+    let layout = |actual: &[(&str, &str)]| {
+        source_layout(&rows(actual), frozen.clone(), deltas, |row| row.0.clone())
+            .map(|layout| Value::from(layout))
+    };
+    assert_eq!(layout(&[("b", "2"), ("a", "1")]).unwrap(), "frozen");
+    assert_eq!(layout(&[("a", "1 changed"), ("b", "2")]).unwrap(), "php-2.8.0");
+    assert_eq!(
+        layout(&[("c", "3"), ("a", "1 changed"), ("b", "2")]).unwrap(),
+        "php-2.9.7"
+    );
+    // A later release's addition without the earlier change is no recorded layout.
+    reason(
+        layout(&[("a", "1"), ("b", "2"), ("c", "3")]),
+        "upgrade_source_catalog_unqualified",
+    );
+    reason(layout(&[("a", "1")]), "upgrade_source_catalog_unqualified");
+}
+
+#[tokio::test]
+async fn frozen_layout_is_reported_by_inspection_and_fingerprint() {
+    let (_directory, path) = php_layout().await;
+    assert_eq!(inspect_sqlite(&path).await.unwrap()["source_layout"], "frozen");
+    assert_eq!(
+        fingerprint::fingerprint_sqlite(&path).await.unwrap()["source_layout"],
+        "frozen"
+    );
+}
+
+/// The frozen test layout moved to PHP 2.9.7's, by the same column, table and
+/// index changes PHP's migrations make. Inspection must call it php-2.9.7.
+async fn php297_layout() -> (tempfile::TempDir, String) {
+    let (directory, path) = php_layout().await;
+    for statement in [
+        // The frozen test layout's private job is not a recognized delivery.
+        "DELETE FROM jobs",
+        r#"ALTER TABLE "workflow_worker_registrations" ADD COLUMN "registration_token" varchar"#,
+        r#"CREATE TABLE "workflow_worker_registration_incarnations" ("token" varchar not null, "namespace" varchar not null, "worker_id" varchar not null, "status" varchar not null, "recovered_workflow_task_count" integer not null default '0', "finished_at" datetime, "created_at" datetime, "updated_at" datetime, primary key ("token"))"#,
+        r#"CREATE INDEX "workflow_worker_registration_incarnations_finished_at_index" on "workflow_worker_registration_incarnations" ("finished_at")"#,
+        r#"CREATE INDEX "dw_worker_incarnation_scope_idx" on "workflow_worker_registration_incarnations" ("namespace", "worker_id")"#,
+        r#"ALTER TABLE "workflow_service_calls" ADD COLUMN "call_deadline_at" datetime"#,
+        r#"CREATE INDEX "wf_service_calls_deadline_idx" on "workflow_service_calls" ("status", "call_deadline_at")"#,
+        r#"ALTER TABLE "workflow_tasks" ADD COLUMN "queue_delivery_reference" text"#,
+    ] {
+        mutate(&path, statement).await;
+    }
+    (directory, path)
+}
+
+async fn backup_fingerprint(path: &str) -> String {
+    fingerprint::fingerprint_sqlite(path).await.unwrap()["fingerprint"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn takeover_converts_a_php_297_database_that_native_then_opens() {
+    let (_directory, path) = php297_layout().await;
+    assert_eq!(inspect_sqlite(&path).await.unwrap()["source_layout"], "php-2.9.7");
+    for statement in [
+        "INSERT INTO workflow_worker_registrations(worker_id,namespace,task_queue,runtime,registration_token,created_at,updated_at) VALUES ('current','default','q','php','0123456789abcdef0123456789abcdef','2026-10-20 09:00:00','2026-10-20 09:00:00')",
+        "INSERT INTO workflow_worker_registrations(worker_id,namespace,task_queue,runtime,created_at,updated_at) VALUES ('older','default','q','php','2026-10-20 09:00:00','2026-10-20 09:00:00')",
+        "INSERT INTO workflow_worker_registration_incarnations VALUES ('0123456789abcdef0123456789abcdef','default','current','active',0,NULL,'2026-10-20 09:00:00.000000','2026-10-20 09:00:00.000000')",
+        "INSERT INTO workflow_worker_registration_incarnations VALUES ('11111111111111111111111111111111','default','current','superseded',0,'2026-10-20 08:00:00.000000','2026-10-20 07:00:00.000000','2026-10-20 08:00:00.000000')",
+        "INSERT INTO workflow_worker_registration_incarnations VALUES ('22222222222222222222222222222222','default','gone','deregistered',3,'2026-10-20 08:30:00.000000','2026-10-20 07:00:00.000000','2026-10-20 08:30:00.000000')",
+    ] {
+        mutate(&path, statement).await;
+    }
+    let fingerprint = backup_fingerprint(&path).await;
+    let report = takeover::take_over_sqlite(&path, &fingerprint, &queue_config())
+        .await
+        .unwrap();
+    assert_eq!(report["status"], "taken_over", "{report}");
+    assert_eq!(report["source_layout"], "php-2.9.7");
+    assert_eq!(report["converted"]["incarnations_copied"], 3, "{report}");
+    assert_eq!(report["converted"]["incarnations_created"], 1, "{report}");
+    let mut connection = SqliteConnection::connect(&format!("sqlite://{path}")).await.unwrap();
+    let incarnations: Vec<(String, String, String, Option<i64>, Option<String>)> = sqlx::query_as(
+        "SELECT token,worker_id,status,recovered_workflow_task_count,finished_at FROM dw_worker_registration_incarnations ORDER BY worker_id,status",
+    )
+    .fetch_all(&mut connection)
+    .await
+    .unwrap();
+    assert_eq!(incarnations.len(), 4, "{incarnations:?}");
+    // The current worker keeps its PHP token; the retired ones keep their state.
+    assert!(incarnations.contains(&(
+        "0123456789abcdef0123456789abcdef".into(),
+        "current".into(),
+        "active".into(),
+        None,
+        None
+    )));
+    assert!(incarnations.iter().any(|row| row.1 == "gone" && row.2 == "deregistered" && row.3 == Some(3)));
+    assert!(incarnations.iter().any(|row| row.1 == "current" && row.2 == "superseded" && row.3.is_none() && row.4.is_some()));
+    assert!(incarnations.iter().any(|row| row.1 == "older" && row.2 == "active" && row.0.len() == 32));
+    connection.close().await.unwrap();
+    let runtime = crate::runtime::Runtime::open(&path, "test-token".into()).await.unwrap();
+    runtime.close().await;
+    let mut connection = SqliteConnection::connect(&format!("sqlite://{path}")).await.unwrap();
+    let marker: (String, i64) = sqlx::query_as("SELECT engine,version FROM dw_server_schema")
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+    assert_eq!(marker, ("rust-development".to_owned(), 4));
+    connection.close().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "only invoked as a real subprocess by the takeover interruption test"]
+async fn sqlite_takeover_child() {
+    let path = std::env::var("DW_TAKEOVER_TEST_DATABASE").unwrap();
+    let fingerprint = std::env::var("DW_TAKEOVER_TEST_FINGERPRINT").unwrap();
+    // Parks just before the commit, where the parent kills this process.
+    let report = takeover::take_over_sqlite(&path, &fingerprint, &queue_config()).await;
+    panic!("takeover returned instead of parking: {report:?}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn takeover_killed_before_commit_leaves_php_data_and_can_be_rerun() {
+    use std::os::unix::process::ExitStatusExt;
+    let (directory, path) = php297_layout().await;
+    let fingerprint = backup_fingerprint(&path).await;
+    let original = std::fs::read(&path).unwrap();
+    let receipt = directory.path().join("boundary");
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "runtime::upgrade::tests::sqlite_takeover_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("DW_TAKEOVER_TEST_DATABASE", &path)
+        .env("DW_TAKEOVER_TEST_FINGERPRINT", &fingerprint)
+        .env("DW_TAKEOVER_TEST_RECEIPT", &receipt)
+        .spawn()
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while !receipt.exists() && tokio::time::Instant::now() < deadline {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("child exited before the commit point: {status}");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    if !receipt.exists() {
+        child.kill().unwrap();
+        child.wait().unwrap();
+        panic!("child did not reach the commit point");
+    }
+    child.kill().unwrap();
+    assert_eq!(child.wait().unwrap().signal(), Some(9));
+    // Either SQLite had not written the file yet, or its rollback journal
+    // still holds the original pages. Read-only inspection never recovers it.
+    if Path::new(&format!("{path}-journal")).exists() {
+        reason(
+            inspect_sqlite(&path).await,
+            "upgrade_source_sqlite_journal_unqualified",
+        );
+    } else {
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+    // Rerunning with the same verified fingerprint rolls the journal back,
+    // finds the backed-up PHP database and takes it over.
+    let report = takeover::take_over_sqlite(&path, &fingerprint, &queue_config())
+        .await
+        .unwrap();
+    assert_eq!(report["status"], "taken_over", "{report}");
+    assert_eq!(report["fingerprint"], fingerprint.as_str());
+    let runtime = crate::runtime::Runtime::open(&path, "test-token".into()).await.unwrap();
+    runtime.close().await;
+}
+
+#[tokio::test]
+async fn takeover_of_the_frozen_layout_adds_only_native_relations() {
+    let (_directory, path) = php_layout().await;
+    mutate(&path, "DELETE FROM jobs").await;
+    let fingerprint = backup_fingerprint(&path).await;
+    let report = takeover::take_over_sqlite(&path, &fingerprint, &queue_config())
+        .await
+        .unwrap();
+    assert_eq!(report["source_layout"], "frozen", "{report}");
+    let runtime = crate::runtime::Runtime::open(&path, "test-token".into()).await.unwrap();
+    runtime.close().await;
+}
+
+#[tokio::test]
+async fn takeover_refusals_leave_the_php_database_unchanged() {
+    let (_directory, path) = php297_layout().await;
+    let fingerprint = backup_fingerprint(&path).await;
+    let original = std::fs::read(&path).unwrap();
+    reason(
+        takeover::take_over_sqlite(&path, &format!("sha256:{}", "0".repeat(64)), &queue_config()).await,
+        "upgrade_backup_fingerprint_mismatch",
+    );
+    reason(
+        takeover::take_over_sqlite(&path, "not-a-fingerprint", &queue_config()).await,
+        "upgrade_backup_fingerprint_required",
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    // A write after the backup changes the digest, so the old one is refused.
+    mutate(&path, "INSERT INTO migrations(migration,batch) VALUES ('after-backup',9)").await;
+    reason(
+        takeover::take_over_sqlite(&path, &fingerprint, &queue_config()).await,
+        "upgrade_backup_fingerprint_mismatch",
+    );
+    for (statement, expected) in [
+        (
+            "INSERT INTO workflow_service_calls(id,endpoint_name,service_name,operation_name,status,operation_mode) VALUES ('call','e','s','o','accepted','sync')",
+            "upgrade_source_service_calls_unsupported",
+        ),
+        (
+            "INSERT INTO runtime_external_payloads(id,namespace,storage_uri,storage_uri_sha256,codec,sha256,size_bytes) VALUES ('p','default','s3://b/k','x','avro','y',1)",
+            "upgrade_source_external_payloads_unsupported",
+        ),
+        // Features native lacks: their rows would be left behind unread.
+        (
+            "INSERT INTO runtime_credentials(id,subject,roles,tenant,token_prefix,token_hash) VALUES ('c','worker','[]','default','dw_','h')",
+            "upgrade_source_runtime_credentials_unsupported",
+        ),
+        (
+            "INSERT INTO workflow_messages(workflow_instance_id,direction,channel,stream_key,sequence) VALUES ('w','inbound','c','k',1)",
+            "upgrade_source_message_streams_unsupported",
+        ),
+    ] {
+        let (_directory, path) = php297_layout().await;
+        mutate(&path, statement).await;
+        let fingerprint = backup_fingerprint(&path).await;
+        let before = std::fs::read(&path).unwrap();
+        reason(
+            takeover::take_over_sqlite(&path, &fingerprint, &queue_config()).await,
+            expected,
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before, "{expected}");
+    }
+}
+
+/// The frozen layout in PHP Server's default WAL mode, copied while its
+/// writer was still open: one committed row is only in the WAL, as a crashed
+/// PHP would leave it.
+async fn wal_source() -> (tempfile::TempDir, String) {
+    let (directory, path) = php_layout().await;
+    let mut writer = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .filename(&path)
+            .journal_mode(SqliteJournalMode::Wal),
+    )
+    .await
+    .unwrap();
+    writer.execute("PRAGMA wal_autocheckpoint=0").await.unwrap();
+    writer
+        .execute("INSERT INTO migrations(migration,batch) VALUES ('only-in-wal',7)")
+        .await
+        .unwrap();
+    let copy = directory.path().join("wal.sqlite").to_str().unwrap().to_owned();
+    for suffix in ["", "-wal", "-shm"] {
+        std::fs::copy(format!("{path}{suffix}"), format!("{copy}{suffix}")).unwrap();
+    }
+    writer.close().await.unwrap();
+    (directory, copy)
+}
+
+#[tokio::test]
+async fn prepare_switches_a_wal_source_to_the_rollback_journal_and_keeps_its_rows() {
+    let (_directory, path) = wal_source().await;
+    assert!(Path::new(&format!("{path}-wal")).exists());
+    reason(
+        inspect_sqlite(&path).await,
+        "upgrade_source_sqlite_journal_unqualified",
+    );
+    let report = prepare_sqlite_source(&path).await.unwrap();
+    assert_eq!(report["status"], "rollback_journal", "{report}");
+    assert_eq!(report["previous_journal_mode"], "wal");
+    assert_eq!(report["source_mutated"], true);
+    for suffix in ["-wal", "-shm", "-journal"] {
+        assert!(!Path::new(&format!("{path}{suffix}")).exists(), "{suffix}");
+    }
+    assert_eq!(journal_format(&path).await.unwrap(), ROLLBACK_JOURNAL);
+    let inventory = inspect_sqlite(&path).await.unwrap();
+    assert_eq!(inventory["table_rows"]["migrations"], 1, "{inventory}");
+    let mut connection = SqliteConnection::connect(&format!("sqlite://{path}?mode=ro"))
+        .await
+        .unwrap();
+    let batch: i64 = sqlx::query_scalar("SELECT batch FROM migrations WHERE migration='only-in-wal'")
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+    assert_eq!(batch, 7);
+    connection.close().await.unwrap();
+    // Preparing again changes nothing.
+    let original = std::fs::read(&path).unwrap();
+    assert_eq!(prepare_sqlite_source(&path).await.unwrap()["source_mutated"], false);
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+}
+
+#[tokio::test]
+async fn prepare_refuses_while_another_connection_holds_the_source() {
+    let (_directory, path) = php_layout().await;
+    let mut writer = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .filename(&path)
+            .journal_mode(SqliteJournalMode::Wal),
+    )
+    .await
+    .unwrap();
+    writer
+        .execute("INSERT INTO migrations(migration,batch) VALUES ('open',8)")
+        .await
+        .unwrap();
+    reason(prepare_sqlite_source(&path).await, "upgrade_source_in_use");
+    assert_eq!(journal_format(&path).await.unwrap(), WRITE_AHEAD_LOG);
+    writer.close().await.unwrap();
+    let report = prepare_sqlite_source(&path).await.unwrap();
+    assert_eq!(report["previous_journal_mode"], "wal", "{report}");
+}
+
+#[tokio::test]
+async fn prepare_leaves_a_rollback_journal_source_byte_identical() {
+    let (_directory, path) = php_layout().await;
+    let original = std::fs::read(&path).unwrap();
+    let report = prepare_sqlite_source(&path).await.unwrap();
+    assert_eq!(report["previous_journal_mode"], "delete", "{report}");
+    assert_eq!(report["source_mutated"], false);
+    assert_eq!(std::fs::read(&path).unwrap(), original);
 }
