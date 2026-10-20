@@ -30,6 +30,7 @@ use App\Support\SharedServiceBoundaryPolicy;
 use App\Support\StoragePressure;
 use App\Support\ValidatedExternalWorkflowUpdateAdmission;
 use App\Support\WorkflowMemoRollingCompatibility;
+use App\Support\WorkflowObservability;
 use App\Support\WorkflowPackageApiFloor;
 use App\Support\WorkflowTaskLeaseConfiguration;
 use Illuminate\Console\Events\CommandStarting;
@@ -233,6 +234,8 @@ class AppServiceProvider extends ServiceProvider
         }
 
         WorkflowTask::observe(WorkflowTaskObserver::class);
+        WorkflowRun::creating(WorkflowObservability::creatingRun(...));
+        WorkflowCommand::creating(WorkflowObservability::creatingCommand(...));
         WorkflowHistoryEvent::observe(WorkflowHistoryEventObserver::class);
         WorkflowUpdate::observe(WorkflowUpdateValidationObserver::class);
         WorkflowInstance::observe(NamespaceDurableStateObserver::class);
