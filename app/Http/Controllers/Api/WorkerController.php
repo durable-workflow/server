@@ -46,6 +46,7 @@ use App\Support\WorkerTerminalEventAttribution;
 use App\Support\WorkflowHistoryPageToken;
 use App\Support\WorkflowMetadataCapabilityPolicy;
 use App\Support\WorkflowQueryTaskBroker;
+use App\Support\WorkflowReplayEligibility;
 use App\Support\WorkflowStreamCommandProcessor;
 use App\Support\WorkflowStreamService;
 use App\Support\WorkflowTaskLeaseRecovery;
@@ -407,7 +408,10 @@ class WorkerController
         $this->validateWorkerTaskCapacity($maxWorkflowTasks, $maxActivityTasks);
         $maxWorkerSessions = $validated['max_concurrent_worker_sessions'] ?? 10;
         $taskSlots = is_array($validated['task_slots'] ?? null) ? $validated['task_slots'] : [];
-        $processMetrics = $this->normalizeProcessMetrics($validated['process_metrics'] ?? null);
+        $processMetrics = [
+            ...($this->normalizeProcessMetrics($validated['process_metrics'] ?? null) ?? []),
+            WorkflowReplayEligibility::PROTOCOL_METRIC => WorkerProtocol::requestVersion($request),
+        ];
         $releaseLeasesForRegistration = $this->shouldReleaseLeasesForWorkerRegistration($existing, $processMetrics);
 
         try {
@@ -935,6 +939,10 @@ class WorkerController
         if (array_key_exists('process_metrics', $validated)) {
             $update['process_metrics'] = $this->normalizeProcessMetrics($validated['process_metrics']);
         }
+        $update['process_metrics'] = [
+            ...($update['process_metrics'] ?? $worker->process_metrics ?? []),
+            WorkflowReplayEligibility::PROTOCOL_METRIC => WorkerProtocol::requestVersion($request),
+        ];
 
         if (array_key_exists('heartbeat_interval_seconds', $validated)
             && $validated['heartbeat_interval_seconds'] !== null) {

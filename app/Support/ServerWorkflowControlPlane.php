@@ -26,6 +26,7 @@ final class ServerWorkflowControlPlane implements RuntimeSignalControlPlane, Wor
         private readonly ControlPlaneFailureDiagnostics $failureDiagnostics,
         private readonly NamespaceDurableStateQuota $durableStateQuota,
         private readonly WorkflowStartVersionPin $versionPin,
+        private readonly WorkflowDefinitionRouting $definitionRouting,
     ) {}
 
     public function start(string $workflowType, ?string $instanceId = null, array $options = []): array
@@ -148,10 +149,12 @@ final class ServerWorkflowControlPlane implements RuntimeSignalControlPlane, Wor
 
     public function repair(string $instanceId, array $options = []): array
     {
-        return $this->mutateCommand(
+        $result = $this->mutateCommand(
             $instanceId, 'repair', HistoryEventType::RepairRequested, $options,
             fn (): array => $this->inner->repair($instanceId, $options),
         );
+
+        return $this->withDefinitionRouting($instanceId, $options, $result);
     }
 
     public function redrive(string $instanceId, string $failedRunId, array $options = []): array
@@ -309,7 +312,26 @@ final class ServerWorkflowControlPlane implements RuntimeSignalControlPlane, Wor
 
     public function describe(string $instanceId, array $options = []): array
     {
-        return $this->inner->describe($instanceId, $options);
+        return $this->withDefinitionRouting($instanceId, $options, $this->inner->describe($instanceId, $options));
+    }
+
+    private function withDefinitionRouting(string $instanceId, array $options, array $result): array
+    {
+        $namespace = $this->namespace($options);
+        if ($namespace === null || ($result['found'] ?? true) === false
+            || in_array($result['reason'] ?? null, ['instance_not_found', 'run_not_found'], true)) {
+            return $result;
+        }
+
+        $runId = data_get($result, 'run.run_id') ?? $result['workflow_run_id'] ?? $options['run_id'] ?? null;
+        $run = WorkflowRun::query()->where('namespace', $namespace)->where('workflow_instance_id', $instanceId)
+            ->when(is_string($runId), static fn ($query) => $query->whereKey($runId))
+            ->orderByDesc('run_number')->first();
+        if ($run instanceof WorkflowRun) {
+            $result['definition_routing'] = $this->definitionRouting->inspect($run);
+        }
+
+        return $result;
     }
 
     /**
