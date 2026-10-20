@@ -150,7 +150,7 @@ October 20, namespace update:
   bounded needs `retention_days`; forever refuses days; bounded refuses null
   days; days run 1–365. A missing namespace is `404 namespace_not_found`.
   Only an admin may update a namespace. Native still has no retention pass,
-  so the stored retention is not enforced yet (see known gaps).
+  so the stored retention is not enforced yet.
 - **Checks.** The `namespace-isolation` probe now updates its first
   namespace at the end through the published SDK, and updates a missing one.
   The contract checks both. Locally, published PHP 2.5.14, embedded PHP and
