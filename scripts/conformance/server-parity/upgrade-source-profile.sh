@@ -190,6 +190,7 @@ case "$backend" in
   sqlite)
     # A stopped SQLite installation is backed up by copying its file.
     cp "$state/database.sqlite" "$state/restored.sqlite"
+    chmod 0666 "$state/restored.sqlite"
     restored=/state/restored.sqlite
     change_restored() {
       php_run -r '(new PDO("sqlite:/state/restored.sqlite"))->exec("UPDATE jobs SET attempts=attempts+1") === 1 || exit(1);'
