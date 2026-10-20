@@ -85,6 +85,16 @@ contract fixture before its correction.
   or whether the fixture counts a boundary replay as the same claim, then add the
   fixture before changing either side.
 
+- **History retention.** Published PHP's worker heartbeat runs an inline
+  history retention pass, and the default namespace retention is bounded at
+  30 days, so PHP prunes old closed runs. Native has no retention yet. Its
+  heartbeat omits PHP's `retention` report rather than claim a pass. The
+  `system/retention` endpoints are absent too.
+- **Activity leases of a replaced worker.** Re-registering a worker that holds
+  leases makes published PHP release its workflow *and* activity task leases.
+  Native releases only the workflow task leases. This needs a fixture with a
+  leased activity before the correction.
+
 ## Contract and verification inventory
 
 The status column summarizes bounded native source and its recorded component
@@ -151,6 +161,40 @@ support is not evidence of multi-node safety.
 
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
 names, including unsuccessful observations.
+
+October 20, worker listing:
+
+- **Source.** Native serves `GET /api/workers` and `GET /api/workers/{id}`,
+  as published PHP's WorkerManagementController does:
+  - the summary fields;
+  - the `task_queue` and `status` filters, with stale workers hidden unless
+    asked for;
+  - the stale window;
+  - `404 worker_not_found`.
+
+  Operators may read these; only `DELETE` needs an admin. Named namespaces may
+  read them.
+- **Registration facts.** Registration and heartbeat now keep what PHP keeps:
+  - capacities, defaulting to 100, 100 and 10;
+  - task slots, bounded by those capacities;
+  - normalized process metrics;
+  - the heartbeat cadence;
+  - workflow definition fingerprints.
+
+  Re-registering an active worker with a changed fingerprint is refused with
+  `409 workflow_definition_changed`. Omitting an advertised one is refused with
+  `409 workflow_definition_fingerprint_missing`, and neither refusal changes
+  the registration. Omitting the fingerprints keeps the advertised one. A
+  heartbeat changes only what it reports. Its acknowledgement carries the
+  configured cadence and stale window.
+- **Fixture.** `worker-listing` registers two workers through the unchanged
+  published SDK. It then lists, filters, describes and refuses them, and
+  re-registers and deregisters them. The contract checks each HTTP target
+  against the reviewed facts. Embedded mode is explicitly inapplicable.
+- **Local evidence.** A local copy of the SQLite parity step recorded
+  published PHP 2.5.14, embedded PHP and native for `worker-listing` and
+  `namespace-isolation`. All three targets passed and the comparison passed.
+  Native integration tests pass on SQLite, PostgreSQL, MySQL and MariaDB.
 
 October 19, before #478, #476, #494 and #460 merged:
 

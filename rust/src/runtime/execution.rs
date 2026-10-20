@@ -705,8 +705,38 @@ impl Runtime {
             page_size: i64,
         ) -> Result<Value>
     );
-    delegate!(register(body: Value) -> Result<Value>);
-    delegate!(worker_heartbeat(body: Value) -> Result<Value>);
+    pub(crate) async fn register(&self, body: Value) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.register(body, &self.queries).await,
+            Storage::Postgres(store) => store.register(body, &self.queries).await,
+            Storage::MySql(store) => store.register(body, &self.queries).await,
+        }
+    }
+    pub(crate) async fn worker_heartbeat(&self, body: Value) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.worker_heartbeat(body, &self.queries).await,
+            Storage::Postgres(store) => store.worker_heartbeat(body, &self.queries).await,
+            Storage::MySql(store) => store.worker_heartbeat(body, &self.queries).await,
+        }
+    }
+    pub(crate) async fn list_workers(
+        &self,
+        task_queue: Option<&str>,
+        status: Option<&str>,
+    ) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.list_workers(task_queue, status, &self.queries).await,
+            Storage::Postgres(store) => store.list_workers(task_queue, status, &self.queries).await,
+            Storage::MySql(store) => store.list_workers(task_queue, status, &self.queries).await,
+        }
+    }
+    pub(crate) async fn describe_worker(&self, worker_id: &str) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.describe_worker(worker_id, &self.queries).await,
+            Storage::Postgres(store) => store.describe_worker(worker_id, &self.queries).await,
+            Storage::MySql(store) => store.describe_worker(worker_id, &self.queries).await,
+        }
+    }
     delegate!(deregister(worker_id: &str) -> Result<Value>);
     pub(crate) async fn deregister_fenced(&self, worker_id: &str, body: Value) -> Result<Value> {
         let codec = self.transition_codec.clone();

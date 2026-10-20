@@ -796,7 +796,11 @@ where
         Ok(())
     }
 
-    pub(crate) async fn register(&self, body: Value) -> Result<Value> {
+    pub(crate) async fn register(
+        &self,
+        body: Value,
+        config: &super::QueryTaskConfig,
+    ) -> Result<Value> {
         let worker_id = text(&body, "worker_id")?;
         let queue = text(&body, "task_queue")?;
         for field in ["supported_workflow_types", "supported_activity_types"] {
@@ -813,6 +817,7 @@ where
             }
         }
         let runtime = text(&body, "runtime")?;
+        let registration = super::worker_management::Registration::parse(&body)?;
         let supplied_contracts = body
             .get("workflow_command_contracts")
             .map(|contracts| {
@@ -821,8 +826,25 @@ where
             .transpose()?;
         let token = super::worker_incarnations::token().await?;
         let mut tx = self.begin().await?;
-        let previous = Self::query("SELECT worker_id,workflow_command_contracts FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
+        let previous = Self::query("SELECT worker_id,status,workflow_command_contracts,workflow_definition_fingerprints FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
             .bind(self.namespace.as_ref()).bind(worker_id).fetch_optional(&mut *tx).await?;
+        // Only an active registration guards its workflow definitions.
+        let current = match &previous {
+            Some(worker) if DB::optional_string(worker, "status")?.as_deref() == Some("active") => {
+                Some(
+                    DB::optional_document_row(worker, "workflow_definition_fingerprints")?
+                        .unwrap_or(Value::Null),
+                )
+            }
+            _ => None,
+        };
+        let supported_types: Vec<String> = body["supported_workflow_types"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|t| t.as_str().map(str::to_owned))
+            .collect();
+        let fingerprints = registration.reconcile(current.as_ref(), &supported_types)?;
         let contracts = match supplied_contracts {
             Some(contracts) => contracts,
             None => {
@@ -861,25 +883,21 @@ where
             .await?;
         Self::query("UPDATE workflow_worker_registrations SET status='active',workflow_command_contracts=$1 WHERE worker_id=$2 AND namespace=$3")
             .bind(DB::document(&contracts)).bind(worker_id).bind(self.namespace.as_ref()).execute(&mut *tx).await?;
+        Self::record_registration(
+            &mut tx,
+            self.namespace.as_ref(),
+            worker_id,
+            &registration,
+            &fingerprints,
+        )
+        .await?;
         self.rotate_incarnation(&mut tx, worker_id, &token).await?;
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(
             json!({"worker_id": worker_id, "registration_token":token, "registered": true, "namespace": self.namespace.as_ref(), "task_queue": queue,
-            "runtime": body["runtime"], "build_id": body["build_id"], "heartbeat_interval_seconds": 10,
+            "runtime": body["runtime"], "build_id": body["build_id"], "heartbeat_interval_seconds": config.worker_heartbeat_interval_seconds,
             "status": "active", "capabilities": body["capabilities"], "capability_manifest": body["capability_manifest"]}),
-        )
-    }
-
-    pub(crate) async fn worker_heartbeat(&self, body: Value) -> Result<Value> {
-        let worker_id = text(&body, "worker_id")?;
-        let result = Self::query("UPDATE workflow_worker_registrations SET last_heartbeat_at=$1 WHERE worker_id=$2 AND namespace=$3")
-            .bind(DB::bind_time(now())).bind(worker_id).bind(self.namespace.as_ref()).execute(&self.pool).await?;
-        if DB::affected(result) != 1 {
-            return Err(refuse(StatusCode::NOT_FOUND, "worker_not_registered"));
-        }
-        Ok(
-            json!({"worker_id": worker_id, "heartbeat_recorded": true, "acknowledged":true, "heartbeat_interval_seconds": 10}),
         )
     }
 
