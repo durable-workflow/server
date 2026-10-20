@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Composer\InstalledVersions;
 use DurableWorkflow\Client;
+require_once __DIR__.'/lock-pressure-middleware.php';
 
 function sdkUpdateActorOpen(string $language, string $phase, array $fixture, array $options, string $runId, float $deadline): array
 {
@@ -78,7 +79,7 @@ function sdkUpdateDirectionHttpObservation(array $fixture, array $options): arra
         throw new RuntimeException('SDK update direction requires its evidence directory.');
     }
     $spec = $fixture['sdk_update_direction'];
-    $client = new Client($options['url'], namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
+    $client = parityClient($options['url'], namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
     $deadline = microtime(true) + 35;
     $workflowId = $options['workflow-id'];
     $runId = '';
@@ -113,7 +114,7 @@ function sdkUpdateDirectionHttpObservation(array $fixture, array $options): arra
                     if ($request['method'] === 'POST' && $request['path'] === '/api/worker/register'
                         && $request['status'] === 201 && ($request['response']['registered'] ?? null) === true
                         && ($request['request']['worker_id'] ?? null) === $workflowId.':original') {
-                        $start = new Client($actor['url'], namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
+                        $start = parityClient($actor['url'], namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
                         $runId = $start->startWorkflow($fixture['workflow_type'], $workflowId,
                             $spec['task_queue'], [$fixture['input'], $fixture['signal_count']])->selectedRunId;
                         $observerStart = ['role' => 'observer', 'language' => 'php', 'pid' => getmypid(),

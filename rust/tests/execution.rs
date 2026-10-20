@@ -49,6 +49,9 @@ mod selected_run_signals;
 #[path = "execution/worker_incarnations.rs"]
 mod worker_incarnations;
 
+#[path = "execution/worker_contracts.rs"]
+mod worker_contracts;
+
 #[path = "execution/worker_deregistration.rs"]
 mod worker_deregistration;
 
@@ -61,6 +64,8 @@ mod version_markers;
 #[path = "execution/activity_deadlines.rs"]
 mod activity_deadlines;
 
+#[path = "execution/lock_free_waiting.rs"]
+mod lock_free_waiting;
 #[path = "execution/read_snapshots.rs"]
 mod read_snapshots;
 
@@ -2346,7 +2351,8 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
     let claim = await_query(&b, "query-a").await;
     assert_eq!(claim["run_status"], "completed");
     // Worker snapshots retain durable row IDs/links; the control-plane
-    // history endpoint exposes its documented timestamp projection.
+    // history endpoint exposes its documented timestamp projection and the
+    // command principal, which these unauthenticated commands do not record.
     let projected = Value::Array(
         claim["history_events"]
             .as_array()
@@ -2354,7 +2360,7 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
             .iter()
             .map(|event| {
                 json!({"sequence":event["sequence"],"event_type":event["event_type"],
-            "payload":event["payload"],"timestamp":event["recorded_at"]})
+            "payload":event["payload"],"timestamp":event["recorded_at"],"principal":null})
             })
             .collect(),
     );
@@ -4622,13 +4628,14 @@ async fn terminal_activity_failures_resume_once_and_preserve_original_failure() 
             .collect();
         assert_eq!(event_ids.len(), worker_events.len());
         // Worker history retains event IDs/attribution and recorded_at;
-        // the control API explicitly returns these four common fields.
+        // the control API returns these common fields plus the command
+        // principal, which these unauthenticated commands do not record.
         let control_events: Vec<_> = worker_events
             .iter()
             .map(|event| {
                 json!({
                     "sequence":event["sequence"],"event_type":event["event_type"],
-                    "timestamp":event["recorded_at"],"payload":event["payload"]
+                    "timestamp":event["recorded_at"],"payload":event["payload"],"principal":null
                 })
             })
             .collect();

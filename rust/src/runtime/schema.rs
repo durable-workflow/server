@@ -31,6 +31,23 @@ fn migrator() -> &'static Migrator {
     })
 }
 
+/// The native relations, indexes and ownership marker that a fresh
+/// bootstrap adds after the frozen PHP layout. Takeover applies them to a
+/// converted PHP database instead of running the whole migration.
+pub(super) fn native_relations_sql() -> Result<String> {
+    super::upgrade::native_relations(
+        include_str!("../../migrations/sqlite/0003_full_schema.sql"),
+        "CREATE TABLE dw_server_schema ",
+        include_str!("../../migrations/sqlite/0004_worker_incarnations.sql"),
+    )
+}
+
+/// The single native migration, which a takeover records as applied once
+/// conversion has produced its schema.
+pub(super) fn migration() -> &'static Migration {
+    migrator().iter().next().expect("one native SQLite migration")
+}
+
 type Catalog = Vec<(String, String, String, String)>;
 static EXPECTED: OnceCell<Catalog> = OnceCell::const_new();
 

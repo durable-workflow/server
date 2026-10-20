@@ -20,11 +20,11 @@ $pdo->exec('PRAGMA query_only=ON');
 if ($pdo->query('PRAGMA journal_mode')->fetchColumn() !== 'delete') {
     throw new RuntimeException('Audit requires the already stopped DELETE-journal fixture');
 }
-$runs = $pdo->query('SELECT * FROM workflow_runs ORDER BY id LIMIT 3')->fetchAll(PDO::FETCH_ASSOC);
+$runs = $pdo->query('SELECT * FROM workflow_runs ORDER BY id LIMIT 5')->fetchAll(PDO::FETCH_ASSOC);
 $workflowIds = array_column($runs, 'workflow_instance_id');
 sort($workflowIds);
-if ($workflowIds !== [$prefix.'-activity', $prefix.'-timer']) {
-    throw new RuntimeException('This reader accepts only the two isolated source-author originals');
+if ($workflowIds !== [$prefix.'-activity', $prefix.'-lease', $prefix.'-signal', $prefix.'-timer']) {
+    throw new RuntimeException('This reader accepts only the four isolated source-author originals');
 }
 $report = ['scope' => 'published_php_stored_representation_observation', 'runs' => [],
     'table_rows' => [], 'tasks' => [], 'activities' => [], 'history' => [], 'queue_jobs' => [], 'cache_files' => []];
