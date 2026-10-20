@@ -180,7 +180,10 @@ mod tests {
         }
         // This receipt acknowledges an actual SQLite boundary inside the
         // still-open outer transaction. The parent sends a real SIGKILL.
-        std::fs::write(format!("{path}.boundary"), phase).unwrap();
+        // The parent waits for the receipt to exist, so it must appear with
+        // its contents: write beside it and rename into place.
+        std::fs::write(format!("{path}.boundary.partial"), &phase).unwrap();
+        std::fs::rename(format!("{path}.boundary.partial"), format!("{path}.boundary")).unwrap();
         loop {
             std::thread::park();
         }

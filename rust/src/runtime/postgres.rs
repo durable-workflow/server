@@ -658,7 +658,11 @@ mod tests {
             verify(&mut tx).await.unwrap();
         }
         // An actual server acknowledgement at a still-uncommitted boundary.
-        std::fs::write(std::env::var("DW_SCHEMA_TEST_RECEIPT").unwrap(), phase).unwrap();
+        // The parent waits for the receipt to exist, so it must appear with
+        // its contents: write beside it and rename into place.
+        let receipt = std::env::var("DW_SCHEMA_TEST_RECEIPT").unwrap();
+        std::fs::write(format!("{receipt}.partial"), &phase).unwrap();
+        std::fs::rename(format!("{receipt}.partial"), &receipt).unwrap();
         loop {
             std::thread::park();
         }
