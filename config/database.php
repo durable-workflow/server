@@ -1,6 +1,20 @@
 <?php
 
 use Illuminate\Support\Str;
+use Pdo\Mysql;
+use Pdo\Pgsql;
+
+$mysqlOptions = [];
+if (extension_loaded('pdo_mysql')) {
+    $sslCaAttribute = PHP_VERSION_ID >= 80500 ? Mysql::ATTR_SSL_CA : PDO::MYSQL_ATTR_SSL_CA;
+    $mysqlOptions = array_filter([$sslCaAttribute => env('MYSQL_ATTR_SSL_CA')]);
+}
+
+$pgsqlOptions = [];
+if (extension_loaded('pdo_pgsql')) {
+    $disablePreparesAttribute = PHP_VERSION_ID >= 80500 ? Pgsql::ATTR_DISABLE_PREPARES : PDO::PGSQL_ATTR_DISABLE_PREPARES;
+    $pgsqlOptions = [$disablePreparesAttribute => true];
+}
 
 return [
 
@@ -60,9 +74,7 @@ return [
             'prefix_indexes' => true,
             'strict' => true,
             'engine' => null,
-            'options' => extension_loaded('pdo_mysql') ? array_filter([
-                (PHP_VERSION_ID >= 80500 ? Pdo\Mysql::ATTR_SSL_CA : PDO::MYSQL_ATTR_SSL_CA) => env('MYSQL_ATTR_SSL_CA'),
-            ]) : [],
+            'options' => $mysqlOptions,
         ],
 
         'mariadb' => [
@@ -80,9 +92,7 @@ return [
             'prefix_indexes' => true,
             'strict' => true,
             'engine' => null,
-            'options' => extension_loaded('pdo_mysql') ? array_filter([
-                (PHP_VERSION_ID >= 80500 ? Pdo\Mysql::ATTR_SSL_CA : PDO::MYSQL_ATTR_SSL_CA) => env('MYSQL_ATTR_SSL_CA'),
-            ]) : [],
+            'options' => $mysqlOptions,
         ],
 
         'pgsql' => [
@@ -98,6 +108,9 @@ return [
             'prefix_indexes' => true,
             'search_path' => 'public',
             'sslmode' => 'prefer',
+            // Keep native parameter binding without session-scoped statement
+            // names, so transaction poolers can safely change backend sessions.
+            'options' => $pgsqlOptions,
         ],
 
         'sqlsrv' => [

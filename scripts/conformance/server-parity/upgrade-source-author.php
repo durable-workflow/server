@@ -42,7 +42,13 @@ if ($request('GET', '/api/namespaces/default')[0] === 404) {
 $worker = $prefix.'-worker';
 $expect($request('POST', '/api/worker/register', ['worker_id' => $worker, 'task_queue' => $prefix,
     'runtime' => 'php', 'sdk_version' => 'raw-upgrade-inspection-author',
-    'supported_workflow_types' => ['parity.upgrade_activity', 'parity.upgrade_timer'],
+    'supported_workflow_types' => ['parity.upgrade_activity', 'parity.upgrade_timer', 'parity.upgrade_signal',
+        'parity.upgrade_lease'],
+    // The signal original declares its one signal, as an SDK worker would.
+    'workflow_command_contracts' => ['parity.upgrade_signal' => ['signals' => ['go'], 'signal_contracts' => [[
+        'name' => 'go', 'parameters' => [['name' => 'value', 'position' => 0, 'type' => 'array', 'required' => true,
+            'variadic' => false, 'allows_null' => false, 'default_available' => false]],
+    ]]]],
     'supported_activity_types' => ['parity.upgrade_activity'], 'capabilities' => [],
     'capability_manifest' => array_fill_keys(['local_activities', 'worker_sessions', 'sticky_execution'],
         ['supported' => false, 'minimum_protocol_version' => '1.18', 'reason' => 'raw_protocol_author']),
@@ -54,7 +60,8 @@ $poll = ['worker_id' => $worker, 'task_queue' => $prefix, 'timeout_seconds' => 0
 $timerSeconds = (int) (getenv('DW_PARITY_UPGRADE_TIMER_SECONDS') ?: 600);
 $check($timerSeconds >= 30 && $timerSeconds <= 600, 'Unsupported original timer delay');
 $originals = [];
-foreach (['activity', 'timer'] as $kind) {
+// The lease original claims before the signal original makes its resume task.
+foreach (['activity', 'timer', 'lease', 'signal'] as $kind) {
     $id = $prefix.'-'.$kind;
     $run = $expect($request('POST', '/api/workflows', ['workflow_id' => $id,
         'workflow_type' => 'parity.upgrade_'.$kind, 'task_queue' => $prefix, 'input' => $envelope,
@@ -63,24 +70,43 @@ foreach (['activity', 'timer'] as $kind) {
         'started_at' => $started, 'original_deadline' => $deadline], JSON_THROW_ON_ERROR)."\n");
     $task = $expect($request('POST', '/api/worker/workflow-tasks/poll', $poll), 200, $kind.' claim')['task'];
     $check($task['run_id'] === $run['run_id'], 'Original workflow claim changed');
-    $command = $kind === 'activity'
-        ? ['type' => 'schedule_activity', 'activity_type' => 'parity.upgrade_activity', 'arguments' => $envelope,
+    $command = match ($kind) {
+        'activity' => ['type' => 'schedule_activity', 'activity_type' => 'parity.upgrade_activity', 'arguments' => $envelope,
             'retry_policy' => ['max_attempts' => 1, 'backoff_seconds' => []],
-            'start_to_close_timeout' => 600, 'schedule_to_close_timeout' => 900]
-        : ['type' => 'start_timer', 'delay_seconds' => $timerSeconds];
-    $expect($request('POST', '/api/worker/workflow-tasks/'.$task['task_id'].'/complete', [
-        'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
-        'commands' => [$command],
-    ]), 200, $kind.' command');
+            'start_to_close_timeout' => 600, 'schedule_to_close_timeout' => 900],
+        'timer' => ['type' => 'start_timer', 'delay_seconds' => $timerSeconds],
+        'signal' => ['type' => 'open_signal_wait', 'signal_name' => 'go'],
+        // The lease original's worker stops after its claim. PHP's workflow
+        // task lease expires after the takeover, and native redelivers it.
+        'lease' => null,
+    };
+    if ($command !== null) {
+        $expect($request('POST', '/api/worker/workflow-tasks/'.$task['task_id'].'/complete', [
+            'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'commands' => [$command],
+        ]), 200, $kind.' command');
+    }
     $activity = null;
     if ($kind === 'activity') {
         $activity = $expect($request('POST', '/api/worker/activity-tasks/poll', $poll), 200, 'activity claim')['task'];
         $check($activity['run_id'] === $run['run_id'] && $activity['attempt_number'] === 1, 'Original activity changed');
     }
+    if ($kind === 'signal') {
+        // PHP accepts the signal and makes its resume task, which stays
+        // unclaimed until native resumes it after the takeover.
+        $signalled = $request('POST', '/api/workflows/'.$id.'/signal/go', ['input' => $envelope]);
+        $check(in_array($signalled[0], [200, 202], true), 'signal: '.json_encode(['status' => $signalled[0],
+            'reason' => $signalled[1]['reason'] ?? null, 'errors' => $signalled[1]['errors'] ?? null]));
+    }
     $history = $expect($request('GET', '/api/workflows/'.$id.'/runs/'.$run['run_id'].'/history'), 200, 'history')['events'];
-    $check(array_column($history, 'event_type') === ($kind === 'activity'
-        ? ['StartAccepted', 'WorkflowStarted', 'ActivityScheduled', 'ActivityStarted']
-        : ['StartAccepted', 'WorkflowStarted', 'TimerScheduled']), 'Original pending history differs');
+    fwrite(STDERR, json_encode(['phase' => 'history', 'kind' => $kind, 'events' => array_column($history, 'event_type')],
+        JSON_THROW_ON_ERROR)."\n");
+    $check(array_column($history, 'event_type') === match ($kind) {
+        'activity' => ['StartAccepted', 'WorkflowStarted', 'ActivityScheduled', 'ActivityStarted'],
+        'timer' => ['StartAccepted', 'WorkflowStarted', 'TimerScheduled'],
+        'signal' => ['StartAccepted', 'WorkflowStarted', 'SignalWaitOpened', 'SignalReceived'],
+        'lease' => ['StartAccepted', 'WorkflowStarted'],
+    }, 'Original pending history differs');
     $originals[$kind] = ['workflow_id' => $id, 'run_id' => $run['run_id'], 'workflow_task' => $task,
         'activity_task' => $activity, 'history' => $history];
 }

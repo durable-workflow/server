@@ -3,7 +3,7 @@
 use super::*;
 use sqlx::Connection;
 
-enum Writer {
+pub(super) enum Writer {
     Sqlite(sqlx::SqliteConnection),
     Postgres(sqlx::PgConnection),
     MySql(sqlx::MySqlConnection),
@@ -11,7 +11,7 @@ enum Writer {
 
 // Takes the lock a native transition takes, on a connection outside the
 // runtime's pool, as a transition from another server process would.
-async fn hold_transition_lock(database: &TestDatabase) -> Writer {
+pub(super) async fn hold_transition_lock(database: &TestDatabase) -> Writer {
     match database {
         TestDatabase::Sqlite(dir) => {
             let mut connection = sqlx::SqliteConnection::connect(&format!(
@@ -56,7 +56,7 @@ async fn hold_transition_lock(database: &TestDatabase) -> Writer {
 }
 
 impl Writer {
-    async fn release(self) {
+    pub(super) async fn release(self) {
         match self {
             Self::Sqlite(mut connection) => {
                 sqlx::raw_sql("ROLLBACK")

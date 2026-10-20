@@ -41,6 +41,8 @@ class WorkflowRunDiagnostics
 
     private const LAST_EVENT_PAYLOAD_KEY_LIMIT = 20;
 
+    public function __construct(private readonly WorkflowDefinitionRouting $definitionRouting) {}
+
     /**
      * @return array<string, mixed>
      */
@@ -84,6 +86,7 @@ class WorkflowRunDiagnostics
             'recent_failures_truncated' => $failureRows->count() > self::FAILURE_LIMIT,
             'latest_workflow_task_failure' => $latestWorkflowTaskFailure,
             'compatibility' => $this->compatibility($namespace, $run, $summary, $taskQueue),
+            'definition_routing' => $this->definitionRouting->inspect($run),
             'cancellation_cascade_supported' => class_exists(CancellationCascadeView::class),
             'cancellation_cascade' => class_exists(CancellationCascadeView::class) && $run->namespace === $namespace
                 ? CancellationCascadeView::forRun($run)
@@ -94,6 +97,16 @@ class WorkflowRunDiagnostics
             ...$this->findings($payload),
             ...$this->pendingWorkflowRoutingFindings($namespace, $run, $taskRows->all(), $taskQueue),
         ];
+
+        if ($payload['definition_routing']['blocked']) {
+            $payload['findings'][] = [
+                'severity' => 'warning', 'code' => 'workflow_definition_routing_blocked',
+                'message' => 'A ready workflow task has no eligible definition route.',
+                'routing_status' => $payload['definition_routing']['status'],
+                'expected_resolution' => $payload['definition_routing']['resolution'],
+            ];
+            $payload['diagnostic_status'] = 'needs_attention';
+        }
 
         return $payload;
     }

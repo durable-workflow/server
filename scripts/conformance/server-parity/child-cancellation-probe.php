@@ -5,6 +5,7 @@ declare(strict_types=1);
 use DurableWorkflow\Client;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\WorkflowStub;
+require_once __DIR__.'/lock-pressure-middleware.php';
 
 final class ChildCancellationProbeState
 {
@@ -54,7 +55,7 @@ function finishHttpChildCancellation(Client $client, string $parentId, string $p
     $state['terminal_duplicate'] = cancellationReceipt(static fn (): array => $client->cancelWorkflow($id, 'post-parent-completion replacement', $runId));
     $state['child_history_after_terminal_duplicate'] = httpHistory($client, $id, $runId);
     $state['parent_history_after_terminal_duplicate'] = httpHistory($client, $parentId, $parentRunId);
-    $fresh = new Client($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null);
+    $fresh = parityClient($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null);
     $state['fresh_child'] = $fresh->describeWorkflow($id, $runId)->raw;
     $state['fresh_child_history'] = httpHistory($fresh, $id, $runId);
     $state['fresh_parent'] = $fresh->describeWorkflow($parentId, $parentRunId)->raw;

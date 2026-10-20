@@ -1250,6 +1250,7 @@ class WorkflowController
             'compatibility_supported_in_fleet' => $this->compatibilitySupportedInFleet($namespace, $run),
             'compatibility_fleet_reason' => $this->compatibilityFleetReason($namespace, $run),
             'payload_codec' => $run->payload_codec,
+            'definition_routing' => $description['definition_routing'] ?? null,
             'execution_timeout_seconds' => $description['execution_timeout_seconds'] ?? null,
             'run_timeout_seconds' => $runDescription['run_timeout_seconds'] ?? null,
             'execution_deadline_at' => $runDescription['execution_deadline_at'] ?? null,

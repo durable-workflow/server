@@ -35,36 +35,17 @@ fn migrator() -> &'static Migrator {
 /// bootstrap adds after the frozen PHP layout. Takeover applies them to a
 /// converted PHP database instead of running the whole migration.
 pub(super) fn native_relations_sql() -> Result<String> {
-    let frozen = include_str!("../../migrations/sqlite/0003_full_schema.sql");
-    let start = frozen
-        .find("CREATE TABLE dw_server_schema ")
-        .ok_or_else(|| refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"))?;
-    Ok(format!(
-        "{}\n{}",
-        &frozen[start..],
-        include_str!("../../migrations/sqlite/0004_worker_incarnations.sql")
-    ))
+    super::upgrade::native_relations(
+        include_str!("../../migrations/sqlite/0003_full_schema.sql"),
+        "CREATE TABLE dw_server_schema ",
+        include_str!("../../migrations/sqlite/0004_worker_incarnations.sql"),
+    )
 }
 
-/// Records the native migration as applied in the caller's transaction, for a
-/// takeover whose schema came from conversion. `verify` then checks the
-/// marker, this ledger and the complete catalog as for any native database.
-pub(super) async fn record_migration(connection: &mut SqliteConnection) -> Result<()> {
-    use sqlx::migrate::Migrate;
-    connection
-        .ensure_migrations_table("_sqlx_migrations")
-        .await?;
-    let migration = migrator()
-        .iter()
-        .next()
-        .ok_or_else(|| refuse(StatusCode::CONFLICT, "native_migration_history_mismatch"))?;
-    sqlx::query("INSERT INTO _sqlx_migrations(version,description,success,checksum,execution_time) VALUES ($1,$2,TRUE,$3,0)")
-        .bind(migration.version)
-        .bind(migration.description.as_ref())
-        .bind(migration.checksum.as_ref())
-        .execute(&mut *connection)
-        .await?;
-    Ok(())
+/// The single native migration, which a takeover records as applied once
+/// conversion has produced its schema.
+pub(super) fn migration() -> &'static Migration {
+    migrator().iter().next().expect("one native SQLite migration")
 }
 
 type Catalog = Vec<(String, String, String, String)>;

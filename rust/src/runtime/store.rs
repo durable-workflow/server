@@ -403,7 +403,7 @@ where
         name: &str,
         body: Value,
         mut prepared: PreparedControlArguments,
-        signal_codec: Arc<Semaphore>,
+        transition_codec: Arc<Semaphore>,
     ) -> Result<Value> {
         reject_fields(&body, &["input", "request_id"])?;
         if name.trim().is_empty() || name.len() > 255 {
@@ -506,7 +506,7 @@ where
                     "message":format!("Workflow signal [{name}] is unknown for workflow type [{workflow_type}]: the durable command contract does not declare that handler. Command contract source [durable_history], declared signals [{labels}].")});
             }
             prepared.command = prepare_rejected_signal_command(
-                signal_codec,
+                transition_codec,
                 name.to_owned(),
                 prepared.values.clone(),
                 validation_errors.clone(),
@@ -697,7 +697,7 @@ where
         run_id: &str,
         task_id: &str,
         task: &DB::Row,
-        signal_codec: Arc<Semaphore>,
+        transition_codec: Arc<Semaphore>,
     ) -> Result<()> {
         let payload = DB::document_row(task, "payload")?;
         if payload["resume_source_kind"] != "workflow_signal" {
@@ -724,7 +724,7 @@ where
             return Err(refuse(StatusCode::CONFLICT, "signal_wait_mismatch"));
         }
         let prepared = prepare_control_arguments(
-            signal_codec,
+            transition_codec,
             name.clone(),
             DB::string(&signal, "arguments")?,
             "invalid_signal_arguments",
@@ -814,27 +814,29 @@ where
             }
         }
         let runtime = text(&body, "runtime")?;
-        let contracts = body
+        let supplied_contracts = body
             .get("workflow_command_contracts")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
-        // PHP encodes an empty associative map as []; activity-only published
-        // workers send this shape. Preserve a map internally for lookups.
-        let contracts = if contracts.as_array().is_some_and(|values| values.is_empty()) {
-            json!({})
-        } else {
-            contracts
-        };
-        if !contracts.is_object() {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid_worker_definition",
-            ));
-        }
+            .map(|contracts| {
+                super::worker_contracts::normalize(contracts, &body["supported_workflow_types"])
+            })
+            .transpose()?;
         let token = super::worker_incarnations::token().await?;
         let mut tx = self.begin().await?;
-        let previous = Self::query("SELECT worker_id FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
+        let previous = Self::query("SELECT worker_id,workflow_command_contracts FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
             .bind(self.namespace.as_ref()).bind(worker_id).fetch_optional(&mut *tx).await?;
+        let contracts = match supplied_contracts {
+            Some(contracts) => contracts,
+            None => {
+                let existing = match &previous {
+                    Some(worker) => {
+                        DB::optional_document_row(worker, "workflow_command_contracts")?
+                            .unwrap_or(Value::Null)
+                    }
+                    None => Value::Null,
+                };
+                super::worker_contracts::normalize(&existing, &body["supported_workflow_types"])?
+            }
+        };
         if previous.is_some() {
             // Match PHP's registration boundary: return original workflow leases
             // to ready without a repair command/history event. Token rotation
@@ -934,18 +936,25 @@ where
         } else {
             None
         };
+        // Only the first probe claims under the lock unconditionally. Later
+        // probes, on a same-node wake or a timed read that also observes
+        // other server processes, claim only after a lock-free read finds
+        // something to claim or refuse.
+        let mut first = true;
+        let mut pace = super::poll_readiness::ReadPace::new();
         loop {
-            // Register the notification before probing; periodic probing also
-            // observes work committed by an independent process.
+            // Register the notification before probing.
             let wake = self.wake.notified();
-            if let Some(task) = self.claim(&body, kind, protocol_version).await? {
+            if (std::mem::take(&mut first) || self.task_poll_ready(&body, kind).await?)
+                && let Some(task) = self.claim(&body, kind, protocol_version).await?
+            {
                 return Ok(
-                    json!({"task": task, "poll_status": "task", "server_capabilities": capabilities()}),
+                    json!({"task": task, "poll_status": "leased", "server_capabilities": capabilities()}),
                 );
             }
             if tokio::time::Instant::now() >= deadline {
                 return Ok(
-                    json!({"task": null, "poll_status": "timeout", "server_capabilities": capabilities()}),
+                    json!({"task": null, "poll_status": "empty", "server_capabilities": capabilities()}),
                 );
             }
             if self
@@ -957,8 +966,45 @@ where
                     json!({"task":null,"poll_status":"task_queue_changed","server_capabilities":capabilities()}),
                 );
             }
-            tokio::select! { _ = wake => {}, _ = tokio::time::sleep(Duration::from_millis(50)) => {} }
+            pace.wait(wake, deadline).await;
         }
+    }
+
+    /// Whether a held workflow or activity poll should claim again.
+    async fn task_poll_ready(&self, body: &Value, kind: &str) -> Result<bool> {
+        let worker_id = text(body, "worker_id")?;
+        let queue = text(body, "task_queue")?;
+        // The claim refuses a removed or moved registration.
+        let registration = Self::query(
+            "SELECT task_queue FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2",
+        )
+        .bind(worker_id)
+        .bind(self.namespace.as_ref())
+        .fetch_optional(&self.pool)
+        .await?;
+        match registration {
+            Some(row) if DB::string(&row, "task_queue")? == queue => {}
+            _ => return Ok(true),
+        }
+        // A concurrent poll with the same request ID may have claimed already;
+        // the claim replays its receipt.
+        if let Some(request_id) = body.get("poll_request_id").and_then(Value::as_str)
+            && Self::query("SELECT task_id FROM dw_poll_receipts WHERE worker_id=$1 AND kind=$2 AND request_id=$3 AND namespace=$4")
+                .bind(worker_id).bind(kind).bind(request_id).bind(self.namespace.as_ref())
+                .fetch_optional(&self.pool).await?.is_some()
+        {
+            return Ok(true);
+        }
+        let at = now();
+        Ok(Self::query(DB::TASK_CANDIDATES_SQL)
+            .bind(self.namespace.as_ref())
+            .bind(queue)
+            .bind(kind)
+            .bind(DB::bind_time(at))
+            .bind(DB::bind_time(at))
+            .fetch_optional(&self.pool)
+            .await?
+            .is_some())
     }
 
     async fn claim(
@@ -1500,7 +1546,7 @@ where
         &self,
         task_id: &str,
         body: Value,
-        signal_codec: Arc<Semaphore>,
+        transition_codec: Arc<Semaphore>,
         external: super::external_resolution::PreparedCommands,
     ) -> Result<Value> {
         let commands = body["commands"]
@@ -1700,7 +1746,7 @@ where
             return Err(refuse(StatusCode::CONFLICT, "update_task_mismatch"));
         }
         let mut sequence = Self::authored_sequence(&mut tx, &run_id).await?;
-        Self::apply_task_signal(&mut tx, &run_id, task_id, &task, signal_codec).await?;
+        Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec).await?;
         for (index, command) in commands.iter().enumerate() {
             if command["type"] == "fail_workflow" {
                 // Published parseCommands applies every nonterminal command
