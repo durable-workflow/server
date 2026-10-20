@@ -52,7 +52,7 @@ rates=($(j '.workload.offered_rates_per_second | map(tostring) | join(" ")'))
 idle_timeout=$(j .idle.requested_timeout_seconds)
 idle_kind=$(j .idle.kind)
 
-project="dw-port-$impl-$(date -u +%Y%m%dT%H%M%S)"
+project="dw-port-$impl-$(date -u +%Y%m%dt%H%M%S)"
 case "$impl" in
   php) profiles=(--profile php) services=(mysql redis php-bootstrap php-server php-worker php-scheduler)
        export DW_PORT_RUNTIME_URL=http://php-server:8080 ;;
