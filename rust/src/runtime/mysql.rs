@@ -67,10 +67,10 @@ impl Flavor {
         })
     }
     fn expected(self) -> Result<Catalog> {
-        Ok(serde_json::from_str(match self {
+        Ok(serde_json::from_str(&canonical(match self {
             Self::MySql => include_str!("../../migrations/mysql/0004_catalog.json"),
             Self::MariaDb => include_str!("../../migrations/mariadb/0004_catalog.json"),
-        })?)
+        }))?)
     }
     fn checksum(self) -> &'static [u8] {
         self.migrator().iter().next().unwrap().checksum.as_ref()
@@ -104,6 +104,38 @@ fn table_sql(prefix: &str, table: &str, suffix: &str) -> Result<AssertSqlSafe<St
     // Only database-owned ASCII identifiers are interpolated, quoted. All
     // request data in the execution runtime continues to use bound parameters.
     Ok(AssertSqlSafe(format!("{prefix}`{table}`{suffix}")))
+}
+
+/// `CHARACTER SET x COLLATE x_…` and `COLLATE x_…` define the same column,
+/// because a collation names its character set. MySQL prints the longer form
+/// for columns restored from a dump and the shorter one for the same columns
+/// as PHP's migrations created them, so catalogs compare the shorter form.
+pub(super) fn canonical(sql: &str) -> String {
+    const CHARSET: &str = " CHARACTER SET ";
+    let mut result = String::with_capacity(sql.len());
+    let mut rest = sql;
+    while let Some(at) = rest.find(CHARSET) {
+        let after = &rest[at + CHARSET.len()..];
+        let length = after
+            .bytes()
+            .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
+            .count();
+        let (charset, tail) = after.split_at(length);
+        if length > 0
+            && tail
+                .strip_prefix(" COLLATE ")
+                .is_some_and(|collation| {
+                    collation.starts_with(charset) && collation[length..].starts_with('_')
+                })
+        {
+            result.push_str(&rest[..at]);
+        } else {
+            result.push_str(&rest[..at + CHARSET.len() + length]);
+        }
+        rest = tail;
+    }
+    result.push_str(rest);
+    result
 }
 
 pub fn definition(sql: String) -> String {
@@ -144,7 +176,7 @@ async fn catalog(connection: &mut MySqlConnection) -> Result<Catalog> {
         let row = sqlx::query(table_sql("SHOW CREATE TABLE ", &name, "")?)
             .fetch_one(&mut *connection)
             .await?;
-        result.push((name, definition(row.try_get(1)?)));
+        result.push((name, canonical(&definition(row.try_get(1)?))));
     }
     Ok(result)
 }
@@ -189,7 +221,7 @@ pub(super) async fn php_source_catalog(connection: &mut MySqlConnection) -> Resu
             Flavor::MySql => include_str!("../../upgrade/php-2.8.0/mysql.json"),
             Flavor::MariaDb => include_str!("../../upgrade/php-2.8.0/mariadb.json"),
         };
-        let mut current = super::upgrade::source_catalog_variant(&expected, delta)?;
+        let mut current = super::upgrade::source_catalog_variant(&expected, &canonical(delta))?;
         current.sort_by(|left, right| left.0.cmp(&right.0));
         if actual != current {
             return Err(refuse(
@@ -512,6 +544,23 @@ mod tests {
     async fn dirty(connection: &mut MySqlConnection, flavor: Flavor) {
         connection.execute(LEDGER_SQL).await.unwrap();
         sqlx::query("INSERT INTO _sqlx_migrations VALUES (?, 'interrupted qualification', CURRENT_TIMESTAMP, FALSE, ?, -1)").bind(VERSION).bind(flavor.checksum()).execute(connection).await.unwrap();
+    }
+
+    #[test]
+    fn restored_column_character_sets_compare_as_their_collation() {
+        let created = "CREATE TABLE `t` (\n  `a` varchar(26) COLLATE utf8mb4_unicode_ci NOT NULL,\n  `b` char(8) COLLATE ascii_bin\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+        let restored = "CREATE TABLE `t` (\n  `a` varchar(26) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,\n  `b` char(8) CHARACTER SET ascii COLLATE ascii_bin\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+        assert_eq!(canonical(restored), created);
+        assert_eq!(canonical(created), created);
+        // Only a character set its collation names is redundant.
+        for kept in [
+            "`a` text CHARACTER SET utf8 COLLATE utf8mb4_bin",
+            "`a` text CHARACTER SET utf8mb4",
+            "`a` text CHARACTER SET latin1 COLLATE utf8mb4_bin",
+            "`a` text COMMENT ' CHARACTER SET '",
+        ] {
+            assert_eq!(canonical(kept), kept);
+        }
     }
 
     #[tokio::test]
