@@ -206,6 +206,18 @@ Upgrade order:
 5. Confirm `/api/ready`, `/api/cluster/info`, and worker registration before
    shifting external traffic.
 
+The release that introduces `SignalRejected` requires a stop-first upgrade.
+Older Core readers cannot decode this persisted history event. After pulling
+the new image, pause admission, drain external workers and stop the existing
+`server`, `worker` and `scheduler` services before starting their replacements.
+Stop any additional matching processes and embedded or direct-database readers,
+including Waterline when it shares the database. Upgrade those readers before
+resuming writes. Keep database, Redis and external-payload storage intact.
+Do not roll an old reader back onto a database containing the new event; repair
+forward or restore the complete pre-upgrade recovery point. See the
+[chart reader-upgrade procedure](../k8s/helm/durable-workflow/docs/UPGRADING.md#01182)
+for the equivalent Kubernetes ordering.
+
 The image generates an internal runtime key automatically. Set `DW_SERVER_KEY`
 only if your deployment needs that key to remain stable across container
 replacement.
@@ -631,6 +643,18 @@ that key returns the original receipt, including its `update_name`, `run_id`, an
 `update_id`, without creating another update. This can return a receipt from an
 earlier run after continue-as-new. Historical-run command routes still refuse
 before receipt lookup.
+
+For this Server API, the body `request_id` is the caller key. `X-Request-Id`
+and `X-Correlation-Id` are audit correlation only. Omitting the body key admits
+an independent operation, even if a proxy reuses its header. Caller keys are
+opaque and case-sensitive, including the literal string `0`, up to the existing
+255-character validation limit. The command context and `requestId()` accessor
+retain that logical key; the indexed database column uses an internal bounded
+lookup token. Historical body keys remain readable without rewriting old rows.
+
+Drain and restart all direct database writers together when upgrading to the
+new token format. After new updates are admitted, an older writer is not a safe
+rollback target. Remote SDK clients need no change for this key correction.
 
 Retained receipts do not verify equality with newly submitted arguments. Keep
 one key for retries of the same logical operation and use a new key for a new

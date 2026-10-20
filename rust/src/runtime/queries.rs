@@ -391,15 +391,15 @@ where
         loop {
             let wake = self.wake.notified();
             match self.claim_query(body, config, proof, keys).await? {
-                QueryClaim::Task(task) => return Ok(poll_result(Some(task), "task")),
+                QueryClaim::Task(task) => return Ok(poll_result(Some(task), "leased")),
                 QueryClaim::StaleWorker => {
                     return Ok(poll_result(None, "stale_worker_registration"));
                 }
-                QueryClaim::Superseded => return Ok(poll_result(None, "timeout")),
+                QueryClaim::Superseded => return Ok(poll_result(None, "empty")),
                 QueryClaim::Empty => {}
             }
             if tokio::time::Instant::now() >= deadline {
-                return Ok(poll_result(None, "timeout"));
+                return Ok(poll_result(None, "empty"));
             }
             if self
                 .poll_queue_changed(&body, "query", &mut cross_kind)

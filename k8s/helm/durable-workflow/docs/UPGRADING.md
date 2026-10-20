@@ -67,6 +67,47 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.183
+
+Server 2.9.7 uses Core's corrected caller-key update receipts. New update rows
+store bounded lookup tokens in the internal `workflow_commands.request_id`
+column; read logical keys through the model accessor or command context.
+Existing rows and retained receipts are preserved.
+
+Use a coordinated stop-first upgrade for every direct database writer. Pause
+ingress and drain workers, then stop all old Server/embedded writer processes
+and prevent their controllers from restarting them before starting the new
+version. After new-token rows are admitted, an old writer is an unsafe rollback
+target. Remote SDK clients keep the same wire contract. The preceding
+[0.1.182](#01182) history-reader boundary still applies when upgrading from an
+older release.
+
+### 0.1.182
+
+The packaged Server uses Core's new `SignalRejected` history event to make an
+accepted signal's non-delivery inspectable. Older Core readers cannot decode
+that event. This boundary requires a coordinated stop-first upgrade; the normal
+rolling procedure and automatic rollback are not qualified.
+
+1. Take the complete recovery point described above. Pause ingress and drain
+   external workers. Stop embedded processes and directly connected Waterline
+   instances that read the same database.
+2. Prevent an HPA or another reconciler from restarting the old workloads.
+   Suspend the scheduler CronJob and scale the Server and worker Deployments
+   to zero, using the commands shown under [0.1.45](#0145). Stop any separately
+   deployed matching role too.
+3. Verify that every old executable Pod is gone, including terminating Pods
+   and in-flight scheduler Jobs. Desired replicas alone do not prove this.
+4. Upgrade all database readers and apply the new chart with `--wait`, omitting
+   `--atomic` for this boundary. Restore the intended replica counts, scheduler
+   and autoscaling only with the new image, then confirm readiness and worker
+   registration before reopening ingress.
+
+The chart cannot check readers deployed outside its release. Keep older readers
+stopped if startup fails. Repair forward or restore the complete pre-upgrade
+database and payload recovery point before returning to old binaries; a Helm
+rollback alone cannot remove a stored history event.
+
 ### 0.1.49
 
 This release advances the chart Server identity to `2.0.0-rc.53` and the

@@ -178,7 +178,7 @@ where
         };
         let Some(task_id) = result["query_task_id"].as_str() else {
             tx.commit().await?;
-            let status = result["poll_status"].as_str().unwrap_or("timeout");
+            let status = result["poll_status"].as_str().unwrap_or("empty");
             return Ok(Some(poll_result(None, status)));
         };
         let at = authority::now();
@@ -193,16 +193,16 @@ where
                 && authority::deadline(task).is_some_and(|deadline| deadline > at)
         });
         let response = match deliverable {
-            Some(task) => poll_result(Some(Self::query_delivery(task)), "task"),
+            Some(task) => poll_result(Some(Self::query_delivery(task)), "leased"),
             None => {
                 Self::put_poll_row(
                     &mut tx,
                     &keys.result,
-                    &json!({"query_task_id": null, "poll_status": "timeout"}),
+                    &json!({"query_task_id": null, "poll_status": "empty"}),
                     empty_ttl(config),
                 )
                 .await?;
-                poll_result(None, "timeout")
+                poll_result(None, "empty")
             }
         };
         tx.commit().await?;
@@ -309,6 +309,6 @@ where
         Ok(self
             .cached_query_poll(keys, body, proof, config)
             .await?
-            .unwrap_or_else(|| poll_result(None, "timeout")))
+            .unwrap_or_else(|| poll_result(None, "empty")))
     }
 }

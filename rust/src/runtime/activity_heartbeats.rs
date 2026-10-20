@@ -41,7 +41,7 @@ where
     // Heartbeat can report lost authority on legacy protocols without granting
     // the separately capability-gated non-renewing status endpoint.
     async fn observe_activity(&self, task_id: &str, body: Value, protocol: &str) -> Result<Value> {
-        let mut tx = self.begin().await?;
+        let mut tx = self.begin_read().await?;
         let (response, _) = self
             .activity_observation(&mut tx, task_id, body, protocol)
             .await?;
