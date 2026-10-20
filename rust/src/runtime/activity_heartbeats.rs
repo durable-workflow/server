@@ -242,7 +242,7 @@ where
         let expires = if Self::cancellation_request(&run)?.is_none() {
             at + chrono::Duration::seconds(300)
         } else {
-            Self::cancellation_lease_expiry(&run)?
+            self.cancellation_lease_expiry(&run)?
         };
         let policy = DB::optional_document_row(&activity, "retry_policy")?.unwrap_or(Value::Null);
         super::activity_deadlines::validate_policy(&policy)?;

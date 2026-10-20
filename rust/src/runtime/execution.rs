@@ -163,6 +163,7 @@ impl Runtime {
         let mut store = Store::new(sqlite::open(database).await?);
         store.memo_size_limit = limit;
         store.history_budget = history_budget;
+        store.workflow_task_lease_seconds = queries.workflow_task_lease_seconds;
         Self::from_storage(Storage::Sqlite(store), token, external, queries).await
     }
 
@@ -175,6 +176,7 @@ impl Runtime {
         let mut store = Store::new(PostgresStorage::open(options).await?.into_pool());
         store.memo_size_limit = limit;
         store.history_budget = history_budget;
+        store.workflow_task_lease_seconds = queries.workflow_task_lease_seconds;
         Self::from_storage(Storage::Postgres(store), token, external, queries).await
     }
 
@@ -187,6 +189,7 @@ impl Runtime {
         let mut store = Store::new(MySqlStorage::open(options).await?.into_pool());
         store.memo_size_limit = limit;
         store.history_budget = history_budget;
+        store.workflow_task_lease_seconds = queries.workflow_task_lease_seconds;
         Self::from_storage(Storage::MySql(store), token, external, queries).await
     }
 
