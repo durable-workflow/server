@@ -14,29 +14,75 @@ qualify a later tree.
 
 ## Current state
 
-Updated October 19, 2026, after merging #460.
+Updated October 20, 2026.
 
-- **Merged native slices.** [#478](https://github.com/durable-workflow/server/pull/478)
-  (run observation, timed waits, `all` barriers, terminal update closure and
-  cooperative cancellation with abandoned and independently cancelled
-  children), [#476](https://github.com/durable-workflow/server/pull/476)
-  (run activity metadata listing), [#494](https://github.com/durable-workflow/server/pull/494)
-  (CPU deadline-health observer timing) and [#460](https://github.com/durable-workflow/server/pull/460)
-  (read-only inspection of an existing PHP database). No native PR is open.
-- **Shared-suite reliability.** Each 13-job run still tends to show one
-  intermittent failure in a step its change does not touch, and qualification
-  records classify each one. Diagnosed and corrected: published PHP SQLite
-  reference lock pressure, and CPU observer client timing. Diagnosed, decision
-  pending: the query-authority deadline-boundary replay (see known gaps).
-  Not yet diagnosed: one native-test failure in `execution-and-codec` step 8 on
-  main's post-#478 run, which four local repetitions under the CI limits did
-  not reproduce.
-- **Next action.** Decide the query deadline-boundary replay contract and add
-  its fixture. Then correct native timer dispatch under CPU load with a
-  deadline-health control. Then continue the remaining parity families, the
-  backup-first in-place takeover and the performance baseline on disposable
-  hosts.
+- **Merged on October 20.**
+  - [#507](https://github.com/durable-workflow/server/pull/507) gives codec work under the transition lock its own permit.
+  - [#508](https://github.com/durable-workflow/server/pull/508) keeps explicit worker command declarations.
+  - [#509](https://github.com/durable-workflow/server/pull/509) reports poll statuses as the worker protocol does.
+  - [#516](https://github.com/durable-workflow/server/pull/516) lets held long polls wait without the transition lock.
+  - [#517](https://github.com/durable-workflow/server/pull/517) designs the backup-first takeover.
 
+  Main's 13-job parity run passed at `ee88ac6ba`.
+- **Open and qualified.** [#515](https://github.com/durable-workflow/server/pull/515)
+  retries the PHP reference's lock-pressure refusals in the probes. It passed
+  all 13 jobs and merges first.
+- **Open, waiting for #515.** Each of these failed or deferred parity only in
+  steps #515 corrects or that it doesn't touch.
+  - The query pair: [#499](https://github.com/durable-workflow/server/pull/499),
+    then [#510](https://github.com/durable-workflow/server/pull/510).
+  - The backup-first takeover stack: [#523](https://github.com/durable-workflow/server/pull/523)
+    (fingerprint), [#529](https://github.com/durable-workflow/server/pull/529)
+    (layouts) and [#532](https://github.com/durable-workflow/server/pull/532),
+    [#533](https://github.com/durable-workflow/server/pull/533) and
+    [#536](https://github.com/durable-workflow/server/pull/536) (SQLite,
+    PostgreSQL and MySQL/MariaDB takeover). Then
+    [#538](https://github.com/durable-workflow/server/pull/538) (SQLite WAL
+    preparation) and [#539](https://github.com/durable-workflow/server/pull/539)
+    (a PHP-accepted signal and an expired PHP lease resumed under native, plus
+    refusal of unsupported features).
+  - Immediate termination, and worker listing with registration facts.
+- **Parity surface.** With this branch, native serves 63 of published PHP's 173 API
+  routes. The missing families are listed below under "API surface still
+  missing".
+- **Next action.** Merge #515. Then run parity once on each stack top (#510,
+  #539 and the worker listing branch) and merge each stack. Then port history
+  export, a large bundle the CLI and both SDKs use for replay. Multi-node
+  qualification and packaging the native binary into the server image remain
+  open gates.
+
+## API surface still missing
+
+These published PHP 2.9.8 routes have no native handler yet, by family. The
+CLI and Waterline use the first group.
+
+- **Used by the CLI or Waterline.**
+  - Schedule listing, update and backfill.
+  - Task queues and their build IDs.
+  - Namespace update, delete and external storage.
+  - Search attributes.
+  - `system` repair, retention and activity-timeout passes, metrics and
+    operator dashboards.
+  - Storage test.
+  - Activities (standalone).
+- **Worker protocol features.**
+  - Worker sessions.
+  - Update validation tasks.
+  - Prepared local activities.
+  - Cancellation scopes.
+  - Activity cancellation acknowledgement.
+- **Run operations.**
+  - History export.
+  - Archive.
+  - Redrive.
+  - Imports from embedded v2 and Waterline v1.
+- **Other families.**
+  - Message streams.
+  - Service catalogs and endpoints.
+  - Nexus operations.
+  - Runtime credentials.
+  - Deployments.
+  - Bridge adapters.
 ## Known gaps found in review
 
 These are confirmed differences from the published PHP reference and open
