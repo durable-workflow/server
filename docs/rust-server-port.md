@@ -85,6 +85,14 @@ contract fixture before its correction.
   or whether the fixture counts a boundary replay as the same claim, then add the
   fixture before changing either side.
 
+- **Python worker shutdown after a late synchronous query handler (not yet
+  diagnosed).** In the SQLite query-authority cohort on #515's run
+  39431491496, the published Python SDK 2.5.15 client in `late-handler-sync`
+  mode failed against native. Its 6-second handler returned and was fenced
+  with `query_execution_budget_expired` after one claim. The SDK's query thread
+  then did not stop within the 5-second shutdown budget. Forty local
+  repetitions of that case alone passed. Find what holds the query thread
+  after the fence before changing either side.
 - **Terminating a child run.** Published Workflow resolves the parent with
   `ChildRunTerminated` and the `terminated` child call status. Native refuses
   this with `422 termination_propagation_not_available` until the parent-side
