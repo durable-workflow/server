@@ -644,6 +644,18 @@ that key returns the original receipt, including its `update_name`, `run_id`, an
 earlier run after continue-as-new. Historical-run command routes still refuse
 before receipt lookup.
 
+For this Server API, the body `request_id` is the caller key. `X-Request-Id`
+and `X-Correlation-Id` are audit correlation only. Omitting the body key admits
+an independent operation, even if a proxy reuses its header. Caller keys are
+opaque and case-sensitive, including the literal string `0`, up to the existing
+255-character validation limit. The command context and `requestId()` accessor
+retain that logical key; the indexed database column uses an internal bounded
+lookup token. Historical body keys remain readable without rewriting old rows.
+
+Drain and restart all direct database writers together when upgrading to the
+new token format. After new updates are admitted, an older writer is not a safe
+rollback target. Remote SDK clients need no change for this key correction.
+
 Retained receipts do not verify equality with newly submitted arguments. Keep
 one key for retries of the same logical operation and use a new key for a new
 operation; inspect the returned identity before treating it as the requested
