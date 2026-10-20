@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
 
-use super::{Result, Runtime, refuse, store::capabilities};
+use super::{Result, Runtime, cancellation::TerminalCommand, refuse, store::capabilities};
 
 #[derive(Clone)]
 pub(super) struct AuthenticatedPrincipal {
@@ -78,6 +78,10 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route("/api/workflows/{workflow_id}/runs", get(list_runs))
         .route("/api/workflows/{workflow_id}/cancel", post(cancel_current))
+        .route(
+            "/api/workflows/{workflow_id}/terminate",
+            post(terminate_current),
+        )
         .route("/api/workflows/{workflow_id}/repair", post(repair_current))
         .route(
             "/api/workflows/{workflow_id}/runs/{run_id}/repair",
@@ -99,6 +103,10 @@ pub fn router(runtime: Runtime) -> Router {
         .route(
             "/api/workflows/{workflow_id}/runs/{run_id}/cancel",
             post(cancel_run),
+        )
+        .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/terminate",
+            post(terminate_run),
         )
         .route(
             "/api/workflows/{workflow_id}/query/{query_name}",
@@ -147,7 +155,11 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/worker/registrations/{worker_id}/deregister",
             post(deregister_fenced),
         )
-        .route("/api/workers/{worker_id}", delete(deregister))
+        .route("/api/workers", get(list_workers))
+        .route(
+            "/api/workers/{worker_id}",
+            get(describe_worker).delete(deregister),
+        )
         .route("/api/worker/workflow-tasks/poll", post(poll_workflow))
         .route(
             "/api/worker/workflow-tasks/{task_id}/deliver-cancellation",
@@ -269,7 +281,7 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         &["worker", "operator", "admin"]
     } else if worker {
         &["worker"]
-    } else if path.starts_with("/api/workers/")
+    } else if path.starts_with("/api/workers/") && request.method() != Method::GET
         || path == "/api/namespaces" && request.method() == Method::POST
         // Updating a namespace or its external storage needs an admin.
         || path.starts_with("/api/namespaces/") && request.method() == Method::PUT
@@ -407,6 +419,13 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     if path == "/api/workflows" {
         return method == "POST";
     }
+    if path == "/api/workers"
+        || path
+            .strip_prefix("/api/workers/")
+            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+    {
+        return method == "GET";
+    }
     if let Some(path) = path.strip_prefix("/api/workflows/") {
         let parts: Vec<_> = path.split('/').collect();
         if matches!(
@@ -432,9 +451,14 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
         }
         return matches!(
             parts.as_slice(),
-            [_] | [_, "cancel"]
+            [_] | [_, "cancel" | "terminate"]
                 | [_, "runs", _]
-                | [_, "runs", _, "history" | "cancel" | "activities"]
+                | [
+                    _,
+                    "runs",
+                    _,
+                    "history" | "cancel" | "terminate" | "activities"
+                ]
         );
     }
     if let Some(path) = path.strip_prefix("/api/worker/") {
@@ -601,18 +625,45 @@ async fn list_runs(
     Ok(Json(runtime.list_runs(&workflow).await?))
 }
 
+async fn close(
+    runtime: Runtime,
+    command: TerminalCommand,
+    workflow_id: &str,
+    run_id: Option<&str>,
+    body: Value,
+) -> Result<(StatusCode, Json<Value>)> {
+    let operation = || match command {
+        TerminalCommand::Cancel => super::control_plane::Operation::Cancel,
+        TerminalCommand::Terminate => super::control_plane::Operation::Terminate,
+    };
+    let (status, response) = runtime
+        .close_workflow(command, workflow_id, run_id, body)
+        .await
+        .map_err(|error| operation().refusal(error, workflow_id, run_id))?;
+    Ok((status, Json(response)))
+}
+
 async fn cancel_current(
     Extension(runtime): Extension<Runtime>,
     Path(workflow_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
-    let (status, response) = runtime
-        .cancel_workflow(&workflow_id, None, body)
-        .await
-        .map_err(|error| {
-            super::control_plane::Operation::Cancel.refusal(error, &workflow_id, None)
-        })?;
-    Ok((status, Json(response)))
+    close(runtime, TerminalCommand::Cancel, &workflow_id, None, body).await
+}
+
+async fn terminate_current(
+    Extension(runtime): Extension<Runtime>,
+    Path(workflow_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    close(
+        runtime,
+        TerminalCommand::Terminate,
+        &workflow_id,
+        None,
+        body,
+    )
+    .await
 }
 
 async fn repair_current(
@@ -701,13 +752,29 @@ async fn cancel_run(
     Path((workflow_id, run_id)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
-    let (status, response) = runtime
-        .cancel_workflow(&workflow_id, Some(&run_id), body)
-        .await
-        .map_err(|error| {
-            super::control_plane::Operation::Cancel.refusal(error, &workflow_id, Some(&run_id))
-        })?;
-    Ok((status, Json(response)))
+    close(
+        runtime,
+        TerminalCommand::Cancel,
+        &workflow_id,
+        Some(&run_id),
+        body,
+    )
+    .await
+}
+
+async fn terminate_run(
+    Extension(runtime): Extension<Runtime>,
+    Path((workflow_id, run_id)): Path<(String, String)>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    close(
+        runtime,
+        TerminalCommand::Terminate,
+        &workflow_id,
+        Some(&run_id),
+        body,
+    )
+    .await
 }
 
 async fn request_cancellation_current(
@@ -889,6 +956,24 @@ async fn worker_heartbeat(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     runtime.worker_heartbeat(body).await.map(Json)
+}
+async fn list_workers(
+    Extension(runtime): Extension<Runtime>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Value>> {
+    runtime
+        .list_workers(
+            query.get("task_queue").map(String::as_str),
+            query.get("status").map(String::as_str),
+        )
+        .await
+        .map(Json)
+}
+async fn describe_worker(
+    Extension(runtime): Extension<Runtime>,
+    Path(worker_id): Path<String>,
+) -> Result<Json<Value>> {
+    runtime.describe_worker(&worker_id).await.map(Json)
 }
 async fn deregister(
     Extension(runtime): Extension<Runtime>,
