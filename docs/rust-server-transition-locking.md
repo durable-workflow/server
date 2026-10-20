@@ -20,6 +20,12 @@ All completions, heartbeats, claims, signals, updates, cancellations, expiry
 sweeps, timer firing and maintenance therefore run one at a time. This keeps
 fencing simple. Leases, attempt checks and cross-run reads cannot interleave.
 
+Reads that change nothing do not take the lock. Worker history pages, activity
+status checks and run activity metadata listings each read one consistent
+read-only snapshot (`Store::begin_read()`, `READ_SNAPSHOT_BEGIN` in
+`backend.rs`). Control-plane reads such as describe and run history query the
+pool without a transaction.
+
 ## Measured cost
 
 Under the CPU deadline-health profile on a local MySQL 8.0 cell, per-step
