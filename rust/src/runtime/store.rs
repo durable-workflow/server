@@ -25,6 +25,7 @@ pub(super) struct Store<DB: Backend> {
     pub(super) memo_codec: Arc<Semaphore>,
     pub(super) memo_size_limit: Option<usize>,
     pub(super) history_budget: super::history_budget::Config,
+    pub(super) search_attribute_limit: i64,
 }
 pub(super) fn id() -> String {
     Ulid::new().to_string()
@@ -66,6 +67,7 @@ where
             memo_codec: Arc::new(Semaphore::new(1)),
             memo_size_limit: Some(262_144),
             history_budget: super::history_budget::Config::default(),
+            search_attribute_limit: 100,
         }
     }
     pub(super) fn in_namespace(&self, namespace: &str) -> Self {
@@ -76,6 +78,7 @@ where
             memo_codec: self.memo_codec.clone(),
             memo_size_limit: self.memo_size_limit,
             history_budget: self.history_budget,
+            search_attribute_limit: self.search_attribute_limit,
         }
     }
     pub(super) async fn database_live(&self) -> bool {

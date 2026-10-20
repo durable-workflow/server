@@ -46,6 +46,7 @@ mod schedule_execution;
 mod schedule_http;
 mod schedule_storage;
 mod schedules;
+mod search_attributes;
 mod schema;
 mod selection_summary;
 mod selections;
