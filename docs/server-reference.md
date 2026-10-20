@@ -206,6 +206,18 @@ Upgrade order:
 5. Confirm `/api/ready`, `/api/cluster/info`, and worker registration before
    shifting external traffic.
 
+The release that introduces `SignalRejected` requires a stop-first upgrade.
+Older Core readers cannot decode this persisted history event. After pulling
+the new image, pause admission, drain external workers and stop the existing
+`server`, `worker` and `scheduler` services before starting their replacements.
+Stop any additional matching processes and embedded or direct-database readers,
+including Waterline when it shares the database. Upgrade those readers before
+resuming writes. Keep database, Redis and external-payload storage intact.
+Do not roll an old reader back onto a database containing the new event; repair
+forward or restore the complete pre-upgrade recovery point. See the
+[chart reader-upgrade procedure](../k8s/helm/durable-workflow/docs/UPGRADING.md#01182)
+for the equivalent Kubernetes ordering.
+
 The image generates an internal runtime key automatically. Set `DW_SERVER_KEY`
 only if your deployment needs that key to remain stable across container
 replacement.
