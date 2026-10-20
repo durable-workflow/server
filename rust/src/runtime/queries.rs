@@ -23,10 +23,15 @@ const SNAPSHOT_BYTES: usize = 1024 * 1024;
 pub(super) const ARGUMENT_BYTES: usize = 64 * 1024;
 pub(super) const RESULT_BYTES: usize = 256 * 1024;
 
+#[path = "query_poll_requests.rs"]
+mod poll_requests;
+
 enum QueryClaim {
     Task(Value),
     Empty,
     StaleWorker,
+    // A newer poll request from the same worker replaced this one.
+    Superseded,
 }
 
 fn poll_result(task: Option<Value>, status: &str) -> Value {
@@ -344,13 +349,42 @@ where
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
         // One request belongs to the registration observed before its wait.
         // A later same-ID registration cannot silently upgrade this poll.
+        let request_id = body
+            .get("poll_request_id")
+            .filter(|value| !value.is_null())
+            .map(|_| text(&body, "poll_request_id"))
+            .transpose()?;
         let Some(proof) =
             Self::query_worker_proof(&self.pool, self.namespace.as_ref(), owner, config).await?
         else {
             return Ok(poll_result(None, "stale_worker_registration"));
         };
+        match request_id {
+            None => {
+                self.wait_for_query(&body, config, &proof, timeout, deadline, None)
+                    .await
+            }
+            Some(request_id) => {
+                let keys = self.poll_keys(&body, request_id).await?;
+                self.coordinated_query_poll(&body, config, &proof, timeout, deadline, &keys)
+                    .await
+            }
+        }
+    }
+
+    // One poll's long wait. With request keys, a newer request from the same
+    // worker ends this wait, as in published PHP.
+    async fn wait_for_query(
+        &self,
+        body: &Value,
+        config: &QueryTaskConfig,
+        proof: &str,
+        timeout: u64,
+        deadline: tokio::time::Instant,
+        keys: Option<&poll_requests::PollKeys>,
+    ) -> Result<Value> {
         let mut cross_kind = if timeout > 0 {
-            self.poll_wake_snapshot(&body, "query").await?
+            self.poll_wake_snapshot(body, "query").await?
         } else {
             None
         };
@@ -360,12 +394,13 @@ where
         let mut pace = super::poll_readiness::ReadPace::new();
         loop {
             let wake = self.wake.notified();
-            if std::mem::take(&mut first) || self.query_poll_ready(&body, config, &proof).await? {
-                match self.claim_query(&body, config, &proof).await? {
+            if std::mem::take(&mut first) || self.query_poll_ready(body, config, proof, keys).await? {
+                match self.claim_query(body, config, proof, keys).await? {
                     QueryClaim::Task(task) => return Ok(poll_result(Some(task), "leased")),
                     QueryClaim::StaleWorker => {
                         return Ok(poll_result(None, "stale_worker_registration"));
                     }
+                    QueryClaim::Superseded => return Ok(poll_result(None, "empty")),
                     QueryClaim::Empty => {}
                 }
             }
@@ -427,6 +462,7 @@ where
             "terminal_receipt",
             "registration_incarnation",
             "legacy_refusal_at",
+            "poll_request_id",
         ] {
             delivered
                 .as_object_mut()
@@ -444,13 +480,20 @@ where
         body: &Value,
         config: &QueryTaskConfig,
         proof: &str,
+        keys: Option<&poll_requests::PollKeys>,
     ) -> Result<bool> {
         let owner = text(body, "worker_id")?;
-        // The claim refuses a replaced, removed or stale registration.
+        // The claim refuses a replaced, removed or stale registration, and
+        // ends a poll a newer request from the same worker has replaced.
         if Self::query_worker_proof(&self.pool, self.namespace.as_ref(), owner, config)
             .await?
             .as_deref()
             != Some(proof)
+        {
+            return Ok(true);
+        }
+        if let Some(keys) = keys
+            && self.poll_request_superseded(keys).await?
         {
             return Ok(true);
         }
@@ -472,9 +515,15 @@ where
         body: &Value,
         config: &QueryTaskConfig,
         expected_proof: &str,
+        keys: Option<&poll_requests::PollKeys>,
     ) -> Result<QueryClaim> {
         let owner = text(body, "worker_id")?;
         let queue = text(body, "task_queue")?;
+        let request_id = body
+            .get("poll_request_id")
+            .filter(|value| !value.is_null())
+            .map(|_| text(body, "poll_request_id"))
+            .transpose()?;
         let mut tx = self.begin().await?;
         let worker = Self::query("SELECT * FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2 AND status='active'")
             .bind(self.namespace.as_ref()).bind(owner)
@@ -487,6 +536,12 @@ where
         let Some(proof) = proof.filter(|proof| proof == expected_proof) else {
             return Ok(QueryClaim::StaleWorker);
         };
+        if let Some(keys) = keys
+            && !Self::poll_request_is_current(&mut tx, keys).await?
+        {
+            tx.commit().await?;
+            return Ok(QueryClaim::Superseded);
+        }
         if DB::string(&worker, "task_queue")? != queue {
             return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
         }
@@ -531,11 +586,16 @@ where
                     config,
                 )
                 .await?;
+                // A live lease belongs to the poll request that claimed it. As in
+                // published PHP, only a retry of that same request receives it
+                // again; any other poll from the same worker is an independent slot.
                 if existing_proof
                     .as_deref()
                     .is_some_and(|proof| task["registration_incarnation"] == proof)
                 {
-                    if existing_owner == owner {
+                    if existing_owner == owner
+                        && request_id.is_some_and(|id| task["poll_request_id"] == id)
+                    {
                         let delivered = Self::query_delivery(&task);
                         tx.commit().await?;
                         return Ok(QueryClaim::Task(delivered));
@@ -558,6 +618,7 @@ where
             }
             task["lease_expires_at"] = json!(authority::wire(expires));
             task["registration_incarnation"] = json!(proof);
+            task["poll_request_id"] = request_id.map_or(Value::Null, |id| json!(id));
             Self::put_query(&mut tx, &key, &task, authority::expiration(&task)?).await?;
             tx.commit().await?;
             return Ok(QueryClaim::Task(Self::query_delivery(&task)));
