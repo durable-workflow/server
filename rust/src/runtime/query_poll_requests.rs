@@ -140,6 +140,24 @@ where
             .is_some_and(|current| current["poll_request_id"] == keys.request_id.as_str()))
     }
 
+    /// Whether a newer request from the same worker has replaced this one,
+    /// read without the transition lock. The claim confirms it under the lock
+    /// with `poll_request_is_current`, which this mirrors.
+    pub(super) async fn poll_request_superseded(&self, keys: &PollKeys) -> Result<bool> {
+        let Some(row) = Self::query(DB::QUERY_CACHE_GET)
+            .bind(&keys.current)
+            .fetch_optional(&self.pool)
+            .await?
+        else {
+            return Ok(true);
+        };
+        if DB::number(&row, "expiration")? <= now() {
+            return Ok(true);
+        }
+        let current: Value = serde_json::from_str(&DB::string(&row, "value")?)?;
+        Ok(current["poll_request_id"] != keys.request_id.as_str())
+    }
+
     // A request becomes the worker's current one only when it is new. A retry
     // of an older request never takes that place back.
     async fn mark_current_if_fresh(&self, keys: &PollKeys, config: &QueryTaskConfig) -> Result<()> {
