@@ -1,9 +1,11 @@
 //! Transitions that encode or decode while holding the transition lock use
 //! their own codec permit. Each test holds the read codec permit, as a long
 //! describe decode would, and requires the transition to finish anyway.
-use super::*;
+use super::{Result, Runtime};
 use crate::codec::{Value as Payload, ValueCodec};
-use serde_json::json;
+use axum::http::StatusCode;
+use serde_json::{Value, json};
+use std::time::Duration;
 
 fn envelope(value: Payload) -> Value {
     json!({"codec":"avro","blob":ValueCodec::new().unwrap().encode(&value).unwrap()})
