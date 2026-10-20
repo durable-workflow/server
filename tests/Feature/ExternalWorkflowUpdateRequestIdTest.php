@@ -403,6 +403,50 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
         $this->assertSame($before, $this->durableRows());
     }
 
+    public static function signalTargets(): iterable
+    {
+        foreach (['default', 'retained-namespace'] as $namespace) {
+            yield $namespace.' instance' => [$namespace, false];
+            yield $namespace.' explicit run' => [$namespace, true];
+        }
+    }
+
+    #[DataProvider('signalTargets')]
+    public function test_signal_retries_preserve_intent_scope_and_all_durable_rows(string $namespace, bool $runTarget): void
+    {
+        $this->startAvailablePhp('signal-retry', $namespace);
+        $runId = DB::table('workflow_runs')->sole()->id;
+        $instanceEndpoint = '/api/workflows/signal-retry';
+        $runEndpoint = $instanceEndpoint.'/runs/'.$runId;
+        $endpoint = $runTarget ? $runEndpoint : $instanceEndpoint;
+        $first = $this->postJson($endpoint.'/signal/advance', [
+            'input' => ['Київ'], 'request_id' => '0',
+        ], [...$this->apiHeaders($namespace), 'X-Request-Id' => 'proxy-a'])->assertAccepted()
+            ->assertJsonPath('request_id', '0')
+            ->assertJsonPath('retained', false)
+            ->assertJsonPath('intent_verified', true)
+            ->assertJsonPath('target_scope', $runTarget ? 'run' : 'instance');
+        $before = $this->durableRows();
+        $this->postJson($endpoint.'/signal/advance', [
+            'input' => ['name' => 'Київ'], 'request_id' => '0',
+        ], [...$this->apiHeaders($namespace), 'X-Request-Id' => 'proxy-b'])->assertAccepted()
+            ->assertJsonPath('command_id', $first->json('command_id'))
+            ->assertJsonPath('retained', true)
+            ->assertJsonPath('intent_verified', true);
+        $this->postJson($endpoint.'/signal/advance', [
+            'input' => ['different'], 'request_id' => '0',
+        ], $this->apiHeaders($namespace))->assertConflict()
+            ->assertJsonPath('reason', 'request_id_conflict')
+            ->assertJsonPath('retained_command_id', $first->json('command_id'));
+        $otherEndpoint = $runTarget ? $instanceEndpoint : $runEndpoint;
+        $this->postJson($otherEndpoint.'/signal/advance', [
+            'input' => ['Київ'], 'request_id' => '0',
+        ], $this->apiHeaders($namespace))->assertConflict()
+            ->assertJsonPath('reason', 'request_id_conflict')
+            ->assertJsonPath('conflict.0', 'target');
+        $this->assertSame($before, $this->durableRows());
+    }
+
     private function startAvailablePhp(string $workflowId, string $namespace = 'default'): void
     {
         Queue::fake();
@@ -444,7 +488,7 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
     private function durableRows(): array
     {
         $snapshot = [];
-        foreach (['workflow_instances', 'workflow_commands', 'workflow_updates', 'workflow_runs', 'workflow_tasks', 'workflow_history_events'] as $table) {
+        foreach (['workflow_instances', 'workflow_commands', 'workflow_signal_records', 'workflow_updates', 'workflow_runs', 'workflow_tasks', 'workflow_history_events'] as $table) {
             $snapshot[$table] = DB::table($table)->orderBy('id')->get()->map(static fn (object $row): array => (array) $row)->all();
         }
 

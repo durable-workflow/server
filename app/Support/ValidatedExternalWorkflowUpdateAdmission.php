@@ -140,6 +140,9 @@ final class ValidatedExternalWorkflowUpdateAdmission extends ExternalWorkflowUpd
         $instance = WorkflowInstance::query()
             ->where('namespace', $namespace)
             ->find($workflowId);
+        if ($instance instanceof WorkflowInstance && ($refusal = $this->runTargetRefusal($instance, $commandContext))) {
+            return ['result' => $refusal];
+        }
         /** @var WorkflowRun|null $run */
         $run = $instance instanceof WorkflowInstance && is_string($instance->current_run_id)
             ? WorkflowRun::query()->find($instance->current_run_id)
@@ -379,8 +382,13 @@ final class ValidatedExternalWorkflowUpdateAdmission extends ExternalWorkflowUpd
                 $commandContext->attributes(),
                 [
                     'command_type' => CommandType::Update->value,
-                    'intent_digest' => CommandIntent::digest(CommandType::Update, $updateName, $arguments),
-                    'target_scope' => 'instance',
+                    'intent_digest' => CommandIntent::digest(
+                        CommandType::Update, $updateName, $arguments,
+                        $this->requestedRunId($commandContext) === null ? 'instance' : 'run',
+                        $this->requestedRunId($commandContext),
+                    ),
+                    'target_scope' => $this->requestedRunId($commandContext) === null ? 'instance' : 'run',
+                    'requested_workflow_run_id' => $this->requestedRunId($commandContext),
                     'status' => CommandStatus::Rejected->value,
                     'outcome' => CommandOutcome::RejectedInvalidArguments->value,
                     'payload_codec' => $commandEncoding,

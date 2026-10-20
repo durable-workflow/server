@@ -70,6 +70,10 @@ class ExternalWorkflowUpdateAdmission
                 return null;
             }
 
+            if ($refusal = $this->runTargetRefusal($instance, $commandContext, allowHistorical: true)) {
+                return $refusal;
+            }
+
             /** @var WorkflowRun|null $run */
             $run = WorkflowRun::query()
                 ->lockForUpdate()
@@ -90,7 +94,12 @@ class ExternalWorkflowUpdateAdmission
                     $arguments,
                     $waitFor,
                     $waitTimeoutSeconds,
+                    $commandContext,
                 );
+            }
+
+            if ($refusal = $this->runTargetRefusal($instance, $commandContext)) {
+                return $refusal;
             }
 
             if (! $this->shouldHandle($run, $updateName)) {
@@ -124,8 +133,13 @@ class ExternalWorkflowUpdateAdmission
                 $commandContext->attributes(),
                 [
                     'command_type' => CommandType::Update->value,
-                    'intent_digest' => CommandIntent::digest(CommandType::Update, $updateName, $arguments),
-                    'target_scope' => 'instance',
+                    'intent_digest' => CommandIntent::digest(
+                        CommandType::Update, $updateName, $arguments,
+                        $this->requestedRunId($commandContext) === null ? 'instance' : 'run',
+                        $this->requestedRunId($commandContext),
+                    ),
+                    'target_scope' => $this->requestedRunId($commandContext) === null ? 'instance' : 'run',
+                    'requested_workflow_run_id' => $this->requestedRunId($commandContext),
                     'status' => CommandStatus::Accepted->value,
                     'payload_codec' => PayloadCodecContract::CODEC,
                     'payload' => Serializer::serializeWithCodec(PayloadCodecContract::CODEC, [
@@ -202,7 +216,7 @@ class ExternalWorkflowUpdateAdmission
 
     /**
      * A retained caller key precedes new validator or workflow execution.
-     * Namespace and selected-run authorization remain the controller's guard.
+     * Namespace and selected-run authorization are rechecked under the lock.
      *
      * @return array<string, mixed>|null
      */
@@ -215,18 +229,26 @@ class ExternalWorkflowUpdateAdmission
         string $waitFor,
         ?int $waitTimeoutSeconds,
     ): ?array {
-        if ($this->requestId($context) === null) {
+        if ($this->requestId($context) === null && $this->requestedRunId($context) === null) {
             return null;
         }
         $result = $this->mutations->run(fn (): ?array => DB::transaction(function () use (
             $namespace, $workflowId, $updateName, $arguments, $context, $waitFor, $waitTimeoutSeconds,
         ): ?array {
             $instance = WorkflowInstance::query()->where('namespace', $namespace)->lockForUpdate()->find($workflowId);
+            if (! $instance instanceof WorkflowInstance) {
+                return null;
+            }
+            if ($refusal = $this->runTargetRefusal($instance, $context, allowHistorical: true)) {
+                return $refusal;
+            }
             $duplicate = $instance instanceof WorkflowInstance ? $this->duplicateForRequest($instance, $context) : null;
 
-            return $duplicate === null ? null : $this->retainedResult(
-                $duplicate['command'], $duplicate['update'], $updateName, $arguments, $waitFor, $waitTimeoutSeconds,
-            );
+            return $duplicate === null
+                ? $this->runTargetRefusal($instance, $context)
+                : $this->retainedResult(
+                    $duplicate['command'], $duplicate['update'], $updateName, $arguments, $waitFor, $waitTimeoutSeconds, $context,
+                );
         }));
 
         return ($result['update_status'] ?? null) === UpdateStatus::Accepted->value
@@ -246,6 +268,7 @@ class ExternalWorkflowUpdateAdmission
         array $arguments,
         string $waitFor,
         ?int $waitTimeoutSeconds,
+        CommandContext $context,
     ): array {
         $run = WorkflowRun::query()->find($command->workflow_run_id);
         $validated = $run instanceof WorkflowRun
@@ -254,7 +277,9 @@ class ExternalWorkflowUpdateAdmission
         $normalized = $validated !== null && $validated['validation_errors'] === []
             ? $validated['arguments']
             : $arguments;
-        $digest = CommandIntent::digest(CommandType::Update, $updateName, $normalized);
+        $requestedRunId = $this->requestedRunId($context);
+        $targetScope = $requestedRunId === null ? 'instance' : 'run';
+        $digest = CommandIntent::digest(CommandType::Update, $updateName, $normalized, $targetScope, $requestedRunId);
         $intent = CommandRequestIdentity::compareIntent($command, $digest);
 
         if ($intent === CommandRequestIdentity::INTENT_DIFFERENT) {
@@ -267,7 +292,8 @@ class ExternalWorkflowUpdateAdmission
                 'command_status' => CommandStatus::Rejected->value,
                 'workflow_id' => $command->workflow_instance_id,
                 'run_id' => $command->workflow_run_id,
-                'target_scope' => 'instance',
+                'target_scope' => $targetScope,
+                'requested_run_id' => $requestedRunId,
                 'command_id' => null,
                 'command_sequence' => null,
                 'update_id' => null,
@@ -277,7 +303,7 @@ class ExternalWorkflowUpdateAdmission
                 'retained_command_id' => $command->id,
                 'retained_command_type' => CommandType::Update->value,
                 'retained_outcome' => $command->outcome?->value,
-                'conflict' => CommandRequestIdentity::conflictingParts($command, $updateName, 'instance', null),
+                'conflict' => CommandRequestIdentity::conflictingParts($command, $updateName, $targetScope, $requestedRunId),
                 'message' => 'This request_id is already associated with a different update.',
             ];
         }
@@ -286,6 +312,37 @@ class ExternalWorkflowUpdateAdmission
             $this->resultPayload($command, $update, $waitFor, false, $waitTimeoutSeconds),
             ['retained' => true, 'intent_verified' => $intent === CommandRequestIdentity::INTENT_SAME],
         );
+    }
+
+    protected function requestedRunId(CommandContext $context): ?string
+    {
+        $runId = $context->attributes()['context']['server']['metadata']['requested_run_id'] ?? null;
+
+        return is_string($runId) && $runId !== '' ? $runId : null;
+    }
+
+    /** @return array<string, mixed>|null */
+    protected function runTargetRefusal(WorkflowInstance $instance, CommandContext $context, bool $allowHistorical = false): ?array
+    {
+        $runId = $this->requestedRunId($context);
+        if ($runId === null) {
+            return null;
+        }
+        $run = WorkflowRun::query()->where('workflow_instance_id', $instance->id)
+            ->where('namespace', $instance->namespace)->lockForUpdate()->find($runId);
+        if ($run instanceof WorkflowRun && ($allowHistorical || $instance->current_run_id === $runId)) {
+            return null;
+        }
+
+        return [
+            'accepted' => false,
+            'status' => $run instanceof WorkflowRun ? 409 : 404,
+            'reason' => $run instanceof WorkflowRun ? 'historical_run_command_rejected' : 'run_not_found',
+            'workflow_id' => $instance->id,
+            'run_id' => $runId,
+            'target_scope' => 'run',
+            'requested_run_id' => $runId,
+        ];
     }
 
     private function shouldHandle(WorkflowRun $run, string $updateName): bool
