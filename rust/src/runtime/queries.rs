@@ -354,17 +354,23 @@ where
         } else {
             None
         };
+        // Only the first probe claims under the lock unconditionally; later
+        // probes claim after a lock-free read finds something to claim or refuse.
+        let mut first = true;
+        let mut pace = super::poll_readiness::ReadPace::new();
         loop {
             let wake = self.wake.notified();
-            match self.claim_query(&body, config, &proof).await? {
-                QueryClaim::Task(task) => return Ok(poll_result(Some(task), "task")),
-                QueryClaim::StaleWorker => {
-                    return Ok(poll_result(None, "stale_worker_registration"));
+            if std::mem::take(&mut first) || self.query_poll_ready(&body, config, &proof).await? {
+                match self.claim_query(&body, config, &proof).await? {
+                    QueryClaim::Task(task) => return Ok(poll_result(Some(task), "leased")),
+                    QueryClaim::StaleWorker => {
+                        return Ok(poll_result(None, "stale_worker_registration"));
+                    }
+                    QueryClaim::Empty => {}
                 }
-                QueryClaim::Empty => {}
             }
             if tokio::time::Instant::now() >= deadline {
-                return Ok(poll_result(None, "timeout"));
+                return Ok(poll_result(None, "empty"));
             }
             if self
                 .poll_queue_changed(&body, "query", &mut cross_kind)
@@ -375,7 +381,7 @@ where
                     json!({"task":null,"poll_status":"task_queue_changed","server_capabilities":super::store::capabilities()}),
                 );
             }
-            tokio::select! { _ = wake => {}, _ = tokio::time::sleep(Duration::from_millis(50)) => {} }
+            pace.wait(wake, deadline).await;
         }
     }
 
@@ -429,6 +435,36 @@ where
         }
         delivered["server_time"] = json!(authority::wire(authority::now()));
         delivered
+    }
+
+    /// Whether a held query poll should claim again. `proof` is the
+    /// registration this poll belongs to.
+    async fn query_poll_ready(
+        &self,
+        body: &Value,
+        config: &QueryTaskConfig,
+        proof: &str,
+    ) -> Result<bool> {
+        let owner = text(body, "worker_id")?;
+        // The claim refuses a replaced, removed or stale registration.
+        if Self::query_worker_proof(&self.pool, self.namespace.as_ref(), owner, config)
+            .await?
+            .as_deref()
+            != Some(proof)
+        {
+            return Ok(true);
+        }
+        let at = super::store::now();
+        let query_now = authority::wire(at);
+        Ok(Self::query(DB::POLL_WAKE_QUERIES_SQL)
+            .bind(at.timestamp())
+            .bind(self.namespace.as_ref())
+            .bind(text(body, "task_queue")?)
+            .bind(query_now.clone())
+            .bind(query_now)
+            .fetch_optional(&self.pool)
+            .await?
+            .is_some())
     }
 
     async fn claim_query(
