@@ -5,7 +5,9 @@ run's native source, optimized binary and machine facts filled in. The
 workload, artifacts, limits and probe hashes are unchanged. The
 [October 20 observations](observations-2026-10-20.md) are one PHP/native
 pair on a disposable VM, run with `scripts/perf/run-server-port-matched.sh`
-and summarized with `scripts/perf/summarize-server-port-matched.py`.
+and summarized with `scripts/perf/summarize-server-port-matched.py`. The
+[repeated observations](repeated-2026-10-20.md) are two alternating pairs
+on a second host, after #516.
 
 To repeat it on a fresh dedicated host with Docker and Compose:
 

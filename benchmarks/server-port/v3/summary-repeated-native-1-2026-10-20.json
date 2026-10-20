@@ -1,0 +1,911 @@
+{
+ "identity": {
+  "implementation": "native",
+  "compose_project": "dw-port-native-20261020t141652",
+  "profile": "/home/linuxuser/profile.json",
+  "profile_sha256": "5e7946a6a506e391510e9222021e60c80d184742b030ee6e2978ab0c0b1e8ac5",
+  "source_revision": "8957ba27aa24b79ec2ea59e0c37b5ce662d434ab",
+  "native_binary_sha256": "edc283f130ff5c802fe5a80d56730cc9fe377c01c9c90340e08a68eb0866e2cc",
+  "smoke": false,
+  "idle_only": false,
+  "machine": {
+   "kernel": "6.8.0-146-generic",
+   "logical_cpus": 4,
+   "physical_memory_bytes": 8320786432,
+   "cpu_model": "AMD EPYC-Rome Processor",
+   "docker": "29.1.3",
+   "cgroup_driver": "systemd",
+   "docker_storage_driver": "overlayfs",
+   "docker_root_filesystem": "ext4"
+  }
+ },
+ "windows": {
+  "setup": {
+   "seconds": 5.4,
+   "health": {
+    "replies": 8,
+    "failures": 0,
+    "slowest_ok_seconds": 0.302
+   },
+   "cpu_core_seconds": {
+    "mysql": 0.876176,
+    "native-server": 0.408746,
+    "probe": 0.0,
+    "sdk-worker": 0.039165
+   },
+   "max_memory_bytes": {
+    "mysql": 527196160,
+    "native-server": 4235264,
+    "probe": 16654336,
+    "sdk-worker": 19292160
+   },
+   "max_runtime_memory_bytes": 4235264,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "offered_rate_per_second": 0.25,
+   "planned_starts": 2,
+   "accepted_starts": 2,
+   "skipped_offer_slots": 0,
+   "late_starts_over_one_slot": 0,
+   "completed_by_observation_deadline": 2,
+   "pending_at_deadline": 0,
+   "closed_during_offer_window": 2,
+   "latency_p50_seconds": 0.2922959327697754,
+   "latency_p95_seconds": 0.5931649208068848,
+   "latency_p99_seconds": 0.5931649208068848,
+   "poll_errors": 0,
+   "errors": 0,
+   "runtime_core_seconds_per_workflow": 0.2044,
+   "mysql_core_seconds_per_workflow": 0.4381
+  },
+  "warmup": {
+   "seconds": 59.3,
+   "health": {
+    "replies": 88,
+    "failures": 0,
+    "slowest_ok_seconds": 0.476
+   },
+   "cpu_core_seconds": {
+    "mysql": 7.408028,
+    "native-server": 3.565426,
+    "probe": 0.383084,
+    "sdk-worker": 0.367419
+   },
+   "max_memory_bytes": {
+    "mysql": 540975104,
+    "native-server": 6533120,
+    "probe": 16683008,
+    "sdk-worker": 19447808
+   },
+   "max_runtime_memory_bytes": 6533120,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "offered_rate_per_second": 0.25,
+   "planned_starts": 15,
+   "accepted_starts": 15,
+   "skipped_offer_slots": 0,
+   "late_starts_over_one_slot": 0,
+   "completed_by_observation_deadline": 15,
+   "pending_at_deadline": 0,
+   "closed_during_offer_window": 15,
+   "latency_p50_seconds": 1.2313079833984375,
+   "latency_p95_seconds": 2.112252950668335,
+   "latency_p99_seconds": 2.112252950668335,
+   "poll_errors": 0,
+   "errors": 0,
+   "runtime_core_seconds_per_workflow": 0.2377,
+   "mysql_core_seconds_per_workflow": 0.4939
+  },
+  "low-before-1": {
+   "seconds": 120.5,
+   "health": {
+    "replies": 181,
+    "failures": 0,
+    "slowest_ok_seconds": 0.431
+   },
+   "cpu_core_seconds": {
+    "mysql": 14.753484,
+    "native-server": 7.199888,
+    "probe": 0.365237,
+    "sdk-worker": 0.774945
+   },
+   "max_memory_bytes": {
+    "mysql": 556244992,
+    "native-server": 6656000,
+    "probe": 16691200,
+    "sdk-worker": 21241856
+   },
+   "max_runtime_memory_bytes": 6656000,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "offered_rate_per_second": 0.25,
+   "planned_starts": 30,
+   "accepted_starts": 30,
+   "skipped_offer_slots": 0,
+   "late_starts_over_one_slot": 0,
+   "completed_by_observation_deadline": 30,
+   "pending_at_deadline": 0,
+   "closed_during_offer_window": 30,
+   "latency_p50_seconds": 0.8146710395812988,
+   "latency_p95_seconds": 1.784688949584961,
+   "latency_p99_seconds": 1.8666729927062988,
+   "poll_errors": 0,
+   "errors": 0,
+   "runtime_core_seconds_per_workflow": 0.24,
+   "mysql_core_seconds_per_workflow": 0.4918
+  },
+  "low-before-2": {
+   "seconds": 119.5,
+   "health": {
+    "replies": 178,
+    "failures": 0,
+    "slowest_ok_seconds": 0.435
+   },
+   "cpu_core_seconds": {
+    "mysql": 15.181942,
+    "native-server": 7.39961,
+    "probe": 0.023146,
+    "sdk-worker": 0.804998
+   },
+   "max_memory_bytes": {
+    "mysql": 569720832,
+    "native-server": 5312512,
+    "probe": 16683008,
+    "sdk-worker": 23449600
+   },
+   "max_runtime_memory_bytes": 5312512,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "offered_rate_per_second": 0.25,
+   "planned_starts": 30,
+   "accepted_starts": 30,
+   "skipped_offer_slots": 0,
+   "late_starts_over_one_slot": 0,
+   "completed_by_observation_deadline": 30,
+   "pending_at_deadline": 0,
+   "closed_during_offer_window": 30,
+   "latency_p50_seconds": 1.170957088470459,
+   "latency_p95_seconds": 1.6039619445800781,
+   "latency_p99_seconds": 2.2019379138946533,
+   "poll_errors": 0,
+   "errors": 0,
+   "runtime_core_seconds_per_workflow": 0.2467,
+   "mysql_core_seconds_per_workflow": 0.5061
+  },
+  "low-before-3": {
+   "seconds": 120.1,
+   "health": {
+    "replies": 183,
+    "failures": 0,
+    "slowest_ok_seconds": 0.342
+   },
+   "cpu_core_seconds": {
+    "mysql": 14.658095,
+    "native-server": 7.169432,
+    "probe": -0.017477,
+    "sdk-worker": 0.760215
+   },
+   "max_memory_bytes": {
+    "mysql": 580112384,
+    "native-server": 5115904,
+    "probe": 16936960,
+    "sdk-worker": 24776704
+   },
+   "max_runtime_memory_bytes": 5115904,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "offered_rate_per_second": 0.25,
+   "planned_starts": 30,
+   "accepted_starts": 30,
+   "skipped_offer_slots": 0,
+   "late_starts_over_one_slot": 0,
+   "completed_by_observation_deadline": 30,
+   "pending_at_deadline": 0,
+   "closed_during_offer_window": 30,
+   "latency_p50_seconds": 0.8877580165863037,
+   "latency_p95_seconds": 1.4847869873046875,
+   "latency_p99_seconds": 2.122774839401245,
+   "poll_errors": 0,
+   "errors": 0,
+   "runtime_core_seconds_per_workflow": 0.239,
+   "mysql_core_seconds_per_workflow": 0.4886
+  },
+  "rate-0.5-1": {
+   "seconds": 120.2,
+   "health": {
+    "replies": 174,
+    "failures": 0,
+    "slowest_ok_seconds": 0.527
+   },
+   "cpu_core_seconds": {
+    "mysql": 19.666724,
+    "native-server": 8.952809,
+    "probe": 0.261888,
+    "sdk-worker": 1.170249
+   },
+   "max_memory_bytes": {
+    "mysql": 604008448,
+    "native-server": 7004160,
+    "probe": 16703488,
+    "sdk-worker": 28123136
+   },
+   "max_runtime_memory_bytes": 7004160,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "offered_rate_per_second": 0.5,
+   "planned_starts": 60,
+   "accepted_starts": 60,
+   "skipped_offer_slots": 0,
+   "late_starts_over_one_slot": 0,
+   "completed_by_observation_deadline": 60,
+   "pending_at_deadline": 0,
+   "closed_during_offer_window": 60,
+   "latency_p50_seconds": 0.8057119846343994,
+   "latency_p95_seconds": 1.4087231159210205,
+   "latency_p99_seconds": 1.4897749423980713,
+   "poll_errors": 0,
+   "errors": 0,
+   "runtime_core_seconds_per_workflow": 0.1492,
+   "mysql_core_seconds_per_workflow": 0.3278
+  },
+  "rate-0.5-2": {
+   "seconds": 120.6,
+   "health": {
+    "replies": 169,
+    "failures": 0,
+    "slowest_ok_seconds": 0.606
+   },
+   "cpu_core_seconds": {
+    "mysql": 20.18183,
+    "native-server": 9.157594,
+    "probe": -0.046921,
+    "sdk-worker": 1.216679
+   },
+   "max_memory_bytes": {
+    "mysql": 626311168,
+    "native-server": 6995968,
+    "probe": 16932864,
+    "sdk-worker": 30769152
+   },
+   "max_runtime_memory_bytes": 6995968,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "offered_rate_per_second": 0.5,
+   "planned_starts": 60,
+   "accepted_starts": 60,
+   "skipped_offer_slots": 0,
+   "late_starts_over_one_slot": 0,
+   "completed_by_observation_deadline": 60,
+   "pending_at_deadline": 0,
+   "closed_during_offer_window": 60,
+   "latency_p50_seconds": 0.8616900444030762,
+   "latency_p95_seconds": 1.3606820106506348,
+   "latency_p99_seconds": 1.7296950817108154,
+   "poll_errors": 0,
+   "errors": 0,
+   "runtime_core_seconds_per_workflow": 0.1526,
+   "mysql_core_seconds_per_workflow": 0.3364
+  },
+  "rate-0.5-3": {
+   "seconds": 119.8,
+   "health": {
+    "replies": 168,
+    "failures": 0,
+    "slowest_ok_seconds": 0.595
+   },
+   "cpu_core_seconds": {
+    "mysql": 19.68832,
+    "native-server": 8.950379,
+    "probe": -0.012808,
+    "sdk-worker": 1.201273
+   },
+   "max_memory_bytes": {
+    "mysql": 647774208,
+    "native-server": 7008256,
+    "probe": 16949248,
+    "sdk-worker": 33390592
+   },
+   "max_runtime_memory_bytes": 7008256,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "offered_rate_per_second": 0.5,
+   "planned_starts": 60,
+   "accepted_starts": 60,
+   "skipped_offer_slots": 0,
+   "late_starts_over_one_slot": 0,
+   "completed_by_observation_deadline": 60,
+   "pending_at_deadline": 0,
+   "closed_during_offer_window": 60,
+   "latency_p50_seconds": 0.8583979606628418,
+   "latency_p95_seconds": 1.4343540668487549,
+   "latency_p99_seconds": 1.5413579940795898,
+   "poll_errors": 0,
+   "errors": 0,
+   "runtime_core_seconds_per_workflow": 0.1492,
+   "mysql_core_seconds_per_workflow": 0.3281
+  },
+  "rate-1-1": {
+   "seconds": 121.3,
+   "health": {
+    "replies": 158,
+    "failures": 0,
+    "slowest_ok_seconds": 0.763
+   },
+   "cpu_core_seconds": {
+    "mysql": 28.940648,
+    "native-server": 12.366946,
+    "probe": 0.301992,
+    "sdk-worker": 2.071431
+   },
+   "max_memory_bytes": {
+    "mysql": 691490816,
+    "native-server": 7041024,
+    "probe": 16936960,
+    "sdk-worker": 36601856
+   },
+   "max_runtime_memory_bytes": 7041024,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "offered_rate_per_second": 1,
+   "planned_starts": 120,
+   "accepted_starts": 120,
+   "skipped_offer_slots": 0,
+   "late_starts_over_one_slot": 0,
+   "completed_by_observation_deadline": 120,
+   "pending_at_deadline": 0,
+   "closed_during_offer_window": 120,
+   "latency_p50_seconds": 0.642268180847168,
+   "latency_p95_seconds": 1.1391160488128662,
+   "latency_p99_seconds": 1.6041810512542725,
+   "poll_errors": 0,
+   "errors": 0,
+   "runtime_core_seconds_per_workflow": 0.1031,
+   "mysql_core_seconds_per_workflow": 0.2412
+  },
+  "rate-1-2": {
+   "seconds": 121.3,
+   "health": {
+    "replies": 156,
+    "failures": 0,
+    "slowest_ok_seconds": 0.764
+   },
+   "cpu_core_seconds": {
+    "mysql": 29.034662,
+    "native-server": 12.278764,
+    "probe": -0.090032,
+    "sdk-worker": 2.080174
+   },
+   "max_memory_bytes": {
+    "mysql": 735203328,
+    "native-server": 7110656,
+    "probe": 18374656,
+    "sdk-worker": 36524032
+   },
+   "max_runtime_memory_bytes": 7110656,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "offered_rate_per_second": 1,
+   "planned_starts": 120,
+   "accepted_starts": 120,
+   "skipped_offer_slots": 0,
+   "late_starts_over_one_slot": 0,
+   "completed_by_observation_deadline": 120,
+   "pending_at_deadline": 0,
+   "closed_during_offer_window": 120,
+   "latency_p50_seconds": 0.6831719875335693,
+   "latency_p95_seconds": 2.1111860275268555,
+   "latency_p99_seconds": 2.5451819896698,
+   "poll_errors": 0,
+   "errors": 0,
+   "runtime_core_seconds_per_workflow": 0.1023,
+   "mysql_core_seconds_per_workflow": 0.242
+  },
+  "rate-1-3": {
+   "seconds": 121.6,
+   "health": {
+    "replies": 156,
+    "failures": 0,
+    "slowest_ok_seconds": 0.717
+   },
+   "cpu_core_seconds": {
+    "mysql": 29.387882,
+    "native-server": 12.440495,
+    "probe": 0.039508,
+    "sdk-worker": 2.065757
+   },
+   "max_memory_bytes": {
+    "mysql": 777027584,
+    "native-server": 7311360,
+    "probe": 16703488,
+    "sdk-worker": 37605376
+   },
+   "max_runtime_memory_bytes": 7311360,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "offered_rate_per_second": 1,
+   "planned_starts": 120,
+   "accepted_starts": 120,
+   "skipped_offer_slots": 0,
+   "late_starts_over_one_slot": 0,
+   "completed_by_observation_deadline": 120,
+   "pending_at_deadline": 0,
+   "closed_during_offer_window": 120,
+   "latency_p50_seconds": 0.6876001358032227,
+   "latency_p95_seconds": 1.6906061172485352,
+   "latency_p99_seconds": 2.5086309909820557,
+   "poll_errors": 0,
+   "errors": 0,
+   "runtime_core_seconds_per_workflow": 0.1037,
+   "mysql_core_seconds_per_workflow": 0.2449
+  },
+  "low-after-1": {
+   "seconds": 120.1,
+   "health": {
+    "replies": 180,
+    "failures": 0,
+    "slowest_ok_seconds": 0.387
+   },
+   "cpu_core_seconds": {
+    "mysql": 15.418894,
+    "native-server": 7.249945,
+    "probe": -0.469773,
+    "sdk-worker": 0.772241
+   },
+   "max_memory_bytes": {
+    "mysql": 788262912,
+    "native-server": 6823936,
+    "probe": 16687104,
+    "sdk-worker": 37871616
+   },
+   "max_runtime_memory_bytes": 6823936,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "offered_rate_per_second": 0.25,
+   "planned_starts": 30,
+   "accepted_starts": 30,
+   "skipped_offer_slots": 0,
+   "late_starts_over_one_slot": 0,
+   "completed_by_observation_deadline": 30,
+   "pending_at_deadline": 0,
+   "closed_during_offer_window": 30,
+   "latency_p50_seconds": 1.120251178741455,
+   "latency_p95_seconds": 1.8871901035308838,
+   "latency_p99_seconds": 1.9591500759124756,
+   "poll_errors": 0,
+   "errors": 0,
+   "runtime_core_seconds_per_workflow": 0.2417,
+   "mysql_core_seconds_per_workflow": 0.514
+  },
+  "low-after-2": {
+   "seconds": 120.2,
+   "health": {
+    "replies": 180,
+    "failures": 0,
+    "slowest_ok_seconds": 0.429
+   },
+   "cpu_core_seconds": {
+    "mysql": 15.669081,
+    "native-server": 7.285336,
+    "probe": 0.020311,
+    "sdk-worker": 0.811745
+   },
+   "max_memory_bytes": {
+    "mysql": 794497024,
+    "native-server": 7094272,
+    "probe": 16699392,
+    "sdk-worker": 38146048
+   },
+   "max_runtime_memory_bytes": 7094272,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "offered_rate_per_second": 0.25,
+   "planned_starts": 30,
+   "accepted_starts": 30,
+   "skipped_offer_slots": 0,
+   "late_starts_over_one_slot": 0,
+   "completed_by_observation_deadline": 30,
+   "pending_at_deadline": 0,
+   "closed_during_offer_window": 30,
+   "latency_p50_seconds": 1.0607280731201172,
+   "latency_p95_seconds": 1.8657190799713135,
+   "latency_p99_seconds": 1.9156861305236816,
+   "poll_errors": 0,
+   "errors": 0,
+   "runtime_core_seconds_per_workflow": 0.2428,
+   "mysql_core_seconds_per_workflow": 0.5223
+  },
+  "low-after-3": {
+   "seconds": 120.2,
+   "health": {
+    "replies": 180,
+    "failures": 0,
+    "slowest_ok_seconds": 0.388
+   },
+   "cpu_core_seconds": {
+    "mysql": 15.794167,
+    "native-server": 7.405617,
+    "probe": 0.017688,
+    "sdk-worker": 0.800382
+   },
+   "max_memory_bytes": {
+    "mysql": 800604160,
+    "native-server": 6619136,
+    "probe": 16941056,
+    "sdk-worker": 38514688
+   },
+   "max_runtime_memory_bytes": 6619136,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "offered_rate_per_second": 0.25,
+   "planned_starts": 30,
+   "accepted_starts": 30,
+   "skipped_offer_slots": 0,
+   "late_starts_over_one_slot": 0,
+   "completed_by_observation_deadline": 30,
+   "pending_at_deadline": 0,
+   "closed_during_offer_window": 30,
+   "latency_p50_seconds": 1.1393530368804932,
+   "latency_p95_seconds": 1.6913490295410156,
+   "latency_p99_seconds": 2.042344093322754,
+   "poll_errors": 0,
+   "errors": 0,
+   "runtime_core_seconds_per_workflow": 0.2469,
+   "mysql_core_seconds_per_workflow": 0.5265
+  }
+ },
+ "idle": {
+  "idle-6-1": {
+   "seconds": 12.3,
+   "health": {
+    "replies": 20,
+    "failures": 0,
+    "slowest_ok_seconds": 0.104
+   },
+   "cpu_core_seconds": {
+    "mysql": 1.271815,
+    "native-server": 0.678925,
+    "probe": -0.55062,
+    "sdk-worker": null
+   },
+   "max_memory_bytes": {
+    "mysql": 801001472,
+    "native-server": 5025792,
+    "probe": 31444992,
+    "sdk-worker": 0
+   },
+   "max_runtime_memory_bytes": 5025792,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "requested_polls": 6,
+   "all_registered": true,
+   "cleanup_errors": 0,
+   "outcomes": {
+    "empty": 6
+   }
+  },
+  "idle-6-2": {
+   "seconds": 11.2,
+   "health": {
+    "replies": 18,
+    "failures": 0,
+    "slowest_ok_seconds": 0.104
+   },
+   "cpu_core_seconds": {
+    "mysql": 1.277346,
+    "native-server": 0.682507,
+    "probe": -0.004253,
+    "sdk-worker": null
+   },
+   "max_memory_bytes": {
+    "mysql": 804032512,
+    "native-server": 6746112,
+    "probe": 31248384,
+    "sdk-worker": 0
+   },
+   "max_runtime_memory_bytes": 6746112,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "requested_polls": 6,
+   "all_registered": true,
+   "cleanup_errors": 0,
+   "outcomes": {
+    "empty": 6
+   }
+  },
+  "idle-6-3": {
+   "seconds": 11.3,
+   "health": {
+    "replies": 17,
+    "failures": 0,
+    "slowest_ok_seconds": 0.105
+   },
+   "cpu_core_seconds": {
+    "mysql": 1.187882,
+    "native-server": 0.644606,
+    "probe": 0.024741,
+    "sdk-worker": null
+   },
+   "max_memory_bytes": {
+    "mysql": 802537472,
+    "native-server": 6971392,
+    "probe": 31236096,
+    "sdk-worker": 0
+   },
+   "max_runtime_memory_bytes": 6971392,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "requested_polls": 6,
+   "all_registered": true,
+   "cleanup_errors": 0,
+   "outcomes": {
+    "empty": 6
+   }
+  },
+  "idle-12-1": {
+   "seconds": 11.5,
+   "health": {
+    "replies": 17,
+    "failures": 0,
+    "slowest_ok_seconds": 0.105
+   },
+   "cpu_core_seconds": {
+    "mysql": 1.518828,
+    "native-server": 0.80815,
+    "probe": 0.14792,
+    "sdk-worker": null
+   },
+   "max_memory_bytes": {
+    "mysql": 801198080,
+    "native-server": 5578752,
+    "probe": 45658112,
+    "sdk-worker": 0
+   },
+   "max_runtime_memory_bytes": 5578752,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "requested_polls": 12,
+   "all_registered": true,
+   "cleanup_errors": 0,
+   "outcomes": {
+    "empty": 12
+   }
+  },
+  "idle-12-2": {
+   "seconds": 11.3,
+   "health": {
+    "replies": 18,
+    "failures": 0,
+    "slowest_ok_seconds": 0.016
+   },
+   "cpu_core_seconds": {
+    "mysql": 1.467164,
+    "native-server": 0.789659,
+    "probe": -0.105134,
+    "sdk-worker": null
+   },
+   "max_memory_bytes": {
+    "mysql": 801349632,
+    "native-server": 5386240,
+    "probe": 44597248,
+    "sdk-worker": 0
+   },
+   "max_runtime_memory_bytes": 5386240,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "requested_polls": 12,
+   "all_registered": true,
+   "cleanup_errors": 0,
+   "outcomes": {
+    "empty": 12
+   }
+  },
+  "idle-12-3": {
+   "seconds": 11.5,
+   "health": {
+    "replies": 16,
+    "failures": 0,
+    "slowest_ok_seconds": 0.104
+   },
+   "cpu_core_seconds": {
+    "mysql": 1.661435,
+    "native-server": 0.916948,
+    "probe": 0.13414,
+    "sdk-worker": null
+   },
+   "max_memory_bytes": {
+    "mysql": 801509376,
+    "native-server": 5398528,
+    "probe": 43933696,
+    "sdk-worker": 0
+   },
+   "max_runtime_memory_bytes": 5398528,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "requested_polls": 12,
+   "all_registered": true,
+   "cleanup_errors": 0,
+   "outcomes": {
+    "empty": 12
+   }
+  },
+  "idle-24-1": {
+   "seconds": 11.9,
+   "health": {
+    "replies": 18,
+    "failures": 0,
+    "slowest_ok_seconds": 0.019
+   },
+   "cpu_core_seconds": {
+    "mysql": 2.294075,
+    "native-server": 1.256186,
+    "probe": 0.249966,
+    "sdk-worker": null
+   },
+   "max_memory_bytes": {
+    "mysql": 801611776,
+    "native-server": 5935104,
+    "probe": 68399104,
+    "sdk-worker": 0
+   },
+   "max_runtime_memory_bytes": 5935104,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "requested_polls": 24,
+   "all_registered": true,
+   "cleanup_errors": 0,
+   "outcomes": {
+    "empty": 24
+   }
+  },
+  "idle-24-2": {
+   "seconds": 12.2,
+   "health": {
+    "replies": 18,
+    "failures": 0,
+    "slowest_ok_seconds": 0.017
+   },
+   "cpu_core_seconds": {
+    "mysql": 2.315425,
+    "native-server": 1.232444,
+    "probe": -0.043559,
+    "sdk-worker": null
+   },
+   "max_memory_bytes": {
+    "mysql": 801931264,
+    "native-server": 5935104,
+    "probe": 67612672,
+    "sdk-worker": 0
+   },
+   "max_runtime_memory_bytes": 5935104,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "requested_polls": 24,
+   "all_registered": true,
+   "cleanup_errors": 0,
+   "outcomes": {
+    "empty": 24
+   }
+  },
+  "idle-24-3": {
+   "seconds": 12.2,
+   "health": {
+    "replies": 19,
+    "failures": 0,
+    "slowest_ok_seconds": 0.019
+   },
+   "cpu_core_seconds": {
+    "mysql": 2.217726,
+    "native-server": 1.206354,
+    "probe": 0.083076,
+    "sdk-worker": null
+   },
+   "max_memory_bytes": {
+    "mysql": 801779712,
+    "native-server": 6131712,
+    "probe": 73183232,
+    "sdk-worker": 0
+   },
+   "max_runtime_memory_bytes": 6131712,
+   "oom_kills": {
+    "mysql": 0,
+    "native-server": 0,
+    "probe": 0,
+    "sdk-worker": 0
+   },
+   "requested_polls": 24,
+   "all_registered": true,
+   "cleanup_errors": 0,
+   "outcomes": {
+    "empty": 24
+   }
+  }
+ }
+}
