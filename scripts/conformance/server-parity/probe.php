@@ -428,6 +428,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $namespaces = isset($fixture['namespace_isolation']) ? finishHttpNamespaces($client, $fixture, $workflowId, $queue, $url) : null;
     $workerDeregistration = isset($fixture['worker_deregistration']) ? finishHttpWorkerDeregistration($client, $fixture, $workflowId, $queue, $url) : null;
     $searchAttributes = isset($fixture['search_attributes']) ? finishHttpSearchAttributes($client, $fixture, $workflowId, $url) : null;
+    $storageTest = isset($fixture['storage_test']) ? finishHttpStorageTest($client, $fixture, $workflowId, $url) : null;
     $waitingHistory = isset($fixture['waiting_for_history']) ? finishHttpWaitingHistory($client, $fixture, $workflowId, $queue, $url) : null;
     $taskRetry = isset($fixture['workflow_task_retry']) ? finishHttpTaskRetry($client, $fixture, $workflowId, $queue, $url) : null;
     if ($scheduleState !== null) {
@@ -515,6 +516,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'namespace_isolation' => $namespaces,
         'worker_deregistration' => $workerDeregistration,
         'search_attributes' => $searchAttributes,
+        'storage_test' => $storageTest,
         'waiting_for_history' => $waitingHistory,
         'workflow_task_retry' => $taskRetry,
         'run_id' => $execution->runId,
@@ -811,6 +813,7 @@ try {
     require __DIR__.'/admission-probe.php';
     require __DIR__.'/namespace-probe.php';
     require __DIR__.'/search-attribute-probe.php';
+    require __DIR__.'/storage-test-probe.php';
     require __DIR__.'/worker-deregistration-probe.php';
     require __DIR__.'/waiting-history-probe.php';
     require __DIR__.'/task-retry-probe.php';
@@ -947,6 +950,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['search_attributes'])) {
         $observation['search_attributes'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_search_attribute_registry'];
+    }
+    if ($mode === 'embedded' && isset($fixture['storage_test'])) {
+        $observation['storage_test'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_storage_diagnostic'];
     }
     $observation['mode'] = $mode;
     $observation['typed_output'] = typedValue($observation['output']);

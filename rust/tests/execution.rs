@@ -40,6 +40,9 @@ mod namespaces;
 #[path = "execution/search_attributes.rs"]
 mod search_attributes;
 
+#[path = "execution/storage_test.rs"]
+mod storage_test;
+
 #[path = "execution/named_timers.rs"]
 mod named_timers;
 

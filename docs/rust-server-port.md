@@ -142,6 +142,29 @@ support is not evidence of multi-node safety.
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
 names, including unsuccessful observations.
 
+October 20, external payload storage diagnostic:
+
+- **Source.** Native serves `POST /api/storage/test` for operators, in the
+  default or a named namespace, as PHP's `StorageController::test` does:
+  - Laravel's validation messages and error counts for `driver` and the two
+    payload sizes (shared with the search attribute registry through
+    `laravel_validation`);
+  - `external_storage_not_configured`, `external_storage_disabled` and
+    `storage_driver_unavailable` refusals with PHP's bodies;
+  - a small and large generated payload written to, read back from and
+    removed from the local driver, with each one's size, SHA-256 and the
+    digest of its object URI.
+- **Shared objects.** Objects are content-addressed, so a diagnostic payload
+  can have the same bytes as a registered external payload. Native holds the
+  payload object lock across the round trip and removes the object only when
+  no registered payload refers to it. PHP removes it unconditionally.
+- **Not covered.** S3, GCS, Azure and custom drivers are refused as
+  unavailable in this runtime, as published PHP does without their SDKs.
+- **Fixture.** `storage-test` drives a fresh namespace through no policy, a
+  disabled policy, another driver, three invalid bodies and two passing round
+  trips. Published PHP 2.5.14 and native returned identical bodies, including
+  the reference identities, and embedded PHP declares it inapplicable.
+
 October 20, search attribute registry:
 
 - **Source.** Native serves `GET` and `POST /api/search-attributes` and
