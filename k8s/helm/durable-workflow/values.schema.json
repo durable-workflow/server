@@ -31,6 +31,13 @@
         "database":   { "type": "string", "minLength": 1 },
         "socket":     { "type": "string" },
         "sslMode":    { "type": "string" },
+        "tls": {
+          "type": "object",
+          "properties": {
+            "existingSecret": { "type": "string" },
+            "caKey": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9._-]+$" }
+          }
+        },
         "existingSecret":              { "type": "string" },
         "existingSecretUsernameKey":   { "type": "string" },
         "existingSecretPasswordKey":   { "type": "string" },

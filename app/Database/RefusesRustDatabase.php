@@ -7,6 +7,11 @@ use Pdo\Mysql;
 
 trait RefusesRustDatabase
 {
+    public function connect(array $config)
+    {
+        return parent::connect(DatabaseTlsConfiguration::configure($config));
+    }
+
     public function createConnection($dsn, array $config, array $options)
     {
         $mysql = in_array($config['driver'], ['mysql', 'mariadb'], true);
@@ -17,7 +22,15 @@ trait RefusesRustDatabase
             unset($options[$attribute]);
         }
 
-        $connection = parent::createConnection($dsn, $config, $options);
+        try {
+            $connection = parent::createConnection($dsn, $config, $options);
+        } catch (\PDOException $exception) {
+            if (in_array($config['sslmode'] ?? null, ['require', 'verify-ca', 'verify-full'], true)) {
+                throw new DatabaseTlsRefused('database_tls_connection_failed', 'The required database TLS connection could not be established. Check the endpoint, CA bundle, certificate hostname and credentials.', $exception);
+            }
+
+            throw $exception;
+        }
         $errorMode = $connection->getAttribute(PDO::ATTR_ERRMODE);
         $connection->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         try {
