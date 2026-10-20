@@ -19,15 +19,15 @@ out=$2
 impl=$3
 smoke=${4:-}
 case "$smoke" in ""|--smoke|--idle-only) ;; *) echo "Unknown option $smoke." >&2; exit 2 ;; esac
-test "$impl" = php || test "$impl" = native || { echo "Choose php or native." >&2; exit 2; }
+[[ $impl == php || $impl == native ]] || { echo "Choose php or native." >&2; exit 2; }
 : "${DW_PORT_SOURCE_ROOT:?Set the absolute source directory}"
 : "${DW_PORT_SDK_ROOT:?Set the normally installed SDK directory}"
 : "${DW_PORT_NATIVE_BINARY:?Set the absolute optimized binary path}"
 compose="$DW_PORT_SOURCE_ROOT/scripts/perf/server-port-matched.compose.yml"
-test ! -e "$out" || { echo "Refusing to overwrite $out." >&2; exit 2; }
+[[ ! -e $out ]] || { echo "Refusing to overwrite $out." >&2; exit 2; }
 mkdir -p "$out"
 out=$(realpath "$out")
-j() { jq -r "$1" "$profile"; }
+j() { local filter=$1; jq -r "$filter" "$profile"; }
 log() { printf '%s %s\n' "$(date -u +%FT%T.%3NZ)" "$*" | tee -a "$out/run.log" >&2; }
 
 # Inputs must be the ones the profile names.
@@ -35,16 +35,16 @@ for pair in .workload.adapter:.workload.adapter_sha256 .workload.command:.worklo
   .idle.command:.idle.command_sha256 .idle.outcome_classifier:.idle.outcome_classifier_sha256; do
   file=$(j "${pair%%:*}") want=$(j "${pair##*:}")
   got=$(sha256sum "$DW_PORT_SOURCE_ROOT/$file" | cut -d ' ' -f1)
-  test "$got" = "$want" || { echo "$file does not match the profile." >&2; exit 1; }
+  [[ $got == "$want" ]] || { echo "$file does not match the profile." >&2; exit 1; }
 done
 binary_sha=$(sha256sum "$DW_PORT_NATIVE_BINARY" | cut -d ' ' -f1)
 want_binary=$(j '.artifacts.native_binary_sha256 // empty')
-if test -n "$want_binary" && test "$binary_sha" != "$want_binary"; then
+if [[ -n $want_binary && $binary_sha != "$want_binary" ]]; then
   echo "The native binary does not match the profile." >&2
   exit 1
 fi
 
-if test "$smoke" = --smoke; then
+if [[ $smoke == --smoke ]]; then
   warmup=5 offer=5 drain=60 repeats=1 idle_counts=6 idle_repeats=1
 else
   warmup=$(j .workload.warmup_seconds) offer=$(j .workload.offer_seconds) drain=$(j .workload.drain_limit_seconds)
@@ -61,6 +61,7 @@ case "$impl" in
        export DW_PORT_RUNTIME_URL=http://php-server:8080 ;;
   native) profiles=(--profile native) services=(mysql native-server)
           export DW_PORT_RUNTIME_URL=http://native-server:8080 ;;
+  *) echo "Choose php or native." >&2; exit 2 ;;
 esac
 dc() { docker compose -p "$project" -f "$compose" "$@"; }
 probe() { dc run --rm --no-deps probe "$@"; }
@@ -101,7 +102,7 @@ host_state() {
 
 cgroup_dir() {
   local id=$1
-  if test "$cgroup_driver" = systemd; then echo "/sys/fs/cgroup/system.slice/docker-$id.scope"
+  if [[ $cgroup_driver == systemd ]]; then echo "/sys/fs/cgroup/system.slice/docker-$id.scope"
   else echo "/sys/fs/cgroup/docker/$id"; fi
 }
 
@@ -122,7 +123,7 @@ sample() {
     now=$(date -u +%s.%N)
     for id in "${!names[@]}"; do
       dir=$(cgroup_dir "$id")
-      test -r "$dir/cpu.stat" || continue
+      [[ -r $dir/cpu.stat ]] || continue
       name=${names[$id]}
       usage=$(awk '/^usage_usec/ {print $2}' "$dir/cpu.stat")
       memory=$(cat "$dir/memory.current")
@@ -148,7 +149,7 @@ window() {
     log "$name failed with status $?"
   fi
   remaining=$(( started + seconds - $(date -u +%s) ))
-  if test "$remaining" -gt 0; then sleep "$remaining"; fi
+  if (( remaining > 0 )); then sleep "$remaining"; fi
   mark "$name" end
   host_state "$name:end"
 }
@@ -159,13 +160,13 @@ dc "${profiles[@]}" up -d --wait "${services[@]}" >> "$out/run.log" 2>&1
 sample & samplers+=($!)
 network="${project}_default"
 image=$(dc --profile clients config --format json | jq -r '.services.probe.image')
-test "$image" != null || { log "no probe image in the Compose configuration"; exit 1; }
+[[ $image != null ]] || { log "no probe image in the Compose configuration"; exit 1; }
 docker run -d --name "$project-health" --label "com.docker.compose.project=$project-observer" \
   --network "$network" --user 1000:1000 --cpus 0.1 --memory 64m --entrypoint sh "$image" -c \
   "while :; do for path in health ready; do printf '%s %s ' \"\$(date -u +%s.%N)\" \$path; \
    curl -s -o /dev/null -w '%{http_code} %{time_total}\n' --max-time 2 $DW_PORT_RUNTIME_URL/api/\$path || echo 'error -'; done; sleep 1; done" \
   > /dev/null 2>> "$out/run.log"
-if test "$smoke" != --idle-only; then
+if [[ $smoke != --idle-only ]]; then
   dc --profile clients up -d sdk-worker >> "$out/run.log" 2>&1
 
   window setup "${rates[0]}" 5
@@ -202,7 +203,8 @@ for count in $idle_counts; do
 done
 
 docker logs "$project-health" > "$out/health.log" 2>&1 || true
-dc exec -T mysql mysql -uworkflow -pport-mysql durable_workflow --batch -e "
+# The client reads the database account from the MySQL service's own environment.
+dc exec -T mysql sh -c 'MYSQL_PWD=$MYSQL_PASSWORD exec mysql -u"$MYSQL_USER" "$MYSQL_DATABASE" --batch -e "$1"' audit "
   SELECT 'runs', status, COUNT(*) FROM workflow_runs GROUP BY status;
   SELECT 'tasks', task_type, status, COUNT(*) FROM workflow_tasks GROUP BY task_type, status;
   SELECT 'activities', status, COUNT(*) FROM activity_executions GROUP BY status;
