@@ -26,6 +26,16 @@ read-only snapshot (`Store::begin_read()`, `READ_SNAPSHOT_BEGIN` in
 `backend.rs`). Control-plane reads such as describe and run history query the
 pool without a transaction.
 
+A held long poll takes the lock for its first probe, and afterwards only when
+a lock-free read finds something to claim or refuse: an eligible task (or
+query), a receipt for the poll's own request ID, or a removed, moved or
+replaced registration (`Store::task_poll_ready` and `Store::query_poll_ready`). The read runs at once when a
+commit on the same node wakes the poll. Otherwise it runs 50 ms after a probe
+and then at doubling intervals up to 250 ms, so a poll observes work committed
+by another server process within 250 ms. An idle poll therefore neither waits
+for the lock nor delays transitions, and an unrelated commit does not send
+every waiting poll to the lock.
+
 ## Measured cost
 
 Under the CPU deadline-health profile on a local MySQL 8.0 cell, per-step
@@ -36,6 +46,21 @@ scheduler from sleeping after each pass to a fixed tick made no measurable
 difference. Deadline health and throughput under load are bounded by how long
 other transitions hold the lock.
 
+A scratch build that logged lock wait and hold per call site then ran the same
+cell on a host shared with other work, so absolute times are approximate:
+
+- A cancellation request held the lock 0.65 to 0.86 s, almost all of it
+  waiting for the single codec permit behind describe decodes of the dense
+  input (0.58 to 0.80 s). With a permit of its own the hold fell to 0.05 to
+  0.09 s. Codec work under the lock now has its own permit.
+- Activity status checks spent about 1.6 s per run waiting for the lock. They
+  no longer take it.
+- Cancellation delivery and expiry, workflow completions, heartbeats and
+  activity expiry held the lock 0.2 to 0.9 s during the read wave without codec
+  work, several times longer than the same transitions before it. Their summary
+  projections took under 30 ms each. Lowering the decode thread's CPU priority
+  changed nothing measurable. This remaining cost is not yet attributed.
+
 ## What lengthens lock hold time
 
 - **Summary projection at commit.** `Transaction::commit` reorders open waits
@@ -43,10 +68,12 @@ other transitions hold the lock.
   `summary_history` pages through the run's entire history to do so
   (`terminal_summary.rs`). Every heartbeat and claim therefore costs time
   proportional to history length while holding the lock.
-- **Codec work inside transactions.** Several paths take the single codec
-  permit and run Avro work on the blocking pool while the transaction is open,
-  for example the rejected-signal path, continue-as-new, cooperative requests
-  and repair.
+- **Codec work inside transactions.** Five paths run Avro work on the blocking
+  pool while the transaction is open: the rejected-signal command, signal
+  arguments applied by a resumed workflow task, cooperative cancellation
+  requests, task repair and fenced worker deregistration. They take
+  `transition_codec`, never the read permit `signal_codec`, so they do not
+  queue behind reads. The CPU work itself still runs under the lock.
 - **Claim reads.** Workflow claims load the first history page (the requested
   page size, 100 by default) and compute the history budget under the lock.
   Query claims parse cached query JSON values.
