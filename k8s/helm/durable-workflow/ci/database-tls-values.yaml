@@ -1,0 +1,13 @@
+externalDatabase:
+  connection: pgsql
+  host: database.example.test
+  port: 5432
+  sslMode: verify-full
+  existingSecret: database-credentials
+  tls:
+    existingSecret: database-ca
+    caKey: trusted.pem
+externalRedis:
+  host: redis.example.test
+auth:
+  existingSecret: application-credentials

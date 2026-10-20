@@ -16,6 +16,15 @@ if (extension_loaded('pdo_pgsql')) {
     $pgsqlOptions = [$disablePreparesAttribute => true];
 }
 
+$databaseTls = [
+    'sslmode' => env('DB_SSLMODE', env('DB_SSL_MODE')),
+    'sslmode_requested' => env('DB_SSLMODE'),
+    'sslmode_alias' => env('DB_SSL_MODE'),
+    'sslrootcert' => env('DB_SSLROOTCERT', env('DB_SSL_ROOT_CERT')),
+    'sslrootcert_requested' => env('DB_SSLROOTCERT'),
+    'sslrootcert_alias' => env('DB_SSL_ROOT_CERT'),
+];
+
 return [
 
     /*
@@ -74,6 +83,7 @@ return [
             'prefix_indexes' => true,
             'strict' => true,
             'engine' => null,
+            ...$databaseTls,
             'options' => $mysqlOptions,
         ],
 
@@ -92,6 +102,7 @@ return [
             'prefix_indexes' => true,
             'strict' => true,
             'engine' => null,
+            ...$databaseTls,
             'options' => $mysqlOptions,
         ],
 
@@ -107,7 +118,8 @@ return [
             'prefix' => '',
             'prefix_indexes' => true,
             'search_path' => 'public',
-            'sslmode' => 'prefer',
+            ...$databaseTls,
+            'sslmode' => $databaseTls['sslmode'] ?? 'prefer',
             // Keep native parameter binding without session-scoped statement
             // names, so transaction poolers can safely change backend sessions.
             'options' => $pgsqlOptions,
