@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
 
-use super::{Result, Runtime, refuse, store::capabilities};
+use super::{Result, Runtime, cancellation::TerminalCommand, refuse, store::capabilities};
 
 #[derive(Clone)]
 pub(super) struct AuthenticatedPrincipal {
@@ -75,6 +75,10 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route("/api/workflows/{workflow_id}/runs", get(list_runs))
         .route("/api/workflows/{workflow_id}/cancel", post(cancel_current))
+        .route(
+            "/api/workflows/{workflow_id}/terminate",
+            post(terminate_current),
+        )
         .route("/api/workflows/{workflow_id}/repair", post(repair_current))
         .route(
             "/api/workflows/{workflow_id}/runs/{run_id}/repair",
@@ -96,6 +100,10 @@ pub fn router(runtime: Runtime) -> Router {
         .route(
             "/api/workflows/{workflow_id}/runs/{run_id}/cancel",
             post(cancel_run),
+        )
+        .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/terminate",
+            post(terminate_run),
         )
         .route(
             "/api/workflows/{workflow_id}/query/{query_name}",
@@ -430,9 +438,14 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
         }
         return matches!(
             parts.as_slice(),
-            [_] | [_, "cancel"]
+            [_] | [_, "cancel" | "terminate"]
                 | [_, "runs", _]
-                | [_, "runs", _, "history" | "cancel" | "activities"]
+                | [
+                    _,
+                    "runs",
+                    _,
+                    "history" | "cancel" | "terminate" | "activities"
+                ]
         );
     }
     if let Some(path) = path.strip_prefix("/api/worker/") {
@@ -587,18 +600,45 @@ async fn list_runs(
     Ok(Json(runtime.list_runs(&workflow).await?))
 }
 
+async fn close(
+    runtime: Runtime,
+    command: TerminalCommand,
+    workflow_id: &str,
+    run_id: Option<&str>,
+    body: Value,
+) -> Result<(StatusCode, Json<Value>)> {
+    let operation = || match command {
+        TerminalCommand::Cancel => super::control_plane::Operation::Cancel,
+        TerminalCommand::Terminate => super::control_plane::Operation::Terminate,
+    };
+    let (status, response) = runtime
+        .close_workflow(command, workflow_id, run_id, body)
+        .await
+        .map_err(|error| operation().refusal(error, workflow_id, run_id))?;
+    Ok((status, Json(response)))
+}
+
 async fn cancel_current(
     Extension(runtime): Extension<Runtime>,
     Path(workflow_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
-    let (status, response) = runtime
-        .cancel_workflow(&workflow_id, None, body)
-        .await
-        .map_err(|error| {
-            super::control_plane::Operation::Cancel.refusal(error, &workflow_id, None)
-        })?;
-    Ok((status, Json(response)))
+    close(runtime, TerminalCommand::Cancel, &workflow_id, None, body).await
+}
+
+async fn terminate_current(
+    Extension(runtime): Extension<Runtime>,
+    Path(workflow_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    close(
+        runtime,
+        TerminalCommand::Terminate,
+        &workflow_id,
+        None,
+        body,
+    )
+    .await
 }
 
 async fn repair_current(
@@ -687,13 +727,29 @@ async fn cancel_run(
     Path((workflow_id, run_id)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
-    let (status, response) = runtime
-        .cancel_workflow(&workflow_id, Some(&run_id), body)
-        .await
-        .map_err(|error| {
-            super::control_plane::Operation::Cancel.refusal(error, &workflow_id, Some(&run_id))
-        })?;
-    Ok((status, Json(response)))
+    close(
+        runtime,
+        TerminalCommand::Cancel,
+        &workflow_id,
+        Some(&run_id),
+        body,
+    )
+    .await
+}
+
+async fn terminate_run(
+    Extension(runtime): Extension<Runtime>,
+    Path((workflow_id, run_id)): Path<(String, String)>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    close(
+        runtime,
+        TerminalCommand::Terminate,
+        &workflow_id,
+        Some(&run_id),
+        body,
+    )
+    .await
 }
 
 async fn request_cancellation_current(

@@ -85,6 +85,12 @@ contract fixture before its correction.
   or whether the fixture counts a boundary replay as the same claim, then add the
   fixture before changing either side.
 
+- **Terminating a child run.** Published Workflow resolves the parent with
+  `ChildRunTerminated` and the `terminated` child call status. Native refuses
+  this with `422 termination_propagation_not_available` until the parent-side
+  wait, child summary and failure projections for `ChildRunTerminated` have a
+  fixture.
+
 ## Contract and verification inventory
 
 The status column summarizes bounded native source and its recorded component
@@ -151,6 +157,30 @@ support is not evidence of multi-node safety.
 
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
 names, including unsuccessful observations.
+
+October 20, immediate termination:
+
+- **Source.** Native serves `POST /api/workflows/{id}/terminate` and its
+  selected-run form. Published Workflow runs cancel and terminate through one
+  `attemptTerminalCommand`, so native now does the same. Terminate records
+  `TerminateRequested` and `WorkflowTerminated`, the `terminated` status,
+  closed reason, failure category and propagation kind, and
+  `WorkflowTerminatedException`. It cancels open tasks, activities and timers
+  exactly as cancel does. A late activity outcome is refused with
+  `run_terminated`. The response carries the `terminate` control-plane
+  contract, which matches cancel's.
+- **Refused.** Terminating a child run returns
+  `422 termination_propagation_not_available` and changes nothing (see known
+  gaps). The other propagation refusals are cancel's.
+- **Fixtures.** `terminate-before-claim`, `terminate-pending-timer` and
+  `terminate-leased-activity` reuse the cancellation workflows with
+  `immediate_cancellation.command = "terminate"`. The shared contract and its
+  runner unit tests check the termination identity in place of cancellation's.
+- **Local evidence.** A local copy of the SQLite parity step recorded published
+  PHP 2.5.14 over HTTP, embedded PHP and native for the three cancel and three
+  terminate fixtures. All six passed on each target, and the comparison passed.
+  Native integration tests for both commands pass on SQLite, PostgreSQL and
+  MySQL.
 
 October 19, before #478, #476, #494 and #460 merged:
 

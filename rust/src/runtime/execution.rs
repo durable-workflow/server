@@ -785,8 +785,9 @@ impl Runtime {
             }
         }
     }
-    pub(crate) async fn cancel_workflow(
+    pub(crate) async fn close_workflow(
         &self,
+        command: super::cancellation::TerminalCommand,
         workflow_id: &str,
         run_id: Option<&str>,
         body: Value,
@@ -796,17 +797,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .cancel_workflow(workflow_id, run_id, reason, blob)
+                    .close_workflow(command, workflow_id, run_id, reason, blob)
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .cancel_workflow(workflow_id, run_id, reason, blob)
+                    .close_workflow(command, workflow_id, run_id, reason, blob)
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .cancel_workflow(workflow_id, run_id, reason, blob)
+                    .close_workflow(command, workflow_id, run_id, reason, blob)
                     .await
             }
         }
