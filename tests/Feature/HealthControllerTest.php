@@ -11,6 +11,7 @@ use App\Support\RedisReadinessProcess;
 use App\Support\ServerReadiness;
 use App\Support\ServerTopology;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Database\SQLiteConnection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use RuntimeException;
@@ -24,6 +25,30 @@ class HealthControllerTest extends TestCase
 {
     use RefreshDatabase;
     use ServerTestHelpers;
+
+    public function test_readiness_refuses_a_connected_database_that_cannot_execute_bound_reads(): void
+    {
+        $pdo = DB::connection()->getPdo();
+        DB::extend('broken_bound_reads', static fn (array $config): SQLiteConnection => new class($pdo, ':memory:', '', $config) extends SQLiteConnection
+        {
+            public function select($query, $bindings = [], $useReadPdo = true)
+            {
+                if ($bindings !== []) {
+                    throw new \PDOException('The connected database cannot execute bound statements.');
+                }
+
+                return parent::select($query, $bindings, $useReadPdo);
+            }
+        });
+        config([
+            'database.connections.broken_bound_reads' => ['driver' => 'broken_bound_reads'],
+            'database.default' => 'broken_bound_reads',
+        ]);
+
+        $this->getJson('/api/ready')
+            ->assertStatus(503)
+            ->assertJsonPath('checks.database.status', 'unavailable');
+    }
 
     public function test_health_check_returns_serving_when_database_is_available(): void
     {
