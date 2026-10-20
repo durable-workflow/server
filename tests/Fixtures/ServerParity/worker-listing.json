@@ -1,0 +1,28 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "worker-listing",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "worker listing λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "worker listing λ"},
+    "count": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null}
+  }},
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "worker_listing": {
+    "workflow_type": "parity.v1.listing",
+    "other_workflow_type": "parity.v1.listing_other",
+    "activity_type": "parity.v1.listing_activity",
+    "build_id": "listing-build-λ",
+    "fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "changed_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "capacity": {"workflow": 3, "activity": 5, "sessions": 2},
+    "task_slots": {"workflow_available": 2, "activity_available": 9, "session_available": 1},
+    "stored_task_slots": {"workflow_available": 2, "activity_available": 5, "session_available": 1},
+    "stale_after_seconds": 30,
+    "heartbeat_interval_seconds": 10
+  },
+  "contract": "Workers registered through the unchanged published SDK are listed and described with the registration and heartbeat facts they sent: capacities, task slots bounded by those capacities, process metrics, definition fingerprints and build ID. The task_queue and status filters select among live workers; a missing worker is 404 worker_not_found. Re-registering the same worker_id with a changed workflow definition fingerprint is refused with 409 workflow_definition_changed, and omitting a previously advertised fingerprint with 409 workflow_definition_fingerprint_missing; neither refusal changes the stored registration. A later valid re-registration keeps the advertised fingerprint and resets the task slots it did not report. Staleness after the 30-second window and the heartbeat's retention report need separate fixtures. Embedded applications have no HTTP worker registration."
+}

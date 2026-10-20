@@ -1,5 +1,6 @@
-//! Immediate cancellation of root or direct child runs. Propagation trees and
-//! broader propagation dependencies remain refused until their fixtures qualify.
+//! Immediate cancellation or termination of root runs and immediate
+//! cancellation of direct child runs. Propagation trees and broader
+//! propagation dependencies remain refused until their fixtures qualify.
 use super::transaction::Transaction;
 use super::{
     Result, RuntimeError,
@@ -28,6 +29,53 @@ pub(super) fn normalize_http_reason(reason: &str) -> &str {
             '\u{3000}' | '\u{3164}' | '\u{feff}' | '\u{ffa0}' | '\u{1d159}' |
             '\u{1d173}'..='\u{1d17a}' | '\u{e0020}')
     })
+}
+
+/// The two immediate terminal commands. Published PHP runs both through one
+/// implementation; they differ only in the identity they record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TerminalCommand {
+    Cancel,
+    Terminate,
+}
+
+impl TerminalCommand {
+    fn command_type(self) -> &'static str {
+        match self {
+            Self::Cancel => "cancel",
+            Self::Terminate => "terminate",
+        }
+    }
+
+    /// The outcome, run status, closed reason, failure category and
+    /// propagation kind, which PHP records as one word.
+    pub(super) fn closed(self) -> &'static str {
+        match self {
+            Self::Cancel => "cancelled",
+            Self::Terminate => "terminated",
+        }
+    }
+
+    fn events(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Cancel => ("CancelRequested", "WorkflowCancelled"),
+            Self::Terminate => ("TerminateRequested", "WorkflowTerminated"),
+        }
+    }
+
+    fn exception(self) -> &'static str {
+        match self {
+            Self::Cancel => "Workflow\\V2\\Exceptions\\WorkflowCancelledException",
+            Self::Terminate => "Workflow\\V2\\Exceptions\\WorkflowTerminatedException",
+        }
+    }
+
+    fn propagation_unavailable(self) -> &'static str {
+        match self {
+            Self::Cancel => "cancellation_propagation_not_available",
+            Self::Terminate => "termination_propagation_not_available",
+        }
+    }
 }
 
 pub(super) async fn prepare_reason(
@@ -164,8 +212,9 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
-    pub(crate) async fn cancel_workflow(
+    pub(crate) async fn close_workflow(
         &self,
+        command: TerminalCommand,
         workflow_id: &str,
         selected_run: Option<&str>,
         reason: Option<String>,
@@ -188,11 +237,16 @@ where
             "pending" | "running" | "waiting"
         );
         if !closed {
-            let unsupported_links =
-                Self::scalar("SELECT COUNT(*) FROM workflow_links WHERE child_workflow_run_id=$1 AND link_type!='child_workflow'")
-                    .bind(&run_id)
-                    .fetch_one(&mut *tx)
-                    .await?;
+            // A terminated child resolves its parent with ChildRunTerminated,
+            // whose parent projections are not qualified yet. Only
+            // cancellation resolves a parent here.
+            let unsupported_links = Self::scalar(match command {
+                TerminalCommand::Cancel => "SELECT COUNT(*) FROM workflow_links WHERE child_workflow_run_id=$1 AND link_type!='child_workflow'",
+                TerminalCommand::Terminate => "SELECT COUNT(*) FROM workflow_links WHERE child_workflow_run_id=$1",
+            })
+            .bind(&run_id)
+            .fetch_one(&mut *tx)
+            .await?;
             let pending_children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','failed')")
                 .bind(&run_id).fetch_one(&mut *tx).await?;
             let pending_queries =
@@ -206,7 +260,7 @@ where
             if unsupported_links != 0 || pending_children != 0 || pending_queries {
                 return Err(refuse(
                     StatusCode::UNPROCESSABLE_ENTITY,
-                    "cancellation_propagation_not_available",
+                    command.propagation_unavailable(),
                 ));
             }
         }
@@ -227,11 +281,11 @@ where
         let at = now();
         let status = if closed { "rejected" } else { "accepted" };
         let rejection = if closed { Some("run_not_active") } else { None };
-        let outcome = if closed { None } else { Some("cancelled") };
+        let outcome = if closed { None } else { Some(command.closed()) };
         // The frozen HTTP selected-run route guards the current run but records
         // an instance-scoped command. Preserve this public receipt representation.
-        Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,target_scope,source,status,outcome,rejection_reason,workflow_type,payload_codec,payload,command_sequence,accepted_at,applied_at,rejected_at) VALUES ($1,$2,$3,$4,'cancel','instance','control_plane',$5,$6,$7,$8,'avro',$9,$10,CASE WHEN $11='accepted' THEN $12 ELSE NULL END,CASE WHEN $13='accepted' THEN $14 ELSE NULL END,CASE WHEN $15='rejected' THEN $16 ELSE NULL END)")
-            .bind(&command_id).bind(workflow_id).bind(&run_id).bind(&run_id).bind(status).bind(outcome).bind(rejection)
+        Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,target_scope,source,status,outcome,rejection_reason,workflow_type,payload_codec,payload,command_sequence,accepted_at,applied_at,rejected_at) VALUES ($1,$2,$3,$4,$5,'instance','control_plane',$6,$7,$8,$9,'avro',$10,$11,CASE WHEN $12='accepted' THEN $13 ELSE NULL END,CASE WHEN $14='accepted' THEN $15 ELSE NULL END,CASE WHEN $16='rejected' THEN $17 ELSE NULL END)")
+            .bind(&command_id).bind(workflow_id).bind(&run_id).bind(&run_id).bind(command.command_type()).bind(status).bind(outcome).bind(rejection)
             .bind(DB::string(&run,"workflow_type")?).bind(if closed {None} else {blob.as_deref()}).bind(command_sequence)
             .bind(status).bind(DB::bind_time(at)).bind(status).bind(DB::bind_time(at))
             .bind(status).bind(DB::bind_time(at)).execute(&mut *tx).await?;
@@ -252,12 +306,13 @@ where
         if let Some(reason) = &reason {
             identity["reason"] = json!(reason);
         }
+        let (requested_event, terminal_event) = command.events();
         let mut requested = identity.clone();
-        requested["command_type"] = json!("cancel");
+        requested["command_type"] = json!(command.command_type());
         Self::append(
             &mut tx,
             &run_id,
-            "CancelRequested",
+            requested_event,
             requested,
             None,
             Some(&command_id),
@@ -284,9 +339,10 @@ where
             .await?;
         }
         let failure_id = id();
+        let closed_as = command.closed();
         let message = reason.as_ref().map_or_else(
-            || "Workflow cancelled.".to_owned(),
-            |reason| format!("Workflow cancelled: {reason}"),
+            || format!("Workflow {closed_as}."),
+            |reason| format!("Workflow {closed_as}: {reason}"),
         );
         // Corrected PHP stores the entire diagnostic as one JSON string
         // literal when NUL would truncate or invalidate a SQL text value.
@@ -296,29 +352,31 @@ where
         } else {
             message
         };
-        const EXCEPTION: &str = "Workflow\\V2\\Exceptions\\WorkflowCancelledException";
-        Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,handled,exception_class,message,file,line,trace_preview,created_at,updated_at) VALUES ($1,$2,'workflow_run',$3,'cancelled','cancelled',FALSE,$4,$5,'',0,'',$6,$7)")
-            .bind(&failure_id).bind(&run_id).bind(&run_id).bind(EXCEPTION).bind(&message)
+        let exception = command.exception();
+        Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,handled,exception_class,message,file,line,trace_preview,created_at,updated_at) VALUES ($1,$2,'workflow_run',$3,$4,$5,FALSE,$6,$7,'',0,'',$8,$9)")
+            .bind(&failure_id).bind(&run_id).bind(&run_id).bind(closed_as).bind(closed_as).bind(exception).bind(&message)
             .bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut *tx).await?;
         let mut terminal = identity;
         terminal["failure_id"] = json!(failure_id);
-        terminal["failure_category"] = json!("cancelled");
-        terminal["closed_reason"] = json!("cancelled");
-        terminal["exception_class"] = json!(EXCEPTION);
+        terminal["failure_category"] = json!(closed_as);
+        terminal["closed_reason"] = json!(closed_as);
+        terminal["exception_class"] = json!(exception);
         terminal["message"] = json!(message);
-        Self::query("UPDATE workflow_runs SET status='cancelled',closed_reason='cancelled',closed_at=$1,last_progress_at=$2 WHERE id=$3")
-            .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(&run_id).execute(&mut *tx).await?;
+        Self::query("UPDATE workflow_runs SET status=$1,closed_reason=$2,closed_at=$3,last_progress_at=$4 WHERE id=$5")
+            .bind(closed_as).bind(closed_as).bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(&run_id).execute(&mut *tx).await?;
         Self::append(
             &mut tx,
             &run_id,
-            "WorkflowCancelled",
+            terminal_event,
             terminal.clone(),
             None,
             Some(&command_id),
         )
         .await?;
         Self::close_pending_updates(&mut tx, &run_id, None).await?;
-        Self::resolve_child(&mut tx, &run, ChildResolution::Cancelled(&terminal), at).await?;
+        if command == TerminalCommand::Cancel {
+            Self::resolve_child(&mut tx, &run, ChildResolution::Cancelled(&terminal), at).await?;
+        }
         tx.summary_changed(&run_id);
         tx.commit().await?;
         self.wake.notify_waiters();
@@ -438,9 +496,14 @@ where
                 .await?;
         let attempt = Self::query("SELECT * FROM activity_attempts WHERE id=$1 AND workflow_task_id=$2 AND workflow_run_id=$3")
             .bind(attempt_id).bind(DB::string(task,"id")?).bind(&run_id).fetch_optional(&mut **tx).await?;
+        let run_status = DB::string(&run, "status")?;
+        let reason = match run_status.as_str() {
+            "cancelled" => "run_cancelled",
+            "terminated" => "run_terminated",
+            _ => return Err(refuse(StatusCode::CONFLICT, "stale_attempt")),
+        };
         if let Some(attempt) = attempt {
-            if DB::string(&run, "status")? == "cancelled"
-                && DB::string(&attempt, "status")? == "cancelled"
+            if DB::string(&attempt, "status")? == "cancelled"
                 && DB::optional_string(&attempt, "lease_owner")?.as_deref() == Some(owner)
             {
                 let activity = Self::query(
@@ -453,8 +516,8 @@ where
                 return Err(RuntimeError::Protocol {
                     status: StatusCode::CONFLICT,
                     response: json!({"task_id":DB::string(task,"id")?,"activity_attempt_id":attempt_id,
-                    "outcome":"ignored","recorded":false,"reason":"run_cancelled","next_task_id":null,
-                    "cancel_requested":true,"can_continue":false,"run_status":"cancelled",
+                    "outcome":"ignored","recorded":false,"reason":reason,"next_task_id":null,
+                    "cancel_requested":true,"can_continue":false,"run_status":run_status,
                     "run_closed_reason":DB::optional_string(&run,"closed_reason")?,"run_closed_at":DB::optional_instant(&run,"closed_at")?,
                     "activity_status":DB::string(&activity,"status")?,"attempt_status":"cancelled","task_status":"cancelled",
                     "lease_owner":owner,"lease_expires_at":null}),
