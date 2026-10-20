@@ -3,12 +3,13 @@
 declare(strict_types=1);
 
 use DurableWorkflow\Client;
+require_once __DIR__.'/lock-pressure-middleware.php';
 
 function finishHttpWaitingHistory(Client $admin, array $fixture, string $workflowId, string $queue, string $url): array
 {
     $definition = $fixture['waiting_for_history'];
     $requests = [];
-    $client = new Client($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null,
+    $client = parityClient($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null,
         transport: namespaceTransport($requests));
     $workerId = $workflowId.'-waiting-worker';
     $peerId = $workflowId.$definition['peer_suffix'];

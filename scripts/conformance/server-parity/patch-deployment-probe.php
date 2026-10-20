@@ -20,6 +20,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
 use Workflow\V2\WorkflowStub;
 use Workflow\WorkflowOptions;
+require_once __DIR__.'/lock-pressure-middleware.php';
 
 final class PatchDeploymentState
 {
@@ -126,7 +127,8 @@ function patchHttpPhase(array $fixture, array $options): array
             });
         };
     });
-    $client = new Client($options['url'], namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null,
+    $stack->push(LockPressurePollRetries::middleware(), 'lock_pressure_poll_retry');
+    $client = parityClient($options['url'], namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null,
         transport: new Psr18Transport(client: new GuzzleClient(['http_errors' => false, 'handler' => $stack])));
     if ($phase === 'replacement') {
         $handle = $client->workflowHandle($workflowId, $options['run-id']);
@@ -279,7 +281,7 @@ function patchPublishedSdkPhase(array $fixture, array $options): array
         if ($result['language'] !== $consumer['language'] || $result['sdk_version'] !== $consumer['version']) {
             throw new RuntimeException('Actual published worker differs from the selected consumer.');
         }
-        $client = new Client($options['url'], namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
+        $client = parityClient($options['url'], namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
         $runId = $original ? ($result['run_id'] ?? null) : $options['run-id'];
         if (! is_string($runId) || $runId === '') {
             throw new RuntimeException('Actual published author returned no original run identity.');

@@ -24,6 +24,9 @@ use sqlx::{
 use std::time::Duration;
 use tokio::time::{Instant, timeout_at};
 
+mod mysql_journal;
+pub use mysql_journal::take_over_mysql;
+
 /// Takeover reads every row twice (inspection and fingerprint).
 const BUDGET: Duration = Duration::from_secs(3600);
 /// Native's PostgreSQL bootstrap key, so a native node cannot open the
@@ -116,7 +119,7 @@ async fn take_over_sqlite_in(
     // Exactly the check native startup makes: marker, ledger and catalog.
     schema::verify(&mut *tx).await?;
     #[cfg(test)]
-    interruption_point();
+    interruption_point("before-commit");
     Ok(report("sqlite", layout, &digest, &inventory, converted))
 }
 
@@ -172,16 +175,20 @@ async fn take_over_postgres_in(
     record_migration::<Postgres>(&mut *tx, postgres::migration()).await?;
     postgres::verify(&mut *tx).await?;
     #[cfg(test)]
-    interruption_point();
+    interruption_point("before-commit");
     Ok(report("pgsql", layout, &digest, &inventory, converted))
 }
 
-/// Lets the interruption qualification kill a real takeover process after
-/// every step has run, just before the commit.
+/// Lets the interruption qualification kill a real takeover process at a
+/// named boundary: `before-commit` unless `DW_TAKEOVER_TEST_BOUNDARY` names
+/// another.
 #[cfg(test)]
-fn interruption_point() {
-    if let Ok(receipt) = std::env::var("DW_TAKEOVER_TEST_RECEIPT") {
-        std::fs::write(format!("{receipt}.partial"), "before-commit").unwrap();
+fn interruption_point(boundary: &str) {
+    let wanted = std::env::var("DW_TAKEOVER_TEST_BOUNDARY");
+    if let Ok(receipt) = std::env::var("DW_TAKEOVER_TEST_RECEIPT")
+        && wanted.as_deref().unwrap_or("before-commit") == boundary
+    {
+        std::fs::write(format!("{receipt}.partial"), boundary).unwrap();
         std::fs::rename(format!("{receipt}.partial"), &receipt).unwrap();
         loop {
             std::thread::park();
@@ -211,10 +218,46 @@ fn report(backend: &str, layout: &str, digest: &Value, inventory: &Value, conver
     })
 }
 
+/// Published PHP features native does not implement yet. A source holding any
+/// of their rows is refused, rather than taken over without them. Derived
+/// projections and PHP's own queue and poll bookkeeping are left in place.
+const UNSUPPORTED_FEATURES: [(&str, &[&str]); 7] = [
+    ("upgrade_source_runtime_credentials_unsupported", &["runtime_credentials"]),
+    (
+        "upgrade_source_message_streams_unsupported",
+        &[
+            "workflow_messages",
+            "workflow_durable_streams",
+            "workflow_durable_stream_items",
+            "workflow_inbound_streams",
+            "workflow_inbound_stream_items",
+        ],
+    ),
+    (
+        "upgrade_source_services_unsupported",
+        &["workflow_services", "workflow_service_endpoints", "workflow_service_operations"],
+    ),
+    ("upgrade_source_update_validation_unsupported", &["workflow_update_validation_tasks"]),
+    ("upgrade_source_worker_sessions_unsupported", &["workflow_worker_sessions"]),
+    ("upgrade_source_build_id_rollouts_unsupported", &["workflow_worker_build_id_rollouts"]),
+    (
+        "upgrade_source_search_attribute_definitions_unsupported",
+        &["search_attribute_definitions"],
+    ),
+];
+
 /// Takeover needs every inspection result it relies on, and refuses what
-/// native cannot represent yet: external payloads and service calls.
-/// Returns the qualified source layout.
+/// native cannot represent yet: external payloads, service calls and the
+/// other unsupported features above. Returns the qualified source layout.
 fn qualified(inventory: &Value) -> Result<&str> {
+    for (reason, tables) in UNSUPPORTED_FEATURES {
+        if tables
+            .iter()
+            .any(|table| inventory["table_rows"][*table].as_i64().unwrap_or(0) != 0)
+        {
+            return Err(refuse(StatusCode::CONFLICT, reason));
+        }
+    }
     if inventory["queue_inspection"]["status"] != "known_subset_bound" {
         return Err(refuse(
             StatusCode::CONFLICT,
@@ -283,6 +326,34 @@ where
     Ok(())
 }
 
+/// Whether a recorded PHP release layout has PHP's own registration
+/// incarnations. Layouts without a recipe are refused.
+fn php_incarnations(layout: &str) -> Result<bool> {
+    match layout.trim_end_matches("+mariadb-driver") {
+        "frozen" => Ok(false),
+        "php-2.8.0" | "php-2.9.7" => Ok(true),
+        _ => Err(refuse(
+            StatusCode::CONFLICT,
+            "upgrade_source_layout_unconverted",
+        )),
+    }
+}
+
+/// Service calls are not part of native yet.
+async fn service_calls_absent<DB: Backend>(tx: &mut DB::Connection) -> Result<()>
+where
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+{
+    if count::<DB>(tx, "SELECT COUNT(*) AS n FROM workflow_service_calls").await? != 0 {
+        return Err(refuse(
+            StatusCode::CONFLICT,
+            "upgrade_source_service_calls_unsupported",
+        ));
+    }
+    Ok(())
+}
+
 /// Converts a recorded PHP release layout to native's (the design's recipes).
 async fn convert<DB: Backend>(tx: &mut DB::Connection, layout: &str) -> Result<Value>
 where
@@ -290,22 +361,52 @@ where
     DB::Arguments: IntoArguments<DB>,
     for<'q> String: Encode<'q, DB> + Type<DB>,
 {
-    let php_incarnations = match layout {
-        "frozen" => false,
-        "php-2.8.0" | "php-2.9.7" => true,
-        _ => {
-            return Err(refuse(
-                StatusCode::CONFLICT,
-                "upgrade_source_layout_unconverted",
-            ));
-        }
-    };
-    if count::<DB>(tx, "SELECT COUNT(*) AS n FROM workflow_service_calls").await? != 0 {
-        return Err(refuse(
-            StatusCode::CONFLICT,
-            "upgrade_source_service_calls_unsupported",
-        ));
+    let php_incarnations = php_incarnations(layout)?;
+    service_calls_absent::<DB>(tx).await?;
+    let (copied, created) = adopt_incarnations::<DB>(tx, php_incarnations).await?;
+    if php_incarnations {
+        sqlx::raw_sql(
+            "DROP TABLE workflow_worker_registration_incarnations; \
+             ALTER TABLE workflow_worker_registrations DROP COLUMN registration_token; \
+             DROP INDEX wf_service_calls_deadline_idx; \
+             ALTER TABLE workflow_service_calls DROP COLUMN call_deadline_at;",
+        )
+        .execute(&mut *tx)
+        .await?;
     }
+    let delivery_references = if layout == "php-2.9.7" {
+        // PHP's own queue delivery lookup metadata; native does not use PHP's
+        // queue, and the queue inspection bound every job to its task row.
+        let references = count::<DB>(tx, DELIVERY_REFERENCES).await?;
+        sqlx::raw_sql("ALTER TABLE workflow_tasks DROP COLUMN queue_delivery_reference")
+            .execute(&mut *tx)
+            .await?;
+        references
+    } else {
+        0
+    };
+    Ok(json!({
+        "incarnations_copied":copied, "incarnations_created":created,
+        "queue_delivery_references_removed":delivery_references
+    }))
+}
+
+const DELIVERY_REFERENCES: &str =
+    "SELECT COUNT(*) AS n FROM workflow_tasks WHERE queue_delivery_reference IS NOT NULL";
+
+/// Gives every registration the incarnation native expects. PHP's own
+/// incarnations and tokens are copied, so a running SDK worker's fenced
+/// deregistration still matches; an active registration without one gets a
+/// new incarnation. Returns how many were copied and created.
+async fn adopt_incarnations<DB: Backend>(
+    tx: &mut DB::Connection,
+    php_incarnations: bool,
+) -> Result<(u64, usize)>
+where
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+    for<'q> String: Encode<'q, DB> + Type<DB>,
+{
     let now = super::super::store::now();
     let mut copied = 0;
     if php_incarnations {
@@ -331,8 +432,8 @@ where
             ));
         }
     }
-    // Every active registration gets the authority native expects. A PHP
-    // 2.8.0+ worker keeps the token it was given; an older one gets a new token.
+    // A PHP 2.8.0+ worker keeps the token it was given; an older one gets a
+    // new token.
     let missing = query::<DB>(if php_incarnations {
         "SELECT r.namespace,r.worker_id,r.registration_token AS token FROM workflow_worker_registrations r WHERE r.status='active' AND NOT EXISTS (SELECT 1 FROM dw_worker_registration_incarnations i WHERE i.namespace=r.namespace AND i.worker_id=r.worker_id AND i.status='active') ORDER BY r.namespace,r.worker_id"
     } else {
@@ -354,35 +455,7 @@ where
             .execute(&mut *tx)
             .await?;
     }
-    if php_incarnations {
-        sqlx::raw_sql(
-            "DROP TABLE workflow_worker_registration_incarnations; \
-             ALTER TABLE workflow_worker_registrations DROP COLUMN registration_token; \
-             DROP INDEX wf_service_calls_deadline_idx; \
-             ALTER TABLE workflow_service_calls DROP COLUMN call_deadline_at;",
-        )
-        .execute(&mut *tx)
-        .await?;
-    }
-    let delivery_references = if layout == "php-2.9.7" {
-        // PHP's own queue delivery lookup metadata; native does not use PHP's
-        // queue, and the queue inspection bound every job to its task row.
-        let references = count::<DB>(
-            tx,
-            "SELECT COUNT(*) AS n FROM workflow_tasks WHERE queue_delivery_reference IS NOT NULL",
-        )
-        .await?;
-        sqlx::raw_sql("ALTER TABLE workflow_tasks DROP COLUMN queue_delivery_reference")
-            .execute(&mut *tx)
-            .await?;
-        references
-    } else {
-        0
-    };
-    Ok(json!({
-        "incarnations_copied":copied, "incarnations_created":missing.len(),
-        "queue_delivery_references_removed":delivery_references
-    }))
+    Ok((copied, missing.len()))
 }
 
 async fn count<DB: Backend>(tx: &mut DB::Connection, sql: &'static str) -> Result<i64>

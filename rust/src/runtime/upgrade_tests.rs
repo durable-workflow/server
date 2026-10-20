@@ -406,7 +406,11 @@ async fn payload_scan_validates_inline_pages_and_reports_late_bad_values_without
     assert_eq!(report["payload_inspection"]["other_root_payload_columns_verified"], false);
     assert_eq!(
         report["payload_inspection"]["unscanned_payload_codec_tables"],
-        json!(["workflow_commands", "workflow_signal_records", "workflow_updates"])
+        json!([
+            "workflow_durable_stream_items",
+            "workflow_inbound_stream_items",
+            "workflow_update_validation_tasks"
+        ])
     );
     assert_eq!(report["payload_inspection"]["diagnostics"], json!([]));
     for (table, column, count) in [
@@ -1042,6 +1046,15 @@ async fn takeover_refusals_leave_the_php_database_unchanged() {
             "INSERT INTO runtime_external_payloads(id,namespace,storage_uri,storage_uri_sha256,codec,sha256,size_bytes) VALUES ('p','default','s3://b/k','x','avro','y',1)",
             "upgrade_source_external_payloads_unsupported",
         ),
+        // Features native lacks: their rows would be left behind unread.
+        (
+            "INSERT INTO runtime_credentials(id,subject,roles,tenant,token_prefix,token_hash) VALUES ('c','worker','[]','default','dw_','h')",
+            "upgrade_source_runtime_credentials_unsupported",
+        ),
+        (
+            "INSERT INTO workflow_messages(workflow_instance_id,direction,channel,stream_key,sequence) VALUES ('w','inbound','c','k',1)",
+            "upgrade_source_message_streams_unsupported",
+        ),
     ] {
         let (_directory, path) = php297_layout().await;
         mutate(&path, statement).await;
@@ -1053,4 +1066,93 @@ async fn takeover_refusals_leave_the_php_database_unchanged() {
         );
         assert_eq!(std::fs::read(&path).unwrap(), before, "{expected}");
     }
+}
+
+/// The frozen layout in PHP Server's default WAL mode, copied while its
+/// writer was still open: one committed row is only in the WAL, as a crashed
+/// PHP would leave it.
+async fn wal_source() -> (tempfile::TempDir, String) {
+    let (directory, path) = php_layout().await;
+    let mut writer = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .filename(&path)
+            .journal_mode(SqliteJournalMode::Wal),
+    )
+    .await
+    .unwrap();
+    writer.execute("PRAGMA wal_autocheckpoint=0").await.unwrap();
+    writer
+        .execute("INSERT INTO migrations(migration,batch) VALUES ('only-in-wal',7)")
+        .await
+        .unwrap();
+    let copy = directory.path().join("wal.sqlite").to_str().unwrap().to_owned();
+    for suffix in ["", "-wal", "-shm"] {
+        std::fs::copy(format!("{path}{suffix}"), format!("{copy}{suffix}")).unwrap();
+    }
+    writer.close().await.unwrap();
+    (directory, copy)
+}
+
+#[tokio::test]
+async fn prepare_switches_a_wal_source_to_the_rollback_journal_and_keeps_its_rows() {
+    let (_directory, path) = wal_source().await;
+    assert!(Path::new(&format!("{path}-wal")).exists());
+    reason(
+        inspect_sqlite(&path).await,
+        "upgrade_source_sqlite_journal_unqualified",
+    );
+    let report = prepare_sqlite_source(&path).await.unwrap();
+    assert_eq!(report["status"], "rollback_journal", "{report}");
+    assert_eq!(report["previous_journal_mode"], "wal");
+    assert_eq!(report["source_mutated"], true);
+    for suffix in ["-wal", "-shm", "-journal"] {
+        assert!(!Path::new(&format!("{path}{suffix}")).exists(), "{suffix}");
+    }
+    assert_eq!(journal_format(&path).await.unwrap(), ROLLBACK_JOURNAL);
+    let inventory = inspect_sqlite(&path).await.unwrap();
+    assert_eq!(inventory["table_rows"]["migrations"], 1, "{inventory}");
+    let mut connection = SqliteConnection::connect(&format!("sqlite://{path}?mode=ro"))
+        .await
+        .unwrap();
+    let batch: i64 = sqlx::query_scalar("SELECT batch FROM migrations WHERE migration='only-in-wal'")
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+    assert_eq!(batch, 7);
+    connection.close().await.unwrap();
+    // Preparing again changes nothing.
+    let original = std::fs::read(&path).unwrap();
+    assert_eq!(prepare_sqlite_source(&path).await.unwrap()["source_mutated"], false);
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+}
+
+#[tokio::test]
+async fn prepare_refuses_while_another_connection_holds_the_source() {
+    let (_directory, path) = php_layout().await;
+    let mut writer = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .filename(&path)
+            .journal_mode(SqliteJournalMode::Wal),
+    )
+    .await
+    .unwrap();
+    writer
+        .execute("INSERT INTO migrations(migration,batch) VALUES ('open',8)")
+        .await
+        .unwrap();
+    reason(prepare_sqlite_source(&path).await, "upgrade_source_in_use");
+    assert_eq!(journal_format(&path).await.unwrap(), WRITE_AHEAD_LOG);
+    writer.close().await.unwrap();
+    let report = prepare_sqlite_source(&path).await.unwrap();
+    assert_eq!(report["previous_journal_mode"], "wal", "{report}");
+}
+
+#[tokio::test]
+async fn prepare_leaves_a_rollback_journal_source_byte_identical() {
+    let (_directory, path) = php_layout().await;
+    let original = std::fs::read(&path).unwrap();
+    let report = prepare_sqlite_source(&path).await.unwrap();
+    assert_eq!(report["previous_journal_mode"], "delete", "{report}");
+    assert_eq!(report["source_mutated"], false);
+    assert_eq!(std::fs::read(&path).unwrap(), original);
 }

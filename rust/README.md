@@ -412,38 +412,58 @@ version-1/version-2/version-3 development schemas are refused without conversion
 needed old development data separately; this unpublished slice supplies no
 older-development converter. Use a new isolated file for version 4.
 
-This refusal is not the upgrade mechanism. A stopped PHP SQLite or PostgreSQL
-database can be taken over with the development `upgrade-takeover` command,
-following the [takeover design](../docs/rust-server-upgrade-takeover.md):
+This refusal is not the upgrade mechanism. A stopped PHP database can be taken
+over with the development `upgrade-takeover` command, following the
+[takeover design](../docs/rust-server-upgrade-takeover.md):
 
 1. Run PHP Server 2.5.14 or later, which refuses a Rust-owned database, and
    stop every PHP role.
+   PHP Server keeps SQLite in WAL mode, which the upgrade commands refuse. With
+   PHP stopped, run `upgrade-prepare-sqlite` on the source file (writable).
+   It has SQLite checkpoint every committed WAL frame into the file and switch
+   it to the rollback journal, refusing with `upgrade_source_in_use` while any
+   other process has the file open. The rows are unchanged; the backup below
+   is taken afterwards. A journal left by a crashed writer is rolled back the
+   same way.
 2. Run `upgrade-fingerprint` on the source: a SQLite file mounted read-only,
-   or PostgreSQL through a read-only role. Back the database up (a file copy,
-   or `pg_dump`), restore the backup separately, and fingerprint that too.
-   The digests must be equal.
+   or the database through a read-only account. Back the database up (a file
+   copy, `pg_dump` or `mysqldump --single-transaction`), restore the backup
+   separately, and fingerprint that too. The digests must be equal.
 3. Run `upgrade-takeover` with `DW_UPGRADE_BACKUP_FINGERPRINT` set to that
    digest and the original queue settings (`DW_RUST_UPGRADE_QUEUE_*`, as for
    `upgrade-queue-inspect`). PostgreSQL uses the owner's `DB_*` settings.
+   MySQL and MariaDB use an account that owns the database and has the
+   `PROCESS` privilege, so the takeover can see every other session.
 
-Inspection, the fingerprint check, the conversion of the recorded PHP release
-layout, the native relations, the migration ledger and native's own startup
-verification all happen in one transaction. SQLite holds the file
+On SQLite and PostgreSQL, inspection, the fingerprint check, the conversion
+of the recorded PHP release layout, the native relations, the migration ledger
+and native's own startup verification all happen in one transaction. SQLite
+holds the file
 exclusively; PostgreSQL takes native's bootstrap lock and locks every table
 before reading, and refuses with `upgrade_source_in_use` if a session still
 holds one after five seconds. A refusal leaves the PHP database unchanged. An
 interrupted takeover commits nothing: rerun it with the same digest. On
 SQLite, the rerun lets SQLite roll back the journal the interrupted run left,
-and the fingerprint check then proves the file is the backed-up one. The
-command refuses:
+and the fingerprint check then proves the file is the backed-up one.
+
+MySQL and MariaDB commit DDL implicitly, so their takeover runs in steps under
+native's bootstrap lock. It refuses with `upgrade_source_in_use` while any
+other session uses the database. Once the source is verified, it first writes
+native's marker with a `rust-takeover:<layout>` row: PHP refuses the database
+from then on, and native refuses it with `native_takeover_incomplete` until
+the takeover finishes. It then checks the sessions and the fingerprint again,
+and runs each conversion step, recording each in that row. An interrupted
+takeover is rerun with the same digest and continues after the last recorded
+step; a different digest is refused.
+
+The command refuses:
 
 - a digest that differs, so any write after the backup stops it;
 - unrecognized queued jobs, external payloads and service calls;
-- a layout other than the frozen one, PHP 2.8.0 or PHP 2.9.7, or a database
-  native already owns.
+- a layout other than the frozen one, PHP 2.8.0 or PHP 2.9.7 (with either
+  Laravel MariaDB driver), or a database native already owns.
 
-MySQL/MariaDB takeover, nested payload columns and multi-node qualification
-remain open. **Never connect PHP to a Rust development database.**
+Nested payload columns and multi-node qualification remain open. **Never connect PHP to a Rust development database.**
 Named namespace isolation and configured worker/operator/admin roles have
 representative shared qualification. Principal/custom-provider credentials and
 the full authorization contract remain open. Broader timer/signal semantics, failure/retry policy, cancellation and the rest of the API also
