@@ -1,4 +1,5 @@
 {{- include "durable-workflow.validateExternalPersistence" . }}
+{{- include "durable-workflow.validateDatabaseTlsVolumes" . }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -23,7 +24,10 @@ data:
   DB_SOCKET: {{ . | quote }}
   {{- end }}
   {{- with .Values.externalDatabase.sslMode }}
-  DB_SSL_MODE: {{ . | quote }}
+  DB_SSLMODE: {{ . | quote }}
+  {{- end }}
+  {{- if .Values.externalDatabase.tls.existingSecret }}
+  DB_SSLROOTCERT: {{ include "durable-workflow.databaseTlsCaPath" . | quote }}
   {{- end }}
   REDIS_HOST: {{ .Values.externalRedis.host | quote }}
   REDIS_PORT: {{ .Values.externalRedis.port | quote }}

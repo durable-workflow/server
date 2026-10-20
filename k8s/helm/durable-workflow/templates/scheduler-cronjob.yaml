@@ -81,10 +81,18 @@ spec:
                 {{- include "durable-workflow.standardEnv" . | nindent 16 }}
               resources:
                 {{- toYaml .Values.scheduler.resources | nindent 16 }}
+              {{- if .Values.externalDatabase.tls.existingSecret }}
+              volumeMounts:
+                {{- include "durable-workflow.databaseTlsVolumeMount" . | nindent 16 }}
+              {{- end }}
               {{- with .Values.scheduler.containerSecurityContext }}
               securityContext:
                 {{- toYaml . | nindent 16 }}
               {{- end }}
+          {{- if .Values.externalDatabase.tls.existingSecret }}
+          volumes:
+            {{- include "durable-workflow.databaseTlsVolume" . | nindent 12 }}
+          {{- end }}
           {{- with .Values.scheduler.nodeSelector }}
           nodeSelector:
             {{- toYaml . | nindent 12 }}
