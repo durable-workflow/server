@@ -20,6 +20,7 @@ use Workflow\V2\StartOptions;
 use Workflow\V2\WorkflowStub;
 use Workflow\WorkflowOptions;
 use Workflow\Serializers\Serializer;
+require_once __DIR__.'/lock-pressure-middleware.php';
 
 function namespaceReceipt(string $id, callable $request): array
 {
@@ -66,6 +67,7 @@ function namespaceTransport(array &$receipts, ?Closure $beforeCompletion = null)
             });
         };
     });
+    $stack->push(LockPressurePollRetries::middleware(), 'lock_pressure_poll_retry');
 
     return new Psr18Transport(client: new NamespaceHttp(['http_errors' => false, 'handler' => $stack,
         'connect_timeout' => 1, 'timeout' => 5]));
@@ -98,7 +100,7 @@ function finishHttpNamespaces(Client $admin, array $fixture, string $workflowId,
             'before' => $before, 'after' => namespaceHttpRun($clients[0], $ids[0], $handles[0]->selectedRunId)];
     };
     foreach ($names as $index => $name) {
-        $clients[] = new Client($url, namespace: $name, token: getenv('DW_PARITY_TOKEN') ?: null,
+        $clients[] = parityClient($url, namespace: $name, token: getenv('DW_PARITY_TOKEN') ?: null,
             transport: namespaceTransport($state['worker_receipts'][$index], $index === 0 ? $beforeCompletion : null));
         $state['registrations'][] = $clients[$index]->registerWorker($state['worker_id'], $queue,
             [$definition['peer_workflow_type']], ['parity.v1.echo_activity']);
