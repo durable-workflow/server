@@ -81,7 +81,7 @@ docker run --rm --name "$resource-author" --user=1000:1000 --cpus=1 --memory=512
 docker stop --signal SIGTERM --time 10 "$resource-php" >/dev/null
 docker inspect --format '{{json .State}}' "$resource-php" > "$evidence/stopped-state.json"
 jq -e '.Running==false and .ExitCode==0 and .OOMKilled==false' "$evidence/stopped-state.json" >/dev/null
-if test "$backend" = sqlite; then
+if [[ $backend == sqlite ]]; then
   # PHP Server keeps SQLite in WAL mode. Once PHP is stopped, the source is
   # switched to the rollback journal the upgrade commands need, as an operator
   # does first; its rows are unchanged.
@@ -95,7 +95,7 @@ if test "$backend" = sqlite; then
     "$evidence/prepare.json" >/dev/null
   [[ "$(od -An -tu1 -j18 -N2 "$state/database.sqlite" | tr -s ' ')" == " 1 1" ]]
 fi
-if test "$backend" = sqlite; then
+if [[ $backend == sqlite ]]; then
   docker run --rm --name "$resource-control" --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
     --network=none -v "$PWD/$state:/state:ro" -v "$PWD:/source:ro" --entrypoint php "$image" \
     /source/scripts/conformance/server-parity/upgrade-source-sqlite-representations.php upgrade-source \
