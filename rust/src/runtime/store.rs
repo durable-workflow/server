@@ -387,7 +387,8 @@ where
             .into_iter()
             .map(|e| {
                 json!({"sequence": e["sequence"],
-            "event_type": e["event_type"], "timestamp": e["recorded_at"], "payload": e["payload"]})
+            "event_type": e["event_type"], "timestamp": e["recorded_at"],
+            "principal": super::history_presentation::principal(&e["payload"]), "payload": e["payload"]})
             })
             .collect();
         Ok(
@@ -2541,9 +2542,12 @@ where
     }
 
     fn event(row: DB::Row) -> Result<Value> {
+        let event_type = DB::string(&row, "event_type")?;
+        let payload =
+            super::history_presentation::payload(DB::document_row(&row, "payload")?, &event_type);
         Ok(
             json!({"id": DB::string(&row,"id")?, "sequence": DB::number(&row,"sequence")?, "event_type": DB::string(&row,"event_type")?,
-        "payload": DB::document_row(&row,"payload")?,
+        "payload": payload,
         "recorded_at": DB::instant(&row,"recorded_at")?.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
         "workflow_task_id": DB::optional_string(&row,"workflow_task_id")?, "workflow_command_id": DB::optional_string(&row,"workflow_command_id")?}),
         )
