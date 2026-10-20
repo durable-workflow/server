@@ -90,7 +90,10 @@ pub async fn run(args: &[String]) -> Result<()> {
     })
     .await
     .map_err(|_| Error::WorkerLoop("Original memo phase observation expired".into()))?;
-    let retired = client.deregister_worker_registration(&worker_id).await;
+    let retired = super::lock_pressure::retrying("deregister", || {
+        client.deregister_worker_registration(&worker_id)
+    })
+    .await;
     outcome?;
     retired?;
     println!(

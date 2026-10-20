@@ -418,6 +418,29 @@ Workers that omit fingerprints during re-registration cannot clear previously
 stored fingerprints for workflow types they still advertise; the server keeps
 the stored value until a new worker id is used.
 
+Existing runs retain their original definition fingerprint, build pin, history
+and deadlines. By default, the Server prefers a fresh eligible worker with the
+recorded definition. When that definition is no longer available in the run's
+namespace, queue, workflow type and build, a replacement definition can claim
+the original task only when it advertises `workflow_entry_arguments_validation`,
+and must pass the SDK's strict replay checks. This worker capability declares
+pre-entry refusal without failing the business run; older worker implementations
+do not gain it from their runtime or protocol version. `entry_validation_unavailable`
+in `definition_routing` identifies a replacement that needs an SDK upgrade.
+Use versioned
+branches such as `get_version` for changes to durable commands. A different
+source fingerprint alone is not proof of incompatible replay.
+
+`DW_V2_PIN_TO_RECORDED_FINGERPRINT=false` removes the matching-source preference.
+It does not remove build pins, namespace or queue isolation, workflow-type and
+capability checks, immutable registration identity, lease fences or strict replay.
+Run detail, run debug, repair responses and queue detail expose
+`definition_routing`. `replay_required` is an allowed fallback, while
+`blocked=true` means a due ready workflow task has no eligible definition route.
+Repair can fix transport state; it cannot manufacture a compatible worker or
+rewrite the original definition. Queue observations contain at most ten run
+examples and explicitly report whether more ready runs exist.
+
 ### 5. Poll for Workflow Tasks
 
 The server holds the connection open (long-poll) until a task is ready or
@@ -1746,7 +1769,7 @@ inside the package's `config/workflows.php` via
 | `DW_V2_SUPPORTED_COMPATIBILITIES` | (unset) | Comma-separated marker list the worker accepts, or `*` for any. |
 | `DW_V2_COMPATIBILITY_NAMESPACE` | (unset) | Compatibility namespace for independent fleets sharing one database. |
 | `DW_V2_COMPATIBILITY_HEARTBEAT_TTL` | `30` | Seconds a worker-compatibility heartbeat remains valid. |
-| `DW_V2_PIN_TO_RECORDED_FINGERPRINT` | `true` | Resolve in-flight runs from the fingerprint recorded at WorkflowStarted. |
+| `DW_V2_PIN_TO_RECORDED_FINGERPRINT` | `true` | Prefer an eligible recorded-definition worker; otherwise require strict replay by current code. False removes this preference, not build pins or replay checks. |
 | `DW_V2_CONTINUE_AS_NEW_EVENT_THRESHOLD` | `10000` | History event count at which the package signals continue-as-new. |
 | `DW_V2_CONTINUE_AS_NEW_SIZE_BYTES_THRESHOLD` | `5242880` | Serialized-history byte count at which the package signals continue-as-new. |
 | `DW_V2_HISTORY_EVENT_WARNING_THRESHOLD` | `8000` | Event count at which history pressure becomes `approaching`. |
