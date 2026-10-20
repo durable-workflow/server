@@ -85,6 +85,13 @@ contract fixture before its correction.
   or whether the fixture counts a boundary replay as the same claim, then add the
   fixture before changing either side.
 
+- **A valid workflow task claim held by a stale worker.** Published PHP
+  refuses a request whose lease is otherwise valid when its owner's
+  registration is no longer fresh (`409 stale_worker_registration`). Native's
+  workflow task guard does not check registration freshness yet, and the
+  local activity and cancellation scope checkpoints still use the older fence.
+  Add a fixture for each before changing them.
+
 ## Contract and verification inventory
 
 The status column summarizes bounded native source and its recorded component
@@ -151,6 +158,31 @@ support is not evidence of multi-node safety.
 
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
 names, including unsuccessful observations.
+
+October 20, lost workflow task claims:
+
+- **Found by.** The [multi-node runs](../benchmarks/server-port/multinode/results-2026-10-20.md).
+  A paused SDK worker resumed with workflow tasks the server had already
+  given to the other worker. Native refused its late renewals and completion
+  with only a reason (`task_not_leased`, `conflicting_completion`), and the
+  worker exited 6 times. Published PHP's ownership guard also returns the task
+  status and, after the run closes, `can_continue: false`. A current worker
+  reads those fields to drop a lost claim and keep running.
+- **Source.** Workflow task completion, failure, lease renewal and task history
+  now share PHP's guard (`WorkflowTaskOwnership::guard`), in PHP's order.
+  A task that is no longer leased is refused with `run_closed` when its run
+  has closed, and otherwise with `task_not_leased` and its status. An open
+  lease is then checked for expiry, owner and attempt. Each refusal has PHP's
+  body: `error`, the reason's fields, `protocol_version` and
+  `server_capabilities`. A completion that differs from the recorded one now
+  gets this refusal instead of `conflicting_completion`. An identical replay
+  still returns the recorded `already_completed` receipt. A completed workflow
+  task now clears its lease expiry and keeps its owner, as PHP's does.
+- **Fixture.** `late-workflow-completion` replaces a worker that holds a
+  claim and sends the replaced claim's completion, renewal and failure while
+  the new claim holds the lease, after it completes, and after the run
+  closes. Published PHP 2.5.14, embedded and native passed in a local copy of
+  the SQLite parity step. Before the change, native failed the same fixture.
 
 October 19, before #478, #476, #494 and #460 merged:
 

@@ -37,6 +37,9 @@ mod role_tokens;
 #[path = "execution/namespaces.rs"]
 mod namespaces;
 
+#[path = "execution/late_workflow_claims.rs"]
+mod late_workflow_claims;
+
 #[path = "execution/named_timers.rs"]
 mod named_timers;
 

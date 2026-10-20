@@ -485,7 +485,10 @@ async fn continuation_commits_one_successor_and_preserves_original_receipts_afte
     conflicting["commands"][0]["arguments"] = envelope(Payload::Array(vec![Payload::Long(8)]));
     let refused = request(&app, "POST", &path, conflicting).await;
     assert_eq!(refused.0, StatusCode::CONFLICT);
-    assert_eq!(refused.1["reason"], "conflicting_completion");
+    // PHP's ownership guard: the original run closed when it continued.
+    assert_eq!(refused.1["reason"], "run_closed", "{}", refused.1);
+    assert_eq!(refused.1["can_continue"], false);
+    assert_eq!(refused.1["task_status"], "completed");
     let runs = request(
         &app,
         "GET",

@@ -1286,10 +1286,10 @@ where
     pub(crate) async fn heartbeat_task(&self, task_id: &str, body: Value) -> Result<Value> {
         let mut tx = self.begin().await?;
         let task = self.task_row(&mut tx, task_id).await?;
-        Self::fence(&task, &body)?;
         if DB::string(&task, "task_type")? != "workflow" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
+        Self::workflow_task_guard(&mut tx, &task, &body).await?;
         let run = Self::active_run(&mut tx, &DB::string(&task, "workflow_run_id")?).await?;
         let expires = Self::cancellation_lease_expiry(&run)?;
         tx.summary_changed(&DB::string(&run, "id")?);
@@ -1314,7 +1314,7 @@ where
         if DB::string(&task, "task_type")? != "workflow" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
-        Self::fence(&task, &body)?;
+        Self::workflow_task_guard(&mut tx, &task, &body).await?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let (events, next) = Self::history_page_connection(&mut tx, &run_id, after, 100).await?;
         let run = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
@@ -1412,9 +1412,9 @@ where
         if DB::string(&task, "task_type")? != "workflow" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
+        Self::workflow_task_guard(&mut tx, &task, &body).await?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
-        Self::fence(&task, &body)?;
         let mut payload = DB::document_row(&task, "payload")?;
         let signals = Self::scalar("SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received'")
             .bind(&run_id).fetch_one(&mut *tx).await?;
@@ -1685,7 +1685,17 @@ where
         if DB::string(&task, "task_type")? != "workflow" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
-        if Self::duplicate_receipt(&task, &body)? {
+        // A completion that differs from the recorded one, or follows a
+        // waiting acknowledgement, comes from a lost claim: the guard refuses
+        // it with the fields a worker uses to recognize that.
+        let replay = match Self::duplicate_receipt(&task, &body) {
+            Err(super::RuntimeError::Refused {
+                reason: "conflicting_completion" | "task_not_leased",
+                ..
+            }) => false,
+            other => other?,
+        };
+        if replay {
             let run_id = DB::string(&task, "workflow_run_id")?;
             let current = Self::query("SELECT status FROM workflow_runs WHERE id=$1")
                 .bind(&run_id)
@@ -1696,7 +1706,7 @@ where
                 "outcome": "completed", "recorded": false, "reason": "already_completed"}),
             );
         }
-        Self::fence(&task, &body)?;
+        Self::workflow_task_guard(&mut tx, &task, &body).await?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
         let task_payload = DB::document_row(&task, "payload")?;
@@ -2027,7 +2037,8 @@ where
         } else {
             false
         };
-        Self::query("UPDATE workflow_tasks SET status=$1 WHERE id=$2")
+        // PHP clears a completed task's lease expiry and keeps its owner.
+        Self::query("UPDATE workflow_tasks SET status=$1,lease_expires_at=NULL WHERE id=$2")
             .bind(if failed { "failed" } else { "completed" })
             .bind(task_id)
             .execute(&mut *tx)
