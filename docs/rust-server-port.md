@@ -20,17 +20,13 @@ Updated October 20, 2026.
   - [#507](https://github.com/durable-workflow/server/pull/507) gives codec work under the transition lock its own permit.
   - [#508](https://github.com/durable-workflow/server/pull/508) keeps explicit worker command declarations.
   - [#509](https://github.com/durable-workflow/server/pull/509) reports poll statuses as the worker protocol does.
+  - [#515](https://github.com/durable-workflow/server/pull/515) retries the PHP reference's lock-pressure refusals in the probes.
   - [#516](https://github.com/durable-workflow/server/pull/516) lets held long polls wait without the transition lock.
   - [#517](https://github.com/durable-workflow/server/pull/517) designs the backup-first takeover.
-
-  Main's 13-job parity run passed at `ee88ac6ba`.
-- **Also merged.** [#515](https://github.com/durable-workflow/server/pull/515)
-  retries the PHP reference's lock-pressure refusals in the probes, after
-  passing all 13 parity jobs.
-- **Open, qualifying on main with #515.** Each of these failed or deferred parity only in
-  steps #515 corrects or that it doesn't touch.
-  - The query pair: [#499](https://github.com/durable-workflow/server/pull/499),
-    then [#510](https://github.com/durable-workflow/server/pull/510).
+  - [#499](https://github.com/durable-workflow/server/pull/499) and [#510](https://github.com/durable-workflow/server/pull/510) replay a live query lease only to its own poll request and remember query poll answers per request.
+  - [#542](https://github.com/durable-workflow/server/pull/542) records repeated matched PHP/native performance pairs.
+  - This branch: [#543](https://github.com/durable-workflow/server/pull/543) (immediate termination) with [#544](https://github.com/durable-workflow/server/pull/544) (worker listing and registration facts).
+- **Open.**
   - The backup-first takeover stack: [#523](https://github.com/durable-workflow/server/pull/523)
     (fingerprint), [#529](https://github.com/durable-workflow/server/pull/529)
     (layouts) and [#532](https://github.com/durable-workflow/server/pull/532),
@@ -40,16 +36,20 @@ Updated October 20, 2026.
     [#538](https://github.com/durable-workflow/server/pull/538) (SQLite WAL
     preparation) and [#539](https://github.com/durable-workflow/server/pull/539)
     (a PHP-accepted signal and an expired PHP lease resumed under native, plus
-    refusal of unsupported features).
-  - Immediate termination, and worker listing with registration facts.
+    refusal of unsupported features). Its top passed all 13 parity jobs.
+  - [#548](https://github.com/durable-workflow/server/pull/548): PHP's
+    ownership guard refusals for a lost workflow task claim.
+  - [#549](https://github.com/durable-workflow/server/pull/549): the
+    multi-node kill and restart qualification and its results.
+  - [#550](https://github.com/durable-workflow/server/pull/550): the search
+    attribute registry. [#551](https://github.com/durable-workflow/server/pull/551):
+    namespace update.
 - **Parity surface.** With this branch, native serves 63 of published PHP's 173 API
   routes. The missing families are listed below under "API surface still
   missing".
-- **Next action.** Run parity once on each stack top (#510,
-  #539 and the worker listing branch) and merge each stack. Then port history
-  export, a large bundle the CLI and both SDKs use for replay. Multi-node
-  qualification and packaging the native binary into the server image remain
-  open gates.
+- **Next action.** Merge the open PRs as their checks pass. Then port history
+  export, a large bundle the CLI and both SDKs use for replay. Packaging the
+  native binary into the server image remains an open gate.
 
 ## API surface still missing
 
@@ -120,16 +120,6 @@ contract fixture before its correction.
   and native then correctly fences the attempt. A heartbeat timeout comfortably
   above the request timeout, still inside the 9-second load wave, needs its own
   reviewed profile change.
-- **Query replay at the deadline boundary.** Both implementations replay a live
-  query lease to its owner on a fresh poll without a request id. The installed
-  Rust query client cancels a late handler at its view of the query deadline and
-  polls again. Native can answer that poll a fraction of a millisecond before
-  the stored microsecond expiry and replay the task, so the client records a
-  second claim. Published PHP's request overhead keeps it past the deadline in
-  practice. One of six local SQLite cohort runs failed this way. Decide whether
-  native stops replaying a lease with less than a minimum delivery budget left,
-  or whether the fixture counts a boundary replay as the same claim, then add the
-  fixture before changing either side.
 
 - **History retention.** Published PHP's worker heartbeat runs an inline
   history retention pass, and the default namespace retention is bounded at

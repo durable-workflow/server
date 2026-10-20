@@ -140,6 +140,9 @@ mod query_arguments;
 #[path = "execution/query_authority.rs"]
 mod query_authority;
 
+#[path = "execution/query_poll_requests.rs"]
+mod query_poll_requests;
+
 #[path = "execution/cross_kind_poll.rs"]
 mod cross_kind_poll;
 
@@ -2288,19 +2291,6 @@ async fn await_query(app: &Router, worker: &str) -> Value {
     .expect("query must be admitted without holding the database pool")
 }
 
-fn assert_query_replay(first: &Value, repeated: Value) {
-    let initial =
-        chrono::DateTime::parse_from_rfc3339(first["server_time"].as_str().unwrap()).unwrap();
-    let current =
-        chrono::DateTime::parse_from_rfc3339(repeated["server_time"].as_str().unwrap()).unwrap();
-    assert!(current >= initial);
-    let mut replay = repeated;
-    // Only this observation clock is nondeterministic. Original query timing,
-    // lease, identities, values and every business-history field remain exact.
-    replay["server_time"] = first["server_time"].clone();
-    assert_eq!(replay, *first);
-}
-
 #[tokio::test]
 async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() {
     let database = TestDatabase::new().await;
@@ -2397,7 +2387,9 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
     );
     assert_eq!(projected, before["events"]);
     assert_eq!(claim["query_arguments"], input["input"]);
-    assert_query_replay(&claim, poll(&a, "query-a", "query").await);
+    // A later poll from the claiming worker is an independent slot. The live
+    // lease stays with the original claim, as in published PHP.
+    assert!(poll(&a, "query-a", "query").await.is_null());
     assert!(poll(&b, "query-b", "query").await.is_null());
     let finish_path = format!(
         "/api/worker/query-tasks/{}/complete",
