@@ -112,9 +112,10 @@ answers every health check. But native's idle cost grows by about
 0.035 cores per waiting poll, two-thirds of it in MySQL. Each waiting poll
 claims under the transition lock every 50 ms. At 24 waiting polls native
 uses about 0.86 cores against PHP's 0.60. This misses the gate that native
-idle long-poll cost meets or beats PHP's, and it is the next performance
-correction: cheaper waiting that does not take the transition lock or a
-locked transaction until work exists.
+idle long-poll cost meets or beats PHP's. A follow-up idle-only comparison on
+the same host type found the read rate, not the lock, to be the main cost:
+lock-free reads at the same 50 ms rate cut MySQL only to about 0.46 cores at
+24 polls ([#516](https://github.com/durable-workflow/server/pull/516)).
 
 ## Limitations
 
