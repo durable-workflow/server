@@ -67,6 +67,21 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### 0.1.183
+
+Server 2.9.7 uses Core's corrected caller-key update receipts. New update rows
+store bounded lookup tokens in the internal `workflow_commands.request_id`
+column; read logical keys through the model accessor or command context.
+Existing rows and retained receipts are preserved.
+
+Use a coordinated stop-first upgrade for every direct database writer. Pause
+ingress and drain workers, then stop all old Server/embedded writer processes
+and prevent their controllers from restarting them before starting the new
+version. After new-token rows are admitted, an old writer is an unsafe rollback
+target. Remote SDK clients keep the same wire contract. The preceding
+[0.1.182](#01182) history-reader boundary still applies when upgrading from an
+older release.
+
 ### 0.1.182
 
 The packaged Server uses Core's new `SignalRejected` history event to make an

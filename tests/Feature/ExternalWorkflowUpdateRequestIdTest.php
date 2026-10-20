@@ -8,8 +8,10 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
+use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Models\WorkflowCommand;
 
 class ExternalWorkflowUpdateRequestIdTest extends TestCase
 {
@@ -64,18 +66,20 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
 
     public static function legacyRequestNames(): iterable
     {
-        yield 'same name' => ['add'];
-        yield 'different name' => ['other'];
+        yield 'same name, missing column' => ['add', null];
+        yield 'different name, missing column' => ['other', null];
+        yield 'same name, proxy column' => ['add', 'legacy-proxy'];
+        yield 'different name, proxy column' => ['other', 'legacy-proxy'];
     }
 
     #[DataProvider('legacyRequestNames')]
-    public function test_legacy_context_key_is_retained_without_populating_missing_column(string $name): void
+    public function test_legacy_context_key_is_retained_without_repairing_stored_column(string $name, ?string $storedKey): void
     {
         $this->startRemote('legacy-key');
         $original = $this->postJson('/api/workflows/legacy-key/update/add', [
             'input' => [17], 'request_id' => 'retained-key',
         ], $this->apiHeaders())->assertAccepted();
-        DB::table('workflow_commands')->where('id', $original->json('command_id'))->update(['request_id' => null]);
+        DB::table('workflow_commands')->where('id', $original->json('command_id'))->update(['request_id' => $storedKey]);
         $before = $this->durableRows();
 
         $this->postJson('/api/workflows/legacy-key/update/'.$name, [
@@ -85,7 +89,74 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
             ->assertJsonPath('update_name', 'add');
 
         $this->assertSame($before, $this->durableRows());
-        $this->assertNull(DB::table('workflow_commands')->where('id', $original->json('command_id'))->value('request_id'));
+        $this->assertSame($storedKey, DB::table('workflow_commands')->where('id', $original->json('command_id'))->value('request_id'));
+    }
+
+    public static function proxyRequestKeys(): iterable
+    {
+        foreach (['default', 'retained-namespace'] as $namespace) {
+            foreach (['remote', 'php'] as $definition) {
+                yield $definition.' '.$namespace.' duplicate caller key' => [$definition, $namespace, 'caller-key', 'caller-key', 'proxy-a', 'proxy-b', true];
+                yield $definition.' '.$namespace.' independent caller keys' => [$definition, $namespace, 'caller-a', 'caller-b', 'shared-proxy', 'shared-proxy', false];
+                yield $definition.' '.$namespace.' omitted keys' => [$definition, $namespace, null, null, 'shared-proxy', 'shared-proxy', false];
+                yield $definition.' '.$namespace.' literal zero key' => [$definition, $namespace, '0', '0', 'proxy-a', 'proxy-b', true];
+                yield $definition.' '.$namespace.' maximum length key' => [$definition, $namespace, str_repeat('k', 255), str_repeat('k', 255), 'proxy-a', 'proxy-b', true];
+                yield $definition.' '.$namespace.' maximum Unicode key' => [$definition, $namespace, str_repeat('é', 255), str_repeat('é', 255), 'proxy-a', 'proxy-b', true];
+                yield $definition.' '.$namespace.' case sensitive key' => [$definition, $namespace, 'Caller', 'caller', 'proxy', 'proxy', false];
+            }
+        }
+    }
+
+    #[DataProvider('proxyRequestKeys')]
+    public function test_only_the_caller_key_selects_an_update_receipt(
+        string $definition, string $namespace, ?string $firstKey, ?string $secondKey,
+        string $firstHeader, string $secondHeader, bool $sameReceipt,
+    ): void {
+        if ($definition === 'php') {
+            $this->startAvailablePhp('proxy-request-key', $namespace);
+        } else {
+            $this->startRemote('proxy-request-key', $namespace);
+        }
+        $firstName = $definition === 'php' ? 'approve' : 'add';
+        $secondName = $definition === 'php' ? 'approve' : 'other';
+        $first = $this->postJson('/api/workflows/proxy-request-key/update/'.$firstName, [
+            'input' => $definition === 'php' ? [true, 'original'] : [17], 'request_id' => $firstKey,
+        ], [...$this->apiHeaders($namespace), 'X-Request-Id' => $firstHeader])->assertAccepted();
+        $before = $this->durableRows();
+        $second = $this->postJson('/api/workflows/proxy-request-key/update/'.$secondName, [
+            'input' => $definition === 'php' ? [false, 'changed'] : [99], 'request_id' => $secondKey,
+        ], [...$this->apiHeaders($namespace), 'X-Request-Id' => $secondHeader])->assertAccepted();
+
+        if ($sameReceipt) {
+            $second->assertJsonPath('update_id', $first->json('update_id'));
+            $this->assertSame($before, $this->durableRows());
+        } else {
+            $this->assertNotSame($first->json('update_id'), $second->json('update_id'));
+            $this->assertDatabaseCount('workflow_updates', 2);
+        }
+        $command = DB::table('workflow_commands')->where('id', $first->json('command_id'))->first();
+        $this->assertNotNull($command);
+        $this->assertSame($firstKey, WorkflowCommand::query()->findOrFail($command->id)->requestId());
+        $this->assertLessThanOrEqual(191, strlen($command->request_id));
+        $context = json_decode($command->context, true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame($firstHeader, $context['request']['headers']['x_request_id']);
+    }
+
+    public function test_available_php_definition_retains_a_legacy_body_key_receipt(): void
+    {
+        $this->startAvailablePhp('available-legacy-key');
+        $original = $this->postJson('/api/workflows/available-legacy-key/update/approve', [
+            'input' => [true, 'original'], 'request_id' => 'caller-key',
+        ], [...$this->apiHeaders(), 'X-Request-Id' => 'proxy-a'])->assertAccepted();
+        DB::table('workflow_commands')->where('id', $original->json('command_id'))
+            ->update(['request_id' => 'legacy-proxy']);
+        $before = $this->durableRows();
+
+        $this->postJson('/api/workflows/available-legacy-key/update/approve', [
+            'input' => [false, 'changed'], 'request_id' => 'caller-key',
+        ], [...$this->apiHeaders(), 'X-Request-Id' => 'proxy-b'])->assertAccepted()
+            ->assertJsonPath('update_id', $original->json('update_id'));
+        $this->assertSame($before, $this->durableRows());
     }
 
     public function test_a_new_key_admits_the_other_update(): void
@@ -99,6 +170,22 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
         ], $this->apiHeaders())->assertAccepted()->assertJsonPath('update_name', 'other');
 
         $this->assertNotSame($first->json('update_id'), $second->json('update_id'));
+        $this->assertDatabaseCount('workflow_updates', 2);
+    }
+
+    public function test_a_legacy_proxy_column_does_not_reserve_another_callers_key(): void
+    {
+        $this->startRemote('legacy-proxy-occupancy');
+        $original = $this->postJson('/api/workflows/legacy-proxy-occupancy/update/add', [
+            'input' => [17], 'request_id' => 'original-caller',
+        ], $this->apiHeaders())->assertAccepted();
+        DB::table('workflow_commands')->where('id', $original->json('command_id'))
+            ->update(['request_id' => 'next-caller']);
+
+        $next = $this->postJson('/api/workflows/legacy-proxy-occupancy/update/other', [
+            'input' => [99], 'request_id' => 'next-caller',
+        ], $this->apiHeaders())->assertAccepted();
+        $this->assertNotSame($original->json('update_id'), $next->json('update_id'));
         $this->assertDatabaseCount('workflow_updates', 2);
     }
 
@@ -140,6 +227,55 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
 
         $this->assertNotSame($first->json('update_id'), $second->json('update_id'));
         $this->assertDatabaseCount('workflow_updates', 2);
+    }
+
+    public static function serviceLimits(): iterable
+    {
+        foreach (['default', 'retained-namespace'] as $namespace) {
+            yield $namespace.' pending limit' => [$namespace, 'pending_update_count'];
+            yield $namespace.' payload limit' => [$namespace, 'payload_size'];
+        }
+    }
+
+    #[DataProvider('serviceLimits')]
+    public function test_service_limits_retain_inspectable_rejection_without_closing_the_run(string $namespace, string $kind): void
+    {
+        $this->startRemote('limited-update', $namespace);
+        if ($kind === 'pending_update_count') {
+            $this->postJson('/api/workflows/limited-update/update/add', [
+                'input' => [17], 'request_id' => 'first',
+            ], $this->apiHeaders($namespace))->assertAccepted();
+            config()->set('workflows.v2.structural_limits.pending_update_count', 1);
+        } else {
+            config()->set('workflows.v2.structural_limits.payload_size_bytes', 1);
+        }
+        $run = DB::table('workflow_runs')->sole();
+        $response = $this->postJson('/api/workflows/limited-update/update/add', [
+            'input' => [17], 'request_id' => 'over-limit',
+        ], $this->apiHeaders($namespace))
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'structural_limit_exceeded')
+            ->assertJsonPath('structural_limit_kind', $kind)
+            ->assertJsonPath('structural_limit_configured', 1)
+            ->assertJsonPath('structural_limit_value', $kind === 'pending_update_count'
+                ? 1 : strlen(Serializer::serializeWithCodec('avro', [17])));
+        $command = WorkflowCommand::query()->findOrFail($response->json('command_id'));
+        $this->assertSame('structural_limit_exceeded', $command->rejection_reason);
+        $this->assertSame('rejected', DB::table('workflow_updates')->where('id', $response->json('update_id'))->value('status'));
+        $afterRun = DB::table('workflow_runs')->sole();
+        foreach (['status', 'started_at', 'execution_deadline_at', 'run_deadline_at', 'run_timeout_seconds'] as $field) {
+            $this->assertSame($run->{$field}, $afterRun->{$field});
+        }
+        $before = $this->durableRows();
+        config()->set('workflows.v2.structural_limits.pending_update_count', 0);
+        config()->set('workflows.v2.structural_limits.payload_size_bytes', 0);
+        $this->postJson('/api/workflows/limited-update/update/other', [
+            'input' => [99], 'request_id' => 'over-limit',
+        ], $this->apiHeaders($namespace))->assertStatus(409)
+            ->assertJsonPath('command_id', $response->json('command_id'))
+            ->assertJsonPath('structural_limit_kind', $kind)
+            ->assertJsonPath('structural_limit_configured', 1);
+        $this->assertSame($before, $this->durableRows());
     }
 
     public static function terminalTransitions(): iterable
@@ -192,6 +328,19 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
             ], $this->apiHeaders())->assertStatus(409)->assertJsonPath('reason', 'historical_run_command_rejected');
             $this->assertSame($before, $this->durableRows());
         }
+    }
+
+    private function startAvailablePhp(string $workflowId, string $namespace = 'default'): void
+    {
+        Queue::fake();
+        $this->createNamespace($namespace);
+        config()->set('workflows.v2.types.workflows', [
+            'tests.interactive-command-workflow' => InteractiveCommandWorkflow::class,
+        ]);
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => $workflowId, 'workflow_type' => 'tests.interactive-command-workflow',
+        ], $this->apiHeaders($namespace))->assertCreated();
+        $this->runReadyWorkflowTask($start->json('run_id'));
     }
 
     private function startRemote(string $workflowId, string $namespace = 'default'): void
