@@ -23,10 +23,15 @@ const SNAPSHOT_BYTES: usize = 1024 * 1024;
 pub(super) const ARGUMENT_BYTES: usize = 64 * 1024;
 pub(super) const RESULT_BYTES: usize = 256 * 1024;
 
+#[path = "query_poll_requests.rs"]
+mod poll_requests;
+
 enum QueryClaim {
     Task(Value),
     Empty,
     StaleWorker,
+    // A newer poll request from the same worker replaced this one.
+    Superseded,
 }
 
 fn poll_result(task: Option<Value>, status: &str) -> Value {
@@ -344,23 +349,53 @@ where
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
         // One request belongs to the registration observed before its wait.
         // A later same-ID registration cannot silently upgrade this poll.
+        let request_id = body
+            .get("poll_request_id")
+            .filter(|value| !value.is_null())
+            .map(|_| text(&body, "poll_request_id"))
+            .transpose()?;
         let Some(proof) =
             Self::query_worker_proof(&self.pool, self.namespace.as_ref(), owner, config).await?
         else {
             return Ok(poll_result(None, "stale_worker_registration"));
         };
+        match request_id {
+            None => {
+                self.wait_for_query(&body, config, &proof, timeout, deadline, None)
+                    .await
+            }
+            Some(request_id) => {
+                let keys = self.poll_keys(&body, request_id).await?;
+                self.coordinated_query_poll(&body, config, &proof, timeout, deadline, &keys)
+                    .await
+            }
+        }
+    }
+
+    // One poll's long wait. With request keys, a newer request from the same
+    // worker ends this wait, as in published PHP.
+    async fn wait_for_query(
+        &self,
+        body: &Value,
+        config: &QueryTaskConfig,
+        proof: &str,
+        timeout: u64,
+        deadline: tokio::time::Instant,
+        keys: Option<&poll_requests::PollKeys>,
+    ) -> Result<Value> {
         let mut cross_kind = if timeout > 0 {
-            self.poll_wake_snapshot(&body, "query").await?
+            self.poll_wake_snapshot(body, "query").await?
         } else {
             None
         };
         loop {
             let wake = self.wake.notified();
-            match self.claim_query(&body, config, &proof).await? {
+            match self.claim_query(body, config, proof, keys).await? {
                 QueryClaim::Task(task) => return Ok(poll_result(Some(task), "task")),
                 QueryClaim::StaleWorker => {
                     return Ok(poll_result(None, "stale_worker_registration"));
                 }
+                QueryClaim::Superseded => return Ok(poll_result(None, "timeout")),
                 QueryClaim::Empty => {}
             }
             if tokio::time::Instant::now() >= deadline {
@@ -437,6 +472,7 @@ where
         body: &Value,
         config: &QueryTaskConfig,
         expected_proof: &str,
+        keys: Option<&poll_requests::PollKeys>,
     ) -> Result<QueryClaim> {
         let owner = text(body, "worker_id")?;
         let queue = text(body, "task_queue")?;
@@ -457,6 +493,12 @@ where
         let Some(proof) = proof.filter(|proof| proof == expected_proof) else {
             return Ok(QueryClaim::StaleWorker);
         };
+        if let Some(keys) = keys
+            && !Self::poll_request_is_current(&mut tx, keys).await?
+        {
+            tx.commit().await?;
+            return Ok(QueryClaim::Superseded);
+        }
         if DB::string(&worker, "task_queue")? != queue {
             return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
         }
