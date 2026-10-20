@@ -10,8 +10,8 @@ use App\Support\RedisReadinessProbeFailure;
 use App\Support\RedisReadinessProcess;
 use App\Support\ServerReadiness;
 use App\Support\ServerTopology;
-use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Database\SQLiteConnection;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use RuntimeException;
@@ -47,7 +47,8 @@ class HealthControllerTest extends TestCase
 
         $this->getJson('/api/ready')
             ->assertStatus(503)
-            ->assertJsonPath('checks.database.status', 'unavailable');
+            ->assertJsonPath('checks.database.status', 'unavailable')
+            ->assertJsonPath('checks.database.reason', 'database_query_failed');
     }
 
     public function test_health_check_returns_serving_when_database_is_available(): void

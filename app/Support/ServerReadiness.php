@@ -95,10 +95,12 @@ final class ServerReadiness
 
     private function databaseCheck(bool $probeQuery = false): array
     {
+        $queryAttempted = false;
         try {
             $connection = DB::connection();
             $connection->getPdo();
             if ($probeQuery) {
+                $queryAttempted = true;
                 $row = $connection->selectOne('SELECT ? AS readiness_probe', [1], useReadPdo: false);
                 if ((string) ($row->readiness_probe ?? '') !== '1') {
                     throw new \RuntimeException('The database did not return the readiness probe value.');
@@ -117,7 +119,7 @@ final class ServerReadiness
             return [
                 'status' => 'unavailable',
                 'message' => $exception->getMessage(),
-                'reason' => BackendUnavailable::is($exception) ? 'backend_unavailable' : null,
+                'reason' => BackendUnavailable::is($exception) ? 'backend_unavailable' : ($queryAttempted ? 'database_query_failed' : null),
             ];
         }
     }

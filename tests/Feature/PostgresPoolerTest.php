@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use Illuminate\Support\Facades\DB;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -12,17 +13,29 @@ use Tests\TestCase;
  */
 class PostgresPoolerTest extends TestCase
 {
-    protected function setUp(): void
+    public static function endpoints(): array
     {
-        parent::setUp();
-        if (! is_string(getenv('DW_POOLER_TEST_HOST')) || getenv('DW_POOLER_TEST_HOST') === '') {
+        $endpoints = ['configured' => [getenv('DW_POOLER_TEST_HOST') ?: null, (int) (getenv('DW_POOLER_TEST_PORT') ?: 6432), getenv('DW_POOLER_TEST_EXPECT_SWITCH') === '1']];
+        $prefix = getenv('DW_POOLER_TEST_PREFIX');
+        if (is_string($prefix) && $prefix !== '') {
+            foreach (['session', 'transaction0', 'transaction200'] as $mode) {
+                $endpoints[$mode] = [$prefix.'-'.$mode, 5432, $mode !== 'session'];
+            }
+        }
+
+        return $endpoints;
+    }
+
+    private function configureEndpoint(?string $host, int $port): void
+    {
+        if ($host === null) {
             $this->markTestSkipped('Requires the isolated DW_POOLER_TEST_HOST endpoint.');
         }
         $base = config('database.connections.pgsql');
         foreach (['pooler_first', 'pooler_second'] as $name) {
             config(['database.connections.'.$name => [...$base,
-                'host' => getenv('DW_POOLER_TEST_HOST'),
-                'port' => getenv('DW_POOLER_TEST_PORT') ?: '6432',
+                'host' => $host,
+                'port' => $port,
                 'database' => getenv('DW_POOLER_TEST_DATABASE') ?: 'dw_pooler_probe',
                 'username' => getenv('DW_POOLER_TEST_USER') ?: 'pooler_probe',
                 'password' => getenv('DW_POOLER_TEST_PASSWORD') ?: '',
@@ -38,8 +51,10 @@ class PostgresPoolerTest extends TestCase
         parent::tearDown();
     }
 
-    public function test_clients_keep_their_bound_values_and_types_when_backend_sessions_change(): void
+    #[DataProvider('endpoints')]
+    public function test_clients_keep_their_bound_values_and_types_when_backend_sessions_change(?string $host, int $port, bool $expectSwitch): void
     {
+        $this->configureEndpoint($host, $port);
         $first = DB::connection('pooler_first');
         $second = DB::connection('pooler_second');
 
@@ -52,10 +67,12 @@ class PostgresPoolerTest extends TestCase
         $first->getPdo()->exec('ROLLBACK');
         $second->getPdo()->exec('ROLLBACK');
 
+        $backends = [];
         for ($iteration = 0; $iteration < 20; $iteration++) {
             $marker = 'first-'.$iteration.'-'.bin2hex(random_bytes(8));
-            $row = $first->selectOne('SELECT CAST(? AS TEXT) AS marker, CAST(? AS BIGINT) AS number, CAST(? AS TEXT) AS absent',
+            $row = $first->selectOne('SELECT CAST(? AS TEXT) AS marker, CAST(? AS BIGINT) AS number, CAST(? AS TEXT) AS absent, pg_backend_pid() AS backend',
                 [$marker, '9223372036854775807', null]);
+            $backends[] = $row->backend;
             self::assertSame($marker, $row->marker);
             self::assertSame('9223372036854775807', (string) $row->number);
             self::assertNull($row->absent);
@@ -63,11 +80,19 @@ class PostgresPoolerTest extends TestCase
             $other = 'second-'.$iteration.'-Київ';
             $row = $second->selectOne('SELECT CAST(? AS TEXT) AS marker', [$other]);
             self::assertSame($other, $row->marker);
+            // An odd number of commands per iteration makes the next first
+            // client's query use another backend in the round-robin pool.
+            self::assertSame(1, (int) $first->selectOne('SELECT 1 AS value')->value);
+        }
+        if ($expectSwitch) {
+            self::assertGreaterThan(1, count(array_unique($backends)), 'The control must change this client\'s physical backend.');
         }
     }
 
-    public function test_bound_statements_do_not_abort_a_multi_query_transaction(): void
+    #[DataProvider('endpoints')]
+    public function test_bound_statements_do_not_abort_a_multi_query_transaction(?string $host, int $port, bool $expectSwitch): void
     {
+        $this->configureEndpoint($host, $port);
         $connection = DB::connection('pooler_first');
         $connection->beginTransaction();
         try {
