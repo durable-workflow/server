@@ -1599,6 +1599,37 @@ overlay or with `kubectl scale`.
 
 ### Configuration
 
+#### PostgreSQL connection pooling
+
+The PostgreSQL connection uses native bound parameters without session-scoped
+prepared-statement names. This lets PgBouncer transaction pooling change the
+physical database session between transactions. Direct and session-pooled
+connections use the same binding path. Statement pooling cannot support the
+Server's multi-statement transactions.
+
+The PHP feature job runs the same alternating-client and rollback controls
+against direct PostgreSQL, session pooling, and transaction pooling with
+`max_prepared_statements=0` and `200`. The transaction controls require actual
+backend PID changes. To run against an isolated existing endpoint:
+
+```bash
+DW_POOLER_TEST_HOST=pooler DW_POOLER_TEST_PORT=6432 \
+DW_POOLER_TEST_DATABASE=isolated_test DW_POOLER_TEST_USER=test_user \
+vendor/bin/phpunit tests/Feature/PostgresPoolerTest.php --fail-on-skipped
+```
+
+These controls do not validate custom session settings, temporary tables,
+advisory-lock policies, or arbitrary proxy configurations. Qualify the exact
+published image, pooler version, authentication, schema and TLS settings used
+by your deployment before routing production traffic.
+
+`/api/ready` executes a bound read on the primary database connection and
+reports `checks.database.check_scope=bound_read_query`. A failed query reports
+`database_query_failed`, or `backend_unavailable` when the backend is known to
+be unavailable. This remains a read probe: `write_capacity_verified=false`.
+Use an actual workflow canary to verify writes and the complete worker path.
+The runtime's lightweight bootstrap guard remains connection-only.
+
 All operator-facing configuration is via `DW_*` environment variables.
 `config/dw-contract.php` is the authoritative machine-checkable contract;
 CI (`tests/Unit/EnvContractTest.php`) diffs it against `.env.example`,
