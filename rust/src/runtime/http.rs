@@ -45,6 +45,7 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/external-payloads/v1/{reference_id}",
             get(super::external_transport::fetch),
         )
+        .route("/api/storage/test", post(storage_test))
         .route(
             "/api/search-attributes",
             get(list_search_attributes).post(create_search_attribute),
@@ -291,6 +292,7 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         &["worker"]
     } else if path.starts_with("/api/workers/") && request.method() != Method::GET
         || path == "/api/namespaces" && request.method() == Method::POST
+        || path == "/api/storage/test"
         // Updating a namespace or its external storage needs an admin.
         || path.starts_with("/api/namespaces/") && request.method() == Method::PUT
     {
@@ -427,6 +429,9 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     if path == "/api/workflows" {
         return method == "POST";
     }
+    if path == "/api/storage/test" {
+        return method == "POST";
+    }
     // The registry is namespace-scoped state with no default-namespace selector.
     if path == "/api/search-attributes" {
         return matches!(method, "GET" | "POST");
@@ -524,6 +529,13 @@ async fn create_namespace(
         StatusCode::CREATED,
         Json(runtime.create_namespace(body).await?),
     ))
+}
+
+async fn storage_test(
+    Extension(runtime): Extension<Runtime>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    Ok(Json(super::storage_test::storage_test(&runtime, body).await?))
 }
 
 async fn list_search_attributes(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
