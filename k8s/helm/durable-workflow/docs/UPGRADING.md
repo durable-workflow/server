@@ -85,6 +85,10 @@ database backup, bootstrap and worker rollout checks above.
 
 ### Chart 0.2.2 / Server 2.10
 
+This historical release crossed a Server minor version under a chart patch
+number, contrary to the policy above. Its published version stays immutable.
+Chart 0.3.0 resumes the stated minor-version policy for the next Server minor.
+
 This chart changes the default application image without removing or renaming
 chart values. Server bootstrap adds Core's nullable context columns to runs,
 commands and tasks, including installations with tracing disabled. Back up the
