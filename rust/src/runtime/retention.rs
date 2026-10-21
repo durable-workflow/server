@@ -145,31 +145,32 @@ pub(super) fn status_limit(value: Option<&str>) -> super::Result<i64> {
     Ok(limit(super::laravel_validation::integer(&body["limit"])))
 }
 
-/// `retentionEnforcePass`'s rules: the limit and up to 100 trimmed run ids.
-pub(super) fn pass_request(body: &Value) -> super::Result<(i64, Vec<String>)> {
+/// The rules of PHP's retention and activity timeout passes: the limit and
+/// up to 100 trimmed ids in `field`.
+pub(super) fn pass_request(body: &Value, field: &'static str) -> super::Result<(i64, Vec<String>)> {
     let body = &super::start_request::normalized(body.clone());
     let rules: &[(&str, &[Rule])] = &[
         ("limit", &[Rule::Nullable, Rule::Integer, Rule::Min(1)]),
-        ("run_ids", &[Rule::Nullable, Rule::Array, Rule::Max(MAX_LIMIT)]),
+        (field, &[Rule::Nullable, Rule::Array, Rule::Max(MAX_LIMIT)]),
     ];
     let mut errors = rule_errors(body, rules, defaults);
     // Laravel names each item by its key, which is the index of a list.
-    let items: Vec<(String, Value)> = match &body["run_ids"] {
+    let items: Vec<(String, Value)> = match &body[field] {
         Value::Array(items) => items.iter().enumerate().map(|(index, item)| (index.to_string(), item.clone())).collect(),
         Value::Object(fields) => fields.iter().map(|(key, item)| (key.clone(), item.clone())).collect(),
         _ => Vec::new(),
     };
     let item_rules: &[Rule] = &[Rule::String, Rule::Min(1), Rule::Max(128)];
     for (key, item) in &items {
-        let field = format!("run_ids.{key}");
+        let name = format!("{field}.{key}");
         let mut value = Map::new();
-        value.insert(field.clone(), item.clone());
-        let nested = rule_errors(&Value::Object(value), &[(field.as_str(), item_rules)], defaults);
+        value.insert(name.clone(), item.clone());
+        let nested = rule_errors(&Value::Object(value), &[(name.as_str(), item_rules)], defaults);
         errors.extend(nested);
     }
     checked(errors)?;
-    let run_ids = items.iter().filter_map(|(_, id)| id.as_str()).map(|id| id.trim().to_owned()).collect();
-    Ok((limit(super::laravel_validation::integer(&body["limit"])), run_ids))
+    let ids = items.iter().filter_map(|(_, id)| id.as_str()).map(|id| id.trim().to_owned()).collect();
+    Ok((limit(super::laravel_validation::integer(&body["limit"])), ids))
 }
 
 /// What a prune attempt did to one run.

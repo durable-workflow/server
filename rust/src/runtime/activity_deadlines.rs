@@ -4,6 +4,7 @@ use super::{Result, backend::Backend, refuse, store::now};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
+use super::transaction::Transaction;
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
 pub(super) const TIMEOUT_FIELDS: [&str; 4] = [
@@ -95,6 +96,60 @@ pub(super) fn expired_kind<DB: Backend>(
     Ok(None)
 }
 
+/// PHP's message for an expired deadline.
+fn timeout_message<DB: Backend>(activity: &DB::Row, kind: &str) -> Result<String>
+where
+    usize: ColumnIndex<DB::Row>,
+{
+    let deadline_field = match kind {
+        "schedule_to_close" => "schedule_to_close_deadline_at",
+        "schedule_to_start" => "schedule_deadline_at",
+        "heartbeat" => "heartbeat_deadline_at",
+        _ => "close_deadline_at",
+    };
+    let expired_at =
+        DB::instant(activity, deadline_field)?.to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+    let label = DB::string(activity, "activity_type")?;
+    if kind != "heartbeat" {
+        return Ok(format!("Activity {label} {} deadline expired at {expired_at}.", kind.replace('_', "-")));
+    }
+    let last = DB::optional_instant(activity, "last_heartbeat_at")?
+        .map_or("never".into(), |at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, false));
+    Ok(format!("Activity {label} heartbeat deadline expired at {expired_at} (last heartbeat: {last})."))
+}
+
+/// What enforcing one execution's deadline did.
+pub(super) enum Enforcement {
+    Enforced { retried: bool },
+    Skipped(&'static str),
+}
+
+/// `activityTimeoutEnforcePass`'s report over each execution's outcome.
+pub(super) fn pass_report(outcomes: Vec<(String, Result<Enforcement>)>) -> (Value, bool) {
+    let (mut enforced, mut skipped, mut failed) = (0, 0, 0);
+    let processed = outcomes.len();
+    let results: Vec<Value> = outcomes
+        .into_iter()
+        .map(|(id, outcome)| match outcome {
+            Ok(Enforcement::Enforced { retried }) => {
+                enforced += 1;
+                json!({"execution_id": id, "outcome": "enforced", "has_retry": retried})
+            }
+            Ok(Enforcement::Skipped(reason)) => {
+                skipped += 1;
+                json!({"execution_id": id, "outcome": "skipped", "reason": reason})
+            }
+            Err(error) => {
+                failed += 1;
+                json!({"execution_id": id, "outcome": "error", "reason": error.to_string()})
+            }
+        })
+        .collect();
+    let report = json!({"processed": processed, "enforced": enforced, "skipped": skipped,
+        "failed": failed, "results": results});
+    (report, failed > 0)
+}
+
 pub(super) fn fence<DB: Backend>(activity: &DB::Row) -> Result<()> {
     if let Some(kind) = expired_kind::<DB>(activity, now())? {
         return Err(refuse(StatusCode::CONFLICT, timeout_reason(kind)));
@@ -134,204 +189,232 @@ where
             .fetch_all(&self.pool)
             .await?;
         for candidate in candidates {
-            let mut tx = self.begin().await?;
-            let activity_id = DB::string(&candidate, "id")?;
-            let Some(activity) = Self::query("SELECT * FROM activity_executions WHERE id=$1")
-                .bind(&activity_id)
-                .fetch_optional(&mut *tx)
-                .await?
-            else {
-                continue;
-            };
-            let Some(kind) = expired_kind::<DB>(&activity, now())? else {
-                continue;
-            };
-            let run_id = DB::string(&activity, "workflow_run_id")?;
-            let run = match Self::active_run(&mut tx, &run_id).await {
-                Ok(run) => run,
-                Err(super::RuntimeError::Refused {
-                    reason: "run_closed" | "cancellation_deadline_expired",
-                    ..
-                }) => continue,
-                Err(error) => return Err(error),
-            };
-            let policy =
-                DB::optional_document_row(&activity, "retry_policy")?.unwrap_or(Value::Null);
-            validate_policy(&policy)?;
-            let count = DB::number(&activity, "attempt_count")?.max(1);
-            let max = policy["max_attempts"].as_i64().unwrap_or(1);
-            let current = DB::optional_string(&activity, "current_attempt_id")?;
-            if DB::string(&activity, "status")? == "running" {
-                let Some(attempt_id) = current.as_deref() else {
-                    continue;
-                };
-                let Some(attempt) = Self::query(
-                    "SELECT * FROM activity_attempts WHERE id=$1 AND activity_execution_id=$2",
-                )
-                .bind(attempt_id)
-                .bind(&activity_id)
-                .fetch_optional(&mut *tx)
-                .await?
-                else {
-                    continue;
-                };
-                if DB::number(&attempt, "attempt_number")?
-                    != DB::number(&activity, "attempt_count")?
-                    || !matches!(
-                        DB::string(&attempt, "status")?.as_str(),
-                        "running" | "expired"
-                    )
-                {
-                    continue;
-                }
-            }
-            let task = Self::query(DB::ACTIVITY_OPEN_TASK_SQL)
-                .bind(&run_id)
-                .bind(&activity_id)
-                .fetch_optional(&mut *tx)
-                .await?;
-            let task_id = task
-                .as_ref()
-                .map(|task| DB::string(task, "id"))
-                .transpose()?;
-            let at = now();
-            if let Some(attempt_id) = current.as_deref() {
-                Self::query("UPDATE activity_attempts SET status='failed',lease_expires_at=NULL,closed_at=$1 WHERE id=$2 AND status='running'")
-                    .bind(DB::bind_time(at)).bind(attempt_id).execute(&mut *tx).await?;
-            }
-            if let Some(task_id) = task_id.as_deref() {
-                Self::query("UPDATE workflow_tasks SET status='cancelled',lease_expires_at=NULL,last_error=NULL WHERE id=$1")
-                    .bind(task_id).execute(&mut *tx).await?;
-            }
-            let deadline_field = match kind {
-                "schedule_to_close" => "schedule_to_close_deadline_at",
-                "schedule_to_start" => "schedule_deadline_at",
-                "heartbeat" => "heartbeat_deadline_at",
-                _ => "close_deadline_at",
-            };
-            let expired_at = DB::instant(&activity, deadline_field)?
-                .to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
-            let label = DB::string(&activity, "activity_type")?;
-            let message = if kind == "heartbeat" {
-                format!(
-                    "Activity {label} heartbeat deadline expired at {expired_at} (last heartbeat: {}).",
-                    DB::optional_instant(&activity, "last_heartbeat_at")?
-                        .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, false))
-                        .unwrap_or("never".into())
-                )
-            } else {
-                format!(
-                    "Activity {label} {} deadline expired at {expired_at}.",
-                    kind.replace('_', "-")
-                )
-            };
-            if count < max && kind != "schedule_to_close" {
-                let backoff = policy["backoff_seconds"]
-                    .as_array()
-                    .and_then(|values| values.get((count - 1) as usize).or_else(|| values.last()))
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0);
-                let available = chrono::Duration::try_seconds(backoff)
-                    .and_then(|duration| at.checked_add_signed(duration))
-                    .ok_or_else(|| {
-                        refuse(StatusCode::CONFLICT, "invalid_stored_activity_retry_policy")
-                    })?;
-                Self::query("UPDATE activity_executions SET status='pending',last_heartbeat_at=NULL,close_deadline_at=NULL,heartbeat_deadline_at=NULL,schedule_deadline_at=$1 WHERE id=$2")
-                    .bind(DB::optional_time(deadline(&policy,"schedule_to_start_timeout",available)?)).bind(&activity_id).execute(&mut *tx).await?;
-                let retry = Self::create_task(&mut tx,&run_id,&DB::string(&activity,"queue")?,"activity",json!({"activity_execution_id":activity_id,"retry_of_task_id":task_id,"retry_after_attempt_id":current,"retry_after_attempt":count,"retry_backoff_seconds":backoff,"max_attempts":max,"retry_policy":policy,"timeout_kind":kind})).await?;
-                Self::query(
-                    "UPDATE workflow_tasks SET available_at=$1,attempt_count=$2 WHERE id=$3",
-                )
-                .bind(DB::bind_time(available))
-                .bind(count)
-                .bind(&retry)
-                .execute(&mut *tx)
-                .await?;
-                let updated = Self::query("SELECT * FROM activity_executions WHERE id=$1")
-                    .bind(&activity_id)
-                    .fetch_one(&mut *tx)
-                    .await?;
-                let mut payload = Self::activity_payload(&updated)?;
-                for (key,value) in json!({"activity_attempt_id":current,"retry_task_id":retry,"retry_of_task_id":task_id,"retry_available_at":available,"retry_backoff_seconds":backoff,"retry_after_attempt_id":current,"retry_after_attempt":count,"max_attempts":max,"retry_policy":policy,"timeout_kind":kind,"message":message}).as_object().unwrap() { if !value.is_null() {payload[key]=value.clone();} }
-                Self::append(
-                    &mut tx,
-                    &run_id,
-                    "ActivityRetryScheduled",
-                    payload,
-                    task_id.as_deref(),
-                    None,
-                )
-                .await?;
-            } else {
-                let failure_id = id();
-                const CLASS: &str = "Workflow\\V2\\Exceptions\\ActivityTimeoutException";
-                Self::query(
-                    "UPDATE activity_executions SET status='failed',closed_at=$1 WHERE id=$2",
-                )
-                .bind(DB::bind_time(at))
-                .bind(&activity_id)
-                .execute(&mut *tx)
-                .await?;
-                Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,exception_class,message,non_retryable,handled,file,line,created_at,updated_at) VALUES ($1,$2,'activity_execution',$3,'timeout','timeout',$4,$5,FALSE,FALSE,'',0,$6,$7)")
-                    .bind(&failure_id).bind(&run_id).bind(&activity_id).bind(CLASS).bind(&message).bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut *tx).await?;
-                let updated = Self::query("SELECT * FROM activity_executions WHERE id=$1")
-                    .bind(&activity_id)
-                    .fetch_one(&mut *tx)
-                    .await?;
-                let mut payload = Self::activity_payload(&updated)?;
-                for (key,value) in json!({"activity_attempt_id":current,"attempt_number":count,"failure_id":failure_id,"failure_category":"timeout","timeout_kind":kind,"message":message,"exception_class":CLASS}).as_object().unwrap() {payload[key]=value.clone();}
-                for field in [
-                    "schedule_deadline_at",
-                    "close_deadline_at",
-                    "schedule_to_close_deadline_at",
-                    "heartbeat_deadline_at",
-                ] {
-                    payload[field] = json!(
-                        DB::optional_instant(&activity, field)?
-                            .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, false))
-                    );
-                }
-                Self::append(
-                    &mut tx,
-                    &run_id,
-                    "ActivityTimedOut",
-                    payload,
-                    task_id.as_deref(),
-                    None,
-                )
-                .await?;
-                let metadata = super::selections::activity_metadata(DB::optional_document_row(
-                    &activity,
-                    "parallel_group_path",
-                )?)?;
-                Self::resolve_selection(
-                    &mut tx,
-                    &run_id,
-                    &metadata,
-                    "activity",
-                    &activity_id,
-                    "ActivityTimedOut",
-                )
-                .await?;
-                Self::selection_resume(
-                    &mut tx,
-                    &run_id,
-                    &DB::string(&run, "queue")?,
-                    json!({"activity_execution_id":activity_id}),
-                    &metadata,
-                )
-                .await?;
-            }
-            tx.commit().await?;
-            self.wake.notify_waiters();
+            self.enforce_activity_deadline(&DB::string(&candidate, "id")?).await?;
         }
         Ok(())
+    }
+
+    /// `ActivityTimeoutGuard::enforce`: retries or times out one execution
+    /// whose deadline passed, or gives PHP's reason for leaving it.
+    pub(super) async fn enforce_activity_deadline(&self, activity_id: &str) -> Result<Enforcement> {
+        use Enforcement::Skipped;
+        let mut tx = self.begin().await?;
+        let Some(activity) = Self::query("SELECT * FROM activity_executions WHERE id=$1")
+            .bind(activity_id)
+            .fetch_optional(&mut *tx)
+            .await?
+        else {
+            return Ok(Skipped("execution_not_found"));
+        };
+        if !matches!(DB::string(&activity, "status")?.as_str(), "pending" | "running") {
+            return Ok(Skipped("execution_already_terminal"));
+        }
+        if let Some(reason) = Self::attempt_state_reason(&mut tx, &activity).await? {
+            return Ok(Skipped(reason));
+        }
+        let Some(kind) = expired_kind::<DB>(&activity, now())? else {
+            return Ok(Skipped("no_deadline_expired"));
+        };
+        let run = match Self::active_run(&mut tx, &DB::string(&activity, "workflow_run_id")?).await {
+            Ok(run) => run,
+            Err(super::RuntimeError::Refused {
+                reason: "run_closed" | "cancellation_deadline_expired",
+                ..
+            }) => return Ok(Skipped("run_already_terminal")),
+            Err(error) => return Err(error),
+        };
+        let retried = Self::time_out_activity(&mut tx, &run, &activity, kind).await?;
+        tx.commit().await?;
+        self.wake.notify_waiters();
+        Ok(Enforcement::Enforced { retried })
+    }
+
+    /// `currentAttemptStateReason`: a running execution's current attempt
+    /// must still be the one it records, and running.
+    async fn attempt_state_reason(
+        tx: &mut Transaction<'_, DB>,
+        activity: &DB::Row,
+    ) -> Result<Option<&'static str>> {
+        if DB::string(activity, "status")? != "running" {
+            return Ok(None);
+        }
+        let Some(attempt_id) = DB::optional_string(activity, "current_attempt_id")? else {
+            return Ok(Some("current_attempt_changed"));
+        };
+        let Some(attempt) = Self::query("SELECT * FROM activity_attempts WHERE id=$1")
+            .bind(&attempt_id)
+            .fetch_optional(&mut **tx)
+            .await?
+        else {
+            return Ok(Some("current_attempt_not_found"));
+        };
+        if DB::string(&attempt, "activity_execution_id")? != DB::string(activity, "id")?
+            || DB::number(&attempt, "attempt_number")? != DB::number(activity, "attempt_count")?
+        {
+            return Ok(Some("current_attempt_changed"));
+        }
+        // Native marks an attempt whose lease lapsed `expired`; it is still current.
+        if !matches!(DB::string(&attempt, "status")?.as_str(), "running" | "expired") {
+            return Ok(Some("current_attempt_not_running"));
+        }
+        Ok(None)
+    }
+
+    /// Fails the expired attempt, then schedules a retry or records the
+    /// timeout. Returns whether it retried.
+    async fn time_out_activity(
+        tx: &mut Transaction<'_, DB>,
+        run: &DB::Row,
+        activity: &DB::Row,
+        kind: &'static str,
+    ) -> Result<bool> {
+        let activity_id = &DB::string(activity, "id")?;
+        let run_id = DB::string(activity, "workflow_run_id")?;
+        let policy = DB::optional_document_row(activity, "retry_policy")?.unwrap_or(Value::Null);
+        validate_policy(&policy)?;
+        let count = DB::number(activity, "attempt_count")?.max(1);
+        let max = policy["max_attempts"].as_i64().unwrap_or(1);
+        let current = DB::optional_string(activity, "current_attempt_id")?;
+        let retried = count < max && kind != "schedule_to_close";
+        let task = Self::query(DB::ACTIVITY_OPEN_TASK_SQL)
+            .bind(&run_id)
+            .bind(activity_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+        let task_id = task
+            .as_ref()
+            .map(|task| DB::string(task, "id"))
+            .transpose()?;
+        let at = now();
+        if let Some(attempt_id) = current.as_deref() {
+            Self::query("UPDATE activity_attempts SET status='failed',lease_expires_at=NULL,closed_at=$1 WHERE id=$2 AND status='running'")
+                .bind(DB::bind_time(at)).bind(attempt_id).execute(&mut **tx).await?;
+        }
+        if let Some(task_id) = task_id.as_deref() {
+            Self::query("UPDATE workflow_tasks SET status='cancelled',lease_expires_at=NULL,last_error=NULL WHERE id=$1")
+                .bind(task_id).execute(&mut **tx).await?;
+        }
+        let message = timeout_message::<DB>(activity, kind)?;
+        if retried {
+            let backoff = policy["backoff_seconds"]
+                .as_array()
+                .and_then(|values| values.get((count - 1) as usize).or_else(|| values.last()))
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let available = chrono::Duration::try_seconds(backoff)
+                .and_then(|duration| at.checked_add_signed(duration))
+                .ok_or_else(|| {
+                    refuse(StatusCode::CONFLICT, "invalid_stored_activity_retry_policy")
+                })?;
+            Self::query("UPDATE activity_executions SET status='pending',last_heartbeat_at=NULL,close_deadline_at=NULL,heartbeat_deadline_at=NULL,schedule_deadline_at=$1 WHERE id=$2")
+                .bind(DB::optional_time(deadline(&policy,"schedule_to_start_timeout",available)?)).bind(activity_id).execute(&mut **tx).await?;
+            let retry = Self::create_task(tx,&run_id,&DB::string(&activity,"queue")?,"activity",json!({"activity_execution_id":activity_id,"retry_of_task_id":task_id,"retry_after_attempt_id":current,"retry_after_attempt":count,"retry_backoff_seconds":backoff,"max_attempts":max,"retry_policy":policy,"timeout_kind":kind})).await?;
+            Self::query(
+                "UPDATE workflow_tasks SET available_at=$1,attempt_count=$2 WHERE id=$3",
+            )
+            .bind(DB::bind_time(available))
+            .bind(count)
+            .bind(&retry)
+            .execute(&mut **tx)
+            .await?;
+            let updated = Self::query("SELECT * FROM activity_executions WHERE id=$1")
+                .bind(activity_id)
+                .fetch_one(&mut **tx)
+                .await?;
+            let mut payload = Self::activity_payload(&updated)?;
+            for (key,value) in json!({"activity_attempt_id":current,"retry_task_id":retry,"retry_of_task_id":task_id,"retry_available_at":available,"retry_backoff_seconds":backoff,"retry_after_attempt_id":current,"retry_after_attempt":count,"max_attempts":max,"retry_policy":policy,"timeout_kind":kind,"message":message}).as_object().unwrap() { if !value.is_null() {payload[key]=value.clone();} }
+            Self::append(
+                tx,
+                &run_id,
+                "ActivityRetryScheduled",
+                payload,
+                task_id.as_deref(),
+                None,
+            )
+            .await?;
+        } else {
+            let failure_id = id();
+            const CLASS: &str = "Workflow\\V2\\Exceptions\\ActivityTimeoutException";
+            Self::query(
+                "UPDATE activity_executions SET status='failed',closed_at=$1 WHERE id=$2",
+            )
+            .bind(DB::bind_time(at))
+            .bind(activity_id)
+            .execute(&mut **tx)
+            .await?;
+            Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,exception_class,message,non_retryable,handled,file,line,created_at,updated_at) VALUES ($1,$2,'activity_execution',$3,'timeout','timeout',$4,$5,FALSE,FALSE,'',0,$6,$7)")
+                .bind(&failure_id).bind(&run_id).bind(activity_id).bind(CLASS).bind(&message).bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut **tx).await?;
+            let updated = Self::query("SELECT * FROM activity_executions WHERE id=$1")
+                .bind(activity_id)
+                .fetch_one(&mut **tx)
+                .await?;
+            let mut payload = Self::activity_payload(&updated)?;
+            for (key,value) in json!({"activity_attempt_id":current,"attempt_number":count,"failure_id":failure_id,"failure_category":"timeout","timeout_kind":kind,"message":message,"exception_class":CLASS}).as_object().unwrap() {payload[key]=value.clone();}
+            for field in [
+                "schedule_deadline_at",
+                "close_deadline_at",
+                "schedule_to_close_deadline_at",
+                "heartbeat_deadline_at",
+            ] {
+                payload[field] = json!(
+                    DB::optional_instant(&activity, field)?
+                        .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, false))
+                );
+            }
+            Self::append(
+                tx,
+                &run_id,
+                "ActivityTimedOut",
+                payload,
+                task_id.as_deref(),
+                None,
+            )
+            .await?;
+            let metadata = super::selections::activity_metadata(DB::optional_document_row(
+                &activity,
+                "parallel_group_path",
+            )?)?;
+            Self::resolve_selection(
+                tx,
+                &run_id,
+                &metadata,
+                "activity",
+                activity_id,
+                "ActivityTimedOut",
+            )
+            .await?;
+            Self::selection_resume(
+                tx,
+                &run_id,
+                &DB::string(&run, "queue")?,
+                json!({"activity_execution_id":activity_id}),
+                &metadata,
+            )
+            .await?;
+        }
+        Ok(retried)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pass_report_counts_each_outcome_like_php() {
+        let outcomes = vec![
+            ("a".to_owned(), Ok(Enforcement::Enforced { retried: true })),
+            ("b".to_owned(), Ok(Enforcement::Skipped("no_deadline_expired"))),
+            ("c".to_owned(), Err(refuse(StatusCode::CONFLICT, "invalid_stored_activity_retry_policy"))),
+        ];
+        let (report, failed) = pass_report(outcomes);
+        assert!(failed);
+        assert_eq!((&report["processed"], &report["enforced"], &report["skipped"], &report["failed"]),
+            (&json!(3), &json!(1), &json!(1), &json!(1)));
+        assert_eq!(report["results"][0], json!({"execution_id":"a","outcome":"enforced","has_retry":true}));
+        assert_eq!(report["results"][1]["reason"], "no_deadline_expired");
+        assert_eq!(report["results"][2]["outcome"], "error");
+    }
 
     #[tokio::test]
     async fn original_deadline_boundary_is_inclusive_and_precedence_is_stable() {

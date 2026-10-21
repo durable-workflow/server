@@ -59,8 +59,8 @@ CLI and Waterline use the first group.
 - **Used by the CLI or Waterline.**
   - Task queue build IDs.
   - Namespace update, delete and external storage.
-  - `system` repair and activity-timeout passes, metrics, and the operator
-    dashboard filtered by workflow type.
+  - `system` repair pass, metrics, and the operator dashboard filtered by
+    workflow type.
   - Activities (standalone).
 - **Worker protocol features.**
   - Worker sessions.
@@ -149,6 +149,10 @@ contract fixture before its correction.
   its message stream items. Native does not clean either up yet. It skips
   such a run with `external_payload_cleanup_unavailable` or
   `message_stream_cleanup_unavailable` and keeps its details.
+- **Malformed JSON bodies.** Published PHP answers a malformed JSON body
+  with `400 malformed_json` and a JSON body, and adds the control-plane
+  envelope on control-plane operations. Native does so only on the two
+  system passes. Elsewhere, native answers a plain-text 400.
 - **Registration without a capability manifest.** At protocol 1.19,
   published PHP 2.5.14 refuses a registration that has no
   `capability_manifest` (422). Native accepts it.
@@ -263,6 +267,7 @@ checkpoint is its own file in
 [`rust-server-port-checkpoints/`](rust-server-port-checkpoints/), named by
 date and topic:
 
+- [Activity timeout pass](rust-server-port-checkpoints/2026-10-21-activity-timeout-pass.md).
 - [History retention](rust-server-port-checkpoints/2026-10-21-history-retention.md).
 
 October 21, operator dashboard:
