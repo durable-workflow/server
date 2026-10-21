@@ -1,0 +1,18 @@
+{
+  "remove": [],
+  "add": [
+    [
+      "column",
+      "workflow_tasks.32",
+      {
+        "name": "queue_delivery_reference",
+        "type": "json",
+        "default": null,
+        "identity": "",
+        "not_null": false,
+        "collation": null,
+        "generated": ""
+      }
+    ]
+  ]
+}
