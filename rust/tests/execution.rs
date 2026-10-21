@@ -83,6 +83,8 @@ mod read_snapshots;
 mod describe_actions;
 #[path = "execution/waterline_reads.rs"]
 mod waterline_reads;
+#[path = "execution/start_timeouts.rs"]
+mod start_timeouts;
 
 #[path = "execution/activity_metadata.rs"]
 mod activity_metadata;

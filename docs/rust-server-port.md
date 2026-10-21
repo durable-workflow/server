@@ -308,6 +308,37 @@ October 21, Waterline reads:
   disables cancel, terminate, signal and repair on native. History export and
   the bounded dashboard summary remain.
 
+October 21, starts without timeouts:
+
+- **Found by.** Comparing describe responses in the Waterline comparison.
+  For a start that names no timeouts, published PHP reports null timeouts
+  and deadlines. Native reported a 3,600-second execution timeout and a
+  600-second run timeout.
+- **Impact.** Native refuses every command on a run after its deadline. A
+  workflow started by an SDK without explicit timeouts, which is the default,
+  stopped accepting work after ten minutes.
+- **Source.** As in PHP's `DefaultWorkflowControlPlane::start`, an absent or
+  null timeout now means none, and that run has no deadline. Each deadline
+  follows its own timeout from the start time; the run deadline is no longer
+  clipped to the execution deadline. Schedule-started runs use the same path.
+- **Evidence.** New tests cover absent and null timeouts, independent
+  explicit deadlines and invalid values on SQLite, PostgreSQL and MySQL.
+- **Still different.** PHP closes a run whose explicit deadline has passed as
+  failed with `timed_out` and records `WorkflowTimedOut`. Native still only
+  refuses further commands on such a run.
+
+October 20, workflow task lease:
+
+- **Source.** Native leased a claimed workflow task for a fixed 30 seconds.
+  Published PHP leases it for `DW_WORKFLOW_TASK_TIMEOUT`, 60 seconds by
+  default, on both claim and heartbeat; 2.5.14 and 2.9.8 measured 59.9 and
+  60.0 seconds. Native now reads the same setting with the same default. The
+  activity lease stays at PHP's fixed five minutes.
+- **Checks.** The `worker-replacement-activity-lease` contract now requires
+  a claimed workflow task's lease to last about 60 seconds. A native test
+  checks claim and heartbeat on each database. Locally, published PHP and
+  native both pass the contract.
+
 October 21, schedule listing, updates and backfill:
 
 - **Listing.** `schedule_list.rs` serves `GET /api/schedules` as PHP's

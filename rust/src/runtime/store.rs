@@ -27,6 +27,8 @@ pub(super) struct Store<DB: Backend> {
     pub(super) memo_codec: Arc<Semaphore>,
     pub(super) memo_size_limit: Option<usize>,
     pub(super) history_budget: super::history_budget::Config,
+    /// How long a claimed workflow task stays leased (DW_WORKFLOW_TASK_TIMEOUT).
+    pub(super) workflow_task_lease_seconds: i64,
     pub(super) search_attribute_limit: i64,
 }
 /// A ULID that sorts after every earlier one from this process, as Laravel's
@@ -89,6 +91,7 @@ where
             memo_codec: Arc::new(Semaphore::new(1)),
             memo_size_limit: Some(262_144),
             history_budget: super::history_budget::Config::default(),
+            workflow_task_lease_seconds: 60,
             search_attribute_limit: 100,
         }
     }
@@ -100,6 +103,7 @@ where
             memo_codec: self.memo_codec.clone(),
             memo_size_limit: self.memo_size_limit,
             history_budget: self.history_budget,
+            workflow_task_lease_seconds: self.workflow_task_lease_seconds,
             search_attribute_limit: self.search_attribute_limit,
         }
     }
@@ -205,8 +209,8 @@ where
             Some(arguments) => arguments.to_owned(),
             None => envelope(&body, "input")?,
         };
-        let execution_timeout = positive_seconds(&body, "execution_timeout_seconds", 3600)?;
-        let run_timeout = positive_seconds(&body, "run_timeout_seconds", 600)?;
+        let execution_timeout = optional_seconds(&body, "execution_timeout_seconds")?;
+        let run_timeout = optional_seconds(&body, "run_timeout_seconds")?;
         reject_fields(
             &body,
             &[
@@ -253,21 +257,24 @@ where
         let run_id = id();
         let command_id = id();
         let started_at = now();
-        let execution_deadline = after(execution_timeout);
-        let run_deadline = after(run_timeout.min(execution_timeout));
+        // DefaultWorkflowControlPlane::start: each deadline follows its own
+        // timeout, and a run without timeouts has no deadline.
+        let execution_deadline = execution_timeout.map(|seconds| started_at + chrono::Duration::seconds(seconds));
+        let run_deadline = run_timeout.map(|seconds| started_at + chrono::Duration::seconds(seconds));
         let authored_memo = body
             .get("memo")
             .filter(|memo| memo.as_object().is_some_and(|entries| !entries.is_empty()))
             .cloned()
             .unwrap_or(Value::Null);
-        Self::query("INSERT INTO workflow_instances(id,workflow_type,workflow_class,current_run_id,run_count,execution_timeout_seconds,created_at,updated_at,started_at,namespace,memo) VALUES ($1,$2,$3,$4,1,$5,$6,$7,$8,$9,$10)")
-            .bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(&run_id).bind(execution_timeout)
+        Self::query("INSERT INTO workflow_instances(id,workflow_type,workflow_class,current_run_id,run_count,execution_timeout_seconds,created_at,updated_at,started_at,namespace,memo) VALUES ($1,$2,$3,$4,1,NULLIF($5,0),$6,$7,$8,$9,$10)")
+            // Timeouts are at least one second; zero binds "no timeout".
+            .bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(&run_id).bind(execution_timeout.unwrap_or(0))
             .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(namespace)
             .bind(DB::optional_document(&authored_memo)).execute(&mut **tx).await?;
         // PHP records the start as the run's first progress.
-        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at,namespace,last_progress_at) VALUES ($1,$2,$3,$4,1,'pending','avro',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
+        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at,namespace,last_progress_at) VALUES ($1,$2,$3,$4,1,'pending','avro',$5,$6,NULLIF($7,0),$8,$9,$10,$11,$12,$13,$14)")
             .bind(&run_id).bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(&arguments)
-            .bind(queue).bind(run_timeout).bind(DB::bind_time(execution_deadline)).bind(DB::bind_time(run_deadline))
+            .bind(queue).bind(run_timeout.unwrap_or(0)).bind(DB::optional_time(execution_deadline)).bind(DB::optional_time(run_deadline))
             .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(namespace)
             .bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
         if let Some(memo) = memo {
@@ -1250,7 +1257,7 @@ where
             let expires = if kind == "activity" && Self::cancellation_request(&run)?.is_none() {
                 now() + chrono::Duration::seconds(300)
             } else {
-                Self::cancellation_lease_expiry(&run)?
+                self.cancellation_lease_expiry(&run)?
             };
             let leased_at = now();
             if kind == "workflow" {
@@ -1386,7 +1393,7 @@ where
         }
         Self::workflow_task_guard(&mut tx, &task, &body).await?;
         let run = Self::active_run(&mut tx, &DB::string(&task, "workflow_run_id")?).await?;
-        let expires = Self::cancellation_lease_expiry(&run)?;
+        let expires = self.cancellation_lease_expiry(&run)?;
         tx.summary_changed(&DB::string(&run, "id")?);
         Self::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE id=$2")
             .bind(DB::bind_time(expires))
@@ -2858,11 +2865,17 @@ where
     }
 }
 
-fn positive_seconds(body: &Value, field: &str, default: i64) -> Result<i64> {
-    body.get(field)
-        .map_or(Some(default), Value::as_i64)
-        .filter(|n| *n > 0 && *n <= 315_360_000)
-        .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_timeout"))
+/// A start's optional `nullable|integer|min:1` timeout. Absent or null means
+/// no timeout, as in published PHP.
+fn optional_seconds(body: &Value, field: &str) -> Result<Option<i64>> {
+    match body.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_i64()
+            .filter(|n| *n > 0 && *n <= 315_360_000)
+            .map(Some)
+            .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_timeout")),
+    }
 }
 
 pub(super) async fn prepare_control_arguments(
