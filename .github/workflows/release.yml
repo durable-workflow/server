@@ -398,8 +398,11 @@ jobs:
   publish-chart:
     name: Publish matching immutable Helm chart
     needs: publish
+    # This one-time maintenance tag publishes images only. The existing chart
+    # stays immutable; the current main chart supports an explicit image tag.
     if: >-
       always() &&
+      github.ref == 'refs/heads/main' &&
       needs.publish.outputs.exact_publish_outcome == 'success' &&
       github.repository == 'durable-workflow/server' &&
       ((github.event_name == 'workflow_dispatch' &&

@@ -808,6 +808,19 @@ esac
         self.assertIn("source_ref: ${{ github.sha }}", protected_publish)
         self.assertIn("allow_missing_image: true", protected_publish)
 
+    def test_maintenance_tag_does_not_republish_existing_chart(self) -> None:
+        self.assertFalse(
+            evaluate_recovery_condition(
+                "release.yml",
+                "publish-chart",
+                exact_publish_outcome="success",
+                repository="durable-workflow/server",
+                event_name="push",
+                ref="refs/tags/2.9.12",
+            ),
+            "the image-only maintenance tag must preserve the published chart",
+        )
+
     def test_partial_release_and_verification_only_recovery_publish_the_chart(
         self,
     ) -> None:
