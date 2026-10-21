@@ -1392,6 +1392,33 @@ where
                         claim[field] = value.clone();
                     }
                 }
+                // `WorkflowTaskPoller::workflowTaskResumeContext`: a signal task
+                // names its signal and command and carries the signal's
+                // arguments, which the Rust SDK resumes the wait with.
+                for field in ["workflow_signal_id", "workflow_command_id"] {
+                    if let Some(value) = task_payload[field].as_str().map(str::trim).filter(|value| !value.is_empty()) {
+                        claim[field] = json!(value);
+                    }
+                }
+                if let Some(signal_id) = task_payload["workflow_signal_id"].as_str() {
+                    let signal = Self::query("SELECT arguments,workflow_command_id FROM workflow_signal_records WHERE id=$1 AND workflow_run_id=$2")
+                        .bind(signal_id)
+                        .bind(&run_id)
+                        .fetch_optional(&mut *tx)
+                        .await?;
+                    if let Some(signal) = signal {
+                        if let Some(arguments) =
+                            DB::optional_string(&signal, "arguments")?.filter(|arguments| !arguments.is_empty())
+                        {
+                            claim["signal_arguments"] = wire(&arguments);
+                        }
+                        // PHP's signal task payload names its command; older
+                        // native tasks take it from the signal record.
+                        if claim.get("workflow_command_id").is_none() {
+                            claim["workflow_command_id"] = json!(DB::string(&signal, "workflow_command_id")?);
+                        }
+                    }
+                }
                 let page_size = body["history_page_size"].as_i64().unwrap_or(100);
                 let (events, next) =
                     Self::history_page_connection(&mut tx, &run_id, 0, page_size).await?;
