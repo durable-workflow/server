@@ -1309,10 +1309,10 @@ where
     pub(crate) async fn heartbeat_task(&self, task_id: &str, body: Value) -> Result<Value> {
         let mut tx = self.begin().await?;
         let task = self.task_row(&mut tx, task_id).await?;
-        Self::fence(&task, &body)?;
         if DB::string(&task, "task_type")? != "workflow" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
+        Self::workflow_task_guard(&mut tx, &task, &body).await?;
         let run = Self::active_run(&mut tx, &DB::string(&task, "workflow_run_id")?).await?;
         let expires = Self::cancellation_lease_expiry(&run)?;
         tx.summary_changed(&DB::string(&run, "id")?);
@@ -1337,7 +1337,7 @@ where
         if DB::string(&task, "task_type")? != "workflow" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
-        Self::fence(&task, &body)?;
+        Self::workflow_task_guard(&mut tx, &task, &body).await?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let (events, next) = Self::history_page_connection(&mut tx, &run_id, after, 100).await?;
         let run = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
@@ -1435,9 +1435,9 @@ where
         if DB::string(&task, "task_type")? != "workflow" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
+        Self::workflow_task_guard(&mut tx, &task, &body).await?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
-        Self::fence(&task, &body)?;
         let mut payload = DB::document_row(&task, "payload")?;
         let signals = Self::scalar("SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received'")
             .bind(&run_id).fetch_one(&mut *tx).await?;
@@ -1708,7 +1708,17 @@ where
         if DB::string(&task, "task_type")? != "workflow" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
-        if Self::duplicate_receipt(&task, &body)? {
+        // A completion that differs from the recorded one, or follows a
+        // waiting acknowledgement, comes from a lost claim: the guard refuses
+        // it with the fields a worker uses to recognize that.
+        let replay = match Self::duplicate_receipt(&task, &body) {
+            Err(super::RuntimeError::Refused {
+                reason: "conflicting_completion" | "task_not_leased",
+                ..
+            }) => false,
+            other => other?,
+        };
+        if replay {
             let run_id = DB::string(&task, "workflow_run_id")?;
             let current = Self::query("SELECT status FROM workflow_runs WHERE id=$1")
                 .bind(&run_id)
@@ -1719,7 +1729,7 @@ where
                 "outcome": "completed", "recorded": false, "reason": "already_completed"}),
             );
         }
-        Self::fence(&task, &body)?;
+        Self::workflow_task_guard(&mut tx, &task, &body).await?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
         let task_payload = DB::document_row(&task, "payload")?;
@@ -2050,7 +2060,8 @@ where
         } else {
             false
         };
-        Self::query("UPDATE workflow_tasks SET status=$1 WHERE id=$2")
+        // PHP clears a completed task's lease expiry and keeps its owner.
+        Self::query("UPDATE workflow_tasks SET status=$1,lease_expires_at=NULL WHERE id=$2")
             .bind(if failed { "failed" } else { "completed" })
             .bind(task_id)
             .execute(&mut *tx)
@@ -2474,6 +2485,86 @@ where
             return Ok(true);
         }
         Err(refuse(StatusCode::CONFLICT, "conflicting_completion"))
+    }
+
+    /// PHP's workflow task ownership guard, in PHP's order: a task that is
+    /// no longer leased first (run_closed when its run has closed), then the
+    /// lease's expiry, owner and attempt.
+    pub(super) async fn workflow_task_guard(
+        tx: &mut Transaction<'_, DB>,
+        task: &DB::Row,
+        body: &Value,
+    ) -> Result<()> {
+        use super::query_authority::wire;
+        let lease_owner = text(body, "lease_owner")?;
+        let task_id = DB::string(task, "id")?;
+        let attempt = body["workflow_task_attempt"]
+            .as_i64()
+            .map_or(Value::Null, Value::from);
+        let refused = |error: &str, reason: &str, fields: Value| {
+            super::workflow_task_guard::refusal(&task_id, &attempt, error, reason, fields)
+        };
+        let status = DB::string(task, "status")?;
+        let owner = DB::optional_string(task, "lease_owner")?
+            .map(|owner| owner.trim().to_owned())
+            .filter(|owner| !owner.is_empty());
+        let expires = DB::optional_instant(task, "lease_expires_at")?;
+        if status != "leased" {
+            let run =
+                Self::query("SELECT status,closed_reason,closed_at FROM workflow_runs WHERE id=$1")
+                    .bind(DB::string(task, "workflow_run_id")?)
+                    .fetch_one(&mut **tx)
+                    .await?;
+            let run_status = DB::string(&run, "status")?;
+            if super::run_observation_store::terminal(&run_status) {
+                let stop_reason = match run_status.as_str() {
+                    "cancelled" => "run_cancelled",
+                    "terminated" => "run_terminated",
+                    "completed" => "run_completed",
+                    _ => "run_failed",
+                };
+                return Err(refused(
+                    "Workflow run is already closed.",
+                    "run_closed",
+                    json!({"stop_reason":stop_reason,"cancel_requested":matches!(run_status.as_str(),"cancelled"|"terminated"),
+                        "can_continue":false,"run_status":run_status,
+                        "run_closed_reason":DB::optional_string(&run,"closed_reason")?,
+                        "run_closed_at":DB::optional_instant(&run,"closed_at")?.map(wire),
+                        "task_status":status,"lease_owner":owner,"lease_expires_at":expires.map(wire)}),
+                ));
+            }
+        }
+        let (true, Some(owner), Some(expires)) = (status == "leased", owner, expires) else {
+            return Err(refused(
+                "Workflow task is not currently leased.",
+                "task_not_leased",
+                json!({"task_status":status}),
+            ));
+        };
+        // An expired lease is claimed again by the next poll.
+        if expires <= now() {
+            return Err(refused(
+                "Workflow task lease has expired and is waiting for recovery.",
+                "lease_expired",
+                json!({"task_status":"leased","lease_owner":owner,"lease_expires_at":wire(expires)}),
+            ));
+        }
+        if lease_owner != owner {
+            return Err(refused(
+                "Workflow task lease is owned by another worker.",
+                "lease_owner_mismatch",
+                json!({"lease_owner":owner}),
+            ));
+        }
+        let current = DB::number(task, "attempt_count")?;
+        if current > 0 && attempt.as_i64() != Some(current) {
+            return Err(refused(
+                "Workflow task lease attempt does not match the current claim.",
+                "workflow_task_attempt_mismatch",
+                json!({"current_attempt":current}),
+            ));
+        }
+        Ok(())
     }
 
     pub(super) fn fence(task: &DB::Row, body: &Value) -> Result<()> {
