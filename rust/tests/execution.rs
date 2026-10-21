@@ -81,6 +81,8 @@ mod activity_deadlines;
 mod lock_free_waiting;
 #[path = "execution/read_snapshots.rs"]
 mod read_snapshots;
+#[path = "execution/query_responses.rs"]
+mod query_responses;
 #[path = "execution/history_export.rs"]
 mod history_export;
 #[path = "execution/start_request.rs"]

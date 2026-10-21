@@ -79,30 +79,6 @@ async fn omitted_query_input_uses_official_empty_arguments_without_mutating_the_
     for (path, input, status, reason) in [
         (
             instance_query.clone(),
-            Value::Null,
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "unsupported_request_field",
-        ),
-        (
-            instance_query.clone(),
-            json!({"foreign":true}),
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "unsupported_payload_codec",
-        ),
-        (
-            instance_query.clone(),
-            json!({"input":empty.clone(),"foreign":true}),
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "unsupported_request_field",
-        ),
-        (
-            instance_query.clone(),
-            json!({"input":null}),
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "unsupported_payload_codec",
-        ),
-        (
-            instance_query.clone(),
             json!({"input":{"codec":"json","blob":"[]"}}),
             StatusCode::UNPROCESSABLE_ENTITY,
             "unsupported_payload_codec",
@@ -186,9 +162,15 @@ async fn omitted_query_input_uses_official_empty_arguments_without_mutating_the_
         .collect(),
     ));
     let mut task_ids = vec![];
+    // As in PHP, `input` is nullable and other request fields are ignored.
     for (index, (path, input)) in [
-        (instance_query, json!({})),
+        (instance_query.clone(), json!({})),
         (run_query, json!({"input":empty.clone()})),
+        (instance_query.clone(), Value::Null),
+        (instance_query.clone(), json!([])),
+        (instance_query.clone(), json!({"foreign":true})),
+        (instance_query.clone(), json!({"input":empty.clone(),"foreign":true})),
+        (instance_query, json!({"input":null})),
     ]
     .into_iter()
     .enumerate()

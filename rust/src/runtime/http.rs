@@ -1427,20 +1427,24 @@ async fn query_current(
     Path((workflow_id, name)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
-    runtime
+    let (status, body) = runtime
         .query_workflow(&workflow_id, None, &name, body)
         .await
-        .map(|(status, body)| (status, Json(body)))
+        .map_err(|error| super::control_plane::Operation::Query(&name).refusal(error, &workflow_id, None))?;
+    Ok((status, Json(super::control_plane::Operation::Query(&name).response(body))))
 }
 async fn query_run(
     Extension(runtime): Extension<Runtime>,
     Path((workflow_id, run_id, name)): Path<(String, String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
-    runtime
+    let (status, body) = runtime
         .query_workflow(&workflow_id, Some(&run_id), &name, body)
         .await
-        .map(|(status, body)| (status, Json(body)))
+        .map_err(|error| {
+            super::control_plane::Operation::Query(&name).refusal(error, &workflow_id, Some(&run_id))
+        })?;
+    Ok((status, Json(super::control_plane::Operation::Query(&name).response(body))))
 }
 async fn poll_query(
     Extension(runtime): Extension<Runtime>,
