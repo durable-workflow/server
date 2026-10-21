@@ -198,6 +198,11 @@ contract fixture before its correction.
   a signal therefore waits on PHP and is refused on native. The port takes the
   snapshot at claim time and must keep query lease replay stable, so it needs
   its own fixture.
+- **Worker-plane error bodies.** Published PHP adds `protocol_version` to
+  every worker-plane response, including validation failures, and answers an
+  unknown activity task with `task_id`, `activity_attempt_id`, `error` and
+  `reason`. Native's worker-plane errors carry only Laravel's validation
+  fields or `message` and `reason`.
 - **Terminating a child run.** Published Workflow resolves the parent with
   `ChildRunTerminated` and the `terminated` child call status. Native refuses
   this with `422 termination_propagation_not_available` until the parent-side
