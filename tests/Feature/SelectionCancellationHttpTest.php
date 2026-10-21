@@ -38,7 +38,9 @@ final class SelectionCancellationHttpTest extends TestCase
     public function test_losing_queued_activity_is_cancelled_through_http_and_cannot_be_claimed(): void
     {
         [$runId, $task, $cancel] = $this->stageTimerWinner();
-        $this->complete($task, [$cancel])->assertOk()->assertJsonPath('recorded', true);
+        $this->complete($task, [$cancel, [
+            'type' => 'complete_workflow', 'result' => Serializer::serialize(['timer-won', 9007199254740993, null, 'λ']),
+        ]])->assertOk()->assertJsonPath('recorded', true);
 
         $this->assertSame('cancelled', ActivityExecution::query()->sole()->status->value);
         $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
@@ -47,10 +49,6 @@ final class SelectionCancellationHttpTest extends TestCase
             'worker_id' => 'activity-worker', 'task_queue' => 'later',
         ], $this->workerHeaders())->assertOk()->assertJsonPath('task', null);
 
-        $resume = $this->pollWorkflow();
-        $this->complete($resume, [[
-            'type' => 'complete_workflow', 'result' => Serializer::serialize(['timer-won', 9007199254740993, null, 'λ']),
-        ]])->assertOk()->assertJsonPath('recorded', true);
         $this->assertSame(RunStatus::Completed, WorkflowRun::query()->findOrFail($runId)->status);
         $this->assertSame(0, WorkflowTask::query()->where('workflow_run_id', $runId)
             ->where('task_type', TaskType::Activity->value)->where('status', TaskStatus::Leased->value)->count());
@@ -62,7 +60,7 @@ final class SelectionCancellationHttpTest extends TestCase
         [$runId, $task, $cancel] = $this->stageTimerWinner();
         $before = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count();
         $this->complete($task, [array_replace($cancel, $changes)], $namespace)->assertStatus($status);
-        $this->assertSame('scheduled', ActivityExecution::query()->sole()->status->value);
+        $this->assertSame('pending', ActivityExecution::query()->sole()->status->value);
         $this->assertSame($before, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count());
         $this->assertSame(TaskStatus::Leased, WorkflowTask::query()->findOrFail($task['task_id'])->status);
     }
@@ -75,6 +73,58 @@ final class SelectionCancellationHttpTest extends TestCase
             'outside group' => [['member_base_sequence' => 3], 'default', 422],
             'wrong namespace' => [[], 'other', 404],
         ];
+    }
+
+    public function test_previously_blocked_run_can_be_repaired_and_cancel_its_original_member(): void
+    {
+        [$runId, $task, $cancel] = $this->stageTimerWinner();
+        $this->postJson('/api/worker/workflow-tasks/'.$task['task_id'].'/fail', [
+            'lease_owner' => 'select-worker', 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'failure' => [
+                'type' => 'ServerError',
+                'message' => 'Workflow task completion failed after commands were produced: Selection cancellation must identify one authored member within a durable selection group.',
+            ],
+        ], $this->workerHeaders())->assertOk()->assertJsonPath('recorded', true);
+        $this->assertSame(0, WorkflowTask::query()->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)->where('status', TaskStatus::Ready->value)->count());
+
+        $this->postJson('/api/workflows/select-http/runs/'.$runId.'/repair', [
+            'request_id' => 'repair-select-validation',
+        ], $this->apiHeaders())->assertOk();
+        $this->complete($this->pollWorkflow(), [$cancel, [
+            'type' => 'complete_workflow', 'result' => Serializer::serialize('recovered'),
+        ]])->assertOk()->assertJsonPath('recorded', true);
+        $this->assertSame(RunStatus::Completed, WorkflowRun::query()->findOrFail($runId)->status);
+        $this->assertSame('cancelled', ActivityExecution::query()->sole()->status->value);
+    }
+
+    public function test_expired_original_claim_cannot_cancel_a_member(): void
+    {
+        [$runId, $task, $cancel] = $this->stageTimerWinner();
+        $before = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count();
+        WorkflowTask::query()->findOrFail($task['task_id'])->forceFill(['lease_expires_at' => now()->subSecond()])->save();
+        $this->complete($task, [$cancel])->assertStatus(409)->assertJsonPath('recorded', false);
+        $this->assertSame('pending', ActivityExecution::query()->sole()->status->value);
+        $this->assertSame($before, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count());
+    }
+
+    #[DataProvider('requiredMemberFields')]
+    public function test_missing_identity_field_is_refused_without_mutation(string $field): void
+    {
+        [$runId, $task, $cancel] = $this->stageTimerWinner();
+        $before = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count();
+        unset($cancel[$field]);
+        $this->complete($task, [$cancel])->assertUnprocessable();
+        $this->assertSame('pending', ActivityExecution::query()->sole()->status->value);
+        $this->assertSame($before, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count());
+    }
+
+    public static function requiredMemberFields(): array
+    {
+        return array_map(static fn (string $field): array => [$field], [
+            'selection_group_id', 'member_key', 'member_index', 'member_base_sequence',
+            'member_size', 'operation_kind', 'operation_identity',
+        ]);
     }
 
     private function stageTimerWinner(): array
