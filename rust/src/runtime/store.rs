@@ -1639,11 +1639,14 @@ where
                 payload["workflow_task_retry_of"] = json!(task_id);
                 payload["workflow_task_retry_after_error"] = json!(message);
                 let next = id();
+                // As PHP in poll mode, a task is dispatched to pollers when it is created.
+                let created = now();
                 // Copy routing in SQL so JSON/null representations remain
                 // native to each backend. A new lease increments this carried
                 // attempt count rather than restarting it at one.
-                Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,namespace,task_type,status,attempt_count,available_at,payload,connection,queue,compatibility,priority,fairness_key,fairness_weight) SELECT $1,r.id,r.namespace,'workflow','ready',t.attempt_count,$2,$3,COALESCE(t.connection,r.connection),COALESCE(t.queue,r.queue),COALESCE(t.compatibility,r.compatibility),COALESCE(t.priority,r.priority,5),COALESCE(t.fairness_key,r.fairness_key),COALESCE(t.fairness_weight,r.fairness_weight,1) FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.id=$4")
-                    .bind(&next).bind(DB::bind_time(now())).bind(DB::document(&payload)).bind(task_id).execute(&mut *tx).await?;
+                Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,namespace,task_type,status,attempt_count,available_at,created_at,updated_at,last_dispatched_at,last_dispatch_attempt_at,payload,connection,queue,compatibility,priority,fairness_key,fairness_weight) SELECT $1,r.id,r.namespace,'workflow','ready',t.attempt_count,$2,$3,$4,$5,$6,$7,COALESCE(t.connection,r.connection),COALESCE(t.queue,r.queue),COALESCE(t.compatibility,r.compatibility),COALESCE(t.priority,r.priority,5),COALESCE(t.fairness_key,r.fairness_key),COALESCE(t.fairness_weight,r.fairness_weight,1) FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.id=$8")
+                    .bind(&next).bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::bind_time(created))
+                    .bind(DB::document(&payload)).bind(task_id).execute(&mut *tx).await?;
                 next_task_id = Some(next);
             }
             tx.commit().await?;
@@ -2749,9 +2752,12 @@ where
             .fetch_one(&mut **tx)
             .await?;
         let namespace = DB::string(&run, "namespace")?;
+        // As PHP in poll mode, a task is dispatched to pollers when it is created.
+        let created = now();
         let fairness_key = DB::optional_string(&run, "fairness_key")?;
-        Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,payload,queue,available_at,namespace,priority,fairness_key,fairness_weight) VALUES ($1,$2,$3,'ready',$4,$5,$6,$7,$8,$9,$10)")
-        .bind(&task_id).bind(run_id).bind(kind).bind(DB::document(&payload)).bind(queue).bind(DB::bind_time(now())).bind(&namespace)
+        Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,payload,queue,available_at,namespace,created_at,updated_at,last_dispatched_at,last_dispatch_attempt_at,priority,fairness_key,fairness_weight) VALUES ($1,$2,$3,'ready',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
+        .bind(&task_id).bind(run_id).bind(kind).bind(DB::document(&payload)).bind(queue).bind(DB::bind_time(created)).bind(&namespace)
+        .bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::bind_time(created))
         .bind(DB::number(&run, "priority")?).bind(fairness_key.as_deref()).bind(DB::number(&run, "fairness_weight")?)
         .execute(&mut **tx).await?;
         Ok(task_id)

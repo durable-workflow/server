@@ -296,6 +296,9 @@ impl Runtime {
     delegate!(namespace_exists(name: &str) -> Result<bool>);
     delegate!(list_namespaces() -> Result<Value>);
     delegate!(describe_namespace(name: &str) -> Result<Value>);
+    delegate!(operator_metrics(config: &super::operator_metrics::MetricsConfig) -> Result<Value>);
+    delegate!(system_health(config: &super::operator_metrics::MetricsConfig) -> Result<(bool, Value)>);
+    delegate!(operator_dashboard(config: &super::operator_metrics::MetricsConfig, bounded: bool) -> Result<Value>);
     delegate!(create_namespace(body: Value) -> Result<Value>);
     delegate!(list_search_attributes() -> Result<Value>);
     delegate!(
@@ -613,6 +616,7 @@ impl Runtime {
             }
         }
     }
+    delegate!(query_target(workflow_id: &str, selected_run: Option<&str>) -> Result<()>);
     pub(crate) async fn query_workflow(
         &self,
         workflow_id: &str,
@@ -620,16 +624,26 @@ impl Runtime {
         name: &str,
         body: Value,
     ) -> Result<(StatusCode, Value)> {
-        if body.as_object().is_none_or(|m| m.len() > 1) {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "unsupported_request_field",
-            ));
+        // `validateOperationName`, `workflowBound`, then `input` =>
+        // nullable|array; other request fields are ignored, as in PHP.
+        let invalid = |field: &'static str, message: &'static str| {
+            let mut error = super::laravel_validation::failure(vec![(field, vec![message])]).expect("one message");
+            if let super::RuntimeError::Protocol { response, .. } = &mut error {
+                response["workflow_id"] = json!(workflow_id);
+            }
+            error
+        };
+        if name.len() > 256 {
+            return Err(invalid("query_name", "The query name exceeds the maximum length of 256 bytes."));
         }
-        let arguments = if body.as_object().is_some_and(|m| m.is_empty()) {
-            super::queries::empty_arguments(self.signal_codec.clone()).await?
-        } else {
-            super::envelope(&body, "input")?
+        self.query_target(workflow_id, run_id).await?;
+        let input = super::laravel_validation::normalized(body.get("input")).filter(|value| !value.is_null());
+        if input.as_ref().is_some_and(|value| !value.is_object() && !value.is_array()) {
+            return Err(invalid("input", "The input field must be an array."));
+        }
+        let arguments = match input {
+            None => super::queries::empty_arguments(self.signal_codec.clone()).await?,
+            Some(_) => super::envelope(&body, "input")?,
         };
         if arguments.len() > super::queries::ARGUMENT_BYTES {
             return Err(refuse(

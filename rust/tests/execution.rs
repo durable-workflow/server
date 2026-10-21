@@ -33,6 +33,8 @@ mod admission;
 
 #[path = "execution/role_tokens.rs"]
 mod role_tokens;
+#[path = "execution/operator_metrics.rs"]
+mod operator_metrics;
 
 #[path = "execution/namespaces.rs"]
 mod namespaces;
@@ -79,6 +81,8 @@ mod activity_deadlines;
 mod lock_free_waiting;
 #[path = "execution/read_snapshots.rs"]
 mod read_snapshots;
+#[path = "execution/query_responses.rs"]
+mod query_responses;
 #[path = "execution/history_export.rs"]
 mod history_export;
 #[path = "execution/start_request.rs"]
@@ -89,6 +93,8 @@ mod command_requests;
 mod describe_actions;
 #[path = "execution/run_deadlines.rs"]
 mod run_deadlines;
+#[path = "execution/operator_dashboard.rs"]
+mod operator_dashboard;
 #[path = "execution/waterline_reads.rs"]
 mod waterline_reads;
 #[path = "execution/start_timeouts.rs"]

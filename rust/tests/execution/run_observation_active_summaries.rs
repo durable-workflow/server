@@ -153,24 +153,72 @@ async fn run_observation_active_summary_failure_rolls_back_claim_and_missing_rea
 }
 
 #[tokio::test]
-async fn run_observation_active_summary_keeps_unqualified_transport_state_unavailable() {
+async fn run_observation_active_summary_classifies_task_transport_as_published_php_does() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
-    register(&app, "default").await;
+    // The started run declares a signal, so a signal can project it again.
+    let registered = namespaces::scoped(
+        &app,
+        "default",
+        "POST",
+        "/api/worker/register",
+        json!({
+        "worker_id":"active-summary-worker", "task_queue":"test", "runtime":"php",
+        "supported_workflow_types":["echo"], "supported_activity_types":[],
+        "workflow_command_contracts":{"echo":{"signals":["payload"],"signal_contracts":[{"name":"payload","parameters":[{"name":"value","position":0,"type":"array","required":true,"variadic":false,"default_available":false,"allows_null":false}]}]}}}),
+    )
+    .await;
+    assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
     let run = namespaces::start_scoped(&app, "default", "summary-transport").await;
     assert_eq!(
         observe(&app, "default", &run).await["liveness_state"],
         "workflow_task_ready"
     );
-    database.execute("UPDATE workflow_tasks SET created_at=available_at,last_dispatch_attempt_at=available_at,last_dispatch_error='retained transport failure'").await;
+    // A signal projects the run again while its workflow task stays ready.
+    let signal = || async {
+        let response = namespaces::scoped(
+            &app,
+            "default",
+            "POST",
+            "/api/workflows/summary-transport/signal/payload",
+            json!({"input":envelope(Payload::Array(vec![Payload::Array(vec![])]))}),
+        )
+        .await;
+        assert!(response.0.is_success(), "{}", response.1);
+    };
+    // A dispatch attempt after the last dispatch failed: the run needs repair.
+    database.execute("UPDATE workflow_tasks SET last_dispatched_at=NULL,last_dispatch_error=' rejected by the queue '").await;
+    signal().await;
+    let failed = observe(&app, "default", &run).await;
+    assert_eq!(failed["liveness_state"], "repair_needed", "{failed}");
+    let reason = failed["liveness_reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("Workflow task ")
+            && reason.contains(" could not be dispatched at 20")
+            && reason.ends_with(". rejected by the queue"),
+        "{reason}"
+    );
+    // A worker that could not claim the task names the task type.
+    database.execute("UPDATE workflow_tasks SET last_dispatched_at=last_dispatch_attempt_at,last_dispatch_error=NULL,last_claim_failed_at=last_dispatch_attempt_at,last_claim_error='backend rejected the claim'").await;
+    signal().await;
+    let unclaimed = observe(&app, "default", &run).await;
+    assert_eq!(
+        unclaimed["liveness_state"], "workflow_task_claim_failed",
+        "{unclaimed}"
+    );
+    assert!(
+        unclaimed["liveness_reason"]
+            .as_str()
+            .unwrap()
+            .ends_with(". backend rejected the claim")
+    );
+    // A leased task carries no ready-task transport problem.
     let claimed = claim(&app, "default").await;
     assert_eq!(claimed.0, StatusCode::OK, "{}", claimed.1);
     assert!(claimed.1["task"].is_object());
-    let unknown = observe(&app, "default", &run).await;
-    assert_eq!(unknown["summary_state"], "unavailable");
-    assert!(unknown["liveness_state"].is_null());
-    assert!(unknown["history_event_count"].is_null());
+    let leased = observe(&app, "default", &run).await;
+    assert_eq!(leased["liveness_state"], "workflow_task_leased", "{leased}");
     runtime.close().await;
     database.remove().await;
 }
