@@ -16,6 +16,7 @@ use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\WorkflowStub;
 
 class ActivityLeaseRenewalTest extends TestCase
@@ -59,6 +60,35 @@ class ActivityLeaseRenewalTest extends TestCase
         $this->assertSame($before, $execution->fresh()->getAttributes());
         $this->assertSame($history, WorkflowHistoryEvent::query()->where('workflow_run_id', $task['run_id'])->get()->toArray());
         $this->assertSame(1, ActivityAttempt::query()->where('activity_execution_id', $execution->id)->count());
+    }
+
+    public function test_poll_and_observation_preserve_original_workflow_deadlines_after_renewal(): void
+    {
+        $runDeadline = now()->addSeconds(30);
+        $executionDeadline = now()->addSeconds(60);
+        $task = $this->claimActivity(runDeadlines: [
+            'run_deadline_at' => $runDeadline,
+            'execution_deadline_at' => $executionDeadline,
+        ]);
+        $this->assertSame($runDeadline->toJSON(), $task['deadlines']['run'] ?? null);
+        $this->assertSame($executionDeadline->toJSON(), $task['deadlines']['execution'] ?? null);
+        $runBefore = WorkflowRun::query()->findOrFail($task['run_id'])->getAttributes();
+
+        $this->travel(4)->seconds();
+        $this->postJson($this->renewalPath($task), $this->ownership($task), $this->workerHeaders())
+            ->assertOk()->assertJsonPath('lease_renewed', true);
+        $this->postJson('/api/worker/activity-tasks/'.$task['task_id'].'/status', $this->ownership($task), $this->workerHeaders())
+            ->assertOk()->assertJsonPath('can_continue', true)
+            ->assertJsonPath('deadlines.run', $runDeadline->toJSON())
+            ->assertJsonPath('deadlines.execution', $executionDeadline->toJSON());
+        $this->assertSame($runBefore, WorkflowRun::query()->findOrFail($task['run_id'])->getAttributes());
+    }
+
+    public function test_absent_workflow_deadlines_are_not_invented(): void
+    {
+        $task = $this->claimActivity();
+        $this->assertArrayNotHasKey('run', $task['deadlines'] ?? []);
+        $this->assertArrayNotHasKey('execution', $task['deadlines'] ?? []);
     }
 
     public function test_renewal_refuses_wrong_owner_and_namespace_without_extending_the_lease(): void
@@ -152,12 +182,15 @@ class ActivityLeaseRenewalTest extends TestCase
             ->assertJsonPath('server_capabilities.activity_lease_renewal', false);
     }
 
-    private function claimActivity(array $policy = [], ?array $session = null): array
+    private function claimActivity(array $policy = [], ?array $session = null, array $runDeadlines = []): array
     {
         $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'renewal-workflow');
         $start = $workflow->start('Ada');
         NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
         $this->runReadyWorkflowTask($start->runId());
+        if ($runDeadlines !== []) {
+            WorkflowRun::query()->findOrFail($start->runId())->forceFill($runDeadlines)->save();
+        }
         $execution = ActivityExecution::query()->where('workflow_run_id', $start->runId())->firstOrFail();
         $execution->forceFill([
             'retry_policy' => [...$execution->retry_policy, ...$policy],

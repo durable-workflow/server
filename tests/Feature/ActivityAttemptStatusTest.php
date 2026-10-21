@@ -208,6 +208,34 @@ class ActivityAttemptStatusTest extends TestCase
             ->assertOk()->assertJsonPath('recorded', true);
     }
 
+    public static function workflowDeadlines(): array
+    {
+        return [
+            'run' => ['run_deadline_at', 'run_timeout'],
+            'execution' => ['execution_deadline_at', 'execution_timeout'],
+        ];
+    }
+
+    #[DataProvider('workflowDeadlines')]
+    public function test_workflow_deadline_refuses_outcome_before_external_payload_resolution(string $field, string $reason): void
+    {
+        $task = $this->lease();
+        WorkflowRun::query()->findOrFail($task['run_id'])->forceFill([$field => now()])->save();
+        $before = $this->snapshot($task);
+        $this->mock(NamespaceExternalPayloadStorage::class, static function (MockInterface $mock): void {
+            $mock->shouldNotReceive('driverFor');
+        });
+        $this->flushControllers();
+
+        foreach (['complete' => ['result' => null], 'fail' => ['failure' => ['message' => 'late failure']]] as $action => $payload) {
+            $this->withHeaders($this->headers())->postJson($this->path($task, $action), $this->fence($task) + $payload)
+                ->assertConflict()->assertJsonPath('recorded', false)->assertJsonPath('reason', $reason);
+        }
+
+        $this->observe($task)->assertOk()->assertJsonPath('can_continue', false)->assertJsonPath('reason', $reason);
+        $this->assertSame($before, $this->snapshot($task));
+    }
+
     #[DataProvider('expiredOutcomeProvider')]
     public function test_outcome_crossing_expiry_during_payload_resolution_cannot_record(string $action, string $protocol): void
     {
