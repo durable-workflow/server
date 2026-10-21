@@ -227,6 +227,38 @@ support is not evidence of multi-node safety.
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
 names, including unsuccessful observations.
 
+October 21, explicit run deadlines:
+
+- **Found by.** Comparing describe responses showed native's default
+  deadlines (#574). Reading published PHP's handling of explicit ones showed
+  a second difference.
+- **Before.** Native refused every claim, signal, activity result,
+  heartbeat and timer on a run past its execution or run deadline with
+  `run_timed_out`. It never closed the run, so the run stayed open with
+  work it could not accept.
+- **Published PHP.** `DefaultWorkflowTaskBridge::complete` calls
+  `WorkflowExecutor::timeoutIfDeadlineExpired`. PHP applies a deadline when a
+  workflow task completes after it, and nowhere else. `timeoutRun` cancels
+  the run's other open tasks, its open activities and its timers. It records
+  a `timeout` failure and fails the run with `closed_reason` `timed_out`. It
+  records `WorkflowTimedOut` with the timeout kind, message, exception class
+  and deadlines, closes pending updates, completes the task and resolves a
+  parent's child call as failed. The worker gets 409 with `recorded: false`
+  and `reason: run_timed_out`.
+- **Source.** Native does the same. Deadlines no longer refuse other work,
+  so a run past its deadline still takes signals, activity results and timer
+  fires until its next workflow task completes.
+- **Evidence.** A probe of published PHP and native, with a 2-second run
+  timeout and a workflow task completed after it, gives the same response,
+  run state, history and `WorkflowTimedOut` payload. The only difference is
+  native's narrower server capability list, the same as on every worker
+  response. New `run_deadlines` tests cover the timeout with an open
+  activity and timer, and an in-time completion, on SQLite, PostgreSQL and
+  MySQL.
+- **Still different.** Describe omits PHP's terminal failure fields
+  (`error`, `failure`, `exception`, `failures`) for every failed run, not
+  only timed-out ones.
+
 October 21, Waterline reads:
 
 - **Found by.** Waterline 2.12.0 service mode in front of published PHP
