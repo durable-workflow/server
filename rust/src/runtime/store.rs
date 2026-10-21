@@ -1785,6 +1785,18 @@ where
         Self::workflow_task_guard(&mut tx, &task, &body).await?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
+        // `timeoutIfDeadlineExpired`: published PHP applies a run's deadlines
+        // when one of its workflow tasks completes, and closes the run.
+        if [DB::optional_instant(&run, "execution_deadline_at")?, DB::optional_instant(&run, "run_deadline_at")?]
+            .into_iter()
+            .flatten()
+            .any(|deadline| deadline <= now())
+        {
+            let response = Self::time_out_run(&mut tx, &run, &task, &body["workflow_task_attempt"]).await?;
+            tx.commit().await?;
+            self.wake.notify_waiters();
+            return Err(super::RuntimeError::Protocol { status: StatusCode::CONFLICT, response });
+        }
         let task_payload = DB::document_row(&task, "payload")?;
         if Self::cancellation_request(&run)?.is_some()
             && commands.iter().any(|command| {
@@ -2416,7 +2428,7 @@ where
             match Self::active_run(&mut tx, &run_id).await {
                 Ok(_) => {}
                 Err(super::RuntimeError::Refused {
-                    reason: "run_timed_out" | "cancellation_deadline_expired",
+                    reason: "cancellation_deadline_expired",
                     ..
                 }) => continue,
                 Err(error) => return Err(error),
@@ -2652,13 +2664,6 @@ where
             "pending" | "running" | "waiting"
         ) {
             return Err(refuse(StatusCode::CONFLICT, "run_closed"));
-        }
-        if DB::optional_instant(&run, "execution_deadline_at")?
-            .is_some_and(|deadline| deadline <= now())
-            || DB::optional_instant(&run, "run_deadline_at")?
-                .is_some_and(|deadline| deadline <= now())
-        {
-            return Err(refuse(StatusCode::CONFLICT, "run_timed_out"));
         }
         if DB::optional_string(&run, "cancellation_request_command_id")?.is_some()
             && DB::optional_instant(&run, "cancellation_deadline_at")?
