@@ -229,6 +229,52 @@ support is not evidence of multi-node safety.
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
 names, including unsuccessful observations.
 
+October 20, concurrent MySQL and MariaDB bootstrap:
+
+- **Found by.** A multi-node smoke run started three nodes together on an
+  empty MySQL database. One node exited with `409 unsupported_rust_schema`.
+- **Cause.** MySQL commits DDL on its own. Between one node creating
+  `dw_server_schema` and recording its `rust-initializing` marker, another
+  node's read-only preflight, which runs before the bootstrap lock, saw an
+  empty marker table and refused. A node killed in the same window left a
+  database that no node could start on. PostgreSQL bootstraps inside one
+  locked transaction and SQLite in one file transaction, so neither has the
+  window.
+- **Source.** Preflight accepts an empty marker table when it is the only
+  table, and the node then waits for the bootstrap lock. Under the lock, a
+  missing marker is recorded before the migration runs.
+- **Checks.** The kill qualification has a `marker-table` phase. It kills a
+  bootstrapping child right after it creates the marker table and holds the
+  bootstrap lock. A concurrent start must still be waiting after one second,
+  then complete once the child is killed. Without the preflight change, it
+  refused at once. All 15 ignored MySQL qualification tests passed on MySQL
+  8.0 and MariaDB 10.11 locally.
+
+October 21, optional caller trace context:
+
+- **Why.** PHP Server's optional tracing ([#558](https://github.com/durable-workflow/server/pull/558),
+  Workflow #773) admits a top-level `observability_context` on start, signal,
+  update, cancel and request-cancellation requests when it is enabled. PHP
+  with tracing disabled, and published PHP 2.5.14, ignore the field. Native
+  refused it with 422 `unsupported_request_field`, so a caller that sent it
+  without checking discovery would have its business request refused.
+- **Source.** Those native handlers now drop exactly that top-level field
+  before reading the request. It is not validated, stored, logged or
+  compared, so a retried start with another trace context is the same
+  request. Native never advertises
+  `worker_protocol.server_capabilities.observability_context`. Terminate,
+  every other route, the same name anywhere else in a body, and any other
+  unknown field keep their existing handling.
+- **Test.** `trace_carriers` sends each of the nine affected routes with and
+  without a carrier to two identical workflows. It checks equal outcomes,
+  equal history event types, no stored trace identifier, the refused
+  terminate carrier and a refused unknown field beside the carrier. Removing
+  the change from any one of the nine handlers fails the test.
+- **Takeover.** Decided on [#325](https://github.com/durable-workflow/server/issues/325#issuecomment-6306545520):
+  a PHP 2.10 database with Core 2.9's nullable `observability_context`
+  columns is refused until its published layout is recorded. Its recipe will
+  count and then drop the three columns, like 2.9.7's `queue_delivery_reference`.
+
 October 20, external payload storage diagnostic:
 
 - **Source.** Native serves `POST /api/storage/test` for operators, in the
