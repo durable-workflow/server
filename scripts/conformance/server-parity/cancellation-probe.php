@@ -8,6 +8,7 @@ use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\WorkflowContext;
 use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\WorkflowCancelled;
+use DurableWorkflow\Exception\WorkflowTerminated;
 use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Support\Facades\Artisan;
 use Workflow\Serializers\Serializer;
@@ -23,6 +24,7 @@ require_once __DIR__.'/lock-pressure-middleware.php';
 // mutate engine rows or synthesize a claim, cancellation or terminal outcome.
 final class CancellationProbeState
 {
+    public static string $command = 'cancel';
     public static string $reason;
     public static ?array $receipt = null;
     public static array $before = [];
@@ -45,13 +47,18 @@ function httpCancellationObservation(array $fixture, string $workflowId, string 
         transport: observedChildTransport($polls, $completions, $activityPolls, $activityOutcomes));
     $phase = $fixture['immediate_cancellation']['phase'];
     $reason = $fixture['immediate_cancellation']['reason'];
+    // Cancel and terminate are one published implementation; the fixture
+    // names which command closes the run.
+    $close = ($fixture['immediate_cancellation']['command'] ?? 'cancel') === 'terminate'
+        ? static fn (?string $reason, string $runId): array => $client->terminateWorkflow($workflowId, $reason, $runId)
+        : static fn (?string $reason, string $runId): array => $client->cancelWorkflow($workflowId, $reason, $runId);
     $handle = $worker = null;
     $before = [];
     $receipt = null;
     $deadline = microtime(true) + 30;
-    $cancel = static function () use ($client, $workflowId, $reason, &$handle, &$before, &$receipt): void {
+    $cancel = static function () use ($client, $workflowId, $reason, $close, &$handle, &$before, &$receipt): void {
         $before = httpHistory($client, $workflowId, $handle->selectedRunId);
-        $receipt = cancellationReceipt(static fn (): array => $client->cancelWorkflow($workflowId, $reason, $handle->selectedRunId));
+        $receipt = cancellationReceipt(static fn (): array => $close($reason, $handle->selectedRunId));
     };
     $worker = (new Worker($client, $queue,
         clock: static function () use (&$worker, &$handle, &$receipt, $client, $workflowId, $phase, $cancel, $deadline): float {
@@ -99,12 +106,12 @@ function httpCancellationObservation(array $fixture, string $workflowId, string 
     unset($report);
     $execution = $handle->describeSelectedRun();
     $events = httpHistory($client, $workflowId, $handle->selectedRunId);
-    $duplicate = cancellationReceipt(static fn (): array => $client->cancelWorkflow($workflowId, 'replacement reason', $handle->selectedRunId));
+    $duplicate = cancellationReceipt(static fn (): array => $close('replacement reason', $handle->selectedRunId));
     $afterDuplicate = httpHistory($client, $workflowId, $handle->selectedRunId);
     $outcome = null;
     try {
         $handle->resultOfSelectedRun(1);
-    } catch (WorkflowCancelled $error) {
+    } catch (WorkflowCancelled|WorkflowTerminated $error) {
         $outcome = ['type' => $error::class, 'message' => $error->getMessage()];
     }
     $late = null;
@@ -148,11 +155,16 @@ function embeddedCancellationReceipt($command): array
         'response' => \Workflow\V2\Support\CommandResponse::payload($command)];
 }
 
+function closeEmbeddedRun(WorkflowStub $stub, string $reason)
+{
+    return CancellationProbeState::$command === 'terminate' ? $stub->attemptTerminate($reason) : $stub->attemptCancel($reason);
+}
+
 function cancelEmbeddedRun(string $runId): void
 {
     CancellationProbeState::$before = embeddedCancellationHistory($runId);
     CancellationProbeState::$receipt = embeddedCancellationReceipt(
-        WorkflowStub::loadRun($runId, 'default')->attemptCancel(CancellationProbeState::$reason));
+        closeEmbeddedRun(WorkflowStub::loadRun($runId, 'default'), CancellationProbeState::$reason));
 }
 
 function embeddedCancellationObservation(array $fixture, string $workflowId, string $namespace, string $queue, string $root): array
@@ -174,6 +186,7 @@ function embeddedCancellationObservation(array $fixture, string $workflowId, str
     $class = config('workflows.v2.types.workflows')[$fixture['workflow_type']];
     $stub = WorkflowStub::make($class, $workflowId);
     CancellationProbeState::$reason = $fixture['immediate_cancellation']['reason'];
+    CancellationProbeState::$command = $fixture['immediate_cancellation']['command'] ?? 'cancel';
     $stub->start($fixture['input'], new WorkflowOptions(connection: 'database', queue: $queue),
         new StartOptions(executionTimeoutSeconds: 3600, runTimeoutSeconds: 600));
     $phase = $fixture['immediate_cancellation']['phase'];
@@ -187,7 +200,7 @@ function embeddedCancellationObservation(array $fixture, string $workflowId, str
         '--max-time' => 10, '--sleep' => 0, '--tries' => 1]);
     $run = WorkflowRun::query()->findOrFail($stub->runId());
     $events = embeddedCancellationHistory($run->id);
-    $duplicate = embeddedCancellationReceipt(WorkflowStub::loadRun($run->id, $namespace)->attemptCancel('replacement reason'));
+    $duplicate = embeddedCancellationReceipt(closeEmbeddedRun(WorkflowStub::loadRun($run->id, $namespace), 'replacement reason'));
     $afterDuplicate = embeddedCancellationHistory($run->id);
     // Redeliver original closed activity work through its actual queue job.
     foreach (CancellationProbeState::$claims as $taskId) {
@@ -205,7 +218,8 @@ function embeddedCancellationObservation(array $fixture, string $workflowId, str
         'cancellation' => ['before' => CancellationProbeState::$before, 'accepted' => CancellationProbeState::$receipt,
             'duplicate' => $duplicate, 'history_before_duplicate' => $events, 'history_after_duplicate' => $afterDuplicate,
             'redelivered_task_ids' => CancellationProbeState::$claims, 'fresh_history' => embeddedCancellationHistory($run->id),
-            'fresh_execution' => ['id' => $fresh->runId(), 'status' => $fresh->status(), 'cancelled' => $fresh->cancelled(), 'output' => $fresh->output()],
+            'fresh_execution' => ['id' => $fresh->runId(), 'status' => $fresh->status(), 'cancelled' => $fresh->cancelled(),
+                'terminated' => $fresh->terminated(), 'output' => $fresh->output()],
             'failures' => $run->failures()->get()->map->toArray()->all(),
             'attempts' => $run->activityAttempts()->get()->map->toArray()->all(),
             'tasks' => $run->tasks()->get()->map->toArray()->all()]];
