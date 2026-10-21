@@ -67,6 +67,8 @@ mod worker_deregistration;
 
 #[path = "execution/worker_listing.rs"]
 mod worker_listing;
+#[path = "execution/activity_failure_fields.rs"]
+mod activity_failure_fields;
 
 #[path = "execution/worker_pressure.rs"]
 mod worker_pressure;

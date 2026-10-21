@@ -7,6 +7,7 @@ use super::{
     store::{Store, now, reject_fields},
     text,
 };
+use super::laravel_validation::{Rule, failure_messages, rule_errors};
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
@@ -113,54 +114,219 @@ pub(super) fn retry_policy(command: &Value) -> Result<Option<Value>> {
     ))
 }
 
+const FAILURE_KINDS: &[&str] = &[
+    "application",
+    "timeout",
+    "cancellation",
+    "malformed_output",
+    "handler_crash",
+    "decode_failure",
+    "unsupported_payload",
+];
+const TIMEOUT_TYPES: &[&str] = &[
+    "schedule_to_start",
+    "start_to_close",
+    "schedule_to_close",
+    "heartbeat",
+    "deadline_exceeded",
+];
+
+/// Published PHP's `ActivityTaskController::fail` rules, in their order.
+const FAILURE_RULES: &[(&str, &[Rule])] = &[
+    ("activity_attempt_id", &[Rule::Required, Rule::String]),
+    ("lease_owner", &[Rule::Required, Rule::String]),
+    ("failure", &[Rule::Required, Rule::Array]),
+    ("failure.message", &[Rule::Required, Rule::String]),
+    ("failure.type", &[Rule::Nullable, Rule::String]),
+    ("failure.class", &[Rule::Nullable, Rule::String]),
+    ("failure.code", &[Rule::Nullable, Rule::Integer]),
+    ("failure.stack_trace", &[Rule::Nullable, Rule::String]),
+    ("failure.non_retryable", &[Rule::Nullable, Rule::Boolean]),
+    ("failure.retryable", &[Rule::Nullable, Rule::Boolean]),
+    ("failure.kind", &[Rule::Nullable, Rule::String, Rule::In(FAILURE_KINDS)]),
+    ("failure.timeout_type", &[Rule::Nullable, Rule::String, Rule::In(TIMEOUT_TYPES)]),
+    ("failure.cancelled", &[Rule::Nullable, Rule::Boolean]),
+    ("failure.malformed_output", &[Rule::Nullable, Rule::Boolean]),
+    ("failure.details", &[Rule::Nullable]),
+    ("failure.diagnostics", &[Rule::Nullable, Rule::Array]),
+    ("failure.runtime_diagnostics", &[Rule::Nullable, Rule::Array]),
+];
+
+fn no_custom(_: &str, _: Rule) -> Option<&'static str> {
+    None
+}
+
+fn invalid(field: &str, message: impl Into<String>) -> super::RuntimeError {
+    failure_messages(vec![(field.to_owned(), vec![message.into()])]).expect("one message")
+}
+
+/// Validates the trimmed request with PHP's rules. Laravel shows a nested
+/// attribute such as `failure.non_retryable` as `failure.non retryable`.
+fn validate_failure(body: &Value) -> Result<()> {
+    let mut flat = body.clone();
+    if let (Some(flat), Some(failure)) = (flat.as_object_mut(), body["failure"].as_object()) {
+        for (key, value) in failure {
+            flat.insert(format!("failure.{key}"), value.clone());
+        }
+    }
+    let errors = rule_errors(&flat, FAILURE_RULES, no_custom)
+        .into_iter()
+        .map(|(field, messages)| {
+            let shown = field.replace('_', " ");
+            let messages = messages.into_iter().map(|message| message.replace(&field, &shown)).collect();
+            (field, messages)
+        })
+        .collect();
+    match failure_messages(errors) {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// `AvroPayloadEnvelopeResolver::resolveCommandPayloadWithCodec` for
+/// `failure.details`: an Avro envelope becomes its blob and codec, any other
+/// value is kept as given.
+fn resolve_details(details: &Value) -> Result<(Value, Option<&'static str>)> {
+    let Some(fields) = details.as_object() else {
+        return Ok((details.clone(), None));
+    };
+    if let Some(message) = fields.get("codec").and_then(super::input_envelope::codec_refusal) {
+        return Err(invalid("failure.details.codec", message));
+    }
+    if fields.contains_key("external_storage") {
+        return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "external_payload_unsupported"));
+    }
+    let mut keys: Vec<&str> = fields.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    if keys != ["blob", "codec"] {
+        return Ok((details.clone(), None));
+    }
+    if !fields["codec"].as_str().is_some_and(|codec| !codec.is_empty()) {
+        return Err(invalid("failure.details.codec", "The payload envelope codec must be a non-empty string."));
+    }
+    let Some(blob) = fields["blob"].as_str() else {
+        return Err(invalid("failure.details.blob", "The payload envelope blob must be a string."));
+    };
+    let decodable = crate::codec::ValueCodec::new().and_then(|codec| codec.decode(blob)).is_ok();
+    if !decodable {
+        return Err(invalid(
+            "failure.details.blob",
+            "The payload must contain one complete Avro Value encoded with the official codec. JSON is only the HTTP document transport.",
+        ));
+    }
+    Ok((json!(blob), Some("avro")))
+}
+
+/// A PHP array round trip: an object keyed 0..n, including an empty one,
+/// comes back as a list.
+fn php_array(value: Value) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(items.into_iter().map(php_array).collect()),
+        Value::Object(fields) => {
+            if (0..fields.len()).all(|index| fields.contains_key(&index.to_string())) {
+                let mut fields = fields;
+                Value::Array((0..fields.len()).map(|index| php_array(fields.remove(&index.to_string()).expect("contiguous key"))).collect())
+            } else {
+                Value::Object(fields.into_iter().map(|(key, value)| (key, php_array(value))).collect())
+            }
+        }
+        other => other,
+    }
+}
+
+/// `FailureFactory::normalizePayload` of PHP's external worker failure: the
+/// reported class (`RuntimeException` when absent), type, message and a
+/// JSON integer code, then the optional fields PHP keeps. The stack trace
+/// and the classification flags are validated but not kept.
+fn normalized_failure(failure: &Value) -> Result<Value> {
+    let mut normalized = json!({
+        "class": failure["class"].as_str().unwrap_or("RuntimeException"),
+        "type": failure["type"].as_str(),
+        "message": failure["message"],
+        "code": failure["code"].as_i64().unwrap_or(0),
+    });
+    if let Some(file) = failure["file"].as_str().filter(|file| !file.is_empty()) {
+        normalized["file"] = json!(file);
+    }
+    if let Some(line) = failure["line"].as_i64() {
+        normalized["line"] = json!(line);
+    }
+    for frames in ["trace", "properties"] {
+        if let Some(value) = failure.get(frames) {
+            let kept: Vec<Value> = match php_array(value.clone()) {
+                Value::Array(items) => items.into_iter().filter(|item| item.is_array() || item.is_object()).collect(),
+                Value::Object(fields) => fields.into_values().filter(|item| item.is_array() || item.is_object()).collect(),
+                _ => Vec::new(),
+            };
+            normalized[frames] = json!(kept);
+        }
+    }
+    if let Some(details) = failure.get("details") {
+        let (payload, codec) = resolve_details(details)?;
+        normalized["details"] = php_array(payload);
+        if let Some(codec) = codec {
+            normalized["details_payload_codec"] = json!(codec);
+        }
+    }
+    if let Some(flag) = failure["non_retryable"].as_bool() {
+        normalized["non_retryable"] = json!(flag);
+    }
+    for field in ["diagnostics", "runtime_diagnostics"] {
+        if let Some(value) = failure.get(field).filter(|value| value.is_array() || value.is_object()) {
+            normalized[field] = php_array(value.clone());
+        }
+    }
+    Ok(normalized)
+}
+
+/// The failure as history presents it: without its class, which history
+/// carries as `exception_class`, and with a string `details` as its envelope.
+pub(super) fn presented_failure(stored: &Value) -> Value {
+    let mut presented = stored.clone();
+    if let Some(fields) = presented.as_object_mut() {
+        fields.remove("class");
+        if let Some(blob) = fields.get("details").and_then(Value::as_str).map(str::to_owned) {
+            let codec = fields.get("details_payload_codec").and_then(Value::as_str).unwrap_or("avro").to_owned();
+            fields.insert("details".into(), json!({"codec":codec,"blob":blob}));
+        }
+    }
+    presented
+}
+
+/// The failure as the activity snapshot keeps it: without its class.
+pub(super) fn snapshot_failure(stored: &Value) -> Value {
+    let mut snapshot = stored.clone();
+    if let Some(fields) = snapshot.as_object_mut() {
+        fields.remove("class");
+    }
+    snapshot
+}
+
+/// Validates a reported failure like published PHP and returns its
+/// normalized form with the Avro blob stored on the execution.
 pub(super) async fn prepare_failure(
     body: &Value,
     semaphore: Arc<Semaphore>,
 ) -> Result<(Value, String)> {
-    reject_fields(body, &["lease_owner", "activity_attempt_id", "failure"])?;
-    text(body, "lease_owner")?;
-    text(body, "activity_attempt_id")?;
-    let failure = &body["failure"];
-    reject_fields(failure, &["type", "message", "code", "non_retryable"])?;
-    let kind = text(failure, "type")?.to_owned();
-    let message = failure["message"]
-        .as_str()
-        .filter(|s| !s.is_empty() && s.len() <= 64 * 1024)
-        .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_activity_failure"))?
-        .to_owned();
-    let code = match failure.get("code") {
-        Some(value) => value
-            .as_i64()
-            .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_activity_failure"))?,
-        None => 0,
-    };
-    let non_retryable = match failure.get("non_retryable") {
-        Some(value) => value
-            .as_bool()
-            .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_activity_failure"))?,
-        None => false,
-    };
-    let payload = json!({"type":kind,"message":message,"code":code,"non_retryable":non_retryable});
+    let body = super::start_request::normalized(body.clone());
+    validate_failure(&body)?;
+    let normalized = normalized_failure(&body["failure"])?;
+    let stored = normalized.clone();
     let permit = semaphore
         .acquire_owned()
         .await
         .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "failure_codec_unavailable"))?;
     let blob = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        use crate::codec::{Value as Datum, ValueCodec};
-        let value = Datum::Map(std::collections::BTreeMap::from([
-            ("type".into(), Datum::String(kind)),
-            ("message".into(), Datum::String(message)),
-            ("code".into(), Datum::Long(code)),
-            ("non_retryable".into(), Datum::Boolean(non_retryable)),
-        ]));
-        ValueCodec::new()
+        let value = super::memos::from_json(stored)
+            .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_activity_failure"))?;
+        crate::codec::ValueCodec::new()
             .and_then(|codec| codec.encode(&value))
             .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_activity_failure"))
     })
     .await
     .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "failure_codec_unavailable"))??;
-    Ok((payload, blob))
+    Ok((normalized, blob))
 }
 
 #[cfg(test)]
@@ -269,10 +435,11 @@ where
         // Class/type filters use exact PHP matching. Preserve the original
         // report's flag in its payload; the derived terminal classification
         // also accounts for the immutable execution policy.
+        // `isNonRetryableFailure` matches the reported class or type.
         let non_retryable = failure["non_retryable"] == true
-            || policy["non_retryable_error_types"]
-                .as_array()
-                .is_some_and(|types| types.contains(&failure["type"]));
+            || policy["non_retryable_error_types"].as_array().is_some_and(|types| {
+                types.contains(&failure["class"]) || types.contains(&failure["type"])
+            });
         let terminal = non_retryable || count >= max;
         let backoff = policy["backoff_seconds"]
             .as_array()
@@ -305,7 +472,7 @@ where
                 .bind(blob).bind(DB::bind_time(closed_at)).bind(&activity_id).execute(&mut *tx).await?;
             let failure_id = super::store::id();
             Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,exception_class,message,non_retryable,handled,file,line,created_at,updated_at) VALUES ($1,$2,'activity_execution',$3,'activity','activity',$4,$5,CASE WHEN $6='true' THEN TRUE ELSE FALSE END,FALSE,'external-worker',0,$7,$8)")
-                .bind(&failure_id).bind(&run_id).bind(&activity_id).bind(text(&failure,"type")?)
+                .bind(&failure_id).bind(&run_id).bind(&activity_id).bind(failure["class"].as_str().unwrap_or("RuntimeException"))
                 .bind(failure["message"].as_str().unwrap()).bind(if non_retryable {"true"} else {"false"})
                 .bind(DB::bind_time(closed_at)).bind(DB::bind_time(closed_at)).execute(&mut *tx).await?;
             let updated = Self::query("SELECT * FROM activity_executions WHERE id=$1")
@@ -319,11 +486,11 @@ where
             payload["failure_category"] = json!("activity");
             payload["non_retryable"] = json!(non_retryable);
             payload["exception_type"] = failure["type"].clone();
-            payload["exception_class"] = failure["type"].clone();
+            payload["exception_class"] = failure["class"].clone();
             payload["message"] = failure["message"].clone();
             payload["code"] = failure["code"].clone();
-            payload["exception"] = failure.clone();
-            payload["activity"]["exception"] = failure;
+            payload["exception"] = presented_failure(&failure);
+            payload["activity"]["exception"] = snapshot_failure(&failure);
             payload["task"] = json!({"id":task_id,"type":"activity","status":"leased",
                 "available_at":DB::optional_instant(&task,"available_at")?,"leased_at":DB::optional_instant(&task,"leased_at")?,
                 "lease_owner":DB::optional_string(&task,"lease_owner")?,"attempt_count":count});
@@ -378,10 +545,11 @@ where
         payload["max_attempts"] = json!(max);
         payload["retry_policy"] = policy;
         payload["exception_type"] = failure["type"].clone();
-        payload["exception_class"] = failure["type"].clone();
+        payload["exception_class"] = failure["class"].clone();
         payload["message"] = failure["message"].clone();
         payload["code"] = failure["code"].clone();
-        payload["exception"] = failure;
+        payload["exception"] = presented_failure(&failure);
+        payload["activity"]["exception"] = snapshot_failure(&failure);
         payload["activity_attempt"] = json!({"id":attempt_id,"activity_execution_id":activity_id,"task_id":task_id,
             "status":"failed","lease_owner":DB::optional_string(&task,"lease_owner")?,"closed_at":closed_at});
         Self::append(
