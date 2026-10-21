@@ -427,6 +427,10 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         $handle->selectedRunId, $queue, $url, $namespace) : null;
     $namespaces = isset($fixture['namespace_isolation']) ? finishHttpNamespaces($client, $fixture, $workflowId, $queue, $url) : null;
     $workerDeregistration = isset($fixture['worker_deregistration']) ? finishHttpWorkerDeregistration($client, $fixture, $workflowId, $queue, $url) : null;
+    $lateWorkflowCompletion = isset($fixture['late_workflow_completion']) ? finishHttpLateWorkflowCompletion($client, $fixture, $workflowId) : null;
+    $searchAttributes = isset($fixture['search_attributes']) ? finishHttpSearchAttributes($client, $fixture, $workflowId, $url) : null;
+    $workerListing = isset($fixture['worker_listing']) ? finishHttpWorkerListing($client, $fixture, $workflowId) : null;
+    $workerReplacement = isset($fixture['worker_replacement']) ? finishHttpWorkerReplacement($client, $fixture, $workflowId) : null;
     $waitingHistory = isset($fixture['waiting_for_history']) ? finishHttpWaitingHistory($client, $fixture, $workflowId, $queue, $url) : null;
     $taskRetry = isset($fixture['workflow_task_retry']) ? finishHttpTaskRetry($client, $fixture, $workflowId, $queue, $url) : null;
     if ($scheduleState !== null) {
@@ -513,6 +517,10 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'admission' => $admission,
         'namespace_isolation' => $namespaces,
         'worker_deregistration' => $workerDeregistration,
+        'late_workflow_completion' => $lateWorkflowCompletion,
+        'search_attributes' => $searchAttributes,
+        'worker_listing' => $workerListing,
+        'worker_replacement' => $workerReplacement,
         'waiting_for_history' => $waitingHistory,
         'workflow_task_retry' => $taskRetry,
         'run_id' => $execution->runId,
@@ -808,7 +816,11 @@ try {
     require __DIR__.'/visibility-probe.php';
     require __DIR__.'/admission-probe.php';
     require __DIR__.'/namespace-probe.php';
+    require __DIR__.'/search-attribute-probe.php';
     require __DIR__.'/worker-deregistration-probe.php';
+    require __DIR__.'/late-workflow-completion-probe.php';
+    require __DIR__.'/worker-listing-probe.php';
+    require __DIR__.'/worker-replacement-probe.php';
     require __DIR__.'/waiting-history-probe.php';
     require __DIR__.'/task-retry-probe.php';
     require __DIR__.'/child-cancellation-probe.php';
@@ -939,8 +951,20 @@ try {
         };
     }
     $observation['typed_input'] = typedValue($observation['input']);
+    if ($mode === 'embedded' && isset($fixture['worker_replacement'])) {
+        $observation['worker_replacement'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_worker_registration_lifecycle'];
+    }
+    if ($mode === 'embedded' && isset($fixture['worker_listing'])) {
+        $observation['worker_listing'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_worker_registration_lifecycle'];
+    }
     if ($mode === 'embedded' && isset($fixture['worker_deregistration'])) {
         $observation['worker_deregistration'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_worker_registration_lifecycle'];
+    }
+    if ($mode === 'embedded' && isset($fixture['late_workflow_completion'])) {
+        $observation['late_workflow_completion'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_worker_registration_lifecycle'];
+    }
+    if ($mode === 'embedded' && isset($fixture['search_attributes'])) {
+        $observation['search_attributes'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_search_attribute_registry'];
     }
     $observation['mode'] = $mode;
     $observation['typed_output'] = typedValue($observation['output']);

@@ -1,0 +1,127 @@
+{
+  "identity": {
+    "database": "sqlite",
+    "compose_project": "dw-mn-sqlite-20261020t172123",
+    "source_revision": "68d78be19c445b22e4cd95a404c50c4f3f52f271",
+    "source_modified_files": 0,
+    "native_binary_sha256": "53d634e8fb7d96cab64d768e01d47db6e8c2f5a634cf0d6e67e6047b95ac03a9",
+    "smoke": false,
+    "schedule": {
+      "rate": 0.5,
+      "offer_seconds": 180,
+      "drain_seconds": 420,
+      "windows": 3,
+      "node_kill_every_seconds": 15,
+      "node_down_seconds": 4,
+      "worker_pause_every_seconds": 90,
+      "worker_pause_seconds": 70,
+      "workflow_task_lease_seconds": 60
+    },
+    "machine": {
+      "kernel": "5.15.0-198-generic",
+      "logical_cpus": 4,
+      "cpu_model": "Intel(R) Core(TM) i5-6500 CPU @ 3.20GHz"
+    }
+  },
+  "windows": [
+    {
+      "sdk_php": "2.0.10",
+      "outcome": "pass",
+      "planned_starts": 90,
+      "accepted_starts": 90,
+      "completed": 90,
+      "verified": 90,
+      "activity_attempts_per_workflow": {
+        "1": 90
+      },
+      "repairs_by_workflow": null,
+      "retries": [],
+      "errors": []
+    },
+    {
+      "sdk_php": "2.0.10",
+      "outcome": "pass",
+      "planned_starts": 90,
+      "accepted_starts": 90,
+      "completed": 90,
+      "verified": 90,
+      "activity_attempts_per_workflow": {
+        "1": 90
+      },
+      "repairs_by_workflow": null,
+      "retries": [],
+      "errors": []
+    },
+    {
+      "sdk_php": "2.0.10",
+      "outcome": "pass",
+      "planned_starts": 90,
+      "accepted_starts": 90,
+      "completed": 90,
+      "verified": 90,
+      "activity_attempts_per_workflow": {
+        "1": 90
+      },
+      "repairs_by_workflow": null,
+      "retries": [],
+      "errors": []
+    }
+  ],
+  "chaos": {
+    "kill": 27,
+    "pause": 3,
+    "start": 27,
+    "unpause": 3
+  },
+  "balancer": {
+    "requests": 3990,
+    "workflow_task_completions_409": 0,
+    "activity_task_completions_409": 0,
+    "responses_5xx": 0
+  },
+  "database_audit": {
+    "runs completed": 270,
+    "tasks activity completed": 270,
+    "tasks workflow completed": 540,
+    "attempts completed": 270,
+    "duplicate_workflow_completions": 0,
+    "duplicate_activity_completions": 0,
+    "duplicate_history_sequences": 0
+  },
+  "containers": {
+    "lb": {
+      "restarts": 0,
+      "oom_killed": false,
+      "exit_code": 0
+    },
+    "native-1": {
+      "restarts": 0,
+      "oom_killed": false,
+      "exit_code": 0
+    },
+    "native-2": {
+      "restarts": 0,
+      "oom_killed": false,
+      "exit_code": 0
+    },
+    "native-3": {
+      "restarts": 0,
+      "oom_killed": false,
+      "exit_code": 0
+    },
+    "sdk-worker-1": {
+      "restarts": 3,
+      "oom_killed": false,
+      "exit_code": 0
+    },
+    "sdk-worker-2": {
+      "restarts": 0,
+      "oom_killed": false,
+      "exit_code": 0
+    }
+  },
+  "native_panics": 0,
+  "sdk_worker_exits": {
+    "sdk-worker-1: Uncaught DurableWorkflow\\Exception\\TransportException: task_not_leased": 3
+  }
+}

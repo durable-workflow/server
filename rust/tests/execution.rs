@@ -37,6 +37,11 @@ mod role_tokens;
 #[path = "execution/namespaces.rs"]
 mod namespaces;
 
+#[path = "execution/late_workflow_claims.rs"]
+mod late_workflow_claims;
+#[path = "execution/search_attributes.rs"]
+mod search_attributes;
+
 #[path = "execution/named_timers.rs"]
 mod named_timers;
 
@@ -54,6 +59,9 @@ mod worker_contracts;
 
 #[path = "execution/worker_deregistration.rs"]
 mod worker_deregistration;
+
+#[path = "execution/worker_listing.rs"]
+mod worker_listing;
 
 #[path = "execution/worker_pressure.rs"]
 mod worker_pressure;
@@ -271,7 +279,11 @@ impl TestDatabase {
     }
 
     async fn cancellation_failure_count(&self, run: &str, failure: &str) -> i64 {
-        let query = "SELECT COUNT(*) FROM workflow_failures WHERE workflow_run_id=$1 AND source_id=$2 AND id=$3 AND source_kind='workflow_run' AND propagation_kind='cancelled' AND failure_category='cancelled' AND handled=false";
+        self.terminal_failure_count(run, failure, "cancelled").await
+    }
+
+    async fn terminal_failure_count(&self, run: &str, failure: &str, kind: &str) -> i64 {
+        let query = "SELECT COUNT(*) FROM workflow_failures WHERE workflow_run_id=$1 AND source_id=$2 AND id=$3 AND source_kind='workflow_run' AND propagation_kind=$4 AND failure_category=$5 AND handled=false";
         match self {
             Self::Sqlite(dir) => {
                 let pool = sqlx::SqlitePool::connect(&format!(
@@ -284,6 +296,8 @@ impl TestDatabase {
                     .bind(run)
                     .bind(run)
                     .bind(failure)
+                    .bind(kind)
+                    .bind(kind)
                     .fetch_one(&pool)
                     .await
                     .unwrap();
@@ -299,6 +313,8 @@ impl TestDatabase {
                     .bind(run)
                     .bind(run)
                     .bind(failure)
+                    .bind(kind)
+                    .bind(kind)
                     .fetch_one(&pool)
                     .await
                     .unwrap();
@@ -310,8 +326,8 @@ impl TestDatabase {
                     .connect_with(options.as_ref().clone())
                     .await
                     .unwrap();
-                let count = sqlx::query_scalar("SELECT COUNT(*) FROM workflow_failures WHERE workflow_run_id=? AND source_id=? AND id=? AND source_kind='workflow_run' AND propagation_kind='cancelled' AND failure_category='cancelled' AND handled=false")
-                    .bind(run).bind(run).bind(failure).fetch_one(&pool).await.unwrap();
+                let count = sqlx::query_scalar("SELECT COUNT(*) FROM workflow_failures WHERE workflow_run_id=? AND source_id=? AND id=? AND source_kind='workflow_run' AND propagation_kind=? AND failure_category=? AND handled=false")
+                    .bind(run).bind(run).bind(failure).bind(kind).bind(kind).fetch_one(&pool).await.unwrap();
                 pool.close().await;
                 count
             }
@@ -1406,6 +1422,27 @@ async fn direct_child_cancellation_preserves_original_failure_and_one_parent_res
             child_id.as_str().unwrap(),
             child_run.as_str().unwrap()
         );
+        // A terminated child would resolve its parent with ChildRunTerminated,
+        // which is not qualified yet. The refusal leaves both runs unchanged.
+        let before = run_history(&app, &child_id, &child_run).await;
+        let terminate = request(
+            &app,
+            "POST",
+            &path.replace("/cancel", "/terminate"),
+            json!({"reason":"direct child termination"}),
+        )
+        .await;
+        assert_eq!(
+            terminate.0,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            terminate.1
+        );
+        assert_eq!(
+            terminate.1["reason"],
+            "termination_propagation_not_available"
+        );
+        assert_eq!(run_history(&app, &child_id, &child_run).await, before);
         let accepted = request(
             &app,
             "POST",
@@ -3795,8 +3832,26 @@ async fn cooperative_delivery_cleanup_and_original_deadline_survive_fresh_runtim
 }
 
 #[tokio::test]
-async fn immediate_cancellation_closes_original_work_once_and_survives_fresh_pools() {
-    for phase in ["before_claim", "pending_timer", "leased_activity"] {
+async fn immediate_cancellation_and_termination_close_original_work_once_and_survive_fresh_pools() {
+    for (command, phase) in ["cancel", "terminate"].into_iter().flat_map(|command| {
+        ["before_claim", "pending_timer", "leased_activity"].map(|phase| (command, phase))
+    }) {
+        // Published PHP runs both commands through one implementation.
+        let (closed, requested_event, terminal_event, exception) = if command == "cancel" {
+            (
+                "cancelled",
+                "CancelRequested",
+                "WorkflowCancelled",
+                "Workflow\\V2\\Exceptions\\WorkflowCancelledException",
+            )
+        } else {
+            (
+                "terminated",
+                "TerminateRequested",
+                "WorkflowTerminated",
+                "Workflow\\V2\\Exceptions\\WorkflowTerminatedException",
+            )
+        };
         let database = TestDatabase::new().await;
         let runtime_a = database.open().await.unwrap();
         let runtime_b = database.open().await.unwrap();
@@ -3820,18 +3875,18 @@ async fn immediate_cancellation_closes_original_work_once_and_survives_fresh_poo
         let workflow = json!(phase);
         let run = started["run_id"].clone();
         let path = format!(
-            "/api/workflows/{phase}/runs/{}/cancel",
+            "/api/workflows/{phase}/runs/{}/{command}",
             run.as_str().unwrap()
         );
         let mut activity_task = Value::Null;
         if phase != "before_claim" {
             let task = poll(&app_a, "cancel-a", "workflow").await;
-            let command = if phase == "pending_timer" {
+            let scheduling = if phase == "pending_timer" {
                 json!({"type":"start_timer","delay_seconds":60})
             } else {
                 json!({"type":"schedule_activity","activity_type":"echo-activity","arguments":envelope(Payload::Array(vec![Payload::Long(9007199254740993)]))})
             };
-            let completed = finish_task(&app_a, &task, json!([command])).await;
+            let completed = finish_task(&app_a, &task, json!([scheduling])).await;
             assert_eq!(completed.0, StatusCode::OK, "{}", completed.1);
             if phase == "leased_activity" {
                 activity_task = poll(&app_b, "cancel-b", "activity").await;
@@ -3842,7 +3897,7 @@ async fn immediate_cancellation_closes_original_work_once_and_survives_fresh_poo
         let wrong_run = request(
             &app_b,
             "POST",
-            &format!("/api/workflows/{phase}/runs/another-run/cancel"),
+            &format!("/api/workflows/{phase}/runs/another-run/{command}"),
             json!({"reason":"replacement"}),
         )
         .await;
@@ -3879,7 +3934,7 @@ async fn immediate_cancellation_closes_original_work_once_and_survives_fresh_poo
         } else {
             right.1
         };
-        assert_eq!(accepted["outcome"], "cancelled");
+        assert_eq!(accepted["outcome"], closed);
         let history = run_history(&app_a, &workflow, &run).await;
         let events = history.as_array().unwrap();
         assert_eq!(
@@ -3888,8 +3943,15 @@ async fn immediate_cancellation_closes_original_work_once_and_survives_fresh_poo
         );
         let requested = &events[prefix.as_array().unwrap().len()];
         let terminal = events.last().unwrap();
-        assert_eq!(requested["event_type"], "CancelRequested");
-        assert_eq!(terminal["event_type"], "WorkflowCancelled");
+        assert_eq!(requested["event_type"], requested_event);
+        assert_eq!(requested["payload"]["command_type"], command);
+        assert_eq!(terminal["event_type"], terminal_event);
+        assert_eq!(terminal["payload"]["closed_reason"], closed);
+        assert_eq!(terminal["payload"]["failure_category"], closed);
+        assert_eq!(
+            terminal["payload"]["message"],
+            format!("Workflow {closed}: parity cancellation λ")
+        );
         assert_eq!(
             requested["payload"]["workflow_command_id"],
             accepted["command_id"]
@@ -3899,15 +3961,13 @@ async fn immediate_cancellation_closes_original_work_once_and_survives_fresh_poo
             accepted["command_id"]
         );
         assert_eq!(terminal["payload"]["reason"], "parity cancellation λ");
-        assert_eq!(
-            terminal["payload"]["exception_class"],
-            "Workflow\\V2\\Exceptions\\WorkflowCancelledException"
-        );
+        assert_eq!(terminal["payload"]["exception_class"], exception);
         assert_eq!(
             database
-                .cancellation_failure_count(
+                .terminal_failure_count(
                     run.as_str().unwrap(),
-                    terminal["payload"]["failure_id"].as_str().unwrap()
+                    terminal["payload"]["failure_id"].as_str().unwrap(),
+                    closed
                 )
                 .await,
             1
@@ -3946,7 +4006,8 @@ async fn immediate_cancellation_closes_original_work_once_and_survives_fresh_poo
             );
             let stale = request(&app_a, "POST", &stale_path, stale_body.clone()).await;
             assert_eq!(stale.0, StatusCode::CONFLICT, "{}", stale.1);
-            assert_eq!(stale.1["reason"], "run_cancelled");
+            assert_eq!(stale.1["reason"], format!("run_{closed}"));
+            assert_eq!(stale.1["run_status"], closed);
             assert_eq!(stale.1["recorded"], false);
             assert_eq!(stale.1["task_id"], activity_task["task_id"]);
             assert_eq!(
@@ -3975,10 +4036,10 @@ async fn immediate_cancellation_closes_original_work_once_and_survives_fresh_poo
         )
         .await
         .1;
-        assert_eq!(description["status"], "cancelled");
+        assert_eq!(description["status"], closed);
         assert_eq!(description["status_bucket"], "failed");
         assert_eq!(description["is_terminal"], true);
-        assert_eq!(description["closed_reason"], "cancelled");
+        assert_eq!(description["closed_reason"], closed);
         assert_eq!(
             ValueCodec::new()
                 .unwrap()
@@ -3997,9 +4058,10 @@ async fn immediate_cancellation_closes_original_work_once_and_survives_fresh_poo
         assert_eq!(run_history(&app_c, &workflow, &run).await, history);
         assert_eq!(
             database
-                .cancellation_failure_count(
+                .terminal_failure_count(
                     run.as_str().unwrap(),
-                    terminal["payload"]["failure_id"].as_str().unwrap()
+                    terminal["payload"]["failure_id"].as_str().unwrap(),
+                    closed
                 )
                 .await,
             1
