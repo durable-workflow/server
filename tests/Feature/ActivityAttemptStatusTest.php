@@ -236,6 +236,27 @@ class ActivityAttemptStatusTest extends TestCase
         $this->assertSame($before, $this->snapshot($task));
     }
 
+    #[DataProvider('workflowDeadlines')]
+    public function test_workflow_deadline_crossing_during_payload_resolution_cannot_record(string $field, string $reason): void
+    {
+        $task = $this->lease();
+        $deadline = now()->addSecond();
+        WorkflowRun::query()->findOrFail($task['run_id'])->forceFill([$field => $deadline])->save();
+        $before = $this->snapshot($task);
+        $this->mock(NamespaceExternalPayloadStorage::class, function (MockInterface $mock) use ($deadline): void {
+            $mock->shouldReceive('driverFor')->once()->andReturnUsing(function () use ($deadline): mixed {
+                $this->travelTo($deadline);
+
+                return null;
+            });
+        });
+        $this->flushControllers();
+
+        $this->withHeaders($this->headers())->postJson($this->path($task, 'complete'), $this->fence($task) + ['result' => null])
+            ->assertConflict()->assertJsonPath('recorded', false)->assertJsonPath('reason', $reason);
+        $this->assertSame($before, $this->snapshot($task));
+    }
+
     #[DataProvider('expiredOutcomeProvider')]
     public function test_outcome_crossing_expiry_during_payload_resolution_cannot_record(string $action, string $protocol): void
     {

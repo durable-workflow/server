@@ -91,6 +91,26 @@ class ActivityLeaseRenewalTest extends TestCase
         $this->assertArrayNotHasKey('execution', $task['deadlines'] ?? []);
     }
 
+    public static function workflowDeadlineFields(): array
+    {
+        return [
+            'run' => ['run_deadline_at', 'run_timeout'],
+            'execution' => ['execution_deadline_at', 'execution_timeout'],
+        ];
+    }
+
+    #[DataProvider('workflowDeadlineFields')]
+    public function test_renewal_cannot_pass_an_original_workflow_deadline(string $field, string $reason): void
+    {
+        $task = $this->claimActivity(runDeadlines: [$field => now()->addSeconds(2)]);
+        $attemptBefore = ActivityAttempt::query()->findOrFail($task['activity_attempt_id'])->getAttributes();
+        $this->travel(2)->seconds();
+        $this->postJson($this->renewalPath($task), $this->ownership($task), $this->workerHeaders())
+            ->assertConflict()->assertJsonPath('lease_renewed', false)
+            ->assertJsonPath('can_continue', false)->assertJsonPath('reason', $reason);
+        $this->assertSame($attemptBefore, ActivityAttempt::query()->findOrFail($task['activity_attempt_id'])->getAttributes());
+    }
+
     public function test_renewal_refuses_wrong_owner_and_namespace_without_extending_the_lease(): void
     {
         $task = $this->claimActivity();
