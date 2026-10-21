@@ -138,6 +138,75 @@ where
         Ok(if attributes.is_empty() { json!([]) } else { Value::Object(attributes) })
     }
 
+    /// The rows `HistoryExport::forRun` reads for one run, as JSON.
+    pub(super) async fn history_export_rows(
+        &self,
+        workflow_id: &str,
+        run_id: &str,
+    ) -> Result<(super::history_export::Rows, Vec<(String, Value, Option<Value>)>)> {
+        use super::history_export as export;
+        let mut tx = self.begin_read().await?;
+        let run = Self::query(export::RUN_SQL)
+            .bind(workflow_id)
+            .bind(run_id)
+            .bind(self.namespace.as_ref())
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| super::refuse(axum::http::StatusCode::NOT_FOUND, "run_not_found"))?;
+        let mut sections = Vec::with_capacity(11);
+        for (sql, columns) in [
+            (export::EVENTS_SQL, export::EVENTS),
+            (export::COMMANDS_SQL, export::COMMANDS),
+            (export::SIGNALS_SQL, export::SIGNALS),
+            (export::UPDATES_SQL, export::UPDATES),
+            (export::TASKS_SQL, export::TASKS),
+            (export::EXECUTIONS_SQL, export::EXECUTIONS),
+            (export::ATTEMPTS_SQL, export::ATTEMPTS),
+            (export::FAILURES_SQL, export::FAILURES),
+            (export::PARENTS_SQL, export::LINKS),
+            (export::CHILDREN_SQL, export::LINKS),
+            (export::SUMMARY_SQL, export::SUMMARY),
+        ] {
+            let rows = Self::query(sql).bind(run_id).fetch_all(&mut *tx).await?;
+            sections.push(rows.iter().map(|row| export::row_json::<DB>(row, columns)).collect::<Result<Vec<_>>>()?);
+        }
+        let mut memo = Vec::new();
+        for row in Self::query(DB::MEMO_READ).bind(run_id).fetch_all(&mut *tx).await? {
+            let portable = (DB::optional_number(&row, "portable_value_sequence")? == Some(DB::number(&row, "upserted_at_sequence")?))
+                .then(|| DB::optional_document_row(&row, "portable_value"))
+                .transpose()?
+                .flatten();
+            memo.push((DB::string(&row, "key")?, DB::document_row(&row, "value")?, portable));
+        }
+        tx.commit().await?;
+        let mut sections = sections.into_iter();
+        let mut next = || sections.next().unwrap_or_default();
+        let mut rows = export::Rows {
+            run: export::row_json::<DB>(&run, export::RUN)?,
+            events: next(),
+            commands: next(),
+            signals: next(),
+            updates: next(),
+            tasks: next(),
+            executions: next(),
+            attempts: next(),
+            failures: next(),
+            parents: next(),
+            children: next(),
+            ..Default::default()
+        };
+        rows.summary = next().into_iter().next();
+        rows.search_attributes = self.typed_search_attributes(run_id).await?;
+        if let Some(summary) = &rows.summary {
+            rows.task_problem_badge = super::run_diagnostics::task_problem_badge(
+                summary["task_problem"].as_bool().unwrap_or(false),
+                summary["liveness_state"].as_str(),
+                summary["wait_kind"].as_str(),
+            );
+        }
+        Ok((rows, memo))
+    }
+
     /// `runUpdateDiagnostics`: the run's updates in command order.
     async fn update_diagnostics(&self, run_id: &str) -> Result<Vec<Value>> {
         let rows = Self::query("SELECT id,workflow_command_id,workflow_instance_id,workflow_run_id,target_scope,requested_workflow_run_id,resolved_workflow_run_id,update_name,status,outcome,command_sequence,workflow_sequence,rejection_reason,validation_errors,failure_id,failure_message,accepted_at,applied_at,rejected_at,closed_at FROM workflow_updates WHERE workflow_run_id=$1 ORDER BY command_sequence,created_at,id")

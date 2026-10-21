@@ -79,6 +79,8 @@ mod activity_deadlines;
 mod lock_free_waiting;
 #[path = "execution/read_snapshots.rs"]
 mod read_snapshots;
+#[path = "execution/history_export.rs"]
+mod history_export;
 #[path = "execution/start_request.rs"]
 mod start_request;
 #[path = "execution/command_requests.rs"]
