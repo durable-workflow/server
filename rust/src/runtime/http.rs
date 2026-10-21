@@ -711,7 +711,7 @@ async fn close(
         .close_workflow(command, workflow_id, run_id, body)
         .await
         .map_err(|error| operation().refusal(error, workflow_id, run_id))?;
-    Ok((status, Json(response)))
+    Ok((status, Json(operation().response(response))))
 }
 
 async fn cancel_current(

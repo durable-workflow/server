@@ -58,6 +58,16 @@ check exists, takeover refuses when `upgrade-payload-inspect` reports any
 external reference, and the operator's object manifest from the backup
 procedure remains the record for those bytes.
 
+Native schedules are still a bounded subset of PHP's: one UTC interval of a
+day or two seconds, the skip overlap policy, no jitter, at most one run, the
+default namespace, and no memo, search attributes, note, buffered actions or
+queue routing. Every inspection reports `schedule_inspection`: the number of
+live (not deleted) schedules and, by reason, how many fall outside that
+subset, without naming them. Such a schedule would stop firing or lose
+fields under native, so its inspection is `unqualified` and takeover refuses
+with `upgrade_source_schedules_unsupported` before any change. Deleted
+schedules keep only their audit history and do not block takeover.
+
 ## Exclusive transaction per backend
 
 The marker, the fingerprint check and the schema changes must not interleave
