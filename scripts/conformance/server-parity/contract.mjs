@@ -12,6 +12,7 @@ import {checkWorkerDeregistration} from './worker-deregistration-contract.mjs';
 import {checkLateWorkflowCompletion} from './late-workflow-completion-contract.mjs';
 import {checkSearchAttributes} from './search-attribute-contract.mjs';
 import {checkStorageTest} from './storage-test-contract.mjs';
+import {checkSchedulePolicies} from './schedule-policies-contract.mjs';
 import {checkSignalsBeforeWorker} from './signals-before-worker-contract.mjs';
 import {checkWorkerListing} from './worker-listing-contract.mjs';
 import {checkWorkerReplacement} from './worker-replacement-contract.mjs';
@@ -138,6 +139,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const lateWorkflowCompletion = fixture.late_workflow_completion ? checkLateWorkflowCompletion(fixture, observation, workflowId) : null;
   const searchAttributes = fixture.search_attributes ? checkSearchAttributes(fixture, observation, workflowId) : null;
   const storageTest = fixture.storage_test ? checkStorageTest(fixture, observation, workflowId) : null;
+  const schedulePolicies = fixture.schedule_policies ? checkSchedulePolicies(fixture, observation, workflowId) : null;
   const signalsBeforeWorker = fixture.signals_before_worker ? checkSignalsBeforeWorker(fixture, observation, workflowId) : null;
   const workerListing = fixture.worker_listing ? checkWorkerListing(fixture, observation, workflowId) : null;
   const workerReplacement = fixture.worker_replacement ? checkWorkerReplacement(fixture, observation, workflowId) : null;
@@ -681,6 +683,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(lateWorkflowCompletion ? {late_workflow_completion: lateWorkflowCompletion} : {}),
     ...(searchAttributes ? {search_attributes: searchAttributes} : {}),
     ...(storageTest ? {storage_test: storageTest} : {}),
+    ...(schedulePolicies ? {schedule_policies: schedulePolicies} : {}),
     ...(signalsBeforeWorker ? {signals_before_worker: signalsBeforeWorker} : {}),
     ...(workerListing ? {worker_listing: workerListing} : {}),
     ...(workerReplacement ? {worker_replacement: workerReplacement} : {}),

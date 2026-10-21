@@ -1,7 +1,10 @@
 //! Whether every live PHP schedule is one native can run and describe as PHP
-//! does. Native schedules are still a bounded subset (one UTC interval, the
-//! skip policy, no jitter, at most one run, the default namespace), so a
-//! source schedule outside it would stop firing, or lose fields, after
+//! does. Native runs PHP's cron, intervals, zones, overlap policies,
+//! buffers, jitter, quotas, memo, notes and namespaces. It still refuses
+//! search attributes, visibility labels, Laravel queue routing, an unknown
+//! status, and a definition its own creation would refuse, including input
+//! that is not a payload envelope and a specification it cannot evaluate. A
+//! source schedule like that would stop firing, or lose fields, after
 //! takeover. The report counts them by reason and never contains schedule
 //! identities or values.
 use crate::runtime::{Result, RuntimeError, backend::Backend, schedules, store::now};
@@ -9,7 +12,7 @@ use serde_json::{Value, json};
 use sqlx::{Executor, IntoArguments};
 use std::collections::BTreeMap;
 
-const SCHEDULES: &str = "SELECT schedule_id,namespace,status,spec,action,overlap_policy,jitter_seconds,max_runs,note,memo,search_attributes,visibility_labels,buffered_actions,connection,queue FROM workflow_schedules WHERE status<>'deleted' ORDER BY id";
+const SCHEDULES: &str = "SELECT schedule_id,status,spec,action,overlap_policy,jitter_seconds,max_runs,note,memo,search_attributes,visibility_labels,connection,queue FROM workflow_schedules WHERE status<>'deleted' ORDER BY id";
 
 pub(super) async fn inspect<DB: Backend>(connection: &mut DB::Connection) -> Result<Value>
 where
@@ -23,7 +26,6 @@ where
     for row in &rows {
         let schedule = Schedule {
             schedule_id: DB::string(row, "schedule_id")?,
-            namespace: DB::optional_string(row, "namespace")?,
             status: DB::string(row, "status")?,
             spec: DB::optional_document_row(row, "spec")?.unwrap_or(Value::Null),
             action: DB::optional_document_row(row, "action")?.unwrap_or(Value::Null),
@@ -36,7 +38,6 @@ where
                 DB::optional_document_row(row, "search_attributes")?,
                 DB::optional_document_row(row, "visibility_labels")?,
             ],
-            buffered: DB::optional_document_row(row, "buffered_actions")?,
             routing: [
                 DB::optional_string(row, "connection")?,
                 DB::optional_string(row, "queue")?,
@@ -55,7 +56,6 @@ where
 
 struct Schedule {
     schedule_id: String,
-    namespace: Option<String>,
     status: String,
     spec: Value,
     action: Value,
@@ -64,7 +64,6 @@ struct Schedule {
     max_runs: Option<i64>,
     note: Option<String>,
     metadata: [Option<Value>; 3],
-    buffered: Option<Value>,
     routing: [Option<String>; 2],
 }
 
@@ -82,20 +81,12 @@ fn present(value: &Option<Value>) -> bool {
 impl Schedule {
     /// The first reason native cannot take this schedule over, if any.
     fn unsupported(&self) -> Option<&'static str> {
-        if self.namespace.as_deref() != Some("default") {
-            return Some("schedule_namespace_unsupported");
-        }
         if !matches!(self.status.as_str(), "active" | "paused") {
             return Some("schedule_status_unsupported");
         }
-        if self.metadata.iter().any(present) {
+        // Memo is carried; search attributes and visibility labels are not.
+        if self.metadata[1..].iter().any(present) {
             return Some("schedule_metadata_unsupported");
-        }
-        if self.note.is_some() {
-            return Some("schedule_note_unsupported");
-        }
-        if present(&self.buffered) {
-            return Some("schedule_buffered_actions_unsupported");
         }
         if self.routing.iter().any(Option::is_some) {
             return Some("schedule_queue_routing_unsupported");
@@ -104,13 +95,20 @@ impl Schedule {
         let body = json!({
             "schedule_id": self.schedule_id, "spec": self.spec, "action": self.action,
             "overlap_policy": self.overlap_policy, "jitter_seconds": self.jitter_seconds,
-            "max_runs": self.max_runs,
+            "max_runs": self.max_runs, "memo": self.metadata[0], "note": self.note,
         });
-        match schedules::definition(&body, now()) {
-            Ok(_) => None,
-            Err(RuntimeError::Refused { reason, .. }) => Some(reason),
-            Err(_) => Some("schedule_definition_unsupported"),
+        if let Err(error) = schedules::definition(&body) {
+            return Some(match error {
+                RuntimeError::Refused { reason, .. } => reason,
+                _ => "schedule_definition_unsupported",
+            });
         }
+        if schedules::spec_problem(&self.spec).is_some()
+            || schedules::next_fire(&self.spec, 0, now()).is_err()
+        {
+            return Some("schedule_spec_unsupported");
+        }
+        None
     }
 }
 
@@ -121,7 +119,6 @@ mod tests {
     fn runnable() -> Schedule {
         Schedule {
             schedule_id: "daily".into(),
-            namespace: Some("default".into()),
             status: "active".into(),
             spec: json!({"intervals":[{"every":"P1D"}],"timezone":"UTC"}),
             action: json!({"workflow_type":"echo","task_queue":"default",
@@ -132,59 +129,43 @@ mod tests {
             max_runs: None,
             note: None,
             metadata: [None, Some(Value::Null), Some(json!([]))],
-            buffered: None,
             routing: [None, None],
         }
     }
 
     #[test]
-    fn only_schedules_native_runs_and_describes_unchanged_are_qualified() {
+    fn schedules_native_runs_are_qualified_and_the_rest_refused() {
         assert_eq!(runnable().unsupported(), None);
-        let cases: [(fn(&mut Schedule), &str); 10] = [
-            (
-                |s| s.namespace = Some("billing".into()),
-                "schedule_namespace_unsupported",
-            ),
-            (|s| s.namespace = None, "schedule_namespace_unsupported"),
-            (
-                |s| s.spec = json!({"cron_expressions":["0 9 * * *"],"timezone":"UTC"}),
-                "unsupported_request_field",
-            ),
-            (
-                |s| s.spec = json!({"intervals":[{"every":"PT1H"}],"timezone":"UTC"}),
-                "unsupported_schedule_interval",
-            ),
-            (|s| s.overlap_policy = "buffer_one".into(), "unsupported_schedule_policy"),
-            (|s| s.jitter_seconds = 30, "unsupported_schedule_policy"),
-            (|s| s.max_runs = Some(5), "unsupported_schedule_quota"),
-            (
-                |s| s.metadata[0] = Some(json!({"team":"ops"})),
-                "schedule_metadata_unsupported",
-            ),
-            (|s| s.note = Some("paused for audit".into()), "schedule_note_unsupported"),
-            (
-                |s| {
-                    s.action["execution_timeout_seconds"] = Value::Null;
-                },
-                "unsupported_schedule_action_timeout",
-            ),
+        let runs: [fn(&mut Schedule); 9] = [
+            |s| s.spec = json!({"cron_expressions":["0 9 * * 1-5","@yearly"],"timezone":"Europe/Budapest"}),
+            |s| s.spec = json!({"intervals":[{"every":"PT1H","offset":"PT5M"}]}),
+            |s| s.overlap_policy = "buffer_one".into(),
+            |s| s.overlap_policy = "terminate_other".into(),
+            |s| s.jitter_seconds = 30,
+            |s| s.max_runs = Some(5),
+            |s| s.metadata[0] = Some(json!({"team":"ops"})),
+            |s| s.note = Some("paused for audit".into()),
+            |s| s.status = "paused".into(),
         ];
-        for (change, reason) in cases {
+        for change in runs {
             let mut schedule = runnable();
             change(&mut schedule);
-            assert_eq!(schedule.unsupported(), Some(reason));
+            assert_eq!(schedule.unsupported(), None, "{}", schedule.spec);
         }
-        let mut buffered = runnable();
-        buffered.buffered = Some(json!([{"buffered_at":"2026-10-21T00:00:00+00:00"}]));
-        assert_eq!(
-            buffered.unsupported(),
-            Some("schedule_buffered_actions_unsupported")
-        );
-        let mut routed = runnable();
-        routed.routing[1] = Some("schedules".into());
-        assert_eq!(
-            routed.unsupported(),
-            Some("schedule_queue_routing_unsupported")
-        );
+        let refused: [(fn(&mut Schedule), &str); 8] = [
+            (|s| s.status = "archived".into(), "schedule_status_unsupported"),
+            (|s| s.metadata[1] = Some(json!({"Team":"ops"})), "schedule_metadata_unsupported"),
+            (|s| s.metadata[2] = Some(json!({"tier":"gold"})), "schedule_metadata_unsupported"),
+            (|s| s.routing[1] = Some("schedules".into()), "schedule_queue_routing_unsupported"),
+            (|s| s.action["input"] = json!([1, 2]), "unsupported_payload_codec"),
+            (|s| s.action = json!({"workflow_class":"App\\Workflows\\Daily"}), "schedule_definition_unsupported"),
+            (|s| s.spec = json!({"cron_expressions":["0 3 * *"]}), "schedule_spec_unsupported"),
+            (|s| s.spec = json!({"cron_expressions":["0 3 * * *"],"timezone":"Mars/Base"}), "schedule_spec_unsupported"),
+        ];
+        for (change, reason) in refused {
+            let mut schedule = runnable();
+            change(&mut schedule);
+            assert_eq!(schedule.unsupported(), Some(reason), "{}", schedule.spec);
+        }
     }
 }

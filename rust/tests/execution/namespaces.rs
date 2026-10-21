@@ -546,7 +546,7 @@ async fn same_worker_id_isolated_claims_completion_and_deregistration_by_namespa
         scoped(&app, "alpha", "GET", &history_path, Value::Null).await,
         before
     );
-    for uri in ["/api/workflows", "/api/schedules/unqualified"] {
+    for uri in ["/api/workflows"] {
         let unavailable = scoped(&app, "alpha", "GET", uri, Value::Null).await;
         assert_eq!(unavailable.0, StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(
