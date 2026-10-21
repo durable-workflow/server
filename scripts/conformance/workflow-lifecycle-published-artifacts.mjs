@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { isOfficialCratesIoRegistrySource } from './crates-registry-source.mjs';
 import { isExactPythonRelease, isExactSemverRelease } from './version-identities.mjs';
 
 const RESULT_DIR = mustEnv('RESULT_DIR');
@@ -1169,7 +1170,7 @@ function rustArtifactMismatch(outputs) {
     || stringValue(provenance.package) !== 'durable-workflow'
     || stringValue(provenance.requested_version) !== sdkVersion
     || stringValue(provenance.installed_version) !== sdkVersion
-    || !stringValue(provenance.registry_source).includes('crates.io')
+    || !isOfficialCratesIoRegistrySource(stringValue(provenance.registry_source))
     || !/^[0-9a-f]{64}$/.test(stringValue(provenance.registry_checksum_sha256));
 }
 
@@ -2283,7 +2284,7 @@ function validateRustSdkLifecycleSurface(outputs) {
   if (provenance.package !== 'durable-workflow'
       || provenance.requested_version !== outputs.artifact_version
       || provenance.installed_version !== outputs.artifact_version
-      || !normalizedText(provenance.registry_source).includes('crates.io')
+      || !isOfficialCratesIoRegistrySource(normalizedText(provenance.registry_source))
       || !/^[0-9a-f]{64}$/.test(stringValue(provenance.registry_checksum_sha256))) {
     failures.push('install_provenance must prove the exact crates.io durable-workflow package and checksum');
   }
@@ -2292,7 +2293,7 @@ function validateRustSdkLifecycleSurface(outputs) {
       || payload.envelope_contract !== 'durable-workflow-published-envelope'
       || payload.apache_avro_package !== 'apache-avro'
       || !truthyFlag(payload.official_crates_io_provenance)
-      || !normalizedText(payload.apache_avro_registry_source).includes('crates.io')
+      || !isOfficialCratesIoRegistrySource(normalizedText(payload.apache_avro_registry_source))
       || !/^[0-9a-f]{64}$/.test(stringValue(payload.apache_avro_registry_checksum_sha256))) {
     failures.push('payload_contract must prove the official apache-avro crate and published Avro envelope');
   }

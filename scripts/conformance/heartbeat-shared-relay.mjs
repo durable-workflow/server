@@ -3,6 +3,7 @@ import http from 'node:http';
 import path from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
+import { proxyTargetUrl } from './proxy-target.mjs';
 
 const MAXIMUM_REQUEST_BYTES = 1024 * 1024;
 const MAXIMUM_RESPONSE_BYTES = 16 * 1024 * 1024;
@@ -265,12 +266,17 @@ async function responseBody(response) {
 
 export async function directRelayRequest({
   targetUrl,
+  allowedOrigin,
   method,
   headers,
   body,
   fetchImpl = globalThis.fetch,
 }) {
   if (typeof fetchImpl !== 'function') throw new Error('fetchImpl must be a function');
+  const target = new URL(targetUrl);
+  if (target.origin !== new URL(allowedOrigin).origin) {
+    throw new Error('relay request changed the configured upstream origin');
+  }
   const forwardedHeaders = new Headers();
   for (const [name, value] of Object.entries(headers)) {
     if (EXCLUDED_HEADERS.has(name) || value === undefined) continue;
@@ -278,7 +284,7 @@ export async function directRelayRequest({
     for (const entry of values) forwardedHeaders.append(name, String(entry));
   }
 
-  const response = await fetchImpl(targetUrl, {
+  const response = await fetchImpl(target.toString(), {
     method,
     headers: forwardedHeaders,
     body: body.length > 0 || !['GET', 'HEAD'].includes(method) ? body : undefined,
@@ -305,10 +311,10 @@ export function createHeartbeatRelayServer({
   return http.createServer(async (request, response) => {
     try {
       const body = await requestBody(request);
-      const requestedUrl = new URL(request.url ?? '/', 'http://heartbeat-relay.invalid');
-      const targetUrl = new URL(`${requestedUrl.pathname}${requestedUrl.search}`, target);
+      const targetUrl = proxyTargetUrl(request.url, target);
       const forwarded = await executeRequest({
         targetUrl: targetUrl.toString(),
+        allowedOrigin: target.origin,
         method: request.method ?? 'GET',
         headers: request.headers,
         body,

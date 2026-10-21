@@ -281,6 +281,7 @@ test('executor-network relay keeps credentials and request bytes in memory', asy
   const requests = [];
   const result = await directRelayRequest({
     targetUrl: 'http://server:8080/api/ready',
+    allowedOrigin: 'http://server:8080',
     method: 'POST',
     headers: {
       authorization: 'Bearer control-token',
@@ -310,6 +311,25 @@ test('executor-network relay keeps credentials and request bytes in memory', asy
   assert.equal(requests[0].options.headers.get('x-namespace'), 'hb-wave-php');
   assert.equal(requests[0].options.headers.has('connection'), false);
   assert.equal(requests[0].options.body.toString(), '{"probe":true}');
+});
+
+test('executor-network relay refuses a request outside the configured origin', async () => {
+  let attempted = false;
+  await assert.rejects(
+    directRelayRequest({
+      targetUrl: 'http://169.254.169.254/latest/meta-data',
+      allowedOrigin: 'http://server:8080',
+      method: 'GET',
+      headers: {},
+      body: Buffer.alloc(0),
+      fetchImpl: async () => {
+        attempted = true;
+        throw new Error('unexpected request');
+      },
+    }),
+    /changed the configured upstream origin/,
+  );
+  assert.equal(attempted, false);
 });
 
 test('executor-network relay reports a bounded gateway failure', async (context) => {

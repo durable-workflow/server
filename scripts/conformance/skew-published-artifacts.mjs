@@ -5,6 +5,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { proxyTargetUrl } from './proxy-target.mjs';
 import { isExactPythonRelease, isExactSemverRelease } from './version-identities.mjs';
 
 const RESULT_SCHEMA = 'durable-workflow.v2.skew-refusal-matrix.result';
@@ -3356,6 +3357,7 @@ function normalizeArtifactHeaders(headers) {
 
 async function withRecordingProxy({ targetUrl, artifactProxyHost = null }, callback) {
   const captures = [];
+  const targetOrigin = new URL(targetUrl);
   const server = http.createServer(async (request, response) => {
     const chunks = [];
     request.on('data', (chunk) => chunks.push(chunk));
@@ -3366,7 +3368,7 @@ async function withRecordingProxy({ targetUrl, artifactProxyHost = null }, callb
       delete headers.connection;
       delete headers['content-length'];
 
-      const requestUrl = new URL(request.url ?? '/', targetUrl);
+      const requestUrl = proxyTargetUrl(request.url, targetOrigin);
       const capture = {
         id: `proxy-${captures.length + 1}`,
         request: {
@@ -3387,6 +3389,7 @@ async function withRecordingProxy({ targetUrl, artifactProxyHost = null }, callb
           method: request.method,
           headers,
           body: requestBody.length > 0 ? requestBody : undefined,
+          redirect: 'manual',
         });
         const text = await upstream.text();
         const parsed = parseJson(text);

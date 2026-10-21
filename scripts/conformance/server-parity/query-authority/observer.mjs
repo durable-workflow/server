@@ -4,6 +4,7 @@ import http from 'node:http';
 import {appendFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {gunzipSync, inflateSync, brotliDecompressSync} from 'node:zlib';
+import {proxyTargetUrl} from '../../proxy-target.mjs';
 
 const [target, mode, journal] = process.argv.slice(2);
 if (!['timely', 'late-poll', 'late-handler-async', 'late-handler-sync'].includes(mode)) throw Error('Unknown case');
@@ -34,7 +35,7 @@ function exchange(method, path, headers, body = Buffer.alloc(0)) {
       };
       reject(error);
     };
-    const request = http.request(new URL(path, upstream), {method, headers: {...headers, host: upstream.host}}, incoming => {
+    const request = http.request(proxyTargetUrl(path, upstream), {method, headers: {...headers, host: upstream.host}}, incoming => {
       response = incoming;
       const chunks = [];
       incoming.on('data', chunk => {
@@ -66,7 +67,7 @@ function json(reply) {
 }
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const server = http.createServer(async (request, response) => {
-  const path = new URL(request.url, upstream).pathname;
+  const path = proxyTargetUrl(request.url, upstream).pathname;
   let upstreamStarted = false;
   const forward = (...arguments_) => {
     upstreamStarted = true;
