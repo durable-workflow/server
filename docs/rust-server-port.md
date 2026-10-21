@@ -240,6 +240,36 @@ support is not evidence of multi-node safety.
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
 names, including unsuccessful observations.
 
+October 21, signal and update requests:
+
+- **Found by.** Published dw 2.3.0 run against both servers on the same seed.
+  - On native, `workflow:signal` and `workflow:update` with `--input '[1]'`
+    were refused with `unsupported_payload_codec`.
+  - `workflow:repair` was refused with `invalid_request`, because the CLI
+    sends `[]` for a command without fields.
+- **Source.**
+  - **Empty bodies.** A short JSON `[]` body is read as `{}`, as Laravel
+    reads both.
+  - **Validation.** Signal and update apply `WorkflowController`'s rules with
+    Laravel's messages and ignore fields outside them. Signal checks
+    `input`, `request_id` and `dry_run`; update checks `input`,
+    `request_id`, `wait_for` and `wait_timeout_seconds`, and refuses the old
+    `wait_policy` field.
+  - **Input.** Both take input as start does: absent, null or empty is no
+    arguments, and plain JSON is encoded as its values in request order.
+  - **Update default.** An update without `wait_for` returns once it is
+    accepted, as in PHP. Native previously waited for completion.
+- **Remaining differences.**
+  - A signal `dry_run` is refused with
+    `501 signal_dry_run_unavailable`; PHP returns a preview.
+  - Native keeps its 30-second cap on an update's completion wait; PHP
+    waits as long as the request asks.
+  - Native validates a signal or update body before it looks up the
+    workflow, so an invalid body for a missing workflow is 422, where PHP
+    answers 404.
+- **Verification.** New `command_requests` integration tests and validator
+  unit tests. The full native suite passes on SQLite, PostgreSQL and MySQL.
+
 October 21, workflow start requests:
 
 - **Found by.** Waterline-harness probes against published PHP 2.5.14 and the

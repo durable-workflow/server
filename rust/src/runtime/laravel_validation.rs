@@ -91,3 +91,159 @@ pub(super) fn integer(value: &Value) -> Option<i64> {
         _ => None,
     }
 }
+
+/// One Laravel validation rule, as the request controllers declare them.
+#[derive(Clone, Copy)]
+pub(super) enum Rule {
+    Required,
+    Nullable,
+    String,
+    Array,
+    Integer,
+    Boolean,
+    Min(i64),
+    Max(i64),
+    Pattern(fn(&str) -> bool),
+    In(&'static [&'static str]),
+}
+use Rule::{Array, Boolean, In, Integer, Max, Min, Nullable, Pattern, Required};
+
+/// The messages for each field in rule order, then any `custom` message in
+/// place of Laravel's default. Fields without messages are left for
+/// [`failure_messages`] to drop.
+pub(super) fn rule_errors(
+    body: &Value,
+    rules: &[(&str, &[Rule])],
+    custom: fn(&str, Rule) -> Option<&'static str>,
+) -> Vec<(String, Vec<String>)> {
+    rules
+        .iter()
+        .map(|(field, rules)| ((*field).to_owned(), messages(field, rules, body.get(*field), custom)))
+        .collect()
+}
+
+/// PHP's `(string)` of a scalar request value.
+fn php_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(number) => Some(match number.as_i64() {
+            Some(whole) => whole.to_string(),
+            None => {
+                let float = number.as_f64()?;
+                if float.fract() == 0.0 && float.abs() < 1e15 { format!("{float:.0}") } else { float.to_string() }
+            }
+        }),
+        Value::Bool(true) => Some("1".into()),
+        Value::Bool(false) | Value::Null => Some(String::new()),
+        _ => None,
+    }
+}
+
+/// PHP 8's `is_numeric` for a request value.
+fn php_numeric(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(number) => number.as_f64(),
+        Value::String(text) => {
+            let text = text.trim_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']);
+            let unsigned = text.strip_prefix(['+', '-']).unwrap_or(text);
+            let (mantissa, exponent) = match unsigned.find(['e', 'E']) {
+                Some(at) => (&unsigned[..at], Some(&unsigned[at + 1..])),
+                None => (unsigned, None),
+            };
+            let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+            let digits = |part: &str| part.bytes().all(|byte| byte.is_ascii_digit());
+            let mantissa_ok = digits(whole) && digits(fraction) && !(whole.is_empty() && fraction.is_empty());
+            let exponent_ok = exponent.is_none_or(|exponent| {
+                let exponent = exponent.strip_prefix(['+', '-']).unwrap_or(exponent);
+                !exponent.is_empty() && digits(exponent)
+            });
+            (mantissa_ok && exponent_ok).then(|| text.parse().ok()).flatten()
+        }
+        _ => None,
+    }
+}
+
+/// Laravel's `getSize`: a number under a numeric rule, an array's count, or
+/// a string's length in characters.
+fn size(value: &Value, numeric: bool) -> f64 {
+    if numeric && let Some(number) = php_numeric(value) {
+        return number;
+    }
+    match value {
+        Value::Array(items) => items.len() as f64,
+        Value::Object(items) => items.len() as f64,
+        other => php_string(other).map_or(0, |text| text.chars().count()) as f64,
+    }
+}
+
+fn passes(rule: Rule, value: Option<&Value>, numeric: bool) -> bool {
+    let Some(value) = value else {
+        return !matches!(rule, Required);
+    };
+    match rule {
+        Required => present(Some(value)),
+        // Laravel's `boolean`: true, false, 1, 0, "1" and "0".
+        Boolean => matches!(value, Value::Bool(_))
+            || value.as_i64().is_some_and(|number| number == 0 || number == 1)
+            || matches!(value.as_str(), Some("0" | "1")),
+        Nullable => true,
+        Rule::String => value.is_string(),
+        Array => value.is_array() || value.is_object(),
+        Integer => integer(value).is_some(),
+        Min(least) => size(value, numeric) >= least as f64,
+        Max(most) => size(value, numeric) <= most as f64,
+        Pattern(matches) => match value {
+            Value::String(_) | Value::Number(_) => php_string(value).is_some_and(|text| matches(&text)),
+            _ => false,
+        },
+        In(allowed) => !(value.is_array() || value.is_object())
+            && php_string(value).is_some_and(|text| allowed.contains(&text.as_str())),
+    }
+}
+
+fn default_message(attribute: &str, rule: Rule, numeric: bool, array: bool) -> String {
+    let kind = if numeric { "numeric" } else if array { "array" } else { "string" };
+    match (rule, kind) {
+        (Required, _) => format!("The {attribute} field is required."),
+        (Rule::String, _) => format!("The {attribute} field must be a string."),
+        (Array, _) => format!("The {attribute} field must be an array."),
+        (Integer, _) => format!("The {attribute} field must be an integer."),
+        (Boolean, _) => format!("The {attribute} field must be true or false."),
+        (Pattern(_), _) => format!("The {attribute} field format is invalid."),
+        (In(_), _) => format!("The selected {attribute} is invalid."),
+        (Min(least), "numeric") => format!("The {attribute} field must be at least {least}."),
+        (Min(least), "array") => format!("The {attribute} field must have at least {least} items."),
+        (Min(least), _) => format!("The {attribute} field must be at least {least} characters."),
+        (Max(most), "numeric") => format!("The {attribute} field must not be greater than {most}."),
+        (Max(most), "array") => format!("The {attribute} field must not have more than {most} items."),
+        (Max(most), _) => format!("The {attribute} field must not be greater than {most} characters."),
+        (Nullable, _) => String::new(),
+    }
+}
+
+/// One attribute's messages in rule order. Absent and nullable null values
+/// skip every rule except `required`, which stops the attribute when it fails.
+fn messages(
+    field: &str,
+    rules: &[Rule],
+    value: Option<&Value>,
+    custom: fn(&str, Rule) -> Option<&'static str>,
+) -> Vec<String> {
+    let attribute = field.replace('_', " ");
+    let nullable = rules.iter().any(|rule| matches!(rule, Nullable));
+    let numeric = rules.iter().any(|rule| matches!(rule, Integer));
+    let array = rules.iter().any(|rule| matches!(rule, Array));
+    let mut found = Vec::new();
+    for &rule in rules {
+        let implicit = matches!(rule, Required);
+        let skipped = !implicit && (value.is_none() || nullable && value.is_some_and(Value::is_null));
+        if matches!(rule, Nullable) || skipped || passes(rule, value, numeric) {
+            continue;
+        }
+        found.push(custom(field, rule).map_or_else(|| default_message(&attribute, rule, numeric, array), str::to_owned));
+        if implicit {
+            break;
+        }
+    }
+    found
+}
