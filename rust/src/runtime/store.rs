@@ -1557,19 +1557,19 @@ where
         .bind(&run_id)
         .fetch_one(&mut *tx)
         .await?;
-        if signals != 0
-            || updates != 0
-            || payload["workflow_signal_id"].is_string()
-            || payload["workflow_update_id"].is_string()
-            || Self::cancellation_request(&run)?.is_some()
+        // Published PHP retries a failed task as it is, with any signal or
+        // update it carries; its waiting acknowledgement with pending
+        // messages still needs its own contract.
+        if waiting
+            && (signals != 0
+                || updates != 0
+                || payload["workflow_signal_id"].is_string()
+                || payload["workflow_update_id"].is_string()
+                || Self::cancellation_request(&run)?.is_some())
         {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,
-                if waiting {
-                    "development_workflow_task_waiting_messages_unqualified"
-                } else {
-                    "development_workflow_task_retry_messages_unqualified"
-                },
+                "development_workflow_task_waiting_messages_unqualified",
             ));
         }
         if !waiting {
