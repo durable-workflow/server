@@ -2935,8 +2935,9 @@ pub(super) async fn prepare_control_arguments(
         else {
             return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid));
         };
+        // `signalValueFromRecord`: no arguments apply as true, one as itself.
         let value = match values.as_slice() {
-            [] => crate::codec::Value::Null,
+            [] => crate::codec::Value::Boolean(true),
             [value] => value.clone(),
             _ => crate::codec::Value::Array(values.clone()),
         };
