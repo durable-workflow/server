@@ -9,6 +9,8 @@ use Workflow\V2\Support\WorkflowCommandNormalizer;
 /** Transport rules retain the package command grammar before semantic normalization. */
 final class WorkflowTaskCompletionValidation
 {
+    private const REQUIRED_WORKFLOW_STREAM = 'required_with:commands.*.workflow_stream';
+
     /** @return array<string, list<string>> */
     public static function rules(): array
     {
@@ -130,10 +132,10 @@ final class WorkflowTaskCompletionValidation
             'commands.*.principal_claims' => ['prohibited'],
             ...WorkflowCommandNormalizer::parallelMetadataValidationRules(),
             'commands.*.workflow_stream' => ['nullable', 'array'],
-            'commands.*.workflow_stream.operation' => ['required_with:commands.*.workflow_stream', 'string', 'in:append,close,error'],
-            'commands.*.workflow_stream.stream_name' => ['required_with:commands.*.workflow_stream', 'string', 'max:191'],
-            'commands.*.workflow_stream.command_identity' => ['required_with:commands.*.workflow_stream', 'string', 'max:191'],
-            'commands.*.workflow_stream.command_ordinal' => ['required_with:commands.*.workflow_stream', 'integer', 'min:0'],
+            'commands.*.workflow_stream.operation' => [self::REQUIRED_WORKFLOW_STREAM, 'string', 'in:append,close,error'],
+            'commands.*.workflow_stream.stream_name' => [self::REQUIRED_WORKFLOW_STREAM, 'string', 'max:191'],
+            'commands.*.workflow_stream.command_identity' => [self::REQUIRED_WORKFLOW_STREAM, 'string', 'max:191'],
+            'commands.*.workflow_stream.command_ordinal' => [self::REQUIRED_WORKFLOW_STREAM, 'integer', 'min:0'],
             'commands.*.workflow_stream.items' => ['nullable', 'array', 'max:'.WorkflowStreamService::DEFAULT_MAX_ITEMS_PER_APPEND],
             'commands.*.workflow_stream.items.*' => ['array'],
             'commands.*.workflow_stream.items.*.payload' => ['nullable'],
