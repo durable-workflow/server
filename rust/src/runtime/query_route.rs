@@ -7,14 +7,7 @@
 //! Native counts a worker as query-capable only when it registered the
 //! `query_tasks` capability, because only such workers can claim native query
 //! tasks. PHP also counts a worker that recently polled for query tasks.
-use super::{
-    Result,
-    backend::Backend,
-    store::{Store, now},
-};
-use chrono::Duration;
-use serde_json::{Value, json};
-use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
+use serde_json::Value;
 
 /// `WorkflowQueryTaskBroker::queryRouteResult`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,28 +26,28 @@ impl QueryRoute {
 }
 
 /// One registration as the route checks read it.
-struct Worker {
-    capabilities: Vec<String>,
-    workflow_types: Vec<String>,
-    build_id: Option<String>,
-    fingerprints: Value,
+pub(super) struct Worker {
+    pub(super) capabilities: Vec<String>,
+    pub(super) workflow_types: Vec<String>,
+    pub(super) build_id: Option<String>,
+    pub(super) fingerprints: Value,
 }
 
 /// `stringArray`: trimmed, non-empty strings.
-fn strings(value: &Value) -> Vec<String> {
+pub(super) fn strings(value: &Value) -> Vec<String> {
     value
         .as_array()
         .map(|items| items.iter().filter_map(|item| trimmed(item.as_str())).map(str::to_owned).collect())
         .unwrap_or_default()
 }
 
-fn trimmed(value: Option<&str>) -> Option<&str> {
+pub(super) fn trimmed(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|text| !text.is_empty())
 }
 
 /// The route for a run, given its queue, type, compatibility and
 /// `WorkflowStarted` payload, over the queue's active registrations.
-fn route(
+pub(super) fn route(
     task_queue: &str,
     workflow_type: Option<&str>,
     compatibility: Option<&str>,
@@ -142,63 +135,10 @@ fn route(
     }
 }
 
-impl<DB: Backend> Store<DB>
-where
-    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
-    DB::Arguments: IntoArguments<DB>,
-    for<'q> &'q str: Encode<'q, DB> + Type<DB>,
-    for<'q> Option<&'q str>: Encode<'q, DB>,
-    for<'q> Option<DB::EncodedDocument>: Encode<'q, DB>,
-    for<'q> String: Encode<'q, DB> + Type<DB>,
-    for<'q> i64: Encode<'q, DB> + Type<DB>,
-    for<'r> i64: Decode<'r, DB>,
-    usize: ColumnIndex<DB::Row>,
-{
-    /// The registered query route for a run row, with workers whose
-    /// heartbeat is newer than `stale_after` seconds.
-    pub(super) async fn query_route(&self, run: &DB::Row, stale_after: i64) -> Result<QueryRoute> {
-        let task_queue = trimmed(DB::optional_string(run, "queue")?.as_deref()).unwrap_or("default").to_owned();
-        let workflow_type = DB::optional_string(run, "workflow_type")?;
-        let compatibility = DB::optional_string(run, "compatibility")?;
-        let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
-            .bind(DB::string(run, "id")?)
-            .fetch_optional(&self.pool)
-            .await?
-            .map(|row| DB::document_row(&row, "payload"))
-            .transpose()?
-            .unwrap_or(Value::Null);
-        let fresh_after = now() - Duration::seconds(stale_after.max(1));
-        let rows = Self::query("SELECT capabilities,supported_workflow_types,build_id,workflow_definition_fingerprints,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND task_queue=$2 AND status='active' ORDER BY worker_id")
-            .bind(self.namespace.as_ref())
-            .bind(task_queue.as_str())
-            .fetch_all(&self.pool)
-            .await?;
-        let mut workers = Vec::with_capacity(rows.len());
-        for row in rows {
-            // `WorkerPollFence::isFresh`: a heartbeat within the stale window.
-            if !DB::optional_instant(&row, "last_heartbeat_at")?.is_some_and(|heartbeat| heartbeat >= fresh_after) {
-                continue;
-            }
-            workers.push(Worker {
-                capabilities: strings(&DB::optional_document_row(&row, "capabilities")?.unwrap_or(Value::Null)),
-                workflow_types: strings(&DB::optional_document_row(&row, "supported_workflow_types")?.unwrap_or(Value::Null)),
-                build_id: trimmed(DB::optional_string(&row, "build_id")?.as_deref()).map(str::to_owned),
-                fingerprints: DB::optional_document_row(&row, "workflow_definition_fingerprints")?.unwrap_or_else(|| json!({})),
-            });
-        }
-        Ok(route(
-            &task_queue,
-            trimmed(workflow_type.as_deref()),
-            trimmed(compatibility.as_deref()),
-            &started,
-            &workers,
-        ))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn worker(capabilities: &[&str], types: &[&str], build_id: Option<&str>, fingerprints: Value) -> Worker {
         Worker {

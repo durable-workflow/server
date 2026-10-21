@@ -137,60 +137,67 @@ impl PhpJson<'_> {
         Some(())
     }
 
+    /// One object, its members in stored order.
+    fn object(&mut self) -> Option<()> {
+        self.at += 1;
+        self.out.push('{');
+        let mut first = true;
+        loop {
+            self.space();
+            if *self.bytes.get(self.at)? == b'}' {
+                self.at += 1;
+                break;
+            }
+            if *self.bytes.get(self.at)? == b',' {
+                self.at += 1;
+                self.space();
+            }
+            if !first {
+                self.out.push(',');
+            }
+            first = false;
+            let key = self.string()?;
+            self.emit_string(&key);
+            self.space();
+            if *self.bytes.get(self.at)? != b':' {
+                return None;
+            }
+            self.at += 1;
+            self.out.push(':');
+            self.value()?;
+        }
+        self.out.push('}');
+        Some(())
+    }
+
+    fn array(&mut self) -> Option<()> {
+        self.at += 1;
+        self.out.push('[');
+        let mut first = true;
+        loop {
+            self.space();
+            if *self.bytes.get(self.at)? == b']' {
+                self.at += 1;
+                break;
+            }
+            if *self.bytes.get(self.at)? == b',' {
+                self.at += 1;
+            }
+            if !first {
+                self.out.push(',');
+            }
+            first = false;
+            self.value()?;
+        }
+        self.out.push(']');
+        Some(())
+    }
+
     fn value(&mut self) -> Option<()> {
         self.space();
         match *self.bytes.get(self.at)? {
-            b'{' => {
-                self.at += 1;
-                self.out.push('{');
-                let mut first = true;
-                loop {
-                    self.space();
-                    if *self.bytes.get(self.at)? == b'}' {
-                        self.at += 1;
-                        break;
-                    }
-                    if *self.bytes.get(self.at)? == b',' {
-                        self.at += 1;
-                        self.space();
-                    }
-                    if !first {
-                        self.out.push(',');
-                    }
-                    first = false;
-                    let key = self.string()?;
-                    self.emit_string(&key);
-                    self.space();
-                    if *self.bytes.get(self.at)? != b':' {
-                        return None;
-                    }
-                    self.at += 1;
-                    self.out.push(':');
-                    self.value()?;
-                }
-                self.out.push('}');
-            }
-            b'[' => {
-                self.at += 1;
-                self.out.push('[');
-                let mut first = true;
-                loop {
-                    self.space();
-                    if *self.bytes.get(self.at)? == b']' {
-                        self.at += 1;
-                        break;
-                    }
-                    if *self.bytes.get(self.at)? == b',' {
-                        self.at += 1;
-                    }
-                    if !first {
-                        self.out.push(',');
-                    }
-                    first = false;
-                    self.value()?;
-                }
-                self.out.push(']');
-            }
+            b'{' => self.object()?,
+            b'[' => self.array()?,
             b'"' => {
                 let text = self.string()?;
                 self.emit_string(&text);
