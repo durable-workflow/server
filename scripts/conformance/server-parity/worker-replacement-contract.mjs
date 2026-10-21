@@ -28,6 +28,8 @@ export function checkWorkerReplacement(fixture, observation, workflowId) {
   equal([replacement.task_id, replacement.attempt_number, replacement.lease_owner],
     [original.task_id, 2, worker], 'the same task claimed again as attempt 2 under a one-attempt policy');
   assert.notEqual(replacement.activity_attempt_id, original.activity_attempt_id, 'a new attempt identity');
+  assert.ok(state.workflow_lease_seconds >= 55 && state.workflow_lease_seconds <= 61,
+    'a claimed workflow task is leased for the published 60 seconds');
   equal(state.history_after_replacement.map(event => event.event_type), definition.expected_events.slice(0, 4),
     'releasing the lease records no history');
 

@@ -173,6 +173,11 @@ where
                             started[target] = value.clone();
                         }
                     }
+                    // WorkflowStartService's defaults for an external worker's
+                    // contract, which make it a complete durable contract.
+                    started["declared_entry_method"] = json!("handle");
+                    started["declared_entry_mode"] = json!("canonical");
+                    started["declared_entry_declaring_class"] = json!(format!("external:{workflow_type}"));
                     break;
                 }
             }

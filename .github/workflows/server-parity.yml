@@ -19,6 +19,7 @@ on:
       - tests/Unit/ServerParityScheduleContractTest.mjs
       - tests/Support/ServerParityScheduleObservation.mjs
       - tests/Fixtures/ServerParityPending/**
+      - tests/Fixtures/ServerParityExpected/**
       - tests/Fixtures/ServerParityProfiles/**
       - tests/Unit/ServerParityVisibilityContractTest.mjs
       - tests/Unit/ServerParityAdmissionContractTest.mjs
@@ -27,6 +28,9 @@ on:
       - tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs
       - tests/Unit/ServerParitySearchAttributeContractTest.mjs
       - tests/Unit/ServerParityStorageTestContractTest.mjs
+      - tests/Unit/ServerParitySchedulePoliciesContractTest.mjs
+      - tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs
+      - tests/Unit/ServerParityScheduleCatalogContractTest.mjs
       - tests/Unit/ServerParityWorkerListingContractTest.mjs
       - tests/Unit/ServerParityWorkerReplacementContractTest.mjs
       - tests/Unit/ServerParityOperatorMetricsContractTest.mjs
@@ -62,6 +66,7 @@ on:
       - tests/Unit/ServerParityScheduleContractTest.mjs
       - tests/Support/ServerParityScheduleObservation.mjs
       - tests/Fixtures/ServerParityPending/**
+      - tests/Fixtures/ServerParityExpected/**
       - tests/Fixtures/ServerParityProfiles/**
       - tests/Unit/ServerParityVisibilityContractTest.mjs
       - tests/Unit/ServerParityAdmissionContractTest.mjs
@@ -70,6 +75,9 @@ on:
       - tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs
       - tests/Unit/ServerParitySearchAttributeContractTest.mjs
       - tests/Unit/ServerParityStorageTestContractTest.mjs
+      - tests/Unit/ServerParitySchedulePoliciesContractTest.mjs
+      - tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs
+      - tests/Unit/ServerParityScheduleCatalogContractTest.mjs
       - tests/Unit/ServerParityWorkerListingContractTest.mjs
       - tests/Unit/ServerParityWorkerReplacementContractTest.mjs
       - tests/Unit/ServerParityOperatorMetricsContractTest.mjs
@@ -1462,7 +1470,7 @@ jobs:
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
-            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs > parity-evidence/comparator-tests.txt
+            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs > parity-evidence/comparator-tests.txt
           docker run --rm --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
             --network=none --entrypoint node -v "$PWD:/source:ro" -w /source \
             "$image" --test tests/Unit/ServerParityCodecDeadlineLoadTest.mjs > parity-evidence/codec-load-tests.txt

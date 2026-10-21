@@ -142,7 +142,7 @@ fn encode(values: BTreeMap<String, Payload>) -> Result<PreparedMemo> {
     Ok(prepared)
 }
 
-fn initial(value: Value) -> Result<PreparedMemo> {
+pub(super) fn initial(value: Value) -> Result<PreparedMemo> {
     let entries = match value {
         Value::Null => return Ok(BTreeMap::new()),
         Value::Array(values) if values.is_empty() => return Ok(BTreeMap::new()),

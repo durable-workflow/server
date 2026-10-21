@@ -67,6 +67,21 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 0.2.2 / Server 2.10
+
+This chart changes the default application image without removing or renaming
+chart values. Server bootstrap adds Core's nullable context columns to runs,
+commands and tasks, including installations with tracing disabled. Back up the
+database before the ordinary bootstrap and verify migration completion.
+
+The ordinary image keeps OpenTelemetry optional. Use an application image with
+the supported API, configure the flag through the existing environment controls,
+and require actual capability discovery before sending carriers. See
+[PHP Server trace context](../../../../docs/observability-context.md) for setup
+and the separate native migration boundary. This chart does not qualify native
+catalog conversion or Cloud deployment.
+
+
 ### 0.2.0
 
 Database TLS settings now affect the PHP connection. An old `sslMode` setting

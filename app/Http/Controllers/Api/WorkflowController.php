@@ -18,6 +18,7 @@ use App\Support\PayloadCodecContract;
 use App\Support\SearchAttributeValueValidator;
 use App\Support\TaskQueueRoutingGate;
 use App\Support\WorkflowCommandContextFactory;
+use App\Support\WorkflowObservability;
 use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowRunDiagnostics;
 use App\Support\WorkflowStartService;
@@ -288,7 +289,7 @@ class WorkflowController
         }
 
         try {
-            $start = $this->workflowStartService->start(
+            $start = WorkflowObservability::admission($request, $workflowId, 'start', fn () => $this->workflowStartService->start(
                 $validated,
                 $namespace,
                 $this->commandContexts->make(
@@ -301,7 +302,7 @@ class WorkflowController
                         'duplicate_policy' => $validated['duplicate_policy'] ?? null,
                     ], static fn (mixed $value): bool => $value !== null),
                 ),
-            );
+            ));
         } catch (ExternalPayloadStorageUnavailable $exception) {
             return ControlPlaneProtocol::jsonForRequest(
                 $request,
@@ -556,7 +557,7 @@ class WorkflowController
             retainExternal: true,
         );
 
-        $result = $this->workflowControlPlane->signal(
+        $result = WorkflowObservability::admission($request, $workflowId, 'signal', fn () => $this->workflowControlPlane->signal(
             $workflowId,
             $signalName,
             [
@@ -575,7 +576,7 @@ class WorkflowController
                 ),
                 'strict_configured_type_validation' => true,
             ],
-        );
+        ));
 
         return $this->resultMapper->signal(
             $workflowId,
@@ -767,7 +768,7 @@ class WorkflowController
             ], static fn (mixed $value): bool => $value !== null),
         );
 
-        $externalResult = $this->externalUpdates->admit(
+        $externalResult = WorkflowObservability::admission($request, $workflowId, 'update', fn () => $this->externalUpdates->admit(
             namespace: (string) $namespace,
             workflowId: $workflowId,
             updateName: $updateName,
@@ -775,7 +776,7 @@ class WorkflowController
             commandContext: $commandContext,
             waitFor: $waitFor,
             waitTimeoutSeconds: $validated['wait_timeout_seconds'] ?? null,
-        );
+        ));
 
         if ($externalResult !== null) {
             return $this->resultMapper->update(
@@ -787,7 +788,7 @@ class WorkflowController
             );
         }
 
-        $result = $this->workflowControlPlane->update(
+        $result = WorkflowObservability::admission($request, $workflowId, 'update', fn () => $this->workflowControlPlane->update(
             $workflowId,
             $updateName,
             [
@@ -798,7 +799,7 @@ class WorkflowController
                 'wait_timeout_seconds' => $validated['wait_timeout_seconds'] ?? null,
                 'strict_configured_type_validation' => true,
             ],
-        );
+        ));
 
         return $this->resultMapper->update(
             workflowId: $workflowId,
@@ -833,7 +834,7 @@ class WorkflowController
             'request_id' => ['nullable', 'string', 'max:255'],
         ]);
 
-        $result = $this->workflowControlPlane->cancel(
+        $result = WorkflowObservability::admission($request, $workflowId, 'cancel', fn () => $this->workflowControlPlane->cancel(
             $workflowId,
             [
                 'namespace' => $namespace,
@@ -850,7 +851,7 @@ class WorkflowController
                 ),
                 'strict_configured_type_validation' => true,
             ],
-        );
+        ));
 
         return $this->resultMapper->cancel(
             $workflowId,

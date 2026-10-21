@@ -1,0 +1,3077 @@
+[
+ {
+  "request": "POST schedules",
+  "status": 201,
+  "response": {
+   "schedule_id": "alpha",
+   "outcome": "created"
+  }
+ },
+ {
+  "request": "POST schedules",
+  "status": 201,
+  "response": {
+   "schedule_id": "beta",
+   "outcome": "created"
+  }
+ },
+ {
+  "request": "POST schedules",
+  "status": 201,
+  "response": {
+   "schedule_id": "gamma",
+   "outcome": "created"
+  }
+ },
+ {
+  "request": "POST schedules",
+  "status": 201,
+  "response": {
+   "schedule_id": "delta",
+   "outcome": "created"
+  }
+ },
+ {
+  "request": "GET schedules",
+  "status": 200,
+  "response": {
+   "schedules": [
+    {
+     "schedule_id": "delta",
+     "workflow_type": "parity.v1.echo",
+     "status": "active",
+     "paused": false,
+     "next_fire": "@v",
+     "last_fire": null,
+     "overlap_policy": "skip",
+     "note": null,
+     "namespace": "@namespace",
+     "spec": {
+      "intervals": [
+       {
+        "every": "P1D"
+       }
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.echo",
+      "task_queue": "@queue",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": null,
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 0
+    },
+    {
+     "schedule_id": "gamma",
+     "workflow_type": "parity.v1.echo",
+     "status": "active",
+     "paused": false,
+     "next_fire": "@v",
+     "last_fire": null,
+     "overlap_policy": "skip",
+     "note": "x AND y",
+     "namespace": "@namespace",
+     "spec": {
+      "intervals": [
+       {
+        "every": "P1D"
+       }
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.echo",
+      "task_queue": "catalog-b",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": null,
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 0
+    },
+    {
+     "schedule_id": "beta",
+     "workflow_type": "parity.v1.other",
+     "status": "paused",
+     "paused": true,
+     "next_fire": "@v",
+     "last_fire": null,
+     "overlap_policy": "skip",
+     "note": null,
+     "namespace": "@namespace",
+     "spec": {
+      "timezone": "Europe/Budapest",
+      "cron_expressions": [
+       "0 3 * * *"
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.other",
+      "task_queue": "@queue",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": null,
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 0
+    },
+    {
+     "schedule_id": "alpha",
+     "workflow_type": "parity.v1.echo",
+     "status": "active",
+     "paused": false,
+     "next_fire": "@v",
+     "last_fire": null,
+     "overlap_policy": "skip",
+     "note": "first",
+     "namespace": "@namespace",
+     "spec": {
+      "intervals": [
+       {
+        "every": "P1D"
+       }
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.echo",
+      "task_queue": "@queue",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": null,
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 0
+    }
+   ],
+   "schedule_count": 4,
+   "next_page_token": null
+  }
+ },
+ {
+  "request": "GET schedules?status=paused",
+  "status": 200,
+  "response": {
+   "schedules": [
+    {
+     "schedule_id": "beta",
+     "workflow_type": "parity.v1.other",
+     "status": "paused",
+     "paused": true,
+     "next_fire": "@v",
+     "last_fire": null,
+     "overlap_policy": "skip",
+     "note": null,
+     "namespace": "@namespace",
+     "spec": {
+      "timezone": "Europe/Budapest",
+      "cron_expressions": [
+       "0 3 * * *"
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.other",
+      "task_queue": "@queue",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": null,
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 0
+    }
+   ],
+   "schedule_count": 1,
+   "next_page_token": null
+  }
+ },
+ {
+  "request": "GET schedules?status=deleted",
+  "status": 422,
+  "response": {
+   "message": "The selected status is invalid.",
+   "reason": "validation_failed",
+   "field": "status",
+   "errors": {
+    "status": [
+     "The selected status is invalid."
+    ]
+   },
+   "validation_errors": {
+    "status": [
+     "The selected status is invalid."
+    ]
+   },
+   "last_safe_cursor": null
+  }
+ },
+ {
+  "request": "GET schedules?workflow_type=parity.v1.echo",
+  "status": 200,
+  "response": {
+   "schedules": [
+    {
+     "schedule_id": "delta",
+     "workflow_type": "parity.v1.echo",
+     "status": "active",
+     "paused": false,
+     "next_fire": "@v",
+     "last_fire": null,
+     "overlap_policy": "skip",
+     "note": null,
+     "namespace": "@namespace",
+     "spec": {
+      "intervals": [
+       {
+        "every": "P1D"
+       }
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.echo",
+      "task_queue": "@queue",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": null,
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 0
+    },
+    {
+     "schedule_id": "gamma",
+     "workflow_type": "parity.v1.echo",
+     "status": "active",
+     "paused": false,
+     "next_fire": "@v",
+     "last_fire": null,
+     "overlap_policy": "skip",
+     "note": "x AND y",
+     "namespace": "@namespace",
+     "spec": {
+      "intervals": [
+       {
+        "every": "P1D"
+       }
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.echo",
+      "task_queue": "catalog-b",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": null,
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 0
+    },
+    {
+     "schedule_id": "alpha",
+     "workflow_type": "parity.v1.echo",
+     "status": "active",
+     "paused": false,
+     "next_fire": "@v",
+     "last_fire": null,
+     "overlap_policy": "skip",
+     "note": "first",
+     "namespace": "@namespace",
+     "spec": {
+      "intervals": [
+       {
+        "every": "P1D"
+       }
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.echo",
+      "task_queue": "@queue",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": null,
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 0
+    }
+   ],
+   "schedule_count": 3,
+   "next_page_token": null
+  }
+ },
+ {
+  "request": "GET schedules?workflow_type=%20",
+  "status": 422,
+  "response": {
+   "message": "The workflow type field is required.",
+   "reason": "validation_failed",
+   "field": "workflow_type",
+   "errors": {
+    "workflow_type": [
+     "The workflow type field is required."
+    ]
+   },
+   "validation_errors": {
+    "workflow_type": [
+     "The workflow type field is required."
+    ]
+   },
+   "last_safe_cursor": null
+  }
+ },
+ {
+  "request": "GET schedules?page_size=2",
+  "status": 200,
+  "response": {
+   "schedules": [
+    {
+     "schedule_id": "delta",
+     "workflow_type": "parity.v1.echo",
+     "status": "active",
+     "paused": false,
+     "next_fire": "@v",
+     "last_fire": null,
+     "overlap_policy": "skip",
+     "note": null,
+     "namespace": "@namespace",
+     "spec": {
+      "intervals": [
+       {
+        "every": "P1D"
+       }
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.echo",
+      "task_queue": "@queue",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": null,
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 0
+    },
+    {
+     "schedule_id": "gamma",
+     "workflow_type": "parity.v1.echo",
+     "status": "active",
+     "paused": false,
+     "next_fire": "@v",
+     "last_fire": null,
+     "overlap_policy": "skip",
+     "note": "x AND y",
+     "namespace": "@namespace",
+     "spec": {
+      "intervals": [
+       {
+        "every": "P1D"
+       }
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.echo",
+      "task_queue": "catalog-b",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": null,
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 0
+    }
+   ],
+   "schedule_count": 2,
+   "next_page_token": "@v"
+  }
+ },
+ {
+  "request": "GET schedules?page_size=2&status=active&next_page_token={token}",
+  "status": 409,
+  "response": {
+   "message": "Schedule continuation token must be reused with the same status, workflow type, and visibility query.",
+   "reason": "schedule_page_token_filter_mismatch",
+   "field": "next_page_token",
+   "errors": {
+    "next_page_token": [
+     "Schedule continuation token must be reused with the same status, workflow type, and visibility query."
+    ]
+   },
+   "validation_errors": {
+    "next_page_token": [
+     "Schedule continuation token must be reused with the same status, workflow type, and visibility query."
+    ]
+   },
+   "last_safe_cursor": {
+    "created_at": "@v",
+    "schedule_id": "gamma"
+   }
+  }
+ },
+ {
+  "request": "GET schedules?page_size=2&next_page_token={token}",
+  "status": 200,
+  "response": {
+   "schedules": [
+    {
+     "schedule_id": "beta",
+     "workflow_type": "parity.v1.other",
+     "status": "paused",
+     "paused": true,
+     "next_fire": "@v",
+     "last_fire": null,
+     "overlap_policy": "skip",
+     "note": null,
+     "namespace": "@namespace",
+     "spec": {
+      "timezone": "Europe/Budapest",
+      "cron_expressions": [
+       "0 3 * * *"
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.other",
+      "task_queue": "@queue",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": null,
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 0
+    },
+    {
+     "schedule_id": "alpha",
+     "workflow_type": "parity.v1.echo",
+     "status": "active",
+     "paused": false,
+     "next_fire": "@v",
+     "last_fire": null,
+     "overlap_policy": "skip",
+     "note": "first",
+     "namespace": "@namespace",
+     "spec": {
+      "intervals": [
+       {
+        "every": "P1D"
+       }
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.echo",
+      "task_queue": "@queue",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": null,
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 0
+    }
+   ],
+   "schedule_count": 2,
+   "next_page_token": null
+  }
+ },
+ {
+  "request": "GET schedules?page_size=0",
+  "status": 422,
+  "response": {
+   "message": "The page size field must be at least 1.",
+   "reason": "validation_failed",
+   "field": "page_size",
+   "errors": {
+    "page_size": [
+     "The page size field must be at least 1."
+    ]
+   },
+   "validation_errors": {
+    "page_size": [
+     "The page size field must be at least 1."
+    ]
+   },
+   "last_safe_cursor": null
+  }
+ },
+ {
+  "request": "GET schedules?page_size=201",
+  "status": 422,
+  "response": {
+   "message": "The page size field must not be greater than 200.",
+   "reason": "validation_failed",
+   "field": "page_size",
+   "errors": {
+    "page_size": [
+     "The page size field must not be greater than 200."
+    ]
+   },
+   "validation_errors": {
+    "page_size": [
+     "The page size field must not be greater than 200."
+    ]
+   },
+   "last_safe_cursor": null
+  }
+ },
+ {
+  "request": "GET schedules?page_size=x",
+  "status": 422,
+  "response": {
+   "message": "The page size field must be an integer.",
+   "reason": "validation_failed",
+   "field": "page_size",
+   "errors": {
+    "page_size": [
+     "The page size field must be an integer."
+    ]
+   },
+   "validation_errors": {
+    "page_size": [
+     "The page size field must be an integer."
+    ]
+   },
+   "last_safe_cursor": null
+  }
+ },
+ {
+  "request": "GET schedules?page_size=2.5",
+  "status": 422,
+  "response": {
+   "message": "The page size field must be an integer.",
+   "reason": "validation_failed",
+   "field": "page_size",
+   "errors": {
+    "page_size": [
+     "The page size field must be an integer."
+    ]
+   },
+   "validation_errors": {
+    "page_size": [
+     "The page size field must be an integer."
+    ]
+   },
+   "last_safe_cursor": null
+  }
+ },
+ {
+  "request": "GET schedules?next_page_token=garbage",
+  "status": 400,
+  "response": {
+   "message": "Schedule continuation token is malformed or has an invalid signature.",
+   "reason": "malformed_schedule_page_token",
+   "field": "next_page_token",
+   "errors": {
+    "next_page_token": [
+     "Schedule continuation token is malformed or has an invalid signature."
+    ]
+   },
+   "validation_errors": {
+    "next_page_token": [
+     "Schedule continuation token is malformed or has an invalid signature."
+    ]
+   },
+   "last_safe_cursor": null
+  }
+ },
+ {
+  "request": "GET schedules?next_page_token=eyJ2ZXJzaW9uIjoxfQ.0000000000000000000000000000000000000000000000000000000000000000",
+  "status": 400,
+  "response": {
+   "message": "Schedule continuation token is malformed or has an invalid signature.",
+   "reason": "malformed_schedule_page_token",
+   "field": "next_page_token",
+   "errors": {
+    "next_page_token": [
+     "Schedule continuation token is malformed or has an invalid signature."
+    ]
+   },
+   "validation_errors": {
+    "next_page_token": [
+     "Schedule continuation token is malformed or has an invalid signature."
+    ]
+   },
+   "last_safe_cursor": null
+  }
+ },
+ {
+  "request": "GET schedules?bogus=1",
+  "status": 422,
+  "response": {
+   "message": "Schedule list filter [bogus] is not supported.",
+   "reason": "unsupported_schedule_list_filter",
+   "field": "bogus",
+   "errors": {
+    "bogus": [
+     "Schedule list filter [bogus] is not supported."
+    ]
+   },
+   "validation_errors": {
+    "bogus": [
+     "Schedule list filter [bogus] is not supported."
+    ]
+   },
+   "last_safe_cursor": null
+  }
+ },
+ {
+  "request": "GET schedules?status[]=active",
+  "status": 422,
+  "response": {
+   "message": "The status field must be a string.",
+   "reason": "validation_failed",
+   "field": "status",
+   "errors": {
+    "status": [
+     "The status field must be a string.",
+     "The selected status is invalid."
+    ]
+   },
+   "validation_errors": {
+    "status": [
+     "The status field must be a string.",
+     "The selected status is invalid."
+    ]
+   },
+   "last_safe_cursor": null
+  }
+ },
+ {
+  "request": "GET schedules?status=active&status=paused",
+  "status": 200,
+  "response": {
+   "schedules": [
+    {
+     "schedule_id": "beta",
+     "workflow_type": "parity.v1.other",
+     "status": "paused",
+     "paused": true,
+     "next_fire": "@v",
+     "last_fire": null,
+     "overlap_policy": "skip",
+     "note": null,
+     "namespace": "@namespace",
+     "spec": {
+      "timezone": "Europe/Budapest",
+      "cron_expressions": [
+       "0 3 * * *"
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.other",
+      "task_queue": "@queue",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": null,
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 0
+    }
+   ],
+   "schedule_count": 1,
+   "next_page_token": null
+  }
+ },
+ {
+  "request": "GET schedules?query=Status%20%3D%20%27paused%27",
+  "status": 200,
+  "response": {
+   "schedules": [
+    {
+     "schedule_id": "beta",
+     "workflow_type": "parity.v1.other",
+     "status": "paused",
+     "paused": true,
+     "next_fire": "@v",
+     "last_fire": null,
+     "overlap_policy": "skip",
+     "note": null,
+     "namespace": "@namespace",
+     "spec": {
+      "timezone": "Europe/Budapest",
+      "cron_expressions": [
+       "0 3 * * *"
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.other",
+      "task_queue": "@queue",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": null,
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 0
+    }
+   ],
+   "schedule_count": 1,
+   "next_page_token": null
+  }
+ },
+ {
+  "request": "GET schedules?query=WorkflowType%20%3D%20%22parity.v1.echo%22%20AND%20TaskQueue%20%3D%20%27catalog-b%27",
+  "status": 200,
+  "response": {
+   "schedules": [
+    {
+     "schedule_id": "gamma",
+     "workflow_type": "parity.v1.echo",
+     "status": "active",
+     "paused": false,
+     "next_fire": "@v",
+     "last_fire": null,
+     "overlap_policy": "skip",
+     "note": "x AND y",
+     "namespace": "@namespace",
+     "spec": {
+      "intervals": [
+       {
+        "every": "P1D"
+       }
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.echo",
+      "task_queue": "catalog-b",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": null,
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 0
+    }
+   ],
+   "schedule_count": 1,
+   "next_page_token": null
+  }
+ },
+ {
+  "request": "GET schedules?query=Note%20%3D%20%27x%20AND%20y%27",
+  "status": 200,
+  "response": {
+   "schedules": [
+    {
+     "schedule_id": "gamma",
+     "workflow_type": "parity.v1.echo",
+     "status": "active",
+     "paused": false,
+     "next_fire": "@v",
+     "last_fire": null,
+     "overlap_policy": "skip",
+     "note": "x AND y",
+     "namespace": "@namespace",
+     "spec": {
+      "intervals": [
+       {
+        "every": "P1D"
+       }
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.echo",
+      "task_queue": "catalog-b",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": null,
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 0
+    }
+   ],
+   "schedule_count": 1,
+   "next_page_token": null
+  }
+ },
+ {
+  "request": "GET schedules?query=ScheduleId%20%3D%20%27alpha%27%20and%20Status%20%3D%20%22active%22",
+  "status": 200,
+  "response": {
+   "schedules": [
+    {
+     "schedule_id": "alpha",
+     "workflow_type": "parity.v1.echo",
+     "status": "active",
+     "paused": false,
+     "next_fire": "@v",
+     "last_fire": null,
+     "overlap_policy": "skip",
+     "note": "first",
+     "namespace": "@namespace",
+     "spec": {
+      "intervals": [
+       {
+        "every": "P1D"
+       }
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.echo",
+      "task_queue": "@queue",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": null,
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 0
+    }
+   ],
+   "schedule_count": 1,
+   "next_page_token": null
+  }
+ },
+ {
+  "request": "GET schedules?query=Status%20%21%3D%20%27active%27",
+  "status": 422,
+  "response": {
+   "message": "Schedule visibility supports only equality predicates joined by AND.",
+   "reason": "unsupported_schedule_visibility_predicate",
+   "field": "query",
+   "errors": {
+    "query": [
+     "Schedule visibility supports only equality predicates joined by AND."
+    ]
+   },
+   "validation_errors": {
+    "query": [
+     "Schedule visibility supports only equality predicates joined by AND."
+    ]
+   },
+   "last_safe_cursor": null
+  }
+ },
+ {
+  "request": "GET schedules?query=Status%20%3D%20%27a%27%20OR%20Note%20%3D%20%27b%27",
+  "status": 422,
+  "response": {
+   "message": "Schedule visibility supports only equality predicates joined by AND.",
+   "reason": "unsupported_schedule_visibility_predicate",
+   "field": "query",
+   "errors": {
+    "query": [
+     "Schedule visibility supports only equality predicates joined by AND."
+    ]
+   },
+   "validation_errors": {
+    "query": [
+     "Schedule visibility supports only equality predicates joined by AND."
+    ]
+   },
+   "last_safe_cursor": null
+  }
+ },
+ {
+  "request": "GET schedules?query=Owner%20%3D%20%27x%27",
+  "status": 422,
+  "response": {
+   "message": "Schedule visibility field [Owner] is not searchable. Use ScheduleId, Status, WorkflowType, TaskQueue, Note, or a registered search attribute.",
+   "reason": "unsupported_schedule_visibility_field",
+   "field": "query",
+   "errors": {
+    "query": [
+     "Schedule visibility field [Owner] is not searchable. Use ScheduleId, Status, WorkflowType, TaskQueue, Note, or a registered search attribute."
+    ]
+   },
+   "validation_errors": {
+    "query": [
+     "Schedule visibility field [Owner] is not searchable. Use ScheduleId, Status, WorkflowType, TaskQueue, Note, or a registered search attribute."
+    ]
+   },
+   "last_safe_cursor": null
+  }
+ },
+ {
+  "request": "GET schedules?query=ScheduleId%20%3D%2001",
+  "status": 422,
+  "response": {
+   "message": "Schedule visibility literal [01] must be a quoted string, number, or boolean.",
+   "reason": "invalid_schedule_visibility_query",
+   "field": "query",
+   "errors": {
+    "query": [
+     "Schedule visibility literal [01] must be a quoted string, number, or boolean."
+    ]
+   },
+   "validation_errors": {
+    "query": [
+     "Schedule visibility literal [01] must be a quoted string, number, or boolean."
+    ]
+   },
+   "last_safe_cursor": null
+  }
+ },
+ {
+  "request": "GET schedules?query=Status%20%3D%20%27deleted%27",
+  "status": 422,
+  "response": {
+   "message": "Schedule visibility field [Status] requires a quoted active or paused literal.",
+   "reason": "invalid_schedule_visibility_query",
+   "field": "query",
+   "errors": {
+    "query": [
+     "Schedule visibility field [Status] requires a quoted active or paused literal."
+    ]
+   },
+   "validation_errors": {
+    "query": [
+     "Schedule visibility field [Status] requires a quoted active or paused literal."
+    ]
+   },
+   "last_safe_cursor": null
+  }
+ },
+ {
+  "request": "GET schedules?query=Note%20%3D%20%27open",
+  "status": 422,
+  "response": {
+   "message": "Schedule visibility query contains an unterminated string or empty predicate.",
+   "reason": "invalid_schedule_visibility_query",
+   "field": "query",
+   "errors": {
+    "query": [
+     "Schedule visibility query contains an unterminated string or empty predicate."
+    ]
+   },
+   "validation_errors": {
+    "query": [
+     "Schedule visibility query contains an unterminated string or empty predicate."
+    ]
+   },
+   "last_safe_cursor": null
+  }
+ },
+ {
+  "request": "GET schedules?query=AND%20Note%20%3D%20%27x%27",
+  "status": 422,
+  "response": {
+   "message": "Schedule visibility query contains an unterminated string or empty predicate.",
+   "reason": "invalid_schedule_visibility_query",
+   "field": "query",
+   "errors": {
+    "query": [
+     "Schedule visibility query contains an unterminated string or empty predicate."
+    ]
+   },
+   "validation_errors": {
+    "query": [
+     "Schedule visibility query contains an unterminated string or empty predicate."
+    ]
+   },
+   "last_safe_cursor": null
+  }
+ },
+ {
+  "request": "GET schedules?query=Note%20%27x%27",
+  "status": 422,
+  "response": {
+   "message": "Schedule visibility predicates must use: Field = literal.",
+   "reason": "invalid_schedule_visibility_query",
+   "field": "query",
+   "errors": {
+    "query": [
+     "Schedule visibility predicates must use: Field = literal."
+    ]
+   },
+   "validation_errors": {
+    "query": [
+     "Schedule visibility predicates must use: Field = literal."
+    ]
+   },
+   "last_safe_cursor": null
+  }
+ },
+ {
+  "request": "GET schedules?query=Note%20%3D%20true",
+  "status": 422,
+  "response": {
+   "message": "Schedule visibility field [Note] requires a quoted string literal.",
+   "reason": "invalid_schedule_visibility_query",
+   "field": "query",
+   "errors": {
+    "query": [
+     "Schedule visibility field [Note] requires a quoted string literal."
+    ]
+   },
+   "validation_errors": {
+    "query": [
+     "Schedule visibility field [Note] requires a quoted string literal."
+    ]
+   },
+   "last_safe_cursor": null
+  }
+ },
+ {
+  "request": "GET schedules?query=Note%20%3D%20%27it%5C%27s%27",
+  "status": 200,
+  "response": {
+   "schedules": [],
+   "schedule_count": 0,
+   "next_page_token": null
+  }
+ },
+ {
+  "request": "POST search-attributes",
+  "status": 201,
+  "response": {
+   "name": "Team",
+   "type": "keyword",
+   "outcome": "created"
+  }
+ },
+ {
+  "request": "GET schedules?query=Team%20%3D%20%27x%27",
+  "status": 200,
+  "response": {
+   "schedules": [],
+   "schedule_count": 0,
+   "next_page_token": null
+  }
+ },
+ {
+  "request": "GET schedules?query=Team%20%3D%205",
+  "status": 422,
+  "response": {
+   "message": "Schedule visibility field [Team] requires a quoted string literal.",
+   "reason": "invalid_schedule_visibility_query",
+   "field": "query",
+   "errors": {
+    "query": [
+     "Schedule visibility field [Team] requires a quoted string literal."
+    ]
+   },
+   "validation_errors": {
+    "query": [
+     "Schedule visibility field [Team] requires a quoted string literal."
+    ]
+   },
+   "last_safe_cursor": null
+  }
+ },
+ {
+  "request": "GET schedules?query=Status%20%3D%20%27active%27%20AND%20Team%20%3D%20%27x%27",
+  "status": 200,
+  "response": {
+   "schedules": [],
+   "schedule_count": 0,
+   "next_page_token": null
+  }
+ },
+ {
+  "request": "GET schedules?page_size=1",
+  "status": 200,
+  "response": {
+   "schedules": [
+    {
+     "schedule_id": "delta",
+     "workflow_type": "parity.v1.echo",
+     "status": "active",
+     "paused": false,
+     "next_fire": "@v",
+     "last_fire": null,
+     "overlap_policy": "skip",
+     "note": null,
+     "namespace": "@namespace",
+     "spec": {
+      "intervals": [
+       {
+        "every": "P1D"
+       }
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.echo",
+      "task_queue": "@queue",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": null,
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 0
+    }
+   ],
+   "schedule_count": 1,
+   "next_page_token": "@v"
+  }
+ },
+ {
+  "request": "DELETE schedules/delta",
+  "status": 200,
+  "response": {
+   "schedule_id": "delta",
+   "outcome": "deleted"
+  }
+ },
+ {
+  "request": "GET schedules?page_size=1&next_page_token={token}",
+  "status": 409,
+  "response": {
+   "message": "Schedule continuation token cursor is no longer present in the unchanged filtered set. Restart pagination without a token.",
+   "reason": "stale_schedule_page_token",
+   "field": "next_page_token",
+   "errors": {
+    "next_page_token": [
+     "Schedule continuation token cursor is no longer present in the unchanged filtered set. Restart pagination without a token."
+    ]
+   },
+   "validation_errors": {
+    "next_page_token": [
+     "Schedule continuation token cursor is no longer present in the unchanged filtered set. Restart pagination without a token."
+    ]
+   },
+   "last_safe_cursor": {
+    "created_at": "@v",
+    "schedule_id": "delta"
+   }
+  }
+ },
+ {
+  "request": "PUT schedules/missing",
+  "status": 404,
+  "response": {
+   "message": "Schedule [missing] not found in namespace [@namespace].",
+   "reason": "schedule_not_found"
+  }
+ },
+ {
+  "request": "PUT schedules/alpha",
+  "status": 200,
+  "response": {
+   "schedule_id": "alpha",
+   "outcome": "updated"
+  }
+ },
+ {
+  "request": "PUT schedules/alpha",
+  "status": 200,
+  "response": {
+   "schedule_id": "alpha",
+   "outcome": "updated"
+  }
+ },
+ {
+  "request": "PUT schedules/alpha",
+  "status": 200,
+  "response": {
+   "schedule_id": "alpha",
+   "outcome": "updated"
+  }
+ },
+ {
+  "request": "PUT schedules/alpha",
+  "status": 200,
+  "response": {
+   "schedule_id": "alpha",
+   "outcome": "updated"
+  }
+ },
+ {
+  "request": "PUT schedules/alpha",
+  "status": 200,
+  "response": {
+   "schedule_id": "alpha",
+   "outcome": "updated"
+  }
+ },
+ {
+  "request": "PUT schedules/alpha",
+  "status": 422,
+  "response": {
+   "message": "The spec field must be an array. (and 5 more errors)",
+   "reason": "validation_failed",
+   "errors": {
+    "spec": [
+     "The spec field must be an array."
+    ],
+    "action.workflow_type": [
+     "The action.workflow type field must be a string."
+    ],
+    "overlap_policy": [
+     "The selected overlap policy is invalid."
+    ],
+    "jitter_seconds": [
+     "The jitter seconds field must not be greater than 3600."
+    ],
+    "max_runs": [
+     "The max runs field must be at least 1."
+    ],
+    "note": [
+     "The note field must be a string."
+    ]
+   },
+   "validation_errors": {
+    "spec": [
+     "The spec field must be an array."
+    ],
+    "action.workflow_type": [
+     "The action.workflow type field must be a string."
+    ],
+    "overlap_policy": [
+     "The selected overlap policy is invalid."
+    ],
+    "jitter_seconds": [
+     "The jitter seconds field must not be greater than 3600."
+    ],
+    "max_runs": [
+     "The max runs field must be at least 1."
+    ],
+    "note": [
+     "The note field must be a string."
+    ]
+   }
+  }
+ },
+ {
+  "request": "GET schedules/alpha",
+  "status": 200,
+  "response": {
+   "schedule_id": "alpha",
+   "spec": {
+    "timezone": "America/New_York",
+    "cron_expressions": [
+     "0 4 * * *"
+    ]
+   },
+   "action": {
+    "workflow_type": "parity.v1.echo",
+    "task_queue": "catalog-z",
+    "input": {
+     "codec": "avro",
+     "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+    },
+    "execution_timeout_seconds": 60
+   },
+   "overlap_policy": "allow_all",
+   "state": {
+    "status": "active",
+    "paused": false,
+    "note": "changed"
+   },
+   "info": {
+    "next_fire": "@v",
+    "last_fire": null,
+    "fires_count": 0,
+    "failures_count": 0,
+    "recent_actions": [],
+    "buffered_actions": [],
+    "skipped_trigger_count": 0,
+    "last_skip_reason": null,
+    "last_skipped_at": null
+   },
+   "memo": null,
+   "search_attributes": null,
+   "created_at": "@v",
+   "updated_at": "@v",
+   "namespace": "@namespace",
+   "status": "active",
+   "paused": false,
+   "note": "changed",
+   "fires_count": 0,
+   "failures_count": 0,
+   "next_fire_at": "@v",
+   "last_fired_at": null,
+   "paused_at": null,
+   "jitter_seconds": 0,
+   "max_runs": 5,
+   "remaining_actions": 5,
+   "latest_workflow_instance_id": null
+  }
+ },
+ {
+  "request": "GET schedules/alpha/history?limit=20",
+  "status": 200,
+  "response": {
+   "schedule_id": "alpha",
+   "namespace": "@namespace",
+   "events": [
+    {
+     "id": "@v",
+     "sequence": 1,
+     "event_type": "ScheduleCreated",
+     "payload": {
+      "spec": {
+       "intervals": [
+        {
+         "every": "P1D"
+        }
+       ]
+      },
+      "action": {
+       "workflow_type": "parity.v1.echo",
+       "task_queue": "@queue",
+       "input": {
+        "codec": "avro",
+        "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+       }
+      },
+      "overlap_policy": "skip",
+      "next_fire_at": "@v",
+      "command_context": {
+       "source": "control_plane",
+       "context": {
+        "caller": {
+         "type": "server",
+         "label": "Standalone Server"
+        },
+        "auth": {
+         "status": "authorized",
+         "method": "token",
+         "role": "admin",
+         "roles": [
+          "admin"
+         ],
+         "principal": {
+          "subject": "legacy-token",
+          "roles": [
+           "admin"
+          ],
+          "claims": {
+           "legacy_credential": true
+          },
+          "legacy_full_access": true
+         }
+        },
+        "request": {
+         "method": "POST",
+         "path": "/api/schedules",
+         "route_name": "@v",
+         "ip": "@v",
+         "user_agent": "GuzzleHttp/8",
+         "fingerprint": "@v"
+        },
+        "server": {
+         "operation_id": "@v",
+         "namespace": "@namespace",
+         "workflow_id": "alpha",
+         "command": "schedule.create",
+         "metadata": []
+        },
+        "principal": {
+         "type": "auth:token",
+         "id": "legacy-token",
+         "label": "Admin"
+        }
+       }
+      },
+      "schedule": {
+       "id": "@v",
+       "schedule_id": "alpha",
+       "namespace": "@namespace",
+       "status": "active",
+       "overlap_policy": "skip",
+       "next_fire_at": "@v",
+       "fires_count": 0,
+       "skipped_trigger_count": 0,
+       "note": "first"
+      }
+     },
+     "workflow_instance_id": null,
+     "workflow_run_id": null,
+     "recorded_at": "@v"
+    },
+    {
+     "id": "@v",
+     "sequence": 2,
+     "event_type": "ScheduleUpdated",
+     "payload": {
+      "changed_fields": [
+       "spec",
+       "action",
+       "overlap_policy",
+       "jitter_seconds",
+       "note"
+      ],
+      "spec": {
+       "intervals": [
+        {
+         "every": "P1D"
+        }
+       ]
+      },
+      "action": {
+       "workflow_type": "parity.v1.echo",
+       "task_queue": "@queue",
+       "input": {
+        "codec": "avro",
+        "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+       }
+      },
+      "overlap_policy": "allow_all",
+      "next_fire_at": "@v",
+      "command_context": {
+       "source": "control_plane",
+       "context": {
+        "caller": {
+         "type": "server",
+         "label": "Standalone Server"
+        },
+        "auth": {
+         "status": "authorized",
+         "method": "token",
+         "role": "admin",
+         "roles": [
+          "admin"
+         ],
+         "principal": {
+          "subject": "legacy-token",
+          "roles": [
+           "admin"
+          ],
+          "claims": {
+           "legacy_credential": true
+          },
+          "legacy_full_access": true
+         }
+        },
+        "request": {
+         "method": "PUT",
+         "path": "/api/schedules/alpha",
+         "route_name": "@v",
+         "ip": "@v",
+         "user_agent": "GuzzleHttp/8",
+         "fingerprint": "@v"
+        },
+        "server": {
+         "operation_id": "@v",
+         "namespace": "@namespace",
+         "workflow_id": "alpha",
+         "command": "schedule.update",
+         "metadata": []
+        },
+        "principal": {
+         "type": "auth:token",
+         "id": "legacy-token",
+         "label": "Admin"
+        }
+       }
+      },
+      "schedule": {
+       "id": "@v",
+       "schedule_id": "alpha",
+       "namespace": "@namespace",
+       "status": "active",
+       "overlap_policy": "allow_all",
+       "next_fire_at": "@v",
+       "fires_count": 0,
+       "skipped_trigger_count": 0,
+       "note": "changed"
+      }
+     },
+     "workflow_instance_id": null,
+     "workflow_run_id": null,
+     "recorded_at": "@v"
+    },
+    {
+     "id": "@v",
+     "sequence": 3,
+     "event_type": "ScheduleUpdated",
+     "payload": {
+      "changed_fields": [
+       "spec",
+       "action"
+      ],
+      "spec": {
+       "timezone": "America/New_York",
+       "cron_expressions": [
+        "0 4 * * *"
+       ]
+      },
+      "action": {
+       "workflow_type": "parity.v1.echo",
+       "task_queue": "catalog-z",
+       "input": {
+        "codec": "avro",
+        "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+       },
+       "execution_timeout_seconds": 60
+      },
+      "overlap_policy": "allow_all",
+      "next_fire_at": "@v",
+      "command_context": {
+       "source": "control_plane",
+       "context": {
+        "caller": {
+         "type": "server",
+         "label": "Standalone Server"
+        },
+        "auth": {
+         "status": "authorized",
+         "method": "token",
+         "role": "admin",
+         "roles": [
+          "admin"
+         ],
+         "principal": {
+          "subject": "legacy-token",
+          "roles": [
+           "admin"
+          ],
+          "claims": {
+           "legacy_credential": true
+          },
+          "legacy_full_access": true
+         }
+        },
+        "request": {
+         "method": "PUT",
+         "path": "/api/schedules/alpha",
+         "route_name": "@v",
+         "ip": "@v",
+         "user_agent": "GuzzleHttp/8",
+         "fingerprint": "@v"
+        },
+        "server": {
+         "operation_id": "@v",
+         "namespace": "@namespace",
+         "workflow_id": "alpha",
+         "command": "schedule.update",
+         "metadata": []
+        },
+        "principal": {
+         "type": "auth:token",
+         "id": "legacy-token",
+         "label": "Admin"
+        }
+       }
+      },
+      "schedule": {
+       "id": "@v",
+       "schedule_id": "alpha",
+       "namespace": "@namespace",
+       "status": "active",
+       "overlap_policy": "allow_all",
+       "next_fire_at": "@v",
+       "fires_count": 0,
+       "skipped_trigger_count": 0,
+       "note": "changed"
+      }
+     },
+     "workflow_instance_id": null,
+     "workflow_run_id": null,
+     "recorded_at": "@v"
+    },
+    {
+     "id": "@v",
+     "sequence": 4,
+     "event_type": "ScheduleUpdated",
+     "payload": {
+      "changed_fields": [
+       "spec",
+       "action",
+       "memo",
+       "max_runs",
+       "remaining_actions"
+      ],
+      "spec": {
+       "timezone": "America/New_York",
+       "cron_expressions": [
+        "0 4 * * *"
+       ]
+      },
+      "action": {
+       "workflow_type": "parity.v1.echo",
+       "task_queue": "catalog-z",
+       "input": {
+        "codec": "avro",
+        "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+       },
+       "execution_timeout_seconds": 60
+      },
+      "overlap_policy": "allow_all",
+      "next_fire_at": "@v",
+      "command_context": {
+       "source": "control_plane",
+       "context": {
+        "caller": {
+         "type": "server",
+         "label": "Standalone Server"
+        },
+        "auth": {
+         "status": "authorized",
+         "method": "token",
+         "role": "admin",
+         "roles": [
+          "admin"
+         ],
+         "principal": {
+          "subject": "legacy-token",
+          "roles": [
+           "admin"
+          ],
+          "claims": {
+           "legacy_credential": true
+          },
+          "legacy_full_access": true
+         }
+        },
+        "request": {
+         "method": "PUT",
+         "path": "/api/schedules/alpha",
+         "route_name": "@v",
+         "ip": "@v",
+         "user_agent": "GuzzleHttp/8",
+         "fingerprint": "@v"
+        },
+        "server": {
+         "operation_id": "@v",
+         "namespace": "@namespace",
+         "workflow_id": "alpha",
+         "command": "schedule.update",
+         "metadata": []
+        },
+        "principal": {
+         "type": "auth:token",
+         "id": "legacy-token",
+         "label": "Admin"
+        }
+       }
+      },
+      "schedule": {
+       "id": "@v",
+       "schedule_id": "alpha",
+       "namespace": "@namespace",
+       "status": "active",
+       "overlap_policy": "allow_all",
+       "next_fire_at": "@v",
+       "fires_count": 0,
+       "skipped_trigger_count": 0,
+       "note": "changed"
+      }
+     },
+     "workflow_instance_id": null,
+     "workflow_run_id": null,
+     "recorded_at": "@v"
+    },
+    {
+     "id": "@v",
+     "sequence": 5,
+     "event_type": "ScheduleUpdated",
+     "payload": {
+      "changed_fields": [
+       "spec",
+       "action",
+       "memo",
+       "search_attributes"
+      ],
+      "spec": {
+       "timezone": "America/New_York",
+       "cron_expressions": [
+        "0 4 * * *"
+       ]
+      },
+      "action": {
+       "workflow_type": "parity.v1.echo",
+       "task_queue": "catalog-z",
+       "input": {
+        "codec": "avro",
+        "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+       },
+       "execution_timeout_seconds": 60
+      },
+      "overlap_policy": "allow_all",
+      "next_fire_at": "@v",
+      "command_context": {
+       "source": "control_plane",
+       "context": {
+        "caller": {
+         "type": "server",
+         "label": "Standalone Server"
+        },
+        "auth": {
+         "status": "authorized",
+         "method": "token",
+         "role": "admin",
+         "roles": [
+          "admin"
+         ],
+         "principal": {
+          "subject": "legacy-token",
+          "roles": [
+           "admin"
+          ],
+          "claims": {
+           "legacy_credential": true
+          },
+          "legacy_full_access": true
+         }
+        },
+        "request": {
+         "method": "PUT",
+         "path": "/api/schedules/alpha",
+         "route_name": "@v",
+         "ip": "@v",
+         "user_agent": "GuzzleHttp/8",
+         "fingerprint": "@v"
+        },
+        "server": {
+         "operation_id": "@v",
+         "namespace": "@namespace",
+         "workflow_id": "alpha",
+         "command": "schedule.update",
+         "metadata": []
+        },
+        "principal": {
+         "type": "auth:token",
+         "id": "legacy-token",
+         "label": "Admin"
+        }
+       }
+      },
+      "schedule": {
+       "id": "@v",
+       "schedule_id": "alpha",
+       "namespace": "@namespace",
+       "status": "active",
+       "overlap_policy": "allow_all",
+       "next_fire_at": "@v",
+       "fires_count": 0,
+       "skipped_trigger_count": 0,
+       "note": "changed"
+      }
+     },
+     "workflow_instance_id": null,
+     "workflow_run_id": null,
+     "recorded_at": "@v"
+    },
+    {
+     "id": "@v",
+     "sequence": 6,
+     "event_type": "ScheduleUpdated",
+     "payload": {
+      "changed_fields": [
+       "spec",
+       "action"
+      ],
+      "spec": {
+       "timezone": "America/New_York",
+       "cron_expressions": [
+        "0 4 * * *"
+       ]
+      },
+      "action": {
+       "workflow_type": "parity.v1.echo",
+       "task_queue": "catalog-z",
+       "input": {
+        "codec": "avro",
+        "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+       },
+       "execution_timeout_seconds": 60
+      },
+      "overlap_policy": "allow_all",
+      "next_fire_at": "@v",
+      "command_context": {
+       "source": "control_plane",
+       "context": {
+        "caller": {
+         "type": "server",
+         "label": "Standalone Server"
+        },
+        "auth": {
+         "status": "authorized",
+         "method": "token",
+         "role": "admin",
+         "roles": [
+          "admin"
+         ],
+         "principal": {
+          "subject": "legacy-token",
+          "roles": [
+           "admin"
+          ],
+          "claims": {
+           "legacy_credential": true
+          },
+          "legacy_full_access": true
+         }
+        },
+        "request": {
+         "method": "PUT",
+         "path": "/api/schedules/alpha",
+         "route_name": "@v",
+         "ip": "@v",
+         "user_agent": "GuzzleHttp/8",
+         "fingerprint": "@v"
+        },
+        "server": {
+         "operation_id": "@v",
+         "namespace": "@namespace",
+         "workflow_id": "alpha",
+         "command": "schedule.update",
+         "metadata": []
+        },
+        "principal": {
+         "type": "auth:token",
+         "id": "legacy-token",
+         "label": "Admin"
+        }
+       }
+      },
+      "schedule": {
+       "id": "@v",
+       "schedule_id": "alpha",
+       "namespace": "@namespace",
+       "status": "active",
+       "overlap_policy": "allow_all",
+       "next_fire_at": "@v",
+       "fires_count": 0,
+       "skipped_trigger_count": 0,
+       "note": "changed"
+      }
+     },
+     "workflow_instance_id": null,
+     "workflow_run_id": null,
+     "recorded_at": "@v"
+    }
+   ],
+   "next_cursor": null,
+   "has_more": false
+  }
+ },
+ {
+  "request": "GET schedules?query=TaskQueue%20%3D%20%27catalog-z%27",
+  "status": 200,
+  "response": {
+   "schedules": [
+    {
+     "schedule_id": "alpha",
+     "workflow_type": "parity.v1.echo",
+     "status": "active",
+     "paused": false,
+     "next_fire": "@v",
+     "last_fire": null,
+     "overlap_policy": "allow_all",
+     "note": "changed",
+     "namespace": "@namespace",
+     "spec": {
+      "timezone": "America/New_York",
+      "cron_expressions": [
+       "0 4 * * *"
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.echo",
+      "task_queue": "catalog-z",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      },
+      "execution_timeout_seconds": 60
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": null,
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 0,
+     "max_runs": 5,
+     "remaining_actions": 5
+    }
+   ],
+   "schedule_count": 1,
+   "next_page_token": null
+  }
+ },
+ {
+  "request": "POST schedules",
+  "status": 201,
+  "response": {
+   "schedule_id": "bf",
+   "outcome": "created"
+  }
+ },
+ {
+  "request": "POST schedules/bf/backfill",
+  "status": 422,
+  "response": {
+   "message": "The start time field is required. (and 1 more error)",
+   "reason": "validation_failed",
+   "errors": {
+    "start_time": [
+     "The start time field is required."
+    ],
+    "end_time": [
+     "The end time field is required."
+    ]
+   },
+   "validation_errors": {
+    "start_time": [
+     "The start time field is required."
+    ],
+    "end_time": [
+     "The end time field is required."
+    ]
+   }
+  }
+ },
+ {
+  "request": "POST schedules/bf/backfill",
+  "status": 422,
+  "response": {
+   "message": "The start time field must be a valid date. (and 2 more errors)",
+   "reason": "validation_failed",
+   "errors": {
+    "start_time": [
+     "The start time field must be a valid date."
+    ],
+    "end_time": [
+     "The end time field must be a valid date."
+    ],
+    "overlap_policy": [
+     "The selected overlap policy is invalid."
+    ]
+   },
+   "validation_errors": {
+    "start_time": [
+     "The start time field must be a valid date."
+    ],
+    "end_time": [
+     "The end time field must be a valid date."
+    ],
+    "overlap_policy": [
+     "The selected overlap policy is invalid."
+    ]
+   }
+  }
+ },
+ {
+  "request": "POST schedules/bf/backfill",
+  "status": 422,
+  "response": {
+   "message": "end_time must be after start_time.",
+   "reason": "invalid_time_range"
+  }
+ },
+ {
+  "request": "POST schedules/bf/backfill",
+  "status": 422,
+  "response": {
+   "message": "end_time must be after start_time.",
+   "reason": "invalid_time_range"
+  }
+ },
+ {
+  "request": "POST schedules/bf/backfill",
+  "status": 200,
+  "response": {
+   "schedule_id": "bf",
+   "outcome": "backfill_started",
+   "fires_attempted": 7,
+   "results": [
+    {
+     "fire_time": "@v",
+     "workflow_id": "@v",
+     "outcome": "started"
+    },
+    {
+     "fire_time": "@v",
+     "workflow_id": "@v",
+     "outcome": "started"
+    },
+    {
+     "fire_time": "@v",
+     "workflow_id": "@v",
+     "outcome": "started"
+    },
+    {
+     "fire_time": "@v",
+     "workflow_id": "@v",
+     "outcome": "started"
+    },
+    {
+     "fire_time": "@v",
+     "workflow_id": "@v",
+     "outcome": "started"
+    },
+    {
+     "fire_time": "@v",
+     "workflow_id": "@v",
+     "outcome": "started"
+    },
+    {
+     "fire_time": "@v",
+     "workflow_id": "@v",
+     "outcome": "started"
+    }
+   ]
+  }
+ },
+ {
+  "request": "POST schedules/bf/backfill",
+  "status": 200,
+  "response": {
+   "schedule_id": "bf",
+   "outcome": "backfill_started",
+   "fires_attempted": 8,
+   "results": [
+    {
+     "fire_time": "@v",
+     "outcome": "skipped"
+    },
+    {
+     "fire_time": "@v",
+     "outcome": "skipped"
+    },
+    {
+     "fire_time": "@v",
+     "outcome": "skipped"
+    },
+    {
+     "fire_time": "@v",
+     "outcome": "skipped"
+    },
+    {
+     "fire_time": "@v",
+     "outcome": "skipped"
+    },
+    {
+     "fire_time": "@v",
+     "outcome": "skipped"
+    },
+    {
+     "fire_time": "@v",
+     "outcome": "skipped"
+    },
+    {
+     "fire_time": "@v",
+     "workflow_id": "@v",
+     "outcome": "started"
+    }
+   ]
+  }
+ },
+ {
+  "request": "GET schedules/bf",
+  "status": 200,
+  "response": {
+   "schedule_id": "bf",
+   "spec": {
+    "timezone": "Europe/Budapest",
+    "cron_expressions": [
+     "0 3 * * *"
+    ],
+    "intervals": [
+     {
+      "every": "P1D",
+      "offset": "PT6H"
+     }
+    ]
+   },
+   "action": {
+    "workflow_type": "parity.v1.echo",
+    "task_queue": "@queue",
+    "input": {
+     "codec": "avro",
+     "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+    }
+   },
+   "overlap_policy": "allow_all",
+   "state": {
+    "status": "active",
+    "paused": false,
+    "note": null
+   },
+   "info": {
+    "next_fire": "@v",
+    "last_fire": "@v",
+    "fires_count": 8,
+    "failures_count": 0,
+    "recent_actions": [
+     {
+      "workflow_id": "@v",
+      "run_id": "@v",
+      "outcome": "backfilled",
+      "fired_at": "@v",
+      "occurrence_time": "@v",
+      "fire_lag_ms": "@v"
+     },
+     {
+      "workflow_id": "@v",
+      "run_id": "@v",
+      "outcome": "backfilled",
+      "fired_at": "@v",
+      "occurrence_time": "@v",
+      "fire_lag_ms": "@v"
+     },
+     {
+      "workflow_id": "@v",
+      "run_id": "@v",
+      "outcome": "backfilled",
+      "fired_at": "@v",
+      "occurrence_time": "@v",
+      "fire_lag_ms": "@v"
+     },
+     {
+      "workflow_id": "@v",
+      "run_id": "@v",
+      "outcome": "backfilled",
+      "fired_at": "@v",
+      "occurrence_time": "@v",
+      "fire_lag_ms": "@v"
+     },
+     {
+      "workflow_id": "@v",
+      "run_id": "@v",
+      "outcome": "backfilled",
+      "fired_at": "@v",
+      "occurrence_time": "@v",
+      "fire_lag_ms": "@v"
+     },
+     {
+      "workflow_id": "@v",
+      "run_id": "@v",
+      "outcome": "backfilled",
+      "fired_at": "@v",
+      "occurrence_time": "@v",
+      "fire_lag_ms": "@v"
+     },
+     {
+      "workflow_id": "@v",
+      "run_id": "@v",
+      "outcome": "backfilled",
+      "fired_at": "@v",
+      "occurrence_time": "@v",
+      "fire_lag_ms": "@v"
+     },
+     {
+      "workflow_id": "@v",
+      "run_id": "@v",
+      "outcome": "backfilled",
+      "fired_at": "@v",
+      "occurrence_time": "@v",
+      "fire_lag_ms": "@v"
+     }
+    ],
+    "buffered_actions": [],
+    "skipped_trigger_count": 7,
+    "last_skip_reason": "already_fired_occurrence",
+    "last_skipped_at": "@v"
+   },
+   "memo": null,
+   "search_attributes": null,
+   "created_at": "@v",
+   "updated_at": "@v",
+   "namespace": "@namespace",
+   "status": "active",
+   "paused": false,
+   "note": null,
+   "fires_count": 8,
+   "failures_count": 0,
+   "next_fire_at": "@v",
+   "last_fired_at": "@v",
+   "paused_at": null,
+   "jitter_seconds": 0,
+   "max_runs": null,
+   "remaining_actions": null,
+   "latest_workflow_instance_id": "@v"
+  }
+ },
+ {
+  "request": "POST schedules",
+  "status": 201,
+  "response": {
+   "schedule_id": "bf-skip",
+   "outcome": "created"
+  }
+ },
+ {
+  "request": "POST schedules/bf-skip/backfill",
+  "status": 200,
+  "response": {
+   "schedule_id": "bf-skip",
+   "outcome": "backfill_started",
+   "fires_attempted": 3,
+   "results": [
+    {
+     "fire_time": "@v",
+     "workflow_id": "@v",
+     "outcome": "started"
+    },
+    {
+     "fire_time": "@v",
+     "outcome": "skipped"
+    },
+    {
+     "fire_time": "@v",
+     "outcome": "skipped"
+    }
+   ]
+  }
+ },
+ {
+  "request": "POST schedules/bf-skip/backfill",
+  "status": 200,
+  "response": {
+   "schedule_id": "bf-skip",
+   "outcome": "backfill_started",
+   "fires_attempted": 2,
+   "results": [
+    {
+     "fire_time": "@v",
+     "workflow_id": "@v",
+     "outcome": "started"
+    },
+    {
+     "fire_time": "@v",
+     "workflow_id": "@v",
+     "outcome": "started"
+    }
+   ]
+  }
+ },
+ {
+  "request": "POST schedules",
+  "status": 201,
+  "response": {
+   "schedule_id": "bf-buffer",
+   "outcome": "created"
+  }
+ },
+ {
+  "request": "POST schedules/bf-buffer/backfill",
+  "status": 200,
+  "response": {
+   "schedule_id": "bf-buffer",
+   "outcome": "backfill_started",
+   "fires_attempted": 3,
+   "results": [
+    {
+     "fire_time": "@v",
+     "workflow_id": "@v",
+     "outcome": "started"
+    },
+    {
+     "fire_time": "@v",
+     "workflow_id": "@v",
+     "outcome": "started"
+    },
+    {
+     "fire_time": "@v",
+     "workflow_id": "@v",
+     "outcome": "started"
+    }
+   ]
+  }
+ },
+ {
+  "request": "POST schedules",
+  "status": 201,
+  "response": {
+   "schedule_id": "bf-quota",
+   "outcome": "created"
+  }
+ },
+ {
+  "request": "POST schedules/bf-quota/backfill",
+  "status": 200,
+  "response": {
+   "schedule_id": "bf-quota",
+   "outcome": "backfill_started",
+   "fires_attempted": 2,
+   "results": [
+    {
+     "fire_time": "@v",
+     "workflow_id": "@v",
+     "outcome": "started"
+    },
+    {
+     "fire_time": "@v",
+     "workflow_id": "@v",
+     "outcome": "started"
+    }
+   ]
+  }
+ },
+ {
+  "request": "GET schedules/bf-quota",
+  "status": 404,
+  "response": {
+   "message": "Schedule [bf-quota] not found in namespace [@namespace].",
+   "reason": "schedule_not_found"
+  }
+ },
+ {
+  "request": "POST schedules/beta/backfill",
+  "status": 200,
+  "response": {
+   "schedule_id": "beta",
+   "outcome": "backfill_started",
+   "fires_attempted": 2,
+   "results": [
+    {
+     "fire_time": "@v",
+     "outcome": "skipped"
+    },
+    {
+     "fire_time": "@v",
+     "outcome": "skipped"
+    }
+   ]
+  }
+ },
+ {
+  "request": "POST schedules/missing/backfill",
+  "status": 404,
+  "response": {
+   "message": "Schedule [missing] not found in namespace [@namespace].",
+   "reason": "schedule_not_found"
+  }
+ },
+ {
+  "request": "GET schedules/bf-skip/history?limit=20",
+  "status": 200,
+  "response": {
+   "schedule_id": "bf-skip",
+   "namespace": "@namespace",
+   "events": [
+    {
+     "id": "@v",
+     "sequence": 1,
+     "event_type": "ScheduleCreated",
+     "payload": {
+      "spec": {
+       "intervals": [
+        {
+         "every": "P1D"
+        }
+       ]
+      },
+      "action": {
+       "workflow_type": "parity.v1.echo",
+       "task_queue": "@queue",
+       "input": {
+        "codec": "avro",
+        "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+       }
+      },
+      "overlap_policy": "skip",
+      "next_fire_at": "@v",
+      "command_context": {
+       "source": "control_plane",
+       "context": {
+        "caller": {
+         "type": "server",
+         "label": "Standalone Server"
+        },
+        "auth": {
+         "status": "authorized",
+         "method": "token",
+         "role": "admin",
+         "roles": [
+          "admin"
+         ],
+         "principal": {
+          "subject": "legacy-token",
+          "roles": [
+           "admin"
+          ],
+          "claims": {
+           "legacy_credential": true
+          },
+          "legacy_full_access": true
+         }
+        },
+        "request": {
+         "method": "POST",
+         "path": "/api/schedules",
+         "route_name": "@v",
+         "ip": "@v",
+         "user_agent": "GuzzleHttp/8",
+         "fingerprint": "@v"
+        },
+        "server": {
+         "operation_id": "@v",
+         "namespace": "@namespace",
+         "workflow_id": "bf-skip",
+         "command": "schedule.create",
+         "metadata": []
+        },
+        "principal": {
+         "type": "auth:token",
+         "id": "legacy-token",
+         "label": "Admin"
+        }
+       }
+      },
+      "schedule": {
+       "id": "@v",
+       "schedule_id": "bf-skip",
+       "namespace": "@namespace",
+       "status": "active",
+       "overlap_policy": "skip",
+       "next_fire_at": "@v",
+       "fires_count": 0,
+       "skipped_trigger_count": 0
+      }
+     },
+     "workflow_instance_id": null,
+     "workflow_run_id": null,
+     "recorded_at": "@v"
+    },
+    {
+     "id": "@v",
+     "sequence": 2,
+     "event_type": "ScheduleTriggered",
+     "payload": {
+      "workflow_instance_id": "@v",
+      "workflow_run_id": "@v",
+      "outcome": "backfilled",
+      "effective_overlap_policy": "skip",
+      "trigger_number": 1,
+      "occurrence_time": "@v",
+      "command_context": {
+       "source": "control_plane",
+       "context": {
+        "caller": {
+         "type": "server",
+         "label": "Standalone Server"
+        },
+        "auth": {
+         "status": "authorized",
+         "method": "token",
+         "role": "admin",
+         "roles": [
+          "admin"
+         ],
+         "principal": {
+          "subject": "legacy-token",
+          "roles": [
+           "admin"
+          ],
+          "claims": {
+           "legacy_credential": true
+          },
+          "legacy_full_access": true
+         }
+        },
+        "request": {
+         "method": "POST",
+         "path": "/api/schedules/bf-skip/backfill",
+         "route_name": "@v",
+         "ip": "@v",
+         "user_agent": "GuzzleHttp/8",
+         "fingerprint": "@v"
+        },
+        "server": {
+         "operation_id": "@v",
+         "namespace": "@namespace",
+         "workflow_id": "bf-skip",
+         "command": "schedule.backfill",
+         "metadata": []
+        },
+        "principal": {
+         "type": "auth:token",
+         "id": "legacy-token",
+         "label": "Admin"
+        }
+       }
+      },
+      "schedule": {
+       "id": "@v",
+       "schedule_id": "bf-skip",
+       "namespace": "@namespace",
+       "status": "active",
+       "overlap_policy": "skip",
+       "next_fire_at": "@v",
+       "fires_count": 0,
+       "skipped_trigger_count": 0
+      }
+     },
+     "workflow_instance_id": "@v",
+     "workflow_run_id": "@v",
+     "recorded_at": "@v"
+    },
+    {
+     "id": "@v",
+     "sequence": 3,
+     "event_type": "ScheduleTriggerSkipped",
+     "payload": {
+      "reason": "overlap_policy_skip",
+      "skipped_trigger_count": 1,
+      "last_skipped_at": "@v",
+      "command_context": {
+       "source": "control_plane",
+       "context": {
+        "caller": {
+         "type": "server",
+         "label": "Standalone Server"
+        },
+        "auth": {
+         "status": "authorized",
+         "method": "token",
+         "role": "admin",
+         "roles": [
+          "admin"
+         ],
+         "principal": {
+          "subject": "legacy-token",
+          "roles": [
+           "admin"
+          ],
+          "claims": {
+           "legacy_credential": true
+          },
+          "legacy_full_access": true
+         }
+        },
+        "request": {
+         "method": "POST",
+         "path": "/api/schedules/bf-skip/backfill",
+         "route_name": "@v",
+         "ip": "@v",
+         "user_agent": "GuzzleHttp/8",
+         "fingerprint": "@v"
+        },
+        "server": {
+         "operation_id": "@v",
+         "namespace": "@namespace",
+         "workflow_id": "bf-skip",
+         "command": "schedule.backfill",
+         "metadata": []
+        },
+        "principal": {
+         "type": "auth:token",
+         "id": "legacy-token",
+         "label": "Admin"
+        }
+       }
+      },
+      "schedule": {
+       "id": "@v",
+       "schedule_id": "bf-skip",
+       "namespace": "@namespace",
+       "status": "active",
+       "overlap_policy": "skip",
+       "next_fire_at": "@v",
+       "last_fired_at": "@v",
+       "last_skip_reason": "overlap_policy_skip",
+       "last_skipped_at": "@v",
+       "fires_count": 1,
+       "skipped_trigger_count": 1,
+       "latest_workflow_instance_id": "@v"
+      }
+     },
+     "workflow_instance_id": null,
+     "workflow_run_id": null,
+     "recorded_at": "@v"
+    },
+    {
+     "id": "@v",
+     "sequence": 4,
+     "event_type": "ScheduleTriggerSkipped",
+     "payload": {
+      "reason": "overlap_policy_skip",
+      "skipped_trigger_count": 2,
+      "last_skipped_at": "@v",
+      "command_context": {
+       "source": "control_plane",
+       "context": {
+        "caller": {
+         "type": "server",
+         "label": "Standalone Server"
+        },
+        "auth": {
+         "status": "authorized",
+         "method": "token",
+         "role": "admin",
+         "roles": [
+          "admin"
+         ],
+         "principal": {
+          "subject": "legacy-token",
+          "roles": [
+           "admin"
+          ],
+          "claims": {
+           "legacy_credential": true
+          },
+          "legacy_full_access": true
+         }
+        },
+        "request": {
+         "method": "POST",
+         "path": "/api/schedules/bf-skip/backfill",
+         "route_name": "@v",
+         "ip": "@v",
+         "user_agent": "GuzzleHttp/8",
+         "fingerprint": "@v"
+        },
+        "server": {
+         "operation_id": "@v",
+         "namespace": "@namespace",
+         "workflow_id": "bf-skip",
+         "command": "schedule.backfill",
+         "metadata": []
+        },
+        "principal": {
+         "type": "auth:token",
+         "id": "legacy-token",
+         "label": "Admin"
+        }
+       }
+      },
+      "schedule": {
+       "id": "@v",
+       "schedule_id": "bf-skip",
+       "namespace": "@namespace",
+       "status": "active",
+       "overlap_policy": "skip",
+       "next_fire_at": "@v",
+       "last_fired_at": "@v",
+       "last_skip_reason": "overlap_policy_skip",
+       "last_skipped_at": "@v",
+       "fires_count": 1,
+       "skipped_trigger_count": 2,
+       "latest_workflow_instance_id": "@v"
+      }
+     },
+     "workflow_instance_id": null,
+     "workflow_run_id": null,
+     "recorded_at": "@v"
+    },
+    {
+     "id": "@v",
+     "sequence": 5,
+     "event_type": "ScheduleTriggered",
+     "payload": {
+      "workflow_instance_id": "@v",
+      "workflow_run_id": "@v",
+      "outcome": "backfilled",
+      "effective_overlap_policy": "terminate_other",
+      "trigger_number": 2,
+      "occurrence_time": "@v",
+      "command_context": {
+       "source": "control_plane",
+       "context": {
+        "caller": {
+         "type": "server",
+         "label": "Standalone Server"
+        },
+        "auth": {
+         "status": "authorized",
+         "method": "token",
+         "role": "admin",
+         "roles": [
+          "admin"
+         ],
+         "principal": {
+          "subject": "legacy-token",
+          "roles": [
+           "admin"
+          ],
+          "claims": {
+           "legacy_credential": true
+          },
+          "legacy_full_access": true
+         }
+        },
+        "request": {
+         "method": "POST",
+         "path": "/api/schedules/bf-skip/backfill",
+         "route_name": "@v",
+         "ip": "@v",
+         "user_agent": "GuzzleHttp/8",
+         "fingerprint": "@v"
+        },
+        "server": {
+         "operation_id": "@v",
+         "namespace": "@namespace",
+         "workflow_id": "bf-skip",
+         "command": "schedule.backfill",
+         "metadata": []
+        },
+        "principal": {
+         "type": "auth:token",
+         "id": "legacy-token",
+         "label": "Admin"
+        }
+       }
+      },
+      "schedule": {
+       "id": "@v",
+       "schedule_id": "bf-skip",
+       "namespace": "@namespace",
+       "status": "active",
+       "overlap_policy": "skip",
+       "next_fire_at": "@v",
+       "last_fired_at": "@v",
+       "last_skip_reason": "overlap_policy_skip",
+       "last_skipped_at": "@v",
+       "fires_count": 1,
+       "skipped_trigger_count": 2,
+       "latest_workflow_instance_id": "@v"
+      }
+     },
+     "workflow_instance_id": "@v",
+     "workflow_run_id": "@v",
+     "recorded_at": "@v"
+    },
+    {
+     "id": "@v",
+     "sequence": 6,
+     "event_type": "ScheduleTriggered",
+     "payload": {
+      "workflow_instance_id": "@v",
+      "workflow_run_id": "@v",
+      "outcome": "backfilled",
+      "effective_overlap_policy": "terminate_other",
+      "trigger_number": 3,
+      "occurrence_time": "@v",
+      "command_context": {
+       "source": "control_plane",
+       "context": {
+        "caller": {
+         "type": "server",
+         "label": "Standalone Server"
+        },
+        "auth": {
+         "status": "authorized",
+         "method": "token",
+         "role": "admin",
+         "roles": [
+          "admin"
+         ],
+         "principal": {
+          "subject": "legacy-token",
+          "roles": [
+           "admin"
+          ],
+          "claims": {
+           "legacy_credential": true
+          },
+          "legacy_full_access": true
+         }
+        },
+        "request": {
+         "method": "POST",
+         "path": "/api/schedules/bf-skip/backfill",
+         "route_name": "@v",
+         "ip": "@v",
+         "user_agent": "GuzzleHttp/8",
+         "fingerprint": "@v"
+        },
+        "server": {
+         "operation_id": "@v",
+         "namespace": "@namespace",
+         "workflow_id": "bf-skip",
+         "command": "schedule.backfill",
+         "metadata": []
+        },
+        "principal": {
+         "type": "auth:token",
+         "id": "legacy-token",
+         "label": "Admin"
+        }
+       }
+      },
+      "schedule": {
+       "id": "@v",
+       "schedule_id": "bf-skip",
+       "namespace": "@namespace",
+       "status": "active",
+       "overlap_policy": "skip",
+       "next_fire_at": "@v",
+       "last_fired_at": "@v",
+       "last_skip_reason": "overlap_policy_skip",
+       "last_skipped_at": "@v",
+       "fires_count": 2,
+       "skipped_trigger_count": 2,
+       "latest_workflow_instance_id": "@v"
+      }
+     },
+     "workflow_instance_id": "@v",
+     "workflow_run_id": "@v",
+     "recorded_at": "@v"
+    }
+   ],
+   "next_cursor": null,
+   "has_more": false
+  }
+ },
+ {
+  "request": "GET schedules?page_size=10",
+  "status": 200,
+  "response": {
+   "schedules": [
+    {
+     "schedule_id": "bf-buffer",
+     "workflow_type": "parity.v1.echo",
+     "status": "active",
+     "paused": false,
+     "next_fire": "@v",
+     "last_fire": "@v",
+     "overlap_policy": "buffer_one",
+     "note": null,
+     "namespace": "@namespace",
+     "spec": {
+      "intervals": [
+       {
+        "every": "P1D"
+       }
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.echo",
+      "task_queue": "@queue",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": "@v",
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 3
+    },
+    {
+     "schedule_id": "bf-skip",
+     "workflow_type": "parity.v1.echo",
+     "status": "active",
+     "paused": false,
+     "next_fire": "@v",
+     "last_fire": "@v",
+     "overlap_policy": "skip",
+     "note": null,
+     "namespace": "@namespace",
+     "spec": {
+      "intervals": [
+       {
+        "every": "P1D"
+       }
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.echo",
+      "task_queue": "@queue",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": "@v",
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 3
+    },
+    {
+     "schedule_id": "bf",
+     "workflow_type": "parity.v1.echo",
+     "status": "active",
+     "paused": false,
+     "next_fire": "@v",
+     "last_fire": "@v",
+     "overlap_policy": "allow_all",
+     "note": null,
+     "namespace": "@namespace",
+     "spec": {
+      "timezone": "Europe/Budapest",
+      "cron_expressions": [
+       "0 3 * * *"
+      ],
+      "intervals": [
+       {
+        "every": "P1D",
+        "offset": "PT6H"
+       }
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.echo",
+      "task_queue": "@queue",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": "@v",
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 8
+    },
+    {
+     "schedule_id": "gamma",
+     "workflow_type": "parity.v1.echo",
+     "status": "active",
+     "paused": false,
+     "next_fire": "@v",
+     "last_fire": null,
+     "overlap_policy": "skip",
+     "note": "x AND y",
+     "namespace": "@namespace",
+     "spec": {
+      "intervals": [
+       {
+        "every": "P1D"
+       }
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.echo",
+      "task_queue": "catalog-b",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": null,
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 0
+    },
+    {
+     "schedule_id": "beta",
+     "workflow_type": "parity.v1.other",
+     "status": "paused",
+     "paused": true,
+     "next_fire": "@v",
+     "last_fire": null,
+     "overlap_policy": "skip",
+     "note": null,
+     "namespace": "@namespace",
+     "spec": {
+      "timezone": "Europe/Budapest",
+      "cron_expressions": [
+       "0 3 * * *"
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.other",
+      "task_queue": "@queue",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      }
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": null,
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 0
+    },
+    {
+     "schedule_id": "alpha",
+     "workflow_type": "parity.v1.echo",
+     "status": "active",
+     "paused": false,
+     "next_fire": "@v",
+     "last_fire": null,
+     "overlap_policy": "allow_all",
+     "note": "changed",
+     "namespace": "@namespace",
+     "spec": {
+      "timezone": "America/New_York",
+      "cron_expressions": [
+       "0 4 * * *"
+      ]
+     },
+     "action": {
+      "workflow_type": "parity.v1.echo",
+      "task_queue": "catalog-z",
+      "input": {
+       "codec": "avro",
+       "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+      },
+      "execution_timeout_seconds": 60
+     },
+     "next_fire_at": "@v",
+     "last_fired_at": null,
+     "search_attributes": null,
+     "created_at": "@v",
+     "updated_at": "@v",
+     "fires_count": 0,
+     "max_runs": 5,
+     "remaining_actions": 5
+    }
+   ],
+   "schedule_count": 6,
+   "next_page_token": null
+  }
+ }
+]

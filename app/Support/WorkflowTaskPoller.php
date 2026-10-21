@@ -2099,6 +2099,10 @@ final class WorkflowTaskPoller
             $payload['history_events_encoding'] = $history['history_events_encoding'];
         }
 
+        if ($run instanceof WorkflowRun && WorkflowObservability::enabled()) {
+            $payload += WorkflowObservabilityPoll::forWorkflowClaim($run, $payload);
+        }
+
         return $payload;
     }
 

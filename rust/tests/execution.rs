@@ -159,6 +159,9 @@ mod cross_kind_poll;
 #[path = "execution/external_payloads.rs"]
 mod external_payloads;
 
+#[path = "execution/trace_carriers.rs"]
+mod trace_carriers;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {
