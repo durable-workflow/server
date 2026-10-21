@@ -93,7 +93,13 @@ async fn caller_trace_context_is_ignored_where_php_admits_it_and_nowhere_else() 
         json!("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01");
     let retried = request(&app, "POST", "/api/workflows", retry).await;
     assert_eq!(retried.0, StatusCode::OK, "{}", retried.1);
-    assert_eq!(retried.1["outcome"], "used_existing_active");
+    assert_eq!(retried.1["outcome"], "returned_existing_active");
+    // The returned start is recorded on the run, so the plain run gets the
+    // same retry without a carrier.
+    let plain_retry = request(&app, "POST", "/api/workflows", json!({"workflow_id":"trace-plain","workflow_type":"echo",
+        "task_queue":"test","duplicate_policy":"use-existing",
+        "input":envelope(Payload::Array(vec![Payload::Long(9007199254740993)]))})).await;
+    assert_eq!(plain_retry.1["outcome"], "returned_existing_active");
 
     // Terminate is not an operation that admits the carrier.
     let refused = request(

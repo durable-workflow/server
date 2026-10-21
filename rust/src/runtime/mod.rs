@@ -62,6 +62,7 @@ mod search_attributes;
 mod selection_summary;
 mod selections;
 mod sqlite;
+mod start_request;
 mod storage_test;
 mod store;
 mod task_failures;

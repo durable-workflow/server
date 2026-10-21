@@ -54,7 +54,10 @@ impl Operation<'_> {
             }
             super::RuntimeError::Protocol { status, response }
                 if matches!(self, Self::Start)
-                    && response["reason"] == "workflow_id_reserved_in_namespace" =>
+                    && matches!(
+                        response["reason"].as_str(),
+                        Some("workflow_id_reserved_in_namespace" | "validation_failed")
+                    ) =>
             {
                 (status, response)
             }

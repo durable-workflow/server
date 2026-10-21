@@ -79,6 +79,8 @@ mod activity_deadlines;
 mod lock_free_waiting;
 #[path = "execution/read_snapshots.rs"]
 mod read_snapshots;
+#[path = "execution/start_request.rs"]
+mod start_request;
 #[path = "execution/waterline_reads.rs"]
 mod waterline_reads;
 #[path = "execution/start_timeouts.rs"]
@@ -759,8 +761,10 @@ async fn simultaneous_starts_and_completions_commit_one_durable_outcome() {
         Value::Null,
     )
     .await;
-    assert_eq!(history.1["events"].as_array().unwrap().len(), 3);
-    assert_eq!(history.1["events"][2]["event_type"], "WorkflowCompleted");
+    // The losing start is refused on the winner's run, as in PHP.
+    assert_eq!(history.1["events"].as_array().unwrap().len(), 4);
+    assert_eq!(history.1["events"][2]["event_type"], "StartRejected");
+    assert_eq!(history.1["events"][3]["event_type"], "WorkflowCompleted");
     node_a.close().await;
     node_b.close().await;
     database.remove().await;
@@ -4959,7 +4963,9 @@ async fn authentication_precedes_protocol_and_namespace_checks() {
     assert_eq!(namespace.status(), StatusCode::NOT_FOUND);
     let unsupported = request(&app,"POST","/api/workflows",json!({"workflow_id":"unsupported","workflow_type":"echo",
         "task_queue":"test","input":envelope(Payload::Null),"search_attributes":{"ignored":"must not be accepted"}})).await;
-    assert_eq!(unsupported.0, StatusCode::UNPROCESSABLE_ENTITY);
+    // Start-time search attributes are refused until native stores them.
+    assert_eq!(unsupported.0, StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(unsupported.1["reason"], "start_search_attributes_unavailable");
     assert_eq!(
         request(&app, "GET", "/api/workflows/unsupported", Value::Null)
             .await
