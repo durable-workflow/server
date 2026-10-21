@@ -109,10 +109,17 @@ impl Cron {
     }
 
     /// The first occurrence strictly after `after`'s minute, in `zone`.
+    #[cfg(test)]
     pub(crate) fn next_after(&self, after: Timestamp, zone: &str) -> Result<Timestamp> {
+        self.next_after_with_offset(after, zone).map(|(next, _)| next)
+    }
+
+    /// `next_after` and the UTC offset, in seconds, PHP's result carries.
+    pub(crate) fn next_after_with_offset(&self, after: Timestamp, zone: &str) -> Result<(Timestamp, i64)> {
         let zone = PhpZone::parse(zone).ok_or(CronError::UnknownTimezone)?;
         let found = run_date(&self.parts, after, &zone)?;
-        Timestamp::from_second(found.seconds).map_err(|_| CronError::Runtime)
+        let next = Timestamp::from_second(found.seconds).map_err(|_| CronError::Runtime)?;
+        Ok((next, found.offset()))
     }
 }
 
@@ -751,7 +758,7 @@ fn nearest_weekday(year: i16, month: i64, target: i64) -> Option<i64> {
 }
 
 /// PHP 8's `is_numeric` for the short ASCII strings cron fields contain.
-fn php_is_numeric(value: &str) -> bool {
+pub(crate) fn php_is_numeric(value: &str) -> bool {
     let trimmed = value.trim_start_matches(is_pcre_space).trim_end_matches(is_pcre_space);
     let digits = trimmed.strip_prefix(['+', '-']).unwrap_or(trimmed);
     let (mantissa, exponent) = match digits.find(['e', 'E']) {

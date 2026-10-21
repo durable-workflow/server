@@ -229,6 +229,69 @@ support is not evidence of multi-node safety.
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
 names, including unsuccessful observations.
 
+October 21, schedule listing, updates and backfill:
+
+- **Listing.** `schedule_list.rs` serves `GET /api/schedules` as PHP's
+  `ScheduleController::index` does:
+  - the `status`, `workflow_type`, `query`, `page_size` and
+    `next_page_token` filters, with Laravel's rules and messages and PHP's
+    refusal bodies, including `last_safe_cursor`;
+  - the visibility query from `ScheduleVisibilityQuery`, which accepts only
+    equality predicates joined by `AND`. It works on ScheduleId, Status,
+    WorkflowType, TaskQueue, Note and registered search attributes, with
+    PHP's literal rules. A search attribute predicate matches no schedule,
+    because native schedules hold no search attribute values.
+  - continuation tokens signed as PHP signs them, with `DW_SERVER_KEY`,
+    then `APP_KEY`. When neither is set, PHP generates a key for each
+    container; native uses its auth token instead, so tokens survive
+    restarts and work on every node. Each token is bound to its namespace,
+    filters and a cursor that must still be present.
+  - newest-first order, with PHP's list items.
+
+  The SQL is assembled from fixed fragments with bound values for each
+  database family.
+- **Updates.** `PUT /api/schedules/{id}` follows `ScheduleManager::update`:
+  the action is merged with the stored one, the quota is recomputed, the
+  next fire time is recalculated, and `ScheduleUpdated` carries PHP's
+  changed fields.
+- **Backfill.** `POST /api/schedules/{id}/backfill` enumerates every
+  occurrence from the start time up to, but not including, the end time,
+  and triggers each one as `triggerForBackfill` does:
+  - no stale check;
+  - buffering policies start every occurrence;
+  - a fired occurrence is skipped;
+  - the run quota ends the backfill.
+
+  Fire times carry the offset PHP formats: the schedule zone's for a cron
+  occurrence, UTC for an interval. The Laravel `date` rule reads ISO-8601
+  dates and date-times exactly as PHP does, including hour 24, second 60,
+  fractions and offsets.
+- **Deliberate differences.**
+  - Backfill times use ISO-8601 only. PHP's other `strtotime` forms, such as
+    `2026-04-01 +1 day` or `@1700000000`, get the `date` validation message.
+  - A backfill range with more than 10,000 occurrences is refused with 422
+    `backfill_range_too_large`. PHP has no limit.
+  - An update to a specification that cannot be evaluated is a 422. PHP
+    leaves that `LogicException` unhandled and returns 500.
+- **Corrected.** Laravel sizes a non-numeric value under a numeric rule by
+  its length, so `page_size=x` reports only the integer rule. The shared
+  rules engine now does the same.
+- **Evidence.**
+  - `cron-oracle/backfill-dates.php` records PHP's `date` rule and instant
+    for 700 seeded strings. Native accepts nothing PHP refuses, reads every
+    accepted string to the same microsecond, and reads every ISO-8601 shape
+    PHP accepts, except offsets of a day or more.
+  - The next-fire corpus now also records PHP's offset, and native matches
+    all 600 cases.
+  - The new `schedule-catalog` fixture sends 72 requests. Published PHP and
+    native agreed on every normalized response locally, and a reviewed copy
+    is in `tests/Fixtures/ServerParityExpected`.
+  - A PHP-on-PostgreSQL harness matched native on 81 responses, except the
+    two deliberate differences above.
+  - Schedule tests pass on SQLite, PostgreSQL, MySQL 8.4 and MariaDB 10.11.
+- **Next.** Narrowing the takeover schedule refusal (#568) to what native
+  still cannot run.
+
 October 21, PHP schedule specifications and policies:
 
 - **Cron.** `schedule_cron.rs` ports `dragonmantank/cron-expression` 3.6.0 as
