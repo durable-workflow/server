@@ -59,8 +59,8 @@ CLI and Waterline use the first group.
 - **Used by the CLI or Waterline.**
   - Task queue build IDs.
   - Namespace update, delete and external storage.
-  - `system` repair, retention and activity-timeout passes, metrics, and
-    the operator dashboard filtered by workflow type.
+  - `system` repair and activity-timeout passes, metrics, and the operator
+    dashboard filtered by workflow type.
   - Activities (standalone).
 - **Worker protocol features.**
   - Worker sessions.
@@ -144,11 +144,14 @@ contract fixture before its correction.
   workflow task guard does not check registration freshness yet, and the
   local activity and cancellation scope checkpoints still use the older fence.
   Add a fixture for each before changing them.
-- **History retention.** Published PHP's worker heartbeat runs an inline
-  history retention pass, and the default namespace retention is bounded at
-  30 days, so PHP prunes old closed runs. Native has no retention yet. Its
-  heartbeat omits PHP's `retention` report rather than claim a pass. The
-  `system/retention` endpoints are absent too.
+- **Retention of runs with external payloads or message streams.**
+  Published PHP deletes a pruned run's external payload objects and releases
+  its message stream items. Native does not clean either up yet. It skips
+  such a run with `external_payload_cleanup_unavailable` or
+  `message_stream_cleanup_unavailable` and keeps its details.
+- **Registration without a capability manifest.** At protocol 1.19,
+  published PHP 2.5.14 refuses a registration that has no
+  `capability_manifest` (422). Native accepts it.
 - **Python worker shutdown after a late synchronous query handler (not yet
   diagnosed).** In the SQLite query-authority cohort on #515's run
   39431491496, the published Python SDK 2.5.15 client in `late-handler-sync`
@@ -255,7 +258,12 @@ support is not evidence of multi-node safety.
 ## Checkpoint history
 
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
-names, including unsuccessful observations.
+names, including unsuccessful observations. From October 21, each new
+checkpoint is its own file in
+[`rust-server-port-checkpoints/`](rust-server-port-checkpoints/), named by
+date and topic:
+
+- [History retention](rust-server-port-checkpoints/2026-10-21-history-retention.md).
 
 October 21, operator dashboard:
 
