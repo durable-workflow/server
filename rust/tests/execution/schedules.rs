@@ -355,3 +355,45 @@ async fn scheduled_occurrence_survives_restart_and_competing_nodes_admit_one_ori
     b.close().await;
     database.remove().await;
 }
+
+#[tokio::test]
+async fn schedules_are_namespace_scoped_and_fire_into_their_own_namespace() {
+    use super::namespaces::{create as create_namespace, scoped};
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    create_namespace(&app, "alpha").await;
+    let body = json!({"schedule_id":"shared","spec":{"cron_expressions":["0 3 1 1 *"],"timezone":"Europe/Budapest"},
+        "action":action(),"overlap_policy":"allow_all"});
+    for namespace in ["alpha", "default"] {
+        let created = scoped(&app, namespace, "POST", "/api/schedules", body.clone()).await;
+        assert_eq!(created.0, StatusCode::CREATED, "{}", created.1);
+    }
+    let described = scoped(&app, "alpha", "GET", "/api/schedules/shared", Value::Null).await;
+    assert_eq!(described.0, StatusCode::OK, "{}", described.1);
+    assert_eq!(described.1["namespace"], "alpha");
+    // 03:00 in Budapest on January 1 is 02:00 UTC.
+    assert!(described.1["next_fire_at"].as_str().unwrap().ends_with("-01-01T02:00:00+00:00"));
+    // Deleting one namespace's schedule leaves the other's.
+    let deleted = scoped(&app, "alpha", "DELETE", "/api/schedules/shared", Value::Null).await;
+    assert_eq!(deleted.0, StatusCode::OK, "{}", deleted.1);
+    let gone = scoped(&app, "alpha", "GET", "/api/schedules/shared", Value::Null).await;
+    assert_eq!(gone.0, StatusCode::NOT_FOUND);
+    assert_eq!(gone.1["message"], "Schedule [shared] not found in namespace [alpha].");
+    let kept = request(&app, "GET", "/api/schedules/shared", Value::Null).await;
+    assert_eq!((kept.0, kept.1["status"].clone()), (StatusCode::OK, json!("active")));
+    // A trigger starts its run in the schedule's namespace only.
+    let other = scoped(&app, "alpha", "POST", "/api/schedules",
+        json!({"schedule_id":"alpha-only","spec":{"intervals":[{"every":"P1D"}]},"action":action()})).await;
+    assert_eq!(other.0, StatusCode::CREATED, "{}", other.1);
+    let triggered = scoped(&app, "alpha", "POST", "/api/schedules/alpha-only/trigger", json!({})).await;
+    assert_eq!(triggered.1["outcome"], "triggered", "{}", triggered.1);
+    let workflow = triggered.1["workflow_id"].as_str().unwrap();
+    let path = format!("/api/workflows/{workflow}");
+    assert_eq!(scoped(&app, "alpha", "GET", &path, Value::Null).await.0, StatusCode::OK);
+    assert_eq!(request(&app, "GET", &path, Value::Null).await.0, StatusCode::NOT_FOUND);
+    let missing = request(&app, "POST", "/api/schedules/alpha-only/trigger", json!({})).await;
+    assert_eq!(missing.0, StatusCode::NOT_FOUND);
+    runtime.close().await;
+    database.remove().await;
+}

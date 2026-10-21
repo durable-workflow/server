@@ -1,6 +1,9 @@
 //! Read-only PHP source inventory. This command never grants takeover authority.
 pub mod external_reference;
+pub mod fingerprint;
+pub mod takeover;
 mod payload_scan;
+mod schedule_scan;
 pub mod queue;
 pub mod queue_binding;
 mod queue_scan;
@@ -19,6 +22,44 @@ use tokio::io::AsyncReadExt;
 use tokio::time::{Instant, timeout, timeout_at};
 
 const BUDGET: Duration = Duration::from_secs(30);
+
+/// Published PHP layouts after the frozen one, oldest first. Each backend
+/// records one delta per layout, applied to the layout before it.
+pub(super) const SOURCE_LAYOUTS: [&str; 2] = ["php-2.8.0", "php-2.9.7"];
+
+/// Names the qualified layout `actual` matches exactly: the frozen layout, or
+/// one reached by applying the recorded deltas in order. Rows are compared in
+/// `order`, so only presentation order, never a definition, is normalized.
+pub(super) fn source_layout<T, K: Ord>(
+    actual: &[T],
+    frozen: Vec<T>,
+    deltas: [&str; 2],
+    order: impl Fn(&T) -> K,
+) -> Result<&'static str>
+where
+    T: Clone + PartialEq + DeserializeOwned,
+{
+    let sorted = |rows: &[T]| {
+        let mut rows = rows.to_vec();
+        rows.sort_by_key(&order);
+        rows
+    };
+    let actual = sorted(actual);
+    let mut layout = sorted(&frozen);
+    if actual == layout {
+        return Ok("frozen");
+    }
+    for (name, delta) in SOURCE_LAYOUTS.into_iter().zip(deltas) {
+        layout = sorted(&source_catalog_variant(&layout, delta)?);
+        if actual == layout {
+            return Ok(name);
+        }
+    }
+    Err(refuse(
+        StatusCode::CONFLICT,
+        "upgrade_source_catalog_unqualified",
+    ))
+}
 
 /// Exact published-catalog additions/replacements, applied only in memory.
 /// Neither unknown objects nor unmatched old definitions are discarded.
@@ -97,12 +138,66 @@ async fn close(future: impl Future<Output = std::result::Result<(), sqlx::Error>
     Ok(())
 }
 
+/// A dedicated MySQL or MariaDB source connection, with its backend name.
+/// Lock waits stay short and transactions are repeatable reads. The client
+/// deadline drops the socket, but the server would keep a running statement,
+/// its metadata locks and its snapshot, so `statement_seconds` bounds each
+/// statement server-side; zero leaves that to the client deadline. With `utc`,
+/// TIMESTAMP values render in UTC.
+async fn mysql_source(
+    options: MySqlConnectOptions,
+    deadline: Instant,
+    utc: bool,
+    statement_seconds: u32,
+) -> Result<(MySqlConnection, &'static str)> {
+    let mut connection = timeout_at(
+        deadline,
+        MySqlConnection::connect_with(&mysql::source_options(options)),
+    )
+    .await
+    .map_err(|_| expired())??;
+    let setup = timeout_at(deadline, async {
+        let version: String = sqlx::query_scalar("SELECT VERSION()")
+            .fetch_one(&mut connection)
+            .await?;
+        let (backend, limit) = if version.contains("MariaDB") {
+            ("mariadb", format!("max_statement_time={statement_seconds}"))
+        } else {
+            let milliseconds = u64::from(statement_seconds) * 1000;
+            ("mysql", format!("max_execution_time={milliseconds}"))
+        };
+        let zone = if utc { "time_zone='+00:00'," } else { "" };
+        sqlx::query(AssertSqlSafe(format!(
+            "SET {zone}sql_quote_show_create=1,lock_wait_timeout=5,innodb_lock_wait_timeout=5,{limit}"
+        )))
+        .execute(&mut connection)
+        .await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            .execute(&mut connection)
+            .await?;
+        Ok(backend)
+    })
+    .await
+    .map_err(|_| expired())
+    .and_then(|result| result);
+    match setup {
+        Ok(backend) => Ok((connection, backend)),
+        Err(error) => {
+            // The setup failure explains more than a failed close would.
+            let _ = close(connection.close()).await;
+            Err(error)
+        }
+    }
+}
+
 fn report(
     backend: &str,
     catalog: &impl Serialize,
+    layout: &str,
     counts: BTreeMap<String, i64>,
     queue_inspection: Option<Value>,
     payload_inspection: Option<Value>,
+    schedule_inspection: Value,
 ) -> Result<Value> {
     let digest = Sha256::digest(serde_json::to_vec(catalog)?)
         .iter()
@@ -111,6 +206,7 @@ fn report(
     let mut report = json!({
         "schema":"durable-workflow.rust-upgrade-source-inspection.v1",
         "status":"inspected", "backend":backend, "catalog_visibility":"configured_role",
+        "source_layout":layout,
         "catalog_sha256":digest, "table_rows":counts,
         "source_mutated":false, "takeover_allowed":false, "backup_verified":false,
         "php_quiescence_verified":false, "stored_representation_compatibility_verified":false
@@ -126,6 +222,10 @@ fn report(
         }
         report["payload_inspection"] = payloads;
     }
+    if schedule_inspection["unsupported"] != 0 {
+        report["status"] = json!("unqualified");
+    }
+    report["schedule_inspection"] = schedule_inspection;
     Ok(report)
 }
 
@@ -189,65 +289,68 @@ pub async fn inspect_sqlite_cli(
 ) -> Result<Value> {
     timeout(BUDGET, async {
         queue_config(queues)?;
-        if path.is_empty() || path.contains(['?', ':']) {
-            return Err(refuse(
-                StatusCode::BAD_REQUEST,
-                "upgrade_source_file_required",
-            ));
-        }
-        #[cfg(unix)]
-        {
-            use std::os::fd::AsRawFd;
-            // SQLite resolves symlinks before locating its sidecars. Check the
-            // resolved parent as well: a file-only read-only bind mount can
-            // still have a writable directory beside it.
-            let resolved = tokio::fs::canonicalize(path).await?;
-            let mut options = tokio::fs::OpenOptions::new();
-            options.read(true).custom_flags(libc::O_NONBLOCK);
-            let file = options.open(&resolved).await?;
-            if !file.metadata().await?.is_file() {
-                return Err(refuse(
-                    StatusCode::BAD_REQUEST,
-                    "upgrade_source_regular_file_required",
-                ));
-            }
-            let parent = options
-                .open(resolved.parent().ok_or_else(|| {
-                    refuse(StatusCode::BAD_REQUEST, "upgrade_source_file_required")
-                })?)
-                .await?;
-            for descriptor in [&file, &parent] {
-                let mut filesystem = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-                // fstatvfs uses this live descriptor's mount. Only read the
-                // returned structure after success.
-                if unsafe { libc::fstatvfs(descriptor.as_raw_fd(), filesystem.as_mut_ptr()) } != 0 {
-                    return Err(std::io::Error::last_os_error().into());
-                }
-                let filesystem = unsafe { filesystem.assume_init() };
-                if filesystem.f_flag & libc::ST_RDONLY == 0 {
-                    return Err(refuse(
-                        StatusCode::CONFLICT,
-                        "upgrade_source_readonly_filesystem_required",
-                    ));
-                }
-            }
-            return inspect_sqlite_inner(
-                resolved.to_str().ok_or_else(|| {
-                    refuse(StatusCode::BAD_REQUEST, "upgrade_source_file_required")
-                })?,
-                queues,
-                payloads,
-            )
-            .await;
-        }
-        #[cfg(not(unix))]
-        return Err(refuse(
-            StatusCode::CONFLICT,
-            "upgrade_source_readonly_filesystem_unavailable",
-        ));
+        let resolved = readonly_source(path).await?;
+        inspect_sqlite_inner(&resolved, queues, payloads).await
     })
     .await
     .map_err(|_| expired())?
+}
+
+/// Resolves a CLI source file and requires that it and its directory are on a
+/// kernel read-only mount.
+pub(super) async fn readonly_source(path: &str) -> Result<String> {
+    if path.is_empty() || path.contains(['?', ':']) {
+        return Err(refuse(
+            StatusCode::BAD_REQUEST,
+            "upgrade_source_file_required",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        // SQLite resolves symlinks before locating its sidecars. Check the
+        // resolved parent as well: a file-only read-only bind mount can
+        // still have a writable directory beside it.
+        let resolved = tokio::fs::canonicalize(path).await?;
+        let mut options = tokio::fs::OpenOptions::new();
+        options.read(true).custom_flags(libc::O_NONBLOCK);
+        let file = options.open(&resolved).await?;
+        if !file.metadata().await?.is_file() {
+            return Err(refuse(
+                StatusCode::BAD_REQUEST,
+                "upgrade_source_regular_file_required",
+            ));
+        }
+        let parent = options
+            .open(resolved.parent().ok_or_else(|| {
+                refuse(StatusCode::BAD_REQUEST, "upgrade_source_file_required")
+            })?)
+            .await?;
+        for descriptor in [&file, &parent] {
+            let mut filesystem = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+            // fstatvfs uses this live descriptor's mount. Only read the
+            // returned structure after success.
+            if unsafe { libc::fstatvfs(descriptor.as_raw_fd(), filesystem.as_mut_ptr()) } != 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            let filesystem = unsafe { filesystem.assume_init() };
+            if filesystem.f_flag & libc::ST_RDONLY == 0 {
+                return Err(refuse(
+                    StatusCode::CONFLICT,
+                    "upgrade_source_readonly_filesystem_required",
+                ));
+            }
+        }
+        return Ok(resolved
+            .to_str()
+            .ok_or_else(|| refuse(StatusCode::BAD_REQUEST, "upgrade_source_file_required"))?
+            .to_owned());
+    }
+    #[cfg(not(unix))]
+    return Err(refuse(
+        StatusCode::CONFLICT,
+        "upgrade_source_readonly_filesystem_unavailable",
+    ));
 }
 
 async fn inspect_sqlite_inner(
@@ -257,6 +360,192 @@ async fn inspect_sqlite_inner(
 ) -> Result<Value> {
     queue_config(queues)?;
     let deadline = Instant::now() + BUDGET;
+    let mut connection = open_sqlite_source(path, deadline).await?;
+    let result = timeout_at(deadline, async {
+        let mut tx = connection.begin().await?;
+        let report = sqlite_inventory(&mut tx, queues, payloads).await;
+        tx.rollback().await?;
+        report
+    })
+    .await
+    .map_err(|_| expired())
+    .and_then(|result| result);
+    close(connection.close()).await?;
+    result
+}
+
+/// The SQLite inspection report, read inside the caller's transaction.
+pub(super) async fn sqlite_inventory(
+    tx: &mut SqliteConnection,
+    queues: Option<&QueueSourceConfig<'_>>,
+    payloads: bool,
+) -> Result<Value> {
+    let (catalog, layout) = schema::php_source_catalog(&mut *tx).await?;
+    let tables: Vec<String> = catalog
+        .iter()
+        .filter(|(kind, _, _, _)| kind == "table")
+        .map(|(_, name, _, _)| name.clone())
+        .collect();
+    let counts = count_tables!(tx, tables, '"');
+    let queue_inspection = match queues {
+        Some(config) => {
+            Some(queue_scan::inspect::<sqlx::Sqlite>(&mut *tx, config, counts["jobs"]).await?)
+        }
+        None => None,
+    };
+    let payload_inspection = if payloads {
+        Some(payload_scan::inspect::<sqlx::Sqlite>(&mut *tx, &counts).await?)
+    } else {
+        None
+    };
+    let schedule_inspection = schedule_scan::inspect::<sqlx::Sqlite>(&mut *tx).await?;
+    report(
+        "sqlite",
+        &catalog,
+        layout,
+        counts,
+        queue_inspection,
+        payload_inspection,
+        schedule_inspection,
+    )
+}
+
+/// Opens a qualified rollback-journal source file read-only.
+pub(super) async fn open_sqlite_source(path: &str, deadline: Instant) -> Result<SqliteConnection> {
+    open_sqlite_file(path, deadline, false).await
+}
+
+/// The file format version bytes of a SQLite header: rollback journal or WAL.
+const ROLLBACK_JOURNAL: [u8; 2] = [1, 1];
+const WRITE_AHEAD_LOG: [u8; 2] = [2, 2];
+
+/// The journal format bytes of a regular SQLite file, read without SQLite.
+async fn journal_format(path: &str) -> Result<[u8; 2]> {
+    let regular_file_required = || {
+        refuse(
+            StatusCode::BAD_REQUEST,
+            "upgrade_source_regular_file_required",
+        )
+    };
+    if !tokio::fs::metadata(path).await?.is_file() {
+        return Err(regular_file_required());
+    }
+    let mut options = tokio::fs::OpenOptions::new();
+    options.read(true);
+    // Tokio filesystem opens use blocking workers. A replaced FIFO must
+    // not strand one beyond the observation budget or prevent CLI exit.
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NONBLOCK);
+    let mut file = options.open(path).await?;
+    if !file.metadata().await?.is_file() {
+        return Err(regular_file_required());
+    }
+    let mut header = [0_u8; 20];
+    file.read_exact(&mut header).await?;
+    if &header[..16] != b"SQLite format 3\0" {
+        return Err(refuse(
+            StatusCode::CONFLICT,
+            "upgrade_source_sqlite_journal_unqualified",
+        ));
+    }
+    Ok([header[18], header[19]])
+}
+
+/// Whether a SQLite file has a WAL, shared-memory or rollback journal beside it.
+async fn sidecars(path: &str) -> Result<bool> {
+    for suffix in ["-wal", "-shm", "-journal"] {
+        if tokio::fs::try_exists(format!("{path}{suffix}")).await? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Prepares a stopped PHP SQLite source for the upgrade commands, which need
+/// the rollback journal. PHP Server's default is WAL: switching it makes
+/// SQLite checkpoint every committed WAL frame into the file first, so the
+/// stored rows are unchanged. A journal left by a crashed writer is rolled
+/// back the same way. Refuses while another process has the file open.
+pub async fn prepare_sqlite_source(path: &str) -> Result<Value> {
+    if path.is_empty() || path.contains(['?', ':']) {
+        return Err(refuse(
+            StatusCode::BAD_REQUEST,
+            "upgrade_source_file_required",
+        ));
+    }
+    let deadline = Instant::now() + BUDGET;
+    let previous = match timeout_at(deadline, journal_format(path))
+        .await
+        .map_err(|_| expired())??
+    {
+        WRITE_AHEAD_LOG => "wal",
+        ROLLBACK_JOURNAL => "delete",
+        _ => {
+            return Err(refuse(
+                StatusCode::CONFLICT,
+                "upgrade_source_sqlite_journal_unqualified",
+            ));
+        }
+    };
+    let switched = previous == "wal" || sidecars(path).await?;
+    if switched {
+        let in_use = || refuse(StatusCode::CONFLICT, "upgrade_source_in_use");
+        let opened = timeout_at(
+            deadline,
+            SqliteConnection::connect_with(
+                &SqliteConnectOptions::new()
+                    .filename(path)
+                    .create_if_missing(false)
+                    .foreign_keys(false)
+                    .busy_timeout(Duration::from_secs(2))
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Delete),
+            ),
+        )
+        .await
+        .map_err(|_| expired())?;
+        // Leaving WAL needs the only connection. SQLite answers busy when another
+        // still has the file after a short wait, which also covers a writer
+        // that is just closing.
+        let mut connection = match opened {
+            Ok(connection) => connection,
+            Err(sqlx::Error::Database(error))
+                if error
+                    .code()
+                    .and_then(|code| code.parse::<i32>().ok())
+                    .is_some_and(|code| code & 0xff == 5) =>
+            {
+                return Err(in_use());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&mut connection)
+            .await?;
+        close(connection.close()).await?;
+        if mode != "delete" {
+            return Err(in_use());
+        }
+    }
+    if journal_format(path).await? != ROLLBACK_JOURNAL || sidecars(path).await? {
+        return Err(refuse(
+            StatusCode::CONFLICT,
+            "upgrade_source_sqlite_journal_unqualified",
+        ));
+    }
+    Ok(json!({
+        "schema":"durable-workflow.rust-upgrade-sqlite-prepare.v1",
+        "status":"rollback_journal", "previous_journal_mode":previous,
+        "source_mutated":switched, "takeover_allowed":false, "backup_verified":false
+    }))
+}
+
+/// Opens a qualified rollback-journal source file, writable only for takeover.
+/// It keeps the rollback journal: native enables WAL itself after takeover.
+pub(super) async fn open_sqlite_file(
+    path: &str,
+    deadline: Instant,
+    writable: bool,
+) -> Result<SqliteConnection> {
     if path.is_empty() || path.contains(['?', ':']) {
         return Err(refuse(
             StatusCode::BAD_REQUEST,
@@ -267,35 +556,24 @@ async fn inspect_sqlite_inner(
     // not open an unqualified WAL source or attempt journal recovery. Unlike
     // immutable=1 this preserves normal SQLite locking/change detection for
     // the supported rollback-journal source, rather than ignoring live WAL.
+    // A WAL source is first switched with upgrade-prepare-sqlite.
     timeout_at(deadline, async {
-        let regular_file_required = || {
-            refuse(
-                StatusCode::BAD_REQUEST,
-                "upgrade_source_regular_file_required",
-            )
-        };
-        if !tokio::fs::metadata(path).await?.is_file() {
-            return Err(regular_file_required());
-        }
-        let mut options = tokio::fs::OpenOptions::new();
-        options.read(true);
-        // Tokio filesystem opens use blocking workers. A replaced FIFO must
-        // not strand one beyond the observation budget or prevent CLI exit.
-        #[cfg(unix)]
-        options.custom_flags(libc::O_NONBLOCK);
-        let mut file = options.open(path).await?;
-        if !file.metadata().await?.is_file() {
-            return Err(regular_file_required());
-        }
-        let mut header = [0_u8; 20];
-        file.read_exact(&mut header).await?;
-        if &header[..16] != b"SQLite format 3\0" || header[18..20] != [1, 1] {
+        if journal_format(path).await? != ROLLBACK_JOURNAL {
             return Err(refuse(
                 StatusCode::CONFLICT,
                 "upgrade_source_sqlite_journal_unqualified",
             ));
         }
-        for suffix in ["-wal", "-shm", "-journal"] {
+        // A killed takeover leaves its rollback journal. Takeover opens the
+        // file writable, so SQLite rolls that journal back before anything is
+        // read, and the fingerprint then proves the result is the backed-up
+        // PHP database. Read-only opens never attempt that recovery.
+        let sidecars: &[&str] = if writable {
+            &["-wal", "-shm"]
+        } else {
+            &["-wal", "-shm", "-journal"]
+        };
+        for suffix in sidecars {
             if tokio::fs::try_exists(format!("{path}{suffix}")).await? {
                 return Err(refuse(
                     StatusCode::CONFLICT,
@@ -307,52 +585,20 @@ async fn inspect_sqlite_inner(
     })
     .await
     .map_err(|_| expired())??;
-    let mut connection = timeout_at(
+    let connection = timeout_at(
         deadline,
         SqliteConnection::connect_with(
             &SqliteConnectOptions::new()
                 .filename(path)
-                .read_only(true)
+                .read_only(!writable)
+                .journal_mode(sqlx::sqlite::SqliteJournalMode::Delete)
                 .create_if_missing(false)
                 .foreign_keys(false),
         ),
     )
     .await
     .map_err(|_| expired())??;
-    let result = timeout_at(deadline, async {
-        let mut tx = connection.begin().await?;
-        let catalog = schema::php_source_catalog(&mut tx).await?;
-        let tables: Vec<String> = catalog
-            .iter()
-            .filter(|(kind, _, _, _)| kind == "table")
-            .map(|(_, name, _, _)| name.clone())
-            .collect();
-        let counts = count_tables!(tx, tables, '"');
-        let queue_inspection = match queues {
-            Some(config) => {
-                Some(queue_scan::inspect::<sqlx::Sqlite>(&mut *tx, config, counts["jobs"]).await?)
-            }
-            None => None,
-        };
-        let payload_inspection = if payloads {
-            Some(payload_scan::inspect::<sqlx::Sqlite>(&mut *tx, &counts).await?)
-        } else {
-            None
-        };
-        tx.rollback().await?;
-        report(
-            "sqlite",
-            &catalog,
-            counts,
-            queue_inspection,
-            payload_inspection,
-        )
-    })
-    .await
-    .map_err(|_| expired())
-    .and_then(|result| result);
-    close(connection.close()).await?;
-    result
+    Ok(connection)
 }
 
 pub async fn inspect_mysql(options: MySqlConnectOptions) -> Result<Value> {
@@ -377,70 +623,70 @@ async fn inspect_mysql_inner(
 ) -> Result<Value> {
     queue_config(queues)?;
     let deadline = Instant::now() + BUDGET;
-    let mut connection = timeout_at(
-        deadline,
-        MySqlConnection::connect_with(&mysql::source_options(options)),
-    )
-    .await
-    .map_err(|_| expired())??;
-    let result = timeout_at(deadline, async {
-        let version: String = sqlx::query_scalar("SELECT VERSION()")
-            .fetch_one(&mut connection)
-            .await?;
-        let backend = if version.contains("MariaDB") {
-            "mariadb"
-        } else {
-            "mysql"
-        };
-        // The client deadline drops the socket, but the server would keep a running
-        // statement, its metadata locks and its snapshot. Bound them server-side.
-        sqlx::query(if backend == "mariadb" {
-            "SET sql_quote_show_create=1,lock_wait_timeout=5,innodb_lock_wait_timeout=5,max_statement_time=30"
-        } else {
-            "SET sql_quote_show_create=1,lock_wait_timeout=5,innodb_lock_wait_timeout=5,max_execution_time=30000"
-        })
-        .execute(&mut connection)
-        .await?;
-        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-            .execute(&mut connection)
-            .await?;
+    let (connection, backend) = mysql_source(options, deadline, false, 30).await?;
+    bounded(connection, deadline, async |connection| {
         let mut tx = connection.begin_with("START TRANSACTION READ ONLY").await?;
-        let catalog = mysql::php_source_catalog(&mut tx).await?;
-        let tables: Vec<String> = catalog.iter().map(|(name, _)| name.clone()).collect();
-        let counts = count_tables!(tx, tables, '`');
-        let queue_inspection = match queues {
-            Some(config) => {
-                Some(queue_scan::inspect::<sqlx::MySql>(&mut *tx, config, counts["jobs"]).await?)
-            }
-            None => None,
-        };
-        let payload_inspection = if payloads {
-            Some(payload_scan::inspect::<sqlx::MySql>(&mut *tx, &counts).await?)
-        } else {
-            None
-        };
-        // MySQL's metadata is not an MVCC snapshot. Refuse a changed visible
-        // catalog rather than joining counts to a different schema.
-        if mysql::php_source_catalog(&mut tx).await? != catalog {
-            return Err(refuse(
-                StatusCode::CONFLICT,
-                "upgrade_source_catalog_changed",
-            ));
-        }
+        let report = mysql_inventory(&mut tx, backend, queues, payloads, false).await;
         tx.rollback().await?;
-        report(
-            backend,
-            &catalog,
-            counts,
-            queue_inspection,
-            payload_inspection,
-        )
+        report
     })
     .await
-    .map_err(|_| expired())
-    .and_then(|result| result);
-    close(connection.close()).await?;
-    result
+}
+
+/// The PHP source catalog, or with `fenced` the catalog of a source whose
+/// takeover marker is all that has been written, with that marker set aside.
+pub(super) async fn mysql_source_catalog(
+    connection: &mut MySqlConnection,
+    fenced: bool,
+) -> Result<(Vec<(String, String)>, &'static str)> {
+    if fenced {
+        mysql::fenced_source_catalog(connection).await
+    } else {
+        mysql::php_source_catalog(connection).await
+    }
+}
+
+/// The MySQL or MariaDB inspection report, read inside the caller's
+/// transaction.
+pub(super) async fn mysql_inventory(
+    tx: &mut MySqlConnection,
+    backend: &str,
+    queues: Option<&QueueSourceConfig<'_>>,
+    payloads: bool,
+    fenced: bool,
+) -> Result<Value> {
+    let (catalog, layout) = mysql_source_catalog(&mut *tx, fenced).await?;
+    let tables: Vec<String> = catalog.iter().map(|(name, _)| name.clone()).collect();
+    let counts = count_tables!(tx, tables, '`');
+    let queue_inspection = match queues {
+        Some(config) => {
+            Some(queue_scan::inspect::<sqlx::MySql>(&mut *tx, config, counts["jobs"]).await?)
+        }
+        None => None,
+    };
+    let payload_inspection = if payloads {
+        Some(payload_scan::inspect::<sqlx::MySql>(&mut *tx, &counts).await?)
+    } else {
+        None
+    };
+    let schedule_inspection = schedule_scan::inspect::<sqlx::MySql>(&mut *tx).await?;
+    // MySQL's metadata is not an MVCC snapshot. Refuse a changed visible
+    // catalog rather than joining counts to a different schema.
+    if mysql_source_catalog(&mut *tx, fenced).await?.0 != catalog {
+        return Err(refuse(
+            StatusCode::CONFLICT,
+            "upgrade_source_catalog_changed",
+        ));
+    }
+    report(
+        backend,
+        &catalog,
+        layout,
+        counts,
+        queue_inspection,
+        payload_inspection,
+        schedule_inspection,
+    )
 }
 
 pub async fn inspect_postgres(options: PgConnectOptions) -> Result<Value> {
@@ -465,46 +711,79 @@ async fn inspect_postgres_inner(
 ) -> Result<Value> {
     queue_config(queues)?;
     let deadline = Instant::now() + BUDGET;
-    let mut connection = timeout_at(
+    let connection = timeout_at(
         deadline,
         PgConnection::connect_with(&postgres::source_options(options)),
     )
     .await
     .map_err(|_| expired())??;
-    let result = timeout_at(deadline, async {
+    bounded(connection, deadline, async |connection| {
         let mut tx = connection
             .begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .await?;
-        let catalog = postgres::php_source_catalog(&mut tx).await?;
-        let tables: Vec<String> = catalog
-            .iter()
-            .filter(|(kind, _, data)| kind == "relation" && data.0["kind"] == "r")
-            .map(|(_, name, _)| name.clone())
-            .collect();
-        let counts = count_tables!(tx, tables, '"');
-        let queue_inspection = match queues {
-            Some(config) => {
-                Some(queue_scan::inspect::<sqlx::Postgres>(&mut *tx, config, counts["jobs"]).await?)
-            }
-            None => None,
-        };
-        let payload_inspection = if payloads {
-            Some(payload_scan::inspect::<sqlx::Postgres>(&mut *tx, &counts).await?)
-        } else {
-            None
-        };
+        let report = postgres_inventory(&mut tx, queues, payloads).await;
         tx.rollback().await?;
-        report(
-            "pgsql",
-            &catalog,
-            counts,
-            queue_inspection,
-            payload_inspection,
-        )
+        report
     })
     .await
-    .map_err(|_| expired())
-    .and_then(|result| result);
+}
+
+/// The PostgreSQL inspection report, read inside the caller's transaction.
+pub(super) async fn postgres_inventory(
+    tx: &mut PgConnection,
+    queues: Option<&QueueSourceConfig<'_>>,
+    payloads: bool,
+) -> Result<Value> {
+    let (catalog, layout) = postgres::php_source_catalog(&mut *tx).await?;
+    let tables: Vec<String> = catalog
+        .iter()
+        .filter(|(kind, _, data)| kind == "relation" && data.0["kind"] == "r")
+        .map(|(_, name, _)| name.clone())
+        .collect();
+    let counts = count_tables!(tx, tables, '"');
+    let queue_inspection = match queues {
+        Some(config) => {
+            Some(queue_scan::inspect::<sqlx::Postgres>(&mut *tx, config, counts["jobs"]).await?)
+        }
+        None => None,
+    };
+    let payload_inspection = if payloads {
+        Some(payload_scan::inspect::<sqlx::Postgres>(&mut *tx, &counts).await?)
+    } else {
+        None
+    };
+    let schedule_inspection = schedule_scan::inspect::<sqlx::Postgres>(&mut *tx).await?;
+    report(
+        "pgsql",
+        &catalog,
+        layout,
+        counts,
+        queue_inspection,
+        payload_inspection,
+        schedule_inspection,
+    )
+}
+
+/// The frozen migration from its ownership marker on, then the incarnation
+/// migration: what a fresh native bootstrap adds after the frozen PHP layout.
+pub(super) fn native_relations(frozen: &str, marker: &str, incarnations: &str) -> Result<String> {
+    let start = frozen
+        .find(marker)
+        .ok_or_else(|| refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"))?;
+    Ok(format!("{}\n{incarnations}", &frozen[start..]))
+}
+
+/// Runs work on a dedicated source connection within the deadline, then
+/// closes the connection whatever the work returned.
+pub(super) async fn bounded<C: Connection>(
+    mut connection: C,
+    deadline: Instant,
+    work: impl AsyncFnOnce(&mut C) -> Result<Value>,
+) -> Result<Value> {
+    let result = timeout_at(deadline, work(&mut connection))
+        .await
+        .map_err(|_| expired())
+        .and_then(|result| result);
     close(connection.close()).await?;
     result
 }

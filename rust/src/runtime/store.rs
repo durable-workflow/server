@@ -15,6 +15,8 @@ pub(super) struct PreparedControlArguments {
     pub(super) value: String,
     pub(super) command: String,
 }
+/// The runtime-owned message-stream delivery signal (`WorkflowStub::MESSAGE_STREAM_RUNTIME_SIGNAL`).
+const MESSAGE_STREAM_SIGNAL: &str = "__durable_workflow_message_stream";
 pub(super) const TASK_CANDIDATES_SQL: &str = "SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) ORDER BY t.available_at,t.id LIMIT 100";
 pub(super) const POLL_RECEIPT_CLEANUP_SQL: &str = "DELETE FROM dw_poll_receipts WHERE expires_at<=$1 AND task_id IN (SELECT id FROM workflow_tasks WHERE status!='leased' OR lease_expires_at<=$2)";
 pub(super) const WORKER_REGISTRATION_SQL: &str = "INSERT INTO workflow_worker_registrations(namespace,worker_id,task_queue,runtime,sdk_version,build_id,supported_workflow_types,supported_activity_types,capabilities,capability_manifest,last_heartbeat_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(worker_id,namespace) DO UPDATE SET task_queue=excluded.task_queue,runtime=excluded.runtime,sdk_version=excluded.sdk_version,build_id=excluded.build_id,supported_workflow_types=excluded.supported_workflow_types,supported_activity_types=excluded.supported_activity_types,capabilities=excluded.capabilities,capability_manifest=excluded.capability_manifest,last_heartbeat_at=excluded.last_heartbeat_at,updated_at=excluded.updated_at";
@@ -29,8 +31,28 @@ pub(super) struct Store<DB: Backend> {
     pub(super) workflow_task_lease_seconds: i64,
     pub(super) search_attribute_limit: i64,
 }
+/// A ULID that sorts after every earlier one from this process, as Laravel's
+/// (Symfony's) generator does. Rows created in the same millisecond, such as
+/// the activity tasks of one completion, keep their creation order in
+/// `ORDER BY available_at,id`.
 pub(super) fn id() -> String {
-    Ulid::new().to_string()
+    static GENERATOR: std::sync::Mutex<ulid::Generator> =
+        std::sync::Mutex::new(ulid::Generator::new());
+    let mut generator = GENERATOR
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Overflow needs 2^80 identifiers in one millisecond.
+    generator
+        .generate()
+        .unwrap_or_else(|_| Ulid::new())
+        .to_string()
+}
+
+#[cfg(test)]
+#[test]
+fn identifiers_keep_creation_order_within_a_millisecond() {
+    let ids: Vec<String> = (0..10_000).map(|_| id()).collect();
+    assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
 }
 pub(super) fn now() -> DateTime<Utc> {
     DateTime::from_timestamp_millis(Utc::now().timestamp_millis()).expect("current timestamp")
@@ -394,7 +416,8 @@ where
             .into_iter()
             .map(|e| {
                 json!({"sequence": e["sequence"],
-            "event_type": e["event_type"], "timestamp": e["recorded_at"], "payload": e["payload"]})
+            "event_type": e["event_type"], "timestamp": e["recorded_at"],
+            "principal": super::history_presentation::principal(&e["payload"]), "payload": e["payload"]})
             })
             .collect();
         Ok(
@@ -436,6 +459,16 @@ where
                 "historical_run_command_rejected",
             ));
         }
+        // PHP's control plane refuses the runtime's own message-stream signal
+        // before admission, whatever the run's state, and records nothing.
+        if name == MESSAGE_STREAM_SIGNAL {
+            let message = "This signal name is reserved for the durable runtime transport.";
+            return Err(super::RuntimeError::Protocol {
+                status: StatusCode::UNPROCESSABLE_ENTITY,
+                response: json!({"workflow_id":workflow_id,"signal_name":name,"outcome":"rejected",
+                    "reason":"runtime_reserved_signal","message":message,"accepted":false}),
+            });
+        }
         let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
             .bind(&current_run)
             .fetch_one(&mut *tx)
@@ -455,6 +488,15 @@ where
         let declared = contract["declared_signals"]
             .as_array()
             .is_some_and(|names| names.iter().any(|value| value == name));
+        // PHP's signalAdmissionForRun: only a complete durable contract can
+        // make a signal unknown. A run started before any worker declared its
+        // contract admits every signal (external_contract_unavailable), and a
+        // declared signal without a parameter contract takes its arguments
+        // as given.
+        let durable = super::run_observation::command_contract(Some(&contract))["source"] == "durable_history";
+        let has_parameters = contract["declared_signal_contracts"]
+            .as_array()
+            .is_some_and(|contracts| contracts.iter().any(|contract| contract["name"] == name));
         let mut validation_errors = json!([]);
         let rejection = if !active {
             Some((
@@ -462,12 +504,14 @@ where
                 "run_not_active",
                 "rejected_not_active",
             ))
-        } else if !declared {
+        } else if !declared && durable {
             Some((
                 StatusCode::NOT_FOUND,
                 "unknown_signal",
                 "rejected_unknown_signal",
             ))
+        } else if !has_parameters {
+            None
         } else {
             match validate_signal_arguments(&contract, name, &prepared.values) {
                 Ok(()) => None,
@@ -584,7 +628,7 @@ where
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(
-            json!({"workflow_id":workflow_id,"run_id":current_run,"resolved_run_id":current_run,"requested_run_id":null,"signal_name":name,"command_id":command_id,"command_sequence":command_sequence,"command_status":"accepted","command_source":"control_plane","target_scope":"instance","outcome":"signal_received","reason":null,"rejection_reason":null,"validation_errors":[]}),
+            json!({"workflow_id":workflow_id,"run_id":current_run,"resolved_run_id":current_run,"requested_run_id":null,"signal_name":name,"command_id":command_id,"command_sequence":command_sequence,"workflow_type":DB::string(&run, "workflow_type")?,"command_status":"accepted","command_source":"control_plane","target_scope":"instance","outcome":"signal_received","reason":null,"rejection_reason":null,"validation_errors":[]}),
         )
     }
 
@@ -2726,9 +2770,12 @@ where
     }
 
     fn event(row: DB::Row) -> Result<Value> {
+        let event_type = DB::string(&row, "event_type")?;
+        let payload =
+            super::history_presentation::payload(DB::document_row(&row, "payload")?, &event_type);
         Ok(
             json!({"id": DB::string(&row,"id")?, "sequence": DB::number(&row,"sequence")?, "event_type": DB::string(&row,"event_type")?,
-        "payload": DB::document_row(&row,"payload")?,
+        "payload": payload,
         "recorded_at": DB::instant(&row,"recorded_at")?.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
         "workflow_task_id": DB::optional_string(&row,"workflow_task_id")?, "workflow_command_id": DB::optional_string(&row,"workflow_command_id")?}),
         )

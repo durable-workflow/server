@@ -1,0 +1,23 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "storage-test",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "storage test λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "storage test λ"},
+    "count": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null}
+  }},
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "storage_test": {
+    "sizes": {"small_payload_bytes": 64, "large_payload_bytes": 70000},
+    "invalid": [
+      {},
+      {"driver": "ftp", "small_payload_bytes": 0, "large_payload_bytes": 16777217},
+      {"driver": 5, "small_payload_bytes": "abc", "large_payload_bytes": 1.5}
+    ]
+  },
+  "contract": "POST /api/storage/test diagnoses the current namespace's external payload storage policy. Without a policy it is 422 external_storage_not_configured with a null driver; with a disabled policy it is 422 external_storage_disabled; a requested driver other than the configured one is 422 storage_driver_unavailable naming the supported local diagnostic driver. Laravel validation refuses missing, non-integer, out-of-range and unknown-driver fields with 422 validation_failed and the published messages and error counts. With an enabled local policy it writes, reads back and removes a generated small and large payload, reporting each one's size, SHA-256 and the digest of its content-addressed object URI under the configured root; the diagnostic can run again over the same objects. Other drivers need separate fixtures. Embedded applications have no HTTP diagnostic."
+}

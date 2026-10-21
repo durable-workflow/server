@@ -226,12 +226,10 @@ impl Operation<'_> {
                 "backend_lock_pressure",
                 "control_plane_internal_error"
             ]);
+            // PHP's ControlPlaneResponseContract::PROJECTED_FIELDS for a signal.
             for field in [
                 "command_id",
                 "target_scope",
-                "resolved_run_id",
-                "requested_run_id",
-                "signal_name",
                 "command_contract_source",
                 "command_contract_backfill_needed",
                 "command_contract_backfill_available",
@@ -243,7 +241,7 @@ impl Operation<'_> {
                 }
             }
         }
-        // Copy scalar read identities/state, never input/output/event payloads.
+        // ControlPlaneResponseContract::PROJECTED_FIELDS: each present field.
         for field in [
             "run_id",
             "workflow_type",
@@ -251,10 +249,12 @@ impl Operation<'_> {
             "business_key",
             "status",
             "status_bucket",
+            "run_status",
             "is_terminal",
             "task_queue",
             "run_number",
             "run_count",
+            "workflow_count",
             "is_current_run",
             "compatibility",
             "started_at",
@@ -262,16 +262,39 @@ impl Operation<'_> {
             "last_progress_at",
             "wait_kind",
             "wait_reason",
-            "workflow_count",
             "next_page_token",
+            "command_id",
             "command_status",
             "command_source",
+            "target_scope",
+            "query_name",
             "outcome",
             "reason",
             "rejection_reason",
+            "rejection_category",
+            "validation_errors",
+            "result",
+            "result_envelope",
+            "update_id",
+            "update_status",
+            "principal",
+            "wait_for",
+            "wait_timed_out",
+            "wait_timeout_seconds",
+            "blocked_reason",
             "message",
             "remediation",
-            "validation_errors",
+            "execution_owner",
+            "identity",
+            "command_contract_source",
+            "command_contract_backfill_needed",
+            "command_contract_backfill_available",
+            "declared_signals",
+            "signal_admission",
+            "diagnostic_status",
+            "retryable",
+            "error_id",
+            "exception",
         ] {
             if let Some(value) = body.get(field) {
                 metadata[field] = value.clone();

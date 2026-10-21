@@ -23,6 +23,7 @@ use App\Support\WorkerPollBackpressure;
 use App\Support\WorkerProtocol;
 use App\Support\WorkerProtocolMutationRetrier;
 use App\Support\WorkerSessionRegistry;
+use App\Support\WorkflowObservabilityPoll;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Http\JsonResponse;
@@ -187,7 +188,7 @@ class ActivityTaskController
         );
 
         return WorkerProtocol::json([
-            'task' => $claim === null ? null : array_filter([
+            'task' => $claim === null ? null : WorkflowObservabilityPoll::filterDelivered(array_filter([
                 'task_id' => $claim['task_id'],
                 'workflow_id' => $claim['workflow_instance_id'],
                 'run_id' => $claim['workflow_run_id'],
@@ -216,7 +217,8 @@ class ActivityTaskController
                         : null,
                 ),
                 'external_executor' => $externalExecutor,
-            ], static fn (mixed $v): bool => $v !== null),
+                ...WorkflowObservabilityPoll::forActivityClaim((string) $namespace, $claim),
+            ], static fn (mixed $v): bool => $v !== null)),
             'poll_status' => is_string($poll['poll_status'] ?? null)
                 ? $poll['poll_status']
                 : ($claim === null ? 'empty' : 'leased'),

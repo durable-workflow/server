@@ -429,6 +429,11 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $workerDeregistration = isset($fixture['worker_deregistration']) ? finishHttpWorkerDeregistration($client, $fixture, $workflowId, $queue, $url) : null;
     $lateWorkflowCompletion = isset($fixture['late_workflow_completion']) ? finishHttpLateWorkflowCompletion($client, $fixture, $workflowId) : null;
     $searchAttributes = isset($fixture['search_attributes']) ? finishHttpSearchAttributes($client, $fixture, $workflowId, $url) : null;
+    $storageTest = isset($fixture['storage_test']) ? finishHttpStorageTest($client, $fixture, $workflowId, $url) : null;
+    $schedulePolicies = isset($fixture['schedule_policies']) ? finishHttpSchedulePolicies($client, $fixture, $workflowId, $url) : null;
+    $signalsBeforeWorker = isset($fixture['signals_before_worker'])
+        ? finishHttpSignalsBeforeWorker($client, $fixture, $workflowId, $url)
+        : null;
     $workerListing = isset($fixture['worker_listing']) ? finishHttpWorkerListing($client, $fixture, $workflowId) : null;
     $workerReplacement = isset($fixture['worker_replacement']) ? finishHttpWorkerReplacement($client, $fixture, $workflowId) : null;
     $waitingHistory = isset($fixture['waiting_for_history']) ? finishHttpWaitingHistory($client, $fixture, $workflowId, $queue, $url) : null;
@@ -519,6 +524,9 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'worker_deregistration' => $workerDeregistration,
         'late_workflow_completion' => $lateWorkflowCompletion,
         'search_attributes' => $searchAttributes,
+        'storage_test' => $storageTest,
+        'schedule_policies' => $schedulePolicies,
+        'signals_before_worker' => $signalsBeforeWorker,
         'worker_listing' => $workerListing,
         'worker_replacement' => $workerReplacement,
         'waiting_for_history' => $waitingHistory,
@@ -817,6 +825,9 @@ try {
     require __DIR__.'/admission-probe.php';
     require __DIR__.'/namespace-probe.php';
     require __DIR__.'/search-attribute-probe.php';
+    require __DIR__.'/storage-test-probe.php';
+    require __DIR__.'/schedule-policies-probe.php';
+    require __DIR__.'/signals-before-worker-probe.php';
     require __DIR__.'/worker-deregistration-probe.php';
     require __DIR__.'/late-workflow-completion-probe.php';
     require __DIR__.'/worker-listing-probe.php';
@@ -965,6 +976,15 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['search_attributes'])) {
         $observation['search_attributes'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_search_attribute_registry'];
+    }
+    if ($mode === 'embedded' && isset($fixture['storage_test'])) {
+        $observation['storage_test'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_storage_diagnostic'];
+    }
+    if ($mode === 'embedded' && isset($fixture['schedule_policies'])) {
+        $observation['schedule_policies'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_schedules'];
+    }
+    if ($mode === 'embedded' && isset($fixture['signals_before_worker'])) {
+        $observation['signals_before_worker'] = ['applicable' => false, 'reason' => 'embedded_runs_have_a_loadable_contract'];
     }
     $observation['mode'] = $mode;
     $observation['typed_output'] = typedValue($observation['output']);
