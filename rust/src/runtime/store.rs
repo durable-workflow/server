@@ -327,19 +327,10 @@ where
         )
     }
 
-    pub(crate) async fn describe(&self, workflow_id: &str, run_id: Option<&str>) -> Result<Value> {
-        self.describe_with(workflow_id, run_id, None).await
-    }
-
-    /// The run description; with a worker stale window it also carries the
-    /// fields PHP's `formatRun` adds (actions, fleet, wait and updates).
-    pub(crate) async fn describe_with(&self, workflow_id: &str, run_id: Option<&str>, stale_after: Option<i64>) -> Result<Value> {
-        let row = Self::query("SELECT r.*,i.execution_timeout_seconds,i.current_run_id,(SELECT parent_workflow_run_id FROM workflow_links l WHERE l.child_workflow_run_id=r.id AND l.link_type='continue_as_new' LIMIT 1) AS continued_from_run_id,(SELECT COUNT(*) FROM workflow_runs counted WHERE counted.workflow_instance_id=i.id) AS run_count FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE i.id=$1 AND r.id=COALESCE($2,i.current_run_id) AND r.namespace=$3")
-            .bind(workflow_id).bind(run_id).bind(self.namespace.as_ref()).fetch_optional(&self.pool).await?
-            .ok_or_else(|| refuse(StatusCode::NOT_FOUND, if run_id.is_some() {"run_not_found"} else {"instance_not_found"}))?;
-        let output = DB::optional_string(&row, "output")?;
+    /// A run's decoded memo map as describe and the run list render it.
+    pub(super) async fn run_memo(&self, run_id: &str) -> Result<Value> {
         let memo_rows = Self::query(DB::MEMO_READ)
-            .bind(DB::string(&row, "id")?)
+            .bind(run_id)
             .fetch_all(&self.pool)
             .await?;
         let mut stored = Vec::with_capacity(memo_rows.len());
@@ -359,6 +350,22 @@ where
             ));
         }
         let memo = super::memos::read_stored(self.memo_codec.clone(), stored).await?;
+        // PHP projects an empty memo map as an empty JSON array.
+        Ok(if memo.as_object().is_some_and(Map::is_empty) { json!([]) } else { memo })
+    }
+
+    pub(crate) async fn describe(&self, workflow_id: &str, run_id: Option<&str>) -> Result<Value> {
+        self.describe_with(workflow_id, run_id, None).await
+    }
+
+    /// The run description; with a worker stale window it also carries the
+    /// fields PHP's `formatRun` adds (actions, fleet, wait and updates).
+    pub(crate) async fn describe_with(&self, workflow_id: &str, run_id: Option<&str>, stale_after: Option<i64>) -> Result<Value> {
+        let row = Self::query("SELECT r.*,i.execution_timeout_seconds,i.current_run_id,(SELECT parent_workflow_run_id FROM workflow_links l WHERE l.child_workflow_run_id=r.id AND l.link_type='continue_as_new' LIMIT 1) AS continued_from_run_id,(SELECT COUNT(*) FROM workflow_runs counted WHERE counted.workflow_instance_id=i.id) AS run_count FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE i.id=$1 AND r.id=COALESCE($2,i.current_run_id) AND r.namespace=$3")
+            .bind(workflow_id).bind(run_id).bind(self.namespace.as_ref()).fetch_optional(&self.pool).await?
+            .ok_or_else(|| refuse(StatusCode::NOT_FOUND, if run_id.is_some() {"run_not_found"} else {"instance_not_found"}))?;
+        let output = DB::optional_string(&row, "output")?;
+        let memo = self.run_memo(&DB::string(&row, "id")?).await?;
         let status = DB::string(&row, "status")?;
         let terminal = matches!(
             status.as_str(),
@@ -388,8 +395,6 @@ where
                 .retain(|_, value| !value.is_null());
             commands.push(public);
         }
-        // PHP projects an empty memo map as an empty JSON array.
-        let memo = if memo.as_object().is_some_and(Map::is_empty) { json!([]) } else { memo };
         let current = DB::optional_string(&row,"current_run_id")?.as_deref() == Some(DB::string(&row,"id")?.as_str());
         let input_envelope = wire(&DB::string(&row,"arguments")?);
         let output_envelope = output.as_deref().map(wire);

@@ -93,7 +93,7 @@ impl Operation<'_> {
             Self::Cancel => ("cancel", &["workflow_id"], &["outcome"]),
             Self::Terminate => ("terminate", &["workflow_id"], &["outcome"]),
             Self::Repair => ("repair", &["workflow_id"], &["outcome"]),
-            Self::Debug => ("debug", &["workflow_id"], &[]),
+            Self::Debug => ("debug_workflow", &["workflow_id"], &["run_id", "diagnostic_status"]),
             Self::Update => (
                 "update",
                 &["workflow_id", "operation_name", "operation_name_field"],

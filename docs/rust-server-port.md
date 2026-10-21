@@ -227,6 +227,41 @@ support is not evidence of multi-node safety.
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
 names, including unsuccessful observations.
 
+October 21, describe actions and run list:
+
+- **Found by.** The Waterline comparison. Waterline 2.12.0 disables cancel,
+  terminate, signal and repair for a run when the server's describe response
+  lacks PHP's `actions` block, so on native every run looked read-only.
+- **Actions.** Describe now carries PHP's `actions`. Signal, cancel,
+  terminate and repair need the current open run. Queries need a
+  query-capable worker route. Updates are never offered, because PHP offers
+  them only for workflow classes it can load in process. Archive needs a
+  closed, unarchived run.
+- **Query route.** A port of PHP's `registeredQueryRoute` decides `can_query`:
+  a fresh active worker on the run's queue, query-task capability, the
+  workflow type, the run's compatibility (an unversioned run with declared
+  queries needs an unversioned worker) and the recorded definition
+  fingerprint, checked in PHP's order. Native counts only workers that
+  registered the `query_tasks` capability, because only they can claim native
+  query tasks. PHP also counts a worker that recently polled for query tasks.
+- **Other describe fields.** `business_key`, `resume_step_sequence`,
+  `recovery_kind`, `compatibility` with its fleet status and reason,
+  `payload_previews`, `last_progress_at`, `wait_kind`, `wait_reason`, typed
+  `search_attributes`, `updates_scope` and `updates`. An empty memo or search
+  attribute set is `[]`, as PHP renders it. Start and close times use
+  `toJSON()`; deadlines and last progress use `toIso8601String()`, which has
+  whole seconds.
+- **Run list.** `GET /api/workflows/{id}/runs` answers with PHP's
+  `run_count` and `formatRunListEntry` entries, including status bucket,
+  terminal flag, task queue, compatibility, fleet status and memo. The current
+  run is the highest numbered one, as in PHP.
+- **Debug envelope.** The debug view's `control_plane` names the
+  `debug_workflow` operation with PHP's success fields.
+- **Still different.** Native records no command context, so describe's
+  commands lack PHP's caller, principal, auth and request fields, and
+  Waterline's timeline shows no principal. Native query responses are not yet
+  PHP's, and native does not refuse a query when no worker can serve it.
+
 October 21, Waterline reads:
 
 - **Found by.** Waterline 2.12.0 service mode in front of published PHP

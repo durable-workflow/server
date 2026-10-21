@@ -154,7 +154,7 @@ where
         let compatibility = DB::optional_string(run, "compatibility")?;
         let queue = DB::optional_string(run, "queue")?;
         let snapshots = self.fleet_snapshots(now()).await?;
-        let (supported, fleet_reason) = Self::fleet_supports(
+        let (supported, fleet_reason) = super::run_diagnostics::fleet_supports(
             &snapshots,
             compatibility.as_deref().map(str::trim).filter(|value| !value.is_empty()),
             queue.as_deref(),
