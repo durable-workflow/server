@@ -352,20 +352,29 @@ impl Runtime {
             Storage::MySql(store) => store.start(body, memo, external).await,
         }
     }
-    pub(crate) async fn create_schedule(&self, body: Value, context: Value) -> Result<Value> {
-        let definition = super::schedules::definition(&body, super::store::now())?;
-        let arguments = super::envelope(&definition.action, "input")?;
-        super::queries::decode(
-            self.signal_codec.clone(),
-            arguments,
-            true,
-            "invalid_schedule_arguments",
-        )
-        .await?;
+    pub(crate) async fn create_schedule(
+        &self,
+        body: Value,
+        schedule_id: String,
+        created: Value,
+        paused: Value,
+    ) -> Result<Value> {
+        let mut definition = super::schedules::definition(&body)?;
+        definition.schedule_id = Some(schedule_id);
+        if definition.action.get("input").is_some_and(|input| !input.is_null()) {
+            let arguments = super::envelope(&definition.action, "input")?;
+            super::queries::decode(
+                self.signal_codec.clone(),
+                arguments,
+                true,
+                "invalid_schedule_arguments",
+            )
+            .await?;
+        }
         match &*self.storage {
-            Storage::Sqlite(store) => store.create_schedule(definition, context).await,
-            Storage::Postgres(store) => store.create_schedule(definition, context).await,
-            Storage::MySql(store) => store.create_schedule(definition, context).await,
+            Storage::Sqlite(store) => store.create_schedule(definition, created, paused).await,
+            Storage::Postgres(store) => store.create_schedule(definition, created, paused).await,
+            Storage::MySql(store) => store.create_schedule(definition, created, paused).await,
         }
     }
     delegate!(describe_schedule(schedule: &str) -> Result<Value>);
@@ -379,8 +388,8 @@ impl Runtime {
         ) -> Result<Value>
     );
     delegate!(schedule_history(schedule: &str, after: i64, limit: i64) -> Result<Value>);
-    delegate!(edit_schedule(schedule: &str, operation: &str, context: Value) -> Result<Value>);
-    delegate!(trigger_schedule(schedule: &str, context: Value) -> Result<Value>);
+    delegate!(edit_schedule(schedule: &str, operation: &str, note: Option<String>, context: Value) -> Result<Value>);
+    delegate!(trigger_schedule(schedule: &str, overlap: Option<String>, context: Value) -> Result<Value>);
     pub(crate) async fn signal(
         &self,
         workflow_id: &str,
