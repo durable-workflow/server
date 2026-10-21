@@ -53,6 +53,13 @@ function restartControlHistory(array $events): array
         'event_type' => $event['event_type'], 'timestamp' => $event['recorded_at'], 'payload' => $event['payload']], $events);
 }
 
+// Public history lifts each command's principal onto its event; worker task
+// history has no principal. Compare the fields both views share.
+function restartWithoutPrincipal(array $events): array
+{
+    return array_map(static fn (array $event): array => array_diff_key($event, ['principal' => true]), $events);
+}
+
 function restartSignalWorkflow(WorkflowContext $context, array $input): array
 {
     $context->waitCondition(fn (): bool => count($context->signals('payload')) > 0, 'restart.payload');
@@ -336,7 +343,7 @@ $client->registerWorker('restart-terminal-new', 'restart-terminal-v1', ['restart
 $terminalClaim = $client->pollWorkflowTask('restart-terminal-new', 'restart-terminal-v1', 0);
 assertRestart(is_array($terminalClaim) && $terminalClaim['task_id'] === $terminal['failure_receipt']['next_task_id']
     && $terminalClaim['run_id'] === $terminal['run_id']
-    && sameRestartValue(restartControlHistory($terminalClaim['history_events']), $terminal['history'])
+    && sameRestartValue(restartControlHistory($terminalClaim['history_events']), restartWithoutPrincipal($terminal['history']))
     && $terminalClaim['history_events'][4]['workflow_task_id'] === $terminalActivity['task_id'], 'Recovered terminal resumption lost original task/run/history.');
 $terminalReplay = (new Replayer($client->payloadCodec()))->replay(restartTerminalWorkflow(...),
     $terminalClaim['history_events'], $client->payloadCodec()->decodeEnvelope($terminalClaim['arguments']), 'restart-terminal-v1', $terminalClaim);

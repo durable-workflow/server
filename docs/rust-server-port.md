@@ -252,6 +252,39 @@ October 20, external payload storage diagnostic:
   trips. Published PHP 2.5.14 and native returned identical bodies, including
   the reference identities, and embedded PHP declares it inapplicable.
 
+October 20, database TLS settings (PHP Server 2.9.10, #545):
+
+- **Source.** Native resolves PostgreSQL, MySQL and MariaDB TLS with
+  `database_tls`, the rules of PHP's `DatabaseTlsConfiguration`:
+  - `DB_SSLMODE`/`DB_SSL_MODE` and `DB_SSLROOTCERT`/`DB_SSL_ROOT_CERT`, plus a
+    `DB_URL`'s `sslmode`/`sslrootcert`;
+  - MySQL's mode names (`required`, `verify_identity`);
+  - MySQL's legacy `MYSQL_ATTR_SSL_CA`.
+
+  Refusals use PHP's messages, with reason `database_tls_configuration_invalid`:
+  - conflicting aliases;
+  - a URL that contradicts `DB_SSLMODE` or `DB_SSLROOTCERT`;
+  - unknown modes, and MySQL modes other than disable, require and
+    verify-full;
+  - verification without a readable CA bundle;
+  - a CA without a mode;
+  - required TLS over a Unix socket.
+- **Behavior change.** Native used to ignore `DB_SSLMODE` and
+  `DB_SSLROOTCERT` when `DB_URL` was set. TLS now always comes from the
+  resolved settings, and TLS spellings that only SQLx reads are removed from
+  the URL first.
+- **Startup.** Native refuses to start on an invalid configuration. When a
+  connection that required TLS fails, it refuses with
+  `database_tls_connection_failed`. PHP keeps serving and reports both as an
+  unavailable readiness check. Readiness carries PHP's `tls` snapshot when the
+  database is reachable, scoped `rust_to_configured_database_endpoint`.
+- **Known difference.** With no configured mode, native MySQL uses TLS when
+  the server offers it. PHP connects without TLS options. Both report the mode
+  as unset.
+- **Qualification.** `scripts/conformance/native-database-tls.sh` runs PHP's
+  TLS cases against the same fixtures, with the database side confirming the
+  transport.
+
 October 20, lost workflow task claims:
 
 - **Found by.** The [multi-node runs](../benchmarks/server-port/multinode/results-2026-10-20.md).
