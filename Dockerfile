@@ -13,7 +13,7 @@ RUN git clone --depth 1 --branch "${PHPREDIS_VERSION}" https://github.com/phpred
 
 # Use the signed upstream fix while Docker Official Image publication catches up.
 # Configure options match docker-library/php at f6048b5f6e3c2202ee082665a4ccc0d90de291a3.
-FROM php:8.3.35-apache@sha256:c59c808172ee3672cd334f8f2a5d7b1480a9d7273a368f412b8ee9b4ef418184 AS patched-php
+FROM php@sha256:c59c808172ee3672cd334f8f2a5d7b1480a9d7273a368f412b8ee9b4ef418184 AS patched-php
 
 LABEL dev.durable-workflow.php.source.version="8.3.36" \
       dev.durable-workflow.php.source.sha256="dd54693aa334c5c4d72e9aee96b082c2473750a18a6c1d105789c93a3b1692fd"
@@ -29,15 +29,18 @@ COPY docker/php-keyring.gpg /tmp/php-keyring.gpg
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-        $PHPIZE_DEPS apache2-dev ca-certificates curl gnupg \
+        autoconf dpkg-dev file g++ gcc libc-dev make pkg-config re2c \
+        apache2-dev ca-certificates curl gnupg \
         libargon2-dev libcurl4-openssl-dev libonig-dev libreadline-dev \
         libsodium-dev libsqlite3-dev libssl-dev libxml2-dev xz-utils zlib1g-dev; \
     printf '%s  %s\n' \
         '43fcb3eaf65536cb0833c229b492c70cfad8562138164dd13673e08925d6c56c' \
         /tmp/php-keyring.gpg | sha256sum --check -; \
-    curl --fail --location --show-error --silent --output /usr/src/php.tar.xz "${PHP_URL}"; \
+    curl --proto '=https' --proto-redir '=https' --fail --location --show-error --silent \
+        --output /usr/src/php.tar.xz "${PHP_URL}"; \
     printf '%s  %s\n' "${PHP_SHA256}" /usr/src/php.tar.xz | sha256sum --check -; \
-    curl --fail --location --show-error --silent --output /tmp/php.tar.xz.asc "${PHP_ASC_URL}"; \
+    curl --proto '=https' --proto-redir '=https' --fail --location --show-error --silent \
+        --output /tmp/php.tar.xz.asc "${PHP_ASC_URL}"; \
     export GNUPGHOME="$(mktemp -d)"; \
     gpg --batch --import /tmp/php-keyring.gpg; \
     gpg --batch --verify /tmp/php.tar.xz.asc /usr/src/php.tar.xz; \
@@ -65,9 +68,9 @@ RUN set -eux; \
     cp php.ini-development php.ini-production "${PHP_INI_DIR}/"; \
     strip --strip-all /usr/local/bin/php /usr/lib/apache2/modules/libphp.so; \
     test "$(php -r 'echo PHP_VERSION;')" = "${PHP_VERSION}"; \
-    rm -rf /var/lib/apt/lists/* /tmp/php.tar.xz.asc /tmp/php-keyring.gpg
+    rm -rf /usr/src/php /var/lib/apt/lists/* /tmp/php.tar.xz.asc /tmp/php-keyring.gpg
 
-FROM php:8.3.35-apache@sha256:c59c808172ee3672cd334f8f2a5d7b1480a9d7273a368f412b8ee9b4ef418184 AS base
+FROM php@sha256:c59c808172ee3672cd334f8f2a5d7b1480a9d7273a368f412b8ee9b4ef418184 AS base
 
 # Replace every PHP runtime/build artifact, including the Apache module and
 # extension sources used below. A changed image environment is not a PHP update.
@@ -90,7 +93,9 @@ LABEL dev.durable-workflow.php.source.version="8.3.36" \
       dev.durable-workflow.php.source.sha256="dd54693aa334c5c4d72e9aee96b082c2473750a18a6c1d105789c93a3b1692fd"
 
 # Both web and CLI roles require the fixed PHP runtime, including cached builds.
-RUN php -r 'if (PHP_MAJOR_VERSION !== 8 || PHP_MINOR_VERSION !== 3 || PHP_VERSION_ID < 80336) { fwrite(STDERR, "Patched PHP 8.3.36 or later on the 8.3 line is required; found ".PHP_VERSION.PHP_EOL); exit(1); }'
+RUN php -r 'if (PHP_MAJOR_VERSION !== 8 || PHP_MINOR_VERSION !== 3 || PHP_VERSION_ID < 80336) { \
+    fwrite(STDERR, "Patched PHP 8.3.36 or later on the 8.3 line is required; found ".PHP_VERSION.PHP_EOL); \
+    exit(1); }'
 
 COPY --from=phpredis-source /phpredis /usr/src/php/ext/redis
 
