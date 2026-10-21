@@ -4,6 +4,7 @@
 use super::{
     Result, RuntimeError,
     backend::Backend,
+    laravel_validation::{failure, normalized, present},
     memo_limits,
     store::{Store, now},
 };
@@ -85,33 +86,6 @@ fn reserved(name: &str) -> bool {
         || name.starts_with("__")
 }
 
-/// Laravel's TrimStrings and ConvertEmptyStringsToNull run before validation.
-fn normalized(value: Option<&Value>) -> Option<Value> {
-    let trimmed = |c: char| c.is_whitespace() || matches!(c, '\u{feff}' | '\u{200b}' | '\u{200e}');
-    match value {
-        Some(Value::String(text)) => {
-            let text = text.trim_matches(trimmed);
-            Some(if text.is_empty() {
-                Value::Null
-            } else {
-                json!(text)
-            })
-        }
-        other => other.cloned(),
-    }
-}
-
-/// Laravel's `required`: null, an empty string and an empty array fail.
-fn present(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) => false,
-        Some(Value::String(text)) => !text.trim().is_empty(),
-        Some(Value::Array(items)) => !items.is_empty(),
-        Some(Value::Object(items)) => !items.is_empty(),
-        Some(_) => true,
-    }
-}
-
 /// The messages for `required|string|max:128|regex:/^[a-zA-Z][a-zA-Z0-9_]*$/`.
 /// A failed `required` stops the remaining rules, as Laravel's implicit rules do.
 fn name_messages(value: Option<&Value>) -> Vec<&'static str> {
@@ -163,27 +137,18 @@ fn type_messages(value: Option<&Value>) -> Vec<&'static str> {
     messages
 }
 
-/// Laravel's 422 ValidationException body for control-plane requests.
-fn validation_failure(errors: Vec<(&'static str, Vec<&'static str>)>) -> RuntimeError {
-    let all: Vec<&str> = errors
-        .iter()
-        .flat_map(|(_, messages)| messages.iter().copied())
-        .collect();
-    let mut message = all[0].to_owned();
-    match all.len() - 1 {
-        0 => {}
-        1 => message.push_str(" (and 1 more error)"),
-        more => message.push_str(&format!(" (and {more} more errors)")),
+/// Laravel's validation of a registration body: the normalized name and type,
+/// or PHP's 422 body.
+fn validated(body: &Value) -> Result<(Value, Value)> {
+    let name = normalized(body.get("name"));
+    let kind = normalized(body.get("type"));
+    if let Some(error) = failure(vec![
+        ("name", name_messages(name.as_ref())),
+        ("type", type_messages(kind.as_ref())),
+    ]) {
+        return Err(error);
     }
-    let errors: Map<String, Value> = errors
-        .into_iter()
-        .map(|(field, messages)| (field.to_owned(), json!(messages)))
-        .collect();
-    RuntimeError::Protocol {
-        status: StatusCode::UNPROCESSABLE_ENTITY,
-        response: json!({"message":message,"reason":"validation_failed",
-            "errors":errors.clone(),"validation_errors":errors}),
-    }
+    Ok((name.unwrap_or_default(), kind.unwrap_or_default()))
 }
 
 fn conflict(status: StatusCode, response: Value) -> RuntimeError {
@@ -242,20 +207,9 @@ where
     }
 
     pub(super) async fn create_search_attribute(&self, body: Value) -> Result<Value> {
-        let name = normalized(body.get("name"));
-        let kind = normalized(body.get("type"));
-        let errors: Vec<_> = [
-            ("name", name_messages(name.as_ref())),
-            ("type", type_messages(kind.as_ref())),
-        ]
-        .into_iter()
-        .filter(|(_, messages)| !messages.is_empty())
-        .collect();
-        if !errors.is_empty() {
-            return Err(validation_failure(errors));
-        }
-        let name = name.as_ref().and_then(Value::as_str).unwrap_or_default();
-        let kind = kind.as_ref().and_then(Value::as_str).unwrap_or_default();
+        let (name, kind) = validated(&body)?;
+        let name = name.as_str().unwrap_or_default();
+        let kind = kind.as_str().unwrap_or_default();
         if reserved(name) {
             return Err(conflict(
                 StatusCode::CONFLICT,
@@ -337,21 +291,10 @@ mod tests {
     use super::*;
 
     fn messages(body: Value) -> Option<Value> {
-        let name = normalized(body.get("name"));
-        let kind = normalized(body.get("type"));
-        let errors: Vec<_> = [
-            ("name", name_messages(name.as_ref())),
-            ("type", type_messages(kind.as_ref())),
-        ]
-        .into_iter()
-        .filter(|(_, messages)| !messages.is_empty())
-        .collect();
-        if errors.is_empty() {
-            return None;
-        }
-        match validation_failure(errors) {
-            RuntimeError::Protocol { response, .. } => Some(response),
-            _ => unreachable!(),
+        match validated(&body) {
+            Ok(_) => None,
+            Err(RuntimeError::Protocol { response, .. }) => Some(response),
+            Err(_) => unreachable!(),
         }
     }
 

@@ -149,6 +149,19 @@ impl LocalStorage {
         .map_err(unavailable)?
     }
 
+    /// Removes the object. The caller holds the object lock and has checked
+    /// that no registered payload shares it.
+    pub async fn delete(&self, reference: &Reference) -> Result<(), SnapshotError> {
+        let path = self.path(reference)?;
+        tokio::task::spawn_blocking(move || match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(unavailable(error)),
+        })
+        .await
+        .map_err(unavailable)?
+    }
+
     pub async fn fetch(
         &self,
         reference: Reference,

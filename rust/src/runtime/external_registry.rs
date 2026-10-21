@@ -100,6 +100,59 @@ where
         Ok(())
     }
 
+    /// The storage diagnostic's write, read and delete of a generated object,
+    /// under the object lock that uploads and cleanup take. Local objects are
+    /// content-addressed, so a registered payload with the same bytes keeps
+    /// its object: the diagnostic deletes only an object nothing references.
+    pub(super) async fn storage_test_round_trip(
+        &self,
+        local: &crate::external_payload::LocalStorage,
+        reference: Reference,
+        payload: Vec<u8>,
+        max_bytes: u64,
+        workers: std::sync::Arc<tokio::sync::Semaphore>,
+    ) -> Result<()> {
+        use super::external_transport::snapshot_error;
+        let uri = local.uri_for(&reference).map_err(snapshot_error)?;
+        let mut tx = self.begin().await?;
+        Self::payload_object_lock(&mut tx, &uri).await?;
+        let registered =
+            Self::scalar("SELECT COUNT(*) FROM runtime_external_payloads WHERE storage_uri=$1")
+                .bind(&uri)
+                .fetch_one(&mut *tx)
+                .await?
+                > 0;
+        let snapshot = crate::external_payload::capture(
+            std::io::Cursor::new(payload),
+            reference.clone(),
+            max_bytes,
+            std::env::temp_dir(),
+            workers.clone(),
+        )
+        .await
+        .map_err(snapshot_error)?;
+        local
+            .put(reference.clone(), snapshot)
+            .await
+            .map_err(snapshot_error)?;
+        // Fetch verifies the stored size and digest against the reference.
+        local
+            .fetch(
+                reference.clone(),
+                &uri,
+                max_bytes,
+                std::env::temp_dir(),
+                workers,
+            )
+            .await
+            .map_err(snapshot_error)?;
+        if !registered {
+            local.delete(&reference).await.map_err(snapshot_error)?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// The caller commits this writing row before any provider effect. A retry
     /// keeps the existing ID, ready status and retained ownership; abandoned
     /// unclaimed retries renew only their upload expiry, matching PHP.

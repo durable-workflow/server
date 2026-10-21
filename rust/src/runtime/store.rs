@@ -27,8 +27,28 @@ pub(super) struct Store<DB: Backend> {
     pub(super) history_budget: super::history_budget::Config,
     pub(super) search_attribute_limit: i64,
 }
+/// A ULID that sorts after every earlier one from this process, as Laravel's
+/// (Symfony's) generator does. Rows created in the same millisecond, such as
+/// the activity tasks of one completion, keep their creation order in
+/// `ORDER BY available_at,id`.
 pub(super) fn id() -> String {
-    Ulid::new().to_string()
+    static GENERATOR: std::sync::Mutex<ulid::Generator> =
+        std::sync::Mutex::new(ulid::Generator::new());
+    let mut generator = GENERATOR
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Overflow needs 2^80 identifiers in one millisecond.
+    generator
+        .generate()
+        .unwrap_or_else(|_| Ulid::new())
+        .to_string()
+}
+
+#[cfg(test)]
+#[test]
+fn identifiers_keep_creation_order_within_a_millisecond() {
+    let ids: Vec<String> = (0..10_000).map(|_| id()).collect();
+    assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
 }
 pub(super) fn now() -> DateTime<Utc> {
     DateTime::from_timestamp_millis(Utc::now().timestamp_millis()).expect("current timestamp")
@@ -390,7 +410,8 @@ where
             .into_iter()
             .map(|e| {
                 json!({"sequence": e["sequence"],
-            "event_type": e["event_type"], "timestamp": e["recorded_at"], "payload": e["payload"]})
+            "event_type": e["event_type"], "timestamp": e["recorded_at"],
+            "principal": super::history_presentation::principal(&e["payload"]), "payload": e["payload"]})
             })
             .collect();
         Ok(
@@ -2722,9 +2743,12 @@ where
     }
 
     fn event(row: DB::Row) -> Result<Value> {
+        let event_type = DB::string(&row, "event_type")?;
+        let payload =
+            super::history_presentation::payload(DB::document_row(&row, "payload")?, &event_type);
         Ok(
             json!({"id": DB::string(&row,"id")?, "sequence": DB::number(&row,"sequence")?, "event_type": DB::string(&row,"event_type")?,
-        "payload": DB::document_row(&row,"payload")?,
+        "payload": payload,
         "recorded_at": DB::instant(&row,"recorded_at")?.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
         "workflow_task_id": DB::optional_string(&row,"workflow_task_id")?, "workflow_command_id": DB::optional_string(&row,"workflow_command_id")?}),
         )
