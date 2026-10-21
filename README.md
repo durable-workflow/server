@@ -21,6 +21,10 @@ Laravel applications can also run the engine directly in
 
 ## Run Server
 
+For the 21 October 2026 critical PHP update, follow the
+[PHP runtime security notice](docs/security/php-runtime-2026-10-21.md) and verify
+the patched runtime in every deployed role.
+
 The published Compose stack starts Server with MySQL, Redis, a queue worker,
 and the scheduler. It bootstraps the database and the default namespace before
 accepting traffic.
