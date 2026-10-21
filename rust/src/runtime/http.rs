@@ -709,12 +709,14 @@ async fn start(
     let result = runtime.start(body).await.map_err(|error| {
         super::control_plane::Operation::Start.refusal(error, &workflow_id, None)
     })?;
-    let status = if result["outcome"] == "started_new" {
-        StatusCode::CREATED
-    } else {
-        StatusCode::OK
+    // Clients such as the CLI require the control-plane contract on every
+    // start response, as PHP sends it.
+    let status = match result["outcome"].as_str() {
+        Some("started_new") => StatusCode::CREATED,
+        Some("rejected_duplicate") => StatusCode::CONFLICT,
+        _ => StatusCode::OK,
     };
-    Ok((status, Json(result)))
+    Ok((status, Json(super::control_plane::Operation::Start.response(result))))
 }
 
 async fn list_workflows(

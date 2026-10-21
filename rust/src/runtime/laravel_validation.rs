@@ -34,13 +34,23 @@ pub(super) fn present(value: Option<&Value>) -> bool {
 /// Laravel's 422 ValidationException body for control-plane requests. Fields
 /// without messages are left out; the summary counts the remaining messages.
 pub(super) fn failure(errors: Vec<(&'static str, Vec<&'static str>)>) -> Option<RuntimeError> {
+    failure_messages(
+        errors
+            .into_iter()
+            .map(|(field, messages)| (field.to_owned(), messages.into_iter().map(str::to_owned).collect()))
+            .collect(),
+    )
+}
+
+/// [`failure`] for messages built at run time.
+pub(super) fn failure_messages(errors: Vec<(String, Vec<String>)>) -> Option<RuntimeError> {
     let errors: Vec<_> = errors
         .into_iter()
         .filter(|(_, messages)| !messages.is_empty())
         .collect();
     let all: Vec<&str> = errors
         .iter()
-        .flat_map(|(_, messages)| messages.iter().copied())
+        .flat_map(|(_, messages)| messages.iter().map(String::as_str))
         .collect();
     let mut message = (*all.first()?).to_owned();
     match all.len() - 1 {
@@ -50,7 +60,7 @@ pub(super) fn failure(errors: Vec<(&'static str, Vec<&'static str>)>) -> Option<
     }
     let errors: Map<String, Value> = errors
         .into_iter()
-        .map(|(field, messages)| (field.to_owned(), json!(messages)))
+        .map(|(field, messages)| (field, json!(messages)))
         .collect();
     Some(RuntimeError::Protocol {
         status: StatusCode::UNPROCESSABLE_ENTITY,

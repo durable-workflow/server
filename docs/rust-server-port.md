@@ -87,6 +87,19 @@ These are confirmed differences from the published PHP reference and open
 contract decisions found while qualifying native slices. Each one needs a
 contract fixture before its correction.
 
+- **Search attributes on start.** Published PHP validates `search_attributes`
+  against the namespace registry and stores them as typed rows. Native
+  answers a start that names any with
+  `501 start_search_attributes_unavailable`; an empty object is accepted.
+- **Fairness within a priority tier.** Native claims tasks by priority, then
+  availability, as PHP's candidate query orders them. PHP then rebalances
+  each priority tier across fairness keys by their weights
+  (`TaskFairnessScheduler`); native stores the keys and weights but does not
+  rebalance yet.
+- **Key order inside plain JSON input.** For input that is not an envelope,
+  PHP encodes nested objects as Avro maps in request order; native encodes
+  them with sorted keys. The decoded values are equal, but the blobs differ.
+
 - **Child completion while the parent has an open workflow task.** Published
   Workflow records the child resolution and reuses the parent's existing ready
   or leased workflow task (`WorkflowExecutor::dispatchParentResumeTasks`).
@@ -307,6 +320,50 @@ October 21, operator metrics and health:
     PHP state.
   - The operator dashboards, capacity evidence, and the repair, retention,
     activity-timeout and payload-cleanup pass endpoints remain.
+
+October 21, workflow start requests:
+
+- **Found by.** Waterline-harness probes against published PHP 2.5.14 and the
+  CLI's `workflow:start`. Native refused `business_key`, `priority`,
+  `fairness_key`, `fairness_weight`, `payload_codec` and every unknown field,
+  required `workflow_id`, `task_queue` and an envelope `input`, and answered
+  without the control-plane contract the CLI requires. As a result,
+  `dw workflow:start` failed against native even when the run started.
+- **Validation.** Native applies `WorkflowController::start`'s rules with
+  Laravel's messages and order, after TrimStrings and
+  ConvertEmptyStringsToNull on every string in the body. The `after` hook
+  names the six legacy fields, and `payload_codec` accepts only `avro`, with
+  PHP's message. Unknown fields are ignored. One native-only bound remains:
+  a timeout above 3,153,600,000 seconds (100 years) is refused, so every
+  deadline stays representable.
+- **Defaults.** As `WorkflowStartService` passes them on: a generated
+  instance ID, the `default` queue, empty arguments for absent, null or
+  empty input, and plain JSON input encoded as its values in request order.
+  Only JSON integers set a timeout, priority or weight, so `"4"` keeps the
+  default, as in PHP.
+- **Stored fields.** `business_key` on the instance and run; priority
+  (default 5), the lowercased fairness key and the weight (default 1) on the
+  run and on every task it creates. Workers claim lower priority numbers
+  first.
+- **History and responses.** StartAccepted keeps PHP's `business_key`,
+  `visibility_labels` and `search_attributes` fields; WorkflowStarted drops
+  null fields. A start for an existing instance records its command and
+  event on the current run: `use-existing` on an active run answers 200
+  `returned_existing_active` with StartAccepted, and anything else answers
+  409 `rejected_duplicate` / `instance_already_started` with StartRejected.
+  Every start response carries the control-plane contract; its block matches
+  PHP's except for identifiers.
+- **Verification.**
+  - The full native suite passes on SQLite, PostgreSQL and MySQL, including
+    the new `start_request` integration tests and the validator unit tests.
+  - Against published PHP 2.5.14, 17 start probes now match in status,
+    errors, defaults, stored input and history events. Two differences
+    remain: describe's `business_key`, which native reports once #578
+    merges, and the nested-map key order above.
+  - The checkout CLI's `workflow:start` with `--input`, `--business-key`,
+    `--priority` and the fairness options succeeds against native.
+- **Remaining.** Search attributes on start, fairness rebalancing and the key
+  order are listed under known gaps.
 
 October 21, describe actions and run list:
 

@@ -349,6 +349,29 @@ impl Runtime {
     delegate!(mark_external_fetched(expected: &crate::external_payload::Reference) -> Result<()>);
     delegate!(database_live() -> bool);
     pub(crate) async fn start(&self, body: Value) -> Result<Value> {
+        // PHP validates the request before it reads the memo or the input.
+        let mut body = super::start_request::normalized(body);
+        super::start_request::validate(&body)?;
+        if body["search_attributes"].as_object().is_some_and(|fields| !fields.is_empty())
+            || body["search_attributes"].as_array().is_some_and(|items| !items.is_empty())
+        {
+            return Err(refuse(StatusCode::NOT_IMPLEMENTED, "start_search_attributes_unavailable"));
+        }
+        let arguments = match super::start_request::input(&body) {
+            super::start_request::Input::Envelope => None,
+            super::start_request::Input::Empty => Some(crate::codec::Value::Array(vec![])),
+            super::start_request::Input::Values(values) => Some(crate::codec::Value::Array(
+                values
+                    .into_iter()
+                    .map(|value| super::memos::from_json(value.clone()))
+                    .collect::<Result<_>>()
+                    .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_workflow_arguments"))?,
+            )),
+        };
+        if let Some(arguments) = arguments {
+            let blob = super::queries::encode_arguments(self.signal_codec.clone(), arguments).await?;
+            body["input"] = json!({"codec": "avro", "blob": blob});
+        }
         let memo =
             super::memos::prepare_initial(self.signal_codec.clone(), body["memo"].clone()).await?;
         let external = self.prepare_external(&body["input"]).await?;

@@ -42,7 +42,7 @@ fn valid_key(key: &str) -> bool {
 
 // Initial JSON follows the published PHP associative-array boundary. Typed
 // portable envelopes bypass this conversion. Envelope-shaped JSON is literal.
-fn from_json(value: Value) -> Result<Payload> {
+pub(super) fn from_json(value: Value) -> Result<Payload> {
     Ok(match value {
         Value::Null => Payload::Null,
         Value::Bool(value) => Payload::Boolean(value),

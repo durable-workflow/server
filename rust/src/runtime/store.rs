@@ -17,7 +17,7 @@ pub(super) struct PreparedControlArguments {
 }
 /// The runtime-owned message-stream delivery signal (`WorkflowStub::MESSAGE_STREAM_RUNTIME_SIGNAL`).
 const MESSAGE_STREAM_SIGNAL: &str = "__durable_workflow_message_stream";
-pub(super) const TASK_CANDIDATES_SQL: &str = "SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) ORDER BY t.available_at,t.id LIMIT 100";
+pub(super) const TASK_CANDIDATES_SQL: &str = "SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) ORDER BY t.priority,t.available_at,t.id LIMIT 100";
 pub(super) const POLL_RECEIPT_CLEANUP_SQL: &str = "DELETE FROM dw_poll_receipts WHERE expires_at<=$1 AND task_id IN (SELECT id FROM workflow_tasks WHERE status!='leased' OR lease_expires_at<=$2)";
 pub(super) const WORKER_REGISTRATION_SQL: &str = "INSERT INTO workflow_worker_registrations(namespace,worker_id,task_queue,runtime,sdk_version,build_id,supported_workflow_types,supported_activity_types,capabilities,capability_manifest,last_heartbeat_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(worker_id,namespace) DO UPDATE SET task_queue=excluded.task_queue,runtime=excluded.runtime,sdk_version=excluded.sdk_version,build_id=excluded.build_id,supported_workflow_types=excluded.supported_workflow_types,supported_activity_types=excluded.supported_activity_types,capabilities=excluded.capabilities,capability_manifest=excluded.capability_manifest,last_heartbeat_at=excluded.last_heartbeat_at,updated_at=excluded.updated_at";
 pub(super) struct Store<DB: Backend> {
@@ -192,51 +192,22 @@ where
         memo: Option<&super::memos::PreparedMemo>,
         external_arguments: Option<&str>,
     ) -> Result<Value> {
-        let workflow_id = text(&body, "workflow_id")?;
-        if workflow_id.len() > 128
-            || !workflow_id
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || b"._:-".contains(&c))
-        {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid_workflow_id",
-            ));
-        }
-        let workflow_type = text(&body, "workflow_type")?;
-        let queue = text(&body, "task_queue")?;
+        let request = super::start_request::validate(body)?;
+        // PHP names an instance the request leaves unnamed.
+        let workflow_id = request.workflow_id.clone().unwrap_or_else(id);
+        let workflow_id = workflow_id.as_str();
+        let workflow_type = request.workflow_type.as_str();
+        let queue = request.task_queue.as_str();
         let arguments = match external_arguments {
             Some(arguments) => arguments.to_owned(),
             None => envelope(&body, "input")?,
         };
-        let execution_timeout = optional_seconds(&body, "execution_timeout_seconds")?;
-        let run_timeout = optional_seconds(&body, "run_timeout_seconds")?;
-        reject_fields(
-            &body,
-            &[
-                "workflow_id",
-                "workflow_type",
-                "task_queue",
-                "input",
-                "execution_timeout_seconds",
-                "run_timeout_seconds",
-                "duplicate_policy",
-                "memo",
-            ],
-        )?;
+        let execution_timeout = request.execution_timeout;
+        let run_timeout = request.run_timeout;
         if memo.is_none() && body.get("memo").is_some_and(|value| !value.is_null()) {
             return Err(refuse(
                 StatusCode::CONFLICT,
                 "workflow_memo_updates_unavailable",
-            ));
-        }
-        if body
-            .get("duplicate_policy")
-            .is_some_and(|v| v != "fail" && v != "use-existing")
-        {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid_duplicate_policy",
             ));
         }
         if let Some(existing) = Self::query("SELECT r.* FROM workflow_instances i JOIN workflow_runs r ON r.id=i.current_run_id WHERE i.id=$1")
@@ -247,12 +218,7 @@ where
                         "outcome":"rejected_workflow_id_reserved_in_namespace","rejection_reason":"workflow_id_reserved_in_namespace",
                         "message":format!("Workflow [{workflow_id}] is already reserved in another namespace.")})});
             }
-            if body["duplicate_policy"] == "use-existing" && matches!(DB::string(&existing,"status")?.as_str(), "pending" | "running" | "waiting") {
-                return Ok(json!({"workflow_id": workflow_id, "run_id": DB::string(&existing,"id")?,
-                    "workflow_type": DB::string(&existing,"workflow_type")?, "namespace": namespace,
-                    "status": DB::string(&existing,"status")?, "payload_codec": "avro", "outcome": "used_existing_active"}));
-            }
-            return Err(refuse(StatusCode::CONFLICT, "workflow_id_already_exists"));
+            return Self::start_existing(tx, &existing, &request, workflow_id, namespace, &arguments).await;
         }
         let run_id = id();
         let command_id = id();
@@ -266,17 +232,18 @@ where
             .filter(|memo| memo.as_object().is_some_and(|entries| !entries.is_empty()))
             .cloned()
             .unwrap_or(Value::Null);
-        Self::query("INSERT INTO workflow_instances(id,workflow_type,workflow_class,current_run_id,run_count,execution_timeout_seconds,created_at,updated_at,started_at,namespace,memo) VALUES ($1,$2,$3,$4,1,NULLIF($5,0),$6,$7,$8,$9,$10)")
+        Self::query("INSERT INTO workflow_instances(id,workflow_type,workflow_class,current_run_id,run_count,execution_timeout_seconds,created_at,updated_at,started_at,namespace,memo,business_key) VALUES ($1,$2,$3,$4,1,NULLIF($5,0),$6,$7,$8,$9,$10,$11)")
             // Timeouts are at least one second; zero binds "no timeout".
             .bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(&run_id).bind(execution_timeout.unwrap_or(0))
             .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(namespace)
-            .bind(DB::optional_document(&authored_memo)).execute(&mut **tx).await?;
+            .bind(DB::optional_document(&authored_memo)).bind(request.business_key.as_deref()).execute(&mut **tx).await?;
         // PHP records the start as the run's first progress.
-        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at,namespace,last_progress_at) VALUES ($1,$2,$3,$4,1,'pending','avro',$5,$6,NULLIF($7,0),$8,$9,$10,$11,$12,$13,$14)")
+        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at,namespace,last_progress_at,business_key,priority,fairness_key,fairness_weight) VALUES ($1,$2,$3,$4,1,'pending','avro',$5,$6,NULLIF($7,0),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)")
             .bind(&run_id).bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(&arguments)
             .bind(queue).bind(run_timeout.unwrap_or(0)).bind(DB::optional_time(execution_deadline)).bind(DB::optional_time(run_deadline))
             .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(namespace)
-            .bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
+            .bind(DB::bind_time(started_at)).bind(request.business_key.as_deref()).bind(request.priority)
+            .bind(request.fairness_key.as_deref()).bind(request.fairness_weight).execute(&mut **tx).await?;
         if let Some(memo) = memo {
             for (key, value) in memo {
                 Self::query(DB::MEMO_INITIAL_INSERT)
@@ -301,6 +268,9 @@ where
             "workflow_type": workflow_type, "workflow_class": workflow_type, "workflow_command_id": command_id,
             "memo":authored_memo});
         let mut accepted = identity.clone();
+        accepted["business_key"] = json!(request.business_key);
+        accepted["visibility_labels"] = Value::Null;
+        accepted["search_attributes"] = Value::Null;
         accepted["outcome"] = json!("started_new");
         Self::append(
             tx,
@@ -312,11 +282,17 @@ where
         )
         .await?;
         let mut started = identity;
-        Self::attach_workflow_contract(tx, queue, workflow_type, &mut started).await?;
+        started["business_key"] = json!(request.business_key);
         started["execution_timeout_seconds"] = json!(execution_timeout);
         started["run_timeout_seconds"] = json!(run_timeout);
         started["execution_deadline_at"] = json!(execution_deadline);
         started["run_deadline_at"] = json!(run_deadline);
+        // PHP filters null fields out of the started payload, then adds the
+        // declared contract.
+        if let Some(fields) = started.as_object_mut() {
+            fields.retain(|_, value| !value.is_null());
+        }
+        Self::attach_workflow_contract(tx, queue, workflow_type, &mut started).await?;
         Self::append(
             tx,
             &run_id,
@@ -329,9 +305,65 @@ where
         Self::create_task(tx, &run_id, queue, "workflow", json!({})).await?;
         Ok(
             json!({"workflow_id": workflow_id, "run_id": run_id, "workflow_type": workflow_type,
-            "namespace": namespace, "status": "pending", "payload_codec": "avro", "outcome": "started_new",
-            "command_status": "accepted", "command_source": "control_plane", "reason": null, "rejection_reason": null}),
+            "namespace": namespace, "status": "pending", "business_key": request.business_key, "payload_codec": "avro",
+            "outcome": "started_new", "command_status": "accepted", "command_source": "control_plane", "reason": null,
+            "rejection_reason": null, "message": null}),
         )
+    }
+
+    /// `DefaultWorkflowControlPlane::start` for an instance that already has
+    /// a run: an active run is returned under `use-existing`, otherwise the
+    /// start is refused. Either way the command and its history event are
+    /// committed on that run; the HTTP layer answers a refusal with 409.
+    async fn start_existing(
+        tx: &mut Transaction<'_, DB>,
+        existing: &DB::Row,
+        request: &super::start_request::StartRequest,
+        workflow_id: &str,
+        namespace: &str,
+        arguments: &str,
+    ) -> Result<Value> {
+        let run_id = DB::string(existing, "id")?;
+        let status = DB::string(existing, "status")?;
+        let returned = request.use_existing && matches!(status.as_str(), "pending" | "running" | "waiting");
+        let (command_status, outcome, rejection, event) = if returned {
+            ("accepted", "returned_existing_active", None, "StartAccepted")
+        } else {
+            ("rejected", "rejected_duplicate", Some("instance_already_started"), "StartRejected")
+        };
+        let command_id = id();
+        let at = now();
+        let sequence = DB::number(existing, "last_command_sequence")?
+            .checked_add(1)
+            .ok_or_else(|| refuse(StatusCode::CONFLICT, "command_sequence_exhausted"))?;
+        let workflow_type = DB::string(existing, "workflow_type")?;
+        let decided = |when: bool| DB::optional_time(when.then_some(at));
+        Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,source,status,outcome,workflow_type,payload_codec,payload,rejection_reason,command_sequence,accepted_at,applied_at,rejected_at) VALUES ($1,$2,$3,$4,'start','control_plane',$5,$6,$7,'avro',$8,$9,$10,$11,$12,$13)")
+            .bind(&command_id).bind(workflow_id).bind(&run_id).bind(&run_id).bind(command_status).bind(outcome)
+            .bind(&workflow_type).bind(arguments).bind(rejection).bind(sequence)
+            .bind(decided(returned)).bind(decided(returned)).bind(decided(!returned)).execute(&mut **tx).await?;
+        Self::query("UPDATE workflow_runs SET last_command_sequence=$1 WHERE id=$2")
+            .bind(sequence)
+            .bind(&run_id)
+            .execute(&mut **tx)
+            .await?;
+        let mut memo = serde_json::Map::new();
+        for row in Self::query(DB::MEMO_READ).bind(&run_id).fetch_all(&mut **tx).await? {
+            memo.insert(DB::string(&row, "key")?, DB::document_row(&row, "value")?);
+        }
+        let business_key = DB::optional_string(existing, "business_key")?;
+        let payload = json!({"workflow_command_id":command_id,"workflow_instance_id":workflow_id,"workflow_run_id":run_id,
+            "workflow_class":DB::string(existing, "workflow_class")?,"workflow_type":workflow_type,"business_key":business_key,
+            "visibility_labels":DB::optional_document_row(existing, "visibility_labels")?,
+            // An empty PHP array projects as a list.
+            "memo":if memo.is_empty() { json!([]) } else { Value::Object(memo) },
+            "search_attributes":[],"outcome":outcome,"rejection_reason":rejection});
+        Self::append(tx, &run_id, event, payload, None, Some(&command_id)).await?;
+        tx.summary_changed(&run_id);
+        let body = json!({"workflow_id":workflow_id,"run_id":run_id,"workflow_type":workflow_type,"namespace":namespace,
+            "status":status,"business_key":business_key,"payload_codec":"avro","outcome":outcome,"command_status":command_status,
+            "command_source":"control_plane","reason":rejection,"rejection_reason":rejection,"message":null});
+        Ok(body)
     }
 
     /// A run's decoded memo map as describe and the run list render it.
@@ -2715,16 +2747,20 @@ where
     ) -> Result<String> {
         tx.summary_changed(run_id);
         let task_id = id();
-        let run = Self::query("SELECT namespace FROM workflow_runs WHERE id=$1")
+        // A task carries its run's priority and fairness tags, as in PHP.
+        let run = Self::query("SELECT namespace,priority,fairness_key,fairness_weight FROM workflow_runs WHERE id=$1")
             .bind(run_id)
             .fetch_one(&mut **tx)
             .await?;
         let namespace = DB::string(&run, "namespace")?;
         // As PHP in poll mode, a task is dispatched to pollers when it is created.
         let created = now();
-        Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,payload,queue,available_at,namespace,created_at,updated_at,last_dispatched_at,last_dispatch_attempt_at) VALUES ($1,$2,$3,'ready',$4,$5,$6,$7,$8,$9,$10,$11)")
+        let fairness_key = DB::optional_string(&run, "fairness_key")?;
+        Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,payload,queue,available_at,namespace,created_at,updated_at,last_dispatched_at,last_dispatch_attempt_at,priority,fairness_key,fairness_weight) VALUES ($1,$2,$3,'ready',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
         .bind(&task_id).bind(run_id).bind(kind).bind(DB::document(&payload)).bind(queue).bind(DB::bind_time(created)).bind(&namespace)
-        .bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::bind_time(created)).execute(&mut **tx).await?;
+        .bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::bind_time(created))
+        .bind(DB::number(&run, "priority")?).bind(fairness_key.as_deref()).bind(DB::number(&run, "fairness_weight")?)
+        .execute(&mut **tx).await?;
         Ok(task_id)
     }
 
@@ -2878,17 +2914,6 @@ where
 
 /// A start's optional `nullable|integer|min:1` timeout. Absent or null means
 /// no timeout, as in published PHP.
-fn optional_seconds(body: &Value, field: &str) -> Result<Option<i64>> {
-    match body.get(field) {
-        None | Some(Value::Null) => Ok(None),
-        Some(value) => value
-            .as_i64()
-            .filter(|n| *n > 0 && *n <= 315_360_000)
-            .map(Some)
-            .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_timeout")),
-    }
-}
-
 pub(super) async fn prepare_control_arguments(
     semaphore: Arc<Semaphore>,
     name: String,
