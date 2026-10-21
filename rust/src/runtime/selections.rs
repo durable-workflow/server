@@ -332,41 +332,4 @@ where
         }
         Ok(Some("activity"))
     }
-
-    pub(super) async fn range_selection_history(
-        tx: &mut Transaction<'_, DB>,
-        run_id: &str,
-    ) -> Result<bool> {
-        let events = Self::query("SELECT id,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('TimerScheduled','TimerFired','SelectionResolved') ORDER BY sequence LIMIT 4")
-            .bind(run_id).fetch_all(&mut **tx).await?;
-        if events.is_empty() {
-            return Ok(false);
-        }
-        if !matches!(events.len(), 1 | 3)
-            || DB::string(&events[0], "event_type")? != "TimerScheduled"
-        {
-            return Err(unqualified());
-        }
-        let opening = DB::document_row(&events[0], "payload")?;
-        let group = metadata(&opening, "timer")?;
-        if group.get("parallel_group_id").is_none() {
-            return Err(unqualified());
-        }
-        if events.len() == 3 {
-            let fired = DB::document_row(&events[1], "payload")?;
-            let winner = DB::document_row(&events[2], "payload")?;
-            if DB::string(&events[1], "event_type")? != "TimerFired"
-                || DB::string(&events[2], "event_type")? != "SelectionResolved"
-                || metadata(&fired, "timer")? != group
-                || fired["timer_id"] != opening["timer_id"]
-                || winner["selection_group_id"] != group["parallel_group_id"]
-                || winner["operation_kind"] != "timer"
-                || winner["operation_identity"] != opening["timer_id"]
-                || winner["resolution_event_id"] != DB::string(&events[1], "id")?
-            {
-                return Err(unqualified());
-            }
-        }
-        Ok(true)
-    }
 }

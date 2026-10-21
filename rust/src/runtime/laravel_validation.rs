@@ -58,3 +58,26 @@ pub(super) fn failure(errors: Vec<(&'static str, Vec<&'static str>)>) -> Option<
             "errors":errors.clone(),"validation_errors":errors}),
     })
 }
+
+/// PHP's `filter_var($value, FILTER_VALIDATE_INT)`, which Laravel's
+/// `integer` rule uses: canonical decimal strings, integral numbers and true.
+pub(super) fn integer(value: &Value) -> Option<i64> {
+    match value {
+        Value::Number(number) => number.as_i64().or_else(|| {
+            number
+                .as_f64()
+                .filter(|float| float.fract() == 0.0 && float.abs() < 9.0e18)
+                .map(|float| float as i64)
+        }),
+        Value::String(text) => {
+            let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
+            let canonical = digits == "0"
+                || !digits.is_empty()
+                    && !digits.starts_with('0')
+                    && digits.bytes().all(|byte| byte.is_ascii_digit());
+            canonical.then(|| text.parse().ok()).flatten()
+        }
+        Value::Bool(true) => Some(1),
+        _ => None,
+    }
+}
