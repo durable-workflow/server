@@ -124,7 +124,7 @@ fn infer_type(value: &Value) -> &'static str {
 
 /// `Carbon::parse` for the forms workers send: RFC 3339, or a date and time
 /// without an offset, read as UTC like the server's timezone.
-fn parse_datetime(text: &str) -> Option<DateTime<Utc>> {
+pub(super) fn parse_datetime(text: &str) -> Option<DateTime<Utc>> {
     if let Ok(time) = DateTime::parse_from_rfc3339(text) {
         return Some(time.with_timezone(&Utc));
     }
@@ -569,25 +569,29 @@ where
             .await?;
         let mut typed = BTreeMap::new();
         for row in rows {
-            let value = match DB::string(&row, "type")?.as_str() {
-                "string" => DB::optional_string(&row, "value_string")?.map(Typed::String),
-                "keyword" => DB::optional_string(&row, "value_keyword")?.map(Typed::Keyword),
-                "keyword_list" => Some(Typed::KeywordList(
-                    DB::optional_document_row(&row, "value_keyword_list")?
-                        .and_then(|list| serde_json::from_value::<Vec<String>>(list).ok())
-                        .unwrap_or_default(),
-                )),
-                "int" => DB::optional_number(&row, "value_int")?.map(Typed::Int),
-                "float" => DB::optional_float(&row, "value_float")?.map(Typed::Float),
-                "bool" => DB::optional_number(&row, "value_bool")?.map(|flag| Typed::Bool(flag != 0)),
-                "datetime" => DB::optional_instant(&row, "value_datetime")?.map(Typed::Datetime),
-                _ => None,
-            };
-            if let Some(value) = value {
+            if let Some(value) = Self::typed_value(&row)? {
                 typed.insert(DB::string(&row, "attribute_key")?, value);
             }
         }
         Ok(typed)
+    }
+
+    /// One typed row's value; a row of an unknown type has none.
+    pub(super) fn typed_value(row: &DB::Row) -> Result<Option<Typed>> {
+        Ok(match DB::string(row, "type")?.as_str() {
+            "string" => DB::optional_string(row, "value_string")?.map(Typed::String),
+            "keyword" => DB::optional_string(row, "value_keyword")?.map(Typed::Keyword),
+            "keyword_list" => Some(Typed::KeywordList(
+                DB::optional_document_row(row, "value_keyword_list")?
+                    .and_then(|list| serde_json::from_value::<Vec<String>>(list).ok())
+                    .unwrap_or_default(),
+            )),
+            "int" => DB::optional_number(row, "value_int")?.map(Typed::Int),
+            "float" => DB::optional_float(row, "value_float")?.map(Typed::Float),
+            "bool" => DB::optional_number(row, "value_bool")?.map(|flag| Typed::Bool(flag != 0)),
+            "datetime" => DB::optional_instant(row, "value_datetime")?.map(Typed::Datetime),
+            _ => None,
+        })
     }
 
     /// The bridge's `applyUpsertSearchAttributes` after the Server's

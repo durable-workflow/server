@@ -156,3 +156,56 @@ async fn continued_runs_inherit_typed_attributes() {
     runtime.close().await;
     database.remove().await;
 }
+
+async fn listed(app: &Router, query: &str) -> (StatusCode, Value) {
+    let encoded: String = form_urlencoded::byte_serialize(query.as_bytes()).collect();
+    request(app, "GET", &format!("/api/workflows?workflow_type=echo&query={encoded}"), Value::Null).await
+}
+
+#[tokio::test]
+async fn workflow_lists_filter_and_show_typed_attributes_like_php() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    for (name, kind) in [("SearchKeyword", "keyword"), ("SearchCount", "int"), ("SearchTags", "keyword_list"),
+        ("SearchFlag", "bool")]
+    {
+        define(&app, name, kind).await;
+    }
+    typed_worker(&app, "typed-worker").await;
+    for (workflow, keyword, count, flag) in [("listed-a", "alpha", 1, true), ("listed-b", "beta", 9_007_199_254_740_993_i64, false)] {
+        start(&app, workflow).await;
+        let task = poll(&app, "typed-worker", "workflow").await;
+        let done = finish_task(&app, &task, json!([upsert(
+            json!({"SearchKeyword":keyword,"SearchCount":count,"SearchTags":[keyword,"shared"],"SearchFlag":flag}),
+            json!({"SearchKeyword":"keyword","SearchCount":"int","SearchTags":"keyword_list","SearchFlag":"bool"})),
+            {"type":"open_signal_wait","signal_name":"finish"}])).await;
+        assert_eq!(done.0, StatusCode::OK, "{}", done.1);
+    }
+    let ids = |body: &Value| -> Vec<String> {
+        body["workflows"].as_array().unwrap().iter().map(|row| row["workflow_id"].as_str().unwrap().to_owned()).collect()
+    };
+    for (query, expected) in [
+        ("SearchKeyword = \"alpha\"", vec!["listed-a"]),
+        ("SearchCount > 9007199254740992 AND SearchCount <= 9007199254740993", vec!["listed-b"]),
+        ("SearchTags = \"shared\"", vec!["listed-b", "listed-a"]),
+        ("SearchFlag = false OR SearchKeyword = alpha", vec!["listed-b", "listed-a"]),
+        ("NOT SearchFlag AND Status = running", vec!["listed-b"]),
+        ("SearchKeyword IN (\"beta\", gamma)", vec!["listed-b"]),
+        ("SearchKeyword = \"missing\"", vec![]),
+    ] {
+        let (status, body) = listed(&app, query).await;
+        assert_eq!(status, StatusCode::OK, "{query}: {body}");
+        assert_eq!(ids(&body), expected, "{query}");
+    }
+    let (_, body) = listed(&app, "SearchKeyword = alpha").await;
+    assert_eq!(body["workflows"][0]["search_attributes"],
+        json!({"SearchCount":1,"SearchFlag":true,"SearchKeyword":"alpha","SearchTags":["alpha","shared"]}));
+    // A plain term keeps the free-text workflow ID search.
+    assert_eq!(ids(&listed(&app, "listed-a").await.1), ["listed-a"]);
+    let refused = listed(&app, "Unknown = 1").await;
+    assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", refused.1);
+    assert_eq!(refused.1["errors"]["query"], json!(["Search attribute [Unknown] is not defined in namespace [default]."]));
+    runtime.close().await;
+    database.remove().await;
+}

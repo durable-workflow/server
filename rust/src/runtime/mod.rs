@@ -85,6 +85,7 @@ mod update_summary;
 mod updates;
 pub mod upgrade;
 mod visibility;
+mod visibility_query;
 mod wait_projection;
 mod wait_timeouts;
 mod worker_contracts;

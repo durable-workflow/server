@@ -198,11 +198,16 @@ contract fixture before its correction.
   a signal therefore waits on PHP and is refused on native. The port takes the
   snapshot at claim time and must keep query lease replay stable, so it needs
   its own fixture.
-- **Search attributes in workflow lists.** Native lists show
-  `search_attributes: []`, and the list `query` refuses any comparison with
-  `422 unsupported_visibility_query`. Published PHP returns each run's typed
-  attributes and filters with `WorkflowVisibilityQuery` over typed
-  predicates. The Sample App's search attribute scenario needs both.
+- **Visibility query evaluation.** Published PHP filters a structured list
+  `query` in SQL. Native reads the queried attribute keys once, then
+  evaluates candidate runs in list order, 500 at a time, until it has the
+  requested page. A query that matches few runs in a large namespace reads
+  every run of that namespace.
+- **Visibility query text comparisons.** PHP compares keyword and text
+  values with the database collation, which is case-insensitive in the
+  published MySQL schema. Native compares them exactly on every backend.
+- **Visibility query key order.** When one command or query has several
+  errors, native reports them in sorted key order rather than request order.
 - **Inherited memos and search attributes on child runs.** Published PHP
   copies the parent's memos and search attributes to a child run and to a
   retried child (`inheritTypedVisibilityMetadata`). Native copies both only

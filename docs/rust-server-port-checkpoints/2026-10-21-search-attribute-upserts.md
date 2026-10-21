@@ -36,10 +36,10 @@
   `continue_as_new` in the same task.
 - **Describe.** Reads keyword lists through each backend's JSON decoding.
   PostgreSQL stores them in a `json` column.
-- **Remaining.** Workflow lists still show no attributes and refuse typed
-  query predicates, so the Sample App scenario is not complete yet. Other
-  remaining differences are recorded as known gaps: start-time search
-  attributes, child-run inheritance, datetime forms and the limit refusal.
+- **Remaining.** Lists and typed list queries follow in the same branch
+  (`2026-10-21-visibility-queries.md`). Other remaining differences are
+  recorded as known gaps: start-time search attributes, child-run
+  inheritance, datetime forms and the limit refusal.
 - **Differential probe.** Published PHP 2.5.14 and native received the same
   requests: twelve upsert completions covering registered, declared and
   inferred types, bad keys, wrong types, malformed `attribute_types`, empty,
