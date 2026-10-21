@@ -446,6 +446,7 @@ class WorkerProtocol
         $workerSessionSupported = self::workerSessionsSupported();
 
         return [
+            ...WorkflowObservability::capabilities(),
             'long_poll_timeout' => (int) config(
                 'server.polling.timeout',
                 WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT,

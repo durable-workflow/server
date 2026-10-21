@@ -632,11 +632,23 @@ async fn activity_result(
     ))
 }
 
+/// PHP Server admits an optional top-level caller trace context on start,
+/// signal, update and cancellation requests when its tracing is enabled.
+/// Native has no carrier and never advertises one, so it drops that one field
+/// unread, as PHP does with tracing disabled. The same name anywhere else
+/// stays ordinary request data, and other unknown fields are still refused.
+fn without_trace_carrier(mut body: Value) -> Value {
+    if let Some(fields) = body.as_object_mut() {
+        fields.remove("observability_context");
+    }
+    body
+}
+
 async fn start(
     Extension(runtime): Extension<Runtime>,
     Json(body): Json<super::memo_json::StartBody>,
 ) -> Result<(StatusCode, Json<Value>)> {
-    let body = body.0;
+    let body = without_trace_carrier(body.0);
     let workflow_id = body["workflow_id"].as_str().unwrap_or("").to_owned();
     let result = runtime.start(body).await.map_err(|error| {
         super::control_plane::Operation::Start.refusal(error, &workflow_id, None)
@@ -701,7 +713,7 @@ async fn cancel_current(
     Path(workflow_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
-    close(runtime, TerminalCommand::Cancel, &workflow_id, None, body).await
+    close(runtime, TerminalCommand::Cancel, &workflow_id, None, without_trace_carrier(body)).await
 }
 
 async fn terminate_current(
@@ -810,7 +822,7 @@ async fn cancel_run(
         TerminalCommand::Cancel,
         &workflow_id,
         Some(&run_id),
-        body,
+        without_trace_carrier(body),
     )
     .await
 }
@@ -836,7 +848,7 @@ async fn request_cancellation_current(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
     let (status, response) = runtime
-        .request_cancellation(&workflow_id, None, body)
+        .request_cancellation(&workflow_id, None, without_trace_carrier(body))
         .await?;
     Ok((status, Json(response)))
 }
@@ -847,7 +859,7 @@ async fn request_cancellation_run(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
     let (status, response) = runtime
-        .request_cancellation(&workflow_id, Some(&run_id), body)
+        .request_cancellation(&workflow_id, Some(&run_id), without_trace_carrier(body))
         .await?;
     Ok((status, Json(response)))
 }
@@ -858,7 +870,7 @@ async fn signal_current(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
     let response = runtime
-        .signal(&workflow_id, None, &name, body)
+        .signal(&workflow_id, None, &name, without_trace_carrier(body))
         .await
         .map_err(|error| {
             super::control_plane::Operation::Signal(&name).refusal(error, &workflow_id, None)
@@ -875,7 +887,7 @@ async fn update_current(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
     let (status, result) = runtime
-        .update_workflow(&workflow_id, None, &name, body)
+        .update_workflow(&workflow_id, None, &name, without_trace_carrier(body))
         .await?;
     Ok((status, Json(result)))
 }
@@ -886,7 +898,7 @@ async fn update_run(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
     let (status, result) = runtime
-        .update_workflow(&workflow_id, Some(&run_id), &name, body)
+        .update_workflow(&workflow_id, Some(&run_id), &name, without_trace_carrier(body))
         .await?;
     Ok((status, Json(result)))
 }
@@ -897,7 +909,7 @@ async fn signal_run(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
     let response = runtime
-        .signal(&workflow_id, Some(&run_id), &name, body)
+        .signal(&workflow_id, Some(&run_id), &name, without_trace_carrier(body))
         .await
         .map_err(|error| {
             super::control_plane::Operation::Signal(&name).refusal(

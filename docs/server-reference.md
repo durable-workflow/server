@@ -1721,6 +1721,9 @@ every operator-facing variable the server honors.
 | `DW_*` name | Default | Description |
 | --- | --- | --- |
 | `DW_MODE` | `service` | Server mode: "service" (external workers poll) or "embedded" (local queue). |
+| `DW_OBSERVABILITY_CONTEXT_ENABLED` | `false` | Enable optional trace context persistence, poll delivery and capability discovery when the application-owned API and nullable schema are installed. See [trace context preparation](observability-context.md). |
+| `DW_OBSERVABILITY_BAGGAGE_ALLOWLIST` | `[]` | JSON list of baggage keys permitted on run origins. Dispatch and secondary links never carry baggage. |
+| `DW_EXTERNAL_PAYLOAD_COMPLETION_MAX_BYTES` | (unset) | Distinct bytes permitted across immutable upload slots in one leased completion; defaults to `DW_EXTERNAL_PAYLOAD_MAX_BYTES`. |
 | `DW_SERVER_ID` | `gethostname()` | Unique identifier for this server instance. |
 | `DW_SERVER_KEY` | generated at container boot | Optional server-internal runtime key. |
 | `DW_DEFAULT_NAMESPACE` | `default` | Namespace used when a request omits the namespace header. |
