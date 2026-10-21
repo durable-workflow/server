@@ -229,6 +229,18 @@ support is not evidence of multi-node safety.
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
 names, including unsuccessful observations.
 
+October 20, workflow task lease:
+
+- **Source.** Native leased a claimed workflow task for a fixed 30 seconds.
+  Published PHP leases it for `DW_WORKFLOW_TASK_TIMEOUT`, 60 seconds by
+  default, on both claim and heartbeat; 2.5.14 and 2.9.8 measured 59.9 and
+  60.0 seconds. Native now reads the same setting with the same default. The
+  activity lease stays at PHP's fixed five minutes.
+- **Checks.** The `worker-replacement-activity-lease` contract now requires
+  a claimed workflow task's lease to last about 60 seconds. A native test
+  checks claim and heartbeat on each database. Locally, published PHP and
+  native both pass the contract.
+
 October 21, schedule listing, updates and backfill:
 
 - **Listing.** `schedule_list.rs` serves `GET /api/schedules` as PHP's
