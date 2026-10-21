@@ -1131,12 +1131,11 @@ where
         Ok((Value::Object(fields), failed))
     }
 
-    /// `GET /api/system/activity-timeouts`: open activity executions past a
-    /// deadline. Like PHP's `ActivityTimeoutScanner`, the scan spans every
-    /// namespace.
-    pub(super) async fn activity_timeout_status(&self, limit: i64) -> Result<Value> {
+    /// `ActivityTimeoutScanner::expiredExecutionIds`: open activity
+    /// executions past a deadline. Like PHP's scan, it spans every namespace.
+    async fn expired_activity_ids(&self, limit: i64) -> Result<Vec<String>> {
         let at = now();
-        let expired: Vec<String> = Self::query("SELECT id FROM activity_executions WHERE status IN ('pending','running') AND ((status='pending' AND schedule_deadline_at IS NOT NULL AND schedule_deadline_at<=$1) OR (status='running' AND close_deadline_at IS NOT NULL AND close_deadline_at<=$2) OR (schedule_to_close_deadline_at IS NOT NULL AND schedule_to_close_deadline_at<=$3) OR (status='running' AND heartbeat_deadline_at IS NOT NULL AND heartbeat_deadline_at<=$4)) ORDER BY id LIMIT $5")
+        Self::query("SELECT id FROM activity_executions WHERE status IN ('pending','running') AND ((status='pending' AND schedule_deadline_at IS NOT NULL AND schedule_deadline_at<=$1) OR (status='running' AND close_deadline_at IS NOT NULL AND close_deadline_at<=$2) OR (schedule_to_close_deadline_at IS NOT NULL AND schedule_to_close_deadline_at<=$3) OR (status='running' AND heartbeat_deadline_at IS NOT NULL AND heartbeat_deadline_at<=$4)) ORDER BY id LIMIT $5")
             .bind(DB::bind_time(at))
             .bind(DB::bind_time(at))
             .bind(DB::bind_time(at))
@@ -1146,9 +1145,26 @@ where
             .await?
             .iter()
             .map(|row| DB::string(row, "id"))
-            .collect::<Result<_>>()?;
+            .collect()
+    }
+
+    /// `GET /api/system/activity-timeouts`.
+    pub(super) async fn activity_timeout_status(&self, limit: i64) -> Result<Value> {
+        let expired = self.expired_activity_ids(limit).await?;
         Ok(json!({"expired_count": expired.len(), "scan_pressure": expired.len() as i64 >= limit,
             "expired_execution_ids": expired, "scan_limit": limit}))
+    }
+
+    /// `POST /api/system/activity-timeouts/pass`: the given executions, or
+    /// the expired ones. Returns the report and whether any failed.
+    pub(super) async fn activity_timeout_pass(&self, limit: i64, ids: Vec<String>) -> Result<(Value, bool)> {
+        let ids = if ids.is_empty() { self.expired_activity_ids(limit).await? } else { ids };
+        let mut outcomes = Vec::with_capacity(ids.len());
+        for id in ids {
+            let outcome = self.enforce_activity_deadline(&id).await;
+            outcomes.push((id, outcome));
+        }
+        Ok(super::activity_deadlines::pass_report(outcomes))
     }
 
     /// `runInlinePass`, reported on the worker heartbeat.
