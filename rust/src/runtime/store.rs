@@ -1360,6 +1360,11 @@ where
                 claim["arguments"] = wire(&DB::string(&activity, "arguments")?);
                 claim["retry_policy"] =
                     DB::optional_document_row(&activity, "retry_policy")?.unwrap_or(Value::Null);
+                // PHP omits the field when the activity has no deadline.
+                let deadlines = super::activity_deadlines::deadlines_view::<DB>(&activity)?;
+                if !deadlines.is_null() {
+                    claim["deadlines"] = deadlines;
+                }
             } else {
                 claim["workflow_task_attempt"] = json!(attempt);
                 claim["arguments"] = wire(&DB::string(&run, "arguments")?);

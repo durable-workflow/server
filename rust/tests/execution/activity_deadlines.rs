@@ -423,12 +423,19 @@ async fn heartbeat_renews_only_progress_deadline_and_cannot_resurrect_elapsed_au
         "/api/worker/activity-tasks/{}/status",
         activity["task_id"].as_str().unwrap()
     );
-    assert_eq!(
-        request_protocol(&app, "POST", &status_path, base.clone(), "1.20")
-            .await
-            .1["can_continue"],
-        true
-    );
+    // Claims and status reads carry PHP's deadlines map in UTC microseconds.
+    let micros = |at: chrono::DateTime<chrono::FixedOffset>| {
+        json!(at.with_timezone(&chrono::Utc).to_rfc3339_opts(chrono::SecondsFormat::Micros, true))
+    };
+    let deadlines = &activity["deadlines"];
+    assert_eq!(deadlines["start_to_close"], micros(close), "{activity}");
+    assert_eq!(deadlines["heartbeat"], micros(at + chrono::Duration::seconds(10)));
+    let lifecycle = deadlines["schedule_to_close"].as_str().unwrap();
+    assert!(lifecycle.ends_with('Z') && lifecycle.len() == 27, "{lifecycle}");
+    assert!(deadlines.get("schedule_to_start").is_none(), "{deadlines}");
+    let status = request_protocol(&app, "POST", &status_path, base.clone(), "1.20").await;
+    assert_eq!(status.1["can_continue"], true, "{}", status.1);
+    assert_eq!(&status.1["deadlines"], deadlines);
     assert_eq!(
         running_deadlines(&database).await,
         initial,

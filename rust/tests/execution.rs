@@ -3700,6 +3700,10 @@ async fn cooperative_delivery_cleanup_and_original_deadline_survive_fresh_runtim
             assert_eq!(status.1["heartbeat_recorded"], false);
             assert_eq!(status.1["lease_expires_at"], activity["lease_expires_at"]);
             assert_eq!(status.1["last_heartbeat_at"], Value::Null);
+            // An activity without deadlines: PHP omits the claim field and
+            // reports null on status.
+            assert!(activity.get("deadlines").is_none(), "{activity}");
+            assert_eq!(status.1["deadlines"], Value::Null);
             let mut wrong_owner = status_body.clone();
             wrong_owner["lease_owner"] = json!("other-owner");
             assert_eq!(
