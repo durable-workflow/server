@@ -173,6 +173,17 @@ contract fixture before its correction.
   `upgrade_source_catalog_unqualified` until its recipe lands. The recipe must
   also refuse rows that carry trace context until native implements the
   contract. The boundary is agreed on #325.
+- **Queries while a workflow task is open.** Native answers a query from a
+  history snapshot taken at admission, so it refuses with 409
+  `query_snapshot_busy` while the run has a ready or leased workflow task.
+  Published PHP admits the query. A workflow task leased at admission fixes
+  the query's history cutoff at that point. The query's claim then waits
+  while a workflow task is leased, or while an earlier resume task (signal,
+  update, activity, child or timer) is ready and not yet in history. A
+  run's first workflow task does not hold the claim. A query sent right after
+  a signal therefore waits on PHP and is refused on native. The port takes the
+  snapshot at claim time and must keep query lease replay stable, so it needs
+  its own fixture.
 - **Terminating a child run.** Published Workflow resolves the parent with
   `ChildRunTerminated` and the `terminated` child call status. Native refuses
   this with `422 termination_propagation_not_available` until the parent-side
@@ -245,6 +256,44 @@ support is not evidence of multi-node safety.
 
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
 names, including unsuccessful observations.
+
+October 21, query responses and routing:
+
+- **Found by.** The Waterline comparison and direct probes of published PHP
+  2.5.14. Native answered every query on a run with an open workflow task
+  with `query_snapshot_busy`. It refused queries a run did not declare even
+  when the run declared none, and it refused unknown request fields and a
+  null `input`. Its responses lacked PHP's `control_plane` envelope and
+  messages.
+- **Admission order.** As in PHP: a workflow outside the namespace is 404
+  `Workflow not found.`. A selected run that is not current is 409
+  `historical_run_command_rejected`. A non-array `input` fails Laravel's
+  rule with 422. A failed, cancelled or terminated run is 409
+  `run_not_active` with `run_status` and `is_terminal`. Other request fields
+  are ignored, and a null `input` means no arguments.
+- **Contracts.** A run that declares no queries leaves the name and arguments
+  to the worker. A declared query without a parameter contract takes its
+  arguments as given. Worker claims match the workflow type, not the query
+  name, so a worker answers queries it does not declare, as in PHP.
+- **Routing.** Before admitting a query, native checks PHP's query route. A
+  missing route is refused with PHP's reason and message. While no worker is
+  available at all, the request waits up to the query timeout for one to
+  register, as `awaitRegisteredQueryRoute` does.
+- **Timeouts.** A query nobody claimed re-checks the route. It is refused if
+  the route is gone, otherwise it is 504 `query_task_not_claimed`. A claimed
+  query that times out is 504 `query_worker_execution_timeout`, naming the
+  worker. Both carry PHP's messages.
+- **Responses.** Answers and refusals carry `target_scope`, `query_name`,
+  `result` and PHP's `query` envelope, with its rejection fields and reasons.
+- **Still different.** Native still refuses a query while a workflow task is
+  open (see the known gaps), now with PHP's body shape and an explanatory
+  message.
+- **Evidence.** Probes of the route refusals, the terminal run, the missing
+  workflow, the historical run, invalid input and an unclaimed query match
+  PHP's status, reason, message and envelope. The open-task case is the only
+  difference. `state-queries`, `state-updates`, `signals-before-worker` and
+  `echo` pass on published PHP, embedded and native. New `query_responses`
+  tests and the existing query tests pass on SQLite, PostgreSQL and MySQL.
 
 October 21, history export:
 
