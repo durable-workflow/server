@@ -69,6 +69,47 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    /// The registered query route for a run row, with workers whose
+    /// heartbeat is newer than `stale_after` seconds.
+    pub(super) async fn query_route(&self, run: &DB::Row, stale_after: i64) -> Result<super::query_route::QueryRoute> {
+        let task_queue = super::query_route::trimmed(DB::optional_string(run, "queue")?.as_deref()).unwrap_or("default").to_owned();
+        let workflow_type = DB::optional_string(run, "workflow_type")?;
+        let compatibility = DB::optional_string(run, "compatibility")?;
+        let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
+            .bind(DB::string(run, "id")?)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|row| DB::document_row(&row, "payload"))
+            .transpose()?
+            .unwrap_or(Value::Null);
+        let fresh_after = now() - chrono::Duration::seconds(stale_after.max(1));
+        let rows = Self::query("SELECT capabilities,supported_workflow_types,build_id,workflow_definition_fingerprints,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND task_queue=$2 AND status='active' ORDER BY worker_id")
+            .bind(self.namespace.as_ref())
+            .bind(task_queue.as_str())
+            .fetch_all(&self.pool)
+            .await?;
+        let mut workers = Vec::with_capacity(rows.len());
+        for row in rows {
+            // `WorkerPollFence::isFresh`: a heartbeat within the stale window.
+            if !DB::optional_instant(&row, "last_heartbeat_at")?.is_some_and(|heartbeat| heartbeat >= fresh_after) {
+                continue;
+            }
+            workers.push(super::query_route::Worker {
+                capabilities: super::query_route::strings(&DB::optional_document_row(&row, "capabilities")?.unwrap_or(Value::Null)),
+                workflow_types: super::query_route::strings(&DB::optional_document_row(&row, "supported_workflow_types")?.unwrap_or(Value::Null)),
+                build_id: super::query_route::trimmed(DB::optional_string(&row, "build_id")?.as_deref()).map(str::to_owned),
+                fingerprints: DB::optional_document_row(&row, "workflow_definition_fingerprints")?.unwrap_or_else(|| json!({})),
+            });
+        }
+        Ok(super::query_route::route(
+            &task_queue,
+            super::query_route::trimmed(workflow_type.as_deref()),
+            super::query_route::trimmed(compatibility.as_deref()),
+            &started,
+            &workers,
+        ))
+    }
+
     /// `WorkflowRun::typedSearchAttributes`, sorted by key; PHP renders an
     /// empty set as `[]`.
     async fn typed_search_attributes(&self, run_id: &str) -> Result<Value> {
