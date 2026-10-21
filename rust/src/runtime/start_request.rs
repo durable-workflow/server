@@ -1,6 +1,6 @@
 //! `WorkflowController::start`'s request rules and the values published PHP
 //! takes from a valid request.
-use super::laravel_validation::{failure_messages, integer};
+use super::laravel_validation::{Rule, failure_messages, rule_errors};
 use super::{Result, refuse};
 use axum::http::StatusCode;
 use serde_json::Value;
@@ -20,20 +20,6 @@ pub(super) struct StartRequest {
     pub(super) fairness_weight: i64,
 }
 
-#[derive(Clone, Copy)]
-enum Rule {
-    Required,
-    Nullable,
-    String,
-    Array,
-    Integer,
-    Min(i64),
-    Max(i64),
-    Pattern(fn(&str) -> bool),
-    In(&'static [&'static str]),
-}
-use Rule::{Array, In, Integer, Max, Min, Nullable, Pattern, Required};
-
 fn workflow_id_pattern(text: &str) -> bool {
     !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
 }
@@ -41,6 +27,8 @@ fn workflow_id_pattern(text: &str) -> bool {
 fn fairness_key_pattern(text: &str) -> bool {
     text.len() <= 64 && workflow_id_pattern(text)
 }
+
+use Rule::{Array, In, Integer, Max, Min, Nullable, Pattern, Required};
 
 const RULES: &[(&str, &[Rule])] = &[
     ("workflow_id", &[Nullable, Rule::String, Max(128), Pattern(workflow_id_pattern)]),
@@ -82,122 +70,6 @@ fn custom_message(field: &str, rule: Rule) -> Option<&'static str> {
         ("fairness_weight", Min(_) | Max(_)) => "The fairness_weight field must be an integer in the range 1..1000.",
         _ => return None,
     })
-}
-
-/// PHP's `(string)` of a scalar request value.
-fn php_string(value: &Value) -> Option<String> {
-    match value {
-        Value::String(text) => Some(text.clone()),
-        Value::Number(number) => Some(match number.as_i64() {
-            Some(whole) => whole.to_string(),
-            None => {
-                let float = number.as_f64()?;
-                if float.fract() == 0.0 && float.abs() < 1e15 { format!("{float:.0}") } else { float.to_string() }
-            }
-        }),
-        Value::Bool(true) => Some("1".into()),
-        Value::Bool(false) | Value::Null => Some(String::new()),
-        _ => None,
-    }
-}
-
-/// PHP 8's `is_numeric` for a request value.
-fn php_numeric(value: &Value) -> Option<f64> {
-    match value {
-        Value::Number(number) => number.as_f64(),
-        Value::String(text) => {
-            let text = text.trim_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']);
-            let unsigned = text.strip_prefix(['+', '-']).unwrap_or(text);
-            let (mantissa, exponent) = match unsigned.find(['e', 'E']) {
-                Some(at) => (&unsigned[..at], Some(&unsigned[at + 1..])),
-                None => (unsigned, None),
-            };
-            let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
-            let digits = |part: &str| part.bytes().all(|byte| byte.is_ascii_digit());
-            let mantissa_ok = digits(whole) && digits(fraction) && !(whole.is_empty() && fraction.is_empty());
-            let exponent_ok = exponent.is_none_or(|exponent| {
-                let exponent = exponent.strip_prefix(['+', '-']).unwrap_or(exponent);
-                !exponent.is_empty() && digits(exponent)
-            });
-            (mantissa_ok && exponent_ok).then(|| text.parse().ok()).flatten()
-        }
-        _ => None,
-    }
-}
-
-/// Laravel's `getSize`: a number under a numeric rule, an array's count, or
-/// a string's length in characters.
-fn size(value: &Value, numeric: bool) -> f64 {
-    if numeric && let Some(number) = php_numeric(value) {
-        return number;
-    }
-    match value {
-        Value::Array(items) => items.len() as f64,
-        Value::Object(items) => items.len() as f64,
-        other => php_string(other).map_or(0, |text| text.chars().count()) as f64,
-    }
-}
-
-fn passes(rule: Rule, value: Option<&Value>, numeric: bool) -> bool {
-    let Some(value) = value else {
-        return !matches!(rule, Required);
-    };
-    match rule {
-        Required => super::laravel_validation::present(Some(value)),
-        Nullable => true,
-        Rule::String => value.is_string(),
-        Array => value.is_array() || value.is_object(),
-        Integer => integer(value).is_some(),
-        Min(least) => size(value, numeric) >= least as f64,
-        Max(most) => size(value, numeric) <= most as f64,
-        Pattern(matches) => match value {
-            Value::String(_) | Value::Number(_) => php_string(value).is_some_and(|text| matches(&text)),
-            _ => false,
-        },
-        In(allowed) => !(value.is_array() || value.is_object())
-            && php_string(value).is_some_and(|text| allowed.contains(&text.as_str())),
-    }
-}
-
-fn default_message(attribute: &str, rule: Rule, numeric: bool, array: bool) -> String {
-    let kind = if numeric { "numeric" } else if array { "array" } else { "string" };
-    match (rule, kind) {
-        (Required, _) => format!("The {attribute} field is required."),
-        (Rule::String, _) => format!("The {attribute} field must be a string."),
-        (Array, _) => format!("The {attribute} field must be an array."),
-        (Integer, _) => format!("The {attribute} field must be an integer."),
-        (Pattern(_), _) => format!("The {attribute} field format is invalid."),
-        (In(_), _) => format!("The selected {attribute} is invalid."),
-        (Min(least), "numeric") => format!("The {attribute} field must be at least {least}."),
-        (Min(least), "array") => format!("The {attribute} field must have at least {least} items."),
-        (Min(least), _) => format!("The {attribute} field must be at least {least} characters."),
-        (Max(most), "numeric") => format!("The {attribute} field must not be greater than {most}."),
-        (Max(most), "array") => format!("The {attribute} field must not have more than {most} items."),
-        (Max(most), _) => format!("The {attribute} field must not be greater than {most} characters."),
-        (Nullable, _) => String::new(),
-    }
-}
-
-/// One attribute's messages in rule order. Absent and nullable null values
-/// skip every rule except `required`, which stops the attribute when it fails.
-fn messages(field: &str, rules: &[Rule], value: Option<&Value>) -> Vec<String> {
-    let attribute = field.replace('_', " ");
-    let nullable = rules.iter().any(|rule| matches!(rule, Nullable));
-    let numeric = rules.iter().any(|rule| matches!(rule, Integer));
-    let array = rules.iter().any(|rule| matches!(rule, Array));
-    let mut found = Vec::new();
-    for &rule in rules {
-        let implicit = matches!(rule, Required);
-        let skipped = !implicit && (value.is_none() || nullable && value.is_some_and(Value::is_null));
-        if matches!(rule, Nullable) || skipped || passes(rule, value, numeric) {
-            continue;
-        }
-        found.push(custom_message(field, rule).map_or_else(|| default_message(&attribute, rule, numeric, array), str::to_owned));
-        if implicit {
-            break;
-        }
-    }
-    found
 }
 
 /// Laravel's TrimStrings and ConvertEmptyStringsToNull, applied to every
@@ -250,10 +122,7 @@ fn text(body: &Value, field: &str) -> Option<String> {
 /// The rules, the `after` hook and the codec check, in PHP's order, then the
 /// values `WorkflowStartService` passes to the control plane.
 pub(super) fn validate(body: &Value) -> Result<StartRequest> {
-    let mut errors: Vec<(String, Vec<String>)> = RULES
-        .iter()
-        .map(|(field, rules)| ((*field).to_owned(), messages(field, rules, body.get(*field))))
-        .collect();
+    let mut errors = rule_errors(body, RULES, custom_message);
     for (field, message) in LEGACY_FIELDS {
         if body.get(*field).is_some() {
             errors.push(((*field).to_owned(), vec![(*message).to_owned()]));

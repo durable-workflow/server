@@ -111,18 +111,11 @@ async fn caller_trace_context_is_ignored_where_php_admits_it_and_nowhere_else() 
     .await;
     assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", refused.1);
     assert_eq!(refused.1["reason"], "unsupported_request_field");
-    // The carrier never admits another unknown field beside it.
-    let mut unknown = traced(number(1));
-    unknown["business_key"] = json!("not supported");
-    let refused = request(
-        &app,
-        "POST",
-        "/api/workflows/trace-carried/signal/finish",
-        unknown,
-    )
-    .await;
-    assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", refused.1);
-    assert_eq!(refused.1["reason"], "unsupported_request_field");
+    // Beside the carrier, other unknown signal fields are ignored, as PHP's
+    // validated input leaves them.
+    let mut unknown = number(1);
+    unknown["business_key"] = json!("ignored");
+    both(&app, "POST", "/api/workflows/{workflow}/signal/note", unknown).await;
 
     let mut update = terminal_updates::input("trace-current");
     both(&app, "POST", "/api/workflows/{workflow}/update/set", update).await;

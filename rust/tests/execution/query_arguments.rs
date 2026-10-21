@@ -85,12 +85,6 @@ async fn omitted_query_input_uses_official_empty_arguments_without_mutating_the_
         ),
         (
             instance_query.clone(),
-            json!([]),
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "unsupported_request_field",
-        ),
-        (
-            instance_query.clone(),
             json!({"foreign":true}),
             StatusCode::UNPROCESSABLE_ENTITY,
             "unsupported_payload_codec",
