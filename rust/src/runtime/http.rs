@@ -155,6 +155,8 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/worker/registrations/{worker_id}/deregister",
             post(deregister_fenced),
         )
+        .route("/api/system/operator-metrics", get(operator_metrics))
+        .route("/api/system/health", get(system_health))
         .route("/api/workers", get(list_workers))
         .route(
             "/api/workers/{worker_id}",
@@ -285,6 +287,8 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         || path == "/api/namespaces" && request.method() == Method::POST
         // Updating a namespace or its external storage needs an admin.
         || path.starts_with("/api/namespaces/") && request.method() == Method::PUT
+        // PHP's system routes are admin-only.
+        || path.starts_with("/api/system/")
     {
         &["admin"]
     } else {
@@ -423,6 +427,8 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
         || path
             .strip_prefix("/api/workers/")
             .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+        || path == "/api/system/operator-metrics"
+        || path == "/api/system/health"
     {
         return method == "GET";
     }
@@ -952,6 +958,29 @@ async fn worker_heartbeat(
 ) -> Result<Json<Value>> {
     runtime.worker_heartbeat(body).await.map(Json)
 }
+fn metrics_config(runtime: &Runtime) -> super::operator_metrics::MetricsConfig {
+    super::operator_metrics::MetricsConfig {
+        // Native leases a claimed workflow task for 30 seconds.
+        workflow_task_lease_seconds: 30,
+        abandoned_upload_expiry_seconds: runtime.external.abandoned_seconds.max(1),
+    }
+}
+
+async fn operator_metrics(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    Ok(Json(runtime.operator_metrics(&metrics_config(&runtime)).await?))
+}
+
+/// PHP answers 503 while a check reports an error.
+async fn system_health(Extension(runtime): Extension<Runtime>) -> Result<Response> {
+    let (unavailable, body) = runtime.system_health(&metrics_config(&runtime)).await?;
+    let status = if unavailable {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(body)).into_response())
+}
+
 async fn list_workers(
     Extension(runtime): Extension<Runtime>,
     Query(query): Query<std::collections::HashMap<String, String>>,

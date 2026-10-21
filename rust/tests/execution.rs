@@ -33,6 +33,8 @@ mod admission;
 
 #[path = "execution/role_tokens.rs"]
 mod role_tokens;
+#[path = "execution/operator_metrics.rs"]
+mod operator_metrics;
 
 #[path = "execution/namespaces.rs"]
 mod namespaces;

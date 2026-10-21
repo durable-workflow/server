@@ -429,6 +429,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $workerDeregistration = isset($fixture['worker_deregistration']) ? finishHttpWorkerDeregistration($client, $fixture, $workflowId, $queue, $url) : null;
     $workerListing = isset($fixture['worker_listing']) ? finishHttpWorkerListing($client, $fixture, $workflowId) : null;
     $workerReplacement = isset($fixture['worker_replacement']) ? finishHttpWorkerReplacement($client, $fixture, $workflowId) : null;
+    $operatorMetrics = isset($fixture['operator_metrics']) ? finishHttpOperatorMetrics($client, $fixture, $workflowId, $url) : null;
     $waitingHistory = isset($fixture['waiting_for_history']) ? finishHttpWaitingHistory($client, $fixture, $workflowId, $queue, $url) : null;
     $taskRetry = isset($fixture['workflow_task_retry']) ? finishHttpTaskRetry($client, $fixture, $workflowId, $queue, $url) : null;
     if ($scheduleState !== null) {
@@ -517,6 +518,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'worker_deregistration' => $workerDeregistration,
         'worker_listing' => $workerListing,
         'worker_replacement' => $workerReplacement,
+        'operator_metrics' => $operatorMetrics,
         'waiting_for_history' => $waitingHistory,
         'workflow_task_retry' => $taskRetry,
         'run_id' => $execution->runId,
@@ -815,6 +817,7 @@ try {
     require __DIR__.'/worker-deregistration-probe.php';
     require __DIR__.'/worker-listing-probe.php';
     require __DIR__.'/worker-replacement-probe.php';
+    require __DIR__.'/operator-metrics-probe.php';
     require __DIR__.'/waiting-history-probe.php';
     require __DIR__.'/task-retry-probe.php';
     require __DIR__.'/child-cancellation-probe.php';
@@ -947,6 +950,9 @@ try {
     $observation['typed_input'] = typedValue($observation['input']);
     if ($mode === 'embedded' && isset($fixture['worker_replacement'])) {
         $observation['worker_replacement'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_worker_registration_lifecycle'];
+    }
+    if ($mode === 'embedded' && isset($fixture['operator_metrics'])) {
+        $observation['operator_metrics'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_operator_metrics'];
     }
     if ($mode === 'embedded' && isset($fixture['worker_listing'])) {
         $observation['worker_listing'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_worker_registration_lifecycle'];

@@ -287,6 +287,8 @@ impl Runtime {
     delegate!(namespace_exists(name: &str) -> Result<bool>);
     delegate!(list_namespaces() -> Result<Value>);
     delegate!(describe_namespace(name: &str) -> Result<Value>);
+    delegate!(operator_metrics(config: &super::operator_metrics::MetricsConfig) -> Result<Value>);
+    delegate!(system_health(config: &super::operator_metrics::MetricsConfig) -> Result<(bool, Value)>);
     delegate!(create_namespace(body: Value) -> Result<Value>);
     delegate!(set_external_policy(name: &str, body: Value) -> Result<Value>);
     delegate!(update_namespace(name: &str, body: Value) -> Result<Value>);

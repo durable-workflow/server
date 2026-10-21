@@ -65,13 +65,6 @@ where
         let run_id = DB::string(run, "id")?;
         if Self::scalar("SELECT COUNT(*) FROM workflow_run_waits WHERE workflow_run_id=$1 AND status='open' AND kind NOT IN ('condition','signal','timer','activity','child','update')")
             .bind(&run_id).fetch_one(&mut **tx).await? > 0 { return Ok(None); }
-        // These native task transitions do not author queue-driver metadata.
-        // Its presence needs the separately qualified transport classifier,
-        // including historical task problems and redispatch configuration.
-        if Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND (created_at IS NOT NULL OR last_dispatch_attempt_at IS NOT NULL OR last_claim_failed_at IS NOT NULL OR last_dispatched_at IS NOT NULL)")
-            .bind(&run_id).fetch_one(&mut **tx).await? > 0 {
-            return Ok(None);
-        }
         let at = now();
         let mut summary = ActiveSummary {
             state: "repair_needed".into(),
@@ -174,29 +167,68 @@ where
         let id = DB::string(task, "id")?;
         let status = DB::string(task, "status")?;
         let expires = DB::optional_instant(task, "lease_expires_at")?;
-        let expired = status == "leased" && expires.is_some_and(|v| v <= at);
+        let transport = TaskTransport::read::<DB>(task, &status, at)?;
         let label = label.unwrap_or(match kind.as_str() {
             "timer" => "Timer",
             "activity" => "Activity",
             _ => "Workflow",
         });
-        summary.state = if expired {
-            "repair_needed".into()
-        } else {
-            format!("{kind}_task_{status}")
+        let json_time = |at: Option<DateTime<Utc>>| {
+            at.map_or_else(
+                || "an unknown time".to_owned(),
+                |at| at.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string(),
+            )
         };
-        summary.reason = if expired {
-            format!(
-                "{label} task {id} lease expired at {}.",
-                expires.unwrap().format("%Y-%m-%dT%H:%M:%S%.6fZ")
+        // PHP's RunSummaryProjector::taskLiveness, in its order.
+        (summary.state, summary.reason) = if transport.lease_expired {
+            (
+                "repair_needed".into(),
+                format!("{label} task {id} lease expired at {}.", json_time(expires)),
+            )
+        } else if let Some(error) = &transport.dispatch_failed {
+            (
+                "repair_needed".into(),
+                format!(
+                    "{label} task {id} could not be dispatched at {}. {error}",
+                    json_time(transport.last_dispatch_attempt_at)
+                ),
+            )
+        } else if let Some(error) = &transport.claim_failed {
+            (
+                format!("{kind}_task_claim_failed"),
+                format!(
+                    "{label} task {id} could not be claimed by a worker at {}. {error}",
+                    json_time(transport.last_claim_failed_at)
+                ),
+            )
+        } else if let Some(reference) = transport.dispatch_overdue {
+            (
+                "repair_needed".into(),
+                format!(
+                    "{label} task {id} is ready but has not been dispatched since {}.",
+                    json_time(Some(reference))
+                ),
             )
         } else if status == "leased" {
-            format!("{label} task {id} is leased to a worker.")
+            (
+                format!("{kind}_task_{status}"),
+                format!("{label} task {id} is leased to a worker."),
+            )
         } else {
-            format!("{label} task {id} is ready to run.")
+            (
+                format!("{kind}_task_{status}"),
+                format!("{label} task {id} is ready to run."),
+            )
         };
-        let wait_reason = if expired {
+        // PHP's wait reason checks the same states in another order.
+        let wait_reason = if transport.dispatch_failed.is_some() {
+            "Workflow task dispatch failed"
+        } else if transport.claim_failed.is_some() {
+            "Workflow task claim failed"
+        } else if transport.lease_expired {
             "Workflow task lease expired"
+        } else if transport.dispatch_overdue.is_some() {
+            "Workflow task ready but dispatch is overdue"
         } else if status == "leased" {
             "Workflow task leased to worker"
         } else {
@@ -216,9 +248,9 @@ where
         summary.lease_expires_at = expires;
         summary.task_id = Some(id);
         summary.task_status = Some(status);
-        summary.problem |= expired && kind == "workflow";
+        summary.problem |= kind == "workflow" && transport.problem();
+        summary.repair_blocked = (summary.state != "repair_needed").then_some("repair_not_needed");
         summary.task_type = Some(kind);
-        summary.repair_blocked = (!expired).then_some("repair_not_needed");
         Ok(true)
     }
 
@@ -236,5 +268,75 @@ where
             .bind(summary.task_status.as_deref()).bind(DB::optional_time(summary.lease_expires_at))
             .bind(i64::from(summary.repair_blocked == Some("unsupported_history"))).bind(i64::from(summary.problem)).bind(run_id).execute(&mut **tx).await?;
         Ok(())
+    }
+}
+
+/// PHP's `TaskRepairPolicy` per-task transport predicates.
+struct TaskTransport {
+    lease_expired: bool,
+    /// The trimmed dispatch error when the latest dispatch attempt failed.
+    dispatch_failed: Option<String>,
+    /// The trimmed claim error when a worker could not claim the task.
+    claim_failed: Option<String>,
+    /// When a ready task was last made available, if that is past the
+    /// redispatch window.
+    dispatch_overdue: Option<DateTime<Utc>>,
+    last_dispatch_attempt_at: Option<DateTime<Utc>>,
+    last_claim_failed_at: Option<DateTime<Utc>>,
+}
+
+impl TaskTransport {
+    fn read<DB: Backend>(task: &DB::Row, status: &str, at: DateTime<Utc>) -> Result<Self> {
+        let ready = status == "ready";
+        let error = |field: &str| -> Result<Option<String>> {
+            Ok(DB::optional_string(task, field)?
+                .map(|error| error.trim().to_owned())
+                .filter(|error| !error.is_empty()))
+        };
+        let attempted = DB::optional_instant(task, "last_dispatch_attempt_at")?;
+        let dispatched = DB::optional_instant(task, "last_dispatched_at")?;
+        let claim_failed_at = DB::optional_instant(task, "last_claim_failed_at")?;
+        let dispatch_failed = match (ready, attempted) {
+            (true, Some(attempted))
+                if dispatched.is_none_or(|dispatched| attempted > dispatched) =>
+            {
+                error("last_dispatch_error")?
+            }
+            _ => None,
+        };
+        let claim_failed = if ready && claim_failed_at.is_some() {
+            error("last_claim_error")?
+        } else {
+            None
+        };
+        let available = DB::optional_instant(task, "available_at")?;
+        let reference = dispatched.or(DB::optional_instant(task, "created_at")?);
+        let cutoff =
+            at - chrono::Duration::seconds(super::operator_metrics::REDISPATCH_AFTER_SECONDS);
+        let dispatch_overdue = (ready
+            && available.is_none_or(|available| available <= at)
+            && dispatch_failed.is_none()
+            && claim_failed.is_none())
+        .then_some(reference)
+        .flatten()
+        .filter(|reference| *reference <= cutoff);
+        Ok(Self {
+            lease_expired: status == "leased"
+                && DB::optional_instant(task, "lease_expires_at")?
+                    .is_some_and(|expires| expires <= at),
+            dispatch_failed,
+            claim_failed,
+            dispatch_overdue,
+            last_dispatch_attempt_at: attempted,
+            last_claim_failed_at: claim_failed_at,
+        })
+    }
+
+    /// `workflowTaskProblemEvidence` for this task's transport state.
+    fn problem(&self) -> bool {
+        self.lease_expired
+            || self.dispatch_failed.is_some()
+            || self.claim_failed.is_some()
+            || self.dispatch_overdue.is_some()
     }
 }

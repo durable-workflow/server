@@ -11,6 +11,7 @@ import {checkNamespaces} from './namespace-contract.mjs';
 import {checkWorkerDeregistration} from './worker-deregistration-contract.mjs';
 import {checkWorkerListing} from './worker-listing-contract.mjs';
 import {checkWorkerReplacement} from './worker-replacement-contract.mjs';
+import {checkOperatorMetrics} from './operator-metrics-contract.mjs';
 import {checkPatchDeployment, checkPublishedPatchArtifacts, checkPatchPackageObservation} from './patch-deployment-contract.mjs';
 import {checkLegacyMarkerArtifacts, checkLegacyMarkerPackageObservation, checkLegacyMarkerDeployment} from './legacy-marker-contract.mjs';
 import {checkWaitingHistory} from './waiting-history-contract.mjs';
@@ -133,6 +134,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const workerDeregistration = fixture.worker_deregistration ? checkWorkerDeregistration(fixture, observation, workflowId) : null;
   const workerListing = fixture.worker_listing ? checkWorkerListing(fixture, observation, workflowId) : null;
   const workerReplacement = fixture.worker_replacement ? checkWorkerReplacement(fixture, observation, workflowId) : null;
+  const operatorMetrics = fixture.operator_metrics ? checkOperatorMetrics(fixture, observation, workflowId) : null;
   const patchDeployment = fixture.patch_deployment ? (fixture.patch_deployment.legacy_marker_history
     ? checkLegacyMarkerDeployment(fixture, observation, workflowId) : checkPatchDeployment(fixture, observation, workflowId)) : null;
   const waitingHistory = fixture.waiting_for_history ? checkWaitingHistory(fixture, observation, workflowId) : null;
@@ -672,6 +674,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(workerDeregistration ? {worker_deregistration: workerDeregistration} : {}),
     ...(workerListing ? {worker_listing: workerListing} : {}),
     ...(workerReplacement ? {worker_replacement: workerReplacement} : {}),
+    ...(operatorMetrics ? {operator_metrics: operatorMetrics} : {}),
     ...(patchDeployment ? {patch_deployment: patchDeployment} : {}),
     ...(waitingHistory ? {waiting_for_history: waitingHistory} : {}),
     ...(taskRetry ? {workflow_task_retry: taskRetry} : {}),

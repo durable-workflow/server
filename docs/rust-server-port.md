@@ -223,6 +223,52 @@ support is not evidence of multi-node safety.
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
 names, including unsuccessful observations.
 
+October 21, operator metrics and health:
+
+- **Source.** Native serves admin-only `GET /api/system/operator-metrics` and
+  `GET /api/system/health`, in the default or a named namespace, from the
+  rules of Workflow 2.5.5's `OperatorMetrics` and `HealthCheck`:
+  - the run, task, activity, backlog, start, history, schedule, worker and
+    command-contract counts, with PHP's predicates over the shared tables;
+  - the twelve health checks, their categories and messages, and 503 while a
+    check reports an error.
+
+  Like Laravel, task comparisons with "now" bind whole seconds, while activity
+  deadlines and schedule times compare with microseconds. The policy
+  sections describe native: no repair loop, sticky routing or worker
+  sessions, in-process long-poll wake, and native's structural limits and
+  workflow task lease. `capacity_evidence` reports itself unavailable.
+- **Decision: selected-run projections.** Native stores run waits in the
+  transaction that records history, so they cannot drift. It reads
+  timelines, timers and lineage from history, so those tables are reported as
+  not maintained rather than aligned. The health check reports native's wait
+  projections. PHP's same check also warns while its asynchronous timeline
+  projection catches up.
+- **Task rows.** Native now stamps a new task's `created_at`, `updated_at`,
+  `last_dispatched_at` and `last_dispatch_attempt_at`, as PHP does in poll
+  mode. Run summaries classify a task's transport as PHP's
+  `RunSummaryProjector::taskLiveness` does: lease expired, dispatch failed,
+  claim failed (`<type>_task_claim_failed`), dispatch overdue, then leased or
+  ready, with PHP's wait reasons and task-problem flag. Before this, native
+  declined to project a run whose tasks carried these columns.
+- **Fixture.** `operator-metrics` drives a fresh namespace through seven
+  stages, from empty to a completed run with one activity retry. The stages
+  cover a waiting run, an overdue unclaimed task, and an activity scheduled,
+  running and retrying. Published PHP 2.5.14, embedded PHP (which declares it
+  inapplicable) and native pass the contract. In a local copy of the SQLite
+  parity step, 32 fixtures (the schedule and visibility fixtures need CI's
+  scheduler and CLI artifact) passed on all three targets, and the
+  comparison passed.
+- **Known differences.**
+  - Summary `history_size_bytes` differs from PHP's (8 events: PHP 10,351
+    bytes, native 7,961).
+  - PHP stamps a dispatch on some new tasks and not on an activity scheduled
+    from a workflow task completion, so `tasks_dispatched_last_minute`
+    differs.
+  - Native refuses worker deregistration in a named namespace.
+  - The operator dashboards, capacity evidence, and the repair, retention,
+    activity-timeout and payload-cleanup pass endpoints remain.
+
 October 20, worker listing:
 
 - **Source.** Native serves `GET /api/workers` and `GET /api/workers/{id}`,
