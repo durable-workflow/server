@@ -87,6 +87,8 @@ mod query_responses;
 mod history_export;
 #[path = "execution/history_retention.rs"]
 mod history_retention;
+#[path = "execution/activity_timeout_pass.rs"]
+mod activity_timeout_pass;
 #[path = "execution/start_request.rs"]
 mod start_request;
 #[path = "execution/command_requests.rs"]
