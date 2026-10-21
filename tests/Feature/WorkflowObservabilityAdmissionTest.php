@@ -97,6 +97,48 @@ class WorkflowObservabilityAdmissionTest extends TestCase
         $this->assertStringNotContainsString('private-value', json_encode($carrier, JSON_THROW_ON_ERROR));
     }
 
+    #[DataProvider('environmentBaggagePolicies')]
+    public function test_environment_baggage_policy_requires_a_json_list(string $json, ?string $expectedBaggage): void
+    {
+        $key = 'DW_OBSERVABILITY_BAGGAGE_ALLOWLIST';
+        $original = [getenv($key), $_ENV[$key] ?? null, $_SERVER[$key] ?? null];
+        try {
+            putenv($key.'='.$json);
+            $_ENV[$key] = $json;
+            $_SERVER[$key] = $json;
+            $settings = require config_path('server.php');
+            config(['server.observability_context.baggage_allowlist' => $settings['observability_context']['baggage_allowlist']]);
+            $start = $this->start('environment-baggage', $this->carrier());
+            $carrier = WorkflowRun::query()->findOrFail($start->json('run_id'))->observability_context;
+            $this->assertSame($expectedBaggage, $carrier['carrier']['baggage'] ?? null);
+        } finally {
+            $original[0] === false ? putenv($key) : putenv($key.'='.$original[0]);
+            if ($original[1] === null) {
+                unset($_ENV[$key]);
+            } else {
+                $_ENV[$key] = $original[1];
+            }
+            if ($original[2] === null) {
+                unset($_SERVER[$key]);
+            } else {
+                $_SERVER[$key] = $original[2];
+            }
+        }
+    }
+
+    public static function environmentBaggagePolicies(): array
+    {
+        return [
+            'explicit list' => ['["approved"]', 'approved=tenant-a'],
+            'mixed list' => ['["approved", {"key":"private"}, 42]', 'approved=tenant-a'],
+            'empty list' => ['[]', null],
+            'numeric-key object' => ['{"0":"approved"}', null],
+            'named-key object' => ['{"approved":true}', null],
+            'malformed JSON' => ['[', null],
+            'scalar JSON' => ['"approved"', null],
+        ];
+    }
+
     public function test_retained_or_conflicting_start_never_replaces_an_origin(): void
     {
         $start = $this->start('retained', $this->carrier());

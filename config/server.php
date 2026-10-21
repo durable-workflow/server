@@ -78,10 +78,11 @@ return [
             FILTER_VALIDATE_BOOLEAN,
             FILTER_NULL_ON_FAILURE,
         ) ?? false,
-        'baggage_allowlist' => json_decode(
-            (string) EnvAuditor::env('DW_OBSERVABILITY_BAGGAGE_ALLOWLIST', null, '[]'),
-            true,
-        ) ?? [],
+        'baggage_allowlist' => (static function (): array {
+            $value = json_decode((string) EnvAuditor::env('DW_OBSERVABILITY_BAGGAGE_ALLOWLIST', null, '[]'));
+
+            return is_array($value) ? array_values(array_filter($value, 'is_string')) : [];
+        })(),
     ],
 
     /*
