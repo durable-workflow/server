@@ -484,6 +484,7 @@ impl Runtime {
         }
     }
 
+    delegate!(run_in_namespace(workflow_id: &str, run_id: &str) -> Result<bool>);
     pub(crate) async fn run_diagnostics(
         &self,
         workflow_id: &str,

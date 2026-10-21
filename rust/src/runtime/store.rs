@@ -264,10 +264,12 @@ where
             .bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(&run_id).bind(execution_timeout)
             .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(namespace)
             .bind(DB::optional_document(&authored_memo)).execute(&mut **tx).await?;
-        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at,namespace) VALUES ($1,$2,$3,$4,1,'pending','avro',$5,$6,$7,$8,$9,$10,$11,$12,$13)")
+        // PHP records the start as the run's first progress.
+        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at,namespace,last_progress_at) VALUES ($1,$2,$3,$4,1,'pending','avro',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
             .bind(&run_id).bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(&arguments)
             .bind(queue).bind(run_timeout).bind(DB::bind_time(execution_deadline)).bind(DB::bind_time(run_deadline))
-            .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(namespace).execute(&mut **tx).await?;
+            .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(namespace)
+            .bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
         if let Some(memo) = memo {
             for (key, value) in memo {
                 Self::query(DB::MEMO_INITIAL_INSERT)

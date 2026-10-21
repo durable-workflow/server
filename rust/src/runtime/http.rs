@@ -102,6 +102,18 @@ pub fn router(runtime: Runtime) -> Router {
             get(debug_run),
         )
         .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/streams",
+            get(super::workflow_streams::list),
+        )
+        .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/streams/{stream_name}",
+            get(super::workflow_streams::show),
+        )
+        .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/streams/{stream_name}/items",
+            get(super::workflow_streams::items),
+        )
+        .route(
             "/api/workflows/{workflow_id}/request-cancellation",
             post(request_cancellation_current),
         )
@@ -468,6 +480,12 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
             return method == "GET";
         }
         if matches!(parts.as_slice(), [_, "runs", _, "activities", _, "result"]) {
+            return method == "GET";
+        }
+        if matches!(
+            parts.as_slice(),
+            [_, "runs", _, "streams"] | [_, "runs", _, "streams", _] | [_, "runs", _, "streams", _, "items"]
+        ) {
             return method == "GET";
         }
         if matches!(

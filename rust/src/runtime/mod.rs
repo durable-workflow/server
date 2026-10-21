@@ -48,6 +48,7 @@ mod schedule_execution;
 mod schedule_http;
 mod run_diagnostics;
 mod task_queues;
+mod workflow_streams;
 mod schedule_storage;
 mod schedules;
 mod schema;
