@@ -2,7 +2,6 @@
 
 namespace App\Support;
 
-use RuntimeException;
 use Workflow\V2\Support\ActivityLease;
 
 final class ActivityTaskLeaseConfiguration
@@ -15,14 +14,14 @@ final class ActivityTaskLeaseConfiguration
                 'options' => ['min_range' => 1, 'max_range' => 86_400],
             ]) : false;
         if ($seconds === false) {
-            throw new RuntimeException('DW_ACTIVITY_TASK_TIMEOUT must be an integer between 1 and 86400 seconds.');
+            throw new ActivityTaskLeaseConfigurationException('DW_ACTIVITY_TASK_TIMEOUT must be an integer between 1 and 86400 seconds.');
         }
 
         config(['server.lease.activity_task_timeout' => $seconds]);
         if (defined(ActivityLease::class.'::CONFIG_KEY') && method_exists(ActivityLease::class, 'seconds')) {
             config([ActivityLease::CONFIG_KEY => $seconds]);
             if (ActivityLease::seconds() !== $seconds) {
-                throw new RuntimeException('The configured activity-task lease does not match the Workflow runtime.');
+                throw new ActivityTaskLeaseConfigurationException('The configured activity-task lease does not match the Workflow runtime.');
             }
         }
 

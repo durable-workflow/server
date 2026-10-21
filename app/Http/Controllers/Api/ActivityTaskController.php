@@ -708,72 +708,85 @@ class ActivityTaskController
             ], 422);
         }
 
+        try {
+            $response = $this->renewOwnedActivityLease($request, $taskId, $bridge);
+        } catch (\Throwable $exception) {
+            if (! BackendLockPressure::is($exception)) {
+                throw $exception;
+            }
+
+            $response = BackendLockPressure::workerOperationResponse($request, false);
+        }
+
+        return $response;
+    }
+
+    private function renewOwnedActivityLease(Request $request, string $taskId, ActivityLeaseRenewal $bridge): JsonResponse
+    {
         $validated = $request->validate([
             'activity_attempt_id' => ['required', 'string'],
             'lease_owner' => ['required', 'string'],
         ]);
         $namespace = $request->attributes->get('namespace');
         $observed = null;
-        try {
-            if ($response = $this->guardAttemptOwnership(
+        if ($response = $this->leaseRenewalRefusal($namespace, $taskId, $validated, $observed)) {
+            return $response;
+        }
+
+        $workerSession = $this->storageMutations->run(
+            fn (): ?array => $this->workerSessions->heartbeatForAttempt(
                 $namespace,
-                $taskId,
                 $validated['activity_attempt_id'],
                 $validated['lease_owner'],
-                $observed,
-            )) {
-                return $response;
-            }
-
-            if (($observed['can_continue'] ?? false) !== true) {
-                return WorkerProtocol::json([
-                    ...$observed, 'lease_renewed' => false,
-                ], $this->outcomeStatus($observed['reason'] ?? null));
-            }
-
-            $expiredReason = $this->expiredDeadlineReason(
-                $this->executionDeadlines($observed['activity_execution_id'] ?? null) ?? [],
-            );
-            if ($expiredReason !== null) {
-                return WorkerProtocol::json([
-                    ...$observed, 'lease_renewed' => false, 'can_continue' => false, 'reason' => $expiredReason,
-                ], 409);
-            }
-
-            $workerSession = $this->storageMutations->run(
-                fn (): ?array => $this->workerSessions->heartbeatForAttempt(
-                    $namespace,
-                    $validated['activity_attempt_id'],
-                    $validated['lease_owner'],
-                ),
-            );
-            if ($workerSession !== null && ($workerSession['admitted'] ?? false) !== true) {
-                return WorkerProtocol::json([
-                    ...$observed,
-                    'lease_renewed' => false,
-                    'can_continue' => false,
-                    'reason' => $workerSession['reason'] ?? 'worker_session_renewal_failed',
-                    'worker_session' => $this->workerSessionSnapshotFromRenewal($workerSession),
-                    'worker_session_renewal' => $this->workerSessionRenewalStatusPayload($workerSession),
-                ], $this->workerSessionRenewalHttpStatus($workerSession));
-            }
-
-            $status = $this->storageMutations->run(
-                static fn (): array => $bridge->renewLease($validated['activity_attempt_id'], $validated['lease_owner']),
-            );
-        } catch (\Throwable $exception) {
-            if (! BackendLockPressure::is($exception)) {
-                throw $exception;
-            }
-
-            return BackendLockPressure::workerOperationResponse($request, false);
+            ),
+        );
+        if ($workerSession !== null && ($workerSession['admitted'] ?? false) !== true) {
+            return WorkerProtocol::json([
+                ...$observed,
+                'lease_renewed' => false,
+                'can_continue' => false,
+                'reason' => $workerSession['reason'] ?? 'worker_session_renewal_failed',
+                'worker_session' => $this->workerSessionSnapshotFromRenewal($workerSession),
+                'worker_session_renewal' => $this->workerSessionRenewalStatusPayload($workerSession),
+            ], $this->workerSessionRenewalHttpStatus($workerSession));
         }
+
+        $status = $this->storageMutations->run(
+            static fn (): array => $bridge->renewLease($validated['activity_attempt_id'], $validated['lease_owner']),
+        );
 
         return WorkerProtocol::json([
             ...$status,
             'task_id' => $taskId,
             'worker_session' => $workerSession['session'] ?? null,
         ], $this->outcomeStatus($status['reason'] ?? null));
+    }
+
+    private function leaseRenewalRefusal(string $namespace, string $taskId, array $validated, ?array &$observed): ?JsonResponse
+    {
+        if ($response = $this->guardAttemptOwnership(
+            $namespace,
+            $taskId,
+            $validated['activity_attempt_id'],
+            $validated['lease_owner'],
+            $observed,
+        )) {
+            return $response;
+        }
+
+        if (($observed['can_continue'] ?? false) !== true) {
+            return WorkerProtocol::json([
+                ...$observed, 'lease_renewed' => false,
+            ], $this->outcomeStatus($observed['reason'] ?? null));
+        }
+
+        $expiredReason = $this->expiredDeadlineReason(
+            $this->executionDeadlines($observed['activity_execution_id'] ?? null) ?? [],
+        );
+
+        return $expiredReason === null ? null : WorkerProtocol::json([
+            ...$observed, 'lease_renewed' => false, 'can_continue' => false, 'reason' => $expiredReason,
+        ], 409);
     }
 
     /**

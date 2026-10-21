@@ -3,8 +3,8 @@
 namespace Tests\Unit;
 
 use App\Support\ActivityTaskLeaseConfiguration;
+use App\Support\ActivityTaskLeaseConfigurationException;
 use PHPUnit\Framework\Attributes\DataProvider;
-use RuntimeException;
 use Tests\TestCase;
 use Workflow\V2\Support\ActivityLease;
 
@@ -29,7 +29,7 @@ class ActivityTaskLeaseConfigurationTest extends TestCase
     public function test_invalid_lease_is_refused_instead_of_silently_replaced(mixed $value): void
     {
         config(['server.lease.activity_task_timeout' => $value]);
-        $this->expectException(RuntimeException::class);
+        $this->expectException(ActivityTaskLeaseConfigurationException::class);
         $this->expectExceptionMessage('DW_ACTIVITY_TASK_TIMEOUT');
         ActivityTaskLeaseConfiguration::apply();
     }
