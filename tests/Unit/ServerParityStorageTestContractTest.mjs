@@ -6,6 +6,7 @@ import {checkStorageTest} from '../../scripts/conformance/server-parity/storage-
 
 const fixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/storage-test.json', import.meta.url)));
 const namespace = 'test-storage';
+const root = `file:///state/storage-test-parity-rust/${namespace}`;
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const invalid = errors => {
   const messages = Object.values(errors).flat();
@@ -18,12 +19,12 @@ const failed = (reason, message, driver, extra = {}) =>
 const roundTrip = (fill, bytes) => {
   const digest = sha256(fill.repeat(bytes));
   return {status: 'passed', bytes, sha256: digest,
-    reference_identity_sha256: sha256(`file:///state/${namespace}/avro/${digest.slice(0, 2)}/${digest}`)};
+    reference_identity_sha256: sha256(`${root}/avro/${digest.slice(0, 2)}/${digest}`)};
 };
 function model() {
   const passed = {status: 200, response: {status: 'passed', namespace, driver: 'local',
     small_payload: roundTrip('s', 64), large_payload: roundTrip('l', 70000)}};
-  return structuredClone({mode: 'http', storage_test: {applicable: true, namespace,
+  return structuredClone({mode: 'http', storage_test: {applicable: true, namespace, storage_root: root,
     not_configured: failed('external_storage_not_configured', 'External payload storage is not configured for this namespace.', null),
     disabled_policy: 200,
     disabled: failed('external_storage_disabled', 'External payload storage is disabled for this namespace.', 'local'),
@@ -53,6 +54,9 @@ test('rejects an embedded observation that runs the diagnostic', () => assert.th
 for (const [label, mutate] of [
   ['a missing observation', s => { for (const key of Object.keys(s)) delete s[key]; }],
   ['another namespace', s => s.namespace = 'default'],
+  ['a root shared with another target', s => s.storage_root = `file:///state/${namespace}`],
+  ['a root outside the namespace', s => s.storage_root = 'file:///state/storage-test-parity-rust/default'],
+  ['no recorded root', s => delete s.storage_root],
   ['a diagnostic without a policy that passes', s => s.not_configured = s.passed],
   ['a refusal without its driver', s => delete s.not_configured.response.driver],
   ['a policy refused', s => s.disabled_policy = 422],

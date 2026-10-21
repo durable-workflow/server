@@ -38,6 +38,10 @@ export function checkStorageTest(fixture, observation, workflowId) {
   const equal = (actual, expected, label) => assert.deepStrictEqual(actual, expected, label);
   const namespace = `${workflowId}-storage`.toLowerCase();
   equal([state.applicable, state.namespace], [true, namespace], 'diagnostic namespace');
+  // A storage root of this target's own, under the namespace.
+  const root = state.storage_root;
+  assert.ok(typeof root === 'string' && /^file:\/\/\/state\/storage-test-[a-z0-9-]+\//.test(root)
+    && root.endsWith(`/${namespace}`) && root.split('/').length === 6, 'a storage root of its own');
   const failed = (reason, message, driver, extra = {}) => ({status: 422, response: {status: 'failed', reason, message,
     namespace, driver, ...extra}});
   equal(state.not_configured, failed('external_storage_not_configured',
@@ -53,7 +57,7 @@ export function checkStorageTest(fixture, observation, workflowId) {
   const roundTrip = (fill, bytes) => {
     const digest = sha256(fill.repeat(bytes));
     return {status: 'passed', bytes, sha256: digest,
-      reference_identity_sha256: sha256(`file:///state/${namespace}/avro/${digest.slice(0, 2)}/${digest}`)};
+      reference_identity_sha256: sha256(`${root}/avro/${digest.slice(0, 2)}/${digest}`)};
   };
   const passed = {status: 200, response: {status: 'passed', namespace, driver: 'local',
     small_payload: roundTrip('s', definition.sizes.small_payload_bytes),

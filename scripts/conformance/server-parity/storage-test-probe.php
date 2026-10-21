@@ -26,10 +26,14 @@ function finishHttpStorageTest(Client $admin, array $fixture, string $workflowId
         return ['status' => $response->getStatusCode(),
             'response' => json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR)];
     };
+    // Each target writes under its own root: the servers can run as different
+    // users, and an object one target wrote must not satisfy another.
+    $host = preg_replace('/[^a-z0-9-]+/', '-', strtolower((string) parse_url($url, PHP_URL_HOST)));
+    $root = 'file:///state/storage-test-'.$host.'/'.$namespace;
     $policy = static fn (bool $enabled): array => ['driver' => 'local', 'enabled' => $enabled,
-        'config' => ['uri' => 'file:///state/'.$namespace]];
+        'config' => ['uri' => $root]];
     $sizes = $definition['sizes'];
-    $state = ['applicable' => true, 'namespace' => $namespace];
+    $state = ['applicable' => true, 'namespace' => $namespace, 'storage_root' => $root];
     $state['not_configured'] = $raw('POST', 'storage/test', $sizes);
     $state['disabled_policy'] = $raw('PUT', 'namespaces/'.$namespace.'/external-storage', $policy(false))['status'];
     $state['disabled'] = $raw('POST', 'storage/test', $sizes);
