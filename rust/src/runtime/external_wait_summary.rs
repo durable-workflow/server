@@ -47,8 +47,10 @@ impl ExternalWaitHistory {
                 self.open.remove(id);
                 return true;
             }
+            // A schedule-started run's own trigger marker opens no wait.
             "StartAccepted"
             | "WorkflowStarted"
+            | "ScheduleTriggered"
             | "RepairRequested"
             | "MessageCursorAdvanced"
             | "VersionMarkerRecorded" => {
