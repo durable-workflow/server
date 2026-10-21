@@ -229,6 +229,31 @@ support is not evidence of multi-node safety.
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
 names, including unsuccessful observations.
 
+October 21, takeover refuses schedules native cannot run:
+
+- **Found by.** A review of takeover against native's schedule support.
+  Native's scheduler fires only default-namespace schedules with one UTC
+  `P1D` or `PT2S` interval, the skip policy, no jitter and at most one run.
+  Once due, a PHP cron schedule taken over would have failed every
+  scheduler tick (native refuses its next occurrence), holding back the
+  schedules due after it. A named-namespace one would have silently stopped
+  firing.
+- **Source.** Every upgrade inspection now reports `schedule_inspection`: the
+  live schedules and, by reason, how many are outside native's subset. The
+  reasons are native's own schedule-creation refusals plus namespace, status,
+  memo/search attributes/labels, note, buffered actions and queue routing,
+  which native would not describe. Any such schedule makes the inspection
+  `unqualified`, and takeover refuses with
+  `upgrade_source_schedules_unsupported` before the fingerprint check or any
+  write. Deleted schedules do not count.
+- **Tests.** SQLite: a cron schedule and a named-namespace schedule each refuse
+  takeover and leave the file byte-identical; a runnable schedule and a
+  deleted cron schedule convert; inspection counts reasons without schedule
+  names or memo values. PostgreSQL 17, MySQL 8.0 and MariaDB 10.11 takeover
+  qualification each refuse the cron schedule with the source unchanged.
+- **Next.** Native schedule parity (cron, time zones, overlap policies,
+  jitter, quotas, metadata, namespaces) narrows this refusal.
+
 October 20, concurrent MySQL and MariaDB bootstrap:
 
 - **Found by.** A multi-node smoke run started three nodes together on an

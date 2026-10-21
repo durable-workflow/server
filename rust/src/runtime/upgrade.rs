@@ -3,6 +3,7 @@ pub mod external_reference;
 pub mod fingerprint;
 pub mod takeover;
 mod payload_scan;
+mod schedule_scan;
 pub mod queue;
 pub mod queue_binding;
 mod queue_scan;
@@ -196,6 +197,7 @@ fn report(
     counts: BTreeMap<String, i64>,
     queue_inspection: Option<Value>,
     payload_inspection: Option<Value>,
+    schedule_inspection: Value,
 ) -> Result<Value> {
     let digest = Sha256::digest(serde_json::to_vec(catalog)?)
         .iter()
@@ -220,6 +222,10 @@ fn report(
         }
         report["payload_inspection"] = payloads;
     }
+    if schedule_inspection["unsupported"] != 0 {
+        report["status"] = json!("unqualified");
+    }
+    report["schedule_inspection"] = schedule_inspection;
     Ok(report)
 }
 
@@ -392,6 +398,7 @@ pub(super) async fn sqlite_inventory(
     } else {
         None
     };
+    let schedule_inspection = schedule_scan::inspect::<sqlx::Sqlite>(&mut *tx).await?;
     report(
         "sqlite",
         &catalog,
@@ -399,6 +406,7 @@ pub(super) async fn sqlite_inventory(
         counts,
         queue_inspection,
         payload_inspection,
+        schedule_inspection,
     )
 }
 
@@ -661,6 +669,7 @@ pub(super) async fn mysql_inventory(
     } else {
         None
     };
+    let schedule_inspection = schedule_scan::inspect::<sqlx::MySql>(&mut *tx).await?;
     // MySQL's metadata is not an MVCC snapshot. Refuse a changed visible
     // catalog rather than joining counts to a different schema.
     if mysql_source_catalog(&mut *tx, fenced).await?.0 != catalog {
@@ -676,6 +685,7 @@ pub(super) async fn mysql_inventory(
         counts,
         queue_inspection,
         payload_inspection,
+        schedule_inspection,
     )
 }
 
@@ -742,6 +752,7 @@ pub(super) async fn postgres_inventory(
     } else {
         None
     };
+    let schedule_inspection = schedule_scan::inspect::<sqlx::Postgres>(&mut *tx).await?;
     report(
         "pgsql",
         &catalog,
@@ -749,6 +760,7 @@ pub(super) async fn postgres_inventory(
         counts,
         queue_inspection,
         payload_inspection,
+        schedule_inspection,
     )
 }
 

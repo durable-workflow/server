@@ -258,6 +258,13 @@ fn qualified(inventory: &Value) -> Result<&str> {
             return Err(refuse(StatusCode::CONFLICT, reason));
         }
     }
+    // A schedule native cannot run would stop firing after takeover.
+    if inventory["schedule_inspection"]["unsupported"] != 0 {
+        return Err(refuse(
+            StatusCode::CONFLICT,
+            "upgrade_source_schedules_unsupported",
+        ));
+    }
     if inventory["queue_inspection"]["status"] != "known_subset_bound" {
         return Err(refuse(
             StatusCode::CONFLICT,
