@@ -1,0 +1,47 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "late-workflow-completion",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "late workflow completion λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "late workflow completion λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "late_workflow_completion": {
+    "workflow_type": "parity.v1.late_completion",
+    "activity_type": "parity.v1.late_completion_activity",
+    "expected_events": [
+      "StartAccepted",
+      "WorkflowStarted",
+      "ActivityScheduled",
+      "ActivityStarted",
+      "ActivityCompleted",
+      "WorkflowCompleted"
+    ]
+  },
+  "contract": "A worker process holding a workflow task claim is replaced by a new registration of the same worker_id, which releases the lease; the task is claimed again as attempt 2. Requests from the replaced attempt 1 are refused with the published ownership guard bodies a worker reads to recognize a lost claim. While attempt 2 holds the lease, completion and lease renewal are refused with 409 workflow_task_attempt_mismatch and the current attempt. After attempt 2 completes the task while the run is open, completion, renewal and failure are refused with 409 task_not_leased and task_status completed. After the run closes, a late completion is refused with 409 run_closed, can_continue false, the run status and closure, and the completed task, which keeps its lease owner and has no lease expiry. No late request records history; each task records one completion. Embedded applications have no HTTP worker registration."
+}
