@@ -229,6 +229,25 @@ support is not evidence of multi-node safety.
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
 names, including unsuccessful observations.
 
+October 21, starts without timeouts:
+
+- **Found by.** Comparing describe responses in the Waterline comparison.
+  For a start that names no timeouts, published PHP reports null timeouts
+  and deadlines. Native reported a 3,600-second execution timeout and a
+  600-second run timeout.
+- **Impact.** Native refuses every command on a run after its deadline. A
+  workflow started by an SDK without explicit timeouts, which is the default,
+  stopped accepting work after ten minutes.
+- **Source.** As in PHP's `DefaultWorkflowControlPlane::start`, an absent or
+  null timeout now means none, and that run has no deadline. Each deadline
+  follows its own timeout from the start time; the run deadline is no longer
+  clipped to the execution deadline. Schedule-started runs use the same path.
+- **Evidence.** New tests cover absent and null timeouts, independent
+  explicit deadlines and invalid values on SQLite, PostgreSQL and MySQL.
+- **Still different.** PHP closes a run whose explicit deadline has passed as
+  failed with `timed_out` and records `WorkflowTimedOut`. Native still only
+  refuses further commands on such a run.
+
 October 20, workflow task lease:
 
 - **Source.** Native leased a claimed workflow task for a fixed 30 seconds.
