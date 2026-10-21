@@ -299,6 +299,7 @@ impl Runtime {
     delegate!(operator_metrics(config: &super::operator_metrics::MetricsConfig) -> Result<Value>);
     delegate!(system_health(config: &super::operator_metrics::MetricsConfig) -> Result<(bool, Value)>);
     delegate!(operator_dashboard(config: &super::operator_metrics::MetricsConfig, bounded: bool) -> Result<Value>);
+    delegate!(repair_status() -> Result<Value>);
     delegate!(retention_status(limit: i64) -> Result<Value>);
     delegate!(retention_pass(limit: i64, run_ids: Vec<String>) -> Result<(Value, bool)>);
     delegate!(activity_timeout_status(limit: i64) -> Result<Value>);

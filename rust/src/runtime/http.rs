@@ -198,6 +198,7 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/system/operator-dashboard/bounded/workflow-types",
             get(workflow_type_operator_dashboard),
         )
+        .route("/api/system/repair", get(repair_status))
         .route("/api/system/retention", get(retention_status))
         .route("/api/system/retention/pass", post(retention_pass))
         .route("/api/system/activity-timeouts", get(activity_timeout_status))
@@ -540,6 +541,7 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
         // timeout scan spans namespaces in PHP too.
         || path == "/api/system/retention"
         || path == "/api/system/activity-timeouts"
+        || path == "/api/system/repair"
     {
         return method == "GET";
     }
@@ -1167,6 +1169,10 @@ async fn workflow_type_operator_dashboard(
 }
 
 type QueryMap = Query<std::collections::HashMap<String, String>>;
+
+async fn repair_status(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    Ok(Json(runtime.repair_status().await?))
+}
 
 async fn retention_status(Extension(runtime): Extension<Runtime>, Query(query): QueryMap) -> Result<Json<Value>> {
     let limit = super::retention::status_limit(query.get("limit").map(String::as_str))?;

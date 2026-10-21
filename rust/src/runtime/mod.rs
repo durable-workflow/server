@@ -45,6 +45,7 @@ pub mod postgres;
 mod previews;
 mod queries;
 mod query_authority;
+mod repair_candidates;
 mod retention;
 mod run_observation;
 mod run_observation_store;
