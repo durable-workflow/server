@@ -688,11 +688,11 @@ mod tests {
             "spec":{"intervals":[{"every":"P1D"}],"timezone":"UTC"},
             "action":{"workflow_type":"echo","task_queue":"test","input":{"codec":"avro","blob":input},
                 "execution_timeout_seconds":3600,"run_timeout_seconds":600},
-            "overlap_policy":"skip","jitter_seconds":0}),super::super::store::now()).unwrap();
+            "overlap_policy":"skip","jitter_seconds":0})).unwrap();
         // This isolated synthetic test surfaces typed-driver failures which
         // the public HTTP boundary correctly redacts as storage_unavailable.
         store
-            .create_schedule(definition, json!({"test":"schedule admission"}))
+            .create_schedule(definition, json!({"test":"schedule admission"}), json!({}))
             .await
             .unwrap();
         let history = store
@@ -1387,6 +1387,11 @@ mod tests {
             (
                 "INSERT INTO runtime_external_payloads(id,namespace,storage_uri,storage_uri_sha256,codec,sha256,size_bytes) VALUES ('p','default','s3://b/k','x','avro','y',1)",
                 "upgrade_source_external_payloads_unsupported",
+            ),
+            (
+                // Native runs cron schedules; search attributes are still refused.
+                "INSERT INTO workflow_schedules(id,schedule_id,namespace,spec,action,status,overlap_policy,jitter_seconds,search_attributes) VALUES ('s','nightly','default','{\"cron_expressions\":[\"0 2 * * *\"],\"timezone\":\"UTC\"}','{\"workflow_type\":\"echo\",\"task_queue\":\"default\"}','active','skip',0,'{\"Customer\":\"acme\"}')",
+                "upgrade_source_schedules_unsupported",
             ),
         ] {
             let db = Database::new().await;

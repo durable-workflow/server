@@ -171,3 +171,45 @@ async fn invalid_declarations_refuse_before_registration_rotation_or_lease_relea
     drop(app);
     database.remove().await;
 }
+
+async fn signal(app: &Router, workflow: &Value, name: &str, body: Value) -> (StatusCode, Value) {
+    let path = format!("/api/workflows/{}/signal/{name}", workflow["workflow_id"].as_str().unwrap());
+    request(app, "POST", &path, body).await
+}
+
+#[tokio::test]
+async fn signals_follow_php_admission_with_and_without_a_recorded_contract() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let input = json!({"input":envelope(Payload::Array(vec![Payload::String("x".into())]))});
+    // No worker has declared a contract: PHP admits every signal.
+    let unregistered = start(&app, "before-any-worker").await;
+    for body in [input.clone(), json!({}), json!({"input":null})] {
+        let admitted = signal(&app, &unregistered, "anything", body).await;
+        assert_eq!((admitted.0, admitted.1["outcome"].clone()), (StatusCode::ACCEPTED, json!("signal_received")), "{}", admitted.1);
+        assert_eq!(admitted.1["workflow_type"], "echo");
+    }
+    let reserved = signal(&app, &unregistered, "__durable_workflow_message_stream", input.clone()).await;
+    assert_eq!(reserved.0, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!((reserved.1["reason"].clone(), reserved.1["accepted"].clone()), (json!("runtime_reserved_signal"), json!(false)));
+    assert!(reserved.1.get("command_id").is_none(), "{}", reserved.1);
+    let history = run_history(&app, &unregistered["workflow_id"], &unregistered["run_id"]).await;
+    let received = history.as_array().unwrap().iter().filter(|event| event["event_type"] == "SignalReceived").count();
+    assert_eq!(received, 3);
+    // A registered contract is complete and durable, as PHP records it.
+    let registered = register_contract(&app, Some(json!({"echo":{"signals":["a"]}}))).await;
+    assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+    let declared = start(&app, "after-a-worker").await;
+    let started = snapshot(&app, &declared).await;
+    assert_eq!(
+        (started["declared_entry_method"].clone(), started["declared_entry_mode"].clone(), started["declared_entry_declaring_class"].clone()),
+        (json!("handle"), json!("canonical"), json!("external:echo"))
+    );
+    let unknown = signal(&app, &declared, "b", input.clone()).await;
+    assert_eq!((unknown.0, unknown.1["reason"].clone()), (StatusCode::NOT_FOUND, json!("unknown_signal")), "{}", unknown.1);
+    // A declared signal without a parameter contract takes its arguments as given.
+    let untyped = signal(&app, &declared, "a", input).await;
+    assert_eq!(untyped.0, StatusCode::ACCEPTED, "{}", untyped.1);
+    drop(app);
+    database.remove().await;
+}

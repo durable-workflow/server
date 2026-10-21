@@ -244,7 +244,8 @@ async fn selected_run_guards_and_durable_rejections_preserve_original_execution(
     let accepted = scoped(&app, "alpha", "POST", &path, json!({"input":input})).await;
     assert_eq!(accepted.0, StatusCode::ACCEPTED, "{}", accepted.1);
     assert_eq!(accepted.1["command_sequence"], 4);
-    assert_eq!(accepted.1["control_plane"]["resolved_run_id"], run);
+    assert_eq!(accepted.1["resolved_run_id"], run);
+    assert!(accepted.1["control_plane"].get("resolved_run_id").is_none());
     let resumed = scoped(
         &app,
         "alpha",

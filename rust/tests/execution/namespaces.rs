@@ -114,10 +114,9 @@ async fn named_signal_waits_keep_both_original_runs_and_foreign_polls_isolated()
                 accepted.1["control_plane"]["command_id"],
                 accepted.1["command_id"]
             );
-            assert_eq!(
-                accepted.1["control_plane"]["resolved_run_id"],
-                starts[index]["run_id"]
-            );
+            // PHP projects only its PROJECTED_FIELDS into the envelope.
+            assert_eq!(accepted.1["resolved_run_id"], starts[index]["run_id"]);
+            assert!(accepted.1["control_plane"].get("resolved_run_id").is_none());
             assert_eq!(accepted.1["control_plane"]["operation_name"], "data");
             command_ids.push(accepted.1["command_id"].as_str().unwrap().to_owned());
             let ready = scoped(&app, namespaces[index], "GET", &history_path, Value::Null).await;
@@ -547,14 +546,16 @@ async fn same_worker_id_isolated_claims_completion_and_deregistration_by_namespa
         scoped(&app, "alpha", "GET", &history_path, Value::Null).await,
         before
     );
-    for uri in ["/api/workflows", "/api/schedules/unqualified"] {
-        let unavailable = scoped(&app, "alpha", "GET", uri, Value::Null).await;
-        assert_eq!(unavailable.0, StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(
-            unavailable.1["reason"],
-            "development_namespace_operation_unqualified"
-        );
-    }
+    // The workflow list is scoped to the request's namespace.
+    let listed = scoped(&app, "alpha", "GET", "/api/workflows", Value::Null).await;
+    assert_eq!(listed.0, StatusCode::OK, "{}", listed.1);
+    let ids: Vec<_> = listed.1["workflows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|run| run["workflow_id"].clone())
+        .collect();
+    assert_eq!(ids, vec![json!("namespace-first")], "{}", listed.1);
     assert_eq!(
         scoped(&app, "alpha", "POST", &path, commands).await.0,
         StatusCode::OK

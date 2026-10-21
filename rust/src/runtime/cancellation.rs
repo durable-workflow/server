@@ -320,7 +320,7 @@ where
         .await?;
         Self::query("UPDATE workflow_tasks SET status='cancelled',lease_expires_at=NULL,last_error=NULL WHERE workflow_run_id=$1 AND status IN ('ready','leased')")
             .bind(&run_id).execute(&mut *tx).await?;
-        Self::cancel_open_activities(&mut tx, &run_id, &command_id, activities, at).await?;
+        Self::cancel_open_activities(&mut tx, &run_id, Some(&command_id), activities, at).await?;
         for timer in timers {
             let timer_id = DB::string(&timer, "id")?;
             Self::query("UPDATE workflow_run_timers SET status='cancelled' WHERE id=$1")
@@ -433,7 +433,7 @@ where
     pub(super) async fn cancel_open_activities(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
-        command_id: &str,
+        command_id: Option<&str>,
         activities: Vec<DB::Row>,
         at: chrono::DateTime<chrono::Utc>,
     ) -> Result<()> {
@@ -471,11 +471,71 @@ where
                 "ActivityCancelled",
                 payload,
                 task_id.as_deref(),
-                Some(command_id),
+                command_id,
             )
             .await?;
         }
         Ok(())
+    }
+
+    /// `WorkflowExecutor::timeoutRun`: a workflow task finished after the
+    /// run's execution or run deadline, so the run fails as timed out. Open
+    /// tasks, activities and timers are cancelled, pending updates close and
+    /// a parent sees the child fail. Returns the worker's refusal.
+    pub(super) async fn time_out_run(
+        tx: &mut Transaction<'_, DB>,
+        run: &DB::Row,
+        task: &DB::Row,
+        attempt: &Value,
+    ) -> Result<Value> {
+        let run_id = DB::string(run, "id")?;
+        let task_id = DB::string(task, "id")?;
+        let at = now();
+        let execution_deadline = DB::optional_instant(run, "execution_deadline_at")?;
+        let run_deadline = DB::optional_instant(run, "run_deadline_at")?;
+        let iso = |time: Option<chrono::DateTime<chrono::Utc>>| time.map(|time| time.format("%Y-%m-%dT%H:%M:%S+00:00").to_string());
+        let (timeout_kind, message) = if execution_deadline.is_some_and(|deadline| deadline <= at) {
+            ("execution_timeout", format!("Workflow execution deadline expired at {}.", iso(execution_deadline).unwrap_or_default()))
+        } else {
+            ("run_timeout", format!("Workflow run deadline expired at {}.", iso(run_deadline).unwrap_or_default()))
+        };
+        let exception = "Workflow\\V2\\Exceptions\\WorkflowTimeoutException";
+        let activities = Self::query("SELECT * FROM activity_executions WHERE workflow_run_id=$1 AND status IN ('pending','running') ORDER BY id")
+            .bind(&run_id).fetch_all(&mut **tx).await?;
+        let timers = Self::query("SELECT * FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending' ORDER BY id")
+            .bind(&run_id).fetch_all(&mut **tx).await?;
+        Self::query("UPDATE workflow_tasks SET status='cancelled',lease_expires_at=NULL,last_error=NULL WHERE workflow_run_id=$1 AND status IN ('ready','leased') AND id<>$2")
+            .bind(&run_id).bind(&task_id).execute(&mut **tx).await?;
+        Self::cancel_open_activities(tx, &run_id, None, activities, at).await?;
+        for timer in timers {
+            let timer_id = DB::string(&timer, "id")?;
+            Self::query("UPDATE workflow_run_timers SET status='cancelled' WHERE id=$1")
+                .bind(&timer_id)
+                .execute(&mut **tx)
+                .await?;
+            let payload = Self::timer_cancellation_payload(tx, &run_id, &timer, at).await?;
+            Self::append(tx, &run_id, "TimerCancelled", payload, None, None).await?;
+        }
+        let failure_id = id();
+        Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,handled,exception_class,message,file,line,trace_preview,created_at,updated_at) VALUES ($1,$2,'workflow_run',$3,'timeout','timeout',FALSE,$4,$5,'',0,'',$6,$7)")
+            .bind(&failure_id).bind(&run_id).bind(&run_id).bind(exception).bind(&message)
+            .bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut **tx).await?;
+        Self::query("UPDATE workflow_runs SET status='failed',closed_reason='timed_out',closed_at=$1,last_progress_at=$2 WHERE id=$3")
+            .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(&run_id).execute(&mut **tx).await?;
+        let timed_out = json!({"failure_id":failure_id,"timeout_kind":timeout_kind,"failure_category":"timeout",
+            "message":message,"exception_class":exception,"execution_deadline_at":iso(execution_deadline),
+            "run_deadline_at":iso(run_deadline),"task":Self::task_snapshot(task)?});
+        Self::append(tx, &run_id, "WorkflowTimedOut", timed_out.clone(), Some(&task_id), None).await?;
+        Self::close_pending_updates(tx, &run_id, Some(task)).await?;
+        Self::query("UPDATE workflow_tasks SET status='completed',lease_expires_at=NULL WHERE id=$1")
+            .bind(&task_id)
+            .execute(&mut **tx)
+            .await?;
+        Self::resolve_child(tx, run, ChildResolution::Failed(&timed_out), at).await?;
+        tx.summary_changed(&run_id);
+        Ok(json!({"task_id":task_id,"workflow_task_attempt":attempt,"outcome":"completed","recorded":false,
+            "run_id":run_id,"run_status":"failed","created_task_ids":[],"reason":"run_timed_out",
+            "protocol_version":"1.20","server_capabilities":super::store::capabilities()}))
     }
 
     pub(super) async fn cancelled_activity_outcome(

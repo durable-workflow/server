@@ -115,13 +115,14 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
-    pub(super) fn cancellation_lease_expiry(run: &DB::Row) -> Result<DateTime<Utc>> {
+    pub(super) fn cancellation_lease_expiry(&self, run: &DB::Row) -> Result<DateTime<Utc>> {
         if DB::optional_string(run, "cancellation_request_command_id")?.is_some() {
             let deadline = DB::optional_instant(run, "cancellation_deadline_at")?
                 .ok_or_else(|| refuse(StatusCode::CONFLICT, "cancellation_deadline_missing"))?;
             Ok(deadline.min(now() + chrono::Duration::seconds(10)))
         } else {
-            Ok(now() + chrono::Duration::seconds(30))
+            // PHP leases a workflow task for its configured DW_WORKFLOW_TASK_TIMEOUT.
+            Ok(now() + chrono::Duration::seconds(self.workflow_task_lease_seconds))
         }
     }
 
@@ -267,7 +268,7 @@ where
                 return Err(refuse(StatusCode::CONFLICT,"cancellation_delivery_mismatch"));
             }
             Self::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE id=$2")
-                .bind(DB::bind_time(Self::cancellation_lease_expiry(&run)?))
+                .bind(DB::bind_time(self.cancellation_lease_expiry(&run)?))
                 .bind(task_id).execute(&mut *tx).await?;
             tx.commit().await?;
             return Ok(response);
@@ -324,7 +325,7 @@ where
             }
         }
         let at = now();
-        let expires = Self::cancellation_lease_expiry(&run)?;
+        let expires = self.cancellation_lease_expiry(&run)?;
         Self::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE id=$2")
             .bind(DB::bind_time(expires))
             .bind(task_id)
@@ -541,7 +542,7 @@ where
             .bind(&run_id).execute(&mut **tx).await?;
         Self::query("UPDATE activity_attempts SET lease_expires_at=NULL WHERE workflow_run_id=$1 AND status='completed'")
             .bind(&run_id).execute(&mut **tx).await?;
-        Self::cancel_open_activities(tx, &run_id, &request_id, activities, at).await?;
+        Self::cancel_open_activities(tx, &run_id, Some(&request_id), activities, at).await?;
         for timer in timers {
             Self::cancel_root_timer(tx, run, &request_id, &timer, task_id, at).await?;
         }

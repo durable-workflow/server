@@ -42,7 +42,7 @@ fn valid_key(key: &str) -> bool {
 
 // Initial JSON follows the published PHP associative-array boundary. Typed
 // portable envelopes bypass this conversion. Envelope-shaped JSON is literal.
-fn from_json(value: Value) -> Result<Payload> {
+pub(super) fn from_json(value: Value) -> Result<Payload> {
     Ok(match value {
         Value::Null => Payload::Null,
         Value::Bool(value) => Payload::Boolean(value),
@@ -142,7 +142,7 @@ fn encode(values: BTreeMap<String, Payload>) -> Result<PreparedMemo> {
     Ok(prepared)
 }
 
-fn initial(value: Value) -> Result<PreparedMemo> {
+pub(super) fn initial(value: Value) -> Result<PreparedMemo> {
     let entries = match value {
         Value::Null => return Ok(BTreeMap::new()),
         Value::Array(values) if values.is_empty() => return Ok(BTreeMap::new()),
@@ -308,6 +308,33 @@ pub(super) async fn read_stored(
             ))
         };
         decode().map_err(|_| refuse(StatusCode::CONFLICT, "unsupported_stored_memo"))
+    })
+    .await
+    .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "memo_codec_unavailable"))?
+}
+
+/// A history export's memo: the projection (PHP's `[]` when empty) and
+/// `MemoPayload::mapEnvelope`, the whole memo as one Avro map envelope.
+pub(super) async fn export(
+    codec: Arc<Semaphore>,
+    rows: Vec<(String, Value, Option<Value>)>,
+) -> Result<(Value, Value)> {
+    let permit = codec
+        .acquire_owned()
+        .await
+        .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "memo_codec_unavailable"))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let read = || -> Result<(Value, Value)> {
+            let codec = ValueCodec::new().map_err(|_| invalid())?;
+            let values = decode_rows(rows, &codec)?;
+            let blob = codec.encode_ordered(&Payload::Map(values.clone())).map_err(|_| invalid())?;
+            let projection: serde_json::Map<String, Value> =
+                encode(values)?.into_iter().map(|(key, value)| (key, value.projection)).collect();
+            let projection = if projection.is_empty() { json!([]) } else { Value::Object(projection) };
+            Ok((projection, json!({"codec": "avro", "blob": blob})))
+        };
+        read().map_err(|_| refuse(StatusCode::CONFLICT, "unsupported_stored_memo"))
     })
     .await
     .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "memo_codec_unavailable"))?

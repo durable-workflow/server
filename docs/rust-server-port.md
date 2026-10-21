@@ -57,13 +57,10 @@ These published PHP 2.9.8 routes have no native handler yet, by family. The
 CLI and Waterline use the first group.
 
 - **Used by the CLI or Waterline.**
-  - Schedule listing, update and backfill.
-  - Task queues and their build IDs.
+  - Task queue build IDs.
   - Namespace update, delete and external storage.
-  - Search attributes.
-  - `system` repair, retention and activity-timeout passes, metrics and
-    operator dashboards.
-  - Storage test.
+  - `system` repair pass, metrics, and the operator dashboard filtered by
+    workflow type.
   - Activities (standalone).
 - **Worker protocol features.**
   - Worker sessions.
@@ -72,12 +69,12 @@ CLI and Waterline use the first group.
   - Cancellation scopes.
   - Activity cancellation acknowledgement.
 - **Run operations.**
-  - History export.
   - Archive.
   - Redrive.
   - Imports from embedded v2 and Waterline v1.
 - **Other families.**
   - Message streams.
+  - Durable workflow stream appends and closes.
   - Service catalogs and endpoints.
   - Nexus operations.
   - Runtime credentials.
@@ -88,6 +85,26 @@ CLI and Waterline use the first group.
 These are confirmed differences from the published PHP reference and open
 contract decisions found while qualifying native slices. Each one needs a
 contract fixture before its correction.
+
+- **History export waits and timeline.** Native keeps no full wait or
+  timeline projection, so its export bundle has empty `waits` and `timeline`
+  and names both sources `native_unavailable` in `selected_run`. Published
+  PHP fills them from `workflow_run_waits` and
+  `workflow_run_timeline_entries`. No SDK replayer or bundle verifier reads
+  either section.
+
+- **Search attributes on start.** Published PHP validates `search_attributes`
+  against the namespace registry and stores them as typed rows. Native
+  answers a start that names any with
+  `501 start_search_attributes_unavailable`; an empty object is accepted.
+- **Fairness within a priority tier.** Native claims tasks by priority, then
+  availability, as PHP's candidate query orders them. PHP then rebalances
+  each priority tier across fairness keys by their weights
+  (`TaskFairnessScheduler`); native stores the keys and weights but does not
+  rebalance yet.
+- **Key order inside plain JSON input.** For input that is not an envelope,
+  PHP encodes nested objects as Avro maps in request order; native encodes
+  them with sorted keys. The decoded values are equal, but the blobs differ.
 
 - **Child completion while the parent has an open workflow task.** Published
   Workflow records the child resolution and reuses the parent's existing ready
@@ -127,11 +144,18 @@ contract fixture before its correction.
   workflow task guard does not check registration freshness yet, and the
   local activity and cancellation scope checkpoints still use the older fence.
   Add a fixture for each before changing them.
-- **History retention.** Published PHP's worker heartbeat runs an inline
-  history retention pass, and the default namespace retention is bounded at
-  30 days, so PHP prunes old closed runs. Native has no retention yet. Its
-  heartbeat omits PHP's `retention` report rather than claim a pass. The
-  `system/retention` endpoints are absent too.
+- **Retention of runs with external payloads or message streams.**
+  Published PHP deletes a pruned run's external payload objects and releases
+  its message stream items. Native does not clean either up yet. It skips
+  such a run with `external_payload_cleanup_unavailable` or
+  `message_stream_cleanup_unavailable` and keeps its details.
+- **Malformed JSON bodies.** Published PHP answers a malformed JSON body
+  with `400 malformed_json` and a JSON body, and adds the control-plane
+  envelope on control-plane operations. Native does so only on the two
+  system passes. Elsewhere, native answers a plain-text 400.
+- **Registration without a capability manifest.** At protocol 1.19,
+  published PHP 2.5.14 refuses a registration that has no
+  `capability_manifest` (422). Native accepts it.
 - **Python worker shutdown after a late synchronous query handler (not yet
   diagnosed).** In the SQLite query-authority cohort on #515's run
   39431491496, the published Python SDK 2.5.15 client in `late-handler-sync`
@@ -156,6 +180,17 @@ contract fixture before its correction.
   `upgrade_source_catalog_unqualified` until its recipe lands. The recipe must
   also refuse rows that carry trace context until native implements the
   contract. The boundary is agreed on #325.
+- **Queries while a workflow task is open.** Native answers a query from a
+  history snapshot taken at admission, so it refuses with 409
+  `query_snapshot_busy` while the run has a ready or leased workflow task.
+  Published PHP admits the query. A workflow task leased at admission fixes
+  the query's history cutoff at that point. The query's claim then waits
+  while a workflow task is leased, or while an earlier resume task (signal,
+  update, activity, child or timer) is ready and not yet in history. A
+  run's first workflow task does not hold the claim. A query sent right after
+  a signal therefore waits on PHP and is refused on native. The port takes the
+  snapshot at claim time and must keep query lease replay stable, so it needs
+  its own fixture.
 - **Terminating a child run.** Published Workflow resolves the parent with
   `ChildRunTerminated` and the `terminated` child call status. Native refuses
   this with `422 termination_propagation_not_available` until the parent-side
@@ -227,7 +262,583 @@ support is not evidence of multi-node safety.
 ## Checkpoint history
 
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
-names, including unsuccessful observations.
+names, including unsuccessful observations. From October 21, each new
+checkpoint is its own file in
+[`rust-server-port-checkpoints/`](rust-server-port-checkpoints/), named by
+date and topic:
+
+- [Activity timeout pass](rust-server-port-checkpoints/2026-10-21-activity-timeout-pass.md).
+- [History retention](rust-server-port-checkpoints/2026-10-21-history-retention.md).
+
+October 21, operator dashboard:
+
+- **Found by.** Waterline 2.12.0's landing page in front of native: its
+  `/waterline/api/stats` request reached native's
+  `/api/system/operator-dashboard/bounded`, which answered 501.
+- **Source.** Native serves admin-only `GET /api/system/operator-dashboard`
+  and `/bounded`, in the default or a named namespace, by the rules of
+  Workflow 2.5.5's `OperatorDashboardSummary` over the run summaries:
+  - the flow counts and rate, current running and failed runs, the hour's
+    completed and failed runs, the longest open wait and the longest
+    duration as summary rows, with the model's casts and appends;
+  - the week's ten busiest workflow types with pass rate, error count,
+    status breakdown and the upper-middle duration;
+  - PHP's attention alerts over workers and run summaries;
+  - hourly completed and failed counts for the last 169 hours;
+  - the operator metrics snapshot. The bounded variant marks the history
+    audits as not requested and reports capacity evidence unavailable.
+- **By workflow type.** `/bounded/workflow-types` applies PHP's
+  `workflow_types` validation, then answers PHP's 501
+  `backend_capability_unavailable` for an observer that cannot filter by
+  type. Native does not advertise `workflow_type_dashboard_summary`, so
+  Waterline does not ask for it. Published PHP 2.5.14 answers with
+  filtered totals; porting that filter is open.
+- **Verification.** `operator_dashboard` integration tests pass on SQLite,
+  PostgreSQL and MySQL, and the full native suite passes on SQLite. With
+  identical seeds, Waterline's stats from native and from published PHP
+  2.5.14 differ only in identifiers, timings and durations, summary
+  `history_size_bytes` (above) and sort-key precision. Before the scheduled
+  run summary correction, native also counted one run fewer.
+
+October 21, operator metrics and health:
+
+- **Source.** Native serves admin-only `GET /api/system/operator-metrics` and
+  `GET /api/system/health`, in the default or a named namespace, from the
+  rules of Workflow 2.5.5's `OperatorMetrics` and `HealthCheck`:
+  - the run, task, activity, backlog, start, history, schedule, worker and
+    command-contract counts, with PHP's predicates over the shared tables;
+  - the twelve health checks, their categories and messages, and 503 while a
+    check reports an error.
+
+  Like Laravel, task comparisons with "now" bind whole seconds, while activity
+  deadlines and schedule times compare with microseconds. The policy
+  sections describe native: no repair loop, sticky routing or worker
+  sessions, in-process long-poll wake, and native's structural limits and
+  workflow task lease. `capacity_evidence` reports itself unavailable.
+- **Worker deregistration.** `DELETE /api/workers/{id}` now works in a named
+  namespace and removes only that namespace's registration, as in PHP.
+- **Decision: selected-run projections.** Native stores run waits in the
+  transaction that records history, so they cannot drift. It reads
+  timelines, timers and lineage from history, so those tables are reported as
+  not maintained rather than aligned. The health check reports native's wait
+  projections. PHP's same check also warns while its asynchronous timeline
+  projection catches up.
+- **Task rows.** Native now stamps a new task's `created_at`, `updated_at`,
+  `last_dispatched_at` and `last_dispatch_attempt_at`, as PHP does in poll
+  mode. Run summaries classify a task's transport as PHP's
+  `RunSummaryProjector::taskLiveness` does: lease expired, dispatch failed,
+  claim failed (`<type>_task_claim_failed`), dispatch overdue, then leased or
+  ready, with PHP's wait reasons and task-problem flag. Before this, native
+  declined to project a run whose tasks carried these columns.
+- **Fixture.** `operator-metrics` drives a fresh namespace through seven
+  stages, from empty to a completed run with one activity retry. The stages
+  cover a waiting run, an overdue unclaimed task, and an activity scheduled,
+  running and retrying. Published PHP 2.5.14, embedded PHP (which declares it
+  inapplicable) and native pass the contract. In a local copy of the SQLite
+  parity step, 32 fixtures (the schedule and visibility fixtures need CI's
+  scheduler and CLI artifact) passed on all three targets, and the
+  comparison passed.
+- **Known differences.**
+  - Summary `history_size_bytes` differs from PHP's (8 events: PHP 10,351
+    bytes, native 7,961).
+  - PHP stamps a dispatch on some new tasks and not on an activity scheduled
+    from a workflow task completion, so `tasks_dispatched_last_minute`
+    differs.
+  - PHP's maintenance loop redispatches an overdue ready task, after which
+    PHP reports it repaired, not overdue. Native runs no repair loop, so the
+    task stays overdue until a worker claims it. The fixture accepts either
+    PHP state.
+  - The operator dashboards, capacity evidence, and the repair, retention,
+    activity-timeout and payload-cleanup pass endpoints remain.
+
+October 21, query responses and routing:
+
+- **Found by.** The Waterline comparison and direct probes of published PHP
+  2.5.14. Native answered every query on a run with an open workflow task
+  with `query_snapshot_busy`. It refused queries a run did not declare even
+  when the run declared none, and it refused unknown request fields and a
+  null `input`. Its responses lacked PHP's `control_plane` envelope and
+  messages.
+- **Admission order.** As in PHP: a workflow outside the namespace is 404
+  `Workflow not found.`. A selected run that is not current is 409
+  `historical_run_command_rejected`. A non-array `input` fails Laravel's
+  rule with 422. A failed, cancelled or terminated run is 409
+  `run_not_active` with `run_status` and `is_terminal`. Other request fields
+  are ignored, and a null `input` means no arguments.
+- **Contracts.** A run that declares no queries leaves the name and arguments
+  to the worker. A declared query without a parameter contract takes its
+  arguments as given. Worker claims match the workflow type, not the query
+  name, so a worker answers queries it does not declare, as in PHP.
+- **Routing.** Before admitting a query, native checks PHP's query route. A
+  missing route is refused with PHP's reason and message. While no worker is
+  available at all, the request waits up to the query timeout for one to
+  register, as `awaitRegisteredQueryRoute` does.
+- **Timeouts.** A query nobody claimed re-checks the route. It is refused if
+  the route is gone, otherwise it is 504 `query_task_not_claimed`. A claimed
+  query that times out is 504 `query_worker_execution_timeout`, naming the
+  worker. Both carry PHP's messages.
+- **Responses.** Answers and refusals carry `target_scope`, `query_name`,
+  `result` and PHP's `query` envelope, with its rejection fields and reasons.
+- **Still different.** Native still refuses a query while a workflow task is
+  open (see the known gaps), now with PHP's body shape and an explanatory
+  message.
+- **Evidence.** Probes of the route refusals, the terminal run, the missing
+  workflow, the historical run, invalid input and an unclaimed query match
+  PHP's status, reason, message and envelope. The open-task case is the only
+  difference. `state-queries`, `state-updates`, `signals-before-worker` and
+  `echo` pass on published PHP, embedded and native. New `query_responses`
+  tests and the existing query tests pass on SQLite, PostgreSQL and MySQL.
+
+October 21, history export:
+
+- **Found by.** On native, published dw 2.3.0's `workflow:history-export`
+  and Waterline's export download both answered 501.
+- **Source.** Native serves
+  `GET /api/workflows/{id}/runs/{run}/history/export` as Workflow 2.5.5's
+  `HistoryExport::forRun` builds the bundle (`schema_version` 2):
+  - the workflow, payloads, summary, history events, commands, signals,
+    updates, tasks, activities with their attempts, timers, failures and
+    links;
+  - the Avro codec schema and the payload manifest of every Avro frame;
+  - the `json-recursive-ksort-v1` SHA-256 checksum, and HMAC-SHA-256 when
+    `DW_V2_HISTORY_EXPORT_SIGNING_KEY` (with `_ID`) is set.
+
+  Timers and links are rebuilt from history and link rows under PHP's
+  `*_rebuilt` source names. An unknown run answers 404 `run_not_found`.
+- **Verification.**
+  - On identical seeds against published PHP 2.5.14, every section's values
+    match apart from identifiers, timestamps and the projection sources.
+    That covers workflow, payloads, summary, signals, activities, payload
+    manifest, links, redaction and codec schemas.
+  - The remaining differences are in data native records differently:
+    commands carry no caller context, event payloads hold envelopes where
+    PHP stores bare blobs, and task payloads differ.
+  - Published Python SDK 2.7.0's bundle verifier recomputes native's
+    checksum and finds it valid. Its only finding, on PHP's bundle and on
+    native's, is that it accepts `schema_version` 1 only
+    (durable-workflow/sdk-python#190).
+  - dw 2.3.0's `workflow:history-export` and Waterline 2.12.0's export
+    download succeed against native.
+  - New `history_export` integration tests and unit tests pass, and the
+    full native suite passes on SQLite, PostgreSQL and MySQL.
+- **Remaining.** Waits and timeline; see known gaps.
+
+October 21, signal and update requests:
+
+- **Found by.** Published dw 2.3.0 run against both servers on the same seed.
+  - On native, `workflow:signal` and `workflow:update` with `--input '[1]'`
+    were refused with `unsupported_payload_codec`.
+  - `workflow:repair` was refused with `invalid_request`, because the CLI
+    sends `[]` for a command without fields.
+- **Source.**
+  - **Empty bodies.** A short JSON `[]` body is read as `{}`, as Laravel
+    reads both.
+  - **Validation.** Signal and update apply `WorkflowController`'s rules with
+    Laravel's messages and ignore fields outside them. Signal checks
+    `input`, `request_id` and `dry_run`; update checks `input`,
+    `request_id`, `wait_for` and `wait_timeout_seconds`, and refuses the old
+    `wait_policy` field.
+  - **Input.** Both take input as start does: absent, null or empty is no
+    arguments, and plain JSON is encoded as its values in request order.
+  - **Update default.** An update without `wait_for` returns once it is
+    accepted, as in PHP. Native previously waited for completion.
+- **Remaining differences.**
+  - A signal `dry_run` is refused with
+    `501 signal_dry_run_unavailable`; PHP returns a preview.
+  - Native keeps its 30-second cap on an update's completion wait; PHP
+    waits as long as the request asks.
+  - Native validates a signal or update body before it looks up the
+    workflow, so an invalid body for a missing workflow is 422, where PHP
+    answers 404.
+- **Verification.** New `command_requests` integration tests and validator
+  unit tests. The full native suite passes on SQLite, PostgreSQL and MySQL.
+
+October 21, workflow start requests:
+
+- **Found by.** Waterline-harness probes against published PHP 2.5.14 and the
+  CLI's `workflow:start`. Native refused `business_key`, `priority`,
+  `fairness_key`, `fairness_weight`, `payload_codec` and every unknown field,
+  required `workflow_id`, `task_queue` and an envelope `input`, and answered
+  without the control-plane contract the CLI requires. As a result,
+  `dw workflow:start` failed against native even when the run started.
+- **Validation.** Native applies `WorkflowController::start`'s rules with
+  Laravel's messages and order, after TrimStrings and
+  ConvertEmptyStringsToNull on every string in the body. The `after` hook
+  names the six legacy fields, and `payload_codec` accepts only `avro`, with
+  PHP's message. Unknown fields are ignored. One native-only bound remains:
+  a timeout above 3,153,600,000 seconds (100 years) is refused, so every
+  deadline stays representable.
+- **Defaults.** As `WorkflowStartService` passes them on: a generated
+  instance ID, the `default` queue, empty arguments for absent, null or
+  empty input, and plain JSON input encoded as its values in request order.
+  Only JSON integers set a timeout, priority or weight, so `"4"` keeps the
+  default, as in PHP.
+- **Stored fields.** `business_key` on the instance and run; priority
+  (default 5), the lowercased fairness key and the weight (default 1) on the
+  run and on every task it creates. Workers claim lower priority numbers
+  first.
+- **History and responses.** StartAccepted keeps PHP's `business_key`,
+  `visibility_labels` and `search_attributes` fields; WorkflowStarted drops
+  null fields. A start for an existing instance records its command and
+  event on the current run: `use-existing` on an active run answers 200
+  `returned_existing_active` with StartAccepted, and anything else answers
+  409 `rejected_duplicate` / `instance_already_started` with StartRejected.
+  Every start response carries the control-plane contract; its block matches
+  PHP's except for identifiers.
+- **Verification.**
+  - The full native suite passes on SQLite, PostgreSQL and MySQL, including
+    the new `start_request` integration tests and the validator unit tests.
+  - Against published PHP 2.5.14, 17 start probes now match in status,
+    errors, defaults, stored input and history events. Two differences
+    remain: describe's `business_key`, which native reports once #578
+    merges, and the nested-map key order above.
+  - The checkout CLI's `workflow:start` with `--input`, `--business-key`,
+    `--priority` and the fairness options succeeds against native.
+- **Remaining.** Search attributes on start, fairness rebalancing and the key
+  order are listed under known gaps.
+
+October 21, describe actions and run list:
+
+- **Found by.** The Waterline comparison. Waterline 2.12.0 disables cancel,
+  terminate, signal and repair for a run when the server's describe response
+  lacks PHP's `actions` block, so on native every run looked read-only.
+- **Actions.** Describe now carries PHP's `actions`. Signal, cancel,
+  terminate and repair need the current open run. Queries need a
+  query-capable worker route. Updates are never offered, because PHP offers
+  them only for workflow classes it can load in process. Archive needs a
+  closed, unarchived run.
+- **Query route.** A port of PHP's `registeredQueryRoute` decides `can_query`:
+  a fresh active worker on the run's queue, query-task capability, the
+  workflow type, the run's compatibility (an unversioned run with declared
+  queries needs an unversioned worker) and the recorded definition
+  fingerprint, checked in PHP's order. Native counts only workers that
+  registered the `query_tasks` capability, because only they can claim native
+  query tasks. PHP also counts a worker that recently polled for query tasks.
+- **Other describe fields.** `business_key`, `resume_step_sequence`,
+  `recovery_kind`, `compatibility` with its fleet status and reason,
+  `payload_previews`, `last_progress_at`, `wait_kind`, `wait_reason`, typed
+  `search_attributes`, `updates_scope` and `updates`. An empty memo or search
+  attribute set is `[]`, as PHP renders it. Start and close times use
+  `toJSON()`; deadlines and last progress use `toIso8601String()`, which has
+  whole seconds.
+- **Run list.** `GET /api/workflows/{id}/runs` answers with PHP's
+  `run_count` and `formatRunListEntry` entries, including status bucket,
+  terminal flag, task queue, compatibility, fleet status and memo. The current
+  run is the highest numbered one, as in PHP.
+- **Envelopes.** The debug view's `control_plane` names the
+  `debug_workflow` operation with PHP's success fields. The run list and its
+  missing-workflow refusal carry PHP's `list_runs` envelope.
+- **Still different.** Native records no command context, so describe's
+  commands lack PHP's caller, principal, auth and request fields, and
+  Waterline's timeline shows no principal. Native query responses are not yet
+  PHP's, and native does not refuse a query when no worker can serve it.
+
+October 21, explicit run deadlines:
+
+- **Found by.** Comparing describe responses showed native's default
+  deadlines (#574). Reading published PHP's handling of explicit ones showed
+  a second difference.
+- **Before.** Native refused every claim, signal, activity result,
+  heartbeat and timer on a run past its execution or run deadline with
+  `run_timed_out`. It never closed the run, so the run stayed open with
+  work it could not accept.
+- **Published PHP.** `DefaultWorkflowTaskBridge::complete` calls
+  `WorkflowExecutor::timeoutIfDeadlineExpired`. PHP applies a deadline when a
+  workflow task completes after it, and nowhere else. `timeoutRun` cancels
+  the run's other open tasks, its open activities and its timers. It records
+  a `timeout` failure and fails the run with `closed_reason` `timed_out`. It
+  records `WorkflowTimedOut` with the timeout kind, message, exception class
+  and deadlines, closes pending updates, completes the task and resolves a
+  parent's child call as failed. The worker gets 409 with `recorded: false`
+  and `reason: run_timed_out`.
+- **Source.** Native does the same. Deadlines no longer refuse other work,
+  so a run past its deadline still takes signals, activity results and timer
+  fires until its next workflow task completes.
+- **Evidence.** A probe of published PHP and native, with a 2-second run
+  timeout and a workflow task completed after it, gives the same response,
+  run state, history and `WorkflowTimedOut` payload. The only difference is
+  native's narrower server capability list, the same as on every worker
+  response. New `run_deadlines` tests cover the timeout with an open
+  activity and timer, and an in-time completion, on SQLite, PostgreSQL and
+  MySQL.
+- **Still different.** Describe omits PHP's terminal failure fields
+  (`error`, `failure`, `exception`, `failures`) for every failed run, not
+  only timed-out ones.
+
+October 21, scheduled run summaries:
+
+- **Found by.** Comparing the operator dashboard with published PHP. A run
+  started by a schedule trigger had no run summary while it was open, so
+  dashboards and summary-backed views missed it.
+- **Cause.** The summary projection treats an unrecognized history event as
+  unsupported. The run's own `ScheduleTriggered` marker was not recognized.
+- **Source.** The marker opens no wait and is now accepted. The schedule
+  trigger test asserts that every run has its summary; without the change it
+  fails.
+
+October 21, Waterline reads:
+
+- **Found by.** Waterline 2.12.0 service mode in front of published PHP
+  2.5.14 and in front of native, with identical seeds. On native, the run
+  debug view failed, the cancelled and terminated filters were refused, the
+  task queue pages were empty and the run detail page reported durable
+  streams as unavailable.
+- **Run debug view.** `GET /api/workflows/{id}[/runs/{run}]/debug` follows
+  PHP's `WorkflowRunDiagnostics::forRun`: summary, worker fleet, tasks with
+  their problem badges, pending activities, queue, last event, recent
+  failures and routing findings. The last event's payload appears only when
+  `include_last_event_payload` asks for it, re-encoded as PHP's
+  `json_encode` writes it.
+- **Workflow list.** The list is scoped to the request's namespace in named
+  namespaces too, and accepts `cancelled` and `terminated` filters by exact
+  status.
+- **Task queues.** `GET /api/task-queues` and `GET /api/task-queues/{name}`
+  follow PHP's `TaskQueueController`: pollers, stats, current leases, repair
+  candidates, recent task flow, activity attempt states and admission.
+- **Durable streams.** The run's stream list, stream description and item
+  reads answer as PHP does, including the name pattern, the `from`,
+  `max_items` and `wait_seconds` rules and the refusal bodies. Native runs
+  never produce durable streams, and takeover refuses a database that holds
+  any, so every list is empty. Producer appends and closes are not
+  implemented.
+- **Last progress.** Runs record `last_progress_at` when they start, as PHP
+  does at start and child start.
+- **Deliberate differences.**
+  - Native bounds pending queries at 16 per queue, so task queue admission
+    reports that bound where PHP reports 1,024.
+  - Native tasks carry no queue-driver dispatch metadata. For tasks native
+    created, the recent added and dispatched counters are zero, and the debug
+    view's dispatch-overdue and transport states differ.
+  - The cancellation cascade view is not ported. The debug view reports
+    `cancellation_cascade_supported: false` and a null cascade.
+- **Evidence.** Debug views of seven run states match PHP except for the
+  differences above, history payload content and key order, and identifier
+  case. Task queue views differ only in the bound and counters above. Sixteen
+  stream requests, including validation edge cases, match PHP after native
+  adopted PHP's `integer` rule, and Waterline's stream panel is identical.
+  Locally, 37 parity fixtures pass on published PHP, embedded and native.
+  `visibility-current-runs` needs CI's published CLI artifact and was not run.
+- **Next.** The describe response lacks PHP's `actions` block, so Waterline
+  disables cancel, terminate, signal and repair on native. History export and
+  the bounded dashboard summary remain.
+
+October 21, starts without timeouts:
+
+- **Found by.** Comparing describe responses in the Waterline comparison.
+  For a start that names no timeouts, published PHP reports null timeouts
+  and deadlines. Native reported a 3,600-second execution timeout and a
+  600-second run timeout.
+- **Impact.** Native refuses every command on a run after its deadline. A
+  workflow started by an SDK without explicit timeouts, which is the default,
+  stopped accepting work after ten minutes.
+- **Source.** As in PHP's `DefaultWorkflowControlPlane::start`, an absent or
+  null timeout now means none, and that run has no deadline. Each deadline
+  follows its own timeout from the start time; the run deadline is no longer
+  clipped to the execution deadline. Schedule-started runs use the same path.
+- **Evidence.** New tests cover absent and null timeouts, independent
+  explicit deadlines and invalid values on SQLite, PostgreSQL and MySQL.
+- **Still different.** PHP closes a run whose explicit deadline has passed as
+  failed with `timed_out` and records `WorkflowTimedOut`. Native still only
+  refuses further commands on such a run.
+
+October 20, workflow task lease:
+
+- **Source.** Native leased a claimed workflow task for a fixed 30 seconds.
+  Published PHP leases it for `DW_WORKFLOW_TASK_TIMEOUT`, 60 seconds by
+  default, on both claim and heartbeat; 2.5.14 and 2.9.8 measured 59.9 and
+  60.0 seconds. Native now reads the same setting with the same default. The
+  activity lease stays at PHP's fixed five minutes.
+- **Checks.** The `worker-replacement-activity-lease` contract now requires
+  a claimed workflow task's lease to last about 60 seconds. A native test
+  checks claim and heartbeat on each database. Locally, published PHP and
+  native both pass the contract.
+
+October 21, schedule listing, updates and backfill:
+
+- **Listing.** `schedule_list.rs` serves `GET /api/schedules` as PHP's
+  `ScheduleController::index` does:
+  - the `status`, `workflow_type`, `query`, `page_size` and
+    `next_page_token` filters, with Laravel's rules and messages and PHP's
+    refusal bodies, including `last_safe_cursor`;
+  - the visibility query from `ScheduleVisibilityQuery`, which accepts only
+    equality predicates joined by `AND`. It works on ScheduleId, Status,
+    WorkflowType, TaskQueue, Note and registered search attributes, with
+    PHP's literal rules. A search attribute predicate matches no schedule,
+    because native schedules hold no search attribute values.
+  - continuation tokens signed as PHP signs them, with `DW_SERVER_KEY`,
+    then `APP_KEY`. When neither is set, PHP generates a key for each
+    container; native uses its auth token instead, so tokens survive
+    restarts and work on every node. Each token is bound to its namespace,
+    filters and a cursor that must still be present.
+  - newest-first order, with PHP's list items.
+
+  The SQL is assembled from fixed fragments with bound values for each
+  database family.
+- **Updates.** `PUT /api/schedules/{id}` follows `ScheduleManager::update`:
+  the action is merged with the stored one, the quota is recomputed, the
+  next fire time is recalculated, and `ScheduleUpdated` carries PHP's
+  changed fields.
+- **Backfill.** `POST /api/schedules/{id}/backfill` enumerates every
+  occurrence from the start time up to, but not including, the end time,
+  and triggers each one as `triggerForBackfill` does:
+  - no stale check;
+  - buffering policies start every occurrence;
+  - a fired occurrence is skipped;
+  - the run quota ends the backfill.
+
+  Fire times carry the offset PHP formats: the schedule zone's for a cron
+  occurrence, UTC for an interval. The Laravel `date` rule reads ISO-8601
+  dates and date-times exactly as PHP does, including hour 24, second 60,
+  fractions and offsets.
+- **Deliberate differences.**
+  - Backfill times use ISO-8601 only. PHP's other `strtotime` forms, such as
+    `2026-04-01 +1 day` or `@1700000000`, get the `date` validation message.
+  - A backfill range with more than 10,000 occurrences is refused with 422
+    `backfill_range_too_large`. PHP has no limit.
+  - An update to a specification that cannot be evaluated is a 422. PHP
+    leaves that `LogicException` unhandled and returns 500.
+- **Corrected.** Laravel sizes a non-numeric value under a numeric rule by
+  its length, so `page_size=x` reports only the integer rule. The shared
+  rules engine now does the same.
+- **Evidence.**
+  - `cron-oracle/backfill-dates.php` records PHP's `date` rule and instant
+    for 700 seeded strings. Native accepts nothing PHP refuses, reads every
+    accepted string to the same microsecond, and reads every ISO-8601 shape
+    PHP accepts, except offsets of a day or more.
+  - The next-fire corpus now also records PHP's offset, and native matches
+    all 600 cases.
+  - The new `schedule-catalog` fixture sends 72 requests. Published PHP and
+    native agreed on every normalized response locally, and a reviewed copy
+    is in `tests/Fixtures/ServerParityExpected`.
+  - A PHP-on-PostgreSQL harness matched native on 81 responses, except the
+    two deliberate differences above.
+  - Schedule tests pass on SQLite, PostgreSQL, MySQL 8.4 and MariaDB 10.11.
+- **Next.** Narrowing the takeover schedule refusal (#568) to what native
+  still cannot run.
+
+October 21, PHP schedule specifications and policies:
+
+- **Cron.** `schedule_cron.rs` ports `dragonmantank/cron-expression` 3.6.0 as
+  published PHP 2.5.14 runs it: validation, aliases, names, ranges, steps,
+  lists, `L`, `W`, `#` and `?`, the separate day-of-month and day-of-week
+  searches, the 1,000-step limit and each field's quirks. PHP's `DateTime`
+  rules around daylight-saving changes are kept: a skipped wall-clock time
+  takes the offset from before the change, a repeated one keeps the current
+  daylight flag, and hour and minute steps are applied in UTC. Zone rules come
+  from `jiff`'s bundled IANA data (2026e). Ireland and Morocco use negative
+  daylight saving in the main IANA data PHP bundles, so PHP's flag is
+  inverted there.
+- **Zones.** `schedule_zones.rs` reads names as `new DateTimeZone()` does:
+  numeric offsets (`+5`, `-0330`, `GMT+1`), PHP's 144 abbreviations first
+  (`CET` is fixed +01:00) and then IANA identifiers in any case, with matched
+  parentheses. Offsets of 26 hours or more, which PHP accepts up to 100, are
+  refused.
+- **Specifications.** `schedule_spec.rs` is `computeNextFireAt`: the earliest
+  occurrence across cron expressions in the zone and intervals counted from
+  the epoch plus an offset, with PHP's `DateInterval` grammar and its
+  365-day year and 30-day month.
+- **Corpora.** `scripts/conformance/cron-oracle` regenerates, from the frozen
+  image, 1,200 cron cases, every PHP zone spelling (1,068 lines) and 600 whole
+  specifications. Native matches all of them, and 6,000 and 2,000 more seeded
+  cases checked locally. Six zones whose rules changed after PHP's 2026.1
+  database are left out (Casablanca, El Aaiun, Edmonton, Inuvik, Vancouver,
+  Winnipeg); native uses the newer rules.
+- **Schedules.** Creation follows PHP's Laravel rules and messages (a small
+  `laravel_rules.rs` engine: trimming, empty strings as null, `*` expansion,
+  attribute names and order). It accepts any schedule id, cron and interval
+  specifications in any zone, all six overlap policies, jitter, any run
+  quota, memo, note and creation paused. Descriptions, history snapshots and
+  history pages have PHP's shapes and timestamps. Pause accepts an
+  already paused schedule and records its note; resume records its note
+  after the resumed audit. Triggers follow `triggerDetailed`: the stale and
+  status checks, quota exhaustion, buffering with a full `buffer_one`,
+  closing the latest run for `cancel_other` and `terminate_other`, the
+  ten-entry recent actions, failure accounting and the next fire time after
+  each fire. The tick drains buffered actions of finished runs before due
+  schedules. Schedules are namespace-scoped and start runs in their own
+  namespace.
+- **Deliberate differences.** PHP's unhandled 500 for resuming an active
+  schedule is a 409 `schedule_not_paused`. A tick that finds another native
+  node already fired the occurrence skips it silently instead of recording
+  `stale_occurrence`. Plain JSON array input and search attributes are
+  refused, as native start refuses them; Avro input that does not decode is
+  refused at creation.
+- **Evidence.** The new `schedule-policies` fixture sends 60 requests to a fresh
+  namespace and compares every response, without generated identities and
+  times, with a reviewed copy of published PHP's
+  (`tests/Fixtures/ServerParityExpected`). Published PHP, embedded and native
+  passed it locally, and native from main failed it. Published PHP on SQLite
+  can fail a trigger with `database is locked` against its own maintenance
+  roles, and the transaction rolls back, so the probe retries exactly that.
+  The two existing schedule fixtures still pass. A local harness running PHP
+  on PostgreSQL matched native on all 72 compared responses except the two
+  refusals above.
+- **Takeover.** The takeover schedule check from #568 now refuses only what
+  native still cannot run: search attributes, visibility labels, Laravel
+  queue routing, an unknown status, a definition native's own creation
+  refuses (such as input that is not a payload envelope), and a
+  specification it cannot evaluate. Cron schedules, schedules in any
+  namespace, notes, memo, buffered actions, jitter, quotas and every
+  overlap policy are taken over.
+- **Next.** Update, listing with visibility queries and page tokens, and
+  backfill.
+
+October 21, signals before any worker registers:
+
+- **Found by.** Waterline 2.12.0 service mode was compared against
+  published PHP 2.5.14 and against native with identical seeds. A signal
+  sent to a run that no worker had picked up was accepted by PHP and
+  rejected by native with 404 `unknown_signal`, so the signal was lost.
+- **Cause.** Native records a run's command contract at start only when a
+  worker for the type has registered. It then treated a missing contract as
+  one that declares nothing, and its recorded contracts lacked PHP's
+  `declared_entry_*` fields.
+- **Source.** Admission now follows PHP's `signalAdmissionForRun`:
+  - A signal is unknown only under a complete durable contract.
+  - A run without one admits every signal (`external_contract_unavailable`).
+  - A declared signal without a parameter contract takes its arguments as
+    given.
+  - The runtime message-stream signal name is refused with 422
+    `runtime_reserved_signal` before admission, whatever the run's state,
+    and no command is recorded.
+  - A signal without `input`, or with null input, has no arguments.
+- **Contracts.** Recorded contracts now carry PHP's entry defaults (`handle`,
+  `canonical`, `external:<type>`), so they are complete.
+- **Responses.** Signal responses carry `workflow_type`. The `control_plane`
+  envelope projects exactly PHP's `PROJECTED_FIELDS`, and cancel and
+  terminate responses now carry it.
+- **Evidence.** The new `signals-before-worker` fixture sends five signals,
+  the reserved name before and after termination, and a missing workflow to
+  a run on an unserved queue. Its responses match a reviewed copy of
+  published PHP's, and its history holds the same events. Published PHP,
+  embedded and native passed it locally; native from main failed it.
+- **Next.** Durable rejected updates and PHP's query routing refusals, which
+  the same comparison found.
+
+October 21, takeover refuses schedules native cannot run:
+
+- **Found by.** A review of takeover against native's schedule support.
+  Native's scheduler fires only default-namespace schedules with one UTC
+  `P1D` or `PT2S` interval, the skip policy, no jitter and at most one run.
+  Once due, a PHP cron schedule taken over would have failed every
+  scheduler tick (native refuses its next occurrence), holding back the
+  schedules due after it. A named-namespace one would have silently stopped
+  firing.
+- **Source.** Every upgrade inspection now reports `schedule_inspection`: the
+  live schedules and, by reason, how many are outside native's subset. The
+  reasons are native's own schedule-creation refusals plus namespace, status,
+  memo/search attributes/labels, note, buffered actions and queue routing,
+  which native would not describe. Any such schedule makes the inspection
+  `unqualified`, and takeover refuses with
+  `upgrade_source_schedules_unsupported` before the fingerprint check or any
+  write. Deleted schedules do not count.
+- **Tests.** SQLite: a cron schedule and a named-namespace schedule each refuse
+  takeover and leave the file byte-identical; a runnable schedule and a
+  deleted cron schedule convert; inspection counts reasons without schedule
+  names or memo values. PostgreSQL 17, MySQL 8.0 and MariaDB 10.11 takeover
+  qualification each refuse the cron schedule with the source unchanged.
+- **Next.** Native schedule parity (cron, time zones, overlap policies,
+  jitter, quotas, metadata, namespaces) narrows this refusal.
 
 October 20, concurrent MySQL and MariaDB bootstrap:
 

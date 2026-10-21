@@ -1,7 +1,8 @@
 use axum::{
     Extension, Json, Router,
     extract::{DefaultBodyLimit, Path, Query, Request, State},
-    http::{HeaderMap, HeaderValue, Method, StatusCode},
+    body::Body,
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
@@ -55,10 +56,15 @@ pub fn router(runtime: Runtime) -> Router {
             delete(delete_search_attribute),
         )
         .route("/api/workflows", get(list_workflows).post(start))
-        .route("/api/schedules", post(super::schedule_http::create))
+        .route(
+            "/api/schedules",
+            get(super::schedule_list::list).post(super::schedule_http::create),
+        )
         .route(
             "/api/schedules/{schedule_id}",
-            get(super::schedule_http::describe).delete(super::schedule_http::remove),
+            get(super::schedule_http::describe)
+                .put(super::schedule_http::update)
+                .delete(super::schedule_http::remove),
         )
         .route(
             "/api/schedules/{schedule_id}/history",
@@ -75,6 +81,10 @@ pub fn router(runtime: Runtime) -> Router {
         .route(
             "/api/schedules/{schedule_id}/trigger",
             post(super::schedule_http::trigger),
+        )
+        .route(
+            "/api/schedules/{schedule_id}/backfill",
+            post(super::schedule_http::backfill),
         )
         .route("/api/workflows/{workflow_id}", get(describe_current))
         .route(
@@ -100,6 +110,18 @@ pub fn router(runtime: Runtime) -> Router {
         .route(
             "/api/workflows/{workflow_id}/runs/{run_id}/debug",
             get(debug_run),
+        )
+        .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/streams",
+            get(super::workflow_streams::list),
+        )
+        .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/streams/{stream_name}",
+            get(super::workflow_streams::show),
+        )
+        .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/streams/{stream_name}/items",
+            get(super::workflow_streams::items),
         )
         .route(
             "/api/workflows/{workflow_id}/request-cancellation",
@@ -150,6 +172,10 @@ pub fn router(runtime: Runtime) -> Router {
             get(history),
         )
         .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/history/export",
+            get(history_export),
+        )
+        .route(
             "/api/workflows/{workflow_id}/runs/{run_id}/activities",
             get(activities),
         )
@@ -164,7 +190,21 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/worker/registrations/{worker_id}/deregister",
             post(deregister_fenced),
         )
+        .route("/api/system/operator-metrics", get(operator_metrics))
+        .route("/api/system/health", get(system_health))
+        .route("/api/system/operator-dashboard", get(operator_dashboard))
+        .route("/api/system/operator-dashboard/bounded", get(bounded_operator_dashboard))
+        .route(
+            "/api/system/operator-dashboard/bounded/workflow-types",
+            get(workflow_type_operator_dashboard),
+        )
+        .route("/api/system/retention", get(retention_status))
+        .route("/api/system/retention/pass", post(retention_pass))
+        .route("/api/system/activity-timeouts", get(activity_timeout_status))
+        .route("/api/system/activity-timeouts/pass", post(activity_timeout_pass))
         .route("/api/workers", get(list_workers))
+        .route("/api/task-queues", get(list_task_queues))
+        .route("/api/task-queues/{task_queue}", get(describe_task_queue))
         .route(
             "/api/workers/{worker_id}",
             get(describe_worker).delete(deregister),
@@ -218,9 +258,36 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route("/api/worker/query-tasks/{task_id}/fail", post(fail_query))
         .fallback(unavailable)
+        .layer(middleware::from_fn(empty_list_body))
         .layer(DefaultBodyLimit::max(3 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(runtime.clone(), guard))
         .with_state(runtime)
+}
+
+/// Laravel reads a JSON `[]` body as the same empty input as `{}`. Clients
+/// such as the CLI send `[]` for a command without fields.
+async fn empty_list_body(request: Request, next: Next) -> Response {
+    let declared = request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|length| length.to_str().ok())
+        .and_then(|length| length.parse::<u64>().ok());
+    let known = declared.or_else(|| axum::body::HttpBody::size_hint(request.body()).exact());
+    let short = known.is_some_and(|length| length <= 16);
+    if !short {
+        return next.run(request).await;
+    }
+    let (mut parts, body) = request.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, 16).await else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let body = if bytes.trim_ascii() == b"[]" {
+        parts.headers.insert(header::CONTENT_LENGTH, HeaderValue::from_static("2"));
+        Body::from("{}")
+    } else {
+        Body::from(bytes)
+    };
+    next.run(Request::from_parts(parts, body)).await
 }
 
 async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next) -> Response {
@@ -295,6 +362,8 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         || path == "/api/storage/test"
         // Updating a namespace or its external storage needs an admin.
         || path.starts_with("/api/namespaces/") && request.method() == Method::PUT
+        // PHP's system routes are admin-only.
+        || path.starts_with("/api/system/")
     {
         &["admin"]
     } else {
@@ -424,10 +493,14 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     if path.starts_with("/api/external-payloads/v1/") {
         return method == "GET";
     }
+    // Schedules are namespace-scoped rows, as in PHP.
+    if path == "/api/schedules" || path.starts_with("/api/schedules/") {
+        return true;
+    }
     // Keep unimplemented families from reaching default-namespace selectors.
     // Further families require their own shared namespace fixtures.
     if path == "/api/workflows" {
-        return method == "POST";
+        return matches!(method, "GET" | "POST");
     }
     if path == "/api/storage/test" {
         return method == "POST";
@@ -442,12 +515,36 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     {
         return method == "DELETE";
     }
-    if path == "/api/workers"
+    // Deregistration deletes only the namespace's own registration.
+    if path
+        .strip_prefix("/api/workers/")
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+    {
+        return matches!(method, "GET" | "DELETE");
+    }
+    // Task queue views are namespace-scoped reads.
+    if path == "/api/task-queues"
         || path
-            .strip_prefix("/api/workers/")
-            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+            .strip_prefix("/api/task-queues/")
+            .is_some_and(|queue| !queue.is_empty() && !queue.contains('/'))
     {
         return method == "GET";
+    }
+    if path == "/api/workers"
+        || path == "/api/system/operator-metrics"
+        || path == "/api/system/health"
+        || path == "/api/system/operator-dashboard"
+        || path == "/api/system/operator-dashboard/bounded"
+        || path == "/api/system/operator-dashboard/bounded/workflow-types"
+        // Retention reads and prunes the namespace's own runs; the activity
+        // timeout scan spans namespaces in PHP too.
+        || path == "/api/system/retention"
+        || path == "/api/system/activity-timeouts"
+    {
+        return method == "GET";
+    }
+    if path == "/api/system/retention/pass" || path == "/api/system/activity-timeouts/pass" {
+        return method == "POST";
     }
     if let Some(path) = path.strip_prefix("/api/workflows/") {
         let parts: Vec<_> = path.split('/').collect();
@@ -458,6 +555,12 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
             return method == "GET";
         }
         if matches!(parts.as_slice(), [_, "runs", _, "activities", _, "result"]) {
+            return method == "GET";
+        }
+        if matches!(
+            parts.as_slice(),
+            [_, "runs", _, "streams"] | [_, "runs", _, "streams", _] | [_, "runs", _, "streams", _, "items"]
+        ) {
             return method == "GET";
         }
         if matches!(
@@ -649,12 +752,14 @@ async fn start(
     let result = runtime.start(body).await.map_err(|error| {
         super::control_plane::Operation::Start.refusal(error, &workflow_id, None)
     })?;
-    let status = if result["outcome"] == "started_new" {
-        StatusCode::CREATED
-    } else {
-        StatusCode::OK
+    // Clients such as the CLI require the control-plane contract on every
+    // start response, as PHP sends it.
+    let status = match result["outcome"].as_str() {
+        Some("started_new") => StatusCode::CREATED,
+        Some("rejected_duplicate") => StatusCode::CONFLICT,
+        _ => StatusCode::OK,
     };
-    Ok((status, Json(result)))
+    Ok((status, Json(super::control_plane::Operation::Start.response(result))))
 }
 
 async fn list_workflows(
@@ -683,7 +788,12 @@ async fn list_runs(
     Extension(runtime): Extension<Runtime>,
     Path(workflow): Path<String>,
 ) -> Result<Json<Value>> {
-    Ok(Json(runtime.list_runs(&workflow).await?))
+    let operation = || super::control_plane::Operation::ListRuns;
+    let runs = runtime
+        .list_runs(&workflow)
+        .await
+        .map_err(|error| operation().refusal(error, &workflow, None))?;
+    Ok(Json(operation().response(runs)))
 }
 
 async fn close(
@@ -701,7 +811,7 @@ async fn close(
         .close_workflow(command, workflow_id, run_id, body)
         .await
         .map_err(|error| operation().refusal(error, workflow_id, run_id))?;
-    Ok((status, Json(response)))
+    Ok((status, Json(operation().response(response))))
 }
 
 async fn cancel_current(
@@ -744,17 +854,11 @@ async fn repair_current(
     ))
 }
 
-fn debug_selection(query: &std::collections::HashMap<String, String>) -> Result<()> {
-    if query
+/// Laravel's `$request->boolean('include_last_event_payload')`.
+fn include_last_event_payload(query: &std::collections::HashMap<String, String>) -> bool {
+    query
         .get("include_last_event_payload")
         .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "on" | "yes"))
-    {
-        return Err(refuse(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "development_range_diagnostics_payload_unqualified",
-        ));
-    }
-    Ok(())
 }
 
 async fn debug_current(
@@ -762,9 +866,8 @@ async fn debug_current(
     Path(workflow_id): Path<String>,
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<Value>> {
-    debug_selection(&query)?;
     let response = runtime
-        .range_debug(&workflow_id, None)
+        .run_diagnostics(&workflow_id, None, include_last_event_payload(&query))
         .await
         .map_err(|error| {
             super::control_plane::Operation::Debug.refusal(error, &workflow_id, None)
@@ -779,9 +882,8 @@ async fn debug_run(
     Path((workflow_id, run_id)): Path<(String, String)>,
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<Value>> {
-    debug_selection(&query)?;
     let response = runtime
-        .range_debug(&workflow_id, Some(&run_id))
+        .run_diagnostics(&workflow_id, Some(&run_id), include_last_event_payload(&query))
         .await
         .map_err(|error| {
             super::control_plane::Operation::Debug.refusal(error, &workflow_id, Some(&run_id))
@@ -863,7 +965,7 @@ async fn request_cancellation_run(
 async fn signal_current(
     Extension(runtime): Extension<Runtime>,
     Path((workflow_id, name)): Path<(String, String)>,
-    Json(body): Json<Value>,
+    Json(super::memo_json::StartBody(body)): Json<super::memo_json::StartBody>,
 ) -> Result<(StatusCode, Json<Value>)> {
     let response = runtime
         .signal(&workflow_id, None, &name, without_trace_carrier(body))
@@ -880,7 +982,7 @@ async fn signal_current(
 async fn update_current(
     Extension(runtime): Extension<Runtime>,
     Path((workflow_id, name)): Path<(String, String)>,
-    Json(body): Json<Value>,
+    Json(super::memo_json::StartBody(body)): Json<super::memo_json::StartBody>,
 ) -> Result<(StatusCode, Json<Value>)> {
     let (status, result) = runtime
         .update_workflow(&workflow_id, None, &name, without_trace_carrier(body))
@@ -891,7 +993,7 @@ async fn update_current(
 async fn update_run(
     Extension(runtime): Extension<Runtime>,
     Path((workflow_id, run_id, name)): Path<(String, String, String)>,
-    Json(body): Json<Value>,
+    Json(super::memo_json::StartBody(body)): Json<super::memo_json::StartBody>,
 ) -> Result<(StatusCode, Json<Value>)> {
     let (status, result) = runtime
         .update_workflow(&workflow_id, Some(&run_id), &name, without_trace_carrier(body))
@@ -902,7 +1004,7 @@ async fn update_run(
 async fn signal_run(
     Extension(runtime): Extension<Runtime>,
     Path((workflow_id, run_id, name)): Path<(String, String, String)>,
-    Json(body): Json<Value>,
+    Json(super::memo_json::StartBody(body)): Json<super::memo_json::StartBody>,
 ) -> Result<(StatusCode, Json<Value>)> {
     let response = runtime
         .signal(&workflow_id, Some(&run_id), &name, without_trace_carrier(body))
@@ -946,6 +1048,16 @@ async fn activities(
     Path((workflow_id, run_id)): Path<(String, String)>,
 ) -> Result<Json<Value>> {
     runtime.activities(&workflow_id, &run_id).await.map(Json)
+}
+
+/// `HistoryController::export`: the run's replay bundle.
+async fn history_export(
+    Extension(runtime): Extension<Runtime>,
+    Path((workflow_id, run_id)): Path<(String, String)>,
+) -> Result<Json<Value>> {
+    runtime.history_export(&workflow_id, &run_id).await.map(Json).map_err(|error| {
+        super::control_plane::Operation::History.refusal(error, &workflow_id, Some(&run_id))
+    })
 }
 
 async fn history(
@@ -1018,6 +1130,96 @@ async fn worker_heartbeat(
 ) -> Result<Json<Value>> {
     runtime.worker_heartbeat(body).await.map(Json)
 }
+fn metrics_config(runtime: &Runtime) -> super::operator_metrics::MetricsConfig {
+    super::operator_metrics::MetricsConfig {
+        // Native leases a claimed workflow task for 30 seconds.
+        workflow_task_lease_seconds: 30,
+        abandoned_upload_expiry_seconds: runtime.external.abandoned_seconds.max(1),
+    }
+}
+
+async fn operator_metrics(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    Ok(Json(
+        runtime.operator_metrics(&metrics_config(&runtime)).await?,
+    ))
+}
+
+async fn operator_dashboard(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    Ok(Json(runtime.operator_dashboard(&metrics_config(&runtime), false).await?))
+}
+
+async fn bounded_operator_dashboard(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    Ok(Json(runtime.operator_dashboard(&metrics_config(&runtime), true).await?))
+}
+
+/// PHP validates `workflow_types` and then answers 501 when its observer
+/// cannot filter dashboard totals by workflow type; native cannot either.
+async fn workflow_type_operator_dashboard(
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Response> {
+    super::operator_dashboard::workflow_types(query.get("workflow_types").map(String::as_str))?;
+    Ok((
+        StatusCode::NOT_IMPLEMENTED,
+        Json(json!({"message":"The installed workflow observer cannot filter dashboard totals by workflow type.",
+            "reason":"backend_capability_unavailable","capability":"workflow_type_dashboard"})),
+    )
+        .into_response())
+}
+
+type QueryMap = Query<std::collections::HashMap<String, String>>;
+
+async fn retention_status(Extension(runtime): Extension<Runtime>, Query(query): QueryMap) -> Result<Json<Value>> {
+    let limit = super::retention::status_limit(query.get("limit").map(String::as_str))?;
+    Ok(Json(runtime.retention_status(limit).await?))
+}
+
+/// PHP's passes answer 207 when any item failed.
+fn pass_response((report, failed): (Value, bool)) -> Response {
+    let status = if failed { StatusCode::MULTI_STATUS } else { StatusCode::OK };
+    (status, Json(report)).into_response()
+}
+
+/// PHP reads an empty body as empty input and refuses malformed JSON.
+fn request_json(body: &[u8]) -> Result<Value> {
+    if body.trim_ascii().is_empty() {
+        return Ok(Value::Null);
+    }
+    serde_json::from_slice(body).map_err(|_| super::RuntimeError::Protocol {
+        status: StatusCode::BAD_REQUEST,
+        response: json!({"message": "Request bodies must contain valid JSON.", "reason": "malformed_json",
+            "json_error": "Syntax error"}),
+    })
+}
+
+async fn retention_pass(Extension(runtime): Extension<Runtime>, body: axum::body::Bytes) -> Result<Response> {
+    let (limit, run_ids) = super::retention::pass_request(&request_json(&body)?, "run_ids")?;
+    Ok(pass_response(runtime.retention_pass(limit, run_ids).await?))
+}
+
+async fn activity_timeout_pass(Extension(runtime): Extension<Runtime>, body: axum::body::Bytes) -> Result<Response> {
+    let (limit, ids) = super::retention::pass_request(&request_json(&body)?, "execution_ids")?;
+    Ok(pass_response(runtime.activity_timeout_pass(limit, ids).await?))
+}
+
+async fn activity_timeout_status(
+    Extension(runtime): Extension<Runtime>,
+    Query(query): QueryMap,
+) -> Result<Json<Value>> {
+    let limit = super::retention::status_limit(query.get("limit").map(String::as_str))?;
+    Ok(Json(runtime.activity_timeout_status(limit).await?))
+}
+
+/// PHP answers 503 while a check reports an error.
+async fn system_health(Extension(runtime): Extension<Runtime>) -> Result<Response> {
+    let (unavailable, body) = runtime.system_health(&metrics_config(&runtime)).await?;
+    let status = if unavailable {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(body)).into_response())
+}
+
 async fn list_workers(
     Extension(runtime): Extension<Runtime>,
     Query(query): Query<std::collections::HashMap<String, String>>,
@@ -1029,6 +1231,17 @@ async fn list_workers(
         )
         .await
         .map(Json)
+}
+/// `GET /api/task-queues`.
+async fn list_task_queues(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    runtime.list_task_queues().await.map(Json)
+}
+/// `GET /api/task-queues/{name}`.
+async fn describe_task_queue(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_queue): Path<String>,
+) -> Result<Json<Value>> {
+    runtime.describe_task_queue(&task_queue).await.map(Json)
 }
 async fn describe_worker(
     Extension(runtime): Extension<Runtime>,
@@ -1268,20 +1481,24 @@ async fn query_current(
     Path((workflow_id, name)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
-    runtime
+    let (status, body) = runtime
         .query_workflow(&workflow_id, None, &name, body)
         .await
-        .map(|(status, body)| (status, Json(body)))
+        .map_err(|error| super::control_plane::Operation::Query(&name).refusal(error, &workflow_id, None))?;
+    Ok((status, Json(super::control_plane::Operation::Query(&name).response(body))))
 }
 async fn query_run(
     Extension(runtime): Extension<Runtime>,
     Path((workflow_id, run_id, name)): Path<(String, String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
-    runtime
+    let (status, body) = runtime
         .query_workflow(&workflow_id, Some(&run_id), &name, body)
         .await
-        .map(|(status, body)| (status, Json(body)))
+        .map_err(|error| {
+            super::control_plane::Operation::Query(&name).refusal(error, &workflow_id, Some(&run_id))
+        })?;
+    Ok((status, Json(super::control_plane::Operation::Query(&name).response(body))))
 }
 async fn poll_query(
     Extension(runtime): Extension<Runtime>,

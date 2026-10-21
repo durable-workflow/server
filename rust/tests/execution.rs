@@ -33,6 +33,8 @@ mod admission;
 
 #[path = "execution/role_tokens.rs"]
 mod role_tokens;
+#[path = "execution/operator_metrics.rs"]
+mod operator_metrics;
 
 #[path = "execution/namespaces.rs"]
 mod namespaces;
@@ -79,6 +81,28 @@ mod activity_deadlines;
 mod lock_free_waiting;
 #[path = "execution/read_snapshots.rs"]
 mod read_snapshots;
+#[path = "execution/query_responses.rs"]
+mod query_responses;
+#[path = "execution/history_export.rs"]
+mod history_export;
+#[path = "execution/history_retention.rs"]
+mod history_retention;
+#[path = "execution/activity_timeout_pass.rs"]
+mod activity_timeout_pass;
+#[path = "execution/start_request.rs"]
+mod start_request;
+#[path = "execution/command_requests.rs"]
+mod command_requests;
+#[path = "execution/describe_actions.rs"]
+mod describe_actions;
+#[path = "execution/run_deadlines.rs"]
+mod run_deadlines;
+#[path = "execution/operator_dashboard.rs"]
+mod operator_dashboard;
+#[path = "execution/waterline_reads.rs"]
+mod waterline_reads;
+#[path = "execution/start_timeouts.rs"]
+mod start_timeouts;
 
 #[path = "execution/activity_metadata.rs"]
 mod activity_metadata;
@@ -755,8 +779,10 @@ async fn simultaneous_starts_and_completions_commit_one_durable_outcome() {
         Value::Null,
     )
     .await;
-    assert_eq!(history.1["events"].as_array().unwrap().len(), 3);
-    assert_eq!(history.1["events"][2]["event_type"], "WorkflowCompleted");
+    // The losing start is refused on the winner's run, as in PHP.
+    assert_eq!(history.1["events"].as_array().unwrap().len(), 4);
+    assert_eq!(history.1["events"][2]["event_type"], "StartRejected");
+    assert_eq!(history.1["events"][3]["event_type"], "WorkflowCompleted");
     node_a.close().await;
     node_b.close().await;
     database.remove().await;
@@ -1711,7 +1737,7 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
         (
             path.clone(),
             json!({"input":input["input"],"wait_for":"other"}),
-            "invalid_update_wait_policy",
+            "validation_failed",
         ),
         (
             path.clone(),
@@ -2227,11 +2253,17 @@ async fn updates_bound_durable_inventory_and_preserve_accepted_work_after_wait_t
     open_update_wait(&app, "update-worker").await;
     let path = "/api/workflows/bounded-updates/update/set";
     for index in 0..64 {
-        let body = json!({"input":envelope(Payload::Array(vec![Payload::Long(index)])),
-            "request_id":format!("bounded:{index}"),"wait_for":"completed","wait_timeout_seconds":0});
+        // PHP's shortest completion wait is one second; one update waits it
+        // out and the rest return at acceptance.
+        let mut body = json!({"input":envelope(Payload::Array(vec![Payload::Long(index)])),
+            "request_id":format!("bounded:{index}"),"wait_for":"accepted"});
+        if index == 0 {
+            body["wait_for"] = json!("completed");
+            body["wait_timeout_seconds"] = json!(1);
+        }
         let receipt = request(&app, "POST", path, body).await;
         assert_eq!(receipt.0, StatusCode::ACCEPTED, "{}", receipt.1);
-        assert_eq!(receipt.1["wait_timed_out"], true);
+        assert_eq!(receipt.1["wait_timed_out"], index == 0);
         let task = poll(&app, "update-worker", "workflow").await;
         assert_eq!(task["workflow_update_id"], receipt.1["update_id"]);
         let complete_path = format!(
@@ -3814,7 +3846,8 @@ async fn cooperative_delivery_cleanup_and_original_deadline_survive_fresh_runtim
         let described = request(&app, "GET", "/api/workflows/cleanup-root", json!({})).await;
         assert_eq!(described.1["status"], "cancelled");
         assert_eq!(described.1["output_envelope"], Value::Null);
-        assert_eq!(cleanup["finished_at"], described.1["closed_at"]);
+        let instant = |value: &Value| chrono::DateTime::parse_from_rfc3339(value.as_str().unwrap()).unwrap();
+        assert_eq!(instant(&cleanup["finished_at"]), instant(&described.1["closed_at"]));
         if !cleanup_activity.is_null() {
             let observed = request_protocol(&app,"POST",
                 &format!("/api/worker/activity-tasks/{}/status",cleanup_activity["task_id"].as_str().unwrap()),
@@ -4955,7 +4988,9 @@ async fn authentication_precedes_protocol_and_namespace_checks() {
     assert_eq!(namespace.status(), StatusCode::NOT_FOUND);
     let unsupported = request(&app,"POST","/api/workflows",json!({"workflow_id":"unsupported","workflow_type":"echo",
         "task_queue":"test","input":envelope(Payload::Null),"search_attributes":{"ignored":"must not be accepted"}})).await;
-    assert_eq!(unsupported.0, StatusCode::UNPROCESSABLE_ENTITY);
+    // Start-time search attributes are refused until native stores them.
+    assert_eq!(unsupported.0, StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(unsupported.1["reason"], "start_search_attributes_unavailable");
     assert_eq!(
         request(&app, "GET", "/api/workflows/unsupported", Value::Null)
             .await

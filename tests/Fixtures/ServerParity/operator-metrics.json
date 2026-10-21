@@ -1,0 +1,21 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "operator-metrics",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "operator metrics λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "operator metrics λ"},
+    "count": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null}
+  }},
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "operator_metrics": {
+    "workflow_type": "parity.v1.metrics",
+    "activity_type": "parity.v1.metrics_activity",
+    "redispatch_wait_seconds": 4,
+    "retry_backoff_seconds": 2
+  },
+  "contract": "GET /api/system/operator-metrics and GET /api/system/health report a fresh namespace through one run's stages: empty, a started run waiting for a worker, the same task past PHP's three-second redispatch window, an activity scheduled, running and retrying after a failure, and the completed run. At each stage the run, task, activity, backlog, start, history, schedule and command-contract counts match published PHP's, every oldest timestamp is present exactly when its count is not zero, and the health document answers 200 with PHP's twelve checks, categories and warnings: command-contract backfill while the run (started before its worker registered) is open, and task transport and routing once the unclaimed task is overdue, unless PHP's maintenance loop has already redispatched it, which native never does. Ready-due and delayed tasks compare as one total, because Laravel compares the current time in whole seconds. Elapsed ages, history byte sizes and tasks dispatched in the last minute are not compared, nor the selected-run projection check, which PHP fills asynchronously. Embedded applications have no HTTP operator surface."
+}

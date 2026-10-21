@@ -30,7 +30,9 @@ impl VisibilityQuery {
         if self
             .status
             .as_deref()
-            .is_some_and(|value| !matches!(value, "running" | "completed" | "failed"))
+            .is_some_and(|value| {
+                !matches!(value, "running" | "completed" | "failed" | "cancelled" | "terminated")
+            })
         {
             return Err(validation("status", "The selected status is invalid."));
         }
@@ -99,7 +101,7 @@ fn validation(field: &'static str, message: &'static str) -> RuntimeError {
     }
 }
 
-pub(super) const VISIBILITY_PAGE: &str = "SELECT r.id,r.workflow_instance_id,r.workflow_type,r.queue,r.status,r.compatibility,r.started_at,r.closed_at,i.business_key FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE r.namespace='default' AND i.namespace='default' AND ($1 IS NULL OR r.workflow_type=$2) AND ($3 IS NULL OR CASE WHEN r.status IN ('pending','running','waiting') THEN 'running' WHEN r.status='completed' THEN 'completed' ELSE 'failed' END=$4) AND ($5 IS NULL OR r.workflow_instance_id LIKE $6 OR i.business_key LIKE $7) ORDER BY r.started_at DESC,r.id DESC LIMIT $8 OFFSET $9";
+pub(super) const VISIBILITY_PAGE: &str = "SELECT r.id,r.workflow_instance_id,r.workflow_type,r.queue,r.status,r.compatibility,r.started_at,r.closed_at,i.business_key FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE r.namespace=$1 AND i.namespace=$2 AND ($3 IS NULL OR r.workflow_type=$4) AND ($5 IS NULL OR CASE WHEN r.status IN ('pending','running','waiting') THEN 'running' WHEN r.status='completed' THEN 'completed' ELSE 'failed' END=$6 OR r.status=$7) AND ($8 IS NULL OR r.workflow_instance_id LIKE $9 OR i.business_key LIKE $10) ORDER BY r.started_at DESC,r.id DESC LIMIT $11 OFFSET $12";
 
 // Preserve decimal micro/nanosecond ordering across PHP SQL UTC and earlier
 // native RFC3339 UTC strings without SQLite floating-point date conversion.
@@ -108,12 +110,12 @@ WITH runs AS (
     SELECT r.id,r.workflow_instance_id,r.workflow_type,r.queue,r.status,r.compatibility,r.started_at,r.closed_at,i.business_key,
         replace(replace(replace(r.started_at,'T',' '),'Z',''),'+00:00','') AS _dw_started_utc
     FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id
-    WHERE r.namespace='default' AND i.namespace='default' AND ($1 IS NULL OR r.workflow_type=$2)
-        AND ($3 IS NULL OR CASE WHEN r.status IN ('pending','running','waiting') THEN 'running' WHEN r.status='completed' THEN 'completed' ELSE 'failed' END=$4)
-        AND ($5 IS NULL OR r.workflow_instance_id LIKE $6 OR i.business_key LIKE $7)
+    WHERE r.namespace=$1 AND i.namespace=$2 AND ($3 IS NULL OR r.workflow_type=$4)
+        AND ($5 IS NULL OR CASE WHEN r.status IN ('pending','running','waiting') THEN 'running' WHEN r.status='completed' THEN 'completed' ELSE 'failed' END=$6 OR r.status=$7)
+        AND ($8 IS NULL OR r.workflow_instance_id LIKE $9 OR i.business_key LIKE $10)
 )
 SELECT *,rtrim(rtrim(CASE WHEN length(_dw_started_utc)=19 THEN _dw_started_utc||'.0' ELSE _dw_started_utc END,'0'),'.') AS _dw_started_order
-FROM runs ORDER BY _dw_started_order DESC,id DESC LIMIT $8 OFFSET $9
+FROM runs ORDER BY _dw_started_order DESC,id DESC LIMIT $11 OFFSET $12
 "#;
 
 impl<DB: Backend> Store<DB>
@@ -129,9 +131,14 @@ where
     usize: ColumnIndex<DB::Row>,
 {
     pub(super) async fn list_workflows(&self, filter: &VisibilityFilter) -> Result<Value> {
+        // PHP's index filters cancelled and terminated runs by their exact
+        // status and the other values by status bucket.
         let rows = Self::query(DB::VISIBILITY_PAGE)
+            .bind(self.namespace.as_ref())
+            .bind(self.namespace.as_ref())
             .bind(filter.workflow_type.as_deref())
             .bind(filter.workflow_type.as_deref())
+            .bind(filter.status.as_deref())
             .bind(filter.status.as_deref())
             .bind(filter.status.as_deref())
             .bind(filter.pattern.as_deref())

@@ -35,6 +35,9 @@ pub(super) trait Backend: Database {
     const REPAIR_COUNTER_MAX: i64 = i32::MAX as i64;
     const RANGE_REPAIR_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace=$2 AND task_type='workflow' AND status='failed' AND payload->>'replay_blocked'='true' ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
     const ACTIVITY_OPEN_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='activity' AND status IN ('ready','leased') AND payload->>'activity_execution_id'=$2 ORDER BY id LIMIT 1";
+    // Local activities in the namespace, as PHP's operator metrics count them.
+    const LOCAL_ACTIVITY_EXECUTIONS: &'static str = "SELECT status FROM activity_executions WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE namespace=$1) AND activity_options->>'execution_mode'='local'";
+    const LOCAL_ACTIVITY_ATTEMPTS: &'static str = "SELECT p.status FROM activity_attempts p JOIN activity_executions a ON a.id=p.activity_execution_id WHERE p.workflow_run_id IN (SELECT id FROM workflow_runs WHERE namespace=$1) AND a.activity_options->>'execution_mode'='local'";
     const QUERY_CACHE_SCAN: &'static str = "SELECT \"key\",value,expiration FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND value::jsonb->>'namespace'=$1 ORDER BY \"key\" LIMIT 65";
     const QUERY_CACHE_PENDING_FOR_RUN: &'static str = "SELECT value::jsonb->>'query_admitted_at' AS query_admitted_at,value::jsonb->>'query_deadline_at' AS query_deadline_at,value::jsonb->>'receipt_expires_at' AS receipt_expires_at FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND expiration>$2 AND value::jsonb->>'run_id'=$1 AND value::jsonb->>'status' IN ('pending','leased') ORDER BY \"key\" LIMIT 65";
     const QUERY_CACHE_GET: &'static str =
@@ -148,6 +151,8 @@ ORDER BY t.available_order,t.id LIMIT 100
     const REPAIR_COUNTER_MAX: i64 = i64::MAX;
     const RANGE_REPAIR_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace=$2 AND task_type='workflow' AND status='failed' AND json_extract(payload,'$.replay_blocked')=1 ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
     const ACTIVITY_OPEN_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='activity' AND status IN ('ready','leased') AND json_extract(payload,'$.activity_execution_id')=$2 ORDER BY id LIMIT 1";
+    const LOCAL_ACTIVITY_EXECUTIONS: &'static str = "SELECT status FROM activity_executions WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE namespace=$1) AND json_extract(activity_options,'$.execution_mode')='local'";
+    const LOCAL_ACTIVITY_ATTEMPTS: &'static str = "SELECT p.status FROM activity_attempts p JOIN activity_executions a ON a.id=p.activity_execution_id WHERE p.workflow_run_id IN (SELECT id FROM workflow_runs WHERE namespace=$1) AND json_extract(a.activity_options,'$.execution_mode')='local'";
     const VISIBILITY_PAGE: &'static str = super::visibility::SQLITE_VISIBILITY_PAGE;
     type EncodedTime = String;
     type EncodedOptionalTime = Option<String>;
@@ -174,7 +179,7 @@ SELECT t.*,r.workflow_type FROM ordered_tasks t JOIN workflow_runs r ON r.id=t.w
 WHERE r.status IN ('pending','running','waiting')
     AND (t.status='ready' OR (t.status='leased' AND t._dw_lease_order<=rtrim(rtrim($4,'0'),'.')))
     AND (t.available_at IS NULL OR t._dw_available_order<=rtrim(rtrim($5,'0'),'.'))
-ORDER BY t._dw_available_order,t.id LIMIT 100
+ORDER BY t.priority,t._dw_available_order,t.id LIMIT 100
 "#;
     const POLL_RECEIPT_CLEANUP_SQL: &'static str = r#"
 WITH utc_receipts AS (
@@ -379,6 +384,8 @@ impl Backend for MySql {
     const REPAIR_COUNTER_MAX: i64 = u32::MAX as i64;
     const RANGE_REPAIR_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=? AND namespace=? AND task_type='workflow' AND status='failed' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.replay_blocked'))='true' ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
     const ACTIVITY_OPEN_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=? AND task_type='activity' AND status IN ('ready','leased') AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.activity_execution_id'))=? ORDER BY id LIMIT 1";
+    const LOCAL_ACTIVITY_EXECUTIONS: &'static str = "SELECT status FROM activity_executions WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE namespace=?) AND JSON_UNQUOTE(JSON_EXTRACT(activity_options,'$.execution_mode'))='local'";
+    const LOCAL_ACTIVITY_ATTEMPTS: &'static str = "SELECT p.status FROM activity_attempts p JOIN activity_executions a ON a.id=p.activity_execution_id WHERE p.workflow_run_id IN (SELECT id FROM workflow_runs WHERE namespace=?) AND JSON_UNQUOTE(JSON_EXTRACT(a.activity_options,'$.execution_mode'))='local'";
     type EncodedTime = DateTime<Utc>;
     type EncodedOptionalTime = Option<DateTime<Utc>>;
     type EncodedDocument = Json<Value>;
@@ -407,6 +414,8 @@ impl Backend for MySql {
             || sql == Self::RANGE_REPAIR_TASK_SQL
             || sql == Self::SELECTION_RESOLUTION_SQL
             || sql == Self::ACTIVITY_OPEN_TASK_SQL
+            || sql == Self::LOCAL_ACTIVITY_EXECUTIONS
+            || sql == Self::LOCAL_ACTIVITY_ATTEMPTS
             || sql == Self::ACTIVITY_RESULT_EVENT_SQL
             || sql == Self::OBSERVATION_FAILURE_EVENT
             || sql == Self::POLL_WAKE_QUERIES_SQL

@@ -480,11 +480,11 @@ where
             Self::set_count(&mut tx, &INTERVAL, interval, worker_id, namespace).await?;
         }
         tx.commit().await?;
-        // PHP also reports an inline history retention pass here. Native has
-        // no retention yet, so it does not claim one.
+        // Like PHP, each heartbeat may prune one expired run of its namespace.
+        let retention = self.retention_inline_pass().await?;
         Ok(json!({"worker_id": worker_id, "acknowledged": true,
             "heartbeat_interval_seconds": config.worker_heartbeat_interval_seconds,
-            "stale_after_seconds": config.worker_stale_after_seconds}))
+            "stale_after_seconds": config.worker_stale_after_seconds, "retention": retention}))
     }
 
     fn worker_summary(row: &DB::Row, stale_after: i64, at: DateTime<Utc>) -> Result<Value> {

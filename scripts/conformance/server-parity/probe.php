@@ -430,8 +430,16 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $lateWorkflowCompletion = isset($fixture['late_workflow_completion']) ? finishHttpLateWorkflowCompletion($client, $fixture, $workflowId) : null;
     $searchAttributes = isset($fixture['search_attributes']) ? finishHttpSearchAttributes($client, $fixture, $workflowId, $url) : null;
     $storageTest = isset($fixture['storage_test']) ? finishHttpStorageTest($client, $fixture, $workflowId, $url) : null;
+    $schedulePolicies = isset($fixture['schedule_policies']) ? finishHttpSchedulePolicies($client, $fixture, $workflowId, $url) : null;
+    $scheduleCatalog = isset($fixture['schedule_catalog'])
+        ? finishHttpSchedulePolicies($client, $fixture, $workflowId, $url, 'schedule_catalog')
+        : null;
+    $signalsBeforeWorker = isset($fixture['signals_before_worker'])
+        ? finishHttpSignalsBeforeWorker($client, $fixture, $workflowId, $url)
+        : null;
     $workerListing = isset($fixture['worker_listing']) ? finishHttpWorkerListing($client, $fixture, $workflowId) : null;
     $workerReplacement = isset($fixture['worker_replacement']) ? finishHttpWorkerReplacement($client, $fixture, $workflowId) : null;
+    $operatorMetrics = isset($fixture['operator_metrics']) ? finishHttpOperatorMetrics($client, $fixture, $workflowId, $url) : null;
     $waitingHistory = isset($fixture['waiting_for_history']) ? finishHttpWaitingHistory($client, $fixture, $workflowId, $queue, $url) : null;
     $taskRetry = isset($fixture['workflow_task_retry']) ? finishHttpTaskRetry($client, $fixture, $workflowId, $queue, $url) : null;
     if ($scheduleState !== null) {
@@ -521,8 +529,12 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'late_workflow_completion' => $lateWorkflowCompletion,
         'search_attributes' => $searchAttributes,
         'storage_test' => $storageTest,
+        'schedule_policies' => $schedulePolicies,
+        'schedule_catalog' => $scheduleCatalog,
+        'signals_before_worker' => $signalsBeforeWorker,
         'worker_listing' => $workerListing,
         'worker_replacement' => $workerReplacement,
+        'operator_metrics' => $operatorMetrics,
         'waiting_for_history' => $waitingHistory,
         'workflow_task_retry' => $taskRetry,
         'run_id' => $execution->runId,
@@ -820,10 +832,13 @@ try {
     require __DIR__.'/namespace-probe.php';
     require __DIR__.'/search-attribute-probe.php';
     require __DIR__.'/storage-test-probe.php';
+    require __DIR__.'/schedule-policies-probe.php';
+    require __DIR__.'/signals-before-worker-probe.php';
     require __DIR__.'/worker-deregistration-probe.php';
     require __DIR__.'/late-workflow-completion-probe.php';
     require __DIR__.'/worker-listing-probe.php';
     require __DIR__.'/worker-replacement-probe.php';
+    require __DIR__.'/operator-metrics-probe.php';
     require __DIR__.'/waiting-history-probe.php';
     require __DIR__.'/task-retry-probe.php';
     require __DIR__.'/child-cancellation-probe.php';
@@ -957,6 +972,9 @@ try {
     if ($mode === 'embedded' && isset($fixture['worker_replacement'])) {
         $observation['worker_replacement'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_worker_registration_lifecycle'];
     }
+    if ($mode === 'embedded' && isset($fixture['operator_metrics'])) {
+        $observation['operator_metrics'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_operator_metrics'];
+    }
     if ($mode === 'embedded' && isset($fixture['worker_listing'])) {
         $observation['worker_listing'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_worker_registration_lifecycle'];
     }
@@ -971,6 +989,15 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['storage_test'])) {
         $observation['storage_test'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_storage_diagnostic'];
+    }
+    if ($mode === 'embedded' && isset($fixture['schedule_policies'])) {
+        $observation['schedule_policies'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_schedules'];
+    }
+    if ($mode === 'embedded' && isset($fixture['schedule_catalog'])) {
+        $observation['schedule_catalog'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_schedules'];
+    }
+    if ($mode === 'embedded' && isset($fixture['signals_before_worker'])) {
+        $observation['signals_before_worker'] = ['applicable' => false, 'reason' => 'embedded_runs_have_a_loadable_contract'];
     }
     $observation['mode'] = $mode;
     $observation['typed_output'] = typedValue($observation['output']);
