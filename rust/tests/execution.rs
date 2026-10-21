@@ -4421,23 +4421,26 @@ async fn reported_activity_failure_commits_one_persistent_retry_and_fences_old_o
         poll(&app_b, "worker", "activity").await.is_null(),
         "retry waits the actual one-second backoff"
     );
+    // A different late outcome from the failed attempt is stale, as in PHP.
     let mut conflicting = fail.clone();
     conflicting["failure"]["message"] = json!("different");
+    let refused = request(&app_b, "POST", &fail_path, conflicting).await;
+    assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
     assert_eq!(
-        request(&app_b, "POST", &fail_path, conflicting).await.0,
-        StatusCode::CONFLICT
+        refused.1,
+        json!({"task_id":first["task_id"],"activity_attempt_id":first["activity_attempt_id"],
+            "outcome":"failed","recorded":false,"reason":"stale_attempt","next_task_id":null})
     );
     let old_complete_path = format!(
         "/api/worker/activity-tasks/{}/complete",
         first["task_id"].as_str().unwrap()
     );
     let old_complete = json!({"lease_owner":"worker","activity_attempt_id":first["activity_attempt_id"],"result":envelope(Payload::Long(-1))});
-    assert_eq!(
-        request(&app_b, "POST", &old_complete_path, old_complete.clone())
-            .await
-            .0,
-        StatusCode::CONFLICT
-    );
+    let refused = request(&app_b, "POST", &old_complete_path, old_complete.clone()).await;
+    assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
+    assert_eq!(refused.1["reason"], "stale_attempt");
+    assert_eq!(refused.1["attempt_status"], "failed");
+    assert_eq!(refused.1["task_status"], "completed");
     node_a.close().await;
     let recovered = database.open().await.unwrap();
     let app_c = router(recovered.clone());
@@ -4468,6 +4471,16 @@ async fn reported_activity_failure_commits_one_persistent_retry_and_fences_old_o
     assert_eq!(second["arguments"], arguments);
     assert_eq!(second["attempt_number"], 2);
     assert_ne!(second["activity_attempt_id"], first["activity_attempt_id"]);
+    // While the retry runs, the first attempt's late result is still the
+    // stale receipt PHP returns to that attempt's owner.
+    let refused = request(&app_b, "POST", &old_complete_path, old_complete.clone()).await;
+    assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
+    assert_eq!(
+        refused.1,
+        json!({"task_id":first["task_id"],"activity_attempt_id":first["activity_attempt_id"],
+            "outcome":"completed","recorded":false,"reason":"stale_attempt","next_task_id":null,
+            "lease_owner":"worker","activity_status":"running","attempt_status":"failed","task_status":"completed"})
+    );
     assert_eq!(
         request(&app_b, "POST", &old_complete_path, old_complete)
             .await

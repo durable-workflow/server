@@ -541,10 +541,11 @@ async fn committed_activity_receipt_survives_elapsed_deadlines_and_conflicting_o
     );
     let mut conflicting = completion;
     conflicting["result"] = envelope(Payload::Long(-1));
-    assert_eq!(
-        request(&app, "POST", &path, conflicting).await.0,
-        StatusCode::CONFLICT
-    );
+    // A different result for the finished attempt is stale, as in PHP.
+    let refused = request(&app, "POST", &path, conflicting).await;
+    assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
+    assert_eq!(refused.1["reason"], "stale_attempt");
+    assert_eq!(refused.1["recorded"], false);
     assert_eq!(
         run_history(&app, &started["workflow_id"], &started["run_id"]).await,
         prefix

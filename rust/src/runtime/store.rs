@@ -2614,15 +2614,14 @@ where
         // receipt. A later completion must refuse it, not decode SQL NULL.
         let receipt = DB::optional_document_row(task, "receipt")?
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "task_not_leased"))?;
-        // A result from another activity attempt is not this one's duplicate;
-        // its attempt is stale, which the caller reports as PHP does.
-        if DB::string(task, "task_type")? == "activity"
-            && receipt["activity_attempt_id"] != body["activity_attempt_id"]
-        {
-            return Ok(false);
-        }
         if receipt == *body {
             return Ok(true);
+        }
+        // Any other result for a closed activity task comes from an attempt
+        // that is no longer current; the caller reports it as stale, as PHP
+        // does, rather than as a conflicting duplicate.
+        if DB::string(task, "task_type")? == "activity" {
+            return Ok(false);
         }
         Err(refuse(StatusCode::CONFLICT, "conflicting_completion"))
     }
