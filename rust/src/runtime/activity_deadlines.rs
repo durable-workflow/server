@@ -150,7 +150,7 @@ where
             let run = match Self::active_run(&mut tx, &run_id).await {
                 Ok(run) => run,
                 Err(super::RuntimeError::Refused {
-                    reason: "run_closed" | "run_timed_out" | "cancellation_deadline_expired",
+                    reason: "run_closed" | "cancellation_deadline_expired",
                     ..
                 }) => continue,
                 Err(error) => return Err(error),
