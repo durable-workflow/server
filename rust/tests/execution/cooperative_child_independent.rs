@@ -155,7 +155,17 @@ async fn independent(parent_state: &str, terminal: &str, missing: bool, rollback
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
     if terminal == "deadline" {
-        tokio::time::sleep(Duration::from_millis(1250)).await;
+        // The one-second cleanup deadline is enforced by the reopened
+        // runtime's deadline sweep. Wait for its outcome rather than a fixed
+        // interval, which a loaded test host can outlast.
+        let path = format!("/api/workflows/{}", child["workflow_id"].as_str().unwrap());
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        while request(&app, "GET", &path, Value::Null).await.1["status"] != "cancelled"
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     } else {
         let completed = finish(&app, &child, terminal == "failure").await;
         assert_eq!(completed.0, StatusCode::OK, "{}", completed.1);
