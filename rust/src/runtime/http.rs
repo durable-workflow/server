@@ -45,6 +45,14 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/external-payloads/v1/{reference_id}",
             get(super::external_transport::fetch),
         )
+        .route(
+            "/api/search-attributes",
+            get(list_search_attributes).post(create_search_attribute),
+        )
+        .route(
+            "/api/search-attributes/{name}",
+            delete(delete_search_attribute),
+        )
         .route("/api/workflows", get(list_workflows).post(start))
         .route("/api/schedules", post(super::schedule_http::create))
         .route(
@@ -423,6 +431,16 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     if path == "/api/workflows" {
         return method == "POST";
     }
+    // The registry is namespace-scoped state with no default-namespace selector.
+    if path == "/api/search-attributes" {
+        return matches!(method, "GET" | "POST");
+    }
+    if path
+        .strip_prefix("/api/search-attributes/")
+        .is_some_and(|name| !name.is_empty() && !name.contains('/'))
+    {
+        return method == "DELETE";
+    }
     if path == "/api/workers"
         || path
             .strip_prefix("/api/workers/")
@@ -512,6 +530,25 @@ async fn create_namespace(
         StatusCode::CREATED,
         Json(runtime.create_namespace(body).await?),
     ))
+}
+
+async fn list_search_attributes(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    Ok(Json(runtime.list_search_attributes().await?))
+}
+async fn create_search_attribute(
+    Extension(runtime): Extension<Runtime>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    Ok((
+        StatusCode::CREATED,
+        Json(runtime.create_search_attribute(body).await?),
+    ))
+}
+async fn delete_search_attribute(
+    Extension(runtime): Extension<Runtime>,
+    Path(name): Path<String>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.delete_search_attribute(&name).await?))
 }
 
 async fn admission_error(

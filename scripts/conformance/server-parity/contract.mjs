@@ -9,6 +9,8 @@ import {checkVisibility} from './visibility-contract.mjs';
 import {checkAdmission} from './admission-contract.mjs';
 import {checkNamespaces} from './namespace-contract.mjs';
 import {checkWorkerDeregistration} from './worker-deregistration-contract.mjs';
+import {checkLateWorkflowCompletion} from './late-workflow-completion-contract.mjs';
+import {checkSearchAttributes} from './search-attribute-contract.mjs';
 import {checkWorkerListing} from './worker-listing-contract.mjs';
 import {checkWorkerReplacement} from './worker-replacement-contract.mjs';
 import {checkOperatorMetrics} from './operator-metrics-contract.mjs';
@@ -132,6 +134,8 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const admission = fixture.admission ? checkAdmission(fixture, observation, workflowId) : null;
   const namespaces = fixture.namespace_isolation ? checkNamespaces(fixture, observation, workflowId, checkObservation) : null;
   const workerDeregistration = fixture.worker_deregistration ? checkWorkerDeregistration(fixture, observation, workflowId) : null;
+  const lateWorkflowCompletion = fixture.late_workflow_completion ? checkLateWorkflowCompletion(fixture, observation, workflowId) : null;
+  const searchAttributes = fixture.search_attributes ? checkSearchAttributes(fixture, observation, workflowId) : null;
   const workerListing = fixture.worker_listing ? checkWorkerListing(fixture, observation, workflowId) : null;
   const workerReplacement = fixture.worker_replacement ? checkWorkerReplacement(fixture, observation, workflowId) : null;
   const operatorMetrics = fixture.operator_metrics ? checkOperatorMetrics(fixture, observation, workflowId) : null;
@@ -672,6 +676,8 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(admission ? {admission} : {}),
     ...(namespaces ? {namespace_isolation: namespaces} : {}),
     ...(workerDeregistration ? {worker_deregistration: workerDeregistration} : {}),
+    ...(lateWorkflowCompletion ? {late_workflow_completion: lateWorkflowCompletion} : {}),
+    ...(searchAttributes ? {search_attributes: searchAttributes} : {}),
     ...(workerListing ? {worker_listing: workerListing} : {}),
     ...(workerReplacement ? {worker_replacement: workerReplacement} : {}),
     ...(operatorMetrics ? {operator_metrics: operatorMetrics} : {}),

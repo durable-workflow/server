@@ -160,8 +160,10 @@ impl Runtime {
         let queries = super::QueryTaskConfig::from_env()?;
         let limit = super::memo_limits::configured_limit()?;
         let history_budget = super::history_budget::Config::from_env()?;
+        let search_attribute_limit = super::search_attributes::configured_limit()?;
         let mut store = Store::new(sqlite::open(database).await?);
         store.memo_size_limit = limit;
+        store.search_attribute_limit = search_attribute_limit;
         store.history_budget = history_budget;
         Self::from_storage(Storage::Sqlite(store), token, external, queries).await
     }
@@ -172,8 +174,10 @@ impl Runtime {
         let queries = super::QueryTaskConfig::from_env()?;
         let limit = super::memo_limits::configured_limit()?;
         let history_budget = super::history_budget::Config::from_env()?;
+        let search_attribute_limit = super::search_attributes::configured_limit()?;
         let mut store = Store::new(PostgresStorage::open(options).await?.into_pool());
         store.memo_size_limit = limit;
+        store.search_attribute_limit = search_attribute_limit;
         store.history_budget = history_budget;
         Self::from_storage(Storage::Postgres(store), token, external, queries).await
     }
@@ -184,8 +188,10 @@ impl Runtime {
         let queries = super::QueryTaskConfig::from_env()?;
         let limit = super::memo_limits::configured_limit()?;
         let history_budget = super::history_budget::Config::from_env()?;
+        let search_attribute_limit = super::search_attributes::configured_limit()?;
         let mut store = Store::new(MySqlStorage::open(options).await?.into_pool());
         store.memo_size_limit = limit;
+        store.search_attribute_limit = search_attribute_limit;
         store.history_budget = history_budget;
         Self::from_storage(Storage::MySql(store), token, external, queries).await
     }
@@ -290,6 +296,9 @@ impl Runtime {
     delegate!(operator_metrics(config: &super::operator_metrics::MetricsConfig) -> Result<Value>);
     delegate!(system_health(config: &super::operator_metrics::MetricsConfig) -> Result<(bool, Value)>);
     delegate!(create_namespace(body: Value) -> Result<Value>);
+    delegate!(list_search_attributes() -> Result<Value>);
+    delegate!(create_search_attribute(body: Value) -> Result<Value>);
+    delegate!(delete_search_attribute(name: &str) -> Result<Value>);
     delegate!(set_external_policy(name: &str, body: Value) -> Result<Value>);
     delegate!(update_namespace(name: &str, body: Value) -> Result<Value>);
     delegate!(

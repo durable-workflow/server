@@ -121,6 +121,12 @@ contract fixture before its correction.
   above the request timeout, still inside the 9-second load wave, needs its own
   reviewed profile change.
 
+- **A valid workflow task claim held by a stale worker.** Published PHP
+  refuses a request whose lease is otherwise valid when its owner's
+  registration is no longer fresh (`409 stale_worker_registration`). Native's
+  workflow task guard does not check registration freshness yet, and the
+  local activity and cancellation scope checkpoints still use the older fence.
+  Add a fixture for each before changing them.
 - **History retention.** Published PHP's worker heartbeat runs an inline
   history retention pass, and the default namespace retention is bounded at
   30 days, so PHP prunes old closed runs. Native has no retention yet. Its
@@ -268,6 +274,54 @@ October 21, operator metrics and health:
   - Native refuses worker deregistration in a named namespace.
   - The operator dashboards, capacity evidence, and the repair, retention,
     activity-timeout and payload-cleanup pass endpoints remain.
+
+October 20, lost workflow task claims:
+
+- **Found by.** The [multi-node runs](../benchmarks/server-port/multinode/results-2026-10-20.md).
+  A paused SDK worker resumed with workflow tasks the server had already
+  given to the other worker. Native refused its late renewals and completion
+  with only a reason (`task_not_leased`, `conflicting_completion`), and the
+  worker exited 6 times. Published PHP's ownership guard also returns the task
+  status and, after the run closes, `can_continue: false`. A current worker
+  reads those fields to drop a lost claim and keep running.
+- **Source.** Workflow task completion, failure, lease renewal and task history
+  now share PHP's guard (`WorkflowTaskOwnership::guard`), in PHP's order.
+  A task that is no longer leased is refused with `run_closed` when its run
+  has closed, and otherwise with `task_not_leased` and its status. An open
+  lease is then checked for expiry, owner and attempt. Each refusal has PHP's
+  body: `error`, the reason's fields, `protocol_version` and
+  `server_capabilities`. A completion that differs from the recorded one now
+  gets this refusal instead of `conflicting_completion`. An identical replay
+  still returns the recorded `already_completed` receipt. A completed workflow
+  task now clears its lease expiry and keeps its owner, as PHP's does.
+- **Fixture.** `late-workflow-completion` replaces a worker that holds a
+  claim and sends the replaced claim's completion, renewal and failure while
+  the new claim holds the lease, after it completes, and after the run
+  closes. Published PHP 2.5.14, embedded and native passed in a local copy of
+  the SQLite parity step. Before the change, native failed the same fixture.
+
+October 20, search attribute registry:
+
+- **Source.** Native serves `GET` and `POST /api/search-attributes` and
+  `DELETE /api/search-attributes/{name}` for operators, in the default or a
+  named namespace, as PHP's `SearchAttributeController` does. Its rules are:
+  - request strings are trimmed;
+  - Laravel's validation messages and error counts;
+  - system names and their aliases are reserved;
+  - a duplicate keeps its type;
+  - `DW_MAX_SEARCH_ATTRIBUTES` (legacy `WORKFLOW_MAX_SEARCH_ATTRIBUTES`,
+    default 100) limits definitions per namespace;
+  - system attributes cannot be removed.
+- **Concurrent registrations.** When two registrations of one name race, the
+  unique key decides the winner. PHP surfaces that as a server error; native
+  refuses the loser as a duplicate.
+- **Not covered.** Native start and upsert still refuse search attribute
+  values, so a definition is registry state only. PHP's enforcement of
+  definitions on start, upsert and visibility filters needs its own fixtures.
+- **Fixture.** `search-attributes` drives two fresh namespaces through the
+  published SDK and raw requests. Published PHP 2.5.14, embedded PHP (which
+  declares it inapplicable) and native passed the contract in a local copy of
+  the SQLite parity step, and the comparison passed.
 
 October 20, worker listing:
 
