@@ -18,7 +18,8 @@ const history = [event('StartAccepted'), event('WorkflowStarted'), event('Activi
 const observation = () => structuredClone({mode: 'http', worker_replacement: {applicable: true, worker_id: worker,
   task_queue: `${id}-replacement`, peer_workflow_id: `${id}-replacement-peer`,
   registration: {worker_id: worker, registered: true}, replacement_registration: {worker_id: worker, registered: true},
-  original_claim: claim(first, 1), replacement_claim: claim(second, 2), history_after_replacement: history.slice(0, 4),
+  workflow_lease_seconds: 59.8, original_claim: claim(first, 1), replacement_claim: claim(second, 2),
+  history_after_replacement: history.slice(0, 4),
   stale_completion: {status: 409, response: {task_id: task, activity_attempt_id: first, outcome: 'completed', recorded: false,
     reason: 'stale_attempt', next_task_id: null, lease_owner: worker, activity_status: 'running', attempt_status: 'expired',
     task_status: 'leased', protocol_version: '1.20'}},
@@ -39,6 +40,7 @@ test('embedded worker replacement is explicitly inapplicable', () => {
 
 for (const [label, mutate] of [
   ['a lease that waits out its expiry', state => { state.replacement_claim = null; }],
+  ['a 30-second workflow task lease', state => { state.workflow_lease_seconds = 29.9; }],
   ['a different task', state => { state.replacement_claim.task_id = 'task-2'; }],
   ['a reused attempt number', state => { state.replacement_claim.attempt_number = 1; }],
   ['a reused attempt identity', state => { state.replacement_claim.activity_attempt_id = first; }],

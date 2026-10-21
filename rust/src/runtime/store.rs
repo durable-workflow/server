@@ -27,6 +27,8 @@ pub(super) struct Store<DB: Backend> {
     pub(super) memo_codec: Arc<Semaphore>,
     pub(super) memo_size_limit: Option<usize>,
     pub(super) history_budget: super::history_budget::Config,
+    /// How long a claimed workflow task stays leased (DW_WORKFLOW_TASK_TIMEOUT).
+    pub(super) workflow_task_lease_seconds: i64,
     pub(super) search_attribute_limit: i64,
 }
 /// A ULID that sorts after every earlier one from this process, as Laravel's
@@ -89,6 +91,7 @@ where
             memo_codec: Arc::new(Semaphore::new(1)),
             memo_size_limit: Some(262_144),
             history_budget: super::history_budget::Config::default(),
+            workflow_task_lease_seconds: 60,
             search_attribute_limit: 100,
         }
     }
@@ -100,6 +103,7 @@ where
             memo_codec: self.memo_codec.clone(),
             memo_size_limit: self.memo_size_limit,
             history_budget: self.history_budget,
+            workflow_task_lease_seconds: self.workflow_task_lease_seconds,
             search_attribute_limit: self.search_attribute_limit,
         }
     }
@@ -1222,7 +1226,7 @@ where
             let expires = if kind == "activity" && Self::cancellation_request(&run)?.is_none() {
                 now() + chrono::Duration::seconds(300)
             } else {
-                Self::cancellation_lease_expiry(&run)?
+                self.cancellation_lease_expiry(&run)?
             };
             let leased_at = now();
             if kind == "workflow" {
@@ -1358,7 +1362,7 @@ where
         }
         Self::workflow_task_guard(&mut tx, &task, &body).await?;
         let run = Self::active_run(&mut tx, &DB::string(&task, "workflow_run_id")?).await?;
-        let expires = Self::cancellation_lease_expiry(&run)?;
+        let expires = self.cancellation_lease_expiry(&run)?;
         tx.summary_changed(&DB::string(&run, "id")?);
         Self::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE id=$2")
             .bind(DB::bind_time(expires))
