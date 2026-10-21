@@ -27,6 +27,7 @@ pub(super) struct Store<DB: Backend> {
     pub(super) history_budget: super::history_budget::Config,
     /// How long a claimed workflow task stays leased (DW_WORKFLOW_TASK_TIMEOUT).
     pub(super) workflow_task_lease_seconds: i64,
+    pub(super) search_attribute_limit: i64,
 }
 pub(super) fn id() -> String {
     Ulid::new().to_string()
@@ -69,6 +70,7 @@ where
             memo_size_limit: Some(262_144),
             history_budget: super::history_budget::Config::default(),
             workflow_task_lease_seconds: 60,
+            search_attribute_limit: 100,
         }
     }
     pub(super) fn in_namespace(&self, namespace: &str) -> Self {
@@ -80,6 +82,7 @@ where
             memo_size_limit: self.memo_size_limit,
             history_budget: self.history_budget,
             workflow_task_lease_seconds: self.workflow_task_lease_seconds,
+            search_attribute_limit: self.search_attribute_limit,
         }
     }
     pub(super) async fn database_live(&self) -> bool {

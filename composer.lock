@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "1230e17c71101ee7340e52d0c1fe2e35",
+    "content-hash": "f19e9ba3a401c157a88a1c27b5a1e639",
     "packages": [
         {
             "name": "apache/avro",
@@ -655,16 +655,16 @@
         },
         {
             "name": "durable-workflow/workflow",
-            "version": "2.7.2",
+            "version": "2.8.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/durable-workflow/workflow.git",
-                "reference": "64efa176e4c37e5d6ae80e767ba3b41464024e53"
+                "reference": "2edaa6b1c6f45fcec4570813c2e741aadde92b3b"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/64efa176e4c37e5d6ae80e767ba3b41464024e53",
-                "reference": "64efa176e4c37e5d6ae80e767ba3b41464024e53",
+                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/2edaa6b1c6f45fcec4570813c2e741aadde92b3b",
+                "reference": "2edaa6b1c6f45fcec4570813c2e741aadde92b3b",
                 "shasum": ""
             },
             "require": {
@@ -698,7 +698,7 @@
                     "dev-main": "2.0.x-dev"
                 },
                 "durable-workflow": {
-                    "product-train": "2.7.2",
+                    "product-train": "2.8.0",
                     "laravel-embedded-upgrade-contract": "resources/laravel-embedded-upgrade-contract.json",
                     "laravel-dependency-security-policy": "resources/laravel-dependency-security-policy.json"
                 }
@@ -725,9 +725,9 @@
             "description": "Embedded durable workflow runtime and orchestration engine for Laravel applications.",
             "support": {
                 "issues": "https://github.com/durable-workflow/workflow/issues",
-                "source": "https://github.com/durable-workflow/workflow/tree/2.7.2"
+                "source": "https://github.com/durable-workflow/workflow/tree/2.8.0"
             },
-            "time": "2026-10-20T06:00:22+00:00"
+            "time": "2026-10-20T21:24:05+00:00"
         },
         {
             "name": "egulias/email-validator",

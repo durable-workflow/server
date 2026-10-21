@@ -235,6 +235,29 @@ October 20, workflow task lease:
   checks claim and heartbeat on each database. Locally, published PHP and
   native both pass the contract.
 
+October 20, search attribute registry:
+
+- **Source.** Native serves `GET` and `POST /api/search-attributes` and
+  `DELETE /api/search-attributes/{name}` for operators, in the default or a
+  named namespace, as PHP's `SearchAttributeController` does. Its rules are:
+  - request strings are trimmed;
+  - Laravel's validation messages and error counts;
+  - system names and their aliases are reserved;
+  - a duplicate keeps its type;
+  - `DW_MAX_SEARCH_ATTRIBUTES` (legacy `WORKFLOW_MAX_SEARCH_ATTRIBUTES`,
+    default 100) limits definitions per namespace;
+  - system attributes cannot be removed.
+- **Concurrent registrations.** When two registrations of one name race, the
+  unique key decides the winner. PHP surfaces that as a server error; native
+  refuses the loser as a duplicate.
+- **Not covered.** Native start and upsert still refuse search attribute
+  values, so a definition is registry state only. PHP's enforcement of
+  definitions on start, upsert and visibility filters needs its own fixtures.
+- **Fixture.** `search-attributes` drives two fresh namespaces through the
+  published SDK and raw requests. Published PHP 2.5.14, embedded PHP (which
+  declares it inapplicable) and native passed the contract in a local copy of
+  the SQLite parity step, and the comparison passed.
+
 October 20, worker listing:
 
 - **Source.** Native serves `GET /api/workers` and `GET /api/workers/{id}`,
@@ -308,6 +331,21 @@ October 20, immediate termination:
   terminate fixtures. All six passed on each target, and the comparison passed.
   Native integration tests for both commands pass on SQLite, PostgreSQL and
   MySQL.
+
+October 20, namespace update:
+
+- **Source.** Native serves `PUT /api/namespaces/{name}`, as published PHP's
+  NamespaceController::update does. A description replaces the stored one
+  only when given. Retention follows PHP's rules: a forever namespace becoming
+  bounded needs `retention_days`; forever refuses days; bounded refuses null
+  days; days run 1–365. A missing namespace is `404 namespace_not_found`.
+  Only an admin may update a namespace. Native still has no retention pass,
+  so the stored retention is not enforced yet.
+- **Checks.** The `namespace-isolation` probe now updates its first
+  namespace at the end through the published SDK, and updates a missing one.
+  The contract checks both. Locally, published PHP 2.5.14, embedded PHP and
+  native passed, and the comparison passed. A native test covers the
+  retention rules on SQLite.
 
 October 19, before #478, #476, #494 and #460 merged:
 

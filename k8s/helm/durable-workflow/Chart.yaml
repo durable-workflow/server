@@ -4,12 +4,12 @@ description: Durable Workflow self-hosted server, worker, scheduler/maintenance 
 type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
-# for this version live in docs/helm-upgrading.md alongside the chart.
-version: 0.1.185
+# for this version live in docs/UPGRADING.md alongside the chart.
+version: 0.2.1
 # The immutable Durable Workflow Server identity this chart release packages.
 # The onboarding default in values.yaml and appVersion are generated from the
 # checked-in source release record.
-appVersion: "2.9.9"
+appVersion: "2.9.11"
 kubeVersion: ">=1.27.0-0"
 home: https://durable-workflow.github.io/docs/2.0/deployment
 sources:
@@ -30,10 +30,12 @@ annotations:
   # exact commit that most recently changed the packaged chart.
   org.opencontainers.image.source: https://github.com/durable-workflow/server
   dev.durable-workflow.source-revision: "unreleased"
-  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:2.9.9"
+  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:2.9.11"
   artifacthub.io/license: MIT
   artifacthub.io/category: integration-delivery
   # Free-form changelog for the current chart release shown by Artifact Hub.
   artifacthub.io/changes: |
     - kind: fixed
-      description: Allow compatible workflow-code replacement with validated workers and preserve incompatible entry failures for supported same-run repair.
+      description: Enforce configured database TLS modes and refuse invalid trust, hostname or plaintext fallback.
+    - kind: added
+      description: Mount an existing database CA Secret read-only in server, worker, bootstrap and scheduler roles.

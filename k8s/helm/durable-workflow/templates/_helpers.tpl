@@ -88,7 +88,7 @@ resolved by an explicit capability declaration or an existing workload marker.
 {{- define "durable-workflow.memoPayloadStorageForImage" -}}
 {{- $image := toString . -}}
 {{- $normalized := regexReplaceAll "^index\\.docker\\.io/" $image "docker.io/" -}}
-{{- if eq $normalized "docker.io/durableworkflow/server:2.9.9" -}}
+{{- if eq $normalized "docker.io/durableworkflow/server:2.9.11" -}}
 dual-v1
 {{- else if regexMatch "^docker\\.io/durableworkflow/server:2\\.0\\.0-rc\\.[0-9]+$" $normalized -}}
 {{- $releaseCandidate := atoi (regexFind "[0-9]+$" $normalized) -}}
@@ -467,8 +467,12 @@ not depend on regular resources Helm or Argo create afterward.
   value: {{ . | quote }}
 {{- end }}
 {{- with .Values.externalDatabase.sslMode }}
-- name: DB_SSL_MODE
+- name: DB_SSLMODE
   value: {{ . | quote }}
+{{- end }}
+{{- if .Values.externalDatabase.tls.existingSecret }}
+- name: DB_SSLROOTCERT
+  value: {{ include "durable-workflow.databaseTlsCaPath" . | quote }}
 {{- end }}
 - name: REDIS_HOST
   value: {{ .Values.externalRedis.host | quote }}

@@ -29,7 +29,10 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/namespaces",
             get(list_namespaces).post(create_namespace),
         )
-        .route("/api/namespaces/{namespace}", get(describe_namespace))
+        .route(
+            "/api/namespaces/{namespace}",
+            get(describe_namespace).put(update_namespace),
+        )
         .route(
             "/api/namespaces/{namespace}/external-storage",
             axum::routing::put(super::external_transport::set_policy),
@@ -41,6 +44,14 @@ pub fn router(runtime: Runtime) -> Router {
         .route(
             "/api/external-payloads/v1/{reference_id}",
             get(super::external_transport::fetch),
+        )
+        .route(
+            "/api/search-attributes",
+            get(list_search_attributes).post(create_search_attribute),
+        )
+        .route(
+            "/api/search-attributes/{name}",
+            delete(delete_search_attribute),
         )
         .route("/api/workflows", get(list_workflows).post(start))
         .route("/api/schedules", post(super::schedule_http::create))
@@ -280,9 +291,8 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         &["worker"]
     } else if path.starts_with("/api/workers/") && request.method() != Method::GET
         || path == "/api/namespaces" && request.method() == Method::POST
-        || path.starts_with("/api/namespaces/")
-            && path.ends_with("/external-storage")
-            && request.method() == Method::PUT
+        // Updating a namespace or its external storage needs an admin.
+        || path.starts_with("/api/namespaces/") && request.method() == Method::PUT
     {
         &["admin"]
     } else {
@@ -417,6 +427,16 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     if path == "/api/workflows" {
         return method == "POST";
     }
+    // The registry is namespace-scoped state with no default-namespace selector.
+    if path == "/api/search-attributes" {
+        return matches!(method, "GET" | "POST");
+    }
+    if path
+        .strip_prefix("/api/search-attributes/")
+        .is_some_and(|name| !name.is_empty() && !name.contains('/'))
+    {
+        return method == "DELETE";
+    }
     if path == "/api/workers"
         || path
             .strip_prefix("/api/workers/")
@@ -489,6 +509,13 @@ async fn describe_namespace(
 ) -> Result<Json<Value>> {
     Ok(Json(runtime.describe_namespace(&namespace).await?))
 }
+async fn update_namespace(
+    Extension(runtime): Extension<Runtime>,
+    Path(namespace): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.update_namespace(&namespace, body).await?))
+}
 async fn create_namespace(
     Extension(runtime): Extension<Runtime>,
     Json(body): Json<Value>,
@@ -497,6 +524,25 @@ async fn create_namespace(
         StatusCode::CREATED,
         Json(runtime.create_namespace(body).await?),
     ))
+}
+
+async fn list_search_attributes(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    Ok(Json(runtime.list_search_attributes().await?))
+}
+async fn create_search_attribute(
+    Extension(runtime): Extension<Runtime>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    Ok((
+        StatusCode::CREATED,
+        Json(runtime.create_search_attribute(body).await?),
+    ))
+}
+async fn delete_search_attribute(
+    Extension(runtime): Extension<Runtime>,
+    Path(name): Path<String>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.delete_search_attribute(&name).await?))
 }
 
 async fn admission_error(
