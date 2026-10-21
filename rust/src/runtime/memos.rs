@@ -313,6 +313,33 @@ pub(super) async fn read_stored(
     .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "memo_codec_unavailable"))?
 }
 
+/// A history export's memo: the projection (PHP's `[]` when empty) and
+/// `MemoPayload::mapEnvelope`, the whole memo as one Avro map envelope.
+pub(super) async fn export(
+    codec: Arc<Semaphore>,
+    rows: Vec<(String, Value, Option<Value>)>,
+) -> Result<(Value, Value)> {
+    let permit = codec
+        .acquire_owned()
+        .await
+        .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "memo_codec_unavailable"))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let read = || -> Result<(Value, Value)> {
+            let codec = ValueCodec::new().map_err(|_| invalid())?;
+            let values = decode_rows(rows, &codec)?;
+            let blob = codec.encode_ordered(&Payload::Map(values.clone())).map_err(|_| invalid())?;
+            let projection: serde_json::Map<String, Value> =
+                encode(values)?.into_iter().map(|(key, value)| (key, value.projection)).collect();
+            let projection = if projection.is_empty() { json!([]) } else { Value::Object(projection) };
+            Ok((projection, json!({"codec": "avro", "blob": blob})))
+        };
+        read().map_err(|_| refuse(StatusCode::CONFLICT, "unsupported_stored_memo"))
+    })
+    .await
+    .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "memo_codec_unavailable"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
