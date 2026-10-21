@@ -367,6 +367,11 @@ impl TryFrom<Value> for JsonValue {
     }
 }
 
+
+/// Durable Workflow patch: the log message for a value that fails
+/// validation. It names neither the value, the schema nor the reason.
+const INVALID_VALUE_MESSAGE: &str = "Invalid value for the schema.";
+
 impl Value {
     /// Validate the value against the given [`Schema`].
     ///
@@ -400,9 +405,10 @@ impl Value {
         let schemata_len = schemata.len();
         schemata.iter().any(
             |schema| match self.validate_internal(schema, rs.get_names(), None) {
-                Some(reason) => {
-                    let log_message =
-                        format!("Invalid value: {self:?} for schema: {schema:?}. Reason: {reason}");
+                Some(_) => {
+                    // Durable Workflow patch: the value, the schema and the
+                    // reason can all contain payload data, so none is logged.
+                    let log_message = INVALID_VALUE_MESSAGE;
                     if schemata_len == 1 {
                         error!("{log_message}");
                     } else {
@@ -425,8 +431,9 @@ impl Value {
         names: &HashMap<Name, S>,
     ) -> bool {
         match self.validate_internal(schema, names, None) {
-            Some(reason) => {
-                error!("Invalid value: {self:?} for schema: {schema:?}. Reason: {reason}");
+            Some(_) => {
+                // Durable Workflow patch: see `INVALID_VALUE_MESSAGE`.
+                error!("{INVALID_VALUE_MESSAGE}");
                 false
             }
             None => true,
@@ -1554,24 +1561,12 @@ mod tests {
         assert!(Value::Fixed(4, vec![0, 0, 0, 0]).validate(&schema));
         let value = Value::Fixed(5, vec![0, 0, 0, 0, 0]);
         assert!(!value.validate(&schema));
-        assert_logged(
-            format!(
-                "Invalid value: {:?} for schema: {:?}. Reason: {}",
-                value, schema, "The value's size (5) is different than the schema's size (4)"
-            )
-            .as_str(),
-        );
+        assert_logged(INVALID_VALUE_MESSAGE);
 
         assert!(Value::Bytes(vec![0, 0, 0, 0]).validate(&schema));
         let value = Value::Bytes(vec![0, 0, 0, 0, 0]);
         assert!(!value.validate(&schema));
-        assert_logged(
-            format!(
-                "Invalid value: {:?} for schema: {:?}. Reason: {}",
-                value, schema, "The bytes' length (5) is different than the schema's size (4)"
-            )
-            .as_str(),
-        );
+        assert_logged(INVALID_VALUE_MESSAGE);
 
         Ok(())
     }
@@ -1597,33 +1592,15 @@ mod tests {
 
         let value = Value::Enum(1, "spades".to_string());
         assert!(!value.validate(&schema));
-        assert_logged(
-            format!(
-                "Invalid value: {:?} for schema: {:?}. Reason: {}",
-                value, schema, "Symbol 'spades' is not at position '1'"
-            )
-            .as_str(),
-        );
+        assert_logged(INVALID_VALUE_MESSAGE);
 
         let value = Value::Enum(1000, "spades".to_string());
         assert!(!value.validate(&schema));
-        assert_logged(
-            format!(
-                "Invalid value: {:?} for schema: {:?}. Reason: {}",
-                value, schema, "No symbol at position '1000'"
-            )
-            .as_str(),
-        );
+        assert_logged(INVALID_VALUE_MESSAGE);
 
         let value = Value::String("lorem".to_string());
         assert!(!value.validate(&schema));
-        assert_logged(
-            format!(
-                "Invalid value: {:?} for schema: {:?}. Reason: {}",
-                value, schema, "'lorem' is not a member of the possible symbols"
-            )
-            .as_str(),
-        );
+        assert_logged(INVALID_VALUE_MESSAGE);
 
         let other_schema = Schema::Enum(EnumSchema {
             name: Name::new("some_other_enum")?,
@@ -1641,13 +1618,7 @@ mod tests {
 
         let value = Value::Enum(0, "spades".to_string());
         assert!(!value.validate(&other_schema));
-        assert_logged(
-            format!(
-                "Invalid value: {:?} for schema: {:?}. Reason: {}",
-                value, other_schema, "Symbol 'spades' is not at position '0'"
-            )
-            .as_str(),
-        );
+        assert_logged(INVALID_VALUE_MESSAGE);
 
         Ok(())
     }
@@ -1718,30 +1689,23 @@ mod tests {
             ("b".to_string(), Value::String("foo".to_string())),
         ]);
         assert!(!value.validate(&schema));
-        assert_logged(
-            r#"Invalid value: Record([("a", Boolean(false)), ("b", String("foo"))]) for schema: Record(RecordSchema { name: Name { name: "some_record", .. }, fields: [RecordField { name: "a", schema: Long, .. }, RecordField { name: "b", schema: String, .. }, RecordField { name: "c", default: Null, schema: Union(UnionSchema { schemas: [Null, Int] }), .. }], .. }). Reason: Unsupported value-schema combination! Value: Boolean(false), schema: Long"#,
-        );
+        assert_logged(INVALID_VALUE_MESSAGE);
 
         let value = Value::Record(vec![
             ("a".to_string(), Value::Long(42i64)),
             ("c".to_string(), Value::String("foo".to_string())),
         ]);
         assert!(!value.validate(&schema));
-        assert_logged(
-            r#"Invalid value: Record([("a", Long(42)), ("c", String("foo"))]) for schema: Record(RecordSchema { name: Name { name: "some_record", .. }, fields: [RecordField { name: "a", schema: Long, .. }, RecordField { name: "b", schema: String, .. }, RecordField { name: "c", default: Null, schema: Union(UnionSchema { schemas: [Null, Int] }), .. }], .. }). Reason: Could not find matching type in union"#,
-        );
-        assert_not_logged(
-            r#"Invalid value: String("foo") for schema: Int. Reason: Unsupported value-schema combination"#,
-        );
+        assert_logged(INVALID_VALUE_MESSAGE);
+        // Durable Workflow patch: no part of the value is logged.
+        assert_not_logged(r#"String("foo")"#);
 
         let value = Value::Record(vec![
             ("a".to_string(), Value::Long(42i64)),
             ("d".to_string(), Value::String("foo".to_string())),
         ]);
         assert!(!value.validate(&schema));
-        assert_logged(
-            r#"Invalid value: Record([("a", Long(42)), ("d", String("foo"))]) for schema: Record(RecordSchema { name: Name { name: "some_record", .. }, fields: [RecordField { name: "a", schema: Long, .. }, RecordField { name: "b", schema: String, .. }, RecordField { name: "c", default: Null, schema: Union(UnionSchema { schemas: [Null, Int] }), .. }], .. }). Reason: There is no schema field for field 'd'"#,
-        );
+        assert_logged(INVALID_VALUE_MESSAGE);
 
         let value = Value::Record(vec![
             ("a".to_string(), Value::Long(42i64)),
@@ -1750,9 +1714,7 @@ mod tests {
             ("d".to_string(), Value::Null),
         ]);
         assert!(!value.validate(&schema));
-        assert_logged(
-            r#"Invalid value: Record([("a", Long(42)), ("b", String("foo")), ("c", Null), ("d", Null)]) for schema: Record(RecordSchema { name: Name { name: "some_record", .. }, fields: [RecordField { name: "a", schema: Long, .. }, RecordField { name: "b", schema: String, .. }, RecordField { name: "c", default: Null, schema: Union(UnionSchema { schemas: [Null, Int] }), .. }], .. }). Reason: The value's records length (4) is greater than the schema's (3 fields)"#,
-        );
+        assert_logged(INVALID_VALUE_MESSAGE);
 
         assert!(
             Value::Map(
@@ -1774,10 +1736,7 @@ mod tests {
             )
             .validate(&schema)
         );
-        assert_logged(
-            r#"Invalid value: Map({"d": Long(123)}) for schema: Record(RecordSchema { name: Name { name: "some_record", .. }, fields: [RecordField { name: "a", schema: Long, .. }, RecordField { name: "b", schema: String, .. }, RecordField { name: "c", default: Null, schema: Union(UnionSchema { schemas: [Null, Int] }), .. }], .. }). Reason: Field with name '"a"' is not a member of the map items
-Field with name '"b"' is not a member of the map items"#,
-        );
+        assert_logged(INVALID_VALUE_MESSAGE);
 
         let union_schema = Schema::Union(UnionSchema::new(vec![Schema::Null, schema])?);
 
