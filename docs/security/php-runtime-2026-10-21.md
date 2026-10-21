@@ -28,6 +28,22 @@ conformance references, keep their original bytes and do not become patched.
 Rollback to a vulnerable generation restores service only temporarily and must
 be followed by a forward update.
 
+## Image build provenance
+
+While the official Apache image is being published, this image builds PHP
+8.3.36 from the upstream release tarball on an immutable Apache foundation.
+The build verifies the tarball's fixed SHA-256 and detached signature against
+the published PHP release keyring, whose SHA-256 is also fixed. Configure
+options follow docker-library/php revision
+`f6048b5f6e3c2202ee082665a4ccc0d90de291a3`.
+
+The resulting CLI, Apache module, runtime libraries, headers and extension
+source replace the older foundation's PHP artifacts. The build checks the
+actual CLI version before installing the application. Release qualification
+must additionally check the real Apache handler and normal API, worker and
+binary transport behavior. Source checksums or an image label alone do not
+establish a working patched image.
+
 ## Configuration reductions are incomplete
 
 The Server image disables automatic POST parsing and session upload-progress
