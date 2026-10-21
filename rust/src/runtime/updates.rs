@@ -5,7 +5,7 @@ use super::{
     Result, RuntimeError,
     backend::Backend,
     envelope, refuse,
-    store::{PreparedControlArguments, Store, id, now, reject_fields, validate_arguments},
+    store::{PreparedControlArguments, Store, id, now, validate_arguments},
     text, wire,
 };
 use axum::http::StatusCode;
@@ -212,10 +212,6 @@ where
         body: Value,
         prepared: PreparedControlArguments,
     ) -> Result<(StatusCode, Value)> {
-        reject_fields(
-            &body,
-            &["input", "request_id", "wait_for", "wait_timeout_seconds"],
-        )?;
         if name.trim().is_empty() || name.len() > 255 {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -233,9 +229,11 @@ where
                 "invalid_request_id",
             ));
         }
+        // PHP waits for acceptance unless the request asks for completion.
         let wait_for = body
             .get("wait_for")
-            .map_or(Ok("completed"), |_| text(&body, "wait_for"))?;
+            .filter(|value| !value.is_null())
+            .map_or(Ok("accepted"), |_| text(&body, "wait_for"))?;
         if !matches!(wait_for, "accepted" | "completed") {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,

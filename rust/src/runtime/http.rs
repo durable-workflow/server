@@ -1,7 +1,8 @@
 use axum::{
     Extension, Json, Router,
     extract::{DefaultBodyLimit, Path, Query, Request, State},
-    http::{HeaderMap, HeaderValue, Method, StatusCode},
+    body::Body,
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
@@ -241,9 +242,36 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route("/api/worker/query-tasks/{task_id}/fail", post(fail_query))
         .fallback(unavailable)
+        .layer(middleware::from_fn(empty_list_body))
         .layer(DefaultBodyLimit::max(3 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(runtime.clone(), guard))
         .with_state(runtime)
+}
+
+/// Laravel reads a JSON `[]` body as the same empty input as `{}`. Clients
+/// such as the CLI send `[]` for a command without fields.
+async fn empty_list_body(request: Request, next: Next) -> Response {
+    let declared = request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|length| length.to_str().ok())
+        .and_then(|length| length.parse::<u64>().ok());
+    let known = declared.or_else(|| axum::body::HttpBody::size_hint(request.body()).exact());
+    let short = known.is_some_and(|length| length <= 16);
+    if !short {
+        return next.run(request).await;
+    }
+    let (mut parts, body) = request.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, 16).await else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let body = if bytes.trim_ascii() == b"[]" {
+        parts.headers.insert(header::CONTENT_LENGTH, HeaderValue::from_static("2"));
+        Body::from("{}")
+    } else {
+        Body::from(bytes)
+    };
+    next.run(Request::from_parts(parts, body)).await
 }
 
 async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next) -> Response {
@@ -903,7 +931,7 @@ async fn request_cancellation_run(
 async fn signal_current(
     Extension(runtime): Extension<Runtime>,
     Path((workflow_id, name)): Path<(String, String)>,
-    Json(body): Json<Value>,
+    Json(super::memo_json::StartBody(body)): Json<super::memo_json::StartBody>,
 ) -> Result<(StatusCode, Json<Value>)> {
     let response = runtime
         .signal(&workflow_id, None, &name, without_trace_carrier(body))
@@ -920,7 +948,7 @@ async fn signal_current(
 async fn update_current(
     Extension(runtime): Extension<Runtime>,
     Path((workflow_id, name)): Path<(String, String)>,
-    Json(body): Json<Value>,
+    Json(super::memo_json::StartBody(body)): Json<super::memo_json::StartBody>,
 ) -> Result<(StatusCode, Json<Value>)> {
     let (status, result) = runtime
         .update_workflow(&workflow_id, None, &name, without_trace_carrier(body))
@@ -931,7 +959,7 @@ async fn update_current(
 async fn update_run(
     Extension(runtime): Extension<Runtime>,
     Path((workflow_id, run_id, name)): Path<(String, String, String)>,
-    Json(body): Json<Value>,
+    Json(super::memo_json::StartBody(body)): Json<super::memo_json::StartBody>,
 ) -> Result<(StatusCode, Json<Value>)> {
     let (status, result) = runtime
         .update_workflow(&workflow_id, Some(&run_id), &name, without_trace_carrier(body))
@@ -942,7 +970,7 @@ async fn update_run(
 async fn signal_run(
     Extension(runtime): Extension<Runtime>,
     Path((workflow_id, run_id, name)): Path<(String, String, String)>,
-    Json(body): Json<Value>,
+    Json(super::memo_json::StartBody(body)): Json<super::memo_json::StartBody>,
 ) -> Result<(StatusCode, Json<Value>)> {
     let response = runtime
         .signal(&workflow_id, Some(&run_id), &name, without_trace_carrier(body))
