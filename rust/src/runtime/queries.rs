@@ -50,6 +50,11 @@ fn key(id: &str) -> Result<String> {
 }
 
 pub(super) async fn empty_arguments(semaphore: Arc<Semaphore>) -> Result<String> {
+    encode_arguments(semaphore, crate::codec::Value::Array(vec![])).await
+}
+
+/// One Avro Value blob with the official codec, off the async workers.
+pub(super) async fn encode_arguments(semaphore: Arc<Semaphore>, arguments: crate::codec::Value) -> Result<String> {
     let permit = semaphore
         .acquire_owned()
         .await
@@ -59,7 +64,7 @@ pub(super) async fn empty_arguments(semaphore: Arc<Semaphore>) -> Result<String>
         let codec = crate::codec::ValueCodec::new()
             .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "query_codec_unavailable"))?;
         codec
-            .encode(&crate::codec::Value::Array(vec![]))
+            .encode(&arguments)
             .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "query_codec_unavailable"))
     })
     .await
