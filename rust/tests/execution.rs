@@ -67,6 +67,8 @@ mod worker_deregistration;
 
 #[path = "execution/worker_listing.rs"]
 mod worker_listing;
+#[path = "execution/query_open_tasks.rs"]
+mod query_open_tasks;
 
 #[path = "execution/worker_pressure.rs"]
 mod worker_pressure;
@@ -2349,15 +2351,9 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
         started["run_id"].as_str().unwrap()
     );
     let input = json!({"input":envelope(Payload::Array(vec![Payload::Long(9007199254740993)]))});
-    assert_eq!(
-        request(&a, "POST", &query_path, input.clone()).await.1["reason"],
-        "query_snapshot_busy"
-    );
+    // Queries during an open workflow task wait for their claim; see
+    // `query_open_tasks`.
     let workflow_task = poll(&a, "query-a", "workflow").await;
-    assert_eq!(
-        request(&a, "POST", &query_path, input.clone()).await.1["reason"],
-        "query_snapshot_busy"
-    );
     let complete_path = format!(
         "/api/worker/workflow-tasks/{}/complete",
         workflow_task["task_id"].as_str().unwrap()
