@@ -748,6 +748,34 @@ impl Runtime {
             run_id: &str,
         ) -> Result<(Vec<Value>, Vec<Value>)>
     );
+    /// `HistoryController::export`: one run's replay bundle.
+    pub(crate) async fn history_export(&self, workflow_id: &str, run_id: &str) -> Result<Value> {
+        let (mut rows, memo) = match &*self.storage {
+            Storage::Sqlite(store) => store.history_export_rows(workflow_id, run_id).await?,
+            Storage::Postgres(store) => store.history_export_rows(workflow_id, run_id).await?,
+            Storage::MySql(store) => store.history_export_rows(workflow_id, run_id).await?,
+        };
+        (rows.memo, rows.memo_payload) = super::memos::export(self.signal_codec.clone(), memo).await?;
+        let setting = |names: [&str; 2]| {
+            names
+                .iter()
+                .find_map(|name| std::env::var(name).ok())
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        };
+        let signing = setting(["DW_V2_HISTORY_EXPORT_SIGNING_KEY", "WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY"]).map(|key| {
+            super::history_export::Signing {
+                key,
+                key_id: setting(["DW_V2_HISTORY_EXPORT_SIGNING_KEY_ID", "WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY_ID"]),
+            }
+        });
+        let exported_at = super::task_queues::json_time(Some(super::store::now()));
+        let exported_at = exported_at.as_str().unwrap_or_default().to_owned();
+        // Decoding payload frames and hashing the bundle stay off the async workers.
+        tokio::task::spawn_blocking(move || super::history_export::bundle(&rows, &exported_at, signing.as_ref()))
+            .await
+            .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "history_export_unavailable"))
+    }
     pub(crate) async fn activities(&self, workflow_id: &str, run_id: &str) -> Result<Value> {
         // Finish every read before taking the codec permit, so a listing never
         // holds codec capacity while it waits on the database.
