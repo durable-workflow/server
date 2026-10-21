@@ -277,10 +277,10 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertLessThan($verifyOffset, $cloneOffset);
         $this->assertLessThan($cleanOffset, $verifyOffset);
         $this->assertLessThan($provenanceOffset, $cleanOffset);
-        $this->assertLessThan($metadataOffset, $provenanceOffset);
+        $this->assertLessThan($removeGitOffset, $provenanceOffset);
+        $this->assertLessThan($metadataOffset, $removeGitOffset);
         $this->assertLessThan($composerUpdateOffset, $metadataOffset);
-        $this->assertLessThan($removeGitOffset, $composerUpdateOffset);
-        $this->assertLessThan($copyApplicationOffset, $removeGitOffset);
+        $this->assertLessThan($copyApplicationOffset, $composerUpdateOffset);
         $this->assertLessThan($compareInstalledProvenanceOffset, $copyApplicationOffset);
         $this->assertLessThan($publishProvenanceOffset, $compareInstalledProvenanceOffset);
     }
@@ -896,27 +896,21 @@ SH);
 
     public function test_composer_metadata_identifies_the_exact_workflow_source(): void
     {
-        $expectedVersion = '2.0.0-rc.55';
-        $expectedCommit = '720512eefa0a5a97afeb410797cff8803ec76864';
         $composer = json_decode($this->read('composer.json'), true, flags: JSON_THROW_ON_ERROR);
-        $lock = json_decode($this->read('composer.lock'), true, flags: JSON_THROW_ON_ERROR);
+        $package = $this->lockedWorkflowPackage();
+        $expectedVersion = $composer['require']['durable-workflow/workflow'];
+        $expectedCommit = $package['source']['reference'];
 
-        $this->assertSame($expectedVersion, $composer['require']['durable-workflow/workflow']);
+        $this->assertMatchesRegularExpression('/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/D', $expectedVersion);
+        $this->assertMatchesRegularExpression('/^[0-9a-f]{40}$/D', $expectedCommit);
         $this->assertArrayNotHasKey('repositories', $composer);
-
-        $workflowPackages = array_values(array_filter(
-            $lock['packages'],
-            static fn (array $package): bool => ($package['name'] ?? null) === 'durable-workflow/workflow',
-        ));
-
-        $this->assertCount(1, $workflowPackages);
-        $this->assertSame($expectedVersion, $workflowPackages[0]['version']);
-        $this->assertSame($expectedCommit, $workflowPackages[0]['source']['reference']);
+        $this->assertSame($expectedVersion, $package['version']);
+        $this->assertSame('https://github.com/durable-workflow/workflow.git', $package['source']['url']);
         $this->assertSame(
             "https://api.github.com/repos/durable-workflow/workflow/zipball/{$expectedCommit}",
-            $workflowPackages[0]['dist']['url'],
+            $package['dist']['url'],
         );
-        $this->assertSame($expectedCommit, $workflowPackages[0]['dist']['reference']);
+        $this->assertSame($expectedCommit, $package['dist']['reference']);
     }
 
     public function test_release_metadata_preparer_adds_the_verified_workflow_source_to_a_transient_manifest(): void
@@ -1249,7 +1243,7 @@ set -eu
 image="$4"
 case "$image" in
     composer:2) prefix="1" ;;
-    php:8.3-apache) prefix="2" ;;
+    php:8.3-apache|php@sha256:*) prefix="2" ;;
     *) exit 1 ;;
 esac
 printf '{"digest":"sha256:%s","manifests":[{"digest":"sha256:%s","platform":{"os":"linux","architecture":"amd64"}},{"digest":"sha256:%s","platform":{"os":"linux","architecture":"arm64"}}]}\n' \
@@ -3093,6 +3087,9 @@ SH;
 
     public function test_workflow_package_resolver_follows_the_composer_authority(): void
     {
+        $package = $this->lockedWorkflowPackage();
+        $version = $package['version'];
+        $commit = $package['source']['reference'];
         $outputFile = tempnam(sys_get_temp_dir(), 'workflow-package-output-');
         $this->assertIsString($outputFile);
 
@@ -3105,11 +3102,11 @@ SH;
             $outputs = file_get_contents($outputFile);
             $this->assertNotFalse($outputs);
             $this->assertStringContainsString("source=https://github.com/durable-workflow/workflow.git\n", $outputs);
-            $this->assertStringContainsString("ref=2.0.0-rc.55\n", $outputs);
-            $this->assertStringContainsString("tag=2.0.0-rc.55\n", $outputs);
-            $this->assertStringContainsString("commit=720512eefa0a5a97afeb410797cff8803ec76864\n", $outputs);
+            $this->assertStringContainsString("ref={$version}\n", $outputs);
+            $this->assertStringContainsString("tag={$version}\n", $outputs);
+            $this->assertStringContainsString("commit={$commit}\n", $outputs);
             $this->assertStringContainsString(
-                'Workflow package authority: 2.0.0-rc.55 at 720512eefa0a5a97afeb410797cff8803ec76864',
+                "Workflow package authority: {$version} at {$commit}",
                 $result['stdout'],
             );
         } finally {
@@ -3119,21 +3116,22 @@ SH;
 
     public function test_workflow_package_resolver_accepts_only_matching_caller_identity(): void
     {
+        $package = $this->lockedWorkflowPackage();
         $outputFile = tempnam(sys_get_temp_dir(), 'workflow-package-output-');
         $this->assertIsString($outputFile);
 
         try {
             $result = $this->runScript('scripts/ci/select-compatible-workflow-package-ref.sh', [
                 'WORKFLOW_PACKAGE_SOURCE' => 'https://github.com/durable-workflow/workflow.git',
-                'WORKFLOW_PACKAGE_REF' => '2.0.0-rc.55',
-                'WORKFLOW_PACKAGE_COMMIT' => '720512eefa0a5a97afeb410797cff8803ec76864',
+                'WORKFLOW_PACKAGE_REF' => $package['version'],
+                'WORKFLOW_PACKAGE_COMMIT' => $package['source']['reference'],
                 'GITHUB_OUTPUT' => $outputFile,
             ]);
 
             $this->assertSame(0, $result['exitCode']);
             $outputs = file_get_contents($outputFile);
             $this->assertNotFalse($outputs);
-            $this->assertStringContainsString("tag=2.0.0-rc.55\n", $outputs);
+            $this->assertStringContainsString("tag={$package['version']}\n", $outputs);
         } finally {
             @unlink($outputFile);
         }
@@ -3141,6 +3139,7 @@ SH;
 
     public function test_workflow_package_resolver_rejects_a_stale_protocol_compatible_override(): void
     {
+        $package = $this->lockedWorkflowPackage();
         $result = $this->runScript('scripts/ci/select-compatible-workflow-package-ref.sh', [
             'WORKFLOW_PACKAGE_REF' => '2.0.0-rc.13',
             'WORKFLOW_PACKAGE_COMMIT' => 'fc28432a82a2433959c6690505c52eabea4aca8c',
@@ -3148,7 +3147,7 @@ SH;
 
         $this->assertSame(1, $result['exitCode']);
         $this->assertStringContainsString(
-            'disagrees with the Composer Workflow package authority 2.0.0-rc.55',
+            'disagrees with the Composer Workflow package authority '.$package['version'],
             $result['stderr'],
         );
     }
@@ -3661,6 +3660,21 @@ SH;
             'stdout' => $stdout === false ? '' : $stdout,
             'stderr' => $stderr === false ? '' : $stderr,
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function lockedWorkflowPackage(): array
+    {
+        $lock = json_decode($this->read('composer.lock'), true, flags: JSON_THROW_ON_ERROR);
+        $packages = array_values(array_filter(
+            $lock['packages'],
+            static fn (array $package): bool => ($package['name'] ?? null) === 'durable-workflow/workflow',
+        ));
+        $this->assertCount(1, $packages);
+
+        return $packages[0];
     }
 
     private function read(string $path): string
