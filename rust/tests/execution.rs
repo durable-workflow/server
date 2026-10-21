@@ -81,6 +81,8 @@ mod activity_deadlines;
 mod lock_free_waiting;
 #[path = "execution/read_snapshots.rs"]
 mod read_snapshots;
+#[path = "execution/describe_actions.rs"]
+mod describe_actions;
 #[path = "execution/run_deadlines.rs"]
 mod run_deadlines;
 #[path = "execution/operator_dashboard.rs"]
@@ -3824,7 +3826,8 @@ async fn cooperative_delivery_cleanup_and_original_deadline_survive_fresh_runtim
         let described = request(&app, "GET", "/api/workflows/cleanup-root", json!({})).await;
         assert_eq!(described.1["status"], "cancelled");
         assert_eq!(described.1["output_envelope"], Value::Null);
-        assert_eq!(cleanup["finished_at"], described.1["closed_at"]);
+        let instant = |value: &Value| chrono::DateTime::parse_from_rfc3339(value.as_str().unwrap()).unwrap();
+        assert_eq!(instant(&cleanup["finished_at"]), instant(&described.1["closed_at"]));
         if !cleanup_activity.is_null() {
             let observed = request_protocol(&app,"POST",
                 &format!("/api/worker/activity-tasks/{}/status",cleanup_activity["task_id"].as_str().unwrap()),

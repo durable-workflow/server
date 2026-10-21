@@ -743,7 +743,12 @@ async fn list_runs(
     Extension(runtime): Extension<Runtime>,
     Path(workflow): Path<String>,
 ) -> Result<Json<Value>> {
-    Ok(Json(runtime.list_runs(&workflow).await?))
+    let operation = || super::control_plane::Operation::ListRuns;
+    let runs = runtime
+        .list_runs(&workflow)
+        .await
+        .map_err(|error| operation().refusal(error, &workflow, None))?;
+    Ok(Json(operation().response(runs)))
 }
 
 async fn close(
