@@ -198,6 +198,10 @@ contract fixture before its correction.
   a signal therefore waits on PHP and is refused on native. The port takes the
   snapshot at claim time and must keep query lease replay stable, so it needs
   its own fixture.
+- **Search attribute upserts.** Native has no `upsert_search_attributes`
+  workflow command and refuses it with `unsupported_workflow_command`. The
+  Sample App's search attribute scenario stops there, on its Rust worker's
+  first upsert.
 - **Terminating a child run.** Published Workflow resolves the parent with
   `ChildRunTerminated` and the `terminated` child call status. Native refuses
   this with `422 termination_propagation_not_available` until the parent-side

@@ -67,6 +67,10 @@ mod worker_deregistration;
 
 #[path = "execution/worker_listing.rs"]
 mod worker_listing;
+#[path = "execution/retry_message_tasks.rs"]
+mod retry_message_tasks;
+#[path = "execution/signal_applied_values.rs"]
+mod signal_applied_values;
 
 #[path = "execution/worker_pressure.rs"]
 mod worker_pressure;
