@@ -368,7 +368,7 @@ impl Runtime {
         Ok(Some(blob))
     }
 
-    /// A signal or update's arguments: the plain input encoded, or the
+    /// A signal, update or query's arguments: the plain input encoded, or the
     /// envelope's blob.
     async fn command_arguments(&self, body: &Value) -> Result<String> {
         match self.plain_arguments(body).await? {
@@ -629,6 +629,8 @@ impl Runtime {
     ) -> Result<(StatusCode, Value)> {
         // `validateOperationName`, `workflowBound`, then `input` =>
         // nullable|array; other request fields are ignored, as in PHP.
+        // Laravel trims strings and turns empty ones into null first.
+        let body = super::start_request::normalized(body);
         let invalid = |field: &'static str, message: &'static str| {
             let mut error = super::laravel_validation::failure(vec![(field, vec![message])]).expect("one message");
             if let super::RuntimeError::Protocol { response, .. } = &mut error {
@@ -644,9 +646,11 @@ impl Runtime {
         if input.as_ref().is_some_and(|value| !value.is_object() && !value.is_array()) {
             return Err(invalid("input", "The input field must be an array."));
         }
+        // Like PHP's AvroPayloadEnvelopeResolver, plain values are encoded
+        // as the query's arguments.
         let arguments = match input {
             None => super::queries::empty_arguments(self.signal_codec.clone()).await?,
-            Some(_) => super::envelope(&body, "input")?,
+            Some(_) => self.command_arguments(&body).await?,
         };
         if arguments.len() > super::queries::ARGUMENT_BYTES {
             return Err(refuse(

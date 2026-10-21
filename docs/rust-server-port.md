@@ -102,6 +102,13 @@ contract fixture before its correction.
   each priority tier across fairness keys by their weights
   (`TaskFairnessScheduler`); native stores the keys and weights but does not
   rebalance yet.
+- **Malformed input envelopes.** Published PHP refuses a malformed `input`
+  envelope on start, signal, update and query with `422 validation_failed`,
+  using Laravel messages on `input.codec` or `input.blob`. The cases are a
+  codec that is not `avro`, a missing codec, a blob that is empty or not a
+  string, and a blob Avro cannot decode. Native answers with its own reasons
+  instead: `unsupported_payload_codec`, `invalid_payload_envelope`, or an
+  `invalid_*_arguments` reason.
 - **Key order inside plain JSON input.** For input that is not an envelope,
   PHP encodes nested objects as Avro maps in request order; native encodes
   them with sorted keys. The decoded values are equal, but the blobs differ.
@@ -263,6 +270,7 @@ checkpoint is its own file in
 [`rust-server-port-checkpoints/`](rust-server-port-checkpoints/), named by
 date and topic:
 
+- [Plain query input](rust-server-port-checkpoints/2026-10-21-query-plain-input.md).
 - [History retention](rust-server-port-checkpoints/2026-10-21-history-retention.md).
 
 October 21, operator dashboard:
