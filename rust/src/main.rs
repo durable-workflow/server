@@ -2,7 +2,8 @@ use std::{env, error::Error, net::SocketAddr, str::FromStr};
 
 use durable_workflow_server::database_tls::{self, Driver, Settings};
 use durable_workflow_server::runtime::{
-    Runtime, RuntimeError, mysql::MySqlStorage, postgres::PostgresStorage, router,
+    Runtime, RuntimeError, WORKER_PROTOCOL_VERSION, mysql::MySqlStorage, postgres::PostgresStorage,
+    router,
 };
 use sqlx::mysql::MySqlConnectOptions;
 use sqlx::postgres::PgConnectOptions;
@@ -95,6 +96,43 @@ where
 
 fn auth_setting(primary: &str, legacy: &str) -> Result<Option<String>, Box<dyn Error>> {
     aliased(auth_value, primary, legacy)
+}
+
+fn setting_value(key: &str) -> Result<Option<String>, Box<dyn Error>> {
+    match env::var(key) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err(format!("{key} must be valid UTF-8").into()),
+    }
+}
+
+/// A PHP setting whose value changes behavior that native does not offer.
+/// Native refuses to start rather than run with PHP's default silently.
+fn unhonored_php_setting<F>(lookup: F) -> Result<Option<String>, Box<dyn Error>>
+where
+    F: Fn(&str) -> Result<Option<String>, Box<dyn Error>>,
+{
+    // PHP lowercases the namespace it falls back to; native always falls
+    // back to `default`.
+    let namespace = aliased(&lookup, "DW_DEFAULT_NAMESPACE", "WORKFLOW_SERVER_DEFAULT_NAMESPACE")?;
+    if namespace.is_some_and(|value| value.to_ascii_lowercase() != "default") {
+        return Ok(Some(
+            "DW_DEFAULT_NAMESPACE must be unset or `default`: native serves `default` to requests that name no namespace"
+                .into(),
+        ));
+    }
+    // PHP advertises this value and gates protocol features on it.
+    let protocol = aliased(
+        &lookup,
+        "DW_WORKER_PROTOCOL_VERSION",
+        "WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION",
+    )?;
+    if protocol.is_some_and(|value| value != WORKER_PROTOCOL_VERSION) {
+        return Ok(Some(format!(
+            "DW_WORKER_PROTOCOL_VERSION must be unset or `{WORKER_PROTOCOL_VERSION}`: native implements only that worker protocol"
+        )));
+    }
+    Ok(None)
 }
 
 fn validate_auth_configuration() -> Result<(), Box<dyn Error>> {
@@ -419,6 +457,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     validate_auth_configuration()?;
+    if let Some(refusal) = unhonored_php_setting(setting_value)? {
+        return Err(refusal.into());
+    }
     // Published PHP reads each token under its `DW_*` name, or else its
     // legacy `WORKFLOW_SERVER_*` name, so an unchanged deployment starts.
     let worker_token = auth_setting("DW_WORKER_TOKEN", "WORKFLOW_SERVER_WORKER_TOKEN")?;
@@ -507,5 +548,37 @@ mod auth_env_tests {
         assert_eq!(aliased(empty, "DW_AUTH_TOKEN", "WORKFLOW_SERVER_AUTH_TOKEN").unwrap().as_deref(), Some(""));
         let neither = lookup(&[]);
         assert_eq!(aliased(neither, "DW_AUTH_TOKEN", "WORKFLOW_SERVER_AUTH_TOKEN").unwrap(), None);
+    }
+
+    #[test]
+    fn php_settings_native_cannot_honor_refuse_start() {
+        let refused =
+            |values: &'static [(&'static str, &'static str)]| unhonored_php_setting(lookup(values)).unwrap();
+        let accepted: [&'static [(&str, &str)]; 7] = [
+            &[],
+            &[("DW_DEFAULT_NAMESPACE", "default")],
+            &[("DW_DEFAULT_NAMESPACE", "Default")],
+            &[("WORKFLOW_SERVER_DEFAULT_NAMESPACE", "default")],
+            &[("DW_WORKER_PROTOCOL_VERSION", "1.20")],
+            &[("WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION", "1.20")],
+            // Settings PHP reads but never applies stay accepted.
+            &[("DW_MAX_PENDING_ACTIVITIES", "10"), ("DW_ACTIVITY_TASK_TIMEOUT", "30")],
+        ];
+        for accepted in accepted {
+            assert_eq!(refused(accepted), None, "{accepted:?}");
+        }
+        let refusals: [(&'static [(&str, &str)], &str); 6] = [
+            (&[("DW_DEFAULT_NAMESPACE", "billing")], "DW_DEFAULT_NAMESPACE"),
+            (&[("DW_DEFAULT_NAMESPACE", "")], "DW_DEFAULT_NAMESPACE"),
+            (&[("WORKFLOW_SERVER_DEFAULT_NAMESPACE", "billing")], "DW_DEFAULT_NAMESPACE"),
+            // A set primary wins over a matching legacy value, as in PHP.
+            (&[("DW_DEFAULT_NAMESPACE", "billing"), ("WORKFLOW_SERVER_DEFAULT_NAMESPACE", "default")], "DW_DEFAULT_NAMESPACE"),
+            (&[("DW_WORKER_PROTOCOL_VERSION", "1.19")], "DW_WORKER_PROTOCOL_VERSION"),
+            (&[("WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION", "1.2")], "DW_WORKER_PROTOCOL_VERSION"),
+        ];
+        for (values, setting) in refusals {
+            let refusal = refused(values).unwrap_or_else(|| panic!("{values:?} was accepted"));
+            assert!(refusal.starts_with(setting), "{refusal}");
+        }
     }
 }

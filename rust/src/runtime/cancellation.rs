@@ -535,7 +535,7 @@ where
         tx.summary_changed(&run_id);
         Ok(json!({"task_id":task_id,"workflow_task_attempt":attempt,"outcome":"completed","recorded":false,
             "run_id":run_id,"run_status":"failed","created_task_ids":[],"reason":"run_timed_out",
-            "protocol_version":"1.20","server_capabilities":super::store::capabilities()}))
+            "protocol_version":super::WORKER_PROTOCOL_VERSION,"server_capabilities":super::store::capabilities()}))
     }
 
     pub(super) async fn cancelled_activity_outcome(
