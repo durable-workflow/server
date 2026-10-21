@@ -27,10 +27,11 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
         $checks = array_values(array_filter(
             $workflow['jobs']['verify']['steps'],
-            static fn (array $step): bool => ($step['run'] ?? null) === 'scripts/smoke-published-first-run.sh',
+            static fn (array $step): bool => ($step['name'] ?? null) === 'Verify existing image first-run readiness and container logging',
         ));
         $this->assertCount(1, $checks);
         $this->assertArrayNotHasKey('continue-on-error', $checks[0]);
+        $this->assertStringContainsString('scripts/smoke-published-first-run.sh', $checks[0]['run']);
         $this->assertStringContainsString('verify-container-logging.mjs', $this->read('scripts/smoke-published-first-run.sh'));
     }
 

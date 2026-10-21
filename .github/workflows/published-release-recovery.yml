@@ -70,7 +70,13 @@ jobs:
         env:
           DW_SERVER_IMAGE: ghcr.io/durable-workflow/server@${{ steps.release_verify.outputs.image_digest }}
           DW_FIRST_RUN_SCOPE: recovery-first-run-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
-        run: scripts/smoke-published-first-run.sh
+          RELEASE_SOURCE_COMMIT: ${{ inputs.release_commit }}
+        run: |
+          if git cat-file -e "${RELEASE_SOURCE_COMMIT}:scripts/ci/verify-container-logging.mjs" 2>/dev/null; then
+            scripts/smoke-published-first-run.sh
+          else
+            echo "This immutable release predates container logging acceptance; historical verification remains unchanged."
+          fi
 
       - name: Clean up existing image first-run resources
         if: always()
