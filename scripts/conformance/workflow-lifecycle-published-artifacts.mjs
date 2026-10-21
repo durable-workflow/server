@@ -2435,7 +2435,7 @@ function normalizeSuppliedFindings(entry, scenario, status, classification, fall
 
 function generatedFinding(scenario, status, classification, summary) {
   return {
-    finding_id: `workflow-lifecycle-${scenario.id.replace(/_/g, '-')}-${classification.replace(/-/g, '-')}`,
+    finding_id: `workflow-lifecycle-${scenario.id.replace(/_/g, '-')}-${classification}`,
     finding_type: findingTypeFor(classification, status),
     classification,
     scenario_id: scenario.id,
@@ -2615,7 +2615,7 @@ function normalizeScenario(scenario, entry, policy) {
 
 function findingForPolicy(index, classification, summary) {
   return {
-    finding_id: `workflow-lifecycle-${classification.replace(/-/g, '-')}-${index + 1}`,
+    finding_id: `workflow-lifecycle-${classification}-${index + 1}`,
     finding_type: findingTypeFor(classification, classification === 'runner-gap' ? 'runner_blocked' : 'fail'),
     classification,
     scenario_id: 'artifact_policy',
