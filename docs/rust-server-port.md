@@ -259,6 +259,17 @@ October 21, explicit run deadlines:
   (`error`, `failure`, `exception`, `failures`) for every failed run, not
   only timed-out ones.
 
+October 21, scheduled run summaries:
+
+- **Found by.** Comparing the operator dashboard with published PHP. A run
+  started by a schedule trigger had no run summary while it was open, so
+  dashboards and summary-backed views missed it.
+- **Cause.** The summary projection treats an unrecognized history event as
+  unsupported. The run's own `ScheduleTriggered` marker was not recognized.
+- **Source.** The marker opens no wait and is now accepted. The schedule
+  trigger test asserts that every run has its summary; without the change it
+  fails.
+
 October 21, Waterline reads:
 
 - **Found by.** Waterline 2.12.0 service mode in front of published PHP
