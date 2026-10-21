@@ -71,6 +71,7 @@ mod worker_contracts;
 mod worker_incarnations;
 mod worker_management;
 mod workflow_failures;
+mod workflow_task_guard;
 
 pub use execution::Runtime;
 pub use external_config::ExternalPayloadConfig;
