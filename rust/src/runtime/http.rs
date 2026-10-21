@@ -190,6 +190,14 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/worker/registrations/{worker_id}/deregister",
             post(deregister_fenced),
         )
+        .route("/api/system/operator-metrics", get(operator_metrics))
+        .route("/api/system/health", get(system_health))
+        .route("/api/system/operator-dashboard", get(operator_dashboard))
+        .route("/api/system/operator-dashboard/bounded", get(bounded_operator_dashboard))
+        .route(
+            "/api/system/operator-dashboard/bounded/workflow-types",
+            get(workflow_type_operator_dashboard),
+        )
         .route("/api/workers", get(list_workers))
         .route("/api/task-queues", get(list_task_queues))
         .route("/api/task-queues/{task_queue}", get(describe_task_queue))
@@ -350,6 +358,8 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         || path == "/api/storage/test"
         // Updating a namespace or its external storage needs an admin.
         || path.starts_with("/api/namespaces/") && request.method() == Method::PUT
+        // PHP's system routes are admin-only.
+        || path.starts_with("/api/system/")
     {
         &["admin"]
     } else {
@@ -501,6 +511,13 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     {
         return method == "DELETE";
     }
+    // Deregistration deletes only the namespace's own registration.
+    if path
+        .strip_prefix("/api/workers/")
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+    {
+        return matches!(method, "GET" | "DELETE");
+    }
     // Task queue views are namespace-scoped reads.
     if path == "/api/task-queues"
         || path
@@ -510,9 +527,11 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
         return method == "GET";
     }
     if path == "/api/workers"
-        || path
-            .strip_prefix("/api/workers/")
-            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+        || path == "/api/system/operator-metrics"
+        || path == "/api/system/health"
+        || path == "/api/system/operator-dashboard"
+        || path == "/api/system/operator-dashboard/bounded"
+        || path == "/api/system/operator-dashboard/bounded/workflow-types"
     {
         return method == "GET";
     }
@@ -1100,6 +1119,53 @@ async fn worker_heartbeat(
 ) -> Result<Json<Value>> {
     runtime.worker_heartbeat(body).await.map(Json)
 }
+fn metrics_config(runtime: &Runtime) -> super::operator_metrics::MetricsConfig {
+    super::operator_metrics::MetricsConfig {
+        // Native leases a claimed workflow task for 30 seconds.
+        workflow_task_lease_seconds: 30,
+        abandoned_upload_expiry_seconds: runtime.external.abandoned_seconds.max(1),
+    }
+}
+
+async fn operator_metrics(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    Ok(Json(
+        runtime.operator_metrics(&metrics_config(&runtime)).await?,
+    ))
+}
+
+async fn operator_dashboard(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    Ok(Json(runtime.operator_dashboard(&metrics_config(&runtime), false).await?))
+}
+
+async fn bounded_operator_dashboard(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    Ok(Json(runtime.operator_dashboard(&metrics_config(&runtime), true).await?))
+}
+
+/// PHP validates `workflow_types` and then answers 501 when its observer
+/// cannot filter dashboard totals by workflow type; native cannot either.
+async fn workflow_type_operator_dashboard(
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Response> {
+    super::operator_dashboard::workflow_types(query.get("workflow_types").map(String::as_str))?;
+    Ok((
+        StatusCode::NOT_IMPLEMENTED,
+        Json(json!({"message":"The installed workflow observer cannot filter dashboard totals by workflow type.",
+            "reason":"backend_capability_unavailable","capability":"workflow_type_dashboard"})),
+    )
+        .into_response())
+}
+
+/// PHP answers 503 while a check reports an error.
+async fn system_health(Extension(runtime): Extension<Runtime>) -> Result<Response> {
+    let (unavailable, body) = runtime.system_health(&metrics_config(&runtime)).await?;
+    let status = if unavailable {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(body)).into_response())
+}
+
 async fn list_workers(
     Extension(runtime): Extension<Runtime>,
     Query(query): Query<std::collections::HashMap<String, String>>,

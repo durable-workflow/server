@@ -59,8 +59,8 @@ CLI and Waterline use the first group.
 - **Used by the CLI or Waterline.**
   - Task queue build IDs.
   - Namespace update, delete and external storage.
-  - `system` repair, retention and activity-timeout passes, metrics and
-    operator dashboards.
+  - `system` repair, retention and activity-timeout passes, metrics, and
+    the operator dashboard filtered by workflow type.
   - Activities (standalone).
 - **Worker protocol features.**
   - Worker sessions.
@@ -256,6 +256,87 @@ support is not evidence of multi-node safety.
 
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
 names, including unsuccessful observations.
+
+October 21, operator dashboard:
+
+- **Found by.** Waterline 2.12.0's landing page in front of native: its
+  `/waterline/api/stats` request reached native's
+  `/api/system/operator-dashboard/bounded`, which answered 501.
+- **Source.** Native serves admin-only `GET /api/system/operator-dashboard`
+  and `/bounded`, in the default or a named namespace, by the rules of
+  Workflow 2.5.5's `OperatorDashboardSummary` over the run summaries:
+  - the flow counts and rate, current running and failed runs, the hour's
+    completed and failed runs, the longest open wait and the longest
+    duration as summary rows, with the model's casts and appends;
+  - the week's ten busiest workflow types with pass rate, error count,
+    status breakdown and the upper-middle duration;
+  - PHP's attention alerts over workers and run summaries;
+  - hourly completed and failed counts for the last 169 hours;
+  - the operator metrics snapshot. The bounded variant marks the history
+    audits as not requested and reports capacity evidence unavailable.
+- **By workflow type.** `/bounded/workflow-types` applies PHP's
+  `workflow_types` validation, then answers PHP's 501
+  `backend_capability_unavailable` for an observer that cannot filter by
+  type. Native does not advertise `workflow_type_dashboard_summary`, so
+  Waterline does not ask for it. Published PHP 2.5.14 answers with
+  filtered totals; porting that filter is open.
+- **Verification.** `operator_dashboard` integration tests pass on SQLite,
+  PostgreSQL and MySQL, and the full native suite passes on SQLite. With
+  identical seeds, Waterline's stats from native and from published PHP
+  2.5.14 differ only in identifiers, timings and durations, summary
+  `history_size_bytes` (above) and sort-key precision. Before the scheduled
+  run summary correction, native also counted one run fewer.
+
+October 21, operator metrics and health:
+
+- **Source.** Native serves admin-only `GET /api/system/operator-metrics` and
+  `GET /api/system/health`, in the default or a named namespace, from the
+  rules of Workflow 2.5.5's `OperatorMetrics` and `HealthCheck`:
+  - the run, task, activity, backlog, start, history, schedule, worker and
+    command-contract counts, with PHP's predicates over the shared tables;
+  - the twelve health checks, their categories and messages, and 503 while a
+    check reports an error.
+
+  Like Laravel, task comparisons with "now" bind whole seconds, while activity
+  deadlines and schedule times compare with microseconds. The policy
+  sections describe native: no repair loop, sticky routing or worker
+  sessions, in-process long-poll wake, and native's structural limits and
+  workflow task lease. `capacity_evidence` reports itself unavailable.
+- **Worker deregistration.** `DELETE /api/workers/{id}` now works in a named
+  namespace and removes only that namespace's registration, as in PHP.
+- **Decision: selected-run projections.** Native stores run waits in the
+  transaction that records history, so they cannot drift. It reads
+  timelines, timers and lineage from history, so those tables are reported as
+  not maintained rather than aligned. The health check reports native's wait
+  projections. PHP's same check also warns while its asynchronous timeline
+  projection catches up.
+- **Task rows.** Native now stamps a new task's `created_at`, `updated_at`,
+  `last_dispatched_at` and `last_dispatch_attempt_at`, as PHP does in poll
+  mode. Run summaries classify a task's transport as PHP's
+  `RunSummaryProjector::taskLiveness` does: lease expired, dispatch failed,
+  claim failed (`<type>_task_claim_failed`), dispatch overdue, then leased or
+  ready, with PHP's wait reasons and task-problem flag. Before this, native
+  declined to project a run whose tasks carried these columns.
+- **Fixture.** `operator-metrics` drives a fresh namespace through seven
+  stages, from empty to a completed run with one activity retry. The stages
+  cover a waiting run, an overdue unclaimed task, and an activity scheduled,
+  running and retrying. Published PHP 2.5.14, embedded PHP (which declares it
+  inapplicable) and native pass the contract. In a local copy of the SQLite
+  parity step, 32 fixtures (the schedule and visibility fixtures need CI's
+  scheduler and CLI artifact) passed on all three targets, and the
+  comparison passed.
+- **Known differences.**
+  - Summary `history_size_bytes` differs from PHP's (8 events: PHP 10,351
+    bytes, native 7,961).
+  - PHP stamps a dispatch on some new tasks and not on an activity scheduled
+    from a workflow task completion, so `tasks_dispatched_last_minute`
+    differs.
+  - PHP's maintenance loop redispatches an overdue ready task, after which
+    PHP reports it repaired, not overdue. Native runs no repair loop, so the
+    task stays overdue until a worker claims it. The fixture accepts either
+    PHP state.
+  - The operator dashboards, capacity evidence, and the repair, retention,
+    activity-timeout and payload-cleanup pass endpoints remain.
 
 October 21, query responses and routing:
 

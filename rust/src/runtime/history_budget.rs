@@ -80,6 +80,11 @@ impl Config {
         Ok(config)
     }
 
+    /// The hard event, size and fan-out thresholds, then their warning thresholds.
+    pub(super) fn thresholds(&self) -> [i64; 6] {
+        self.thresholds
+    }
+
     pub(super) fn summarize(self, count: i64, bytes: i64, fan_out: i64) -> Budget {
         let values = [count.max(0), bytes.max(0), fan_out.max(0)];
         let labels = ["event_count", "size_bytes", "fan_out"];

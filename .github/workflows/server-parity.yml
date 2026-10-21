@@ -33,6 +33,7 @@ on:
       - tests/Unit/ServerParityScheduleCatalogContractTest.mjs
       - tests/Unit/ServerParityWorkerListingContractTest.mjs
       - tests/Unit/ServerParityWorkerReplacementContractTest.mjs
+      - tests/Unit/ServerParityOperatorMetricsContractTest.mjs
       - tests/Unit/ServerParityWaitingHistoryContractTest.mjs
       - tests/Unit/ServerParityTaskRetryContractTest.mjs
       - tests/Unit/ServerParityPublishedPatchContractTest.mjs
@@ -79,6 +80,7 @@ on:
       - tests/Unit/ServerParityScheduleCatalogContractTest.mjs
       - tests/Unit/ServerParityWorkerListingContractTest.mjs
       - tests/Unit/ServerParityWorkerReplacementContractTest.mjs
+      - tests/Unit/ServerParityOperatorMetricsContractTest.mjs
       - tests/Unit/ServerParityWaitingHistoryContractTest.mjs
       - tests/Unit/ServerParityTaskRetryContractTest.mjs
       - tests/Unit/ServerParityPublishedPatchContractTest.mjs
@@ -530,7 +532,7 @@ jobs:
           export DW_PARITY_CLI_PHAR=/source/parity-consumers/dw.phar
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
-            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR "$image" scripts/conformance/server-parity.mjs record \
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR -e MYSQL_IMAGE "$image" scripts/conformance/server-parity.mjs record \
             --mode http --url http://parity-php:8080 --target php --output /evidence/php.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-completed.json \
@@ -554,7 +556,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
-            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR "$image" scripts/conformance/server-parity.mjs record \
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR -e MYSQL_IMAGE "$image" scripts/conformance/server-parity.mjs record \
             --mode http --url http://parity-native-a:8080 --target rust --output /evidence/rust.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-completed.json \
@@ -1468,7 +1470,7 @@ jobs:
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
-            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs > parity-evidence/comparator-tests.txt
+            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs > parity-evidence/comparator-tests.txt
           docker run --rm --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
             --network=none --entrypoint node -v "$PWD:/source:ro" -w /source \
             "$image" --test tests/Unit/ServerParityCodecDeadlineLoadTest.mjs > parity-evidence/codec-load-tests.txt
