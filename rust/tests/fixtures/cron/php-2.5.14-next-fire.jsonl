@@ -1,0 +1,600 @@
+{"spec":{"cron_expressions":["0 12 29 2 *"],"timezone":"Mars/Base"},"after":"2026-02-09T09:29:21.684233Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"intervals":[{"every":"P0D"},{"every":"P0Y2MT30H78M"}],"timezone":"America/New_York"},"after":"2028-02-07T21:46:03.192404Z","next":"2028-03-29T13:06:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly","0 3 * * *"],"timezone":"EST"},"after":"2027-12-20T21:26:46.708009Z","next":"2027-12-20T22:00:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly","0 12 29 2 *"],"intervals":[{"every":"P10M2W18D"}]},"after":"2028-08-23T21:03:01.395881Z","next":"2028-08-23T22:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P0W"}],"timezone":""},"after":"2028-02-19T09:21:48.608503Z","next":null}
+{"spec":{"cron_expressions":["@hourly","0 0 1 * *"],"timezone":"Europe/Budapest"},"after":"2028-03-16T09:24:31.179399Z","next":"2028-03-16T10:00:00.000000Z"}
+{"spec":{"timezone":""},"after":"2027-12-15T02:33:48.376137Z","next":null}
+{"spec":{"cron_expressions":["0 3 * * *","0 0 1 * *"],"intervals":[{"every":"P0Y39DT82M"},{"every":"P3WT760S"}],"timezone":"+05:30"},"after":"2027-03-17T15:25:19.081189Z","next":"2027-03-17T21:30:00.000000Z"}
+{"spec":{"intervals":[{"every":"P6M7DT44H"},{"every":"P14D"}],"timezone":"Australia/Lord_Howe"},"after":"2027-03-17T10:24:27.201519Z","next":"2027-03-25T00:00:00.000000Z"}
+{"spec":{"cron_expressions":["5 4 L * ?"],"timezone":""},"after":"2028-08-03T14:15:14.715307Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"intervals":[{"every":"P1W23DT971S"},{"every":"PT10H"}]},"after":"2025-10-07T05:41:13.166011Z","next":"2025-10-07T08:00:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron","bad cron"]},"after":"2028-04-10T03:51:37.879190Z","error":"InvalidArgumentException"}
+{"spec":{"intervals":[{"every":"PT16H7164S","offset":"PT45H13M"}],"timezone":"+05:30"},"after":"2028-06-03T12:05:40.359424Z","next":"2028-06-03T18:34:00.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *","0 0 1 * *"],"intervals":[{"every":"P3WT0H3755S","offset":"P1YT28H1386S"}],"timezone":"UTC"},"after":"2027-05-11T22:31:42.785856Z","next":"2027-05-29T17:32:11.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *"],"timezone":"Mars/Base"},"after":"2028-12-26T08:39:30.997893Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"intervals":[{"every":"PT6304S"},{"every":"P0W28DT15H","offset":"P2D1W"}],"timezone":"UTC"},"after":"2028-12-11T03:32:27.175651Z","next":"2028-12-11T04:21:20.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *","0 0 1 * *"],"intervals":[{"every":"PT30M1129S","offset":"PT19H"},{"every":"PT83M169S","offset":"P9MT40M2161S"}],"timezone":"UTC"},"after":"2028-08-20T12:23:20.576017Z","next":"2028-08-20T12:30:00.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *"],"timezone":"Australia/Lord_Howe"},"after":"2027-06-23T01:12:38.155251Z","next":"2028-02-29T01:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"PT1121S"}],"timezone":"America/New_York"},"after":"2025-05-24T05:09:59.133868Z","next":"2025-05-24T05:17:39.000000Z"}
+{"spec":{"intervals":[{"every":"PT2366S"},{"every":"P31DT6580S"}],"timezone":"Asia/Kolkata"},"after":"2026-10-01T16:20:50.446536Z","next":"2026-10-01T16:38:40.000000Z"}
+{"spec":{"cron_expressions":["bad cron",""],"timezone":"America/New_York"},"after":"2027-06-22T12:18:37.280503Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["0 12 29 2 *"],"intervals":[{"every":"P8M1WT50H50M"}],"timezone":"Australia/Lord_Howe"},"after":"2026-04-24T07:51:17.148229Z","next":"2026-08-11T19:10:00.000000Z"}
+{"spec":{"intervals":[{"every":"P7M","offset":"P2Y9DT41H"}],"timezone":"Mars/Base"},"after":"2025-11-18T20:32:25.471373Z","next":"2026-01-27T17:00:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron","0 12 29 2 *"],"timezone":"+05:30"},"after":"2025-11-26T19:57:59.982784Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["0 9 * * 1-5"]},"after":"2026-10-18T02:53:41.643187Z","next":"2026-10-19T09:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *"],"intervals":[{"every":"P5MT41M"},{"every":"P3WT1M359S"}],"timezone":"Mars/Base"},"after":"2026-12-22T10:12:08.919035Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["0 12 29 2 *","0 0 1 * *"],"intervals":[{"every":"P0YT39H1494S"}],"timezone":"Mars/Base"},"after":"2026-10-01T00:49:10.193998Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["0 12 29 2 *","0 12 29 2 *"],"intervals":[{"every":"P2Y4D"},{"every":"P2DT1921S"}],"timezone":"Australia/Lord_Howe"},"after":"2026-04-19T09:01:55.922271Z","next":"2026-04-21T02:17:29.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *","30 2 * * SUN"],"intervals":[{"every":"P15DT48M"}],"timezone":"Australia/Lord_Howe"},"after":"2027-07-03T02:05:52.166470Z","next":"2027-07-03T02:15:00.000000Z"}
+{"spec":{"intervals":[{"every":"P0YT24H7132S"},{"every":"P0D"}],"timezone":"Asia/Kolkata"},"after":"2027-12-18T02:17:58.192301Z","next":"2027-12-18T06:36:32.000000Z"}
+{"spec":{"timezone":"EST"},"after":"2028-03-18T15:40:10.783988Z","next":null}
+{"spec":{"cron_expressions":["30 2 * * SUN","bad cron"],"intervals":[{"every":"PT303S"},{"every":"PT53M637S","offset":"P3W"}],"timezone":""},"after":"2026-12-23T13:29:09.082410Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"intervals":[{"every":"P33D"}]},"after":"2027-07-26T07:12:48.904833Z","next":"2027-08-24T00:00:00.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *","bad cron"],"intervals":[{"every":"PT14H"}],"timezone":"America/New_York"},"after":"2025-02-18T14:29:12.170410Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["bad cron"],"intervals":[{"every":"P0WT24H"}],"timezone":"Europe/Budapest"},"after":"2028-01-20T19:03:56.187132Z","error":"InvalidArgumentException"}
+{"spec":{"intervals":[{"every":"PT0S"},{"every":"P8M1W","offset":"PT10H"}],"timezone":"Asia/Kolkata"},"after":"2028-07-17T18:25:06.530828Z","next":"2028-11-01T10:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"PT5803S"}]},"after":"2027-05-13T01:37:32.581499Z","next":"2027-05-13T02:43:34.000000Z"}
+{"spec":{"cron_expressions":["5 4 L * ?","bad cron"],"intervals":[{"every":"P2Y"},{"every":"P0WT45M"}],"timezone":"America/New_York"},"after":"2028-02-20T07:25:36.838272Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["*/15 * * * *"],"intervals":[{"every":"PT2002S"}],"timezone":"EST"},"after":"2025-03-29T13:26:40.292059Z","next":"2025-03-29T13:30:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron"],"intervals":[{"every":"P1D ","offset":"PT2H"},{"every":"PT1327S","offset":"P2Y14M"}],"timezone":"Europe/Budapest"},"after":"2027-02-02T00:49:07.776196Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["30 2 * * SUN","0 3 * * *"],"intervals":[{"every":"P1WT5473S"}],"timezone":"America/New_York"},"after":"2026-07-20T04:33:34.275358Z","next":"2026-07-20T07:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *"],"timezone":"UTC"},"after":"2025-09-02T14:36:10.957055Z","next":"2025-09-03T03:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P2WT12M6553S"},{"every":"PT6M","offset":""}],"timezone":"Australia/Lord_Howe"},"after":"2028-02-23T17:47:09.731427Z","next":"2028-02-23T17:48:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5","0 3 * * *"],"intervals":[{"every":"P2Y"}],"timezone":""},"after":"2028-06-22T12:16:29.346585Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"timezone":"Europe/Budapest"},"after":"2026-09-19T13:27:57.572792Z","next":null}
+{"spec":{"cron_expressions":["0 9 * * 1-5","*/15 * * * *"],"intervals":[{"every":"P24DT50H89M6622S","offset":"P0Y7MT47H"}],"timezone":"+05:30"},"after":"2027-01-14T18:32:42.092624Z","next":"2027-01-14T18:45:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron"],"intervals":[{"every":"P1Y35D"}],"timezone":"Europe/Budapest"},"after":"2026-08-07T22:55:31.459048Z","error":"InvalidArgumentException"}
+{"spec":{"intervals":[{"every":"PT3447S","offset":"P1WT14H"},{"every":"P0WT15H","offset":"P0Y10M9DT90M"}],"timezone":"Mars/Base"},"after":"2025-04-07T02:32:26.217195Z","next":"2025-04-07T03:22:12.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *"],"intervals":[{"every":"PT639S","offset":"PT1970S"}]},"after":"2025-06-08T15:15:16.360987Z","next":"2025-06-08T15:21:44.000000Z"}
+{"spec":{"timezone":"America/New_York"},"after":"2027-08-20T20:24:40.689560Z","next":null}
+{"spec":{"cron_expressions":["","0 0 1 * *"],"timezone":"EST"},"after":"2025-03-24T19:19:49.674151Z","next":"2025-04-01T05:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P1MT47H29M","offset":"P0MT6771S"},{"every":"PT1319S"}],"timezone":"Australia/Lord_Howe"},"after":"2028-10-19T05:48:21.714653Z","next":"2028-10-19T06:01:36.000000Z"}
+{"spec":{"cron_expressions":["@hourly"],"intervals":[{"every":"PT71M"},{"every":"P6MT43H84M4807S"}],"timezone":"Asia/Kolkata"},"after":"2026-12-29T22:43:53.203631Z","next":"2026-12-29T22:53:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5","0 3 * * *"],"intervals":[{"every":"P2WT5852S"}]},"after":"2026-08-31T08:28:55.219966Z","next":"2026-08-31T09:00:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN","0 0 1 * *"],"intervals":[{"every":"P1YT74M208S"},{"every":"PT17H","offset":"P1W2D"}],"timezone":"+05:30"},"after":"2028-05-02T05:00:31.168474Z","next":"2028-05-02T11:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *"],"intervals":[{"every":"P1M1W0DT5875S"}],"timezone":"Australia/Lord_Howe"},"after":"2025-06-04T07:37:18.370045Z","next":"2025-07-07T04:40:25.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *","0 3 * * *"],"intervals":[{"every":"P1W16DT28H","offset":"P1MT15H72M"},{"every":"P36D"}]},"after":"2025-04-15T15:29:32.536226Z","next":"2025-04-15T15:30:00.000000Z"}
+{"spec":{"intervals":[{"every":"PT40H"},{"every":"P17DT32H52M"}]},"after":"2027-03-02T19:10:56.326103Z","next":"2027-03-03T00:00:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron"],"intervals":[{"every":"P7M0W16DT76M7185S","offset":"P1Y0W20DT1M"},{"every":"P2D1W"}],"timezone":"UTC"},"after":"2026-07-23T10:05:53.139117Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["0 3 * * *"],"intervals":[{"every":"PT21H56M4886S"}],"timezone":"+05:30"},"after":"2027-01-11T09:33:13.258129Z","next":"2027-01-11T12:29:04.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *"],"intervals":[{"every":"P10000000000000000000D"}]},"after":"2026-09-09T23:04:56.976613Z","next":"2028-02-29T12:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P2Y39DT13H"}],"timezone":"EST"},"after":"2028-09-18T12:28:37.154784Z","next":"2028-12-29T04:00:00.000000Z"}
+{"spec":{"cron_expressions":[""],"intervals":[{"every":"P1YT43H","offset":"PT30H"},{"every":"P2Y1W26DT52M"}],"timezone":"Europe/Budapest"},"after":"2025-04-22T19:13:38.965049Z","next":"2026-03-29T14:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5"],"intervals":[{"every":"P7M1W2DT31H"},{"every":"P10000000000000000000D"}],"timezone":"UTC"},"after":"2028-08-02T02:33:47.952177Z","next":"2028-08-02T09:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5","30 2 * * SUN"],"intervals":[{"every":"PT290S"},{"every":"P3M"}],"timezone":"Asia/Kolkata"},"after":"2025-09-17T23:04:00.338112Z","next":"2025-09-17T23:08:40.000000Z"}
+{"spec":{"cron_expressions":[""],"intervals":[{"every":"PT1H"},{"every":"PT49H"}],"timezone":"Europe/Budapest"},"after":"2028-06-03T07:44:27.309552Z","next":"2028-06-03T08:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P5MT18H","offset":"P2D1W"},{"every":"P8MT41H27M"}],"timezone":"UTC"},"after":"2026-01-13T14:18:49.661599Z","next":"2026-02-18T00:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *"],"timezone":"Europe/Budapest"},"after":"2027-05-11T19:42:53.913592Z","next":"2027-05-12T01:00:00.000000Z"}
+{"spec":[],"after":"2027-02-16T12:56:37.387766Z","next":null}
+{"spec":{"intervals":[{"every":"PT47H4M6730S","offset":"P2Y11MT9H"}],"timezone":"+05:30"},"after":"2026-01-21T09:23:20.792750Z","next":"2026-01-22T18:39:00.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *","*/15 * * * *"],"timezone":"UTC"},"after":"2028-05-14T07:53:50.895097Z","next":"2028-05-14T08:00:00.000000Z"}
+{"spec":{"cron_expressions":["5 4 L * ?"],"intervals":[{"every":"P14MT2335S"}],"timezone":"Australia/Lord_Howe"},"after":"2026-01-30T11:41:13.604252Z","next":"2026-01-30T17:05:00.000000Z"}
+{"spec":{"intervals":[{"every":"P1YT76M","offset":"PT79M"},{"every":"P3W"}],"timezone":"+05:30"},"after":"2028-09-25T05:36:42.848528Z","next":"2028-10-05T00:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5"],"timezone":"Asia/Kolkata"},"after":"2027-02-24T21:06:47.956260Z","next":"2027-02-25T03:30:00.000000Z"}
+{"spec":[],"after":"2028-04-14T03:36:28.375994Z","next":null}
+{"spec":{"cron_expressions":["0 3 * * *","0 9 * * 1-5"],"intervals":[{"every":"PT6H","offset":"P6DT84M"}],"timezone":"Australia/Lord_Howe"},"after":"2028-05-12T11:30:44.395347Z","next":"2028-05-12T13:24:00.000000Z"}
+{"spec":{"intervals":[{"every":"P24D"},{"every":"P2WT4279S"}],"timezone":"UTC"},"after":"2027-12-30T23:05:47.325379Z","next":"2028-01-03T16:25:32.000000Z"}
+{"spec":{"cron_expressions":["@hourly"],"intervals":[{"every":"P1YT43M"},{"every":"P29D"}]},"after":"2026-02-08T08:54:23.812658Z","next":"2026-02-08T09:00:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly"],"intervals":[{"every":"PT3583S"}],"timezone":""},"after":"2025-01-22T23:26:16.675758Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"timezone":"Europe/Budapest"},"after":"2026-05-30T23:23:52.266131Z","next":null}
+{"spec":{"cron_expressions":["*/15 * * * *"],"timezone":"EST"},"after":"2028-02-14T23:50:14.470614Z","next":"2028-02-15T00:00:00.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *",""],"intervals":[{"every":"P0YT1H","offset":"P0WT8H"}],"timezone":""},"after":"2027-06-07T19:53:22.969234Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["30 2 * * SUN"],"timezone":"Asia/Kolkata"},"after":"2028-05-29T03:34:56.514041Z","next":"2028-06-03T21:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *","0 0 1 * *"]},"after":"2027-08-15T11:40:57.096896Z","next":"2027-08-16T03:00:00.000000Z"}
+{"spec":{"timezone":""},"after":"2028-12-17T02:50:39.664623Z","next":null}
+{"spec":{"cron_expressions":["@hourly"],"intervals":[{"every":"P0M0W"}],"timezone":"Australia/Lord_Howe"},"after":"2028-05-15T17:00:17.591055Z","next":"2028-05-15T17:30:00.000000Z"}
+{"spec":{"cron_expressions":["5 4 L * ?"],"timezone":"+05:30"},"after":"2026-10-02T12:30:13.817300Z","next":"2026-10-30T22:35:00.000000Z"}
+{"spec":{"cron_expressions":[""],"timezone":"Australia/Lord_Howe"},"after":"2025-10-11T11:52:59.497618Z","next":null}
+{"spec":{"cron_expressions":["30 2 * * SUN"],"intervals":[{"every":"P3DT72M4810S","offset":"PT26H"}]},"after":"2026-11-06T16:56:55.714163Z","next":"2026-11-08T02:30:00.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *"],"intervals":[{"every":"P1W0DT2478S","offset":"PT1H1D"}],"timezone":"Australia/Lord_Howe"},"after":"2025-08-26T04:20:23.672791Z","next":"2025-08-26T16:30:00.000000Z"}
+{"spec":{"cron_expressions":["5 4 L * ?","5 4 L * ?"],"timezone":"America/New_York"},"after":"2028-09-26T17:09:54.285672Z","next":"2028-09-30T08:05:00.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *","0 12 29 2 *"],"intervals":[{"every":"PT41H"},{"every":"P2YT768S","offset":"PT74M"}]},"after":"2027-08-10T09:35:48.829688Z","next":"2027-08-11T13:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *"]},"after":"2026-12-18T02:37:10.737793Z","next":"2027-01-01T00:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"PT2280S"}],"timezone":"Asia/Kolkata"},"after":"2027-04-10T18:08:32.387529Z","next":"2027-04-10T18:18:00.000000Z"}
+{"spec":{"intervals":[{"every":"P2YT3H1M6031S"},{"every":"PT4H5264S"}],"timezone":"Europe/Budapest"},"after":"2027-11-27T21:21:56.470736Z","next":"2027-11-27T22:50:56.000000Z"}
+{"spec":{"cron_expressions":["5 4 L * ?"],"intervals":[{"every":"PT24H73M"}],"timezone":"Asia/Kolkata"},"after":"2028-06-29T21:20:34.587113Z","next":"2028-06-29T22:35:00.000000Z"}
+{"spec":{"cron_expressions":["5 4 L * ?","5 4 L * ?"],"timezone":"Australia/Lord_Howe"},"after":"2026-11-09T12:55:56.491228Z","next":"2026-11-29T17:05:00.000000Z"}
+{"spec":{"cron_expressions":["","5 4 L * ?"]},"after":"2027-03-30T00:24:20.232551Z","next":"2027-03-31T04:05:00.000000Z"}
+{"spec":{"timezone":"UTC"},"after":"2028-04-08T18:25:16.244290Z","next":null}
+{"spec":{"intervals":[{"every":"P0000-00-00T00:00:01"}],"timezone":""},"after":"2025-10-16T15:22:04.351586Z","next":"2025-10-16T15:22:05.000000Z"}
+{"spec":{"cron_expressions":["@hourly"],"intervals":[{"every":"P24DT13H","offset":"PT73M"},{"every":"PT0001H","offset":"PT179S"}]},"after":"2027-12-21T07:35:16.004358Z","next":"2027-12-21T08:00:00.000000Z"}
+{"spec":{"cron_expressions":["5 4 L * ?"],"intervals":[{"every":"P2Y2W"}]},"after":"2026-10-23T14:21:07.012334Z","next":"2026-10-31T04:05:00.000000Z"}
+{"spec":{"intervals":[{"every":"PT2H334S"}],"timezone":"+05:30"},"after":"2027-06-07T14:07:16.241567Z","next":"2027-06-07T14:37:20.000000Z"}
+{"spec":{"timezone":"UTC"},"after":"2025-12-18T08:15:38.145916Z","next":null}
+{"spec":{"cron_expressions":["0 9 * * 1-5","30 2 * * SUN"],"intervals":[{"every":"P1W19D"},{"every":"P1Y2WT27H4475S"}],"timezone":"+05:30"},"after":"2026-05-31T12:48:26.420842Z","next":"2026-06-01T03:30:00.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *","bad cron"],"intervals":[{"every":"P1Y14DT16H","offset":"P7DT18H33M1276S"}],"timezone":"+05:30"},"after":"2025-07-29T21:21:24.540313Z","error":"InvalidArgumentException"}
+{"spec":{"intervals":[{"every":"PT3498S"},{"every":"P1YT32M"}],"timezone":"+05:30"},"after":"2025-03-13T22:30:44.038395Z","next":"2025-03-13T22:47:36.000000Z"}
+{"spec":{"cron_expressions":["bad cron"],"intervals":[{"every":"PT0001H"},{"every":"PT2039S"}],"timezone":"America/New_York"},"after":"2026-01-07T13:11:28.272076Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["0 3 * * *"]},"after":"2025-05-31T22:03:34.191444Z","next":"2025-06-01T03:00:00.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *","0 0 1 * *"],"intervals":[{"every":"P1Y3M"},{"every":"PT3415S"}],"timezone":"UTC"},"after":"2027-09-05T14:55:07.050258Z","next":"2027-09-05T15:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"PT0S"},{"every":"P3M"}],"timezone":"+05:30"},"after":"2028-10-09T18:24:27.498224Z","next":"2028-11-22T00:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P2Y4DT773S"}],"timezone":"+05:30"},"after":"2028-01-24T08:19:31.383572Z","next":"2028-04-12T06:13:37.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN"],"timezone":"America/New_York"},"after":"2025-10-01T11:56:40.740893Z","next":"2025-10-05T06:30:00.000000Z"}
+{"spec":{"intervals":[{"every":"P2WT41H","offset":"P2Y21DT3094S"},{"every":"PT10H"}],"timezone":"Europe/Budapest"},"after":"2027-05-23T03:04:39.679839Z","next":"2027-05-23T06:00:00.000000Z"}
+{"spec":{"timezone":"America/New_York"},"after":"2027-10-17T15:41:49.694977Z","next":null}
+{"spec":{"cron_expressions":["0 0 1 * *"],"timezone":"Asia/Kolkata"},"after":"2028-07-30T19:04:59.738919Z","next":"2028-07-31T18:30:00.000000Z"}
+{"spec":{"intervals":[{"every":"P1YT40H78M514S"},{"every":"P2M2W36D","offset":"PT27H"}],"timezone":"America/New_York"},"after":"2026-11-08T11:01:41.556930Z","next":"2026-12-04T03:00:00.000000Z"}
+{"spec":{"timezone":"EST"},"after":"2025-06-03T22:27:12.880236Z","next":null}
+{"spec":{"cron_expressions":["0 9 * * 1-5","0 12 29 2 *"],"intervals":[{"every":"PT88M"}]},"after":"2025-08-30T11:13:44.507694Z","next":"2025-08-30T12:08:00.000000Z"}
+{"spec":{"intervals":[{"every":"P1Y25DT62M2348S"}],"timezone":"Mars/Base"},"after":"2025-04-09T12:19:42.487503Z","next":"2025-07-14T15:38:56.000000Z"}
+{"spec":{"cron_expressions":["bad cron","bad cron"],"intervals":[{"every":"P1D ","offset":"P2M3W"}]},"after":"2027-01-02T13:47:16.080317Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["@hourly"],"timezone":"UTC"},"after":"2025-03-16T19:30:27.356624Z","next":"2025-03-16T20:00:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN"],"intervals":[{"every":"P14M2WT0M","offset":"P2WT12H"}]},"after":"2028-05-23T09:23:53.091973Z","next":"2028-05-28T02:30:00.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *"],"intervals":[{"every":"PT598S"},{"every":"PT1831S"}],"timezone":"Europe/Budapest"},"after":"2027-09-21T19:11:22.110112Z","next":"2027-09-21T19:14:06.000000Z"}
+{"spec":{"cron_expressions":[""],"intervals":[{"every":"P0YT15H43M170S"},{"every":"P0Y4M3W11DT16M"}],"timezone":"Europe/Budapest"},"after":"2027-07-20T06:58:47.675672Z","next":"2027-07-20T19:58:20.000000Z"}
+{"spec":{"cron_expressions":["bad cron","5 4 L * ?"]},"after":"2025-07-10T23:30:27.226467Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["30 2 * * SUN","0 0 1 * *"],"timezone":"EST"},"after":"2028-11-09T10:57:35.176656Z","next":"2028-11-12T07:30:00.000000Z"}
+{"spec":{"cron_expressions":["5 4 L * ?","0 12 29 2 *"],"intervals":[{"every":"P6M"}],"timezone":"Mars/Base"},"after":"2025-03-27T03:09:00.188831Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"intervals":[{"every":"P2YT7H68M695S"},{"every":"P35DT14H9M3784S"}],"timezone":"+05:30"},"after":"2027-06-24T21:01:28.960090Z","next":"2027-07-24T16:39:20.000000Z"}
+{"spec":{"cron_expressions":["@hourly","30 2 * * SUN"],"intervals":[{"every":"PT103S"},{"every":"P9M38DT5311S"}],"timezone":"Australia/Lord_Howe"},"after":"2025-05-28T15:37:44.387552Z","next":"2025-05-28T15:38:53.000000Z"}
+{"spec":{"cron_expressions":["bad cron","0 3 * * *"]},"after":"2026-03-17T14:15:19.440496Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["0 3 * * *"]},"after":"2026-04-12T21:59:46.884289Z","next":"2026-04-13T03:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *","bad cron"],"intervals":[{"every":"PT11M3588S"},{"every":"P20DT4H","offset":"PT4H3382S"}],"timezone":"Mars/Base"},"after":"2026-11-13T21:04:35.653360Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["*/15 * * * *"]},"after":"2026-01-04T17:21:32.077077Z","next":"2026-01-04T17:30:00.000000Z"}
+{"spec":{"cron_expressions":["",""],"intervals":[{"every":"P2YT27M"},{"every":"PT1794S"}],"timezone":"America/New_York"},"after":"2027-08-29T17:43:41.476597Z","next":"2027-08-29T18:05:06.000000Z"}
+{"spec":{"intervals":[{"every":"P2WT6397S"},{"every":"P2WT3548S"}]},"after":"2028-05-24T02:57:10.948932Z","next":"2028-05-24T09:03:32.000000Z"}
+{"spec":{"intervals":[{"every":"PT38M"},{"every":"P1YT17H","offset":"P13MT77M6384S"}],"timezone":"UTC"},"after":"2026-06-13T19:14:32.588261Z","next":"2026-06-13T19:46:00.000000Z"}
+{"spec":[],"after":"2028-09-22T15:14:26.289793Z","next":null}
+{"spec":{"cron_expressions":["bad cron","0 9 * * 1-5"],"timezone":"Australia/Lord_Howe"},"after":"2027-08-31T06:25:26.494049Z","error":"InvalidArgumentException"}
+{"spec":{"intervals":[{"every":"P1WT43H75M"}],"timezone":"EST"},"after":"2026-11-07T07:23:59.467085Z","next":"2026-11-08T03:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *"],"timezone":"UTC"},"after":"2026-03-16T23:16:31.228343Z","next":"2026-04-01T00:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"PT49H"},{"every":"P1M3WT3H"}],"timezone":""},"after":"2026-07-02T18:03:55.386196Z","next":"2026-07-03T04:00:00.000000Z"}
+{"spec":[],"after":"2027-07-27T11:41:54.241202Z","next":null}
+{"spec":{"cron_expressions":[""],"timezone":"UTC"},"after":"2026-05-02T09:32:22.118361Z","next":null}
+{"spec":{"timezone":"UTC"},"after":"2028-07-09T22:40:59.549216Z","next":null}
+{"spec":{"intervals":[{"every":"P0Y2MT2H35M","offset":"P0M1W"},{"every":"P0WT7H88M","offset":"PT1112S"}],"timezone":"Australia/Lord_Howe"},"after":"2025-11-22T04:50:05.367146Z","next":"2025-11-22T04:54:32.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *"]},"after":"2028-12-22T04:58:51.739494Z","next":"2029-01-01T00:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"PT2364S","offset":"P2WT90M5716S"}],"timezone":"UTC"},"after":"2026-12-11T01:19:52.293340Z","next":"2026-12-11T01:35:40.000000Z"}
+{"spec":{"timezone":"Mars/Base"},"after":"2027-09-19T22:12:45.136293Z","next":null}
+{"spec":{"timezone":"America/New_York"},"after":"2026-09-18T06:39:18.367556Z","next":null}
+{"spec":{"cron_expressions":["@hourly","0 0 1 * *"],"intervals":[{"every":"PT18H"},{"every":"PT1161S"}]},"after":"2026-12-27T07:44:22.248728Z","next":"2026-12-27T07:47:33.000000Z"}
+{"spec":{"intervals":[{"every":"PT47M","offset":"PT282S"},{"every":"P2YT71M"}],"timezone":"Australia/Lord_Howe"},"after":"2028-08-20T21:00:07.662430Z","next":"2028-08-20T21:23:42.000000Z"}
+{"spec":[],"after":"2025-04-07T06:51:13.358558Z","next":null}
+{"spec":{"cron_expressions":["0 0 1 * *","0 9 * * 1-5"],"intervals":[{"every":"PT2820S"},{"every":"P0Y39DT61M3433S"}],"timezone":"America/New_York"},"after":"2028-12-25T20:54:46.442088Z","next":"2028-12-25T21:16:00.000000Z"}
+{"spec":{"intervals":[{"every":"PT78M"}],"timezone":"UTC"},"after":"2025-03-07T09:55:20.908120Z","next":"2025-03-07T10:36:00.000000Z"}
+{"spec":{"intervals":[{"every":"PT22M379S","offset":"P10MT3H"}],"timezone":"EST"},"after":"2026-10-27T12:14:05.048299Z","next":"2026-10-27T12:41:14.000000Z"}
+{"spec":{"intervals":[{"every":"PT4H"}],"timezone":"Mars/Base"},"after":"2028-08-13T08:51:24.952073Z","next":"2028-08-13T12:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *"],"intervals":[{"every":"P1Y","offset":"P1Y10MT29H61M"},{"every":"P1Y13MT20S"}],"timezone":"+05:30"},"after":"2025-04-22T03:07:48.115154Z","next":"2025-10-15T06:01:00.000000Z"}
+{"spec":{"cron_expressions":["","30 2 * * SUN"],"intervals":[{"every":"P1YT31M"}]},"after":"2026-01-14T07:37:34.963712Z","next":"2026-01-18T02:30:00.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *","0 3 * * *"],"timezone":""},"after":"2026-08-19T05:26:50.430612Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"timezone":"EST"},"after":"2028-04-17T06:51:07.261214Z","next":null}
+{"spec":{"cron_expressions":["0 9 * * 1-5","5 4 L * ?"],"intervals":[{"every":"P1Y3M"}],"timezone":"America/New_York"},"after":"2028-09-14T11:33:25.873440Z","next":"2028-09-14T13:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *"],"intervals":[{"every":"P2Y","offset":"P0000-00-00T00:00:01"}]},"after":"2026-04-21T19:35:44.643125Z","next":"2026-05-01T00:00:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN","30 2 * * SUN"],"intervals":[{"every":"P1Y3WT5820S"}],"timezone":"UTC"},"after":"2026-05-23T16:41:46.283178Z","next":"2026-05-24T02:30:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly","@hourly"],"timezone":"EST"},"after":"2027-01-25T16:01:54.455971Z","next":"2027-01-25T17:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P10MT28H3388S","offset":"PT5978S"}]},"after":"2026-09-04T21:06:44.688771Z","next":"2026-11-26T06:35:50.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *","30 2 * * SUN"],"intervals":[{"every":"p1d"}],"timezone":"Australia/Lord_Howe"},"after":"2027-02-13T07:05:04.672930Z","next":"2027-02-13T07:15:00.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *"],"intervals":[{"every":"P1YT49H6279S"},{"every":"PT1855S"}],"timezone":"UTC"},"after":"2027-06-05T08:26:41.707111Z","next":"2027-06-05T08:30:00.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *","bad cron"],"intervals":[{"every":"P10000000000000000000D","offset":"P1Y4DT1508S"}]},"after":"2028-01-10T11:01:47.905985Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["@hourly","@hourly"],"intervals":[{"every":"P4M1D"}],"timezone":"America/New_York"},"after":"2028-08-21T00:14:45.933969Z","next":"2028-08-21T01:00:00.000000Z"}
+{"spec":{"cron_expressions":["","30 2 * * SUN"],"intervals":[{"every":"PT33H"}]},"after":"2028-09-08T00:50:57.190736Z","next":"2028-09-09T06:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"PT1031S"},{"every":"P0Y","offset":"P8M"}],"timezone":"America/New_York"},"after":"2026-07-09T19:08:06.719351Z","next":"2026-07-09T19:20:45.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *","@hourly"],"intervals":[{"every":"PT7H"},{"every":"P2W16DT6643S"}]},"after":"2026-04-01T00:44:31.015730Z","next":"2026-04-01T01:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"p1d"}],"timezone":"America/New_York"},"after":"2026-11-02T01:30:32.374592Z","next":null}
+{"spec":{"cron_expressions":["*/15 * * * *"],"intervals":[{"every":"P1Y"},{"every":"PT1263S"}],"timezone":"Europe/Budapest"},"after":"2027-04-18T19:28:48.702431Z","next":"2027-04-18T19:30:00.000000Z"}
+{"spec":{"cron_expressions":["5 4 L * ?",""],"intervals":[{"every":"P10000000000000000000D"},{"every":"P37DT26H"}],"timezone":"Mars/Base"},"after":"2026-12-05T14:34:07.107324Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["@hourly","0 9 * * 1-5"],"timezone":"+05:30"},"after":"2026-04-05T04:13:06.749465Z","next":"2026-04-05T04:30:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5","bad cron"],"intervals":[{"every":"P0Y38DT36M"}]},"after":"2025-02-15T06:33:06.646846Z","error":"InvalidArgumentException"}
+{"spec":{"intervals":[{"every":"P10DT24M"},{"every":"P1MT9H3574S","offset":"PT1285S"}],"timezone":"+05:30"},"after":"2025-02-04T10:09:02.830622Z","next":"2025-02-04T11:36:00.000000Z"}
+{"spec":{"timezone":"America/New_York"},"after":"2028-01-30T14:28:26.867003Z","next":null}
+{"spec":{"intervals":[{"every":"P0Y"},{"every":"P1W6DT24H"}],"timezone":""},"after":"2027-09-16T17:34:46.701421Z","next":"2027-09-23T00:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5","0 3 * * *"],"intervals":[{"every":"PT0S"}],"timezone":"America/New_York"},"after":"2026-12-25T17:39:21.139614Z","next":"2026-12-26T08:00:00.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *"],"intervals":[{"every":"P13M10DT6H"},{"every":"PT9M"}],"timezone":"+05:30"},"after":"2027-04-26T15:02:21.996166Z","next":"2027-04-26T15:09:00.000000Z"}
+{"spec":{"timezone":"Australia/Lord_Howe"},"after":"2025-11-22T04:44:14.866184Z","next":null}
+{"spec":{"cron_expressions":["*/15 * * * *"],"timezone":"Asia/Kolkata"},"after":"2025-11-09T06:08:16.426273Z","next":"2025-11-09T06:15:00.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *"],"timezone":"Mars/Base"},"after":"2025-02-07T19:00:30.824249Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["0 3 * * *","bad cron"],"timezone":"+05:30"},"after":"2028-03-17T11:11:34.043760Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["5 4 L * ?"],"intervals":[{"every":"P5M","offset":"P0YT5599S"},{"every":"P2YT23H22M"}]},"after":"2026-04-16T20:11:11.548571Z","next":"2026-04-30T04:05:00.000000Z"}
+{"spec":{"cron_expressions":["","@hourly"],"timezone":"Europe/Budapest"},"after":"2027-11-21T00:48:10.798476Z","next":"2027-11-21T01:00:00.000000Z"}
+{"spec":[],"after":"2026-05-19T13:25:34.926627Z","next":null}
+{"spec":[],"after":"2025-07-02T13:16:49.841335Z","next":null}
+{"spec":{"cron_expressions":["5 4 L * ?"],"timezone":"Australia/Lord_Howe"},"after":"2025-12-15T04:52:26.906823Z","next":"2025-12-30T17:05:00.000000Z"}
+{"spec":{"intervals":[{"every":"PT12H56M"}],"timezone":"Europe/Budapest"},"after":"2027-05-16T05:24:43.238155Z","next":"2027-05-16T16:40:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN","@hourly"]},"after":"2027-06-20T17:01:54.547722Z","next":"2027-06-20T18:00:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly","5 4 L * ?"],"intervals":[{"every":"P0D"},{"every":"PT15H56M"}],"timezone":"Mars/Base"},"after":"2025-07-10T13:01:34.097668Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["bad cron"]},"after":"2025-11-22T02:28:47.208865Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["@hourly"],"intervals":[{"every":"P1DT"},{"every":"P16DT171S","offset":"PT5497S"}],"timezone":"UTC"},"after":"2025-07-07T13:59:54.754036Z","next":"2025-07-07T14:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P1YT6377S","offset":"P2Y3WT87M"},{"every":"P1WT41H","offset":"PT5967S"}],"timezone":"Asia/Kolkata"},"after":"2028-10-18T22:41:06.863948Z","next":"2028-10-26T12:39:27.000000Z"}
+{"spec":{"timezone":"Mars/Base"},"after":"2028-11-27T01:00:50.961735Z","next":null}
+{"spec":{"cron_expressions":["0 0 1 * *"]},"after":"2025-03-23T00:58:04.286253Z","next":"2025-04-01T00:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *","0 0 1 * *"],"intervals":[{"every":"P0WT37H","offset":"P3MT1786S"},{"every":"PT64M","offset":"P1YT77M"}]},"after":"2027-11-10T21:22:53.385961Z","next":"2027-11-10T22:05:00.000000Z"}
+{"spec":{"intervals":[{"every":"P1Y14M","offset":"PT539S"},{"every":"P19D","offset":"P3MT7M4385S"}],"timezone":"UTC"},"after":"2027-09-20T21:01:21.389915Z","next":"2027-09-24T01:20:05.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5"],"intervals":[{"every":"PT6H33M"},{"every":"P2Y3M8D"}]},"after":"2026-09-26T07:06:40.804278Z","next":"2026-09-26T13:30:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly"],"intervals":[{"every":"P2YT4037S"}],"timezone":"Australia/Lord_Howe"},"after":"2027-04-13T10:21:35.098325Z","next":"2027-04-13T10:30:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron"],"intervals":[{"every":"PT661S"},{"every":"PT12M"}],"timezone":"America/New_York"},"after":"2027-03-21T20:37:17.728379Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["@hourly","5 4 L * ?"],"timezone":"America/New_York"},"after":"2027-04-27T15:06:01.336689Z","next":"2027-04-27T16:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5","0 12 29 2 *"],"timezone":"+05:30"},"after":"2025-06-25T10:22:04.314053Z","next":"2025-06-26T03:30:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN"],"intervals":[{"every":"P3MT10H"}],"timezone":"Australia/Lord_Howe"},"after":"2025-06-20T11:37:54.014879Z","next":"2025-06-21T16:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"PT2926S","offset":"P14M1W"},{"every":"P10MT87M"}],"timezone":""},"after":"2026-04-19T09:05:14.306835Z","next":"2026-04-19T09:13:10.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *"],"timezone":""},"after":"2026-12-09T20:43:35.085404Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"timezone":"Australia/Lord_Howe"},"after":"2027-10-01T08:37:14.968155Z","next":null}
+{"spec":{"timezone":"Asia/Kolkata"},"after":"2025-05-19T15:15:09.829744Z","next":null}
+{"spec":{"cron_expressions":["0 0 1 * *","0 3 * * *"],"intervals":[{"every":"P1M22DT16H"},{"every":"P2M3WT11H"}]},"after":"2027-07-25T08:39:48.059771Z","next":"2027-07-26T03:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *","0 0 1 * *"],"timezone":"Europe/Budapest"},"after":"2027-01-31T16:46:15.098593Z","next":"2027-01-31T23:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *","30 2 * * SUN"],"intervals":[{"every":" P1D"}],"timezone":"UTC"},"after":"2025-05-30T19:45:25.730448Z","next":"2025-05-31T00:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5","0 0 1 * *"],"intervals":[{"every":"PT1679S"}]},"after":"2025-04-23T08:05:42.645380Z","next":"2025-04-23T08:14:15.000000Z"}
+{"spec":{"intervals":[{"every":"PT50H"},{"every":"PT2506S","offset":"P3M8D"}],"timezone":"+05:30"},"after":"2027-09-06T20:52:13.573710Z","next":"2027-09-06T21:11:44.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *"],"intervals":[{"every":"P1Y"},{"every":"PT38M","offset":"PT20H"}],"timezone":"Australia/Lord_Howe"},"after":"2026-05-14T16:49:28.472159Z","next":"2026-05-14T16:52:00.000000Z"}
+{"spec":{"cron_expressions":["","*/15 * * * *"],"timezone":"EST"},"after":"2028-06-03T10:03:41.468336Z","next":"2028-06-03T10:15:00.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *"],"intervals":[{"every":"P19DT48H"},{"every":"PT"}],"timezone":"Asia/Kolkata"},"after":"2028-11-19T04:07:50.889215Z","next":"2028-11-30T18:30:00.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *","5 4 L * ?"],"intervals":[{"every":"P3M3W4DT1911S"},{"every":"P1YT36H5863S","offset":"P25D"}],"timezone":"Asia/Kolkata"},"after":"2026-03-15T22:48:17.312055Z","next":"2026-03-15T23:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P1Y"}]},"after":"2027-04-24T08:42:37.232804Z","next":"2027-12-18T00:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *"],"intervals":[{"every":"P1Y3WT7H72M"}],"timezone":"UTC"},"after":"2026-10-11T01:05:44.863602Z","next":"2027-02-13T10:48:00.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *","@hourly"],"timezone":""},"after":"2028-06-07T21:21:00.707932Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"timezone":"+05:30"},"after":"2025-03-10T12:50:32.346852Z","next":null}
+{"spec":{"intervals":[{"every":"P2YT36M2062S"},{"every":"PT3206S"}]},"after":"2025-07-25T04:24:27.007658Z","next":"2025-07-25T04:51:48.000000Z"}
+{"spec":{"intervals":[{"every":"P0WT6970S"},{"every":"P0YT21H5M","offset":"P36D"}],"timezone":"+05:30"},"after":"2027-10-14T18:21:28.985741Z","next":"2027-10-14T18:56:30.000000Z"}
+{"spec":{"cron_expressions":["@hourly"],"intervals":[{"every":"P2WT71M3889S","offset":"P-1D"}]},"after":"2026-04-03T07:06:17.931867Z","next":"2026-04-03T08:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5"],"timezone":""},"after":"2025-09-30T19:10:26.746532Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["5 4 L * ?",""],"timezone":"Australia/Lord_Howe"},"after":"2025-04-02T10:52:02.889782Z","next":"2025-04-29T17:35:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron"],"intervals":[{"every":"P0000-00-00T00:00:01"}],"timezone":"+05:30"},"after":"2027-02-02T18:17:55.945007Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["*/15 * * * *"],"intervals":[{"every":"PT26H2352S","offset":"P1Y0W29DT85M"},{"every":"PT0S"}]},"after":"2026-04-02T14:04:52.320925Z","next":"2026-04-02T14:15:00.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *"]},"after":"2026-07-27T10:22:12.554345Z","next":"2028-02-29T12:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P0DT48H"}]},"after":"2027-01-11T23:02:03.334959Z","next":"2027-01-12T00:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P11MT37H74M6508S","offset":"P10M"},{"every":"PT1657S"}],"timezone":"America/New_York"},"after":"2028-08-18T10:00:15.446742Z","next":"2028-08-18T10:10:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN"]},"after":"2027-12-30T11:36:18.476223Z","next":"2028-01-02T02:30:00.000000Z"}
+{"spec":{"intervals":[{"every":"P0Y0WT14H63M"}],"timezone":"Europe/Budapest"},"after":"2026-05-20T03:38:21.495944Z","next":"2026-05-20T10:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *","0 12 29 2 *"],"intervals":[{"every":"P2Y11MT4291S","offset":"PT784S"},{"every":"PT2567S"}]},"after":"2028-08-06T16:58:36.383785Z","next":"2028-08-06T17:15:24.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *"],"intervals":[{"every":"P27DT38H","offset":"P1Y5MT5515S"}]},"after":"2026-05-31T18:45:36.926881Z","next":"2026-06-05T03:31:55.000000Z"}
+{"spec":{"cron_expressions":["@hourly","@hourly"],"intervals":[{"every":"P2WT2796S"}],"timezone":""},"after":"2028-02-14T06:16:57.010823Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["0 0 1 * *","0 3 * * *"],"intervals":[{"every":"P26DT2297S"}],"timezone":"Asia/Kolkata"},"after":"2026-09-02T15:28:45.643289Z","next":"2026-09-02T21:30:00.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *","bad cron"],"intervals":[{"every":"PT3234S"},{"every":"PT1341S"}],"timezone":"UTC"},"after":"2027-03-04T04:36:31.463173Z","error":"InvalidArgumentException"}
+{"spec":{"intervals":[{"every":"P1YT85M4502S","offset":"P14DT0M"},{"every":"P3W"}],"timezone":"Mars/Base"},"after":"2025-08-14T23:31:04.261301Z","next":"2025-08-28T00:00:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron"],"intervals":[{"every":"P0W37DT6309S"},{"every":"P0Y15DT42H82M4932S"}],"timezone":"EST"},"after":"2026-11-12T01:57:28.816136Z","error":"InvalidArgumentException"}
+{"spec":{"intervals":[{"every":"P17DT42H2667S"}],"timezone":"EST"},"after":"2025-10-05T17:31:59.736568Z","next":"2025-10-16T05:48:15.000000Z"}
+{"spec":{"intervals":[{"every":"PT0H85M","offset":"P1Y"},{"every":"P11M18DT0H2851S","offset":"P13MT1H75M4758S"}],"timezone":"America/New_York"},"after":"2027-01-11T23:57:46.247981Z","next":"2027-01-12T01:10:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly"],"intervals":[{"every":"PT15M","offset":"PT68M4338S"},{"every":"PT3543S"}],"timezone":"EST"},"after":"2028-07-16T17:29:38.972844Z","next":"2028-07-16T17:35:18.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *",""],"timezone":""},"after":"2028-03-02T22:43:27.071404Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"timezone":"+05:30"},"after":"2026-05-13T08:43:50.050083Z","next":null}
+{"spec":{"cron_expressions":["5 4 L * ?"]},"after":"2026-11-12T03:31:06.739811Z","next":"2026-11-30T04:05:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN"],"intervals":[{"every":"P0YT6610S"}],"timezone":"Mars/Base"},"after":"2028-09-22T10:00:02.582702Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["*/15 * * * *","5 4 L * ?"],"timezone":"Australia/Lord_Howe"},"after":"2028-07-03T01:46:37.640319Z","next":"2028-07-03T02:00:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly"],"intervals":[{"every":"PT1836S","offset":"PT2590S"},{"every":"P7M3W"}],"timezone":"UTC"},"after":"2026-07-15T22:08:44.987884Z","next":"2026-07-15T22:19:10.000000Z"}
+{"spec":{"cron_expressions":["","0 9 * * 1-5"],"intervals":[{"every":"P0001-00-02T00:00:00"},{"every":"P1Y4DT1813S","offset":"P0DT4573S"}],"timezone":"America/New_York"},"after":"2026-09-30T05:32:07.867223Z","next":"2026-09-30T13:00:00.000000Z"}
+{"spec":{"cron_expressions":["","*/15 * * * *"],"intervals":[{"every":"P1Y11M","offset":"PT5620S"},{"every":"P22D"}],"timezone":"Europe/Budapest"},"after":"2025-11-18T23:04:30.215113Z","next":"2025-11-18T23:15:00.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *"],"intervals":[{"every":"PT2773S"}],"timezone":"Australia/Lord_Howe"},"after":"2025-02-26T15:14:15.785187Z","next":"2025-02-26T15:39:30.000000Z"}
+{"spec":{"cron_expressions":["@hourly"],"timezone":"UTC"},"after":"2025-09-08T04:30:23.984658Z","next":"2025-09-08T05:00:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN","0 0 1 * *"],"timezone":"Europe/Budapest"},"after":"2028-12-29T10:16:56.559580Z","next":"2028-12-31T01:30:00.000000Z"}
+{"spec":{"intervals":[{"every":"PT778S"},{"every":"P1Y10M"}],"timezone":"Europe/Budapest"},"after":"2028-01-06T04:46:27.602969Z","next":"2028-01-06T04:46:50.000000Z"}
+{"spec":{"timezone":"Europe/Budapest"},"after":"2027-04-06T01:53:38.378676Z","next":null}
+{"spec":{"cron_expressions":["0 9 * * 1-5"],"intervals":[{"every":"P14M"},{"every":"P18D"}],"timezone":"America/New_York"},"after":"2025-05-03T17:44:45.343398Z","next":"2025-05-05T13:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P3M3W26DT26M4938S"},{"every":"P33DT19H6247S"}],"timezone":"Europe/Budapest"},"after":"2028-11-10T21:31:20.827259Z","next":"2028-11-15T14:54:05.000000Z"}
+{"spec":{"intervals":[{"every":"P0D","offset":"P14MT9H5257S"}]},"after":"2028-04-24T06:52:01.134666Z","next":null}
+{"spec":{"intervals":[{"every":"P0Y2WT6H"},{"every":"P2WT158S","offset":"P0D"}],"timezone":""},"after":"2028-11-13T03:30:28.021980Z","next":"2028-11-15T06:00:00.000000Z"}
+{"spec":{"timezone":"+05:30"},"after":"2028-08-13T09:21:41.706576Z","next":null}
+{"spec":{"cron_expressions":["@hourly"],"timezone":"Australia/Lord_Howe"},"after":"2028-04-06T19:02:35.208845Z","next":"2028-04-06T19:30:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN"],"intervals":[{"every":"P1Y0WT39H7137S"}],"timezone":"Europe/Budapest"},"after":"2027-05-12T06:47:55.663694Z","next":"2027-05-16T00:30:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5"],"intervals":[{"every":"P1WT54M"}],"timezone":"Mars/Base"},"after":"2025-06-28T11:41:26.754948Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"intervals":[{"every":"P2Y3WT1672S"}]},"after":"2027-01-16T21:05:46.136744Z","next":"2027-07-29T13:00:16.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *","0 3 * * *"],"timezone":"Asia/Kolkata"},"after":"2027-01-03T09:23:03.015597Z","next":"2027-01-03T21:30:00.000000Z"}
+{"spec":{"intervals":[{"every":"P6MT1376S","offset":"PT1005S"}],"timezone":"UTC"},"after":"2026-06-14T13:45:53.097101Z","next":"2026-09-05T20:14:05.000000Z"}
+{"spec":{"cron_expressions":["@hourly","30 2 * * SUN"],"intervals":[{"every":"PT3184S"}],"timezone":"America/New_York"},"after":"2028-12-26T07:02:28.175818Z","next":"2028-12-26T07:54:40.000000Z"}
+{"spec":{"timezone":"UTC"},"after":"2026-06-06T02:59:20.729849Z","next":null}
+{"spec":{"cron_expressions":["0 0 1 * *"],"intervals":[{"every":"PT2575S","offset":"P0WT25H255S"}]},"after":"2026-02-26T21:17:23.619421Z","next":"2026-02-26T21:21:20.000000Z"}
+{"spec":{"cron_expressions":["5 4 L * ?","0 12 29 2 *"],"intervals":[{"every":"P10MT29H2643S"},{"every":"P2Y2WT52M5892S"}],"timezone":""},"after":"2026-06-23T22:07:15.509825Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["30 2 * * SUN","30 2 * * SUN"],"intervals":[{"every":"PT1.5S"}]},"after":"2027-12-11T18:11:11.447463Z","next":"2027-12-12T02:30:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN","bad cron"],"timezone":"America/New_York"},"after":"2026-08-18T11:02:42.000211Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["","0 3 * * *"]},"after":"2028-03-05T14:53:40.915003Z","next":"2028-03-06T03:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P7M2DT2760S","offset":"P2W"},{"every":"P40DT23H64M"}],"timezone":"+05:30"},"after":"2027-05-13T17:18:18.483080Z","next":"2027-05-14T10:04:00.000000Z"}
+{"spec":{"cron_expressions":["","0 0 1 * *"],"intervals":[{"every":"P5M"},{"every":"PT3360S","offset":"PT"}]},"after":"2028-08-14T16:48:34.199692Z","next":"2028-08-14T16:56:00.000000Z"}
+{"spec":{"cron_expressions":[""],"intervals":[{"every":"PT7063S"}]},"after":"2026-06-08T13:24:51.398549Z","next":"2026-06-08T14:19:47.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5","bad cron"],"intervals":[{"every":"P27DT46H79M3381S"},{"every":"P0YT12M"}],"timezone":"Europe/Budapest"},"after":"2027-05-20T04:33:25.787358Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["5 4 L * ?","*/15 * * * *"],"intervals":[{"every":"P0W25DT25M1382S","offset":"P1YT61M"}],"timezone":"EST"},"after":"2026-09-06T22:24:40.086473Z","next":"2026-09-06T22:30:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron","30 2 * * SUN"],"intervals":[{"every":"PT20M"}],"timezone":"+05:30"},"after":"2025-02-07T12:54:37.780454Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["bad cron","0 12 29 2 *"],"intervals":[{"every":"P-1D"}],"timezone":"America/New_York"},"after":"2028-03-12T18:55:30.626285Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["0 3 * * *","5 4 L * ?"]},"after":"2025-09-10T03:37:15.157467Z","next":"2025-09-11T03:00:00.000000Z"}
+{"spec":{"cron_expressions":["5 4 L * ?"],"timezone":"Australia/Lord_Howe"},"after":"2028-02-10T04:00:32.749257Z","next":"2028-02-28T17:05:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly","0 0 1 * *"],"intervals":[{"every":"P2YT37H","offset":"P0Y"}],"timezone":"Europe/Budapest"},"after":"2026-02-20T03:50:17.946148Z","next":"2026-02-20T04:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *"],"intervals":[{"every":"P0001-00-02T00:00:00"},{"every":"P0YT4515S","offset":"P9M3WT86M1621S"}]},"after":"2026-02-24T13:29:29.615777Z","next":"2026-02-24T14:39:46.000000Z"}
+{"spec":{"timezone":"Asia/Kolkata"},"after":"2028-02-12T19:40:41.573202Z","next":null}
+{"spec":{"intervals":[{"every":"P4M13DT1134S"}]},"after":"2026-07-06T06:12:54.486276Z","next":"2026-10-24T01:08:24.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5","0 3 * * *"],"intervals":[{"every":"P1WT4H82M4361S","offset":"PT1H0M"}],"timezone":""},"after":"2025-04-19T07:30:53.387137Z","error":"DateInvalidTimeZoneException"}
+{"spec":[],"after":"2027-06-08T11:08:26.880261Z","next":null}
+{"spec":{"cron_expressions":["@hourly"],"intervals":[{"every":"PT2017S","offset":"P29DT13M"},{"every":"P35D"}],"timezone":"+05:30"},"after":"2027-03-10T12:07:23.696530Z","next":"2027-03-10T12:29:21.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *","5 4 L * ?"],"intervals":[{"every":"P1H","offset":"P2Y1WT1762S"}],"timezone":"EST"},"after":"2025-11-23T19:13:50.968843Z","next":"2025-11-30T09:05:00.000000Z"}
+{"spec":{"intervals":[{"every":"P0WT11H2M"}]},"after":"2028-12-02T09:51:05.986142Z","next":"2028-12-02T12:24:00.000000Z"}
+{"spec":{"intervals":[{"every":"P3WT27H"},{"every":"P11MT31H","offset":"P1YT1015S"}],"timezone":"Europe/Budapest"},"after":"2027-02-19T20:28:44.692764Z","next":"2027-03-09T00:00:00.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *","0 12 29 2 *"],"intervals":[{"every":"P26D","offset":"P3WT64M4072S"},{"every":"PT83M"}],"timezone":""},"after":"2026-12-23T16:27:56.727124Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"intervals":[{"every":"P12M0W32DT43H5978S","offset":"PT6M"},{"every":"P1Y4M8DT35H24M"}]},"after":"2026-10-11T23:16:34.702546Z","next":"2026-11-10T22:48:00.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *","0 0 1 * *"]},"after":"2025-11-26T12:57:50.592965Z","next":"2025-12-01T00:00:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron"],"intervals":[{"every":"P17DT33H47M"}],"timezone":"Asia/Kolkata"},"after":"2027-02-28T08:02:01.193376Z","error":"InvalidArgumentException"}
+{"spec":{"intervals":[{"every":"P1Y14M1W","offset":"PT4254S"},{"every":"PT60M6499S","offset":"PT3335S"}],"timezone":""},"after":"2027-12-06T10:24:22.555205Z","next":"2027-12-06T11:53:38.000000Z"}
+{"spec":{"timezone":"+05:30"},"after":"2027-01-31T00:27:59.659286Z","next":null}
+{"spec":{"cron_expressions":["0 9 * * 1-5"],"intervals":[{"every":"PT2230S"},{"every":"P2Y13M","offset":"P12D"}],"timezone":"America/New_York"},"after":"2025-04-18T07:44:07.900674Z","next":"2025-04-18T08:10:50.000000Z"}
+{"spec":{"cron_expressions":["bad cron"],"timezone":"EST"},"after":"2027-08-15T03:46:49.865937Z","error":"InvalidArgumentException"}
+{"spec":{"intervals":[{"every":"P24DT2361S","offset":"P1W"}],"timezone":"Europe/Budapest"},"after":"2026-12-02T10:40:18.138782Z","next":"2026-12-03T15:17:45.000000Z"}
+{"spec":{"cron_expressions":["bad cron",""],"intervals":[{"every":"P25DT10H36M"}],"timezone":"+05:30"},"after":"2025-05-25T17:38:44.058260Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["@hourly","0 3 * * *"],"intervals":[{"every":"P1Y","offset":"PT21H"},{"every":"PT12H"}],"timezone":"UTC"},"after":"2026-09-29T21:36:21.772996Z","next":"2026-09-29T22:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *",""],"timezone":"+05:30"},"after":"2025-03-14T12:15:10.893408Z","next":"2025-03-31T18:30:00.000000Z"}
+{"spec":{"timezone":"EST"},"after":"2026-10-30T11:31:38.151792Z","next":null}
+{"spec":{"cron_expressions":["0 12 29 2 *"],"intervals":[{"every":"P"},{"every":"PT1H1D"}]},"after":"2026-06-20T02:23:02.676005Z","next":"2028-02-29T12:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *",""],"intervals":[{"every":"P2Y6MT65M"}],"timezone":"UTC"},"after":"2027-01-05T19:13:26.746558Z","next":"2027-04-23T00:55:00.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *"]},"after":"2028-05-12T16:42:40.852450Z","next":"2028-05-12T16:45:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly"],"timezone":"America/New_York"},"after":"2026-04-12T17:13:45.002188Z","next":"2026-04-12T18:00:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron","0 9 * * 1-5"],"timezone":"UTC"},"after":"2026-06-22T15:01:01.549774Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["*/15 * * * *","@hourly"],"timezone":"Asia/Kolkata"},"after":"2026-10-24T17:49:42.988910Z","next":"2026-10-24T18:00:00.000000Z"}
+{"spec":{"cron_expressions":[""],"intervals":[{"every":"P1Y14MT2564S"}]},"after":"2025-07-08T02:54:42.438598Z","next":"2025-11-18T18:31:04.000000Z"}
+{"spec":{"cron_expressions":["","0 9 * * 1-5"],"intervals":[{"every":"P10DT68M2844S","offset":"P2W"},{"every":"P0M3WT31H26M"}],"timezone":"Mars/Base"},"after":"2028-04-24T01:53:46.502007Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["5 4 L * ?","bad cron"],"intervals":[{"every":"PT15H"}],"timezone":"Australia/Lord_Howe"},"after":"2028-06-06T17:15:28.914994Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["0 12 29 2 *"],"intervals":[{"every":"P2D1W"},{"every":"PT39M","offset":"P0YT15H75M"}],"timezone":""},"after":"2026-08-01T01:49:18.040844Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["bad cron","bad cron"],"intervals":[{"every":"P2Y13M0D"}],"timezone":"EST"},"after":"2025-06-02T08:18:51.515593Z","error":"InvalidArgumentException"}
+{"spec":{"timezone":"Europe/Budapest"},"after":"2028-10-03T19:28:42.711159Z","next":null}
+{"spec":{"cron_expressions":["0 12 29 2 *",""],"timezone":"Asia/Kolkata"},"after":"2028-05-04T05:43:36.605712Z","next":"2032-02-29T06:30:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron","bad cron"],"intervals":[{"every":"PT82M5189S"},{"every":"PT30H"}]},"after":"2028-10-22T09:13:21.689430Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":[""],"intervals":[{"every":"P0M3D"},{"every":"P12D"}],"timezone":"Mars/Base"},"after":"2028-10-01T17:17:24.931279Z","next":"2028-10-02T00:00:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN","5 4 L * ?"]},"after":"2025-09-22T17:56:23.343505Z","next":"2025-09-28T02:30:00.000000Z"}
+{"spec":{"intervals":[{"every":"P0YT26H"}],"timezone":""},"after":"2028-06-05T20:53:27.828648Z","next":"2028-06-06T16:00:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly","0 0 1 * *"],"intervals":[{"every":"PT56M","offset":"P2Y7M14DT19H2813S"},{"every":"P2M2W24D","offset":"PT1942S"}]},"after":"2028-02-07T08:32:59.196619Z","next":"2028-02-07T09:00:00.000000Z"}
+{"spec":[],"after":"2026-02-05T22:37:46.075230Z","next":null}
+{"spec":{"cron_expressions":["0 9 * * 1-5"],"intervals":[{"every":"P17D"},{"every":"PT15H"}]},"after":"2027-08-09T00:07:53.007469Z","next":"2027-08-09T09:00:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN"],"timezone":""},"after":"2026-05-21T20:23:28.044173Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["@hourly"],"intervals":[{"every":"PT76M","offset":"P1Y5DT0H"}],"timezone":"Australia/Lord_Howe"},"after":"2025-02-15T16:22:50.709285Z","next":"2025-02-15T16:44:00.000000Z"}
+{"spec":[],"after":"2028-06-03T13:07:12.296777Z","next":null}
+{"spec":{"intervals":[{"every":"P2Y0WT17H30M4320S","offset":"P4M0WT19H74M5148S"},{"every":"PT2985S"}]},"after":"2028-06-18T02:03:03.456788Z","next":"2028-06-18T02:45:00.000000Z"}
+{"spec":{"timezone":"UTC"},"after":"2026-11-28T09:13:17.290511Z","next":null}
+{"spec":[],"after":"2025-01-11T23:30:24.551344Z","next":null}
+{"spec":{"cron_expressions":["0 3 * * *","0 12 29 2 *"],"intervals":[{"every":"P0YT75M","offset":"PT110S"}],"timezone":"America/New_York"},"after":"2027-12-18T22:20:00.794731Z","next":"2027-12-18T22:31:50.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5","0 12 29 2 *"],"intervals":[{"every":"P0YT49H1983S","offset":"PT1308S"}],"timezone":"Mars/Base"},"after":"2027-03-11T14:16:51.934207Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"intervals":[{"every":"P0M2W"},{"every":"P3W"}],"timezone":"UTC"},"after":"2025-05-24T14:20:12.350841Z","next":"2025-06-05T00:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5"]},"after":"2027-02-09T14:55:34.314491Z","next":"2027-02-10T09:00:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron"],"intervals":[{"every":"P1YT38H5590S","offset":"P0Y0M2WT48H61M6837S"},{"every":"P39DT6564S"}],"timezone":"Europe/Budapest"},"after":"2027-03-16T19:51:12.457792Z","error":"InvalidArgumentException"}
+{"spec":{"timezone":"America/New_York"},"after":"2028-01-12T21:58:45.089881Z","next":null}
+{"spec":{"cron_expressions":["0 0 1 * *"],"timezone":"+05:30"},"after":"2026-02-26T19:34:34.752186Z","next":"2026-02-28T18:30:00.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *"],"intervals":[{"every":"P0WT55M","offset":"p1d"}]},"after":"2028-04-03T09:24:55.424400Z","next":"2028-04-03T09:35:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly","@hourly"],"intervals":[{"every":"P8M10DT1659S"}],"timezone":"Europe/Budapest"},"after":"2028-07-23T21:31:58.580462Z","next":"2028-07-23T22:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P14M31D"},{"every":"PT6161S","offset":"P4M"}],"timezone":"Mars/Base"},"after":"2028-07-16T18:20:04.017594Z","next":"2028-07-16T19:06:49.000000Z"}
+{"spec":{"intervals":[{"every":"P0W38DT42H"}]},"after":"2027-08-08T08:37:58.719755Z","next":"2027-09-06T12:00:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly"],"intervals":[{"every":"PT4890S"}],"timezone":"EST"},"after":"2026-09-19T21:34:57.528178Z","next":"2026-09-19T22:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P1Y6M27DT26H6878S"},{"every":"PT1917S"}],"timezone":"Mars/Base"},"after":"2025-02-11T23:04:08.836547Z","next":"2025-02-11T23:06:27.000000Z"}
+{"spec":{"cron_expressions":[""],"intervals":[{"every":"P10DT3583S"}]},"after":"2027-02-27T15:55:16.816079Z","next":"2027-03-09T06:10:40.000000Z"}
+{"spec":{"intervals":[{"every":"P13MT5H68M","offset":"P37DT10H84M"}],"timezone":"Mars/Base"},"after":"2028-09-27T01:39:35.009516Z","next":"2028-11-13T12:44:00.000000Z"}
+{"spec":{"intervals":[{"every":"PT2260S"},{"every":"P2WT37H4040S"}],"timezone":"EST"},"after":"2025-03-28T00:57:04.956252Z","next":"2025-03-28T01:14:00.000000Z"}
+{"spec":[],"after":"2026-02-14T12:12:29.042953Z","next":null}
+{"spec":{"intervals":[{"every":"P2Y9M3WT68M","offset":"P2Y0WT34H"}]},"after":"2028-08-28T21:49:45.649810Z","next":"2030-09-16T09:48:00.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *"],"intervals":[{"every":"P","offset":"P0Y20DT28M"}],"timezone":"Mars/Base"},"after":"2027-07-14T09:25:37.801341Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["0 12 29 2 *"],"intervals":[{"every":"P0Y1W28DT1902S"},{"every":"PT25M"}],"timezone":"UTC"},"after":"2027-02-03T12:12:10.354387Z","next":"2027-02-03T12:25:00.000000Z"}
+{"spec":{"intervals":[{"every":"P2YT2H"}]},"after":"2025-07-22T05:55:58.202946Z","next":"2025-12-20T08:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"PT4M","offset":"P14M21DT43H16M"}]},"after":"2025-10-26T02:49:29.367377Z","next":"2025-10-26T02:52:00.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *"],"intervals":[{"every":"P3W26DT27H58M4430S"},{"every":"PT48M"}],"timezone":"America/New_York"},"after":"2026-01-24T17:03:38.342263Z","next":"2026-01-24T17:36:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly"],"intervals":[{"every":"PT2318S","offset":"P7M32D"},{"every":"PT1.5S","offset":"P0Y1W10DT2779S"}],"timezone":"Mars/Base"},"after":"2025-04-15T23:54:54.775905Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["@hourly","30 2 * * SUN"],"intervals":[{"every":"P","offset":"P2Y1WT46H"},{"every":"PT90M","offset":"P7M0WT90M"}],"timezone":"Asia/Kolkata"},"after":"2025-07-07T09:21:30.832055Z","next":"2025-07-07T09:30:00.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *"],"intervals":[{"every":"PT35H","offset":"P3W"},{"every":"P3M","offset":"P0W"}],"timezone":""},"after":"2025-08-05T13:39:47.480038Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["0 3 * * *"],"intervals":[{"every":"P2Y"}],"timezone":"Australia/Lord_Howe"},"after":"2027-01-19T17:26:57.856138Z","next":"2027-01-20T16:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P1MT25H"},{"every":"P0WT3252S"}],"timezone":"UTC"},"after":"2027-01-15T01:57:28.837817Z","next":"2027-01-15T02:05:48.000000Z"}
+{"spec":{"cron_expressions":["@hourly","0 12 29 2 *"],"intervals":[{"every":"P4MT2283S","offset":"P2YT8H32M"}],"timezone":"America/New_York"},"after":"2028-01-30T06:33:10.210035Z","next":"2028-01-30T07:00:00.000000Z"}
+{"spec":{"timezone":""},"after":"2028-04-05T20:15:02.057570Z","next":null}
+{"spec":{"cron_expressions":["0 9 * * 1-5"],"intervals":[{"every":"P3W","offset":"P24DT17H6657S"}],"timezone":"Australia/Lord_Howe"},"after":"2028-09-04T09:04:05.323208Z","next":"2028-09-04T22:30:00.000000Z"}
+{"spec":{"cron_expressions":["5 4 L * ?"],"timezone":""},"after":"2028-05-18T20:36:07.157216Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["bad cron","0 3 * * *"],"intervals":[{"every":"PT23H"},{"every":"PT19H21M","offset":"P0YT6735S"}]},"after":"2026-08-22T21:38:46.402801Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["30 2 * * SUN","0 3 * * *"],"intervals":[{"every":"P0W","offset":"P9MT87M"}],"timezone":"UTC"},"after":"2025-12-30T19:59:28.748808Z","next":"2025-12-31T03:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *","0 9 * * 1-5"],"intervals":[{"every":"P0W14DT32M"}],"timezone":"Europe/Budapest"},"after":"2026-07-21T16:47:19.415310Z","next":"2026-07-22T01:00:00.000000Z"}
+{"spec":{"cron_expressions":["","0 9 * * 1-5"],"intervals":[{"every":"P01D"}],"timezone":"EST"},"after":"2025-08-23T18:42:19.820471Z","next":"2025-08-24T00:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"PT290S"}],"timezone":""},"after":"2028-02-01T17:24:09.518820Z","next":"2028-02-01T17:24:30.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *"],"timezone":"Asia/Kolkata"},"after":"2025-09-18T22:19:52.766568Z","next":"2025-09-30T18:30:00.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *",""],"intervals":[{"every":"P1DT","offset":"P21D"}],"timezone":"+05:30"},"after":"2025-06-19T02:11:28.883773Z","next":"2025-06-30T18:30:00.000000Z"}
+{"spec":{"timezone":"Europe/Budapest"},"after":"2025-05-04T20:18:25.525518Z","next":null}
+{"spec":{"cron_expressions":["30 2 * * SUN"],"intervals":[{"every":"P2W37DT73M"},{"every":"PT280S"}]},"after":"2028-12-30T22:37:18.978187Z","next":"2028-12-30T22:37:20.000000Z"}
+{"spec":{"intervals":[{"every":"P7M"},{"every":"P7MT1H78M","offset":"PT60M"}],"timezone":"Australia/Lord_Howe"},"after":"2025-06-25T10:58:24.572656Z","next":"2025-10-09T00:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5","*/15 * * * *"],"intervals":[{"every":"PT710S"}]},"after":"2026-10-27T21:23:11.704232Z","next":"2026-10-27T21:24:00.000000Z"}
+{"spec":{"timezone":"Asia/Kolkata"},"after":"2025-12-19T15:46:08.887758Z","next":null}
+{"spec":{"cron_expressions":["bad cron"],"intervals":[{"every":"P4M","offset":"PT49H3849S"}],"timezone":"UTC"},"after":"2026-08-05T09:36:56.132476Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["0 9 * * 1-5"],"intervals":[{"every":"PT681S","offset":"PT32H218S"},{"every":"P0M0W"}],"timezone":"Europe/Budapest"},"after":"2025-06-13T15:21:48.473463Z","next":"2025-06-13T15:27:47.000000Z"}
+{"spec":{"cron_expressions":["5 4 L * ?","0 12 29 2 *"],"timezone":"Asia/Kolkata"},"after":"2028-12-03T19:27:24.708727Z","next":"2028-12-30T22:35:00.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *"],"intervals":[{"every":"PT13H"},{"every":" P1D"}],"timezone":"America/New_York"},"after":"2025-08-21T14:23:33.418404Z","next":"2025-08-21T17:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"PT1H1D"}],"timezone":"Australia/Lord_Howe"},"after":"2026-06-03T10:27:06.424615Z","next":null}
+{"spec":{"timezone":"America/New_York"},"after":"2028-09-06T22:50:35.297934Z","next":null}
+{"spec":{"intervals":[{"every":"P20DT42H64M367S","offset":"P37DT177S"},{"every":"PT16M6580S"}],"timezone":"America/New_York"},"after":"2026-04-06T19:14:26.598740Z","next":"2026-04-06T19:35:20.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *","0 12 29 2 *"],"intervals":[{"every":"P32D","offset":"P1D "},{"every":"P0Y26DT7M"}],"timezone":""},"after":"2026-07-15T22:21:09.814577Z","error":"DateInvalidTimeZoneException"}
+{"spec":[],"after":"2027-06-27T18:49:22.862856Z","next":null}
+{"spec":{"cron_expressions":["30 2 * * SUN","*/15 * * * *"],"timezone":"Australia/Lord_Howe"},"after":"2025-11-30T14:58:32.313439Z","next":"2025-11-30T15:00:00.000000Z"}
+{"spec":{"cron_expressions":[""],"intervals":[{"every":"P1YT5918S"},{"every":"PT38H33M","offset":"P34D"}],"timezone":"+05:30"},"after":"2028-04-11T08:44:33.544721Z","next":"2028-04-12T07:03:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly","*/15 * * * *"],"intervals":[{"every":"PT3795S"},{"every":"P0W33DT41H","offset":"PT473S"}],"timezone":"EST"},"after":"2027-02-28T21:52:28.665375Z","next":"2027-02-28T22:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *","0 0 1 * *"],"intervals":[{"every":"P6D","offset":"PT1702S"},{"every":"PT9H"}],"timezone":"Mars/Base"},"after":"2027-05-29T13:03:58.913042Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["0 12 29 2 *"],"intervals":[{"every":"P39DT858S"}]},"after":"2028-11-07T02:09:20.460706Z","next":"2028-12-15T11:33:36.000000Z"}
+{"spec":{"timezone":"UTC"},"after":"2028-04-30T05:30:51.590818Z","next":null}
+{"spec":{"intervals":[{"every":"P10000000000000000000D","offset":"P32DT30H5494S"}],"timezone":"+05:30"},"after":"2025-08-27T10:46:27.602244Z","next":null}
+{"spec":{"timezone":"+05:30"},"after":"2027-05-13T07:09:58.083532Z","next":null}
+{"spec":{"cron_expressions":[""],"timezone":"UTC"},"after":"2025-11-04T22:27:47.081161Z","next":null}
+{"spec":{"cron_expressions":["5 4 L * ?"],"timezone":"Australia/Lord_Howe"},"after":"2028-03-21T00:06:50.016769Z","next":"2028-03-30T17:05:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN"],"intervals":[{"every":"P1WT1585S","offset":"P14MT35H6058S"},{"every":"P3WT87M"}],"timezone":"Europe/Budapest"},"after":"2025-12-18T00:23:47.684916Z","next":"2025-12-21T01:30:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5"],"intervals":[{"every":"PT4179S"},{"every":"P0Y"}],"timezone":"UTC"},"after":"2026-01-26T15:36:49.126614Z","next":"2026-01-26T15:55:27.000000Z"}
+{"spec":{"timezone":"Mars/Base"},"after":"2025-09-16T08:19:19.226970Z","next":null}
+{"spec":{"cron_expressions":["0 0 1 * *","0 9 * * 1-5"],"intervals":[{"every":"P0Y","offset":"P2Y"},{"every":"PT61M4517S","offset":"P2WT6816S"}],"timezone":"Europe/Budapest"},"after":"2026-05-29T12:30:50.939478Z","next":"2026-05-29T14:38:47.000000Z"}
+{"spec":{"cron_expressions":["bad cron","bad cron"],"intervals":[{"every":"P39DT6H384S"},{"every":"P20DT27H"}],"timezone":"Mars/Base"},"after":"2025-03-07T00:30:21.003180Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["5 4 L * ?","0 3 * * *"],"timezone":"UTC"},"after":"2026-08-22T00:55:33.193573Z","next":"2026-08-22T03:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *","0 9 * * 1-5"],"timezone":"Asia/Kolkata"},"after":"2025-08-16T10:36:51.323995Z","next":"2025-08-18T03:30:00.000000Z"}
+{"spec":{"intervals":[{"every":"P7M","offset":"P1D "},{"every":"P1M1WT1902S"}],"timezone":"America/New_York"},"after":"2027-04-19T10:36:54.086094Z","next":"2027-05-16T11:02:12.000000Z"}
+{"spec":{"cron_expressions":["5 4 L * ?"],"timezone":"EST"},"after":"2028-01-15T02:44:37.614243Z","next":"2028-01-31T09:05:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN"],"timezone":"Europe/Budapest"},"after":"2026-07-02T09:38:41.561526Z","next":"2026-07-05T00:30:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron"],"intervals":[{"every":"P9MT507S"}],"timezone":""},"after":"2025-05-07T07:12:52.164454Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["5 4 L * ?"],"intervals":[{"every":"PT47H5235S"}],"timezone":"EST"},"after":"2025-04-25T00:11:32.296346Z","next":"2025-04-25T08:50:45.000000Z"}
+{"spec":{"cron_expressions":["","@hourly"],"intervals":[{"every":"P0001-00-02T00:00:00"}]},"after":"2027-03-01T16:20:10.099185Z","next":"2027-03-01T17:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *","0 9 * * 1-5"],"intervals":[{"every":"P1Y"},{"every":"PT15H3056S","offset":"P"}]},"after":"2028-06-05T07:20:19.977361Z","next":"2028-06-05T09:00:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly"],"timezone":"EST"},"after":"2025-01-22T22:53:16.394003Z","next":"2025-01-22T23:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *"],"timezone":"Asia/Kolkata"},"after":"2026-12-22T02:45:03.120749Z","next":"2028-02-29T06:30:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly"],"timezone":"UTC"},"after":"2027-07-31T06:34:00.577717Z","next":"2027-07-31T07:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P0Y31DT2H"}],"timezone":"Australia/Lord_Howe"},"after":"2025-03-10T15:57:53.143767Z","next":"2025-03-26T02:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *",""],"intervals":[{"every":"PT21H","offset":"PT36H52M"}]},"after":"2028-05-14T03:55:18.487731Z","next":"2028-05-14T06:52:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron","0 3 * * *"],"intervals":[{"every":"P2YT49H"}],"timezone":"Asia/Kolkata"},"after":"2026-09-15T23:10:32.398680Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["5 4 L * ?","0 3 * * *"],"intervals":[{"every":"PT58M6403S"},{"every":"PT0001H","offset":"P8D"}],"timezone":"UTC"},"after":"2026-09-01T04:32:20.268467Z","next":"2026-09-01T05:00:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly"],"intervals":[{"every":"P2MT23H53M"},{"every":"P0WT52M"}],"timezone":"Asia/Kolkata"},"after":"2028-05-18T14:59:37.518692Z","next":"2028-05-18T15:16:00.000000Z"}
+{"spec":{"timezone":"Europe/Budapest"},"after":"2025-01-25T10:14:28.816783Z","next":null}
+{"spec":{"cron_expressions":["0 9 * * 1-5","0 12 29 2 *"],"intervals":[{"every":" P1D"},{"every":"P2YT1213S"}]},"after":"2025-08-27T08:05:10.744539Z","next":"2025-08-27T09:00:00.000000Z"}
+{"spec":{"timezone":"Australia/Lord_Howe"},"after":"2026-03-24T00:52:36.997737Z","next":null}
+{"spec":{"intervals":[{"every":"PT1H1D"}]},"after":"2025-09-28T09:34:24.019639Z","next":null}
+{"spec":{"cron_expressions":["5 4 L * ?"],"intervals":[{"every":"PT3180S","offset":"PT3095S"},{"every":"PT36M5891S"}],"timezone":"Europe/Budapest"},"after":"2028-07-01T04:16:33.927473Z","next":"2028-07-01T04:19:03.000000Z"}
+{"spec":{"cron_expressions":[""],"intervals":[{"every":"P0Y"}]},"after":"2028-01-18T13:50:58.920347Z","next":null}
+{"spec":{"intervals":[{"every":"P10M"}],"timezone":"EST"},"after":"2025-01-18T19:05:57.867674Z","next":"2025-11-08T00:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P21DT46H"}],"timezone":"Mars/Base"},"after":"2028-03-08T12:21:03.412222Z","next":"2028-03-23T16:00:00.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *"],"intervals":[{"every":"PT1360S"},{"every":"P1Y11M2WT11H"}],"timezone":"America/New_York"},"after":"2026-04-17T13:18:27.891305Z","next":"2026-04-17T13:20:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN"]},"after":"2027-06-16T01:40:37.235997Z","next":"2027-06-20T02:30:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly","0 0 1 * *"],"intervals":[{"every":"P1W"},{"every":"P1WT50H84M"}],"timezone":"Europe/Budapest"},"after":"2026-08-05T21:06:29.049442Z","next":"2026-08-05T22:00:00.000000Z"}
+{"spec":{"cron_expressions":["","@hourly"],"intervals":[{"every":"P7M1WT18H65M5161S"}]},"after":"2026-07-04T07:04:23.124652Z","next":"2026-07-04T08:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *","0 0 1 * *"],"timezone":"Asia/Kolkata"},"after":"2026-03-27T01:44:50.751481Z","next":"2026-03-27T21:30:00.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *","bad cron"],"intervals":[{"every":"P14MT1234S"}]},"after":"2028-05-20T05:56:53.160699Z","error":"InvalidArgumentException"}
+{"spec":{"timezone":"+05:30"},"after":"2025-05-19T14:42:07.228540Z","next":null}
+{"spec":{"cron_expressions":["0 3 * * *"],"intervals":[{"every":"P9M35DT37H1054S"}],"timezone":"America/New_York"},"after":"2026-11-30T21:25:50.844234Z","next":"2026-12-01T08:00:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN","0 9 * * 1-5"],"timezone":"+05:30"},"after":"2027-10-13T15:49:56.846238Z","next":"2027-10-14T03:30:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN","0 9 * * 1-5"],"intervals":[{"every":"P1W11DT41H51M"},{"every":"P2MT56M","offset":"P0001-00-02T00:00:00"}]},"after":"2025-12-19T06:03:33.787931Z","next":"2025-12-19T09:00:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN","bad cron"],"timezone":"UTC"},"after":"2026-03-11T15:18:05.561693Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["bad cron"],"timezone":"Asia/Kolkata"},"after":"2027-02-19T16:41:34.793050Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["30 2 * * SUN"],"intervals":[{"every":"P2M34DT21M","offset":"PT0H2068S"},{"every":"P1YT16H"}],"timezone":"Mars/Base"},"after":"2027-02-10T17:28:21.760356Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"intervals":[{"every":"P2D1W","offset":"PT5H38M"}]},"after":"2027-09-06T10:44:19.577934Z","next":null}
+{"spec":{"cron_expressions":["@hourly",""],"intervals":[{"every":"P0WT6H4375S"}]},"after":"2025-02-19T11:37:15.995304Z","next":"2025-02-19T12:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5"],"intervals":[{"every":"PT21H"},{"every":"PT48H"}],"timezone":"Asia/Kolkata"},"after":"2026-05-15T09:24:35.154539Z","next":"2026-05-15T18:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P6MT23H76M"},{"every":"PT2327S"}],"timezone":"Mars/Base"},"after":"2028-06-22T02:52:12.417648Z","next":"2028-06-22T02:52:32.000000Z"}
+{"spec":{"timezone":"Mars/Base"},"after":"2025-03-24T15:00:12.366398Z","next":null}
+{"spec":{"intervals":[{"every":"PT352S"}]},"after":"2027-08-07T09:12:13.590173Z","next":"2027-08-07T09:15:44.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *"],"intervals":[{"every":"P1W2D"},{"every":"P0Y18DT16H59M"}],"timezone":"Mars/Base"},"after":"2027-06-09T12:56:16.785554Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["bad cron"],"timezone":"Europe/Budapest"},"after":"2027-01-31T13:26:12.757105Z","error":"InvalidArgumentException"}
+{"spec":{"intervals":[{"every":"P10000000000000000000D"},{"every":"P1Y","offset":"PT42H4414S"}],"timezone":""},"after":"2025-05-19T06:15:19.873782Z","next":"2025-12-19T19:13:34.000000Z"}
+{"spec":{"cron_expressions":["5 4 L * ?","0 0 1 * *"],"intervals":[{"every":"PT80M3878S","offset":" P1D"}]},"after":"2025-11-08T09:35:26.065396Z","next":"2025-11-08T10:14:38.000000Z"}
+{"spec":{"cron_expressions":[""],"intervals":[{"every":"PT2957S"},{"every":"P7M19DT1127S"}],"timezone":"Asia/Kolkata"},"after":"2025-04-16T01:27:54.634186Z","next":"2025-04-16T02:02:59.000000Z"}
+{"spec":{"intervals":[{"every":"P32DT12H52M"}],"timezone":"+05:30"},"after":"2025-02-06T23:25:25.115886Z","next":"2025-02-20T20:28:00.000000Z"}
+{"spec":{"timezone":"+05:30"},"after":"2028-06-29T16:22:17.749149Z","next":null}
+{"spec":{"intervals":[{"every":"P0YT47M"}],"timezone":"Mars/Base"},"after":"2026-12-03T02:58:56.016708Z","next":"2026-12-03T03:45:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron"],"timezone":"Europe/Budapest"},"after":"2028-12-21T02:58:32.751986Z","error":"InvalidArgumentException"}
+{"spec":{"intervals":[{"every":"P1WT24H89M","offset":"PT1.5S"},{"every":"P10M11DT49H3395S","offset":"P3WT446S"}]},"after":"2026-12-11T11:27:37.257261Z","next":"2026-12-12T11:00:00.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *","@hourly"],"intervals":[{"every":"PT33M5297S","offset":"PT59M"},{"every":"PT52M"}],"timezone":"Australia/Lord_Howe"},"after":"2027-03-10T12:10:30.418249Z","next":"2027-03-10T12:15:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5"],"timezone":"Asia/Kolkata"},"after":"2027-03-25T08:23:50.295558Z","next":"2027-03-26T03:30:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron","0 9 * * 1-5"]},"after":"2028-08-20T23:08:35.468998Z","error":"InvalidArgumentException"}
+{"spec":{"intervals":[{"every":"P0W5D"}]},"after":"2025-10-04T03:14:25.526172Z","next":"2025-10-09T00:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"PT3007S","offset":"PT44H"},{"every":"P27DT49H"}],"timezone":"America/New_York"},"after":"2027-02-12T21:06:31.528839Z","next":"2027-02-12T21:16:37.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *"],"intervals":[{"every":"P3M4DT2855S"}],"timezone":"Europe/Budapest"},"after":"2028-11-10T23:45:32.730300Z","next":"2028-12-15T13:36:35.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *","*/15 * * * *"],"intervals":[{"every":"P3WT24H6608S"},{"every":"PT8M","offset":"P14MT17M"}],"timezone":"UTC"},"after":"2026-06-19T09:44:32.385273Z","next":"2026-06-19T09:45:00.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *"]},"after":"2028-07-09T19:45:23.909735Z","next":"2028-08-01T00:00:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN","0 12 29 2 *"],"intervals":[{"every":"P6MT73M"}],"timezone":"EST"},"after":"2026-12-29T11:06:06.183637Z","next":"2027-01-03T07:30:00.000000Z"}
+{"spec":{"cron_expressions":[""],"intervals":[{"every":"P11M1W","offset":"P0YT6619S"}],"timezone":"+05:30"},"after":"2028-12-08T00:46:53.242429Z","next":"2029-01-19T01:50:19.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *","0 0 1 * *"],"timezone":"Australia/Lord_Howe"},"after":"2025-12-23T23:00:08.534955Z","next":"2025-12-31T13:00:00.000000Z"}
+{"spec":{"timezone":"UTC"},"after":"2027-07-07T02:04:39.748455Z","next":null}
+{"spec":{"cron_expressions":["@hourly","bad cron"],"intervals":[{"every":"P1Y3M"},{"every":"PT11M"}]},"after":"2025-08-13T18:28:10.001052Z","error":"InvalidArgumentException"}
+{"spec":{"intervals":[{"every":"PT15M","offset":"P13M2W40DT5614S"},{"every":"P1W"}]},"after":"2027-06-20T09:36:27.964154Z","next":"2027-06-20T09:48:34.000000Z"}
+{"spec":{"timezone":"America/New_York"},"after":"2026-05-27T13:27:37.280399Z","next":null}
+{"spec":{"intervals":[{"every":"PT841S"},{"every":"P2Y1W2DT16H"}],"timezone":"America/New_York"},"after":"2026-08-11T08:11:47.676166Z","next":"2026-08-11T08:17:01.000000Z"}
+{"spec":{"cron_expressions":["@hourly"],"intervals":[{"every":"P9M24DT36H31M","offset":"PT2911S"}]},"after":"2026-11-11T04:32:03.768302Z","next":"2026-11-11T05:00:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly","0 0 1 * *"],"intervals":[{"every":"P1W"}],"timezone":"+05:30"},"after":"2026-12-10T04:10:14.107477Z","next":"2026-12-10T04:30:00.000000Z"}
+{"spec":{"timezone":"America/New_York"},"after":"2025-01-20T12:38:15.731407Z","next":null}
+{"spec":{"cron_expressions":["bad cron"],"intervals":[{"every":"P2WT240S","offset":"PT0H3359S"},{"every":"P1YT12M4718S","offset":"PT1799S"}],"timezone":"America/New_York"},"after":"2025-09-03T13:12:27.729164Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["30 2 * * SUN"],"timezone":"America/New_York"},"after":"2028-12-11T20:58:08.791187Z","next":"2028-12-17T07:30:00.000000Z"}
+{"spec":{"timezone":"Mars/Base"},"after":"2028-08-23T11:10:48.787613Z","next":null}
+{"spec":{"cron_expressions":["0 12 29 2 *"],"intervals":[{"every":"P14M"},{"every":"PT887S"}],"timezone":"Australia/Lord_Howe"},"after":"2028-11-03T07:03:39.212632Z","next":"2028-11-03T07:14:21.000000Z"}
+{"spec":{"intervals":[{"every":"P2YT87M1244S"}],"timezone":"America/New_York"},"after":"2026-05-07T14:24:59.522654Z","next":"2027-12-20T04:04:16.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *"],"intervals":[{"every":"PT1.5S"}],"timezone":"Europe/Budapest"},"after":"2027-11-04T16:15:30.391066Z","next":"2027-11-05T02:00:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN","0 0 1 * *"],"intervals":[{"every":"P2D1W","offset":"P7D"}]},"after":"2027-09-24T14:49:07.429099Z","next":"2027-09-26T02:30:00.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *"],"intervals":[{"every":"PT13H79M2379S"},{"every":"P0001-00-02T00:00:00"}],"timezone":"UTC"},"after":"2026-12-27T06:24:43.629134Z","next":"2026-12-27T08:33:27.000000Z"}
+{"spec":{"timezone":"Europe/Budapest"},"after":"2027-05-12T17:09:10.245632Z","next":null}
+{"spec":{"cron_expressions":["0 12 29 2 *","0 12 29 2 *"],"intervals":[{"every":"PT365S","offset":"PT6012S"},{"every":"P1M33D"}],"timezone":"UTC"},"after":"2027-05-06T18:35:26.651698Z","next":"2027-05-06T18:36:02.000000Z"}
+{"spec":{"cron_expressions":[""],"timezone":"Mars/Base"},"after":"2026-03-10T10:39:07.478198Z","next":null}
+{"spec":{"cron_expressions":["@hourly"],"intervals":[{"every":"PT5H3741S"}],"timezone":""},"after":"2028-01-05T18:20:34.888588Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["@hourly"],"intervals":[{"every":"P4M0WT2322S"}]},"after":"2026-07-21T16:28:15.662861Z","next":"2026-07-21T17:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P0000-00-00T00:00:01"},{"every":"P0M26D","offset":"PT46H5M"}],"timezone":""},"after":"2027-06-04T00:58:09.456761Z","next":"2027-06-04T00:58:10.000000Z"}
+{"spec":{"timezone":"+05:30"},"after":"2027-01-27T09:08:05.832968Z","next":null}
+{"spec":{"cron_expressions":["bad cron"],"timezone":"Australia/Lord_Howe"},"after":"2028-12-25T04:26:27.107672Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["@hourly","0 12 29 2 *"],"timezone":"EST"},"after":"2028-05-29T01:31:21.413723Z","next":"2028-05-29T02:00:00.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *"],"intervals":[{"every":"P0WT42H","offset":"PT1199S"}]},"after":"2028-01-04T18:16:16.915036Z","next":"2028-01-04T18:30:00.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *","5 4 L * ?"],"intervals":[{"every":"P1W2D"},{"every":"PT679S"}],"timezone":""},"after":"2028-03-04T03:20:11.545837Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["bad cron","bad cron"],"intervals":[{"every":"PT1447S"},{"every":"P21DT63M3717S"}],"timezone":"+05:30"},"after":"2025-12-26T02:29:16.499383Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["0 12 29 2 *",""],"timezone":"+05:30"},"after":"2027-07-15T01:40:42.095387Z","next":"2028-02-29T06:30:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5","0 0 1 * *"],"intervals":[{"every":"P1YT5H4M"}],"timezone":"+05:30"},"after":"2028-04-19T02:09:53.218402Z","next":"2028-04-19T03:30:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron"],"intervals":[{"every":"P0000-00-00T00:00:01","offset":"P3WT3M"},{"every":"P0YT88M4546S"}],"timezone":"Europe/Budapest"},"after":"2028-10-07T22:05:54.257137Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["@hourly","0 9 * * 1-5"],"intervals":[{"every":"P0YT6H24M6322S"}],"timezone":"EST"},"after":"2028-10-26T01:31:52.303616Z","next":"2028-10-26T02:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *","0 12 29 2 *"],"intervals":[{"every":"PT30H","offset":"PT5H"},{"every":"P1YT14M"}]},"after":"2027-06-02T15:17:32.785214Z","next":"2027-06-03T03:00:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly"],"intervals":[{"every":"P0Y3W"}]},"after":"2026-05-28T21:25:27.136769Z","next":"2026-05-28T22:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P7DT3H4M1770S","offset":"P2YT8H43M"},{"every":"P3WT78M646S","offset":"P0Y1W27DT4353S"}],"timezone":"Europe/Budapest"},"after":"2025-01-29T10:37:45.084511Z","next":"2025-02-04T14:28:30.000000Z"}
+{"spec":{"timezone":"America/New_York"},"after":"2025-04-12T14:27:45.093767Z","next":null}
+{"spec":{"cron_expressions":["*/15 * * * *"],"intervals":[{"every":"PT2059S"},{"every":"P0WT1487S"}],"timezone":"UTC"},"after":"2027-04-28T14:09:01.570182Z","next":"2027-04-28T14:15:00.000000Z"}
+{"spec":{"intervals":[{"every":"P2Y13M3WT23M2798S"}],"timezone":"UTC"},"after":"2028-04-30T19:08:55.882884Z","next":"2029-05-10T22:03:02.000000Z"}
+{"spec":{"timezone":"+05:30"},"after":"2027-02-17T20:04:45.834270Z","next":null}
+{"spec":{"timezone":"UTC"},"after":"2025-02-17T10:29:07.447213Z","next":null}
+{"spec":{"cron_expressions":["0 3 * * *"],"intervals":[{"every":"P12MT2744S"}],"timezone":"Europe/Budapest"},"after":"2026-04-10T12:32:48.747533Z","next":"2026-04-11T01:00:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly","0 12 29 2 *"],"intervals":[{"every":"P2Y0DT62M"}],"timezone":"Australia/Lord_Howe"},"after":"2026-09-23T18:09:40.405162Z","next":"2026-09-23T18:30:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5","@hourly"],"timezone":"EST"},"after":"2026-11-12T23:46:25.107691Z","next":"2026-11-13T00:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P2YT84M","offset":"P1D "},{"every":"P1YT42H1751S","offset":"P2Y11M25DT3333S"}],"timezone":""},"after":"2025-09-09T16:54:14.086905Z","next":"2025-12-20T15:12:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron","@hourly"],"timezone":"Europe/Budapest"},"after":"2027-08-10T09:28:31.100791Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["","@hourly"],"timezone":"+05:30"},"after":"2026-07-03T05:24:12.839482Z","next":"2026-07-03T05:30:00.000000Z"}
+{"spec":{"intervals":[{"every":"P1YT32M6644S"}]},"after":"2026-06-15T16:00:41.356533Z","next":"2026-12-23T15:35:48.000000Z"}
+{"spec":{"intervals":[{"every":"P6M","offset":"PT48S"},{"every":"PT6H","offset":"P5MT22H25M"}],"timezone":"Australia/Lord_Howe"},"after":"2028-12-19T18:07:36.150317Z","next":"2028-12-19T22:25:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5"],"timezone":"EST"},"after":"2026-03-31T00:05:56.526078Z","next":"2026-03-31T14:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"PT1603S"}],"timezone":"Australia/Lord_Howe"},"after":"2025-05-21T10:52:55.835917Z","next":"2025-05-21T11:17:21.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *"],"intervals":[{"every":"PT32M"}]},"after":"2025-09-04T12:46:58.433206Z","next":"2025-09-04T12:48:00.000000Z"}
+{"spec":{"cron_expressions":["5 4 L * ?","0 9 * * 1-5"],"intervals":[{"every":"P1W4DT18M4172S"},{"every":"P2WT2H5M"}]},"after":"2025-03-07T22:26:01.676230Z","next":"2025-03-10T09:00:00.000000Z"}
+{"spec":{"timezone":"Europe/Budapest"},"after":"2028-06-02T01:03:28.593956Z","next":null}
+{"spec":{"cron_expressions":["bad cron","5 4 L * ?"],"intervals":[{"every":"P12M11DT5606S"}]},"after":"2027-02-20T15:51:28.737245Z","error":"InvalidArgumentException"}
+{"spec":{"intervals":[{"every":"P2Y0W"},{"every":"P1YT22H"}]},"after":"2026-11-21T20:57:43.086715Z","next":"2027-02-08T06:00:00.000000Z"}
+{"spec":{"cron_expressions":["","0 9 * * 1-5"],"intervals":[{"every":"PT43M"}],"timezone":"Asia/Kolkata"},"after":"2026-07-21T01:21:39.190170Z","next":"2026-07-21T01:55:00.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *"],"intervals":[{"every":"P16DT11H"}],"timezone":"Europe/Budapest"},"after":"2025-10-10T17:20:39.897813Z","next":"2025-10-14T10:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *"],"intervals":[{"every":"P1Y1WT76M"}],"timezone":"Australia/Lord_Howe"},"after":"2028-11-27T17:25:11.888760Z","next":"2028-11-28T16:00:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly"],"intervals":[{"every":"P2MT16H57M","offset":"P2WT17H"}]},"after":"2028-04-09T01:18:43.454806Z","next":"2028-04-09T02:00:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN","0 0 1 * *"],"timezone":"UTC"},"after":"2026-09-20T08:31:47.183541Z","next":"2026-09-27T02:30:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN"],"timezone":""},"after":"2025-12-28T01:17:20.637191Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["bad cron",""],"intervals":[{"every":"P6M"},{"every":"P0Y19DT21M"}],"timezone":"Asia/Kolkata"},"after":"2028-12-26T13:46:01.187704Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["@hourly","0 9 * * 1-5"],"intervals":[{"every":"P7MT55M","offset":"P2YT10H"}],"timezone":"Australia/Lord_Howe"},"after":"2026-12-29T06:37:33.194389Z","next":"2026-12-29T07:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *"],"intervals":[{"every":"PT2311S"},{"every":"P7MT28H23M3499S","offset":"P1H"}],"timezone":"+05:30"},"after":"2027-06-21T07:21:11.470798Z","next":"2027-06-21T07:49:43.000000Z"}
+{"spec":{"timezone":"+05:30"},"after":"2026-09-24T13:51:06.096924Z","next":null}
+{"spec":{"intervals":[{"every":"P0Y3WT81M"},{"every":"P13M28DT53M"}],"timezone":"Australia/Lord_Howe"},"after":"2028-02-23T12:54:04.920105Z","next":"2028-03-02T18:09:00.000000Z"}
+{"spec":{"intervals":[{"every":"P8DT27H4252S"},{"every":"P10000000000000000000D","offset":"P11M0WT3H5951S"}],"timezone":"Asia/Kolkata"},"after":"2026-03-24T06:35:01.245998Z","next":"2026-03-29T01:30:28.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *"],"intervals":[{"every":"P0WT36M","offset":"P2YT31H5432S"}]},"after":"2028-01-27T05:04:39.934361Z","next":"2028-01-27T05:30:32.000000Z"}
+{"spec":{"intervals":[{"every":"P7MT14M"}],"timezone":"Europe/Budapest"},"after":"2026-05-08T07:51:47.649487Z","next":"2026-12-03T23:06:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron"],"intervals":[{"every":"P1YT39H"}],"timezone":"Asia/Kolkata"},"after":"2026-01-22T04:12:30.162444Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["0 9 * * 1-5","bad cron"],"intervals":[{"every":"P9M3W"},{"every":"P15D","offset":"P18D"}],"timezone":"Mars/Base"},"after":"2028-11-06T02:07:55.441990Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"intervals":[{"every":"P0WT4725S"},{"every":"P3WT648S","offset":"P2Y24DT4083S"}],"timezone":"EST"},"after":"2025-02-08T11:26:44.253213Z","next":"2025-02-08T12:22:30.000000Z"}
+{"spec":{"cron_expressions":["bad cron","0 3 * * *"]},"after":"2028-08-09T08:48:08.237585Z","error":"InvalidArgumentException"}
+{"spec":{"intervals":[{"every":"P4M","offset":"PT86M"}],"timezone":"EST"},"after":"2027-12-04T22:26:08.716976Z","next":"2028-02-26T01:26:00.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *"],"intervals":[{"every":"P13M3WT3261S"}],"timezone":"America/New_York"},"after":"2026-01-19T19:09:33.174773Z","next":"2026-01-20T08:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P3M39DT46H77M"}],"timezone":"UTC"},"after":"2026-03-10T15:01:50.491354Z","next":"2026-04-19T07:29:00.000000Z"}
+{"spec":{"cron_expressions":["0 0 1 * *"],"timezone":"Asia/Kolkata"},"after":"2026-06-29T04:16:30.557734Z","next":"2026-06-30T18:30:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN"],"timezone":"Asia/Kolkata"},"after":"2026-08-02T13:04:47.187823Z","next":"2026-08-08T21:00:00.000000Z"}
+{"spec":{"cron_expressions":["@hourly"],"intervals":[{"every":"PT2860S"},{"every":"PT2638S","offset":"PT"}],"timezone":"Europe/Budapest"},"after":"2028-04-27T02:21:47.408712Z","next":"2028-04-27T02:35:20.000000Z"}
+{"spec":{"cron_expressions":[""],"timezone":"+05:30"},"after":"2026-12-30T01:24:35.149947Z","next":null}
+{"spec":{"intervals":[{"every":"P2WT41M5551S"}],"timezone":"America/New_York"},"after":"2025-09-26T18:33:13.884679Z","next":"2025-10-02T23:31:35.000000Z"}
+{"spec":{"cron_expressions":["bad cron","@hourly"],"timezone":"+05:30"},"after":"2027-02-24T10:55:17.432973Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["0 0 1 * *","30 2 * * SUN"],"intervals":[{"every":"P1W"},{"every":"P13D"}],"timezone":"Australia/Lord_Howe"},"after":"2026-02-20T09:48:01.738348Z","next":"2026-02-21T15:30:00.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *","@hourly"],"intervals":[{"every":"PT80M","offset":"P0YT30M657S"},{"every":"P1H","offset":"P1WT51M"}],"timezone":"America/New_York"},"after":"2027-05-03T13:49:46.486180Z","next":"2027-05-03T14:00:00.000000Z"}
+{"spec":{"cron_expressions":[""],"intervals":[{"every":"P2W"},{"every":"P1WT27H"}],"timezone":"Australia/Lord_Howe"},"after":"2027-02-17T04:38:08.197029Z","next":"2027-02-24T03:00:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN"],"intervals":[{"every":"PT66M6672S"},{"every":"P"}],"timezone":"+05:30"},"after":"2028-09-07T04:05:51.807222Z","next":"2028-09-07T04:27:36.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *","@hourly"],"intervals":[{"every":"P2YT20H"},{"every":"PT2H16M"}],"timezone":"+05:30"},"after":"2026-09-04T02:58:08.866458Z","next":"2026-09-04T03:00:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN"]},"after":"2025-04-17T18:48:32.751543Z","next":"2025-04-20T02:30:00.000000Z"}
+{"spec":{"cron_expressions":["5 4 L * ?"],"intervals":[{"every":"P0D"},{"every":"PT33H34M"}]},"after":"2026-10-24T03:55:17.295775Z","next":"2026-10-25T04:38:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron","bad cron"],"intervals":[{"every":"PT2966S"}],"timezone":"Europe/Budapest"},"after":"2028-02-19T13:53:14.677613Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["0 0 1 * *","bad cron"],"intervals":[{"every":"PT51M5078S"}]},"after":"2026-08-14T17:39:52.890454Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["0 0 1 * *"],"timezone":"Mars/Base"},"after":"2027-05-21T20:10:13.143227Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"timezone":"Australia/Lord_Howe"},"after":"2027-04-05T00:11:09.055188Z","next":null}
+{"spec":{"cron_expressions":["@hourly"]},"after":"2025-01-06T16:23:14.305637Z","next":"2025-01-06T17:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *","0 3 * * *"]},"after":"2028-12-04T20:24:10.233883Z","next":"2028-12-05T03:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *","0 12 29 2 *"],"intervals":[{"every":"P3W"}],"timezone":"+05:30"},"after":"2027-07-31T02:00:51.896288Z","next":"2027-08-12T00:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5","30 2 * * SUN"]},"after":"2027-07-26T19:49:36.503106Z","next":"2027-07-27T09:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *",""]},"after":"2025-09-16T05:20:46.388159Z","next":"2025-09-17T03:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5","0 0 1 * *"],"intervals":[{"every":"P1YT13H3172S","offset":"PT3117S"},{"every":"PT15M"}],"timezone":"America/New_York"},"after":"2026-01-04T12:00:10.769130Z","next":"2026-01-04T12:15:00.000000Z"}
+{"spec":{"cron_expressions":["30 2 * * SUN"]},"after":"2026-08-31T22:28:14.121490Z","next":"2026-09-06T02:30:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron","5 4 L * ?"],"intervals":[{"every":"P0Y0WT86M"},{"every":"P2Y2M3W16DT27M","offset":"PT2120S"}],"timezone":"+05:30"},"after":"2027-07-15T21:26:34.731017Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["0 0 1 * *","0 3 * * *"],"intervals":[{"every":"P1YT90M"},{"every":"PT5018S","offset":"P1Y9MT37H71M4532S"}],"timezone":"Asia/Kolkata"},"after":"2027-12-21T21:30:06.658712Z","next":"2027-12-21T21:53:10.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *"],"intervals":[{"every":"P0YT6366S","offset":"P2Y1W"}],"timezone":"Asia/Kolkata"},"after":"2026-03-24T21:41:26.622374Z","next":"2026-03-24T21:45:00.000000Z"}
+{"spec":{"cron_expressions":["","*/15 * * * *"],"intervals":[{"every":"P2W"}],"timezone":"EST"},"after":"2027-11-17T15:00:41.485866Z","next":"2027-11-17T15:15:00.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *","5 4 L * ?"],"intervals":[{"every":"P1W33D","offset":"P12MT378S"}],"timezone":"Mars/Base"},"after":"2028-04-19T05:22:05.237645Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["","0 9 * * 1-5"]},"after":"2026-10-07T10:43:41.406206Z","next":"2026-10-08T09:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *"],"timezone":"Europe/Budapest"},"after":"2025-11-19T08:15:58.552197Z","next":"2028-02-29T11:00:00.000000Z"}
+{"spec":{"intervals":[{"every":"P0YT48H5728S"},{"every":"P0D"}],"timezone":"Asia/Kolkata"},"after":"2027-10-02T05:05:34.508435Z","next":"2027-10-03T19:39:12.000000Z"}
+{"spec":{"cron_expressions":["@hourly","bad cron"],"intervals":[{"every":"P0WT22M"},{"every":"PT623S","offset":"P12MT4H"}]},"after":"2026-06-12T03:09:06.754174Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":["5 4 L * ?"],"intervals":[{"every":"P2WT23H"},{"every":"P1YT435S"}]},"after":"2025-02-24T20:15:53.177304Z","next":"2025-02-28T04:05:00.000000Z"}
+{"spec":{"intervals":[{"every":"PT1551S"},{"every":"PT2326S","offset":"P2YT41H1729S"}]},"after":"2028-12-05T19:57:34.522907Z","next":"2028-12-05T20:10:57.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *","*/15 * * * *"],"timezone":"UTC"},"after":"2027-04-02T19:21:37.829761Z","next":"2027-04-02T19:30:00.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *"],"intervals":[{"every":"P0Y1WT9H"}],"timezone":"America/New_York"},"after":"2027-04-16T09:59:04.666378Z","next":"2027-04-17T07:00:00.000000Z"}
+{"spec":{"cron_expressions":["bad cron","*/15 * * * *"],"intervals":[{"every":"PT18H231S","offset":"P1D "}],"timezone":"EST"},"after":"2028-11-05T01:22:28.342817Z","error":"InvalidArgumentException"}
+{"spec":{"intervals":[{"every":"P5MT3453S"},{"every":"P2WT37M"}]},"after":"2026-05-04T07:48:00.274407Z","next":"2026-05-16T17:16:00.000000Z"}
+{"spec":{"intervals":[{"every":"PT9M","offset":"P2Y"}]},"after":"2026-03-09T07:12:49.000324Z","next":"2026-03-09T07:21:00.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *",""],"intervals":[{"every":"PT1474S"},{"every":"P13MT28M2342S","offset":"PT6295S"}]},"after":"2026-05-10T13:27:21.459455Z","next":"2026-05-10T13:30:00.000000Z"}
+{"spec":{"cron_expressions":["5 4 L * ?","0 12 29 2 *"],"intervals":[{"every":"PT25H1355S","offset":"P2WT31H"}]},"after":"2025-10-22T08:58:36.990677Z","next":"2025-10-23T01:45:20.000000Z"}
+{"spec":{"cron_expressions":["@hourly"],"timezone":"Australia/Lord_Howe"},"after":"2028-01-17T08:55:20.444833Z","next":"2028-01-17T09:00:00.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *"],"intervals":[{"every":"PT1.5S"}],"timezone":"Mars/Base"},"after":"2025-05-07T15:51:22.591059Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"intervals":[{"every":"P0Y31DT32H6046S","offset":"P38DT19H"},{"every":"P6MT78M6815S","offset":"PT1.5S"}],"timezone":"Australia/Lord_Howe"},"after":"2027-07-15T04:53:26.159920Z","next":"2027-08-06T03:16:48.000000Z"}
+{"spec":{"intervals":[{"every":"PT6849S"},{"every":"P2WT23H","offset":"P20DT19H"}]},"after":"2027-05-07T12:45:07.017482Z","next":"2027-05-07T13:46:12.000000Z"}
+{"spec":{"cron_expressions":["0 3 * * *"],"intervals":[{"every":"P0YT41H17M3312S"}],"timezone":"UTC"},"after":"2027-12-29T23:08:49.524608Z","next":"2027-12-30T03:00:00.000000Z"}
+{"spec":{"cron_expressions":["*/15 * * * *"],"timezone":"Europe/Budapest"},"after":"2026-09-27T08:30:11.537157Z","next":"2026-09-27T08:45:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5"],"intervals":[{"every":"P0WT5H3021S"}]},"after":"2028-04-30T05:58:26.585620Z","next":"2028-04-30T10:37:45.000000Z"}
+{"spec":{"cron_expressions":["0 12 29 2 *"],"timezone":""},"after":"2027-12-17T10:20:14.550543Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["0 12 29 2 *"],"intervals":[{"every":"P2YT45H41M6210S","offset":"P6MT17H75M"},{"every":"PT44H"}],"timezone":""},"after":"2028-07-05T05:13:13.359070Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["0 9 * * 1-5","*/15 * * * *"],"timezone":"+05:30"},"after":"2028-11-21T09:28:50.578338Z","next":"2028-11-21T09:30:00.000000Z"}
+{"spec":{"cron_expressions":["0 9 * * 1-5"],"intervals":[{"every":"P37DT6105S","offset":"PT0001H"},{"every":"PT840S","offset":"P0WT41M"}],"timezone":""},"after":"2028-03-01T10:19:48.814592Z","error":"DateInvalidTimeZoneException"}
+{"spec":{"cron_expressions":["bad cron"],"intervals":[{"every":"P13M1WT4544S"},{"every":"P12M"}],"timezone":"EST"},"after":"2027-12-22T21:06:27.540112Z","error":"InvalidArgumentException"}
+{"spec":{"cron_expressions":[""],"intervals":[{"every":"P0WT37M","offset":"P13MT13H"}],"timezone":"America/New_York"},"after":"2025-04-21T20:58:32.363793Z","next":"2025-04-21T21:06:00.000000Z"}

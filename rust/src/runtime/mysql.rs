@@ -688,11 +688,11 @@ mod tests {
             "spec":{"intervals":[{"every":"P1D"}],"timezone":"UTC"},
             "action":{"workflow_type":"echo","task_queue":"test","input":{"codec":"avro","blob":input},
                 "execution_timeout_seconds":3600,"run_timeout_seconds":600},
-            "overlap_policy":"skip","jitter_seconds":0}),super::super::store::now()).unwrap();
+            "overlap_policy":"skip","jitter_seconds":0})).unwrap();
         // This isolated synthetic test surfaces typed-driver failures which
         // the public HTTP boundary correctly redacts as storage_unavailable.
         store
-            .create_schedule(definition, json!({"test":"schedule admission"}))
+            .create_schedule(definition, json!({"test":"schedule admission"}), json!({}))
             .await
             .unwrap();
         let history = store

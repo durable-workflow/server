@@ -438,6 +438,10 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     if path.starts_with("/api/external-payloads/v1/") {
         return method == "GET";
     }
+    // Schedules are namespace-scoped rows, as in PHP.
+    if path == "/api/schedules" || path.starts_with("/api/schedules/") {
+        return true;
+    }
     // Keep unimplemented families from reaching default-namespace selectors.
     // Further families require their own shared namespace fixtures.
     if path == "/api/workflows" {
