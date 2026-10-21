@@ -393,6 +393,9 @@ impl Runtime {
     delegate!(schedule_history(schedule: &str, after: i64, limit: i64) -> Result<Value>);
     delegate!(edit_schedule(schedule: &str, operation: &str, note: Option<String>, context: Value) -> Result<Value>);
     delegate!(trigger_schedule(schedule: &str, overlap: Option<String>, context: Value) -> Result<Value>);
+    delegate!(update_schedule(schedule: &str, changes: super::schedules::Changes, context: Value) -> Result<Value>);
+    delegate!(list_schedules(raw: Option<&str>, secret: &str) -> Result<Value>);
+    delegate!(backfill_schedule(schedule: &str, range: super::schedule_backfill::Range, context: Value) -> Result<Value>);
     pub(crate) async fn signal(
         &self,
         workflow_id: &str,

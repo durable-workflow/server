@@ -431,6 +431,9 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $searchAttributes = isset($fixture['search_attributes']) ? finishHttpSearchAttributes($client, $fixture, $workflowId, $url) : null;
     $storageTest = isset($fixture['storage_test']) ? finishHttpStorageTest($client, $fixture, $workflowId, $url) : null;
     $schedulePolicies = isset($fixture['schedule_policies']) ? finishHttpSchedulePolicies($client, $fixture, $workflowId, $url) : null;
+    $scheduleCatalog = isset($fixture['schedule_catalog'])
+        ? finishHttpSchedulePolicies($client, $fixture, $workflowId, $url, 'schedule_catalog')
+        : null;
     $signalsBeforeWorker = isset($fixture['signals_before_worker'])
         ? finishHttpSignalsBeforeWorker($client, $fixture, $workflowId, $url)
         : null;
@@ -526,6 +529,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'search_attributes' => $searchAttributes,
         'storage_test' => $storageTest,
         'schedule_policies' => $schedulePolicies,
+        'schedule_catalog' => $scheduleCatalog,
         'signals_before_worker' => $signalsBeforeWorker,
         'worker_listing' => $workerListing,
         'worker_replacement' => $workerReplacement,
@@ -982,6 +986,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['schedule_policies'])) {
         $observation['schedule_policies'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_schedules'];
+    }
+    if ($mode === 'embedded' && isset($fixture['schedule_catalog'])) {
+        $observation['schedule_catalog'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_schedules'];
     }
     if ($mode === 'embedded' && isset($fixture['signals_before_worker'])) {
         $observation['signals_before_worker'] = ['applicable' => false, 'reason' => 'embedded_runs_have_a_loadable_contract'];
