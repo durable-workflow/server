@@ -20,7 +20,7 @@ if ($selected) {
             throw new RuntimeException('Invalid container logging probe identity.');
         }
 
-        file_put_contents('/tmp/dw-container-logging-probe', $nonce);
+        file_put_contents('/app/storage/framework/testing/dw-container-logging-probe', $nonce);
         \Illuminate\Support\Facades\Log::error('container-logging-probe', [
             'role' => $role,
             'nonce' => $nonce,

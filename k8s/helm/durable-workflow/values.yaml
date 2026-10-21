@@ -77,10 +77,11 @@ config:
   # Free-form ConfigMap entries appended verbatim. Use this for environment
   # tuning that the chart does not expose as first-class settings (e.g.
   # DW_V2_MATCHING_ROLE_QUEUE_WAKE for dedicated matching rollouts).
-  extraEnv: {}
+  extraEnv:
+    LOG_CHANNEL: "stderr"
   # extraEnv:
   #   DW_V2_MATCHING_ROLE_QUEUE_WAKE: "0"
-  #   DW_LOG_FORMAT: "json"
+  #   LOG_STDERR_FORMATTER: 'Monolog\Formatter\JsonFormatter'
 
 # ---------------------------------------------------------------------------
 # External persistence (REQUIRED — no in-cluster database is bundled)

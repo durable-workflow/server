@@ -164,7 +164,8 @@ ENV DW_WORKER_LONG_POLL_MAX_CONCURRENT=2 \
     DB_CONNECTION=sqlite \
     DB_DATABASE=/app/database/database.sqlite \
     QUEUE_CONNECTION=database \
-    CACHE_STORE=file
+    CACHE_STORE=file \
+    LOG_CHANNEL=stderr
 
 ENTRYPOINT ["server-entrypoint"]
 

@@ -66,6 +66,22 @@ jobs:
           TLS_TEST_ROOT: ${{ runner.temp }}/dw-server-tls-release-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/ci/qualify-database-tls.sh
 
+      - name: Verify existing image first-run readiness and container logging
+        env:
+          DW_SERVER_IMAGE: ghcr.io/durable-workflow/server@${{ steps.release_verify.outputs.image_digest }}
+          DW_FIRST_RUN_SCOPE: recovery-first-run-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: scripts/smoke-published-first-run.sh
+
+      - name: Clean up existing image first-run resources
+        if: always()
+        env:
+          DW_FIRST_RUN_SCOPE: recovery-first-run-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: |
+          docker ps -aq --filter "label=dev.durable-workflow.container-logging=${DW_FIRST_RUN_SCOPE}-logs" | xargs -r docker rm -f >/dev/null 2>&1 || true
+          docker volume ls -q --filter "label=dev.durable-workflow.container-logging=${DW_FIRST_RUN_SCOPE}-logs" | xargs -r docker volume rm >/dev/null 2>&1 || true
+          docker rm -f "${DW_FIRST_RUN_SCOPE}-server" "${DW_FIRST_RUN_SCOPE}-bootstrap" >/dev/null 2>&1 || true
+          docker volume rm "${DW_FIRST_RUN_SCOPE}-database" >/dev/null 2>&1 || true
+
       - name: Clean up published image database TLS fixtures
         if: always()
         env:
@@ -93,6 +109,7 @@ jobs:
     needs: verify
     if: >-
       always() &&
+      needs.verify.result == 'success' &&
       needs.verify.outputs.release_verification_outcome == 'success' &&
       needs.verify.outputs.published_database_tls_outcome == 'success' &&
       github.repository == 'durable-workflow/server' &&

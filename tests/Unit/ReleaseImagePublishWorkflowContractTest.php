@@ -19,6 +19,21 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->repoRoot = dirname(__DIR__, 2);
     }
 
+    public function test_recovery_chart_publication_requires_all_image_checks_to_succeed(): void
+    {
+        $workflow = Yaml::parse($this->read('.github/workflows/published-release-recovery.yml'));
+        $condition = $workflow['jobs']['publish-chart']['if'];
+        $this->assertStringContainsString("needs.verify.result == 'success'", $condition);
+
+        $checks = array_values(array_filter(
+            $workflow['jobs']['verify']['steps'],
+            static fn (array $step): bool => ($step['run'] ?? null) === 'scripts/smoke-published-first-run.sh',
+        ));
+        $this->assertCount(1, $checks);
+        $this->assertArrayNotHasKey('continue-on-error', $checks[0]);
+        $this->assertStringContainsString('verify-container-logging.mjs', $this->read('scripts/smoke-published-first-run.sh'));
+    }
+
     public function test_release_publish_job_is_guarded_before_registry_login(): void
     {
         $workflow = $this->read('.github/workflows/release.yml');

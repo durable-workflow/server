@@ -20,6 +20,10 @@ RECOVERED_SERVER_LOG="${ARTIFACT_DIR}/recovered-server.log"
 HEALTH_LOG="${ARTIFACT_DIR}/docker-health.log"
 
 cleanup() {
+    docker ps -aq --filter "label=dev.durable-workflow.container-logging=${SCOPE}-logs" \
+        | xargs -r docker rm -f >/dev/null 2>&1 || true
+    docker volume ls -q --filter "label=dev.durable-workflow.container-logging=${SCOPE}-logs" \
+        | xargs -r docker volume rm >/dev/null 2>&1 || true
     docker rm -f "$CONTAINER" "$BOOTSTRAP_CONTAINER" >/dev/null 2>&1 || true
     docker volume rm -f "$DATABASE_VOLUME" >/dev/null 2>&1 || true
     rm -rf "$ARTIFACT_DIR"
@@ -190,4 +194,7 @@ assert ready.get("checks", {}).get("auth", {}).get("status") == "ok", ready
 assert os.environ["AUTH_TOKEN"] not in Path(os.environ["RECOVERED_SERVER_LOG"]).read_text()
 PY
 
-echo "Published Server first-run readiness smoke passed"
+DW_LOGGING_SMOKE_SCOPE="${SCOPE}-logs" \
+    node "$(dirname "$0")/ci/verify-container-logging.mjs"
+
+echo "Published Server first-run readiness and container logging smoke passed"
