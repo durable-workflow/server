@@ -96,6 +96,51 @@ pub(super) async fn decode(
     .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "query_codec_unavailable"))?
 }
 
+/// One admission attempt: an answer, or no worker to route the query to.
+pub(super) enum QueryAttempt {
+    Answered((StatusCode, Value)),
+    Unroutable { run_id: String, route: super::query_route::QueryRoute },
+}
+
+/// `queryFailed`: PHP's refusal body for one query.
+fn query_refusal(status: StatusCode, workflow_id: &str, run_id: &str, name: &str, reason: &str, message: &str) -> super::RuntimeError {
+    super::RuntimeError::Protocol {
+        status,
+        response: json!({"workflow_id":workflow_id,"run_id":run_id,"target_scope":"instance","query_name":name,
+            "result":null,"reason":reason,"message":message}),
+    }
+}
+
+/// A query refused because no worker can take it.
+fn route_refusal(workflow_id: &str, run_id: &str, name: &str, route: &super::query_route::QueryRoute) -> super::RuntimeError {
+    query_refusal(
+        StatusCode::CONFLICT,
+        workflow_id,
+        run_id,
+        name,
+        route.reason.unwrap_or("query_worker_unavailable"),
+        route.message.as_deref().unwrap_or("No compatible query-capable worker is available for this workflow query."),
+    )
+}
+
+/// `terminalRunQueryFailure`: failed, cancelled and terminated runs refuse
+/// queries.
+fn run_not_active(workflow_id: &str, run_id: &str, name: &str, status: &str) -> super::RuntimeError {
+    let mut error = query_refusal(
+        StatusCode::CONFLICT,
+        workflow_id,
+        run_id,
+        name,
+        "run_not_active",
+        &format!("Workflow query [{name}] cannot execute because run [{run_id}] is terminal with status [{status}]."),
+    );
+    if let super::RuntimeError::Protocol { response, .. } = &mut error {
+        response["run_status"] = json!(status);
+        response["is_terminal"] = json!(true);
+    }
+    error
+}
+
 impl<DB: Backend> Store<DB>
 where
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
@@ -156,6 +201,26 @@ where
         Ok(())
     }
 
+    /// `workflowBound` and `withCurrentRunGuard` for a query: the workflow
+    /// is in this namespace, and a selected run is its current run.
+    pub(super) async fn query_target(&self, workflow_id: &str, selected_run: Option<&str>) -> Result<()> {
+        let instance = Self::query("SELECT current_run_id FROM workflow_instances WHERE id=$1 AND namespace=$2")
+            .bind(workflow_id)
+            .bind(self.namespace.as_ref())
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
+        if let Some(selected) = selected_run
+            && DB::optional_string(&instance, "current_run_id")?.as_deref() != Some(selected)
+        {
+            return Err(refuse(StatusCode::CONFLICT, "historical_run_command_rejected"));
+        }
+        Ok(())
+    }
+
+    /// `WorkflowQueryTaskBroker::query`. While no worker can take the query,
+    /// it waits up to the query timeout for one to register
+    /// (`awaitRegisteredQueryRoute`), then refuses with the route's reason.
     pub(super) async fn query_workflow(
         &self,
         workflow_id: &str,
@@ -165,15 +230,41 @@ where
         values: Vec<crate::codec::Value>,
         config: &QueryTaskConfig,
     ) -> Result<(StatusCode, Value)> {
-        if name.is_empty() || name.len() > 255 {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid_query_name",
-            ));
+        let wait_until =
+            tokio::time::Instant::now() + Duration::from_secs(config.timeout_seconds.max(0) as u64);
+        loop {
+            match self
+                .query_attempt(workflow_id, selected_run, name, &arguments, &values, config)
+                .await?
+            {
+                QueryAttempt::Answered(answer) => return Ok(answer),
+                QueryAttempt::Unroutable { run_id, route } => {
+                    let now = tokio::time::Instant::now();
+                    if route.reason == Some("query_worker_unavailable") && now < wait_until {
+                        tokio::time::sleep((wait_until - now).min(Duration::from_millis(250))).await;
+                        continue;
+                    }
+                    return Err(route_refusal(workflow_id, &run_id, name, &route));
+                }
+            }
         }
-        let mut tx = self.begin().await?;
-        let run = Self::query("SELECT r.* FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE i.id=$1 AND r.id=COALESCE($2,i.current_run_id) AND r.namespace=$3")
-            .bind(workflow_id).bind(selected_run).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?
+    }
+
+    async fn query_attempt(
+        &self,
+        workflow_id: &str,
+        selected_run: Option<&str>,
+        name: &str,
+        arguments: &str,
+        values: &[crate::codec::Value],
+        config: &QueryTaskConfig,
+    ) -> Result<QueryAttempt> {
+        // PHP's refusal order: terminal run, query contract, then route. These
+        // reads run before the transaction so that no request holds one
+        // connection while waiting for another.
+        let lookup = "SELECT r.* FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE i.id=$1 AND r.id=COALESCE($2,i.current_run_id) AND r.namespace=$3";
+        let run = Self::query(lookup)
+            .bind(workflow_id).bind(selected_run).bind(self.namespace.as_ref()).fetch_optional(&self.pool).await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
         if DB::string(&run, "namespace")? != self.namespace.as_ref()
             || DB::string(&run, "workflow_instance_id")? != workflow_id
@@ -187,33 +278,64 @@ where
             status.as_str(),
             "pending" | "running" | "waiting" | "completed"
         ) {
-            return Err(refuse(
-                StatusCode::CONFLICT,
-                "query_unavailable_for_run_status",
-            ));
+            return Err(run_not_active(workflow_id, &run_id, name, &status));
+        }
+        let contract = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
+            .bind(&run_id).fetch_one(&self.pool).await?;
+        let contract = DB::document_row(&contract, "payload")?;
+        // `validateContractedQueryArguments`: a run that declares no queries
+        // leaves the name and arguments to the worker.
+        let declared = |field: &str| contract[field].as_array().is_some_and(|items| !items.is_empty());
+        if declared("declared_queries") || declared("declared_query_contracts") {
+            if !contract["declared_queries"]
+                .as_array()
+                .is_some_and(|names| names.iter().any(|v| v == name))
+            {
+                return Err(query_refusal(StatusCode::NOT_FOUND, workflow_id, &run_id, name, "rejected_unknown_query",
+                    &format!("Workflow query [{name}] is not declared on workflow [{workflow_id}].")));
+            }
+            // A declared query without a parameter contract takes its
+            // arguments as given.
+            if contract["declared_query_contracts"]
+                .as_array()
+                .is_some_and(|contracts| contracts.iter().any(|entry| entry["name"] == name))
+            {
+                validate_arguments(
+                    &contract,
+                    "declared_query_contracts",
+                    name,
+                    values,
+                    "unsupported_query_contract",
+                    "invalid_query_arguments",
+                )?;
+            }
+        }
+        let route = self.query_route(&run, config.worker_stale_after_seconds).await?;
+        if !route.servable {
+            return Ok(QueryAttempt::Unroutable { run_id, route });
+        }
+        let mut tx = self.begin().await?;
+        // The run read again under the transaction is the one admitted.
+        let run = Self::query(lookup)
+            .bind(workflow_id).bind(selected_run).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?
+            .filter(|row| DB::string(row, "id").ok().as_deref() == Some(run_id.as_str()))
+            .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
+        let status = DB::string(&run, "status")?;
+        if !matches!(
+            status.as_str(),
+            "pending" | "running" | "waiting" | "completed"
+        ) {
+            return Err(run_not_active(workflow_id, &run_id, name, &status));
         }
         let busy = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased')")
             .bind(&run_id).fetch_one(&mut *tx).await?;
+        // Native answers from a snapshot taken here, so it refuses while a
+        // workflow task is open. PHP admits the query and holds its claim
+        // instead; see the port log's known gaps.
         if busy != 0 {
-            return Err(refuse(StatusCode::CONFLICT, "query_snapshot_busy"));
+            return Err(query_refusal(StatusCode::CONFLICT, workflow_id, &run_id, name, "query_snapshot_busy",
+                &format!("Workflow query [{name}] cannot run while run [{run_id}] has an open workflow task. Retry after the task completes.")));
         }
-        let contract = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
-            .bind(&run_id).fetch_one(&mut *tx).await?;
-        let contract = DB::document_row(&contract, "payload")?;
-        if !contract["declared_queries"]
-            .as_array()
-            .is_some_and(|names| names.iter().any(|v| v == name))
-        {
-            return Err(refuse(StatusCode::NOT_FOUND, "rejected_unknown_query"));
-        }
-        validate_arguments(
-            &contract,
-            "declared_query_contracts",
-            name,
-            &values,
-            "unsupported_query_contract",
-            "invalid_query_arguments",
-        )?;
         let entries = self.query_entries(&mut tx).await?;
         if entries.len() >= MAX_ENTRIES
             || entries
@@ -264,32 +386,30 @@ where
         self.wake.notify_waiters();
         // Never hold the transition lock or a pooled connection across the wait.
         // Periodic probes observe results committed by another server process.
-        let timed_out = |claimed| super::RuntimeError::Protocol {
-            status: StatusCode::GATEWAY_TIMEOUT,
-            response: json!({"workflow_id":workflow_id,"run_id":run_id,"query_name":name,
-                "reason":if claimed { "query_worker_execution_timeout" } else { "query_task_not_claimed" },
-                "message":"Timed out waiting for the original query result."}),
-        };
-        let mut claimed = false;
+        let mut last = json!({"status":"pending"});
         loop {
             let wake = self.wake.notified();
             let remaining = (deadline - authority::now()).to_std().unwrap_or_default();
             let read = Self::query(DB::QUERY_CACHE_GET)
                 .bind(&key)
                 .fetch_optional(&self.pool);
-            let row = tokio::time::timeout(remaining, read)
-                .await
-                .map_err(|_| timed_out(claimed))??
-                .ok_or_else(|| refuse(StatusCode::CONFLICT, "query_task_timed_out"))?;
+            let row = match tokio::time::timeout(remaining, read).await {
+                Err(_) => {
+                    return Err(self.query_timeout(&run, workflow_id, &run_id, name, &last, config).await?);
+                }
+                Ok(row) => row?,
+            };
+            let Some(row) = row else {
+                return Err(refuse(StatusCode::CONFLICT, "query_task_timed_out"));
+            };
             let task: Value = serde_json::from_str(&DB::string(&row, "value")?)?;
-            claimed = task["query_task_attempt"].as_i64().unwrap_or(0) > 0;
             match task["status"].as_str() {
                 Some("completed") => {
-                    return Ok((
+                    return Ok(QueryAttempt::Answered((
                         StatusCode::OK,
-                        json!({"workflow_id":workflow_id,"run_id":run_id,
-                    "query_name":name,"result":null,"result_envelope":task["result_envelope"],"reason":null}),
-                    ));
+                        json!({"workflow_id":workflow_id,"run_id":run_id,"target_scope":"instance",
+                            "query_name":name,"result":null,"result_envelope":task["result_envelope"],"reason":null}),
+                    )));
                 }
                 Some("failed") => {
                     let status = match task["failure"]["reason"].as_str() {
@@ -300,18 +420,23 @@ where
                     let mut body = task["failure"].clone();
                     body["workflow_id"] = json!(workflow_id);
                     body["run_id"] = json!(run_id);
+                    body["target_scope"] = json!("instance");
                     body["query_name"] = json!(name);
-                    return Ok((status, body));
+                    body["result"] = Value::Null;
+                    if body["message"].as_str().is_none_or(str::is_empty) {
+                        body["message"] = json!("Query failed on the worker.");
+                    }
+                    return Ok(QueryAttempt::Answered((status, body)));
                 }
                 Some("timed_out") => {
-                    return Err(timed_out(claimed));
+                    return Err(self.query_timeout(&run, workflow_id, &run_id, name, &last, config).await?);
                 }
                 _ if authority::deadline(&task)
                     .is_some_and(|deadline| authority::now() >= deadline) =>
                 {
                     // The stored deadline already fences every new outcome.
                     // Cleanup must not delay the caller behind a busy writer.
-                    return Err(timed_out(claimed));
+                    return Err(self.query_timeout(&run, workflow_id, &run_id, name, &task, config).await?);
                 }
                 _ if authority::deadline(&task).is_none() => {
                     let mut tx = self.begin().await?;
@@ -333,8 +458,42 @@ where
                 }
                 _ => {}
             }
+            last = task;
             tokio::select! { _ = wake => {}, _ = tokio::time::sleep(Duration::from_millis(50)) => {} }
         }
+    }
+
+    /// `timeoutFailure`: why a query got no answer before its deadline.
+    async fn query_timeout(
+        &self,
+        run: &DB::Row,
+        workflow_id: &str,
+        run_id: &str,
+        name: &str,
+        task: &Value,
+        config: &QueryTaskConfig,
+    ) -> Result<super::RuntimeError> {
+        let status = task["status"].as_str().unwrap_or("unknown");
+        let (reason, message) = match status {
+            "pending" => {
+                let route = self.query_route(run, config.worker_stale_after_seconds).await?;
+                if !route.servable {
+                    return Ok(route_refusal(workflow_id, run_id, name, &route));
+                }
+                ("query_task_not_claimed", format!(
+                    "Timed out waiting for a compatible worker to claim workflow query [{name}] on task queue [{}].",
+                    route.task_queue
+                ))
+            }
+            "leased" => ("query_worker_execution_timeout", match task["lease_owner"].as_str().filter(|owner| !owner.is_empty()) {
+                Some(owner) => format!("Timed out waiting for worker [{owner}] to complete workflow query [{name}]."),
+                None => format!("Timed out waiting for the worker that leased workflow query [{name}] to complete it."),
+            }),
+            other => ("query_worker_timeout", format!(
+                "Timed out waiting for workflow query [{name}] to complete; last query task status was [{other}]."
+            )),
+        };
+        Ok(query_refusal(StatusCode::GATEWAY_TIMEOUT, workflow_id, run_id, name, reason, &message))
     }
 
     pub(super) async fn poll_query(&self, body: Value, config: &QueryTaskConfig) -> Result<Value> {
@@ -546,7 +705,6 @@ where
             return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
         }
         let types = DB::document_row(&worker, "supported_workflow_types")?;
-        let contracts = DB::document_row(&worker, "workflow_command_contracts")?;
         let capabilities = DB::document_row(&worker, "capabilities")?;
         if !capabilities
             .as_array()
@@ -565,13 +723,9 @@ where
             {
                 continue;
             }
-            let Some(workflow_type) = task["workflow_type"].as_str() else {
-                continue;
-            };
-            if !contracts[workflow_type]["queries"]
-                .as_array()
-                .is_some_and(|names| names.contains(&task["query_name"]))
-            {
+            // `queryTaskMatchesPoller` matches the workflow type, not the
+            // query name: a worker answers a query it does not declare.
+            if task["workflow_type"].as_str().is_none() {
                 continue;
             }
             if task["status"] == "leased"

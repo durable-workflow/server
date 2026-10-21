@@ -17,6 +17,7 @@ pub(super) enum Operation<'a> {
     Debug,
     Update,
     Signal(&'a str),
+    Query(&'a str),
 }
 
 impl Operation<'_> {
@@ -39,7 +40,7 @@ impl Operation<'_> {
                 )
             }
             super::RuntimeError::Refused { status, reason }
-                if matches!(self, Self::Signal(_))
+                if matches!(self, Self::Signal(_) | Self::Query(_))
                     && reason == "historical_run_command_rejected" =>
             {
                 (
@@ -49,7 +50,7 @@ impl Operation<'_> {
                 )
             }
             super::RuntimeError::Protocol { status, response }
-                if matches!(self, Self::Signal(_)) =>
+                if matches!(self, Self::Signal(_) | Self::Query(_)) =>
             {
                 (status, response)
             }
@@ -100,6 +101,11 @@ impl Operation<'_> {
                 "update",
                 &["workflow_id", "operation_name", "operation_name_field"],
                 &["outcome"],
+            ),
+            Self::Query(_) => (
+                "query",
+                &["workflow_id", "operation_name", "operation_name_field"],
+                &["result", "result_envelope"],
             ),
             Self::Signal(_) => (
                 "signal",
@@ -191,6 +197,41 @@ impl Operation<'_> {
             ] {
                 metadata[field] = body[field].clone();
             }
+        }
+        if let Self::Query(name) = self {
+            metadata["operation_name"] = json!(name);
+            metadata["operation_name_field"] = json!("query_name");
+            metadata["contract"]["rejection_fields"] = json!([
+                "workflow_id",
+                "run_id",
+                "query_name",
+                "target_scope",
+                "result",
+                "reason",
+                "message",
+                "run_status",
+                "is_terminal",
+                "blocked_reason",
+                "validation_errors"
+            ]);
+            metadata["contract"]["rejection_reasons"] = json!([
+                "instance_not_found",
+                "historical_run_command_rejected",
+                "run_not_active",
+                "query_not_found",
+                "rejected_unknown_query",
+                "invalid_query_arguments",
+                "workflow_definition_unavailable",
+                "query_rejected",
+                "query_worker_unavailable",
+                "query_worker_incompatible",
+                "query_task_queue_full",
+                "query_task_queue_unavailable",
+                "query_task_not_claimed",
+                "query_worker_execution_timeout",
+                "query_worker_timeout",
+                "v1_projection_read_only"
+            ]);
         }
         if let Self::Signal(name) = self {
             metadata["operation_name"] = json!(name);

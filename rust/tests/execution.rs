@@ -79,6 +79,8 @@ mod activity_deadlines;
 mod lock_free_waiting;
 #[path = "execution/read_snapshots.rs"]
 mod read_snapshots;
+#[path = "execution/query_responses.rs"]
+mod query_responses;
 #[path = "execution/describe_actions.rs"]
 mod describe_actions;
 #[path = "execution/waterline_reads.rs"]
