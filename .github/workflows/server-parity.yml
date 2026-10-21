@@ -758,8 +758,8 @@ jobs:
             schema-check > parity-evidence/tls-wrong-hostname.txt 2>&1; then
             exit 1
           fi
-          grep -Fq storage_unavailable parity-evidence/tls-untrusted.txt
-          grep -Fq storage_unavailable parity-evidence/tls-wrong-hostname.txt
+          grep -Fq database_tls_connection_failed parity-evidence/tls-untrusted.txt
+          grep -Fq database_tls_connection_failed parity-evidence/tls-wrong-hostname.txt
       - name: Collect logs and clean owned resources
         if: always()
         run: |
@@ -1299,8 +1299,8 @@ jobs:
             schema-check > parity-evidence/tls-wrong-hostname.txt 2>&1; then
             exit 1
           fi
-          grep -Fq storage_unavailable parity-evidence/tls-untrusted.txt
-          grep -Fq storage_unavailable parity-evidence/tls-wrong-hostname.txt
+          grep -Fq database_tls_connection_failed parity-evidence/tls-untrusted.txt
+          grep -Fq database_tls_connection_failed parity-evidence/tls-wrong-hostname.txt
       - name: Collect logs and clean owned resources
         if: always()
         run: |
