@@ -86,6 +86,7 @@ function stage(name) {
   const warned = new Set(warnings);
   return {metrics_status: 200, metrics_namespace: namespace, metrics_keys: ['namespace', 'operator_metrics'], sections,
     active_workers: ['empty', 'waiting', 'waiting_after_redispatch'].includes(name) ? 0 : 1, worker_fleet: [],
+    runtime: 'php',
     health_status: 200, health_namespace: namespace, retention: ['bounded', 30],
     health: {status: warned.size ? 'warning' : 'ok', healthy: true, categories: {}},
     checks: NAMES.map(check => ({name: check, status: warned.has(check) ? 'warning' : 'ok',
@@ -124,6 +125,32 @@ test('a task PHP\'s maintenance loop already redispatched passes', () => {
 test('rejects a repaired task still reported overdue', () => {
   const observation = model();
   observation.operator_metrics.stages.waiting_after_redispatch.sections.tasks.counts.max_repair_count = 1;
+  assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'));
+});
+// Published PHP on MariaDB answers health with 500 once an activity exists.
+const mariaDbHealthDefect = (observation, runtime, stages) => {
+  observation.operator_metrics.database_family = 'mariadb';
+  for (const name of stages) {
+    Object.assign(observation.operator_metrics.stages[name], {runtime, health_status: 500, health_namespace: null,
+      retention: [null, null], health: {status: null, healthy: null, categories: null}, checks: []});
+  }
+  return observation;
+};
+const ACTIVITY = ['activity_scheduled', 'activity_running', 'activity_retrying', 'completed'];
+test('published PHP health failing on MariaDB after an activity passes', () => assert.deepStrictEqual(
+  checkOperatorMetrics(fixture, mariaDbHealthDefect(model(), 'php', ACTIVITY), 'TEST'), projection));
+test('rejects native health failing on MariaDB', () => assert.throws(() =>
+  checkOperatorMetrics(fixture, mariaDbHealthDefect(model(), 'rust', ACTIVITY), 'TEST')));
+test('rejects PHP health failing on MariaDB before any activity', () => assert.throws(() =>
+  checkOperatorMetrics(fixture, mariaDbHealthDefect(model(), 'php', ['waiting']), 'TEST')));
+test('rejects PHP health failing on another database', () => {
+  const observation = mariaDbHealthDefect(model(), 'php', ACTIVITY);
+  observation.operator_metrics.database_family = null;
+  assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'));
+});
+test('rejects an unknown database family', () => {
+  const observation = model();
+  observation.operator_metrics.database_family = 'oracle';
   assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'));
 });
 test('embedded explicitly declares the HTTP metrics inapplicable', () => assert.deepStrictEqual(checkOperatorMetrics(fixture,

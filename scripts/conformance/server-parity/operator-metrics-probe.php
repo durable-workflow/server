@@ -54,6 +54,8 @@ function finishHttpOperatorMetrics(Client $admin, array $fixture, string $workfl
             'worker_fleet' => array_map(static fn (array $entry): array => ['worker_id' => $entry['worker_id'] ?? null,
                 'namespace' => $entry['namespace'] ?? null, 'queue' => $entry['queue'] ?? null],
                 $document['workers']['fleet'] ?? []),
+            // Native reports its runtime; published PHP reports none.
+            'runtime' => $metrics['body']['operator_metrics']['backend']['runtime'] ?? 'php',
             'health_status' => $health['status'],
             'health_namespace' => $health['body']['namespace'] ?? null,
             'retention' => [$health['body']['retention_mode'] ?? null, $health['body']['retention_days'] ?? null],
@@ -93,5 +95,8 @@ function finishHttpOperatorMetrics(Client $admin, array $fixture, string $workfl
     $stages['completed'] = $stage();
     $client->deregisterWorker($worker);
 
-    return ['applicable' => true, 'namespace' => $namespace, 'stages' => $stages];
+    // The MySQL-family job names its server image (MariaDB or MySQL).
+    $family = str_contains((string) getenv('MYSQL_IMAGE'), '/mariadb@') ? 'mariadb' : null;
+
+    return ['applicable' => true, 'namespace' => $namespace, 'database_family' => $family, 'stages' => $stages];
 }

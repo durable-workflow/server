@@ -522,7 +522,7 @@ jobs:
           export DW_PARITY_CLI_PHAR=/source/parity-consumers/dw.phar
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
-            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR "$image" scripts/conformance/server-parity.mjs record \
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR -e MYSQL_IMAGE "$image" scripts/conformance/server-parity.mjs record \
             --mode http --url http://parity-php:8080 --target php --output /evidence/php.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-completed.json \
@@ -546,7 +546,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
-            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR "$image" scripts/conformance/server-parity.mjs record \
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR -e MYSQL_IMAGE "$image" scripts/conformance/server-parity.mjs record \
             --mode http --url http://parity-native-a:8080 --target rust --output /evidence/rust.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-completed.json \
