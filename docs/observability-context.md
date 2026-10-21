@@ -27,7 +27,7 @@ RUN chown 1000:1000 /app/composer.json /app/composer.lock \
 USER 1000:1000
 RUN COMPOSER_HOME=/tmp/composer COMPOSER_CACHE_DIR=/tmp/composer-cache \
     composer require 'open-telemetry/api:^1.10.1' \
-    --no-dev --no-scripts --no-plugins --prefer-dist --no-interaction --no-progress \
+    --update-no-dev --no-scripts --no-plugins --prefer-dist --no-interaction --no-progress \
     && rm -rf /tmp/composer /tmp/composer-cache
 ```
 
