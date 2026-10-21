@@ -81,6 +81,8 @@ mod lock_free_waiting;
 mod read_snapshots;
 #[path = "execution/query_responses.rs"]
 mod query_responses;
+#[path = "execution/history_export.rs"]
+mod history_export;
 #[path = "execution/start_request.rs"]
 mod start_request;
 #[path = "execution/command_requests.rs"]

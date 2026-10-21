@@ -172,6 +172,10 @@ pub fn router(runtime: Runtime) -> Router {
             get(history),
         )
         .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/history/export",
+            get(history_export),
+        )
+        .route(
             "/api/workflows/{workflow_id}/runs/{run_id}/activities",
             get(activities),
         )
@@ -1014,6 +1018,16 @@ async fn activities(
     Path((workflow_id, run_id)): Path<(String, String)>,
 ) -> Result<Json<Value>> {
     runtime.activities(&workflow_id, &run_id).await.map(Json)
+}
+
+/// `HistoryController::export`: the run's replay bundle.
+async fn history_export(
+    Extension(runtime): Extension<Runtime>,
+    Path((workflow_id, run_id)): Path<(String, String)>,
+) -> Result<Json<Value>> {
+    runtime.history_export(&workflow_id, &run_id).await.map(Json).map_err(|error| {
+        super::control_plane::Operation::History.refusal(error, &workflow_id, Some(&run_id))
+    })
 }
 
 async fn history(
