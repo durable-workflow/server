@@ -72,6 +72,19 @@ return [
 
     'task_dispatch_mode_override' => EnvAuditor::env('DW_TASK_DISPATCH_MODE', 'WORKFLOW_V2_TASK_DISPATCH_MODE', null),
 
+    'observability_context' => [
+        'enabled' => filter_var(
+            EnvAuditor::env('DW_OBSERVABILITY_CONTEXT_ENABLED', null, false),
+            FILTER_VALIDATE_BOOLEAN,
+            FILTER_NULL_ON_FAILURE,
+        ) ?? false,
+        'baggage_allowlist' => (static function (): array {
+            $value = json_decode((string) EnvAuditor::env('DW_OBSERVABILITY_BAGGAGE_ALLOWLIST', null, '[]'));
+
+            return is_array($value) ? array_values(array_filter($value, 'is_string')) : [];
+        })(),
+    ],
+
     /*
     |--------------------------------------------------------------------------
     | Workflow Fleet Validation Mode
