@@ -598,6 +598,12 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_MAX_BYTES',
         ],
+        'DW_EXTERNAL_PAYLOAD_COMPLETION_MAX_BYTES' => [
+            'description' => 'Optional byte allowance for leased completion uploads; unset uses DW_EXTERNAL_PAYLOAD_MAX_BYTES.',
+            'default' => null,
+            'since' => '2.3.5',
+            'legacy' => 'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_COMPLETION_MAX_BYTES',
+        ],
         'DW_EXTERNAL_PAYLOAD_REQUEST_TIMEOUT' => [
             'description' => 'Client-facing request-timeout budget advertised for external-payload upload and fetch.',
             'default' => '30',
