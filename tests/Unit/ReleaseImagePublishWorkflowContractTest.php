@@ -668,6 +668,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $fakeGh = $tmpDir.'/gh';
         $fakeDocker = $tmpDir.'/docker';
         $evidencePath = $tmpDir.'/evidence.json';
+        $githubOutput = $tmpDir.'/github-output';
         $releaseCommit = str_repeat('8', 40);
         $digest = 'sha256:'.str_repeat('a', 64);
 
@@ -720,6 +721,7 @@ SH);
             'RELEASE_TAG' => '2.0.0-rc.33',
             'RELEASE_COMMIT' => $releaseCommit,
             'RELEASE_RECOVERY_EVIDENCE' => $evidencePath,
+            'GITHUB_OUTPUT' => $githubOutput,
             'RUNNER_TEMP' => $tmpDir,
             'FAKE_RELEASE_TAG' => '2.0.0-rc.33',
             'FAKE_RELEASE_COMMIT' => $releaseCommit,
@@ -738,15 +740,18 @@ SH);
             $this->assertSame('verified', $evidence['source_tag']['status']);
             $this->assertSame('verified', $evidence['images']['status']);
             $this->assertSame($digest, $evidence['images']['digest']);
+            $this->assertSame('image_digest='.$digest."\n", file_get_contents($githubOutput));
             $this->assertSame('verified', $evidence['github_release']['status']);
             $this->assertFalse($evidence['mutation_policy']['image_mutation']);
             $this->assertFalse($evidence['mutation_policy']['tag_mutation']);
             $this->assertFalse($evidence['mutation_policy']['github_release_mutation']);
 
+            unlink($githubOutput);
             $missing = $this->runScript('scripts/ci/verify-published-release-recovery.sh', $environment + [
                 'FAKE_RELEASE_MISSING' => 'true',
             ]);
             $this->assertSame(1, $missing['exitCode']);
+            $this->assertFileDoesNotExist($githubOutput);
             $failedEvidence = json_decode(
                 (string) file_get_contents($evidencePath),
                 true,
@@ -758,6 +763,7 @@ SH);
             @unlink($fakeGh);
             @unlink($fakeDocker);
             @unlink($evidencePath);
+            @unlink($githubOutput);
             @rmdir($tmpDir);
         }
     }
