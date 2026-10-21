@@ -198,6 +198,12 @@ contract fixture before its correction.
   a signal therefore waits on PHP and is refused on native. The port takes the
   snapshot at claim time and must keep query lease replay stable, so it needs
   its own fixture.
+- **Stop signal in the published image.** The published Server image declares
+  `STOPSIGNAL SIGWINCH`, Apache's graceful stop. Native stops gracefully on
+  `SIGTERM` or `SIGINT` and ignores `SIGWINCH`, so `docker stop` on the
+  published image with the native binary as its entrypoint waits out its
+  timeout and kills the process. A native image must declare
+  `STOPSIGNAL SIGTERM`.
 - **Terminating a child run.** Published Workflow resolves the parent with
   `ChildRunTerminated` and the `terminated` child call status. Native refuses
   this with `422 termination_propagation_not_available` until the parent-side
