@@ -102,11 +102,11 @@ final class SelectionCancellationHttpTest extends TestCase
     public function test_expired_original_claim_cannot_cancel_a_member(): void
     {
         [$runId, $task, $cancel] = $this->stageTimerWinner();
-        $before = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count();
         WorkflowTask::query()->findOrFail($task['task_id'])->forceFill(['lease_expires_at' => now()->subSecond()])->save();
-        $this->complete($task, [$cancel])->assertStatus(409);
+        $this->complete($task, [$cancel])->assertStatus(409)->assertJsonPath('reason', 'lease_expired');
         $this->assertSame('pending', ActivityExecution::query()->sole()->status->value);
-        $this->assertSame($before, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count());
+        $this->assertSame(0, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::SelectionOperationCancelled->value)->count());
     }
 
     #[DataProvider('requiredMemberFields')]

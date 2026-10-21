@@ -6,7 +6,7 @@ when validating a workflow-task completion. The runtime then refuses the
 workflow replay error, leaving the run waiting with `workflow_replay_blocked`.
 The activity the workflow tried to cancel can still be queued or running.
 
-Upgrade to the corrected PHP Server release before repairing affected runs.
+Upgrade to PHP Server 2.10.1 or later before repairing affected runs.
 The correction preserves the existing command format and does not require an
 SDK or Workflow dependency upgrade. It does not automatically retry blocked
 runs or undo an activity that has already executed.
