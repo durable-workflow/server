@@ -339,6 +339,33 @@ async fn a_replacement_registration_releases_the_activity_lease_at_once() {
     let (status, done) = request(&app, "POST", &path, complete(&replacement)).await;
     assert_eq!(status, StatusCode::OK, "{done}");
     assert_eq!(done["recorded"], true);
+    // After the replacement finished the task, the original attempt's late
+    // result is still stale, as in PHP, not a conflicting duplicate.
+    let (status, late) = request(&app, "POST", &path, complete(&original)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{late}");
+    assert_eq!(
+        late,
+        json!({"task_id":original["task_id"],"activity_attempt_id":original["activity_attempt_id"],
+        "outcome":"completed","recorded":false,"reason":"stale_attempt","next_task_id":null,
+        "lease_owner":"replaced","activity_status":"completed","attempt_status":"expired","task_status":"completed"})
+    );
+    let fail_path = format!(
+        "/api/worker/activity-tasks/{}/fail",
+        original["task_id"].as_str().unwrap()
+    );
+    let (status, late_failure) = request(&app, "POST", &fail_path,
+        json!({"activity_attempt_id":original["activity_attempt_id"],"lease_owner":"replaced",
+            "failure":{"message":"late","type":"RuntimeException"}})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{late_failure}");
+    assert_eq!(
+        late_failure,
+        json!({"task_id":original["task_id"],"activity_attempt_id":original["activity_attempt_id"],
+        "outcome":"failed","recorded":false,"reason":"stale_attempt","next_task_id":null})
+    );
+    // The replacement's own repeated result keeps its idempotent receipt.
+    let (status, again) = request(&app, "POST", &path, complete(&replacement)).await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(again["reason"], "already_completed");
     let history = run_history(&app, &json!("replaced-peer"), &started["run_id"]).await;
     let started_attempts: Vec<_> = history
         .as_array()

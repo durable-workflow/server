@@ -2344,7 +2344,6 @@ where
                 json!({"task_id": task_id, "activity_attempt_id": attempt_id, "outcome": "completed", "recorded": false, "reason": "already_completed"}),
             );
         }
-        Self::fence(&task, &body)?;
         let attempt =
             Self::query("SELECT * FROM activity_attempts WHERE id=$1 AND workflow_task_id=$2")
                 .bind(attempt_id)
@@ -2352,6 +2351,9 @@ where
                 .fetch_optional(&mut *tx)
                 .await?
                 .ok_or_else(|| refuse(StatusCode::CONFLICT, "stale_attempt"))?;
+        // PHP judges the attempt before the task's lease: a late result from
+        // an attempt that is no longer current is stale even after another
+        // attempt finished the task.
         if DB::string(&attempt, "status")? != "running"
             || DB::number(&attempt, "attempt_number")? != DB::number(&task, "attempt_count")?
         {
@@ -2378,6 +2380,7 @@ where
                 response: receipt,
             });
         }
+        Self::fence(&task, &body)?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
         let activity_id = DB::string(&attempt, "activity_execution_id")?;
@@ -2611,6 +2614,13 @@ where
         // receipt. A later completion must refuse it, not decode SQL NULL.
         let receipt = DB::optional_document_row(task, "receipt")?
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "task_not_leased"))?;
+        // A result from another activity attempt is not this one's duplicate;
+        // its attempt is stale, which the caller reports as PHP does.
+        if DB::string(task, "task_type")? == "activity"
+            && receipt["activity_attempt_id"] != body["activity_attempt_id"]
+        {
+            return Ok(false);
+        }
         if receipt == *body {
             return Ok(true);
         }
