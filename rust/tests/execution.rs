@@ -71,6 +71,8 @@ mod worker_listing;
 mod retry_message_tasks;
 #[path = "execution/signal_applied_values.rs"]
 mod signal_applied_values;
+#[path = "execution/update_admission.rs"]
+mod update_admission;
 
 #[path = "execution/worker_pressure.rs"]
 mod worker_pressure;
@@ -1719,10 +1721,6 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
     );
     let input = json!({"input":envelope(Payload::Array(vec![Payload::Long(9007199254740993)])),
         "request_id":"original-update","wait_for":"accepted"});
-    assert_eq!(
-        request(&a, "POST", &path, input.clone()).await.1["reason"],
-        "update_snapshot_busy"
-    );
     open_update_wait(&a, "update-a").await;
     for (test_path, body, reason) in [
         (
@@ -1771,12 +1769,6 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
     assert_eq!(
         request(&b, "GET", &history_path, Value::Null).await.1,
         before
-    );
-    let mut another = input.clone();
-    another["request_id"] = json!("another");
-    assert_eq!(
-        request(&a, "POST", &path, another).await.1["reason"],
-        "update_snapshot_busy"
     );
     register(&b, "without-update-handler", json!(["echo"]), json!([])).await;
     assert!(
