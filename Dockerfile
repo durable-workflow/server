@@ -11,7 +11,10 @@ RUN git clone --depth 1 --branch "${PHPREDIS_VERSION}" https://github.com/phpred
          exit 1; \
        fi
 
-FROM php:8.3-apache AS base
+FROM php:8.3.36-apache AS base
+
+# Both web and CLI roles require the fixed PHP runtime, including cached builds.
+RUN php -r 'if (PHP_MAJOR_VERSION !== 8 || PHP_MINOR_VERSION !== 3 || PHP_VERSION_ID < 80336) { fwrite(STDERR, "Patched PHP 8.3.36 or later on the 8.3 line is required; found ".PHP_VERSION.PHP_EOL); exit(1); }'
 
 COPY --from=phpredis-source /phpredis /usr/src/php/ext/redis
 
