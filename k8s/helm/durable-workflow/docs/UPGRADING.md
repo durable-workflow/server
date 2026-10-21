@@ -73,6 +73,8 @@ This chart advances the default Server minor version. Existing values retain
 their shape. Server adds the optional `activity_lease_renewal` capability and
 reads `DW_ACTIVITY_TASK_TIMEOUT` as the activity-task lease duration, in seconds
 from 1 to 86400, with the existing 300-second default.
+Review any existing override before upgrading: values previously ignored by
+the PHP Server now take effect.
 
 Lease maintenance requires a compatible worker that discovers the capability.
 It does not replace application heartbeats or extend an activity's authored
