@@ -69,7 +69,6 @@ CLI and Waterline use the first group.
   - Cancellation scopes.
   - Activity cancellation acknowledgement.
 - **Run operations.**
-  - History export.
   - Archive.
   - Redrive.
   - Imports from embedded v2 and Waterline v1.
@@ -86,6 +85,13 @@ CLI and Waterline use the first group.
 These are confirmed differences from the published PHP reference and open
 contract decisions found while qualifying native slices. Each one needs a
 contract fixture before its correction.
+
+- **History export waits and timeline.** Native keeps no full wait or
+  timeline projection, so its export bundle has empty `waits` and `timeline`
+  and names both sources `native_unavailable` in `selected_run`. Published
+  PHP fills them from `workflow_run_waits` and
+  `workflow_run_timeline_entries`. No SDK replayer or bundle verifier reads
+  either section.
 
 - **Search attributes on start.** Published PHP validates `search_attributes`
   against the namespace registry and stores them as typed rows. Native
@@ -239,6 +245,40 @@ support is not evidence of multi-node safety.
 
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
 names, including unsuccessful observations.
+
+October 21, history export:
+
+- **Found by.** On native, published dw 2.3.0's `workflow:history-export`
+  and Waterline's export download both answered 501.
+- **Source.** Native serves
+  `GET /api/workflows/{id}/runs/{run}/history/export` as Workflow 2.5.5's
+  `HistoryExport::forRun` builds the bundle (`schema_version` 2):
+  - the workflow, payloads, summary, history events, commands, signals,
+    updates, tasks, activities with their attempts, timers, failures and
+    links;
+  - the Avro codec schema and the payload manifest of every Avro frame;
+  - the `json-recursive-ksort-v1` SHA-256 checksum, and HMAC-SHA-256 when
+    `DW_V2_HISTORY_EXPORT_SIGNING_KEY` (with `_ID`) is set.
+
+  Timers and links are rebuilt from history and link rows under PHP's
+  `*_rebuilt` source names. An unknown run answers 404 `run_not_found`.
+- **Verification.**
+  - On identical seeds against published PHP 2.5.14, every section's values
+    match apart from identifiers, timestamps and the projection sources.
+    That covers workflow, payloads, summary, signals, activities, payload
+    manifest, links, redaction and codec schemas.
+  - The remaining differences are in data native records differently:
+    commands carry no caller context, event payloads hold envelopes where
+    PHP stores bare blobs, and task payloads differ.
+  - Published Python SDK 2.7.0's bundle verifier recomputes native's
+    checksum and finds it valid. Its only finding, on PHP's bundle and on
+    native's, is that it accepts `schema_version` 1 only
+    (durable-workflow/sdk-python#190).
+  - dw 2.3.0's `workflow:history-export` and Waterline 2.12.0's export
+    download succeed against native.
+  - New `history_export` integration tests and unit tests pass, and the
+    full native suite passes on SQLite, PostgreSQL and MySQL.
+- **Remaining.** Waits and timeline; see known gaps.
 
 October 21, workflow start requests:
 
