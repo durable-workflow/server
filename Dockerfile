@@ -29,10 +29,29 @@ COPY docker/php-keyring.gpg /tmp/php-keyring.gpg
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-        autoconf dpkg-dev file g++ gcc libc-dev make pkg-config re2c \
-        apache2-dev ca-certificates curl gnupg \
-        libargon2-dev libcurl4-openssl-dev libonig-dev libreadline-dev \
-        libsodium-dev libsqlite3-dev libssl-dev libxml2-dev xz-utils zlib1g-dev; \
+        apache2-dev \
+        autoconf \
+        ca-certificates \
+        curl \
+        dpkg-dev \
+        file \
+        g++ \
+        gcc \
+        gnupg \
+        libargon2-dev \
+        libc-dev \
+        libcurl4-openssl-dev \
+        libonig-dev \
+        libreadline-dev \
+        libsodium-dev \
+        libsqlite3-dev \
+        libssl-dev \
+        libxml2-dev \
+        make \
+        pkg-config \
+        re2c \
+        xz-utils \
+        zlib1g-dev; \
     printf '%s  %s\n' \
         '43fcb3eaf65536cb0833c229b492c70cfad8562138164dd13673e08925d6c56c' \
         /tmp/php-keyring.gpg | sha256sum --check -; \
