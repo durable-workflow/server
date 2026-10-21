@@ -33,6 +33,10 @@ jobs:
           elif [[ "${{ github.event.before }}" =~ ^0+$ ]]; then
             range="-1 ${{ github.sha }}"
           else
+            before="${{ github.event.before }}"
+            if ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
+              git fetch --no-tags --depth=1 origin "$before"
+            fi
             range="${{ github.event.before }}..${{ github.sha }}"
           fi
 
