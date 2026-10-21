@@ -67,6 +67,7 @@ async fn omitted_query_input_uses_official_empty_arguments_without_mutating_the_
         started["run_id"].as_str().unwrap()
     );
     let instance_query = format!("{describe}/query/state");
+    let required = format!("{describe}/query/required");
     let run_query = format!(
         "{describe}/runs/{}/query/state",
         started["run_id"].as_str().unwrap()
@@ -83,11 +84,19 @@ async fn omitted_query_input_uses_official_empty_arguments_without_mutating_the_
             StatusCode::UNPROCESSABLE_ENTITY,
             "unsupported_payload_codec",
         ),
+        // As in PHP, an object that is not exactly an envelope is plain
+        // values, here one argument the query does not take.
         (
             instance_query.clone(),
             json!({"input":{"codec":"avro"}}),
             StatusCode::UNPROCESSABLE_ENTITY,
-            "unsupported_payload_codec",
+            "invalid_query_arguments",
+        ),
+        (
+            instance_query.clone(),
+            json!({"input":[7]}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_query_arguments",
         ),
         (
             instance_query.clone(),
@@ -214,6 +223,27 @@ async fn omitted_query_input_uses_official_empty_arguments_without_mutating_the_
         );
     }
     assert_ne!(task_ids[0], task_ids[1]);
+
+    // Like PHP, plain input values are encoded as the query's arguments, and
+    // an envelope's codec is trimmed first.
+    let padded = json!({"codec":" avro ","blob":envelope(Payload::Array(vec![Payload::Long(7)]))["blob"]});
+    for input in [json!([7]), json!({"request":7}), padded] {
+        let waiting = {
+            let (app, path) = (app.clone(), required.clone());
+            tokio::spawn(async move { request(&app, "POST", &path, json!({"input":input})).await })
+        };
+        let claim = await_query(&app, worker).await;
+        let arguments = ValueCodec::new().unwrap().decode(claim["query_arguments"]["blob"].as_str().unwrap()).unwrap();
+        assert_eq!(arguments, Payload::Array(vec![Payload::Long(7)]));
+        let receipt = request(
+            &app, "POST",
+            &format!("/api/worker/query-tasks/{}/complete", claim["query_task_id"].as_str().unwrap()),
+            json!({"lease_owner":claim["lease_owner"],"query_task_attempt":claim["query_task_attempt"],"result_envelope":result}),
+        ).await;
+        assert_eq!(receipt.0, StatusCode::OK, "{}", receipt.1);
+        let response = waiting.await.unwrap();
+        assert_eq!((response.0, &response.1["result_envelope"]), (StatusCode::OK, &result), "{}", response.1);
+    }
     runtime.close().await;
     database.remove().await;
 }
