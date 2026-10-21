@@ -83,6 +83,8 @@ mod lock_free_waiting;
 mod read_snapshots;
 #[path = "execution/start_request.rs"]
 mod start_request;
+#[path = "execution/command_requests.rs"]
+mod command_requests;
 #[path = "execution/describe_actions.rs"]
 mod describe_actions;
 #[path = "execution/run_deadlines.rs"]
@@ -1727,7 +1729,7 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
         (
             path.clone(),
             json!({"input":input["input"],"wait_for":"other"}),
-            "invalid_update_wait_policy",
+            "validation_failed",
         ),
         (
             path.clone(),
@@ -2243,11 +2245,17 @@ async fn updates_bound_durable_inventory_and_preserve_accepted_work_after_wait_t
     open_update_wait(&app, "update-worker").await;
     let path = "/api/workflows/bounded-updates/update/set";
     for index in 0..64 {
-        let body = json!({"input":envelope(Payload::Array(vec![Payload::Long(index)])),
-            "request_id":format!("bounded:{index}"),"wait_for":"completed","wait_timeout_seconds":0});
+        // PHP's shortest completion wait is one second; one update waits it
+        // out and the rest return at acceptance.
+        let mut body = json!({"input":envelope(Payload::Array(vec![Payload::Long(index)])),
+            "request_id":format!("bounded:{index}"),"wait_for":"accepted"});
+        if index == 0 {
+            body["wait_for"] = json!("completed");
+            body["wait_timeout_seconds"] = json!(1);
+        }
         let receipt = request(&app, "POST", path, body).await;
         assert_eq!(receipt.0, StatusCode::ACCEPTED, "{}", receipt.1);
-        assert_eq!(receipt.1["wait_timed_out"], true);
+        assert_eq!(receipt.1["wait_timed_out"], index == 0);
         let task = poll(&app, "update-worker", "workflow").await;
         assert_eq!(task["workflow_update_id"], receipt.1["update_id"]);
         let complete_path = format!(

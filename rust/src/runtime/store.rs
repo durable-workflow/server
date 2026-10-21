@@ -497,7 +497,6 @@ where
         mut prepared: PreparedControlArguments,
         transition_codec: Arc<Semaphore>,
     ) -> Result<Value> {
-        reject_fields(&body, &["input", "request_id"])?;
         if name.trim().is_empty() || name.len() > 255 {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,

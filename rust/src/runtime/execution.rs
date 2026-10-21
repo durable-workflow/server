@@ -348,6 +348,32 @@ impl Runtime {
     );
     delegate!(mark_external_fetched(expected: &crate::external_payload::Reference) -> Result<()>);
     delegate!(database_live() -> bool);
+    /// PHP's `AvroPayloadEnvelopeResolver` for command input: absent, null or
+    /// empty input is no arguments and any list or object other than an
+    /// envelope is its values, both encoded here. An envelope is left as sent.
+    async fn plain_arguments(&self, body: &Value) -> Result<Option<String>> {
+        let arguments = match super::start_request::input(body) {
+            super::start_request::Input::Envelope => return Ok(None),
+            super::start_request::Input::Empty => Vec::new(),
+            super::start_request::Input::Values(values) => values
+                .into_iter()
+                .map(|value| super::memos::from_json(value.clone()))
+                .collect::<Result<_>>()
+                .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_workflow_arguments"))?,
+        };
+        let blob = super::queries::encode_arguments(self.signal_codec.clone(), crate::codec::Value::Array(arguments)).await?;
+        Ok(Some(blob))
+    }
+
+    /// A signal or update's arguments: the plain input encoded, or the
+    /// envelope's blob.
+    async fn command_arguments(&self, body: &Value) -> Result<String> {
+        match self.plain_arguments(body).await? {
+            Some(blob) => Ok(blob),
+            None => super::envelope(body, "input"),
+        }
+    }
+
     pub(crate) async fn start(&self, body: Value) -> Result<Value> {
         // PHP validates the request before it reads the memo or the input.
         let mut body = super::start_request::normalized(body);
@@ -357,19 +383,7 @@ impl Runtime {
         {
             return Err(refuse(StatusCode::NOT_IMPLEMENTED, "start_search_attributes_unavailable"));
         }
-        let arguments = match super::start_request::input(&body) {
-            super::start_request::Input::Envelope => None,
-            super::start_request::Input::Empty => Some(crate::codec::Value::Array(vec![])),
-            super::start_request::Input::Values(values) => Some(crate::codec::Value::Array(
-                values
-                    .into_iter()
-                    .map(|value| super::memos::from_json(value.clone()))
-                    .collect::<Result<_>>()
-                    .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_workflow_arguments"))?,
-            )),
-        };
-        if let Some(arguments) = arguments {
-            let blob = super::queries::encode_arguments(self.signal_codec.clone(), arguments).await?;
+        if let Some(blob) = self.plain_arguments(&body).await? {
             body["input"] = json!({"codec": "avro", "blob": blob});
         }
         let memo =
@@ -429,12 +443,9 @@ impl Runtime {
         name: &str,
         body: Value,
     ) -> Result<Value> {
-        // PHP's `input` is nullable: an absent or null input is no arguments.
-        let arguments = if body.get("input").is_none_or(Value::is_null) {
-            super::queries::empty_arguments(self.signal_codec.clone()).await?
-        } else {
-            super::envelope(&body, "input")?
-        };
+        let body = super::start_request::normalized(body);
+        super::command_requests::signal(&body)?;
+        let arguments = self.command_arguments(&body).await?;
         let prepared = super::store::prepare_control_arguments(
             self.signal_codec.clone(),
             name.to_owned(),
@@ -571,7 +582,9 @@ impl Runtime {
         name: &str,
         body: Value,
     ) -> Result<(StatusCode, Value)> {
-        let arguments = super::envelope(&body, "input")?;
+        let body = super::start_request::normalized(body);
+        super::command_requests::update(&body)?;
+        let arguments = self.command_arguments(&body).await?;
         if arguments.len() > super::queries::ARGUMENT_BYTES {
             return Err(refuse(
                 StatusCode::PAYLOAD_TOO_LARGE,
