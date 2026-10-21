@@ -427,7 +427,7 @@ mod tests {
                 .unwrap(),
         );
         store.register(json!({"worker_id":"memo-unit-worker", "task_queue":"test", "runtime":"php",
-            "supported_workflow_types":["echo"], "supported_activity_types":[], "capabilities":["memo_upserts"]})).await.unwrap();
+            "supported_workflow_types":["echo"], "supported_activity_types":[], "capabilities":["memo_upserts"]}), &crate::runtime::QueryTaskConfig::default()).await.unwrap();
         let original = store
             .start(
                 json!({"workflow_id":"memo-unit", "workflow_type":"echo", "task_queue":"test",

@@ -1,8 +1,24 @@
 import assert from 'node:assert/strict';
 
+// Published PHP closes a run immediately by cancel or terminate through one
+// implementation. The reviewed difference is only the recorded identity.
+const COMMANDS = {
+  cancel: {closed: 'cancelled', requested: 'CancelRequested', terminal: 'WorkflowCancelled',
+    exception: 'Workflow\\V2\\Exceptions\\WorkflowCancelledException', sdk: 'DurableWorkflow\\Exception\\WorkflowCancelled'},
+  terminate: {closed: 'terminated', requested: 'TerminateRequested', terminal: 'WorkflowTerminated',
+    exception: 'Workflow\\V2\\Exceptions\\WorkflowTerminatedException', sdk: 'DurableWorkflow\\Exception\\WorkflowTerminated'},
+};
+
+export function immediateCommand(fixture) {
+  const name = fixture.immediate_cancellation?.command ?? 'cancel';
+  assert.ok(Object.hasOwn(COMMANDS, name), 'reviewed immediate terminal command');
+  return {name, ...COMMANDS[name]};
+}
+
 // Reviewed immediate-cancel semantics. Cooperative cleanup and propagation to
 // children/updates remain separate gates; raw representations are retained.
 export function checkImmediateCancellation(fixture, observation) {
+  const command = immediateCommand(fixture);
   const equal = (actual, expected, label) => assert.deepStrictEqual(actual, expected, label);
   const nonempty = (value, label) => assert.ok(typeof value === 'string' && value.length > 0, label);
   const time = (value, label) => { const parsed = Date.parse(value); assert.ok(Number.isFinite(parsed), label); return parsed; };
@@ -13,7 +29,7 @@ export function checkImmediateCancellation(fixture, observation) {
   const events = observation.events;
   const rawEvents = events.map(({decoded, typed_decoded, ...event}) => event);
   const cancellation = observation.cancellation;
-  const requested = events.find(event => event.event_type === 'CancelRequested');
+  const requested = events.find(event => event.event_type === command.requested);
   const terminal = events.at(-1);
   const commandId = requested.payload.workflow_command_id;
   const failureId = terminal.payload.failure_id;
@@ -30,11 +46,12 @@ export function checkImmediateCancellation(fixture, observation) {
     equal(event.payload.workflow_command_id, commandId, 'original cancel command across lifecycle');
     equal(event.payload.reason, reason, 'immutable original cancellation reason');
   }
-  equal(requested.payload.command_type, 'cancel', 'immediate cancel command');
-  equal(terminal.payload.failure_category, 'cancelled', 'typed cancellation failure category');
-  equal(terminal.payload.closed_reason, 'cancelled', 'terminal cancellation reason');
-  equal(terminal.payload.exception_class, 'Workflow\\V2\\Exceptions\\WorkflowCancelledException', 'published cancellation exception identity');
-  const completeDiagnostic = `Workflow cancelled: ${reason}`;
+  equal(terminal.event_type, command.terminal, 'immediate terminal event');
+  equal(requested.payload.command_type, command.name, 'immediate terminal command');
+  equal(terminal.payload.failure_category, command.closed, 'typed terminal failure category');
+  equal(terminal.payload.closed_reason, command.closed, 'terminal closed reason');
+  equal(terminal.payload.exception_class, command.exception, 'published terminal exception identity');
+  const completeDiagnostic = `Workflow ${command.closed}: ${reason}`;
   const encoding = fixture.immediate_cancellation.diagnostic_encoding;
   assert.ok(encoding === undefined || encoding === 'json_string_literal_if_nul', 'reviewed diagnostic encoding');
   const encoded = encoding === 'json_string_literal_if_nul' && completeDiagnostic.includes('\0');
@@ -45,17 +62,17 @@ export function checkImmediateCancellation(fixture, observation) {
   }
   equal(Object.keys(terminal.decoded), [], 'cancellation commits no workflow result');
   equal(Object.keys(terminal.typed_decoded), [], 'cancellation has no typed success result');
-  equal(observation.execution.closed_reason, 'cancelled', 'durable run closure');
+  equal(observation.execution.closed_reason, command.closed, 'durable run closure');
   assert.ok(time(observation.execution.closed_at, 'durable cancellation close timestamp') >= time(observation.execution.started_at, 'original start time'), 'cancellation closes the original run');
   const fresh = cancellation.fresh_execution;
   equal(fresh.run_id ?? fresh.id, observation.run_id, 'fresh original run identity');
-  equal(fresh.status, 'cancelled', 'fresh durable cancellation');
+  equal(fresh.status, command.closed, 'fresh durable closure');
   equal(fresh.output, null, 'no fresh success output');
   const accepted = cancellation.accepted;
   equal(accepted.status, 200, 'accepted cancellation transport');
   equal(accepted.response.command_id, commandId, 'acknowledged original cancellation command');
   equal(accepted.response.command_status, 'accepted', 'accepted cancellation command');
-  equal(accepted.response.outcome, 'cancelled', 'terminal cancellation acknowledgment');
+  equal(accepted.response.outcome, command.closed, 'terminal command acknowledgment');
   equal(accepted.response.command_sequence, 2, 'cancel follows original start command');
   const duplicate = cancellation.duplicate;
   equal(duplicate.status, 409, 'repeat cancellation refusal');
@@ -130,7 +147,7 @@ export function checkImmediateCancellation(fixture, observation) {
       for (const receipt of [report, cancellation.late_completion]) {
         equal(receipt.status, 409, 'late activity completion refused');
         equal(receipt.response.recorded, false, 'late activity result is not durable');
-        equal(receipt.response.reason, 'run_cancelled', 'late cancelled run fencing');
+        equal(receipt.response.reason, `run_${command.closed}`, 'late closed run fencing');
         equal(receipt.response.outcome, 'ignored', 'cancelled run ignores late outcome');
         equal(receipt.response.cancel_requested, true, 'late outcome sees cancellation');
         equal(receipt.response.can_continue, false, 'late cancelled activity must stop');
@@ -152,21 +169,22 @@ export function checkImmediateCancellation(fixture, observation) {
   }
   equal(new Set(identities).size, identities.length, 'all cancellation work identities remain distinct');
   if (observation.mode === 'http') {
-    equal(cancellation.outcome, {type: 'DurableWorkflow\\Exception\\WorkflowCancelled', message: reason}, 'actual SDK typed cancelled result');
+    equal(cancellation.outcome, {type: command.sdk, message: reason}, 'actual SDK typed closed result');
     equal(cancellation.remaining_tasks, {workflow: null, activity: null}, 'cancelled run yields no remaining work');
     equal(observation.workflow_polls.length, phase === 'before_claim' ? 0 : 1, 'actual workflow claim count');
     equal(observation.workflow_completions.length, phase === 'before_claim' ? 0 : 1, 'one actual scheduling completion');
     if (phase !== 'leased_activity') equal(observation.activity_polls, [], 'no unexpected activity claim');
   } else {
-    equal(fresh.cancelled, true, 'embedded public cancellation outcome');
+    equal(fresh.cancelled, command.name === 'cancel', 'embedded public cancellation outcome');
+    equal(fresh.terminated, command.name === 'terminate', 'embedded public termination outcome');
     equal(cancellation.failures.length, 1, 'one original embedded cancellation failure');
     const failure = cancellation.failures[0];
     equal(failure.id, failureId, 'original durable cancellation failure');
     equal(failure.workflow_run_id, observation.run_id, 'failure original run');
     equal(failure.source_kind, 'workflow_run', 'failure source kind');
     equal(failure.source_id, observation.run_id, 'failure original source');
-    equal(failure.propagation_kind, 'cancelled', 'failure cancellation propagation');
-    equal(failure.failure_category, 'cancelled', 'failure typed category');
+    equal(failure.propagation_kind, command.closed, 'failure propagation kind');
+    equal(failure.failure_category, command.closed, 'failure typed category');
     equal(failure.exception_class, terminal.payload.exception_class, 'failure original exception class');
     equal(failure.message, terminal.payload.message, 'failure original message');
     equal(failure.handled, false, 'cancellation failure not swallowed');
