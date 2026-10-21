@@ -118,171 +118,51 @@ impl Operation<'_> {
             "contract":{"schema":"durable-workflow.v2.control-plane-response.contract", "version":1,
                 "legacy_field_policy":"reject_non_canonical", "legacy_fields":{"query":"query_name","signal":"signal_name","update":"update_name","wait_policy":"wait_for"},
                 "required_fields":required, "success_fields":success}});
-        if matches!(self, Self::Start) {
-            metadata["contract"]["rejection_fields"] = json!([
-                "workflow_id",
-                "command_status",
-                "command_source",
-                "outcome",
-                "reason",
-                "rejection_reason",
-                "message"
-            ]);
-            metadata["contract"]["rejection_reasons"] = json!([
-                "workflow_id_reserved_in_namespace",
-                "task_queue_draining",
-                "compatibility_blocked"
-            ]);
+        if let Some((fields, reasons)) = self.rejection_contract() {
+            metadata["contract"]["rejection_fields"] = words(fields);
+            metadata["contract"]["rejection_reasons"] = words(reasons);
         }
-        if matches!(self, Self::DescribeRun | Self::History) {
-            metadata["contract"]["rejection_fields"] = json!([
-                "workflow_id",
-                "run_id",
-                "reason",
-                "message",
-                "retryable",
-                "error_id",
-                "exception"
-            ]);
-            metadata["contract"]["rejection_reasons"] = json!(["control_plane_internal_error"]);
-        }
-        if matches!(self, Self::Cancel | Self::Terminate | Self::Repair) {
-            metadata["contract"]["rejection_fields"] =
-                json!(["workflow_id", "run_id", "reason", "message", "remediation"]);
-            metadata["contract"]["rejection_reasons"] = json!(["v1_projection_read_only"]);
-        }
-        if matches!(self, Self::Update) {
-            metadata["operation_name"] = body["update_name"].clone();
-            metadata["operation_name_field"] = json!("update_name");
-            metadata["contract"]["rejection_fields"] = json!([
-                "workflow_id",
-                "run_id",
-                "update_id",
-                "update_name",
-                "update_status",
-                "outcome",
-                "reason",
-                "rejection_reason",
-                "validation_errors",
-                "retryable",
-                "message",
-                "remediation"
-            ]);
-            metadata["contract"]["rejection_reasons"] = json!([
-                "update_validator_rejected",
-                "update_validator_contract_missing",
-                "update_validation_request_id_required",
-                "update_validation_idempotency_conflict",
-                "update_validation_capability_unsupported",
-                "update_validator_worker_unavailable",
-                "update_validator_worker_incompatible",
-                "update_validator_worker_lost",
-                "update_validation_task_not_claimed",
-                "update_validation_execution_timeout",
-                "duplicate_update_validation_completion",
-                "stale_update_validation_completion",
-                "invalid_update_arguments",
-                "v1_projection_read_only"
-            ]);
-            for field in [
-                "command_id",
-                "target_scope",
-                "result",
-                "result_envelope",
-                "update_id",
-                "update_status",
-                "wait_for",
-                "wait_timed_out",
-                "wait_timeout_seconds",
-            ] {
-                metadata[field] = body[field].clone();
-            }
-        }
-        if let Self::Query(name) = self {
-            metadata["operation_name"] = json!(name);
-            metadata["operation_name_field"] = json!("query_name");
-            metadata["contract"]["rejection_fields"] = json!([
-                "workflow_id",
-                "run_id",
-                "query_name",
-                "target_scope",
-                "result",
-                "reason",
-                "message",
-                "run_status",
-                "is_terminal",
-                "blocked_reason",
-                "validation_errors"
-            ]);
-            metadata["contract"]["rejection_reasons"] = json!([
-                "instance_not_found",
-                "historical_run_command_rejected",
-                "run_not_active",
-                "query_not_found",
-                "rejected_unknown_query",
-                "invalid_query_arguments",
-                "workflow_definition_unavailable",
-                "query_rejected",
-                "query_worker_unavailable",
-                "query_worker_incompatible",
-                "query_task_queue_full",
-                "query_task_queue_unavailable",
-                "query_task_not_claimed",
-                "query_worker_execution_timeout",
-                "query_worker_timeout",
-                "v1_projection_read_only"
-            ]);
-        }
-        if let Self::Signal(name) = self {
-            metadata["operation_name"] = json!(name);
-            metadata["operation_name_field"] = json!("signal_name");
-            metadata["contract"]["rejection_fields"] = json!([
-                "workflow_id",
-                "run_id",
-                "signal_name",
-                "command_status",
-                "command_source",
-                "target_scope",
-                "outcome",
-                "reason",
-                "rejection_reason",
-                "rejection_category",
-                "message",
-                "command_contract_source",
-                "command_contract_backfill_needed",
-                "command_contract_backfill_available",
-                "declared_signals",
-                "signal_admission",
-                "retryable",
-                "error_id"
-            ]);
-            metadata["contract"]["rejection_reasons"] = json!([
-                "instance_not_found",
-                "historical_run_command_rejected",
-                "unknown_signal",
-                "invalid_signal_arguments",
-                "run_not_active",
-                "instance_not_started",
-                "selected_run_not_current",
-                "configured_workflow_type_invalid",
-                "v1_projection_read_only",
-                "backend_lock_pressure",
-                "control_plane_internal_error"
-            ]);
-            // PHP's ControlPlaneResponseContract::PROJECTED_FIELDS for a signal.
-            for field in [
-                "command_id",
-                "target_scope",
-                "command_contract_source",
-                "command_contract_backfill_needed",
-                "command_contract_backfill_available",
-                "declared_signals",
-                "signal_admission",
-            ] {
-                if let Some(value) = body.get(field) {
-                    metadata[field] = value.clone();
+        match self {
+            Self::Update => {
+                metadata["operation_name"] = body["update_name"].clone();
+                metadata["operation_name_field"] = json!("update_name");
+                for field in [
+                    "command_id",
+                    "target_scope",
+                    "result",
+                    "result_envelope",
+                    "update_id",
+                    "update_status",
+                    "wait_for",
+                    "wait_timed_out",
+                    "wait_timeout_seconds",
+                ] {
+                    metadata[field] = body[field].clone();
                 }
             }
+            Self::Query(name) => {
+                metadata["operation_name"] = json!(name);
+                metadata["operation_name_field"] = json!("query_name");
+            }
+            Self::Signal(name) => {
+                metadata["operation_name"] = json!(name);
+                metadata["operation_name_field"] = json!("signal_name");
+                // PHP's ControlPlaneResponseContract::PROJECTED_FIELDS for a signal.
+                for field in [
+                    "command_id",
+                    "target_scope",
+                    "command_contract_source",
+                    "command_contract_backfill_needed",
+                    "command_contract_backfill_available",
+                    "declared_signals",
+                    "signal_admission",
+                ] {
+                    if let Some(value) = body.get(field) {
+                        metadata[field] = value.clone();
+                    }
+                }
+            }
+            _ => {}
         }
         // ControlPlaneResponseContract::PROJECTED_FIELDS: each present field.
         for field in [
@@ -346,6 +226,59 @@ impl Operation<'_> {
         body["control_plane"] = metadata;
         body
     }
+    /// `ControlPlaneResponseContract`'s rejection fields and reasons, each a
+    /// space-separated list.
+    fn rejection_contract(&self) -> Option<(&'static str, &'static str)> {
+        Some(match self {
+            Self::Start => (
+                "workflow_id command_status command_source outcome reason rejection_reason message",
+                "workflow_id_reserved_in_namespace task_queue_draining compatibility_blocked",
+            ),
+            Self::DescribeRun | Self::History => (
+                "workflow_id run_id reason message retryable error_id exception",
+                "control_plane_internal_error",
+            ),
+            Self::Cancel | Self::Terminate | Self::Repair => {
+                ("workflow_id run_id reason message remediation", "v1_projection_read_only")
+            }
+            Self::Update => (
+                "workflow_id run_id update_id update_name update_status outcome reason \
+                 rejection_reason validation_errors retryable message remediation",
+                "update_validator_rejected update_validator_contract_missing \
+                 update_validation_request_id_required update_validation_idempotency_conflict \
+                 update_validation_capability_unsupported update_validator_worker_unavailable \
+                 update_validator_worker_incompatible update_validator_worker_lost \
+                 update_validation_task_not_claimed update_validation_execution_timeout \
+                 duplicate_update_validation_completion stale_update_validation_completion \
+                 invalid_update_arguments v1_projection_read_only",
+            ),
+            Self::Query(_) => (
+                "workflow_id run_id query_name target_scope result reason message run_status \
+                 is_terminal blocked_reason validation_errors",
+                "instance_not_found historical_run_command_rejected run_not_active query_not_found \
+                 rejected_unknown_query invalid_query_arguments workflow_definition_unavailable \
+                 query_rejected query_worker_unavailable query_worker_incompatible \
+                 query_task_queue_full query_task_queue_unavailable query_task_not_claimed \
+                 query_worker_execution_timeout query_worker_timeout v1_projection_read_only",
+            ),
+            Self::Signal(_) => (
+                "workflow_id run_id signal_name command_status command_source target_scope outcome \
+                 reason rejection_reason rejection_category message command_contract_source \
+                 command_contract_backfill_needed command_contract_backfill_available \
+                 declared_signals signal_admission retryable error_id",
+                "instance_not_found historical_run_command_rejected unknown_signal \
+                 invalid_signal_arguments run_not_active instance_not_started \
+                 selected_run_not_current configured_workflow_type_invalid v1_projection_read_only \
+                 backend_lock_pressure control_plane_internal_error",
+            ),
+            Self::List | Self::ListRuns | Self::Describe | Self::Observe | Self::Debug => return None,
+        })
+    }
+}
+
+/// A space-separated list as a JSON array of its words.
+fn words(list: &str) -> Value {
+    list.split_whitespace().collect::<Vec<_>>().into()
 }
 
 pub(super) async fn admission_response(request: Request, mut body: Value) -> Value {

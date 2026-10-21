@@ -141,6 +141,45 @@ fn run_not_active(workflow_id: &str, run_id: &str, name: &str, status: &str) -> 
     error
 }
 
+/// The run statuses PHP still answers queries for.
+fn admits_queries(status: &str) -> bool {
+    matches!(status, "pending" | "running" | "waiting" | "completed")
+}
+
+/// `validateContractedQueryArguments`: a run that declares no queries leaves
+/// the name and arguments to the worker. A declared query without a
+/// parameter contract takes its arguments as given.
+fn check_query_contract(
+    contract: &Value,
+    workflow_id: &str,
+    run_id: &str,
+    name: &str,
+    values: &[crate::codec::Value],
+) -> Result<()> {
+    let declared = |field: &str| contract[field].as_array().is_some_and(|items| !items.is_empty());
+    if !declared("declared_queries") && !declared("declared_query_contracts") {
+        return Ok(());
+    }
+    if !contract["declared_queries"].as_array().is_some_and(|names| names.iter().any(|v| v == name)) {
+        return Err(query_refusal(StatusCode::NOT_FOUND, workflow_id, run_id, name, "rejected_unknown_query",
+            &format!("Workflow query [{name}] is not declared on workflow [{workflow_id}].")));
+    }
+    if contract["declared_query_contracts"]
+        .as_array()
+        .is_some_and(|contracts| contracts.iter().any(|entry| entry["name"] == name))
+    {
+        validate_arguments(
+            contract,
+            "declared_query_contracts",
+            name,
+            values,
+            "unsupported_query_contract",
+            "invalid_query_arguments",
+        )?;
+    }
+    Ok(())
+}
+
 impl<DB: Backend> Store<DB>
 where
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
@@ -274,42 +313,12 @@ where
         }
         let run_id = DB::string(&run, "id")?;
         let status = DB::string(&run, "status")?;
-        if !matches!(
-            status.as_str(),
-            "pending" | "running" | "waiting" | "completed"
-        ) {
+        if !admits_queries(&status) {
             return Err(run_not_active(workflow_id, &run_id, name, &status));
         }
         let contract = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
             .bind(&run_id).fetch_one(&self.pool).await?;
-        let contract = DB::document_row(&contract, "payload")?;
-        // `validateContractedQueryArguments`: a run that declares no queries
-        // leaves the name and arguments to the worker.
-        let declared = |field: &str| contract[field].as_array().is_some_and(|items| !items.is_empty());
-        if declared("declared_queries") || declared("declared_query_contracts") {
-            if !contract["declared_queries"]
-                .as_array()
-                .is_some_and(|names| names.iter().any(|v| v == name))
-            {
-                return Err(query_refusal(StatusCode::NOT_FOUND, workflow_id, &run_id, name, "rejected_unknown_query",
-                    &format!("Workflow query [{name}] is not declared on workflow [{workflow_id}].")));
-            }
-            // A declared query without a parameter contract takes its
-            // arguments as given.
-            if contract["declared_query_contracts"]
-                .as_array()
-                .is_some_and(|contracts| contracts.iter().any(|entry| entry["name"] == name))
-            {
-                validate_arguments(
-                    &contract,
-                    "declared_query_contracts",
-                    name,
-                    values,
-                    "unsupported_query_contract",
-                    "invalid_query_arguments",
-                )?;
-            }
-        }
+        check_query_contract(&DB::document_row(&contract, "payload")?, workflow_id, &run_id, name, values)?;
         let route = self.query_route(&run, config.worker_stale_after_seconds).await?;
         if !route.servable {
             return Ok(QueryAttempt::Unroutable { run_id, route });
@@ -321,10 +330,7 @@ where
             .filter(|row| DB::string(row, "id").ok().as_deref() == Some(run_id.as_str()))
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
         let status = DB::string(&run, "status")?;
-        if !matches!(
-            status.as_str(),
-            "pending" | "running" | "waiting" | "completed"
-        ) {
+        if !admits_queries(&status) {
             return Err(run_not_active(workflow_id, &run_id, name, &status));
         }
         let busy = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased')")
