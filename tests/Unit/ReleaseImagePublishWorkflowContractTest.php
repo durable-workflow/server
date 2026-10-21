@@ -310,7 +310,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $dockerfile = $this->read('Dockerfile');
         $phpConfig = $this->read('docker/php-custom.ini');
 
-        $this->assertStringContainsString('FROM php:8.3-apache AS base', $dockerfile);
+        $this->assertMatchesRegularExpression('/^FROM php@sha256:[a-f0-9]{64} AS base$/m', $dockerfile);
         $this->assertStringContainsString('docker-php-ext-install opcache', $dockerfile);
         $this->assertStringContainsString('opcache.enable = 1', $phpConfig);
         $this->assertStringContainsString('opcache.enable_cli = 1', $phpConfig);
@@ -369,12 +369,12 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $dockerfile = $this->read('Dockerfile');
         $activitiesRunner = $this->read('scripts/conformance/activities-published-artifacts.sh');
 
-        $this->assertStringContainsString('FROM php:8.3-apache AS base', $dockerfile);
+        $this->assertMatchesRegularExpression('/^FROM php@sha256:[a-f0-9]{64} AS base$/m', $dockerfile);
         $this->assertStringContainsString('nodejs', $dockerfile);
         $this->assertStringContainsString('if ! require_command node; then', $activitiesRunner);
         $this->assertStringContainsString('required command not found: node', $activitiesRunner);
 
-        $baseOffset = strpos($dockerfile, 'FROM php:8.3-apache AS base');
+        $baseOffset = strpos($dockerfile, " AS base\n");
         $nodeOffset = strpos($dockerfile, 'nodejs');
         $productionOffset = strpos($dockerfile, 'FROM base AS production');
 
@@ -390,7 +390,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $dockerfile = $this->read('Dockerfile');
         $activitiesRunner = $this->read('scripts/conformance/activities-published-artifacts.sh');
 
-        $this->assertStringContainsString('FROM php:8.3-apache AS base', $dockerfile);
+        $this->assertMatchesRegularExpression('/^FROM php@sha256:[a-f0-9]{64} AS base$/m', $dockerfile);
         $this->assertStringContainsString('python3', $dockerfile);
         $this->assertStringContainsString('python3-venv', $dockerfile);
         $this->assertStringContainsString('prepare_focused_python_sdk', $activitiesRunner);
@@ -399,7 +399,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringContainsString('run_python_activity_executor', $activitiesRunner);
         $this->assertStringContainsString('activity_host_evidence missing passing ${requiredMode}/${runtime} cell', $activitiesRunner);
 
-        $baseOffset = strpos($dockerfile, 'FROM php:8.3-apache AS base');
+        $baseOffset = strpos($dockerfile, " AS base\n");
         $pythonOffset = strpos($dockerfile, 'python3');
         $productionOffset = strpos($dockerfile, 'FROM base AS production');
 
@@ -2513,6 +2513,105 @@ SH);
             @unlink($logFile);
             @unlink($outputFile);
             @rmdir($tmpDir);
+        }
+    }
+
+    public function test_maintenance_resolver_tracks_only_the_latest_patch_in_its_minor_line(): void
+    {
+        $outputFile = tempnam(sys_get_temp_dir(), 'release-minor-output-');
+        $this->assertIsString($outputFile);
+
+        try {
+            foreach (['2.9.11', '2.9.13'] as $otherPatch) {
+                file_put_contents($outputFile, '');
+                $result = $this->runScript('scripts/ci/resolve-release-image-rolling-tags.sh', [
+                    'RELEASE_TAG' => '2.9.12',
+                    'RELEASE_IMAGE_ROLLING_SCOPE' => 'minor',
+                    'RELEASE_IMAGE_KNOWN_TAGS' => "{$otherPatch}\n2.10.1",
+                    'GITHUB_OUTPUT' => $outputFile,
+                ]);
+
+                $this->assertSame(0, $result['exitCode'], $result['stderr']);
+                $outputs = (string) file_get_contents($outputFile);
+                $promote = $otherPatch === '2.9.11' ? 'true' : 'false';
+                $this->assertStringContainsString("rolling_should_promote={$promote}\n", $outputs);
+                $this->assertStringContainsString("durableworkflow/server:2.9\n", $outputs);
+                $this->assertStringContainsString("ghcr.io/durable-workflow/server:2.9\n", $outputs);
+                $this->assertStringNotContainsString(':latest', $outputs);
+                $this->assertStringNotContainsString("durableworkflow/server:2\n", $outputs);
+            }
+        } finally {
+            @unlink($outputFile);
+        }
+    }
+
+    public function test_maintenance_promotion_preserves_global_aliases_and_rechecks_the_minor_line(): void
+    {
+        $tmpDir = sys_get_temp_dir().'/release-minor-docker-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($tmpDir));
+        $dockerBin = $tmpDir.'/docker';
+        $logFile = $tmpDir.'/docker.log';
+        file_put_contents($dockerBin, "#!/usr/bin/env sh\nprintf '%s\\n' \"\$*\" >> \"{$logFile}\"\n");
+        chmod($dockerBin, 0755);
+
+        try {
+            $environment = [
+                'RELEASE_TAG' => '2.9.12',
+                'RELEASE_IMAGE_ROLLING_SCOPE' => 'minor',
+                'ROLLING_SHOULD_PROMOTE' => 'true',
+                'DOCKER' => $dockerBin,
+            ];
+            $result = $this->runScript('scripts/ci/promote-release-image-rolling-tags.sh', [
+                ...$environment,
+                'RELEASE_IMAGE_KNOWN_TAGS' => "2.9.11\n2.10.1",
+            ]);
+            $this->assertSame(0, $result['exitCode'], $result['stderr']);
+            $this->assertSame(
+                "buildx imagetools create --tag durableworkflow/server:2.9 durableworkflow/server:2.9.12\n"
+                ."buildx imagetools create --tag ghcr.io/durable-workflow/server:2.9 ghcr.io/durable-workflow/server:2.9.12\n",
+                file_get_contents($logFile),
+            );
+
+            unlink($logFile);
+            $raced = $this->runScript('scripts/ci/promote-release-image-rolling-tags.sh', [
+                ...$environment,
+                'RELEASE_IMAGE_KNOWN_TAGS' => "2.9.11\n2.9.13\n2.10.1",
+            ]);
+            $this->assertSame(0, $raced['exitCode'], $raced['stderr']);
+            $this->assertFileDoesNotExist($logFile);
+            $this->assertStringContainsString('superseded by 2.9.13', $raced['stdout']);
+        } finally {
+            @unlink($dockerBin);
+            @unlink($logFile);
+            @rmdir($tmpDir);
+        }
+    }
+
+    public function test_maintenance_evidence_names_only_the_promoted_minor_aliases(): void
+    {
+        $evidenceFile = tempnam(sys_get_temp_dir(), 'release-minor-evidence-');
+        $this->assertIsString($evidenceFile);
+
+        try {
+            $result = $this->runScript('scripts/ci/write-release-image-publish-evidence.sh', [
+                'RELEASE_IMAGE_EVIDENCE_PATH' => $evidenceFile,
+                'RELEASE_TAG' => '2.9.12',
+                'RELEASE_IMAGE_ROLLING_SCOPE' => 'minor',
+                'VALIDATION_OUTCOME' => 'success',
+                'EXACT_PUBLISH_OUTCOME' => 'success',
+                'ROLLING_GUARD_OUTCOME' => 'success',
+                'ROLLING_PROMOTE_OUTCOME' => 'success',
+                'ROLLING_ARTIFACT_STATUS' => 'current',
+                'ROLLING_SHOULD_PROMOTE' => 'true',
+            ]);
+            $this->assertSame(0, $result['exitCode'], $result['stderr']);
+            $evidence = json_decode((string) file_get_contents($evidenceFile), true, flags: JSON_THROW_ON_ERROR);
+            $this->assertSame([
+                'durableworkflow/server:2.9',
+                'ghcr.io/durable-workflow/server:2.9',
+            ], $evidence['rolling']['refs']);
+        } finally {
+            @unlink($evidenceFile);
         }
     }
 

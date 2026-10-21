@@ -2,6 +2,7 @@
 
 import ast
 import importlib.util
+import json
 import os
 import re
 import sys
@@ -466,7 +467,7 @@ esac
         source_release = RELEASE.source_release_metadata()
         self.assertGreater(RELEASE.semver_key(metadata["version"]), (0, 1, 0))
         self.assertEqual(metadata["version"], source_release["chart_version"])
-        self.assertEqual(metadata["app_version"], source_release["server_version"])
+        self.assertEqual(metadata["app_version"], source_release["chart_server_version"])
         self.assertEqual(
             metadata["image_reference"],
             f"docker.io/durableworkflow/server:{RELEASE.onboarding_server_version()}",
@@ -479,6 +480,26 @@ esac
             metadata["annotations"][RELEASE.IMAGE_REFERENCE_ANNOTATION],
             metadata["release_image_reference"],
         )
+
+    def test_image_only_patch_retains_the_recorded_chart_server(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "release.json"
+            record = {
+                "schema": "durable-workflow.server.source-release/v1",
+                "server": {"version": "2.9.12"},
+                "helm_chart": {"version": "0.2.1", "server_version": "2.9.11"},
+            }
+            path.write_text(json.dumps(record))
+            self.assertEqual(RELEASE.source_release_metadata(path)["server_version"], "2.9.12")
+            self.assertEqual(RELEASE.source_release_metadata(path)["chart_server_version"], "2.9.11")
+            del record["helm_chart"]["server_version"]
+            path.write_text(json.dumps(record))
+            self.assertEqual(RELEASE.source_release_metadata(path)["chart_server_version"], "2.9.12")
+            for invalid in ("latest", None):
+                record["helm_chart"]["server_version"] = invalid
+                path.write_text(json.dumps(record))
+                with self.assertRaisesRegex(RELEASE.ReleaseError, "chart Server version is not SemVer"):
+                    RELEASE.source_release_metadata(path)
 
     def test_changed_app_version_requires_changed_release_annotation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -807,6 +828,19 @@ esac
         self.assertIn("needs: validate", protected_publish)
         self.assertIn("source_ref: ${{ github.sha }}", protected_publish)
         self.assertIn("allow_missing_image: true", protected_publish)
+
+    def test_maintenance_tag_does_not_republish_existing_chart(self) -> None:
+        self.assertFalse(
+            evaluate_recovery_condition(
+                "release.yml",
+                "publish-chart",
+                exact_publish_outcome="success",
+                repository="durable-workflow/server",
+                event_name="push",
+                ref="refs/tags/2.9.12",
+            ),
+            "the image-only maintenance tag must preserve the published chart",
+        )
 
     def test_partial_release_and_verification_only_recovery_publish_the_chart(
         self,

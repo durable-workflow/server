@@ -33,6 +33,8 @@ jobs:
     name: Build and push Docker image
     runs-on: ubuntu-latest
     environment: dockerhub
+    env:
+      RELEASE_IMAGE_ROLLING_SCOPE: minor
     if: >-
       (github.event_name == 'workflow_dispatch' &&
        github.ref == 'refs/heads/main') ||
@@ -197,7 +199,8 @@ jobs:
 
       - name: Build and push exact image tags
         id: build
-        timeout-minutes: 45
+        # A cold signed PHP source build under ARM emulation exceeds 45 minutes.
+        timeout-minutes: 120
         continue-on-error: true
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7
         with:
@@ -211,6 +214,7 @@ jobs:
           cache-to: ${{ steps.cache.outputs.cache_to }}
           provenance: false
           build-args: |
+            PHP_BUILD_JOBS=4
             PHPREDIS_VERSION=${{ env.PHPREDIS_VERSION }}
             PHPREDIS_COMMIT=${{ env.PHPREDIS_COMMIT }}
             WORKFLOW_PACKAGE_SOURCE=${{ steps.workflow.outputs.source }}
@@ -398,8 +402,11 @@ jobs:
   publish-chart:
     name: Publish matching immutable Helm chart
     needs: publish
+    # This one-time maintenance tag publishes images only. The existing chart
+    # stays immutable; the current main chart supports an explicit image tag.
     if: >-
       always() &&
+      github.ref == 'refs/heads/main' &&
       needs.publish.outputs.exact_publish_outcome == 'success' &&
       github.repository == 'durable-workflow/server' &&
       ((github.event_name == 'workflow_dispatch' &&

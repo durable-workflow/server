@@ -100,6 +100,7 @@ test('a stable server source identity fans out through current release consumers
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
     manifest.server.version = '2.0.0';
     manifest.helm_chart.version = nextServerRelease(manifest.helm_chart.version);
+    delete manifest.helm_chart.server_version;
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
     const write = runGenerator(temporaryRoot, ['--write']);
@@ -130,6 +131,7 @@ test('a simulated next release fans out without rewriting history or retaining s
     const nextChart = nextServerRelease(previousChart);
     manifest.server.version = nextServer;
     manifest.helm_chart.version = nextChart;
+    delete manifest.helm_chart.server_version;
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
     const upgradingPath = 'k8s/helm/durable-workflow/docs/UPGRADING.md';
@@ -217,6 +219,42 @@ test('a simulated next release fans out without rewriting history or retaining s
     assert.equal(drift.status, 1);
     assert.match(drift.stderr, /docker-compose\.small-cluster\.yml/);
     assert.ok(drift.stderr.includes(remediation));
+  } finally {
+    await rm(temporaryRoot, {recursive: true, force: true});
+  }
+});
+
+test('an image-only patch preserves the existing Helm release bytes', async () => {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'server-image-only-release-'));
+  try {
+    const paths = await copyRepositoryFiles(temporaryRoot);
+    const manifestPath = join(temporaryRoot, 'resources/release/source-release.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    const chartPath = join(temporaryRoot, 'k8s/helm/durable-workflow/Chart.yaml');
+    const chart = await readFile(chartPath, 'utf8');
+    const chartServer = /^appVersion: "([^"]+)"$/m.exec(chart)[1];
+    manifest.helm_chart.server_version = chartServer;
+    manifest.server.version = nextServerRelease(manifest.server.version);
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    const before = new Map(await Promise.all(paths.filter((path) => path.startsWith('k8s/helm/'))
+      .map(async (path) => [path, await readFile(join(temporaryRoot, path))])));
+
+    const write = runGenerator(temporaryRoot, ['--write']);
+    assert.equal(write.status, 0, write.stderr);
+    assert.equal(runGenerator(temporaryRoot, ['--check']).status, 0);
+    for (const [path, bytes] of before) {
+      assert.ok((await readFile(join(temporaryRoot, path))).equals(bytes), path);
+    }
+    const composer = JSON.parse(await readFile(join(temporaryRoot, 'composer.json'), 'utf8'));
+    assert.equal(composer.extra['durable-workflow']['product-train'], manifest.server.version);
+
+    for (const invalidVersion of ['latest', null]) {
+      manifest.helm_chart.server_version = invalidVersion;
+      await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+      const invalid = runGenerator(temporaryRoot, ['--check']);
+      assert.equal(invalid.status, 1);
+      assert.match(invalid.stderr, /helm_chart.server_version must be an exact SemVer value/);
+    }
   } finally {
     await rm(temporaryRoot, {recursive: true, force: true});
   }

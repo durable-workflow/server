@@ -7,6 +7,7 @@ dockerhub_image="${DOCKERHUB_IMAGE:-durableworkflow/server}"
 ghcr_image="${GHCR_IMAGE:-ghcr.io/durable-workflow/server}"
 docker_bin="${DOCKER:-docker}"
 tag_source_url="${RELEASE_IMAGE_TAG_SOURCE_URL:-}"
+rolling_scope="${RELEASE_IMAGE_ROLLING_SCOPE:-all}"
 
 fail() {
     printf '::error title=%s::%s\n' "$1" "$2" >&2
@@ -63,7 +64,8 @@ latest_known_stable_tag() {
         collect_release_tags
         printf '%s\n' "$release_tag"
     } | while IFS= read -r candidate; do
-        if is_stable_semver_tag "$candidate"; then
+        if is_stable_semver_tag "$candidate" &&
+            { [ "$rolling_scope" != "minor" ] || [ "${candidate%.*}" = "$minor_alias" ]; }; then
             printf '%s\n' "$candidate"
         fi
     done | sort -u -V | tail -n 1
@@ -103,6 +105,12 @@ fi
 promote_image() {
     image="$1"
 
+    if [ "$rolling_scope" = "minor" ]; then
+        "$docker_bin" buildx imagetools create \
+            --tag "${image}:${minor_alias}" "${image}:${release_tag}"
+        return
+    fi
+
     "$docker_bin" buildx imagetools create \
         --tag "${image}:${minor_alias}" \
         --tag "${image}:${major_alias}" \
@@ -117,5 +125,10 @@ write_output "rolling_should_promote" "true"
 write_output "artifact_status" "current"
 write_output "superseded_by" ""
 
-printf 'Promoted rolling image aliases %s, %s, and latest from exact tag %s for %s and %s.\n' \
-    "$minor_alias" "$major_alias" "$release_tag" "$dockerhub_image" "$ghcr_image"
+if [ "$rolling_scope" = "minor" ]; then
+    printf 'Promoted only rolling image alias %s from exact tag %s for %s and %s.\n' \
+        "$minor_alias" "$release_tag" "$dockerhub_image" "$ghcr_image"
+else
+    printf 'Promoted rolling image aliases %s, %s, and latest from exact tag %s for %s and %s.\n' \
+        "$minor_alias" "$major_alias" "$release_tag" "$dockerhub_image" "$ghcr_image"
+fi

@@ -189,6 +189,11 @@ if is_stable_semver_tag "$release_tag"; then
         "$ghcr_image" "$minor_alias" \
         "$ghcr_image" "$major_alias" \
         "$ghcr_image" "latest")"
+
+    if [ "${RELEASE_IMAGE_ROLLING_SCOPE:-all}" = "minor" ]; then
+        rolling_refs="$(printf '%s:%s\n%s:%s' \
+            "$dockerhub_image" "$minor_alias" "$ghcr_image" "$minor_alias")"
+    fi
 fi
 
 if ! is_stable_semver_tag "$release_tag"; then
