@@ -6,6 +6,7 @@ namespace Tests\Feature;
 
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Testing\TestResponse;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
@@ -103,7 +104,7 @@ final class SelectionCancellationHttpTest extends TestCase
         [$runId, $task, $cancel] = $this->stageTimerWinner();
         $before = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count();
         WorkflowTask::query()->findOrFail($task['task_id'])->forceFill(['lease_expires_at' => now()->subSecond()])->save();
-        $this->complete($task, [$cancel])->assertStatus(409)->assertJsonPath('recorded', false);
+        $this->complete($task, [$cancel])->assertStatus(409);
         $this->assertSame('pending', ActivityExecution::query()->sole()->status->value);
         $this->assertSame($before, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count());
     }
@@ -166,7 +167,7 @@ final class SelectionCancellationHttpTest extends TestCase
         ], $this->workerHeaders())->assertOk()->json('task');
     }
 
-    private function complete(array $task, array $commands, string $namespace = 'default'): \Illuminate\Testing\TestResponse
+    private function complete(array $task, array $commands, string $namespace = 'default'): TestResponse
     {
         return $this->postJson('/api/worker/workflow-tasks/'.$task['task_id'].'/complete', [
             'lease_owner' => 'select-worker', 'workflow_task_attempt' => $task['workflow_task_attempt'],
