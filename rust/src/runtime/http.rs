@@ -201,6 +201,7 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/system/retention", get(retention_status))
         .route("/api/system/retention/pass", post(retention_pass))
         .route("/api/system/activity-timeouts", get(activity_timeout_status))
+        .route("/api/system/activity-timeouts/pass", post(activity_timeout_pass))
         .route("/api/workers", get(list_workers))
         .route("/api/task-queues", get(list_task_queues))
         .route("/api/task-queues/{task_queue}", get(describe_task_queue))
@@ -542,7 +543,7 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     {
         return method == "GET";
     }
-    if path == "/api/system/retention/pass" {
+    if path == "/api/system/retention/pass" || path == "/api/system/activity-timeouts/pass" {
         return method == "POST";
     }
     if let Some(path) = path.strip_prefix("/api/workflows/") {
@@ -1172,13 +1173,32 @@ async fn retention_status(Extension(runtime): Extension<Runtime>, Query(query): 
     Ok(Json(runtime.retention_status(limit).await?))
 }
 
-/// PHP answers 207 when any run failed to prune.
-async fn retention_pass(Extension(runtime): Extension<Runtime>, body: Option<Json<Value>>) -> Result<Response> {
-    let body = body.map_or(Value::Null, |Json(body)| body);
-    let (limit, run_ids) = super::retention::pass_request(&body)?;
-    let (report, failed) = runtime.retention_pass(limit, run_ids).await?;
+/// PHP's passes answer 207 when any item failed.
+fn pass_response((report, failed): (Value, bool)) -> Response {
     let status = if failed { StatusCode::MULTI_STATUS } else { StatusCode::OK };
-    Ok((status, Json(report)).into_response())
+    (status, Json(report)).into_response()
+}
+
+/// PHP reads an empty body as empty input and refuses malformed JSON.
+fn request_json(body: &[u8]) -> Result<Value> {
+    if body.trim_ascii().is_empty() {
+        return Ok(Value::Null);
+    }
+    serde_json::from_slice(body).map_err(|_| super::RuntimeError::Protocol {
+        status: StatusCode::BAD_REQUEST,
+        response: json!({"message": "Request bodies must contain valid JSON.", "reason": "malformed_json",
+            "json_error": "Syntax error"}),
+    })
+}
+
+async fn retention_pass(Extension(runtime): Extension<Runtime>, body: axum::body::Bytes) -> Result<Response> {
+    let (limit, run_ids) = super::retention::pass_request(&request_json(&body)?, "run_ids")?;
+    Ok(pass_response(runtime.retention_pass(limit, run_ids).await?))
+}
+
+async fn activity_timeout_pass(Extension(runtime): Extension<Runtime>, body: axum::body::Bytes) -> Result<Response> {
+    let (limit, ids) = super::retention::pass_request(&request_json(&body)?, "execution_ids")?;
+    Ok(pass_response(runtime.activity_timeout_pass(limit, ids).await?))
 }
 
 async fn activity_timeout_status(
