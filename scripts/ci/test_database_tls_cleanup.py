@@ -42,5 +42,60 @@ class DatabaseTlsCleanupTest(unittest.TestCase):
         )
 
 
+class DatabaseTlsRunnerInputsTest(unittest.TestCase):
+    def run_fixture(self, *, mode="published", image=None, project="tls-123-2-verify"):
+        with tempfile.TemporaryDirectory() as runner:
+            root = Path(runner)
+            binaries = root / "bin"
+            binaries.mkdir()
+            marker = root / "docker-called"
+            docker = binaries / "docker"
+            docker.write_text(
+                '#!/bin/sh\nprintf called > "$DOCKER_MARKER"\n'
+                'if [ "$1" = run ]; then exit 88; fi\n'
+            )
+            docker.chmod(0o755)
+            resources = root / "resources"
+            result = subprocess.run(
+                ["bash", str(Path(__file__).with_name("qualify-database-tls.sh"))],
+                env={
+                    **os.environ,
+                    "PATH": f"{binaries}:{os.environ['PATH']}",
+                    "DOCKER_MARKER": str(marker),
+                    "TLS_TEST_MODE": mode,
+                    "TLS_TEST_IMAGE": image or "example/server@sha256:" + "a" * 64,
+                    "TLS_TEST_PROJECT": project,
+                    "TLS_TEST_ROOT": str(resources),
+                    "GITHUB_ACTIONS": "true",
+                    "GITHUB_RUN_ID": "123",
+                    "GITHUB_RUN_ATTEMPT": "2",
+                    "GITHUB_JOB": "verify",
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return result, marker.exists(), resources.exists()
+
+    def test_unknown_mode_and_mutable_image_are_refused_before_resources(self):
+        for settings in [{"mode": "unknown"}, {"image": "example/server:latest"}]:
+            with self.subTest(settings=settings):
+                result, docker_called, resources_created = self.run_fixture(**settings)
+                self.assertEqual(result.returncode, 2)
+                self.assertFalse(docker_called)
+                self.assertFalse(resources_created)
+
+    def test_another_ci_job_scope_is_refused_before_resources(self):
+        result, docker_called, resources_created = self.run_fixture(project="tls-123-2-another-job")
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse(docker_called)
+        self.assertFalse(resources_created)
+
+    def test_original_ci_scope_reaches_the_fixture_launcher(self):
+        result, docker_called, _ = self.run_fixture()
+        self.assertEqual(result.returncode, 88)
+        self.assertTrue(docker_called)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -297,6 +297,15 @@ impl Runtime {
     delegate!(system_health(config: &super::operator_metrics::MetricsConfig) -> Result<(bool, Value)>);
     delegate!(create_namespace(body: Value) -> Result<Value>);
     delegate!(list_search_attributes() -> Result<Value>);
+    delegate!(
+        storage_test_round_trip(
+            local: &crate::external_payload::LocalStorage,
+            reference: crate::external_payload::Reference,
+            payload: Vec<u8>,
+            max_bytes: u64,
+            workers: Arc<Semaphore>,
+        ) -> Result<()>
+    );
     delegate!(create_search_attribute(body: Value) -> Result<Value>);
     delegate!(delete_search_attribute(name: &str) -> Result<Value>);
     delegate!(set_external_policy(name: &str, body: Value) -> Result<Value>);
