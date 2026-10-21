@@ -6,6 +6,7 @@ release_tag="${RELEASE_TAG:-}"
 dockerhub_image="${DOCKERHUB_IMAGE:-durableworkflow/server}"
 ghcr_image="${GHCR_IMAGE:-ghcr.io/durable-workflow/server}"
 tag_source_url="${RELEASE_IMAGE_TAG_SOURCE_URL:-}"
+rolling_scope="${RELEASE_IMAGE_ROLLING_SCOPE:-all}"
 
 fail() {
     title="$1"
@@ -105,7 +106,8 @@ stable_tags="$(
         collect_release_tags
         printf '%s\n' "$release_tag"
     } | while IFS= read -r candidate; do
-        if is_stable_semver_tag "$candidate"; then
+        if is_stable_semver_tag "$candidate" &&
+            { [ "$rolling_scope" != "minor" ] || [ "${candidate%.*}" = "$minor_alias" ]; }; then
             printf '%s\n' "$candidate"
         fi
     done | sort -u -V
@@ -124,6 +126,11 @@ rolling_refs="$(printf '%s:%s\n%s:%s\n%s:%s\n%s:%s\n%s:%s\n%s:%s' \
     "$ghcr_image" "$minor_alias" \
     "$ghcr_image" "$major_alias" \
     "$ghcr_image" "latest")"
+
+if [ "$rolling_scope" = "minor" ]; then
+    rolling_refs="$(printf '%s:%s\n%s:%s' \
+        "$dockerhub_image" "$minor_alias" "$ghcr_image" "$minor_alias")"
+fi
 
 write_output "rolling_eligible" "true"
 write_output "major_alias" "$major_alias"

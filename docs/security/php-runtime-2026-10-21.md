@@ -43,6 +43,10 @@ The generated chart files in this maintenance source are not a new published
 chart artifact. Chart publication remains on current main. This one-time patch
 does not establish a separate long-term support branch.
 
+After exact image verification, this maintenance release promotes only the
+`2.9` image alias in both registries. It checks again for a newer 2.9 patch
+before promotion. The `2` and `latest` aliases remain on the current 2.10 line.
+
 ### Signed PHP source
 
 While the official Apache image is being published, this image builds PHP
