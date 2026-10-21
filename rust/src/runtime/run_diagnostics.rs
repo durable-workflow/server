@@ -421,7 +421,7 @@ where
 
     /// `WorkflowCompatibilityFleet::detailsForNamespace` from the
     /// registrations whose heartbeat is within the fleet window.
-    async fn fleet_snapshots(&self, at: DateTime<Utc>) -> Result<Vec<(String, Option<String>, Vec<String>, DateTime<Utc>)>> {
+    pub(super) async fn fleet_snapshots(&self, at: DateTime<Utc>) -> Result<Vec<(String, Option<String>, Vec<String>, DateTime<Utc>)>> {
         let rows = Self::query("SELECT worker_id,task_queue,build_id,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND last_heartbeat_at IS NOT NULL")
             .bind(self.namespace.as_ref()).fetch_all(&self.pool).await?;
         let mut snapshots = Vec::new();
@@ -440,7 +440,7 @@ where
         Ok(snapshots)
     }
 
-    fn fleet_supports(snapshots: &[(String, Option<String>, Vec<String>, DateTime<Utc>)], compatibility: Option<&str>, queue: Option<&str>) -> (bool, Option<String>) {
+    pub(super) fn fleet_supports(snapshots: &[(String, Option<String>, Vec<String>, DateTime<Utc>)], compatibility: Option<&str>, queue: Option<&str>) -> (bool, Option<String>) {
         let Some(required) = compatibility else {
             return (true, None);
         };
