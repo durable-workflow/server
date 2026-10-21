@@ -183,7 +183,7 @@ where
     }
 
     /// `ScheduleManager::triggerDetailed` on the schedule row `key`.
-    async fn trigger_detailed(
+    pub(super) async fn trigger_detailed(
         &self,
         key: &str,
         overlap: Option<&str>,
@@ -200,7 +200,7 @@ where
                 .await?;
             let store = self.in_namespace(DB::optional_string(&row, "namespace")?.as_deref().unwrap_or("default"));
             match store
-                .decide(&mut tx, &row, overlap, context, occurrence, closed)
+                .decide(&mut tx, &row, overlap, context, occurrence, closed, outcome == "backfilled")
                 .await?
             {
                 Decision::Done(result) => {
@@ -260,9 +260,11 @@ where
         context: Option<&Value>,
         occurrence: Option<DateTime<Utc>>,
         closed: bool,
+        backfill: bool,
     ) -> Result<Decision> {
         let skip = |reason: &str| Decision::Done(Trigger::Skipped(reason.to_owned()));
-        if let Some(occurrence) = occurrence {
+        // triggerForBackfill has no stale check: its occurrences are past.
+        if let Some(occurrence) = occurrence.filter(|_| !backfill) {
             let next = DB::optional_instant(row, "next_fire_at")?;
             if next.is_none_or(|next| occurrence_key(next) != occurrence_key(occurrence)) {
                 // PHP records a stale_occurrence skip here. Native nodes all
@@ -454,7 +456,7 @@ where
     }
 
     /// `recordFailure`, committed on its own after a failed evaluation.
-    async fn record_failure(&self, key: &str, reason: &str) -> Result<()> {
+    pub(super) async fn record_failure(&self, key: &str, reason: &str) -> Result<()> {
         let mut tx = self.begin().await?;
         let row = Self::query("SELECT * FROM workflow_schedules WHERE id=$1")
             .bind(key)

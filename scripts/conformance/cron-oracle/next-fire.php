@@ -41,6 +41,9 @@ for ($i = 0; $i < (int) $argv[2]; ++$i) {
         $schedule->spec = $spec;
         $next = $schedule->computeNextFireAt(new Carbon\Carbon($at));
         $case['next'] = $next === null ? null : Carbon\Carbon::instance($next)->utc()->format('Y-m-d\TH:i:s.u\Z');
+        if ($next !== null) {
+            $case['offset'] = $next->format('P');
+        }
     } catch (Throwable $e) {
         $case['error'] = get_class($e);
     }

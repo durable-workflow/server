@@ -4,17 +4,21 @@ import {readFileSync} from 'node:fs';
 // Published PHP's reviewed, normalized responses to every step.
 const EXPECTED = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/ServerParityExpected/schedule-policies.json', import.meta.url)));
 
-// Generated identities, times, audit fingerprints, route names and peer
-// addresses differ between servers and runs. Next fire times are checked on
-// their own below, against the published cron corpus semantics.
+// Generated identities, times, audit fingerprints, route names, peer
+// addresses and signed continuation tokens differ between servers and runs.
+// Next fire times are checked on their own, against the published cron
+// corpus semantics.
 const VOLATILE = [/^\d{4}-\d{2}-\d{2}T/, /^[0-9A-Za-z]{26}$/, /^sha256:[0-9a-f]{64}$/, /^generated::/,
-  /^api\.schedules\./, /^\d+\.\d+\.\d+\.\d+$/];
+  /^api\.schedules\./, /^\d+\.\d+\.\d+\.\d+$/, /^[A-Za-z0-9_-]{40,}\.[0-9a-f]{64}$/];
+// How late a backfilled or scheduled occurrence fired depends on the clock.
+const VOLATILE_FIELDS = new Set(['fire_lag_ms']);
 
 // The run's own namespace and task queue read as placeholders, wherever they appear.
 export function normalized(value, names = {}) {
   if (Array.isArray(value)) return value.map(item => normalized(item, names));
   if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([field, item]) => [field, normalized(item, names)]));
+    return Object.fromEntries(Object.entries(value).map(([field, item]) =>
+      [field, VOLATILE_FIELDS.has(field) ? '@v' : normalized(item, names)]));
   }
   if (typeof value !== 'string') return value;
   if (VOLATILE.some(pattern => pattern.test(value))) return '@v';
@@ -45,7 +49,9 @@ export function checkSchedulePolicies(fixture, observation, workflowId) {
       'embedded schedule surface explicitly inapplicable');
     return {scope: 'schedule_policies'};
   }
-  const namespace = `${workflowId}-schedules`.toLowerCase();
+  assert.ok(Number.isInteger(state.attempts) && state.attempts >= 1 && state.attempts <= 3, 'recorded sequence attempts');
+  // A sequence replayed after PHP's SQLite lock defect runs in a new namespace.
+  const namespace = `${workflowId}-schedules`.toLowerCase() + (state.attempts === 1 ? '' : `-r${state.attempts}`);
   assert.deepStrictEqual([state.applicable, state.namespace], [true, namespace], 'schedule policy namespace');
   assert.ok(Number.isInteger(state.retries) && state.retries >= 0, 'recorded lock retries');
   const raw = state.steps;

@@ -55,10 +55,15 @@ pub fn router(runtime: Runtime) -> Router {
             delete(delete_search_attribute),
         )
         .route("/api/workflows", get(list_workflows).post(start))
-        .route("/api/schedules", post(super::schedule_http::create))
+        .route(
+            "/api/schedules",
+            get(super::schedule_list::list).post(super::schedule_http::create),
+        )
         .route(
             "/api/schedules/{schedule_id}",
-            get(super::schedule_http::describe).delete(super::schedule_http::remove),
+            get(super::schedule_http::describe)
+                .put(super::schedule_http::update)
+                .delete(super::schedule_http::remove),
         )
         .route(
             "/api/schedules/{schedule_id}/history",
@@ -75,6 +80,10 @@ pub fn router(runtime: Runtime) -> Router {
         .route(
             "/api/schedules/{schedule_id}/trigger",
             post(super::schedule_http::trigger),
+        )
+        .route(
+            "/api/schedules/{schedule_id}/backfill",
+            post(super::schedule_http::backfill),
         )
         .route("/api/workflows/{workflow_id}", get(describe_current))
         .route(
