@@ -23,6 +23,12 @@ MySQL and MariaDB controls exercise verified connections, required encryption,
 certificate/configuration refusals and explicit plaintext behavior. This is
 direct PHP-to-database coverage; it does not qualify HTTPS ingress or proxies.
 
+Existing releases use `published-release-recovery.yml` with the exact release
+tag and source commit. It verifies the registry identities, then runs the same
+TLS probes on the verified digest. It does not rebuild or replace an image.
+Both release paths require the TLS gate to pass before publishing the matching
+chart.
+
 For a local repeat, set `TLS_TEST_MODE=published`, `TLS_TEST_IMAGE` to an
 immutable `repository@sha256:...` reference, and unique `TLS_TEST_PROJECT` and
 `TLS_TEST_ROOT` values, then run `scripts/ci/qualify-database-tls.sh`. The

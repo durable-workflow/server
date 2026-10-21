@@ -43,6 +43,7 @@ jobs:
     outputs:
       release_source_commit: ${{ steps.release_source.outputs.commit }}
       exact_publish_outcome: ${{ steps.exact.outputs.exact_publish_outcome }}
+      published_database_tls_outcome: ${{ steps.published_database_tls.outcome }}
     steps:
       - name: Check out trusted release tooling
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
@@ -424,6 +425,7 @@ jobs:
     if: >-
       always() &&
       needs.publish.outputs.exact_publish_outcome == 'success' &&
+      needs.publish.outputs.published_database_tls_outcome == 'success' &&
       github.repository == 'durable-workflow/server' &&
       ((github.event_name == 'workflow_dispatch' &&
         github.ref == 'refs/heads/main') ||
