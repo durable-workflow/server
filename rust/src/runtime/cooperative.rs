@@ -542,7 +542,7 @@ where
             .bind(&run_id).execute(&mut **tx).await?;
         Self::query("UPDATE activity_attempts SET lease_expires_at=NULL WHERE workflow_run_id=$1 AND status='completed'")
             .bind(&run_id).execute(&mut **tx).await?;
-        Self::cancel_open_activities(tx, &run_id, &request_id, activities, at).await?;
+        Self::cancel_open_activities(tx, &run_id, Some(&request_id), activities, at).await?;
         for timer in timers {
             Self::cancel_root_timer(tx, run, &request_id, &timer, task_id, at).await?;
         }
