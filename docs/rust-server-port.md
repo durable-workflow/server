@@ -255,8 +255,9 @@ October 21, describe actions and run list:
   `run_count` and `formatRunListEntry` entries, including status bucket,
   terminal flag, task queue, compatibility, fleet status and memo. The current
   run is the highest numbered one, as in PHP.
-- **Debug envelope.** The debug view's `control_plane` names the
-  `debug_workflow` operation with PHP's success fields.
+- **Envelopes.** The debug view's `control_plane` names the
+  `debug_workflow` operation with PHP's success fields. The run list and its
+  missing-workflow refusal carry PHP's `list_runs` envelope.
 - **Still different.** Native records no command context, so describe's
   commands lack PHP's caller, principal, auth and request fields, and
   Waterline's timeline shows no principal. Native query responses are not yet

@@ -79,4 +79,10 @@ async fn run_list_matches_php_entries() {
         assert!(entry.get(field).is_some(), "{field}");
     }
     assert!(entry.get("closed_reason").is_none(), "{entry}");
+    assert_eq!(body["control_plane"]["operation"], "list_runs");
+    assert_eq!(body["control_plane"]["run_count"], 1);
+    let (status, missing) = request(&app, "GET", "/api/workflows/missing/runs", Value::Null).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+    assert_eq!(missing["message"], "Workflow not found.");
+    assert_eq!(missing["control_plane"]["operation"], "list_runs");
 }
