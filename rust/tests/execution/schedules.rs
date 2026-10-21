@@ -194,6 +194,11 @@ async fn manual_schedule_preserves_paused_skip_original_authored_run_and_deleted
     assert_eq!(triggered.0, StatusCode::OK, "{}", triggered.1);
     assert_eq!(triggered.1["outcome"], "triggered");
     assert_eq!(triggered.1["schedule_id"], schedule);
+    // The open scheduled run has its run summary, as every run does.
+    assert_eq!(
+        task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_runs r WHERE NOT EXISTS (SELECT 1 FROM workflow_run_summaries s WHERE s.id=r.id)").await,
+        0
+    );
     complete_original(&app, "schedule-worker", schedule, &triggered.1).await;
     let active = request(&app, "GET", &path, Value::Null).await;
     assert_eq!(active.0, StatusCode::OK);
