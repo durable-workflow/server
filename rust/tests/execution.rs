@@ -85,6 +85,8 @@ mod read_snapshots;
 mod query_responses;
 #[path = "execution/history_export.rs"]
 mod history_export;
+#[path = "execution/workflow_repair.rs"]
+mod workflow_repair;
 #[path = "execution/history_retention.rs"]
 mod history_retention;
 #[path = "execution/activity_timeout_pass.rs"]

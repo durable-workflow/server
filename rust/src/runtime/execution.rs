@@ -496,47 +496,18 @@ impl Runtime {
             }
         }
     }
-    pub(crate) async fn repair_range_blocked(
+    pub(crate) async fn repair_workflow(
         &self,
         workflow_id: &str,
         run_id: Option<&str>,
         body: Value,
         context: Value,
-    ) -> Result<Value> {
+    ) -> Result<(StatusCode, Value)> {
+        let codec = self.transition_codec.clone();
         match &*self.storage {
-            Storage::Sqlite(store) => {
-                store
-                    .repair_range_blocked(
-                        workflow_id,
-                        run_id,
-                        body,
-                        context,
-                        self.transition_codec.clone(),
-                    )
-                    .await
-            }
-            Storage::Postgres(store) => {
-                store
-                    .repair_range_blocked(
-                        workflow_id,
-                        run_id,
-                        body,
-                        context,
-                        self.transition_codec.clone(),
-                    )
-                    .await
-            }
-            Storage::MySql(store) => {
-                store
-                    .repair_range_blocked(
-                        workflow_id,
-                        run_id,
-                        body,
-                        context,
-                        self.transition_codec.clone(),
-                    )
-                    .await
-            }
+            Storage::Sqlite(store) => store.repair_workflow(workflow_id, run_id, body, context, codec).await,
+            Storage::Postgres(store) => store.repair_workflow(workflow_id, run_id, body, context, codec).await,
+            Storage::MySql(store) => store.repair_workflow(workflow_id, run_id, body, context, codec).await,
         }
     }
 

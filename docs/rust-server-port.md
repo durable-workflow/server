@@ -102,6 +102,10 @@ contract fixture before its correction.
   each priority tier across fairness keys by their weights
   (`TaskFairnessScheduler`); native stores the keys and weights but does not
   rebalance yet.
+- **Repair of a run without a recoverable task.** Published PHP's repair
+  creates a run's missing task, and recovers an expired activity-task lease
+  with its attempt. Native refuses both with
+  `development_workflow_task_repair_unqualified`.
 - **Key order inside plain JSON input.** For input that is not an envelope,
   PHP encodes nested objects as Avro maps in request order; native encodes
   them with sorted keys. The decoded values are equal, but the blobs differ.
