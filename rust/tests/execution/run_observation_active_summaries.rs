@@ -52,7 +52,11 @@ async fn run_observation_active_summary_tracks_claim_without_history_and_cold_re
     let mut originals = Vec::new();
     for namespace in ["default", "active-summary"] {
         register(&app, namespace).await;
-        let run = namespaces::start_scoped(&app, namespace, &format!("summary-{namespace}")).await;
+        // An explicit run timeout gives the run a deadline the lease below can borrow.
+        let (status, run) = namespaces::scoped(&app, namespace, "POST", "/api/workflows",
+            json!({"workflow_id":format!("summary-{namespace}"),"workflow_type":"echo","task_queue":"test",
+                "input":envelope(Payload::Array(vec![Payload::Long(9007199254740993)])),"run_timeout_seconds":600})).await;
+        assert_eq!(status, StatusCode::CREATED, "{run}");
         let ready = observe(&app, namespace, &run).await;
         assert_eq!(ready["summary_state"], "observed", "{ready}");
         assert_eq!(ready["liveness_state"], "workflow_task_ready");

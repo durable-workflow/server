@@ -81,6 +81,8 @@ mod lock_free_waiting;
 mod read_snapshots;
 #[path = "execution/waterline_reads.rs"]
 mod waterline_reads;
+#[path = "execution/start_timeouts.rs"]
+mod start_timeouts;
 
 #[path = "execution/activity_metadata.rs"]
 mod activity_metadata;
