@@ -921,6 +921,10 @@ mod tests {
                 "INSERT INTO runtime_external_payloads(id,namespace,storage_uri,storage_uri_sha256,codec,sha256,size_bytes) VALUES ('p','default','s3://b/k','x','avro','y',1)",
                 "upgrade_source_external_payloads_unsupported",
             ),
+            (
+                "INSERT INTO workflow_schedules(id,schedule_id,namespace,spec,action,status,overlap_policy,jitter_seconds) VALUES ('s','nightly','default','{\"cron_expressions\":[\"0 2 * * *\"],\"timezone\":\"UTC\"}','{\"workflow_type\":\"echo\",\"task_queue\":\"default\"}','active','skip',0)",
+                "upgrade_source_schedules_unsupported",
+            ),
         ] {
             let db = Database::new().await;
             let mut connection = php_297(&db).await;

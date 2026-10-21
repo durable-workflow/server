@@ -1,0 +1,742 @@
+[
+ {
+  "request": "POST workflows/@workflow/signal/approve",
+  "status": 202,
+  "response": {
+   "outcome": "signal_received",
+   "workflow_id": "@workflow",
+   "run_id": "@v",
+   "requested_run_id": null,
+   "resolved_run_id": "@v",
+   "command_id": "@v",
+   "command_sequence": 2,
+   "target_scope": "instance",
+   "workflow_type": "parity.v1.echo",
+   "command_status": "accepted",
+   "command_source": "control_plane",
+   "reason": null,
+   "rejection_reason": null,
+   "validation_errors": [],
+   "signal_name": "approve",
+   "control_plane": {
+    "schema": "durable-workflow.v2.control-plane-response",
+    "version": 1,
+    "operation": "signal",
+    "workflow_id": "@workflow",
+    "contract": {
+     "schema": "durable-workflow.v2.control-plane-response.contract",
+     "version": 1,
+     "legacy_field_policy": "reject_non_canonical",
+     "legacy_fields": {
+      "query": "query_name",
+      "signal": "signal_name",
+      "update": "update_name",
+      "wait_policy": "wait_for"
+     },
+     "required_fields": [
+      "workflow_id",
+      "operation_name",
+      "operation_name_field"
+     ],
+     "success_fields": [
+      "outcome"
+     ],
+     "rejection_fields": [
+      "workflow_id",
+      "run_id",
+      "signal_name",
+      "command_status",
+      "command_source",
+      "target_scope",
+      "outcome",
+      "reason",
+      "rejection_reason",
+      "rejection_category",
+      "message",
+      "command_contract_source",
+      "command_contract_backfill_needed",
+      "command_contract_backfill_available",
+      "declared_signals",
+      "signal_admission",
+      "retryable",
+      "error_id"
+     ],
+     "rejection_reasons": [
+      "instance_not_found",
+      "historical_run_command_rejected",
+      "unknown_signal",
+      "invalid_signal_arguments",
+      "run_not_active",
+      "instance_not_started",
+      "selected_run_not_current",
+      "configured_workflow_type_invalid",
+      "v1_projection_read_only",
+      "backend_lock_pressure",
+      "control_plane_internal_error"
+     ]
+    },
+    "operation_name": "approve",
+    "operation_name_field": "signal_name",
+    "run_id": "@v",
+    "workflow_type": "parity.v1.echo",
+    "command_id": "@v",
+    "command_status": "accepted",
+    "command_source": "control_plane",
+    "target_scope": "instance",
+    "outcome": "signal_received",
+    "reason": null,
+    "rejection_reason": null,
+    "validation_errors": []
+   }
+  }
+ },
+ {
+  "request": "POST workflows/@workflow/signal/approve",
+  "status": 202,
+  "response": {
+   "outcome": "signal_received",
+   "workflow_id": "@workflow",
+   "run_id": "@v",
+   "requested_run_id": null,
+   "resolved_run_id": "@v",
+   "command_id": "@v",
+   "command_sequence": 3,
+   "target_scope": "instance",
+   "workflow_type": "parity.v1.echo",
+   "command_status": "accepted",
+   "command_source": "control_plane",
+   "reason": null,
+   "rejection_reason": null,
+   "validation_errors": [],
+   "signal_name": "approve",
+   "control_plane": {
+    "schema": "durable-workflow.v2.control-plane-response",
+    "version": 1,
+    "operation": "signal",
+    "workflow_id": "@workflow",
+    "contract": {
+     "schema": "durable-workflow.v2.control-plane-response.contract",
+     "version": 1,
+     "legacy_field_policy": "reject_non_canonical",
+     "legacy_fields": {
+      "query": "query_name",
+      "signal": "signal_name",
+      "update": "update_name",
+      "wait_policy": "wait_for"
+     },
+     "required_fields": [
+      "workflow_id",
+      "operation_name",
+      "operation_name_field"
+     ],
+     "success_fields": [
+      "outcome"
+     ],
+     "rejection_fields": [
+      "workflow_id",
+      "run_id",
+      "signal_name",
+      "command_status",
+      "command_source",
+      "target_scope",
+      "outcome",
+      "reason",
+      "rejection_reason",
+      "rejection_category",
+      "message",
+      "command_contract_source",
+      "command_contract_backfill_needed",
+      "command_contract_backfill_available",
+      "declared_signals",
+      "signal_admission",
+      "retryable",
+      "error_id"
+     ],
+     "rejection_reasons": [
+      "instance_not_found",
+      "historical_run_command_rejected",
+      "unknown_signal",
+      "invalid_signal_arguments",
+      "run_not_active",
+      "instance_not_started",
+      "selected_run_not_current",
+      "configured_workflow_type_invalid",
+      "v1_projection_read_only",
+      "backend_lock_pressure",
+      "control_plane_internal_error"
+     ]
+    },
+    "operation_name": "approve",
+    "operation_name_field": "signal_name",
+    "run_id": "@v",
+    "workflow_type": "parity.v1.echo",
+    "command_id": "@v",
+    "command_status": "accepted",
+    "command_source": "control_plane",
+    "target_scope": "instance",
+    "outcome": "signal_received",
+    "reason": null,
+    "rejection_reason": null,
+    "validation_errors": []
+   }
+  }
+ },
+ {
+  "request": "POST workflows/@workflow/signal/approve",
+  "status": 202,
+  "response": {
+   "outcome": "signal_received",
+   "workflow_id": "@workflow",
+   "run_id": "@v",
+   "requested_run_id": null,
+   "resolved_run_id": "@v",
+   "command_id": "@v",
+   "command_sequence": 4,
+   "target_scope": "instance",
+   "workflow_type": "parity.v1.echo",
+   "command_status": "accepted",
+   "command_source": "control_plane",
+   "reason": null,
+   "rejection_reason": null,
+   "validation_errors": [],
+   "signal_name": "approve",
+   "control_plane": {
+    "schema": "durable-workflow.v2.control-plane-response",
+    "version": 1,
+    "operation": "signal",
+    "workflow_id": "@workflow",
+    "contract": {
+     "schema": "durable-workflow.v2.control-plane-response.contract",
+     "version": 1,
+     "legacy_field_policy": "reject_non_canonical",
+     "legacy_fields": {
+      "query": "query_name",
+      "signal": "signal_name",
+      "update": "update_name",
+      "wait_policy": "wait_for"
+     },
+     "required_fields": [
+      "workflow_id",
+      "operation_name",
+      "operation_name_field"
+     ],
+     "success_fields": [
+      "outcome"
+     ],
+     "rejection_fields": [
+      "workflow_id",
+      "run_id",
+      "signal_name",
+      "command_status",
+      "command_source",
+      "target_scope",
+      "outcome",
+      "reason",
+      "rejection_reason",
+      "rejection_category",
+      "message",
+      "command_contract_source",
+      "command_contract_backfill_needed",
+      "command_contract_backfill_available",
+      "declared_signals",
+      "signal_admission",
+      "retryable",
+      "error_id"
+     ],
+     "rejection_reasons": [
+      "instance_not_found",
+      "historical_run_command_rejected",
+      "unknown_signal",
+      "invalid_signal_arguments",
+      "run_not_active",
+      "instance_not_started",
+      "selected_run_not_current",
+      "configured_workflow_type_invalid",
+      "v1_projection_read_only",
+      "backend_lock_pressure",
+      "control_plane_internal_error"
+     ]
+    },
+    "operation_name": "approve",
+    "operation_name_field": "signal_name",
+    "run_id": "@v",
+    "workflow_type": "parity.v1.echo",
+    "command_id": "@v",
+    "command_status": "accepted",
+    "command_source": "control_plane",
+    "target_scope": "instance",
+    "outcome": "signal_received",
+    "reason": null,
+    "rejection_reason": null,
+    "validation_errors": []
+   }
+  }
+ },
+ {
+  "request": "POST workflows/@workflow/runs/@run/signal/remember",
+  "status": 202,
+  "response": {
+   "outcome": "signal_received",
+   "workflow_id": "@workflow",
+   "run_id": "@v",
+   "requested_run_id": null,
+   "resolved_run_id": "@v",
+   "command_id": "@v",
+   "command_sequence": 5,
+   "target_scope": "instance",
+   "workflow_type": "parity.v1.echo",
+   "command_status": "accepted",
+   "command_source": "control_plane",
+   "reason": null,
+   "rejection_reason": null,
+   "validation_errors": [],
+   "signal_name": "remember",
+   "control_plane": {
+    "schema": "durable-workflow.v2.control-plane-response",
+    "version": 1,
+    "operation": "signal",
+    "workflow_id": "@workflow",
+    "contract": {
+     "schema": "durable-workflow.v2.control-plane-response.contract",
+     "version": 1,
+     "legacy_field_policy": "reject_non_canonical",
+     "legacy_fields": {
+      "query": "query_name",
+      "signal": "signal_name",
+      "update": "update_name",
+      "wait_policy": "wait_for"
+     },
+     "required_fields": [
+      "workflow_id",
+      "operation_name",
+      "operation_name_field"
+     ],
+     "success_fields": [
+      "outcome"
+     ],
+     "rejection_fields": [
+      "workflow_id",
+      "run_id",
+      "signal_name",
+      "command_status",
+      "command_source",
+      "target_scope",
+      "outcome",
+      "reason",
+      "rejection_reason",
+      "rejection_category",
+      "message",
+      "command_contract_source",
+      "command_contract_backfill_needed",
+      "command_contract_backfill_available",
+      "declared_signals",
+      "signal_admission",
+      "retryable",
+      "error_id"
+     ],
+     "rejection_reasons": [
+      "instance_not_found",
+      "historical_run_command_rejected",
+      "unknown_signal",
+      "invalid_signal_arguments",
+      "run_not_active",
+      "instance_not_started",
+      "selected_run_not_current",
+      "configured_workflow_type_invalid",
+      "v1_projection_read_only",
+      "backend_lock_pressure",
+      "control_plane_internal_error"
+     ]
+    },
+    "operation_name": "remember",
+    "operation_name_field": "signal_name",
+    "run_id": "@v",
+    "workflow_type": "parity.v1.echo",
+    "command_id": "@v",
+    "command_status": "accepted",
+    "command_source": "control_plane",
+    "target_scope": "instance",
+    "outcome": "signal_received",
+    "reason": null,
+    "rejection_reason": null,
+    "validation_errors": []
+   }
+  }
+ },
+ {
+  "request": "POST workflows/@workflow/signal/__durable_workflow_message_stream",
+  "status": 422,
+  "response": {
+   "workflow_id": "@workflow",
+   "signal_name": "__durable_workflow_message_stream",
+   "outcome": "rejected",
+   "reason": "runtime_reserved_signal",
+   "message": "This signal name is reserved for the durable runtime transport.",
+   "accepted": false,
+   "control_plane": {
+    "schema": "durable-workflow.v2.control-plane-response",
+    "version": 1,
+    "operation": "signal",
+    "workflow_id": "@workflow",
+    "contract": {
+     "schema": "durable-workflow.v2.control-plane-response.contract",
+     "version": 1,
+     "legacy_field_policy": "reject_non_canonical",
+     "legacy_fields": {
+      "query": "query_name",
+      "signal": "signal_name",
+      "update": "update_name",
+      "wait_policy": "wait_for"
+     },
+     "required_fields": [
+      "workflow_id",
+      "operation_name",
+      "operation_name_field"
+     ],
+     "success_fields": [
+      "outcome"
+     ],
+     "rejection_fields": [
+      "workflow_id",
+      "run_id",
+      "signal_name",
+      "command_status",
+      "command_source",
+      "target_scope",
+      "outcome",
+      "reason",
+      "rejection_reason",
+      "rejection_category",
+      "message",
+      "command_contract_source",
+      "command_contract_backfill_needed",
+      "command_contract_backfill_available",
+      "declared_signals",
+      "signal_admission",
+      "retryable",
+      "error_id"
+     ],
+     "rejection_reasons": [
+      "instance_not_found",
+      "historical_run_command_rejected",
+      "unknown_signal",
+      "invalid_signal_arguments",
+      "run_not_active",
+      "instance_not_started",
+      "selected_run_not_current",
+      "configured_workflow_type_invalid",
+      "v1_projection_read_only",
+      "backend_lock_pressure",
+      "control_plane_internal_error"
+     ]
+    },
+    "operation_name": "__durable_workflow_message_stream",
+    "operation_name_field": "signal_name",
+    "outcome": "rejected",
+    "reason": "runtime_reserved_signal",
+    "message": "This signal name is reserved for the durable runtime transport."
+   }
+  }
+ },
+ {
+  "request": "POST workflows/@workflow/terminate",
+  "status": 200,
+  "response": {
+   "outcome": "terminated",
+   "workflow_id": "@workflow",
+   "run_id": "@v",
+   "requested_run_id": null,
+   "resolved_run_id": "@v",
+   "command_id": "@v",
+   "command_sequence": 6,
+   "target_scope": "instance",
+   "workflow_type": "parity.v1.echo",
+   "command_status": "accepted",
+   "command_source": "control_plane",
+   "reason": "before worker",
+   "rejection_reason": null,
+   "validation_errors": [],
+   "control_plane": {
+    "schema": "durable-workflow.v2.control-plane-response",
+    "version": 1,
+    "operation": "terminate",
+    "workflow_id": "@workflow",
+    "contract": {
+     "schema": "durable-workflow.v2.control-plane-response.contract",
+     "version": 1,
+     "legacy_field_policy": "reject_non_canonical",
+     "legacy_fields": {
+      "query": "query_name",
+      "signal": "signal_name",
+      "update": "update_name",
+      "wait_policy": "wait_for"
+     },
+     "required_fields": [
+      "workflow_id"
+     ],
+     "success_fields": [
+      "outcome"
+     ],
+     "rejection_fields": [
+      "workflow_id",
+      "run_id",
+      "reason",
+      "message",
+      "remediation"
+     ],
+     "rejection_reasons": [
+      "v1_projection_read_only"
+     ]
+    },
+    "run_id": "@v",
+    "workflow_type": "parity.v1.echo",
+    "command_id": "@v",
+    "command_status": "accepted",
+    "command_source": "control_plane",
+    "target_scope": "instance",
+    "outcome": "terminated",
+    "reason": "before worker",
+    "rejection_reason": null,
+    "validation_errors": []
+   }
+  }
+ },
+ {
+  "request": "POST workflows/@workflow/signal/approve",
+  "status": 409,
+  "response": {
+   "outcome": "rejected_not_active",
+   "workflow_id": "@workflow",
+   "run_id": "@v",
+   "requested_run_id": null,
+   "resolved_run_id": "@v",
+   "command_id": "@v",
+   "command_sequence": 7,
+   "target_scope": "instance",
+   "workflow_type": "parity.v1.echo",
+   "command_status": "rejected",
+   "command_source": "control_plane",
+   "reason": "run_not_active",
+   "rejection_reason": "run_not_active",
+   "validation_errors": [],
+   "signal_name": "approve",
+   "accepted": false,
+   "control_plane": {
+    "schema": "durable-workflow.v2.control-plane-response",
+    "version": 1,
+    "operation": "signal",
+    "workflow_id": "@workflow",
+    "contract": {
+     "schema": "durable-workflow.v2.control-plane-response.contract",
+     "version": 1,
+     "legacy_field_policy": "reject_non_canonical",
+     "legacy_fields": {
+      "query": "query_name",
+      "signal": "signal_name",
+      "update": "update_name",
+      "wait_policy": "wait_for"
+     },
+     "required_fields": [
+      "workflow_id",
+      "operation_name",
+      "operation_name_field"
+     ],
+     "success_fields": [
+      "outcome"
+     ],
+     "rejection_fields": [
+      "workflow_id",
+      "run_id",
+      "signal_name",
+      "command_status",
+      "command_source",
+      "target_scope",
+      "outcome",
+      "reason",
+      "rejection_reason",
+      "rejection_category",
+      "message",
+      "command_contract_source",
+      "command_contract_backfill_needed",
+      "command_contract_backfill_available",
+      "declared_signals",
+      "signal_admission",
+      "retryable",
+      "error_id"
+     ],
+     "rejection_reasons": [
+      "instance_not_found",
+      "historical_run_command_rejected",
+      "unknown_signal",
+      "invalid_signal_arguments",
+      "run_not_active",
+      "instance_not_started",
+      "selected_run_not_current",
+      "configured_workflow_type_invalid",
+      "v1_projection_read_only",
+      "backend_lock_pressure",
+      "control_plane_internal_error"
+     ]
+    },
+    "operation_name": "approve",
+    "operation_name_field": "signal_name",
+    "run_id": "@v",
+    "workflow_type": "parity.v1.echo",
+    "command_id": "@v",
+    "command_status": "rejected",
+    "command_source": "control_plane",
+    "target_scope": "instance",
+    "outcome": "rejected_not_active",
+    "reason": "run_not_active",
+    "rejection_reason": "run_not_active",
+    "validation_errors": []
+   }
+  }
+ },
+ {
+  "request": "POST workflows/@workflow/signal/__durable_workflow_message_stream",
+  "status": 422,
+  "response": {
+   "workflow_id": "@workflow",
+   "signal_name": "__durable_workflow_message_stream",
+   "outcome": "rejected",
+   "reason": "runtime_reserved_signal",
+   "message": "This signal name is reserved for the durable runtime transport.",
+   "accepted": false,
+   "control_plane": {
+    "schema": "durable-workflow.v2.control-plane-response",
+    "version": 1,
+    "operation": "signal",
+    "workflow_id": "@workflow",
+    "contract": {
+     "schema": "durable-workflow.v2.control-plane-response.contract",
+     "version": 1,
+     "legacy_field_policy": "reject_non_canonical",
+     "legacy_fields": {
+      "query": "query_name",
+      "signal": "signal_name",
+      "update": "update_name",
+      "wait_policy": "wait_for"
+     },
+     "required_fields": [
+      "workflow_id",
+      "operation_name",
+      "operation_name_field"
+     ],
+     "success_fields": [
+      "outcome"
+     ],
+     "rejection_fields": [
+      "workflow_id",
+      "run_id",
+      "signal_name",
+      "command_status",
+      "command_source",
+      "target_scope",
+      "outcome",
+      "reason",
+      "rejection_reason",
+      "rejection_category",
+      "message",
+      "command_contract_source",
+      "command_contract_backfill_needed",
+      "command_contract_backfill_available",
+      "declared_signals",
+      "signal_admission",
+      "retryable",
+      "error_id"
+     ],
+     "rejection_reasons": [
+      "instance_not_found",
+      "historical_run_command_rejected",
+      "unknown_signal",
+      "invalid_signal_arguments",
+      "run_not_active",
+      "instance_not_started",
+      "selected_run_not_current",
+      "configured_workflow_type_invalid",
+      "v1_projection_read_only",
+      "backend_lock_pressure",
+      "control_plane_internal_error"
+     ]
+    },
+    "operation_name": "__durable_workflow_message_stream",
+    "operation_name_field": "signal_name",
+    "outcome": "rejected",
+    "reason": "runtime_reserved_signal",
+    "message": "This signal name is reserved for the durable runtime transport."
+   }
+  }
+ },
+ {
+  "request": "POST workflows/missing-before-worker/signal/__durable_workflow_message_stream",
+  "status": 404,
+  "response": {
+   "message": "Workflow not found.",
+   "reason": "instance_not_found",
+   "workflow_id": "missing-before-worker",
+   "control_plane": {
+    "schema": "durable-workflow.v2.control-plane-response",
+    "version": 1,
+    "operation": "signal",
+    "workflow_id": "missing-before-worker",
+    "contract": {
+     "schema": "durable-workflow.v2.control-plane-response.contract",
+     "version": 1,
+     "legacy_field_policy": "reject_non_canonical",
+     "legacy_fields": {
+      "query": "query_name",
+      "signal": "signal_name",
+      "update": "update_name",
+      "wait_policy": "wait_for"
+     },
+     "required_fields": [
+      "workflow_id",
+      "operation_name",
+      "operation_name_field"
+     ],
+     "success_fields": [
+      "outcome"
+     ],
+     "rejection_fields": [
+      "workflow_id",
+      "run_id",
+      "signal_name",
+      "command_status",
+      "command_source",
+      "target_scope",
+      "outcome",
+      "reason",
+      "rejection_reason",
+      "rejection_category",
+      "message",
+      "command_contract_source",
+      "command_contract_backfill_needed",
+      "command_contract_backfill_available",
+      "declared_signals",
+      "signal_admission",
+      "retryable",
+      "error_id"
+     ],
+     "rejection_reasons": [
+      "instance_not_found",
+      "historical_run_command_rejected",
+      "unknown_signal",
+      "invalid_signal_arguments",
+      "run_not_active",
+      "instance_not_started",
+      "selected_run_not_current",
+      "configured_workflow_type_invalid",
+      "v1_projection_read_only",
+      "backend_lock_pressure",
+      "control_plane_internal_error"
+     ]
+    },
+    "operation_name": "__durable_workflow_message_stream",
+    "operation_name_field": "signal_name",
+    "reason": "instance_not_found",
+    "message": "Workflow not found."
+   }
+  }
+ }
+]

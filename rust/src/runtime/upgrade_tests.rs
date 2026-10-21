@@ -294,6 +294,10 @@ async fn inspection_preserves_source_bytes_reports_counts_and_never_grants_takeo
     assert_eq!(inspected["table_rows"].as_object().unwrap().len(), 49);
     assert_eq!(inspected["table_rows"]["jobs"], 1);
     assert_eq!(inspected["table_rows"]["workflow_runs"], 0);
+    assert_eq!(
+        inspected["schedule_inspection"],
+        serde_json::json!({"schedules":0,"unsupported":0,"reasons":{}})
+    );
     assert_eq!(inspected["catalog_sha256"].as_str().unwrap().len(), 64);
     for flag in [
         "source_mutated",
@@ -897,6 +901,10 @@ async fn takeover_converts_a_php_297_database_that_native_then_opens() {
         "INSERT INTO workflow_worker_registration_incarnations VALUES ('0123456789abcdef0123456789abcdef','default','current','active',0,NULL,'2026-10-20 09:00:00.000000','2026-10-20 09:00:00.000000')",
         "INSERT INTO workflow_worker_registration_incarnations VALUES ('11111111111111111111111111111111','default','current','superseded',0,'2026-10-20 08:00:00.000000','2026-10-20 07:00:00.000000','2026-10-20 08:00:00.000000')",
         "INSERT INTO workflow_worker_registration_incarnations VALUES ('22222222222222222222222222222222','default','gone','deregistered',3,'2026-10-20 08:30:00.000000','2026-10-20 07:00:00.000000','2026-10-20 08:30:00.000000')",
+        // A schedule native runs as PHP stored it, and a deleted cron one,
+        // which only keeps its audit history.
+        "INSERT INTO workflow_schedules(id,schedule_id,namespace,spec,action,status,overlap_policy,jitter_seconds) VALUES ('s1','daily','default','{\"intervals\":[{\"every\":\"P1D\"}],\"timezone\":\"UTC\"}','{\"workflow_type\":\"echo\",\"task_queue\":\"default\",\"input\":{\"codec\":\"avro\",\"blob\":\"AA==\"},\"execution_timeout_seconds\":3600,\"run_timeout_seconds\":600}','active','skip',0)",
+        "INSERT INTO workflow_schedules(id,schedule_id,namespace,spec,action,status,overlap_policy,jitter_seconds,deleted_at) VALUES ('s2','nightly','default','{\"cron_expressions\":[\"0 2 * * *\"]}','{}','deleted','buffer_all',30,'2026-10-19 00:00:00')",
     ] {
         mutate(&path, statement).await;
     }
@@ -1062,6 +1070,16 @@ async fn takeover_refusals_leave_the_php_database_unchanged() {
             "INSERT INTO workflow_messages(workflow_instance_id,direction,channel,stream_key,sequence) VALUES ('w','inbound','c','k',1)",
             "upgrade_source_message_streams_unsupported",
         ),
+        // Schedules native would describe without their search attributes,
+        // or start outside their Laravel queue routing.
+        (
+            "INSERT INTO workflow_schedules(id,schedule_id,namespace,spec,action,status,overlap_policy,jitter_seconds,search_attributes) VALUES ('s','nightly','default','{\"cron_expressions\":[\"0 2 * * *\"],\"timezone\":\"UTC\"}','{\"workflow_type\":\"echo\",\"task_queue\":\"default\"}','active','skip',0,'{\"Customer\":\"acme\"}')",
+            "upgrade_source_schedules_unsupported",
+        ),
+        (
+            "INSERT INTO workflow_schedules(id,schedule_id,namespace,spec,action,status,overlap_policy,jitter_seconds,queue) VALUES ('s','daily','billing','{\"intervals\":[{\"every\":\"P1D\"}],\"timezone\":\"UTC\"}','{\"workflow_type\":\"echo\",\"task_queue\":\"default\",\"input\":{\"codec\":\"avro\",\"blob\":\"AA==\"},\"execution_timeout_seconds\":3600,\"run_timeout_seconds\":600}','paused','skip',0,'schedules')",
+            "upgrade_source_schedules_unsupported",
+        ),
     ] {
         let (_directory, path) = php297_layout().await;
         mutate(&path, statement).await;
@@ -1164,4 +1182,30 @@ async fn prepare_leaves_a_rollback_journal_source_byte_identical() {
     assert_eq!(report["previous_journal_mode"], "delete", "{report}");
     assert_eq!(report["source_mutated"], false);
     assert_eq!(std::fs::read(&path).unwrap(), original);
+}
+
+#[tokio::test]
+async fn inspection_counts_unrunnable_schedules_by_reason_without_naming_them() {
+    let (_directory, path) = php297_layout().await;
+    for statement in [
+        "INSERT INTO workflow_schedules(id,schedule_id,namespace,spec,action,status,overlap_policy,jitter_seconds) VALUES ('s1','nightly-billing','default','{\"cron_expressions\":[\"0 2 * * *\"],\"timezone\":\"UTC\"}','{\"workflow_type\":\"echo\",\"task_queue\":\"default\",\"input\":{\"codec\":\"avro\",\"blob\":\"AA==\"},\"execution_timeout_seconds\":3600,\"run_timeout_seconds\":600}','active','skip',0)",
+        "INSERT INTO workflow_schedules(id,schedule_id,namespace,spec,action,status,overlap_policy,jitter_seconds,memo) VALUES ('s2','tenant-report','default','{}','{}','paused','skip',0,'{\"tenant\":\"private-tenant\"}')",
+        "INSERT INTO workflow_schedules(id,schedule_id,namespace,spec,action,status,overlap_policy,jitter_seconds) VALUES ('s3','old','default','{}','{}','deleted','skip',0)",
+        "INSERT INTO workflow_schedules(id,schedule_id,namespace,spec,action,status,overlap_policy,jitter_seconds,search_attributes) VALUES ('s4','tagged','billing','{\"intervals\":[{\"every\":\"P1D\"}]}','{\"workflow_type\":\"echo\"}','active','skip',0,'{\"Customer\":\"private-customer\"}')",
+    ] {
+        mutate(&path, statement).await;
+    }
+    let before = std::fs::read(&path).unwrap();
+    let inspected = inspect_sqlite(&path).await.unwrap();
+    assert_eq!(inspected["status"], "unqualified");
+    assert_eq!(
+        inspected["schedule_inspection"],
+        // The cron schedule runs natively; an empty definition and search
+        // attribute values do not.
+        serde_json::json!({"schedules":3,"unsupported":2,
+            "reasons":{"schedule_definition_unsupported":1,"schedule_metadata_unsupported":1}})
+    );
+    let text = inspected.to_string();
+    assert!(!text.contains("nightly-billing") && !text.contains("private-tenant") && !text.contains("private-customer"));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
 }

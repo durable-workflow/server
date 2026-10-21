@@ -434,6 +434,9 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $scheduleCatalog = isset($fixture['schedule_catalog'])
         ? finishHttpSchedulePolicies($client, $fixture, $workflowId, $url, 'schedule_catalog')
         : null;
+    $signalsBeforeWorker = isset($fixture['signals_before_worker'])
+        ? finishHttpSignalsBeforeWorker($client, $fixture, $workflowId, $url)
+        : null;
     $workerListing = isset($fixture['worker_listing']) ? finishHttpWorkerListing($client, $fixture, $workflowId) : null;
     $workerReplacement = isset($fixture['worker_replacement']) ? finishHttpWorkerReplacement($client, $fixture, $workflowId) : null;
     $waitingHistory = isset($fixture['waiting_for_history']) ? finishHttpWaitingHistory($client, $fixture, $workflowId, $queue, $url) : null;
@@ -527,6 +530,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'storage_test' => $storageTest,
         'schedule_policies' => $schedulePolicies,
         'schedule_catalog' => $scheduleCatalog,
+        'signals_before_worker' => $signalsBeforeWorker,
         'worker_listing' => $workerListing,
         'worker_replacement' => $workerReplacement,
         'waiting_for_history' => $waitingHistory,
@@ -827,6 +831,7 @@ try {
     require __DIR__.'/search-attribute-probe.php';
     require __DIR__.'/storage-test-probe.php';
     require __DIR__.'/schedule-policies-probe.php';
+    require __DIR__.'/signals-before-worker-probe.php';
     require __DIR__.'/worker-deregistration-probe.php';
     require __DIR__.'/late-workflow-completion-probe.php';
     require __DIR__.'/worker-listing-probe.php';
@@ -984,6 +989,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['schedule_catalog'])) {
         $observation['schedule_catalog'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_schedules'];
+    }
+    if ($mode === 'embedded' && isset($fixture['signals_before_worker'])) {
+        $observation['signals_before_worker'] = ['applicable' => false, 'reason' => 'embedded_runs_have_a_loadable_contract'];
     }
     $observation['mode'] = $mode;
     $observation['typed_output'] = typedValue($observation['output']);

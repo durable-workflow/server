@@ -120,6 +120,13 @@ generic "workflows per second" number cannot hide the workload being measured.
 - [External payload storage contract](docs/contracts/external-payload-storage.md)
 - [Helm upgrade guide](k8s/helm/durable-workflow/docs/UPGRADING.md)
 
+## Optional trace context
+
+A configured application image can persist bounded W3C context across compatible
+SDK workers. Enable the optional API and discover the actual capability as
+explained in [PHP Server trace context](docs/observability-context.md). The guide
+covers nullable schema migrations, baggage controls and runtime boundaries.
+
 ## Development
 
 ```bash

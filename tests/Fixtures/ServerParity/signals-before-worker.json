@@ -1,0 +1,27 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "signals-before-worker",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "signals before a worker λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {"message": {"type": "string", "value": "signals before a worker λ"}, "count": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}},
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "signals_before_worker": {
+    "input_blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA==",
+    "steps": [
+      ["POST", "workflows", {"workflow_id": "@workflow", "workflow_type": "parity.v1.echo", "task_queue": "@queue", "input": "@input"}],
+      ["POST", "workflows/@workflow/signal/approve", {"input": "@input", "request_id": "before-worker-1"}],
+      ["POST", "workflows/@workflow/signal/approve", {}],
+      ["POST", "workflows/@workflow/signal/approve", {"input": null}],
+      ["POST", "workflows/@workflow/runs/@run/signal/remember", {"input": "@input"}],
+      ["POST", "workflows/@workflow/signal/__durable_workflow_message_stream", {"input": "@input"}],
+      ["POST", "workflows/@workflow/terminate", {"reason": "before worker"}],
+      ["POST", "workflows/@workflow/signal/approve", {"input": "@input"}],
+      ["POST", "workflows/@workflow/signal/__durable_workflow_message_stream", {"input": "@input"}],
+      ["POST", "workflows/missing-before-worker/signal/__durable_workflow_message_stream", {"input": "@input"}],
+      ["GET", "workflows/@workflow/runs/@run/history"]
+    ]
+  },
+  "contract": "Signals to a run on a task queue that no worker has registered, so the run has no recorded command contract. Published PHP admits every signal then (external_contract_unavailable), with an envelope, without input or with null input, to the instance or the current run, and records each SignalReceived; the runtime message-stream signal name is refused with 422 runtime_reserved_signal whatever the run state, without a durable command; a terminated run rejects a signal with 409 run_not_active; a missing workflow is 404. Every response matches published PHP's apart from generated identities and times, and the run history holds the same events. Embedded applications run loadable workflow classes, whose contract is always available."
+}

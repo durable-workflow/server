@@ -400,7 +400,12 @@ impl Runtime {
         name: &str,
         body: Value,
     ) -> Result<Value> {
-        let arguments = super::envelope(&body, "input")?;
+        // PHP's `input` is nullable: an absent or null input is no arguments.
+        let arguments = if body.get("input").is_none_or(Value::is_null) {
+            super::queries::empty_arguments(self.signal_codec.clone()).await?
+        } else {
+            super::envelope(&body, "input")?
+        };
         let prepared = super::store::prepare_control_arguments(
             self.signal_codec.clone(),
             name.to_owned(),

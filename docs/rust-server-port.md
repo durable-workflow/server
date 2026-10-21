@@ -349,8 +349,118 @@ October 21, PHP schedule specifications and policies:
   The two existing schedule fixtures still pass. A local harness running PHP
   on PostgreSQL matched native on all 72 compared responses except the two
   refusals above.
+- **Takeover.** The takeover schedule check from #568 now refuses only what
+  native still cannot run: search attributes, visibility labels, Laravel
+  queue routing, an unknown status, a definition native's own creation
+  refuses (such as input that is not a payload envelope), and a
+  specification it cannot evaluate. Cron schedules, schedules in any
+  namespace, notes, memo, buffered actions, jitter, quotas and every
+  overlap policy are taken over.
 - **Next.** Update, listing with visibility queries and page tokens, and
-  backfill; then narrowing the takeover schedule refusal (#568).
+  backfill.
+
+October 21, signals before any worker registers:
+
+- **Found by.** Waterline 2.12.0 service mode was compared against
+  published PHP 2.5.14 and against native with identical seeds. A signal
+  sent to a run that no worker had picked up was accepted by PHP and
+  rejected by native with 404 `unknown_signal`, so the signal was lost.
+- **Cause.** Native records a run's command contract at start only when a
+  worker for the type has registered. It then treated a missing contract as
+  one that declares nothing, and its recorded contracts lacked PHP's
+  `declared_entry_*` fields.
+- **Source.** Admission now follows PHP's `signalAdmissionForRun`:
+  - A signal is unknown only under a complete durable contract.
+  - A run without one admits every signal (`external_contract_unavailable`).
+  - A declared signal without a parameter contract takes its arguments as
+    given.
+  - The runtime message-stream signal name is refused with 422
+    `runtime_reserved_signal` before admission, whatever the run's state,
+    and no command is recorded.
+  - A signal without `input`, or with null input, has no arguments.
+- **Contracts.** Recorded contracts now carry PHP's entry defaults (`handle`,
+  `canonical`, `external:<type>`), so they are complete.
+- **Responses.** Signal responses carry `workflow_type`. The `control_plane`
+  envelope projects exactly PHP's `PROJECTED_FIELDS`, and cancel and
+  terminate responses now carry it.
+- **Evidence.** The new `signals-before-worker` fixture sends five signals,
+  the reserved name before and after termination, and a missing workflow to
+  a run on an unserved queue. Its responses match a reviewed copy of
+  published PHP's, and its history holds the same events. Published PHP,
+  embedded and native passed it locally; native from main failed it.
+- **Next.** Durable rejected updates and PHP's query routing refusals, which
+  the same comparison found.
+
+October 21, takeover refuses schedules native cannot run:
+
+- **Found by.** A review of takeover against native's schedule support.
+  Native's scheduler fires only default-namespace schedules with one UTC
+  `P1D` or `PT2S` interval, the skip policy, no jitter and at most one run.
+  Once due, a PHP cron schedule taken over would have failed every
+  scheduler tick (native refuses its next occurrence), holding back the
+  schedules due after it. A named-namespace one would have silently stopped
+  firing.
+- **Source.** Every upgrade inspection now reports `schedule_inspection`: the
+  live schedules and, by reason, how many are outside native's subset. The
+  reasons are native's own schedule-creation refusals plus namespace, status,
+  memo/search attributes/labels, note, buffered actions and queue routing,
+  which native would not describe. Any such schedule makes the inspection
+  `unqualified`, and takeover refuses with
+  `upgrade_source_schedules_unsupported` before the fingerprint check or any
+  write. Deleted schedules do not count.
+- **Tests.** SQLite: a cron schedule and a named-namespace schedule each refuse
+  takeover and leave the file byte-identical; a runnable schedule and a
+  deleted cron schedule convert; inspection counts reasons without schedule
+  names or memo values. PostgreSQL 17, MySQL 8.0 and MariaDB 10.11 takeover
+  qualification each refuse the cron schedule with the source unchanged.
+- **Next.** Native schedule parity (cron, time zones, overlap policies,
+  jitter, quotas, metadata, namespaces) narrows this refusal.
+
+October 20, concurrent MySQL and MariaDB bootstrap:
+
+- **Found by.** A multi-node smoke run started three nodes together on an
+  empty MySQL database. One node exited with `409 unsupported_rust_schema`.
+- **Cause.** MySQL commits DDL on its own. Between one node creating
+  `dw_server_schema` and recording its `rust-initializing` marker, another
+  node's read-only preflight, which runs before the bootstrap lock, saw an
+  empty marker table and refused. A node killed in the same window left a
+  database that no node could start on. PostgreSQL bootstraps inside one
+  locked transaction and SQLite in one file transaction, so neither has the
+  window.
+- **Source.** Preflight accepts an empty marker table when it is the only
+  table, and the node then waits for the bootstrap lock. Under the lock, a
+  missing marker is recorded before the migration runs.
+- **Checks.** The kill qualification has a `marker-table` phase. It kills a
+  bootstrapping child right after it creates the marker table and holds the
+  bootstrap lock. A concurrent start must still be waiting after one second,
+  then complete once the child is killed. Without the preflight change, it
+  refused at once. All 15 ignored MySQL qualification tests passed on MySQL
+  8.0 and MariaDB 10.11 locally.
+
+October 21, optional caller trace context:
+
+- **Why.** PHP Server's optional tracing ([#558](https://github.com/durable-workflow/server/pull/558),
+  Workflow #773) admits a top-level `observability_context` on start, signal,
+  update, cancel and request-cancellation requests when it is enabled. PHP
+  with tracing disabled, and published PHP 2.5.14, ignore the field. Native
+  refused it with 422 `unsupported_request_field`, so a caller that sent it
+  without checking discovery would have its business request refused.
+- **Source.** Those native handlers now drop exactly that top-level field
+  before reading the request. It is not validated, stored, logged or
+  compared, so a retried start with another trace context is the same
+  request. Native never advertises
+  `worker_protocol.server_capabilities.observability_context`. Terminate,
+  every other route, the same name anywhere else in a body, and any other
+  unknown field keep their existing handling.
+- **Test.** `trace_carriers` sends each of the nine affected routes with and
+  without a carrier to two identical workflows. It checks equal outcomes,
+  equal history event types, no stored trace identifier, the refused
+  terminate carrier and a refused unknown field beside the carrier. Removing
+  the change from any one of the nine handlers fails the test.
+- **Takeover.** Decided on [#325](https://github.com/durable-workflow/server/issues/325#issuecomment-6306545520):
+  a PHP 2.10 database with Core 2.9's nullable `observability_context`
+  columns is refused until its published layout is recorded. Its recipe will
+  count and then drop the three columns, like 2.9.7's `queue_delivery_reference`.
 
 October 20, external payload storage diagnostic:
 
