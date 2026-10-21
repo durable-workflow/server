@@ -65,6 +65,7 @@ mod schedule_list;
 mod schedule_storage;
 mod schedules;
 mod schema;
+mod search_attribute_upserts;
 mod search_attributes;
 mod selection_summary;
 mod selections;

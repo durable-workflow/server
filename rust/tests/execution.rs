@@ -43,6 +43,8 @@ mod namespaces;
 mod late_workflow_claims;
 #[path = "execution/search_attributes.rs"]
 mod search_attributes;
+#[path = "execution/search_attribute_upserts.rs"]
+mod search_attribute_upserts;
 
 #[path = "execution/storage_test.rs"]
 mod storage_test;

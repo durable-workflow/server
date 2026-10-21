@@ -198,6 +198,32 @@ contract fixture before its correction.
   a signal therefore waits on PHP and is refused on native. The port takes the
   snapshot at claim time and must keep query lease replay stable, so it needs
   its own fixture.
+- **Search attributes in workflow lists.** Native lists show
+  `search_attributes: []`, and the list `query` refuses any comparison with
+  `422 unsupported_visibility_query`. Published PHP returns each run's typed
+  attributes and filters with `WorkflowVisibilityQuery` over typed
+  predicates. The Sample App's search attribute scenario needs both.
+- **Inherited memos and search attributes on child runs.** Published PHP
+  copies the parent's memos and search attributes to a child run and to a
+  retried child (`inheritTypedVisibilityMetadata`). Native copies both only
+  on continue-as-new.
+- **Search attribute datetime forms.** `Carbon::parse` accepts relative and
+  free-form dates. Native accepts RFC 3339, and a date or date and time
+  without an offset read as UTC, and refuses other forms as PHP refuses an
+  unparsable one.
+- **Search attribute datetimes with an offset.** Published PHP stores a
+  typed datetime written with an offset, such as `2026-10-08T12:34:56+02:00`,
+  as that wall-clock time in UTC (`12:34:56Z`), which is a different
+  instant ([workflow#898](https://github.com/durable-workflow/workflow/issues/898)).
+  Native stores the instant written (`10:34:56Z`).
+- **Worker payload datums.** Published PHP refuses a worker command payload,
+  such as a `complete_workflow` result, that is not one complete Avro Value
+  (`422 validation_failed` on `commands.N.result.blob`). Native checks only
+  the envelope's transport shape and accepts it.
+- **Search attribute limits.** Over 100 attributes or 64 KB per run, PHP
+  raises an uncaught `InvalidArgumentException` while applying the command.
+  Native refuses the completion with `422 search_attribute_limit_exceeded`
+  and PHP's message, and records nothing.
 - **Terminating a child run.** Published Workflow resolves the parent with
   `ChildRunTerminated` and the `terminated` child call status. Native refuses
   this with `422 termination_propagation_not_available` until the parent-side

@@ -1113,6 +1113,19 @@ async fn register(
     {
         memo_protocol(&headers)?;
     }
+    if body["capabilities"].as_array().is_some_and(|flags| {
+        flags
+            .iter()
+            .any(|flag| flag == super::search_attribute_upserts::CAPABILITY)
+    }) && !protocol_at_least(&headers, 16)?
+    {
+        return Err(super::RuntimeError::Protocol {
+            status: StatusCode::CONFLICT,
+            response: json!({"reason":"workflow_metadata_capability_protocol_mismatch",
+                "worker_capability":super::search_attribute_upserts::CAPABILITY,
+                "minimum_protocol_version":super::search_attribute_upserts::MINIMUM_PROTOCOL_VERSION,"recorded":false}),
+        });
+    }
     Ok((
         StatusCode::CREATED,
         Json(worker_response(runtime.register(body).await?)),
@@ -1347,6 +1360,22 @@ async fn complete_workflow(
     }) {
         memo_protocol(&headers)?;
     }
+    // `guardTypedSearchAttributeCommandsAvailable`.
+    if body["commands"].as_array().is_some_and(|commands| {
+        commands.iter().any(|command| {
+            command["type"] == "upsert_search_attributes" && command.get("attribute_types").is_some()
+        })
+    }) && !protocol_at_least(&headers, 16)?
+    {
+        let minimum = super::search_attribute_upserts::MINIMUM_PROTOCOL_VERSION;
+        return Err(super::RuntimeError::Protocol {
+            status: StatusCode::CONFLICT,
+            response: json!({"task_id":task_id,"workflow_task_attempt":body["workflow_task_attempt"],
+                "outcome":"rejected","recorded":false,"reason":"typed_search_attributes_unavailable",
+                "requested_version":request_protocol(&headers)?,"minimum_protocol_version":minimum,
+                "remediation":format!("Complete typed search-attribute updates only through server nodes advertising worker protocol {minimum} or newer.")}),
+        });
+    }
     let attempt = body["workflow_task_attempt"].clone();
     runtime
         .complete_workflow(&task_id, body)
@@ -1361,6 +1390,14 @@ async fn complete_workflow(
             )
         })
         .map(Json)
+}
+
+/// Whether the request's worker protocol is `1.<minor>` or newer.
+fn protocol_at_least(headers: &HeaderMap, minor: u32) -> Result<bool> {
+    Ok(request_protocol(headers)?
+        .strip_prefix("1.")
+        .and_then(|value| value.parse::<u32>().ok())
+        .is_some_and(|value| value >= minor))
 }
 
 fn memo_protocol(headers: &HeaderMap) -> Result<()> {

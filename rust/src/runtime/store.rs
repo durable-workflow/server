@@ -1215,6 +1215,25 @@ where
                     continue;
                 }
             }
+            // `WorkflowMetadataCapabilityPolicy::canReplayRun`: typed upsert
+            // history needs a worker that advertises typed search attributes.
+            if kind == "workflow"
+                && !DB::optional_document_row(&worker, "capabilities")?.is_some_and(|flags| {
+                    flags.as_array().is_some_and(|flags| {
+                        flags.iter().any(|flag| flag == super::search_attribute_upserts::CAPABILITY)
+                    })
+                })
+            {
+                let typed_history = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SearchAttributesUpserted' ORDER BY sequence LIMIT 1001")
+                    .bind(&run_id).fetch_all(&mut *tx).await?;
+                let mut typed = false;
+                for event in &typed_history {
+                    typed |= DB::document_row(event, "payload")?.get("attribute_types").is_some();
+                }
+                if typed {
+                    continue;
+                }
+            }
             let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
                 .bind(&run_id)
                 .fetch_one(&mut *tx)
@@ -1720,7 +1739,7 @@ where
                     if index + 1 == commands.len()
                         && commands[..index]
                             .iter()
-                            .all(|prior| prior["type"] == "upsert_memo") =>
+                            .all(|prior| matches!(prior["type"].as_str(), Some("upsert_memo" | "upsert_search_attributes"))) =>
                 {
                     super::continuations::validate(command)?;
                 }
@@ -1754,6 +1773,10 @@ where
                 }
                 "record_version_marker" => {
                     version_marker_payload(command)?;
+                }
+                "upsert_search_attributes" => {
+                    reject_fields(command, &["type", "attributes", "attribute_types"])?;
+                    super::search_attribute_upserts::validate_shape(command, index)?;
                 }
                 "upsert_memo" => {
                     reject_fields(command, &["type", "entries"])?;
@@ -1938,6 +1961,10 @@ where
             } else if command["type"] == "upsert_memo" {
                 sequence += 1;
                 self.upsert_memo(&mut tx, &run, &task, command, sequence)
+                    .await?;
+            } else if command["type"] == "upsert_search_attributes" {
+                sequence += 1;
+                self.upsert_search_attributes(&mut tx, &run, &task, command, index, sequence)
                     .await?;
             } else if command["type"] == "schedule_activity" {
                 sequence += 1;
@@ -3224,6 +3251,16 @@ pub(crate) fn capabilities() -> Value {
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
         "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,
         "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": true});
+    value["supported_workflow_task_commands"]
+        .as_array_mut()
+        .expect("commands")
+        .push(json!("upsert_search_attributes"));
+    value["typed_search_attributes"] = json!({"supported":true,
+        "minimum_worker_protocol_version":super::search_attribute_upserts::MINIMUM_PROTOCOL_VERSION,
+        "worker_capability":super::search_attribute_upserts::CAPABILITY,
+        "canonical_types":["string","keyword","keyword_list","int","float","bool","datetime"],
+        "command_field":"attribute_types","history_event":"SearchAttributesUpserted",
+        "history_field":"attribute_types","legacy_history_rule":"absent_metadata_is_unknown_type_identity"});
     if super::memos::UPDATES_SUPPORTED {
         value["supported_workflow_task_commands"]
             .as_array_mut()
