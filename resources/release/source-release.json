@@ -4,6 +4,7 @@
     "version": "2.9.12"
   },
   "helm_chart": {
-    "version": "0.2.1"
+    "version": "0.2.1",
+    "server_version": "2.9.11"
   }
 }

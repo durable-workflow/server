@@ -135,6 +135,7 @@ def source_release_metadata(
         schema = record["schema"]
         server_version = record["server"]["version"]
         chart_version = record["helm_chart"]["version"]
+        chart_server_version = record["helm_chart"].get("server_version", server_version)
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
         raise ReleaseError(f"source release manifest is invalid: {error}") from error
     if schema != "durable-workflow.server.source-release/v1":
@@ -143,11 +144,17 @@ def source_release_metadata(
         raise ReleaseError("source release Server version is not SemVer")
     if not isinstance(chart_version, str) or SEMVER_PATTERN.fullmatch(chart_version) is None:
         raise ReleaseError("source release Helm chart version is not SemVer")
-    return {"server_version": server_version, "chart_version": chart_version}
+    if not isinstance(chart_server_version, str) or SEMVER_PATTERN.fullmatch(chart_server_version) is None:
+        raise ReleaseError("source release Helm chart Server version is not SemVer")
+    return {
+        "server_version": server_version,
+        "chart_version": chart_version,
+        "chart_server_version": chart_server_version,
+    }
 
 
 def onboarding_server_version() -> str:
-    return source_release_metadata()["server_version"]
+    return source_release_metadata()["chart_server_version"]
 
 
 def validate_source(chart_path: Path = DEFAULT_CHART_PATH) -> dict[str, Any]:
@@ -178,10 +185,10 @@ def validate_source(chart_path: Path = DEFAULT_CHART_PATH) -> dict[str, Any]:
             f"got {metadata['version']} and {source_release['chart_version']}. "
             "Run node scripts/ci/sync-source-release.mjs --write"
         )
-    if metadata["app_version"] != source_release["server_version"]:
+    if metadata["app_version"] != source_release["chart_server_version"]:
         raise ReleaseError(
-            "Chart.yaml.appVersion must match the authoritative Server source release; "
-            f"got {metadata['app_version']} and {source_release['server_version']}. "
+            "Chart.yaml.appVersion must match the authoritative chart Server version; "
+            f"got {metadata['app_version']} and {source_release['chart_server_version']}. "
             "Run node scripts/ci/sync-source-release.mjs --write"
         )
     return metadata

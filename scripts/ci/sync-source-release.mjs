@@ -55,6 +55,12 @@ export async function sourceRelease(repositoryRoot = defaultRepositoryRoot) {
       serverVersion,
       'source release helm_chart.version',
     ),
+    chartServerVersion: exact(
+      Object.hasOwn(record.helm_chart, 'server_version')
+        ? record.helm_chart.server_version : record.server.version,
+      serverVersion,
+      'source release helm_chart.server_version',
+    ),
   };
 }
 
@@ -274,7 +280,7 @@ const consumers = [
       rendered = replaceExactly(
         rendered,
         new RegExp(`^(appVersion:\\s*["'])${serverVersion}(["']\\s*)$`, 'm'),
-        (_match, prefix, suffix) => `${prefix}${release.serverVersion}${suffix}`,
+        (_match, prefix, suffix) => `${prefix}${release.chartServerVersion}${suffix}`,
         1,
         this.path,
         'top-level appVersion',
@@ -282,7 +288,7 @@ const consumers = [
       return replaceExactly(
         rendered,
         new RegExp(`^(  dev\\.durable-workflow\\.image-reference:\\s*["']docker\\.io/durableworkflow/server:)${serverVersion}(["']\\s*)$`, 'm'),
-        (_match, prefix, suffix) => `${prefix}${release.serverVersion}${suffix}`,
+        (_match, prefix, suffix) => `${prefix}${release.chartServerVersion}${suffix}`,
         1,
         this.path,
         'release image annotation',
@@ -304,7 +310,7 @@ const consumers = [
       return replaceExactly(
         source,
         new RegExp(`^(  tag:\\s*["'])${serverVersion}(["']\\s*)$`, 'm'),
-        (_match, prefix, suffix) => `${prefix}${release.serverVersion}${suffix}`,
+        (_match, prefix, suffix) => `${prefix}${release.chartServerVersion}${suffix}`,
         1,
         path,
         'generated image tag',
@@ -317,7 +323,7 @@ const consumers = [
       return replaceExactly(
         source,
         new RegExp(`(docker\\.io/durableworkflow/server:)${serverVersion}`),
-        (_match, prefix) => `${prefix}${release.serverVersion}`,
+        (_match, prefix) => `${prefix}${release.chartServerVersion}`,
         1,
         this.path,
         'recognized official Server image',

@@ -39,8 +39,9 @@ packages remain unchanged. Choose the exact patched image through the chart's
 `image.tag` override, or use its digest setting after verifying the published
 release evidence. Replace every runtime role and verify the actual PHP version.
 
-The generated chart files in this maintenance source are not a new published
-chart artifact. Chart publication remains on current main. This one-time patch
+The existing chart source and its recorded Server default stay byte-identical
+to 2.9.11. The release manifest records the separate chart default explicitly.
+Chart publication remains on current main. This one-time patch
 does not establish a separate long-term support branch.
 
 After exact image verification, this maintenance release promotes only the
