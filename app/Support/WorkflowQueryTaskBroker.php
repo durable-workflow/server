@@ -2266,6 +2266,10 @@ final class WorkflowQueryTaskBroker
             $payload['command_context'] = $task['command_context'];
         }
 
+        if ($run instanceof WorkflowRun) {
+            $payload += WorkflowObservabilityPoll::forQuery($run, $task);
+        }
+
         return $payload;
     }
 

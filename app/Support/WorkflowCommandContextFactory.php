@@ -214,7 +214,7 @@ final class WorkflowCommandContextFactory
         $fingerprintPayload = [
             'method' => $request->method(),
             'path' => $path,
-            'payload' => $this->normalize($request->all()),
+            'payload' => $this->normalize($this->businessRequestPayload($request, $commandName)),
             'headers' => $headers,
         ];
 
@@ -240,6 +240,22 @@ final class WorkflowCommandContextFactory
                 : 'sha256:'.hash('sha256', $encodedFingerprintPayload),
             'headers' => $headers === [] ? null : $headers,
         ], static fn (mixed $value): bool => $value !== null && $value !== '' && $value !== []);
+    }
+
+    /**
+     * Exclude only the optional carrier at its admitted structural location.
+     * Same-named fields inside business input retain their ordinary identity.
+     *
+     * @return array<string, mixed>
+     */
+    private function businessRequestPayload(Request $request, string $commandName): array
+    {
+        $payload = $request->all();
+        if (in_array($commandName, ['start', 'signal_with_start', 'signal', 'update', 'cancel'], true)) {
+            unset($payload['observability_context']);
+        }
+
+        return $payload;
     }
 
     private function bodyRequestId(Request $request): ?string

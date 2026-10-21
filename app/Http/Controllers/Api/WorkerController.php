@@ -45,6 +45,9 @@ use App\Support\WorkerProtocolMutationRetrier;
 use App\Support\WorkerTerminalEventAttribution;
 use App\Support\WorkflowHistoryPageToken;
 use App\Support\WorkflowMetadataCapabilityPolicy;
+use App\Support\WorkflowObservability;
+use App\Support\WorkflowObservabilityPoll;
+use App\Support\WorkflowObservabilityTransitions;
 use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowReplayEligibility;
 use App\Support\WorkflowStreamCommandProcessor;
@@ -1460,6 +1463,10 @@ class WorkerController
             $task['sticky_replay_mode'] = null;
         }
 
+        if (is_array($task)) {
+            $task = WorkflowObservabilityPoll::filterDelivered($task);
+        }
+
         return WorkerProtocol::json([
             'task' => $task,
             'poll_status' => is_string($poll['poll_status'] ?? null)
@@ -1805,6 +1812,9 @@ class WorkerController
         }
 
         $input = $request->all();
+        if (is_array($input['commands'] ?? null)) {
+            $input['commands'] = WorkflowObservabilityTransitions::businessCommands($input['commands']);
+        }
         $topLevelValidator = Validator::make($input, $topLevelRules);
         $validationErrors = $topLevelValidator->fails()
             ? $topLevelValidator->errors()->messages()
@@ -2132,7 +2142,8 @@ class WorkerController
                             // or attribute a terminal event to a prefix receipt.
                             $outcome['completed'] = false;
                         } else {
-                            $outcome = $bridge->complete($taskId, $commands);
+                            $outcome = WorkflowObservability::completion($request, $claimedTask,
+                                fn (): array => $bridge->complete($taskId, $commands));
                         }
                         if (($outcome[$checkpoint ? 'checkpointed' : 'completed'] ?? false) === true) {
                             app(WorkflowStreamCommandProcessor::class)->process($taskId, (string) $namespace, $streamCommands);
@@ -4399,7 +4410,7 @@ class WorkerController
         }
 
         return WorkerProtocol::json([
-            'task' => $poll['task'],
+            'task' => WorkflowObservabilityPoll::filterOptionalDelivered($poll['task']),
             'poll_status' => $poll['poll_status'],
         ]);
     }
