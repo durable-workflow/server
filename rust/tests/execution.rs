@@ -83,6 +83,8 @@ mod lock_free_waiting;
 mod read_snapshots;
 #[path = "execution/run_deadlines.rs"]
 mod run_deadlines;
+#[path = "execution/operator_dashboard.rs"]
+mod operator_dashboard;
 #[path = "execution/waterline_reads.rs"]
 mod waterline_reads;
 #[path = "execution/start_timeouts.rs"]

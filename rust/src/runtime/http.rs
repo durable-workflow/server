@@ -187,6 +187,12 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route("/api/system/operator-metrics", get(operator_metrics))
         .route("/api/system/health", get(system_health))
+        .route("/api/system/operator-dashboard", get(operator_dashboard))
+        .route("/api/system/operator-dashboard/bounded", get(bounded_operator_dashboard))
+        .route(
+            "/api/system/operator-dashboard/bounded/workflow-types",
+            get(workflow_type_operator_dashboard),
+        )
         .route("/api/workers", get(list_workers))
         .route("/api/task-queues", get(list_task_queues))
         .route("/api/task-queues/{task_queue}", get(describe_task_queue))
@@ -491,6 +497,9 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     if path == "/api/workers"
         || path == "/api/system/operator-metrics"
         || path == "/api/system/health"
+        || path == "/api/system/operator-dashboard"
+        || path == "/api/system/operator-dashboard/bounded"
+        || path == "/api/system/operator-dashboard/bounded/workflow-types"
     {
         return method == "GET";
     }
@@ -1073,6 +1082,28 @@ async fn operator_metrics(Extension(runtime): Extension<Runtime>) -> Result<Json
     Ok(Json(
         runtime.operator_metrics(&metrics_config(&runtime)).await?,
     ))
+}
+
+async fn operator_dashboard(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    Ok(Json(runtime.operator_dashboard(&metrics_config(&runtime), false).await?))
+}
+
+async fn bounded_operator_dashboard(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    Ok(Json(runtime.operator_dashboard(&metrics_config(&runtime), true).await?))
+}
+
+/// PHP validates `workflow_types` and then answers 501 when its observer
+/// cannot filter dashboard totals by workflow type; native cannot either.
+async fn workflow_type_operator_dashboard(
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Response> {
+    super::operator_dashboard::workflow_types(query.get("workflow_types").map(String::as_str))?;
+    Ok((
+        StatusCode::NOT_IMPLEMENTED,
+        Json(json!({"message":"The installed workflow observer cannot filter dashboard totals by workflow type.",
+            "reason":"backend_capability_unavailable","capability":"workflow_type_dashboard"})),
+    )
+        .into_response())
 }
 
 /// PHP answers 503 while a check reports an error.
