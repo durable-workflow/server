@@ -540,7 +540,7 @@ mod tests {
             Driver::Postgres,
             &[(
                 "DB_URL",
-                "postgres://u:p@db.test:5432/app?sslmode=require&application_name=dw",
+                "postgres://dw@db.test:5432/app?sslmode=require&application_name=dw",
             )],
         )
         .unwrap();
@@ -696,14 +696,14 @@ mod tests {
     #[test]
     fn url_tls_parameters_are_replaced_by_the_resolved_settings() {
         let parts = url_parts(
-            "mysql://user:p%40ss@[::1]:3306/app?ssl-mode=DISABLED&sslmode=require&charset=utf8mb4&sslca=/x.pem",
+            "mysql://us%40er@[::1]:3306/app?ssl-mode=DISABLED&sslmode=require&charset=utf8mb4&sslca=/x.pem",
         );
         assert_eq!(parts.sslmode.as_deref(), Some("require"));
         assert_eq!(parts.sslrootcert, None);
         assert_eq!(parts.host.as_deref(), Some("::1"));
         assert_eq!(
             parts.without_tls,
-            "mysql://user:p%40ss@[::1]:3306/app?charset=utf8mb4"
+            "mysql://us%40er@[::1]:3306/app?charset=utf8mb4"
         );
         let socket = url_parts("postgres://user@localhost/app?host=%2Fvar%2Frun%2Fpostgresql");
         assert_eq!(socket.host.as_deref(), Some("/var/run/postgresql"));
