@@ -29,6 +29,10 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal
 ulid = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 jiff = { version = "0.2.38", default-features = false, features = ["std", "tzdb-bundle-always"] }
+# Native installs no `log` logger, and dependencies such as apache-avro
+# format whole values in `log` messages. Compiling every `log` macro out
+# keeps payloads out of any logger a later change might install.
+log = { version = "0.4", features = ["max_level_off", "release_max_level_off"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
