@@ -85,6 +85,8 @@ mod read_snapshots;
 mod query_responses;
 #[path = "execution/history_export.rs"]
 mod history_export;
+#[path = "execution/input_envelopes.rs"]
+mod input_envelopes;
 #[path = "execution/history_retention.rs"]
 mod history_retention;
 #[path = "execution/activity_timeout_pass.rs"]
@@ -1729,10 +1731,11 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
             json!({"input":envelope(Payload::Array(vec![Payload::String("wrong".into())]))}),
             "invalid_update_arguments",
         ),
+        // PHP refuses an undecodable blob as validation of `input.blob`.
         (
             path.clone(),
             json!({"input":{"codec":"avro","blob":"bad"}}),
-            "invalid_update_arguments",
+            "validation_failed",
         ),
         (
             path.clone(),

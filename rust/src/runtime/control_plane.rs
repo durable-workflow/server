@@ -15,7 +15,7 @@ pub(super) enum Operation<'a> {
     Terminate,
     Repair,
     Debug,
-    Update,
+    Update(&'a str),
     Signal(&'a str),
     Query(&'a str),
 }
@@ -48,6 +48,16 @@ impl Operation<'_> {
                     json!({"reason":reason,"workflow_id":workflow_id,"target_scope":"run",
                     "message":"Commands cannot target historical runs. Use the instance-level endpoint to command the current run, or omit the run ID."}),
                 )
+            }
+            // PHP names the workflow on every command validation failure.
+            super::RuntimeError::Protocol { status, mut response }
+                if matches!(self, Self::Signal(_) | Self::Query(_) | Self::Update(_))
+                    && response["reason"] == "validation_failed" =>
+            {
+                if response.get("workflow_id").is_none() {
+                    response["workflow_id"] = json!(workflow_id);
+                }
+                (status, response)
             }
             super::RuntimeError::Protocol { status, response }
                 if matches!(self, Self::Signal(_) | Self::Query(_)) =>
@@ -100,7 +110,7 @@ impl Operation<'_> {
             Self::Terminate => ("terminate", &["workflow_id"], &["outcome"]),
             Self::Repair => ("repair", &["workflow_id"], &["outcome"]),
             Self::Debug => ("debug_workflow", &["workflow_id"], &["run_id", "diagnostic_status"]),
-            Self::Update => (
+            Self::Update(_) => (
                 "update",
                 &["workflow_id", "operation_name", "operation_name_field"],
                 &["outcome"],
@@ -126,8 +136,8 @@ impl Operation<'_> {
             metadata["contract"]["rejection_reasons"] = words(reasons);
         }
         match self {
-            Self::Update => {
-                metadata["operation_name"] = body["update_name"].clone();
+            Self::Update(name) => {
+                metadata["operation_name"] = body.get("update_name").cloned().unwrap_or_else(|| json!(name));
                 metadata["operation_name_field"] = json!("update_name");
                 for field in [
                     "command_id",
@@ -140,7 +150,9 @@ impl Operation<'_> {
                     "wait_timed_out",
                     "wait_timeout_seconds",
                 ] {
-                    metadata[field] = body[field].clone();
+                    if let Some(value) = body.get(field) {
+                        metadata[field] = value.clone();
+                    }
                 }
             }
             Self::Query(name) => {
@@ -244,7 +256,7 @@ impl Operation<'_> {
             Self::Cancel | Self::Terminate | Self::Repair => {
                 ("workflow_id run_id reason message remediation", "v1_projection_read_only")
             }
-            Self::Update => (
+            Self::Update(_) => (
                 "workflow_id run_id update_id update_name update_status outcome reason \
                  rejection_reason validation_errors retryable message remediation",
                 "update_validator_rejected update_validator_contract_missing \

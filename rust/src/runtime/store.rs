@@ -840,6 +840,7 @@ where
             name.clone(),
             DB::string(&signal, "arguments")?,
             "invalid_signal_arguments",
+            false,
         )
         .await?;
         let command_id = DB::string(&signal, "workflow_command_id")?;
@@ -2913,11 +2914,14 @@ where
 
 /// A start's optional `nullable|integer|min:1` timeout. Absent or null means
 /// no timeout, as in published PHP.
+/// `request` arguments come from a control-plane `input`, which PHP refuses
+/// as validation of `input.blob`; stored arguments keep `invalid`.
 pub(super) async fn prepare_control_arguments(
     semaphore: Arc<Semaphore>,
     name: String,
     arguments: String,
     invalid: &'static str,
+    request: bool,
 ) -> Result<PreparedControlArguments> {
     let permit = semaphore
         .acquire_owned()
@@ -2929,11 +2933,20 @@ pub(super) async fn prepare_control_arguments(
         let _permit = permit;
         let codec = crate::codec::ValueCodec::new()
             .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid))?;
-        let crate::codec::Value::Array(values) = codec
-            .decode(&arguments)
-            .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid))?
-        else {
-            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid));
+        // PHP's `resolveToArray`: the blob decodes to a list, or to a
+        // non-empty map whose values are the arguments.
+        let (values, arguments) = match codec.decode(&arguments) {
+            Ok(crate::codec::Value::Array(values)) => (values, arguments),
+            Ok(crate::codec::Value::Map(entries)) if request && !entries.is_empty() => {
+                let values: Vec<_> = entries.into_values().collect();
+                let encoded = codec
+                    .encode(&crate::codec::Value::Array(values.clone()))
+                    .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid))?;
+                (values, encoded)
+            }
+            Ok(_) if request => return Err(super::input_envelope::not_a_list()),
+            Err(error) if request => return Err(super::input_envelope::undecodable(&arguments, &error)),
+            _ => return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid)),
         };
         let value = match values.as_slice() {
             [] => crate::codec::Value::Null,

@@ -102,13 +102,13 @@ contract fixture before its correction.
   each priority tier across fairness keys by their weights
   (`TaskFairnessScheduler`); native stores the keys and weights but does not
   rebalance yet.
-- **Malformed input envelopes.** Published PHP refuses a malformed `input`
-  envelope on start, signal, update and query with `422 validation_failed`,
-  using Laravel messages on `input.codec` or `input.blob`. The cases are a
-  codec that is not `avro`, a missing codec, a blob that is empty or not a
-  string, and a blob Avro cannot decode. Native answers with its own reasons
-  instead: `unsupported_payload_codec`, `invalid_payload_envelope`, or an
-  `invalid_*_arguments` reason.
+- **Undecodable query input before routing.** Native decodes query
+  arguments at admission and refuses an undecodable blob with
+  `invalid_query_arguments`. Published PHP first looks for a query worker,
+  and answers `409 query_worker_unavailable` when there is none.
+- **External payload references on signal, update and query.** Published
+  PHP resolves `{codec, external_payload}` input on these routes; native
+  supports it only on start.
 - **Key order inside plain JSON input.** For input that is not an envelope,
   PHP encodes nested objects as Avro maps in request order; native encodes
   them with sorted keys. The decoded values are equal, but the blobs differ.

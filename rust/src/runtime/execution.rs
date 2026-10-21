@@ -356,6 +356,7 @@ impl Runtime {
     /// empty input is no arguments and any list or object other than an
     /// envelope is its values, both encoded here. An envelope is left as sent.
     async fn plain_arguments(&self, body: &Value) -> Result<Option<String>> {
+        super::input_envelope::check(body)?;
         let arguments = match super::start_request::input(body) {
             super::start_request::Input::Envelope => return Ok(None),
             super::start_request::Input::Empty => Vec::new(),
@@ -378,17 +379,38 @@ impl Runtime {
         }
     }
 
+    /// Refuses an envelope blob the codec cannot decode, with PHP's message.
+    async fn decodable(&self, blob: &Value) -> Result<()> {
+        let Some(blob) = blob.as_str().map(str::to_owned) else {
+            return Ok(());
+        };
+        let permit = self.signal_codec.clone().acquire_owned().await
+            .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let codec = crate::codec::ValueCodec::new()
+                .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?;
+            codec.decode(&blob).map(drop).map_err(|error| super::input_envelope::undecodable(&blob, &error))
+        })
+        .await
+        .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?
+    }
+
     pub(crate) async fn start(&self, body: Value) -> Result<Value> {
         // PHP validates the request before it reads the memo or the input.
         let mut body = super::start_request::normalized(body);
+        super::input_envelope::transport(&body)?;
         super::start_request::validate(&body)?;
         if body["search_attributes"].as_object().is_some_and(|fields| !fields.is_empty())
             || body["search_attributes"].as_array().is_some_and(|items| !items.is_empty())
         {
             return Err(refuse(StatusCode::NOT_IMPLEMENTED, "start_search_attributes_unavailable"));
         }
-        if let Some(blob) = self.plain_arguments(&body).await? {
-            body["input"] = json!({"codec": "avro", "blob": blob});
+        match self.plain_arguments(&body).await? {
+            Some(blob) => body["input"] = json!({"codec": "avro", "blob": blob}),
+            // PHP 2.5.14 answers an undecodable start blob with a 500
+            // (server#601); native refuses it as PHP's signal does.
+            None => self.decodable(&body["input"]["blob"]).await?,
         }
         let memo =
             super::memos::prepare_initial(self.signal_codec.clone(), body["memo"].clone()).await?;
@@ -448,6 +470,7 @@ impl Runtime {
         body: Value,
     ) -> Result<Value> {
         let body = super::start_request::normalized(body);
+        super::input_envelope::transport(&body)?;
         super::command_requests::signal(&body)?;
         let arguments = self.command_arguments(&body).await?;
         let prepared = super::store::prepare_control_arguments(
@@ -455,6 +478,7 @@ impl Runtime {
             name.to_owned(),
             arguments,
             "invalid_signal_arguments",
+            true,
         )
         .await?;
         match &*self.storage {
@@ -587,6 +611,7 @@ impl Runtime {
         body: Value,
     ) -> Result<(StatusCode, Value)> {
         let body = super::start_request::normalized(body);
+        super::input_envelope::transport(&body)?;
         super::command_requests::update(&body)?;
         let arguments = self.command_arguments(&body).await?;
         if arguments.len() > super::queries::ARGUMENT_BYTES {
@@ -600,6 +625,7 @@ impl Runtime {
             name.to_owned(),
             arguments,
             "invalid_update_arguments",
+            true,
         )
         .await?;
         match &*self.storage {
@@ -632,6 +658,7 @@ impl Runtime {
         // nullable|array; other request fields are ignored, as in PHP.
         // Laravel trims strings and turns empty ones into null first.
         let body = super::start_request::normalized(body);
+        super::input_envelope::transport(&body)?;
         let invalid = |field: &'static str, message: &'static str| {
             let mut error = super::laravel_validation::failure(vec![(field, vec![message])]).expect("one message");
             if let super::RuntimeError::Protocol { response, .. } = &mut error {
