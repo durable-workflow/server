@@ -2,7 +2,7 @@
 import http from 'node:http';
 import {appendFileSync} from 'node:fs';
 import {gunzipSync, inflateSync, brotliDecompressSync} from 'node:zlib';
-import {proxyTargetUrl} from '../../proxy-target.mjs';
+import {proxyHttpRequest, proxyTargetPath} from '../../proxy-target.mjs';
 
 const [target, journal, observationMode, gateMode, gateWorkflowId, ...extra] = process.argv.slice(2);
 if (observationMode !== undefined && observationMode !== '--forwarding-state') throw new Error('Unknown observation mode');
@@ -30,7 +30,7 @@ const server = http.createServer((request, response) => {
   const record = fields => {
     if (recorded) return;
     recorded = true;
-    appendFileSync(journal, JSON.stringify({method: request.method, path: proxyTargetUrl(request.url, upstream).pathname,
+    appendFileSync(journal, JSON.stringify({method: request.method, path: proxyTargetPath(request.url).pathname,
       ...(captureNamespace ? {namespace: request.headers['x-namespace'] ?? null} : {}),
       request_body: Buffer.concat(chunks).toString('utf8'), status: 0, response_encoding: 'identity',
       response_retry_after: null, response_bytes_base64: '', response_body: '', client_cancelled: false,
@@ -59,13 +59,13 @@ const server = http.createServer((request, response) => {
       if (recorded) return;
       const arrivalLine = arrivalJournal ? JSON.stringify({schema: 'durable-workflow.server-parity-http-request-arrival/v1',
         request_observation_id: requestObservationId, method: request.method,
-        path: proxyTargetUrl(request.url, upstream).pathname, request_body: body.toString('utf8'),
+        path: proxyTargetPath(request.url).pathname, request_body: body.toString('utf8'),
         request_body_complete: true, upstream_request_started: true, response_observed: false})+'\n' : null;
       const arrivalSize = arrivalLine === null ? 0 : Buffer.byteLength(arrivalLine);
       if (arrivalLine && (arrivalCount >= 512 || arrivalBytes + arrivalSize > 4 * 1024 * 1024)) {
         throw new Error('Request-arrival journal exceeds its bounded fixture budget');
       }
-      forwarded = http.request(proxyTargetUrl(request.url, upstream), {
+      forwarded = proxyHttpRequest(request.url, upstream, {
         method: request.method,
         headers: {...request.headers, host: upstream.host},
       }, incoming => {
@@ -83,7 +83,7 @@ const server = http.createServer((request, response) => {
             response_bytes_base64: bytes.toString('base64'), response_body: decoded});
           response.writeHead(incoming.statusCode, incoming.headers);
           response.end(bytes);
-          if (!startObserved && request.method === 'POST' && proxyTargetUrl(request.url, upstream).pathname === '/api/workflows'
+          if (!startObserved && request.method === 'POST' && proxyTargetPath(request.url).pathname === '/api/workflows'
             && incoming.statusCode === 201) {
             let started, receipt;
             try { started = JSON.parse(body.toString('utf8')); receipt = JSON.parse(decoded); } catch { return; }
@@ -108,7 +108,7 @@ const server = http.createServer((request, response) => {
     // Keep the real worker request intact until this fixture's accepted start
     // is fully observed. Other cohorts retain their original forwarding behavior.
     if (!startObserved && request.method === 'POST'
-      && proxyTargetUrl(request.url, upstream).pathname === '/api/worker/workflow-tasks/poll') waitingPolls.add(forwardRequest);
+      && proxyTargetPath(request.url).pathname === '/api/worker/workflow-tasks/poll') waitingPolls.add(forwardRequest);
     else forwardRequest();
   });
 });

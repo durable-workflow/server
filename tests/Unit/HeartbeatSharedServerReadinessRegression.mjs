@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs';
+import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { gzipSync } from 'node:zlib';
 
 import {
   createHeartbeatRelayServer,
@@ -289,12 +291,13 @@ test('executor-network relay keeps credentials and request bytes in memory', asy
       'x-namespace': 'hb-wave-php',
     },
     body: Buffer.from('{"probe":true}'),
-    fetchImpl: async (url, options) => {
-      requests.push({ url, options });
-      return new Response('{"ready":true}', {
+    requestImpl: async (request) => {
+      requests.push(request);
+      return {
         status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+        contentType: 'application/json',
+        body: Buffer.from('{"ready":true}'),
+      };
     },
   });
 
@@ -302,15 +305,60 @@ test('executor-network relay keeps credentials and request bytes in memory', asy
   assert.equal(result.contentType, 'application/json');
   assert.equal(result.body.toString(), '{"ready":true}');
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, 'http://server:8080/api/ready');
-  assert.equal(requests[0].options.method, 'POST');
-  assert.equal(
-    requests[0].options.headers.get('authorization'),
-    'Bearer control-token',
-  );
-  assert.equal(requests[0].options.headers.get('x-namespace'), 'hb-wave-php');
-  assert.equal(requests[0].options.headers.has('connection'), false);
-  assert.equal(requests[0].options.body.toString(), '{"probe":true}');
+  assert.equal(requests[0].requestTarget, '/api/ready');
+  assert.equal(requests[0].allowedOrigin, 'http://server:8080');
+  assert.equal(requests[0].method, 'POST');
+  assert.equal(requests[0].headers.authorization, 'Bearer control-token');
+  assert.equal(requests[0].headers['x-namespace'], 'hb-wave-php');
+  assert.equal('connection' in requests[0].headers, false);
+  assert.equal(requests[0].body.toString(), '{"probe":true}');
+});
+
+test('executor-network relay uses the pinned HTTP origin and decodes its bounded response', async (context) => {
+  const observed = [];
+  const upstream = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    observed.push({
+      url: request.url,
+      authorization: request.headers.authorization,
+      body: Buffer.concat(chunks).toString(),
+    });
+    response.writeHead(200, {
+      'content-encoding': 'gzip',
+      'content-type': 'application/json',
+    });
+    response.end(gzipSync('{"ready":true}'));
+  });
+  context.after(async () => {
+    upstream.closeAllConnections();
+    await new Promise((resolve) => upstream.close(resolve));
+  });
+  upstream.listen(0, '127.0.0.1');
+  await once(upstream, 'listening');
+  const address = upstream.address();
+  assert.equal(typeof address, 'object');
+  const origin = `http://127.0.0.1:${address.port}`;
+
+  const result = await directRelayRequest({
+    targetUrl: `${origin}/api/ready?source=relay`,
+    allowedOrigin: origin,
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer control-token',
+      connection: 'keep-alive',
+    },
+    body: Buffer.from('{"probe":true}'),
+  });
+
+  assert.deepEqual(observed, [{
+    url: '/api/ready?source=relay',
+    authorization: 'Bearer control-token',
+    body: '{"probe":true}',
+  }]);
+  assert.equal(result.status, 200);
+  assert.equal(result.contentType, 'application/json');
+  assert.equal(result.body.toString(), '{"ready":true}');
 });
 
 test('executor-network relay refuses a request outside the configured origin', async () => {
@@ -322,7 +370,7 @@ test('executor-network relay refuses a request outside the configured origin', a
       method: 'GET',
       headers: {},
       body: Buffer.alloc(0),
-      fetchImpl: async () => {
+      requestImpl: async () => {
         attempted = true;
         throw new Error('unexpected request');
       },

@@ -5,7 +5,7 @@ import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {writeFileSync} from 'node:fs';
 import assert from 'node:assert/strict';
-import {proxyTargetUrl} from '../../scripts/conformance/proxy-target.mjs';
+import {proxyHttpRequest} from '../../scripts/conformance/proxy-target.mjs';
 
 const [target,output,prefix,artifacts]=process.argv.slice(2);
 const upstream=new URL(target);
@@ -27,7 +27,7 @@ const server=http.createServer((request,response)=>{
         return;
       }
     }
-    const forward=http.request(proxyTargetUrl(request.url,upstream),{method:request.method,
+    const forward=proxyHttpRequest(request.url,upstream,{method:request.method,
       headers:{...request.headers,host:upstream.host}},incoming=>{
       response.writeHead(incoming.statusCode,incoming.headers);incoming.pipe(response);
     });

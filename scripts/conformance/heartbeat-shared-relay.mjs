@@ -3,7 +3,8 @@ import http from 'node:http';
 import path from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
-import { proxyTargetUrl } from './proxy-target.mjs';
+import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
+import { proxyHttpRequest, proxyTargetUrl } from './proxy-target.mjs';
 
 const MAXIMUM_REQUEST_BYTES = 1024 * 1024;
 const MAXIMUM_RESPONSE_BYTES = 16 * 1024 * 1024;
@@ -253,7 +254,7 @@ async function requestBody(request) {
 async function responseBody(response) {
   const chunks = [];
   let bytes = 0;
-  for await (const chunk of response.body ?? []) {
+  for await (const chunk of response) {
     const buffer = Buffer.from(chunk);
     bytes += buffer.length;
     if (bytes > MAXIMUM_RESPONSE_BYTES) {
@@ -261,7 +262,37 @@ async function responseBody(response) {
     }
     chunks.push(buffer);
   }
-  return Buffer.concat(chunks);
+  const encoded = Buffer.concat(chunks);
+  const encoding = String(response.headers['content-encoding'] ?? 'identity').toLowerCase();
+  const options = { maxOutputLength: MAXIMUM_RESPONSE_BYTES };
+  const decoders = {
+    identity: (value) => value,
+    gzip: (value) => gunzipSync(value, options),
+    deflate: (value) => inflateSync(value, options),
+    br: (value) => brotliDecompressSync(value, options),
+  };
+  if (!(encoding in decoders)) throw new Error(`unsupported relay response encoding: ${encoding}`);
+  const decoded = decoders[encoding](encoded);
+  if (decoded.length > MAXIMUM_RESPONSE_BYTES) {
+    throw new Error(`relay response exceeded ${MAXIMUM_RESPONSE_BYTES} bytes`);
+  }
+  return decoded;
+}
+
+async function directHttpRequest({ requestTarget, allowedOrigin, method, headers, body }) {
+  const response = await new Promise((resolve, reject) => {
+    const request = proxyHttpRequest(requestTarget, allowedOrigin, { method, headers }, resolve);
+    request.setTimeout(REQUEST_TIMEOUT_MS, () => {
+      request.destroy(new Error(`relay request timed out after ${REQUEST_TIMEOUT_MS}ms`));
+    });
+    request.once('error', reject);
+    request.end(body.length > 0 || !['GET', 'HEAD'].includes(method) ? body : undefined);
+  });
+  return {
+    status: response.statusCode ?? 502,
+    contentType: response.headers['content-type'] ?? '',
+    body: await responseBody(response),
+  };
 }
 
 export async function directRelayRequest({
@@ -270,32 +301,26 @@ export async function directRelayRequest({
   method,
   headers,
   body,
-  fetchImpl = globalThis.fetch,
+  requestImpl = directHttpRequest,
 }) {
-  if (typeof fetchImpl !== 'function') throw new Error('fetchImpl must be a function');
+  if (typeof requestImpl !== 'function') throw new Error('requestImpl must be a function');
   const target = new URL(targetUrl);
   if (target.origin !== new URL(allowedOrigin).origin) {
     throw new Error('relay request changed the configured upstream origin');
   }
-  const forwardedHeaders = new Headers();
+  const forwardedHeaders = {};
   for (const [name, value] of Object.entries(headers)) {
     if (EXCLUDED_HEADERS.has(name) || value === undefined) continue;
-    const values = Array.isArray(value) ? value : [value];
-    for (const entry of values) forwardedHeaders.append(name, String(entry));
+    forwardedHeaders[name] = Array.isArray(value) ? value.map(String) : String(value);
   }
 
-  const response = await fetchImpl(target.toString(), {
+  return requestImpl({
+    requestTarget: `${target.pathname}${target.search}`,
+    allowedOrigin,
     method,
     headers: forwardedHeaders,
-    body: body.length > 0 || !['GET', 'HEAD'].includes(method) ? body : undefined,
-    redirect: 'manual',
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    body,
   });
-  return {
-    status: response.status,
-    contentType: response.headers.get('content-type') ?? '',
-    body: await responseBody(response),
-  };
 }
 
 export function createHeartbeatRelayServer({
