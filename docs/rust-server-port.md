@@ -256,6 +256,29 @@ October 20, database TLS settings (PHP Server 2.9.10, #545):
   TLS cases against the same fixtures, with the database side confirming the
   transport.
 
+October 20, search attribute registry:
+
+- **Source.** Native serves `GET` and `POST /api/search-attributes` and
+  `DELETE /api/search-attributes/{name}` for operators, in the default or a
+  named namespace, as PHP's `SearchAttributeController` does. Its rules are:
+  - request strings are trimmed;
+  - Laravel's validation messages and error counts;
+  - system names and their aliases are reserved;
+  - a duplicate keeps its type;
+  - `DW_MAX_SEARCH_ATTRIBUTES` (legacy `WORKFLOW_MAX_SEARCH_ATTRIBUTES`,
+    default 100) limits definitions per namespace;
+  - system attributes cannot be removed.
+- **Concurrent registrations.** When two registrations of one name race, the
+  unique key decides the winner. PHP surfaces that as a server error; native
+  refuses the loser as a duplicate.
+- **Not covered.** Native start and upsert still refuse search attribute
+  values, so a definition is registry state only. PHP's enforcement of
+  definitions on start, upsert and visibility filters needs its own fixtures.
+- **Fixture.** `search-attributes` drives two fresh namespaces through the
+  published SDK and raw requests. Published PHP 2.5.14, embedded PHP (which
+  declares it inapplicable) and native passed the contract in a local copy of
+  the SQLite parity step, and the comparison passed.
+
 October 20, worker listing:
 
 - **Source.** Native serves `GET /api/workers` and `GET /api/workers/{id}`,
