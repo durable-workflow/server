@@ -6,6 +6,7 @@ use std::collections::HashMap;
 pub(super) enum Operation<'a> {
     Start,
     List,
+    ListRuns,
     Describe,
     DescribeRun,
     Observe,
@@ -76,6 +77,7 @@ impl Operation<'_> {
         let (operation, required, success): (&str, &[&str], &[&str]) = match self {
             Self::Start => ("start", &[], &["workflow_id", "outcome"]),
             Self::List => ("list", &[], &[]),
+            Self::ListRuns => ("list_runs", &["workflow_id"], &[]),
             Self::Describe => ("describe", &["workflow_id"], &[]),
             Self::DescribeRun => ("describe_run", &["workflow_id"], &["run_id"]),
             Self::Observe => (
@@ -96,7 +98,7 @@ impl Operation<'_> {
             Self::Cancel => ("cancel", &["workflow_id"], &["outcome"]),
             Self::Terminate => ("terminate", &["workflow_id"], &["outcome"]),
             Self::Repair => ("repair", &["workflow_id"], &["outcome"]),
-            Self::Debug => ("debug", &["workflow_id"], &[]),
+            Self::Debug => ("debug_workflow", &["workflow_id"], &["run_id", "diagnostic_status"]),
             Self::Update => (
                 "update",
                 &["workflow_id", "operation_name", "operation_name_field"],
@@ -318,6 +320,7 @@ pub(super) async fn admission_response(request: Request, mut body: Value) -> Val
     let operation = match (request.method().as_str(), segments.as_slice()) {
         ("GET", ["api", "workflows"]) => Operation::List,
         ("GET", ["api", "workflows", _]) => Operation::Describe,
+        ("GET", ["api", "workflows", _, "runs"]) => Operation::ListRuns,
         ("GET", ["api", "workflows", _, "runs", _]) => Operation::DescribeRun,
         ("GET", ["api", "workflows", _, "runs", _, "history"]) => Operation::History,
         ("GET", ["api", "workflows", _, "observation"])

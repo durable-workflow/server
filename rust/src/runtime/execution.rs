@@ -536,10 +536,11 @@ impl Runtime {
         }
     }
     pub(crate) async fn describe(&self, workflow_id: &str, run_id: Option<&str>) -> Result<Value> {
+        let stale_after = self.queries.worker_stale_after_seconds;
         let description = match &*self.storage {
-            Storage::Sqlite(store) => store.describe(workflow_id, run_id).await?,
-            Storage::Postgres(store) => store.describe(workflow_id, run_id).await?,
-            Storage::MySql(store) => store.describe(workflow_id, run_id).await?,
+            Storage::Sqlite(store) => store.describe_with(workflow_id, run_id, Some(stale_after)).await?,
+            Storage::Postgres(store) => store.describe_with(workflow_id, run_id, Some(stale_after)).await?,
+            Storage::MySql(store) => store.describe_with(workflow_id, run_id, Some(stale_after)).await?,
         };
         super::previews::describe(self.signal_codec.clone(), description).await
     }

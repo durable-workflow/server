@@ -284,6 +284,74 @@ October 21, workflow start requests:
 - **Remaining.** Search attributes on start, fairness rebalancing and the key
   order are listed under known gaps.
 
+October 21, describe actions and run list:
+
+- **Found by.** The Waterline comparison. Waterline 2.12.0 disables cancel,
+  terminate, signal and repair for a run when the server's describe response
+  lacks PHP's `actions` block, so on native every run looked read-only.
+- **Actions.** Describe now carries PHP's `actions`. Signal, cancel,
+  terminate and repair need the current open run. Queries need a
+  query-capable worker route. Updates are never offered, because PHP offers
+  them only for workflow classes it can load in process. Archive needs a
+  closed, unarchived run.
+- **Query route.** A port of PHP's `registeredQueryRoute` decides `can_query`:
+  a fresh active worker on the run's queue, query-task capability, the
+  workflow type, the run's compatibility (an unversioned run with declared
+  queries needs an unversioned worker) and the recorded definition
+  fingerprint, checked in PHP's order. Native counts only workers that
+  registered the `query_tasks` capability, because only they can claim native
+  query tasks. PHP also counts a worker that recently polled for query tasks.
+- **Other describe fields.** `business_key`, `resume_step_sequence`,
+  `recovery_kind`, `compatibility` with its fleet status and reason,
+  `payload_previews`, `last_progress_at`, `wait_kind`, `wait_reason`, typed
+  `search_attributes`, `updates_scope` and `updates`. An empty memo or search
+  attribute set is `[]`, as PHP renders it. Start and close times use
+  `toJSON()`; deadlines and last progress use `toIso8601String()`, which has
+  whole seconds.
+- **Run list.** `GET /api/workflows/{id}/runs` answers with PHP's
+  `run_count` and `formatRunListEntry` entries, including status bucket,
+  terminal flag, task queue, compatibility, fleet status and memo. The current
+  run is the highest numbered one, as in PHP.
+- **Envelopes.** The debug view's `control_plane` names the
+  `debug_workflow` operation with PHP's success fields. The run list and its
+  missing-workflow refusal carry PHP's `list_runs` envelope.
+- **Still different.** Native records no command context, so describe's
+  commands lack PHP's caller, principal, auth and request fields, and
+  Waterline's timeline shows no principal. Native query responses are not yet
+  PHP's, and native does not refuse a query when no worker can serve it.
+
+October 21, explicit run deadlines:
+
+- **Found by.** Comparing describe responses showed native's default
+  deadlines (#574). Reading published PHP's handling of explicit ones showed
+  a second difference.
+- **Before.** Native refused every claim, signal, activity result,
+  heartbeat and timer on a run past its execution or run deadline with
+  `run_timed_out`. It never closed the run, so the run stayed open with
+  work it could not accept.
+- **Published PHP.** `DefaultWorkflowTaskBridge::complete` calls
+  `WorkflowExecutor::timeoutIfDeadlineExpired`. PHP applies a deadline when a
+  workflow task completes after it, and nowhere else. `timeoutRun` cancels
+  the run's other open tasks, its open activities and its timers. It records
+  a `timeout` failure and fails the run with `closed_reason` `timed_out`. It
+  records `WorkflowTimedOut` with the timeout kind, message, exception class
+  and deadlines, closes pending updates, completes the task and resolves a
+  parent's child call as failed. The worker gets 409 with `recorded: false`
+  and `reason: run_timed_out`.
+- **Source.** Native does the same. Deadlines no longer refuse other work,
+  so a run past its deadline still takes signals, activity results and timer
+  fires until its next workflow task completes.
+- **Evidence.** A probe of published PHP and native, with a 2-second run
+  timeout and a workflow task completed after it, gives the same response,
+  run state, history and `WorkflowTimedOut` payload. The only difference is
+  native's narrower server capability list, the same as on every worker
+  response. New `run_deadlines` tests cover the timeout with an open
+  activity and timer, and an in-time completion, on SQLite, PostgreSQL and
+  MySQL.
+- **Still different.** Describe omits PHP's terminal failure fields
+  (`error`, `failure`, `exception`, `failures`) for every failed run, not
+  only timed-out ones.
+
 October 21, scheduled run summaries:
 
 - **Found by.** Comparing the operator dashboard with published PHP. A run

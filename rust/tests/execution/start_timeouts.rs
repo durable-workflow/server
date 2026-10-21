@@ -50,9 +50,10 @@ async fn explicit_timeouts_set_independent_deadlines() {
     let run = described(&app, "timed").await;
     assert_eq!(run["execution_timeout_seconds"], 10);
     assert_eq!(run["run_timeout_seconds"], 30);
+    // Describe reports deadlines in whole seconds, as PHP's toIso8601String does.
     let started = instant(&run["started_at"]);
-    assert_eq!((instant(&run["execution_deadline_at"]) - started).num_seconds(), 10);
-    assert_eq!((instant(&run["run_deadline_at"]) - started).num_seconds(), 30);
+    assert_eq!(instant(&run["execution_deadline_at"]).timestamp(), (started + chrono::Duration::seconds(10)).timestamp());
+    assert_eq!(instant(&run["run_deadline_at"]).timestamp(), (started + chrono::Duration::seconds(30)).timestamp());
     for invalid in [json!(0), json!(-1), json!("ten")] {
         let (status, body) = request(&app, "POST", "/api/workflows", json!({"workflow_id":"invalid","workflow_type":"echo",
             "task_queue":"test","input":envelope(Payload::Array(vec![])),"run_timeout_seconds":invalid})).await;

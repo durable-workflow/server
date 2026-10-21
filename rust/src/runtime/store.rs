@@ -3,7 +3,7 @@ use super::transaction::Transaction;
 use super::{Result, backend::Backend, envelope, refuse, text, wire};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Pool, Type};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{Notify, Semaphore};
@@ -366,13 +366,10 @@ where
         Ok(body)
     }
 
-    pub(crate) async fn describe(&self, workflow_id: &str, run_id: Option<&str>) -> Result<Value> {
-        let row = Self::query("SELECT r.*,i.execution_timeout_seconds,i.current_run_id,(SELECT parent_workflow_run_id FROM workflow_links l WHERE l.child_workflow_run_id=r.id AND l.link_type='continue_as_new' LIMIT 1) AS continued_from_run_id,(SELECT COUNT(*) FROM workflow_runs counted WHERE counted.workflow_instance_id=i.id) AS run_count FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE i.id=$1 AND r.id=COALESCE($2,i.current_run_id) AND r.namespace=$3")
-            .bind(workflow_id).bind(run_id).bind(self.namespace.as_ref()).fetch_optional(&self.pool).await?
-            .ok_or_else(|| refuse(StatusCode::NOT_FOUND, if run_id.is_some() {"run_not_found"} else {"instance_not_found"}))?;
-        let output = DB::optional_string(&row, "output")?;
+    /// A run's decoded memo map as describe and the run list render it.
+    pub(super) async fn run_memo(&self, run_id: &str) -> Result<Value> {
         let memo_rows = Self::query(DB::MEMO_READ)
-            .bind(DB::string(&row, "id")?)
+            .bind(run_id)
             .fetch_all(&self.pool)
             .await?;
         let mut stored = Vec::with_capacity(memo_rows.len());
@@ -392,6 +389,22 @@ where
             ));
         }
         let memo = super::memos::read_stored(self.memo_codec.clone(), stored).await?;
+        // PHP projects an empty memo map as an empty JSON array.
+        Ok(if memo.as_object().is_some_and(Map::is_empty) { json!([]) } else { memo })
+    }
+
+    pub(crate) async fn describe(&self, workflow_id: &str, run_id: Option<&str>) -> Result<Value> {
+        self.describe_with(workflow_id, run_id, None).await
+    }
+
+    /// The run description; with a worker stale window it also carries the
+    /// fields PHP's `formatRun` adds (actions, fleet, wait and updates).
+    pub(crate) async fn describe_with(&self, workflow_id: &str, run_id: Option<&str>, stale_after: Option<i64>) -> Result<Value> {
+        let row = Self::query("SELECT r.*,i.execution_timeout_seconds,i.current_run_id,(SELECT parent_workflow_run_id FROM workflow_links l WHERE l.child_workflow_run_id=r.id AND l.link_type='continue_as_new' LIMIT 1) AS continued_from_run_id,(SELECT COUNT(*) FROM workflow_runs counted WHERE counted.workflow_instance_id=i.id) AS run_count FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE i.id=$1 AND r.id=COALESCE($2,i.current_run_id) AND r.namespace=$3")
+            .bind(workflow_id).bind(run_id).bind(self.namespace.as_ref()).fetch_optional(&self.pool).await?
+            .ok_or_else(|| refuse(StatusCode::NOT_FOUND, if run_id.is_some() {"run_not_found"} else {"instance_not_found"}))?;
+        let output = DB::optional_string(&row, "output")?;
+        let memo = self.run_memo(&DB::string(&row, "id")?).await?;
         let status = DB::string(&row, "status")?;
         let terminal = matches!(
             status.as_str(),
@@ -421,22 +434,35 @@ where
                 .retain(|_, value| !value.is_null());
             commands.push(public);
         }
-        Ok(
+        let current = DB::optional_string(&row,"current_run_id")?.as_deref() == Some(DB::string(&row,"id")?.as_str());
+        let input_envelope = wire(&DB::string(&row,"arguments")?);
+        let output_envelope = output.as_deref().map(wire);
+        let mut described =
             json!({"workflow_id": workflow_id, "run_id": DB::string(&row,"id")?, "workflow_type": DB::string(&row,"workflow_type")?,
             "namespace": self.namespace.as_ref(), "task_queue": DB::string(&row,"queue")?, "status": status,
             "commands_scope":"selected_run","commands":commands,
             "status_bucket": super::visibility::status_bucket(&status)?,
-            "is_current_run": DB::optional_string(&row,"current_run_id")?.as_deref() == Some(DB::string(&row,"id")?.as_str()),
+            "is_current_run": current,
             "run_count": DB::number(&row,"run_count")?,
             "is_terminal": terminal, "closed_reason": DB::optional_string(&row,"closed_reason")?, "run_number": DB::number(&row,"run_number")?,
             "continued_from_run_id": DB::optional_string(&row,"continued_from_run_id")?,
             "payload_codec": "avro", "input": null, "output": null, "memo": memo,
-            "input_envelope": wire(&DB::string(&row,"arguments")?), "output_envelope": output.as_deref().map(wire),
-            "started_at": DB::instant(&row,"started_at")?, "closed_at": DB::optional_instant(&row,"closed_at")?,
+            "input_envelope": input_envelope, "output_envelope": output_envelope,
+            // `toJSON()` for start and close; the run description's
+            // `toIso8601String()` for deadlines.
+            "started_at": super::task_queues::json_time(Some(DB::instant(&row,"started_at")?)),
+            "closed_at": super::task_queues::json_time(DB::optional_instant(&row,"closed_at")?),
             "execution_timeout_seconds": DB::optional_number(&row,"execution_timeout_seconds")?,
             "run_timeout_seconds": DB::optional_number(&row,"run_timeout_seconds")?,
-            "execution_deadline_at": DB::optional_instant(&row,"execution_deadline_at")?, "run_deadline_at": DB::optional_instant(&row,"run_deadline_at")?}),
-        )
+            "execution_deadline_at": super::run_describe::iso8601(DB::optional_instant(&row,"execution_deadline_at")?),
+            "run_deadline_at": super::run_describe::iso8601(DB::optional_instant(&row,"run_deadline_at")?)});
+        if let Some(stale_after) = stale_after {
+            let fields = self
+                .describe_fields(&row, current, terminal, &described["input_envelope"], &described["output_envelope"], stale_after)
+                .await?;
+            described.as_object_mut().expect("description object").extend(fields);
+        }
+        Ok(described)
     }
 
     pub(crate) async fn history(
@@ -1817,6 +1843,18 @@ where
         Self::workflow_task_guard(&mut tx, &task, &body).await?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
+        // `timeoutIfDeadlineExpired`: published PHP applies a run's deadlines
+        // when one of its workflow tasks completes, and closes the run.
+        if [DB::optional_instant(&run, "execution_deadline_at")?, DB::optional_instant(&run, "run_deadline_at")?]
+            .into_iter()
+            .flatten()
+            .any(|deadline| deadline <= now())
+        {
+            let response = Self::time_out_run(&mut tx, &run, &task, &body["workflow_task_attempt"]).await?;
+            tx.commit().await?;
+            self.wake.notify_waiters();
+            return Err(super::RuntimeError::Protocol { status: StatusCode::CONFLICT, response });
+        }
         let task_payload = DB::document_row(&task, "payload")?;
         if Self::cancellation_request(&run)?.is_some()
             && commands.iter().any(|command| {
@@ -2448,7 +2486,7 @@ where
             match Self::active_run(&mut tx, &run_id).await {
                 Ok(_) => {}
                 Err(super::RuntimeError::Refused {
-                    reason: "run_timed_out" | "cancellation_deadline_expired",
+                    reason: "cancellation_deadline_expired",
                     ..
                 }) => continue,
                 Err(error) => return Err(error),
@@ -2684,13 +2722,6 @@ where
             "pending" | "running" | "waiting"
         ) {
             return Err(refuse(StatusCode::CONFLICT, "run_closed"));
-        }
-        if DB::optional_instant(&run, "execution_deadline_at")?
-            .is_some_and(|deadline| deadline <= now())
-            || DB::optional_instant(&run, "run_deadline_at")?
-                .is_some_and(|deadline| deadline <= now())
-        {
-            return Err(refuse(StatusCode::CONFLICT, "run_timed_out"));
         }
         if DB::optional_string(&run, "cancellation_request_command_id")?.is_some()
             && DB::optional_instant(&run, "cancellation_deadline_at")?
