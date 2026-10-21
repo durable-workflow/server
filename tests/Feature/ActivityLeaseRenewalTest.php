@@ -39,9 +39,8 @@ class ActivityLeaseRenewalTest extends TestCase
         $execution = ActivityExecution::query()->findOrFail($task['activity_execution_id']);
         $before = $execution->getAttributes();
         $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $task['run_id'])->get()->toArray();
-        $this->assertSame(now()->toJSON(), $task['server_time']);
 
-        for ($renewal = 0; $renewal < 3; ++$renewal) {
+        for ($renewal = 0; $renewal < 3; $renewal++) {
             $this->travel(4)->seconds();
             $this->postJson($this->renewalPath($task), $this->ownership($task), $this->workerHeaders())
                 ->assertOk()
@@ -84,6 +83,42 @@ class ActivityLeaseRenewalTest extends TestCase
             ->assertJsonPath('reason', 'lease_expired');
     }
 
+    public function test_only_worker_credentials_can_renew_an_original_activity(): void
+    {
+        $task = $this->claimActivity();
+        config([
+            'server.auth.driver' => 'token',
+            'server.auth.token' => null,
+            'server.auth.role_tokens' => ['worker' => 'worker-token', 'operator' => 'operator-token'],
+        ]);
+        $this->postJson($this->renewalPath($task), $this->ownership($task), $this->workerHeaders())
+            ->assertUnauthorized();
+        $this->postJson($this->renewalPath($task), $this->ownership($task), [
+            ...$this->workerHeaders(), 'Authorization' => 'Bearer operator-token',
+        ])->assertForbidden();
+        $this->postJson($this->renewalPath($task), $this->ownership($task), [
+            ...$this->workerHeaders(), 'Authorization' => 'Bearer worker-token',
+        ])->assertOk()->assertJsonPath('lease_renewed', true);
+    }
+
+    public function test_a_lost_worker_session_does_not_extend_the_activity_lease(): void
+    {
+        $task = $this->claimActivity(session: [
+            'session_id' => 'renewal-session',
+            'lease_seconds' => 2,
+            'ttl_seconds' => 30,
+            'queue' => 'external-activities',
+        ]);
+        $before = ActivityAttempt::query()->findOrFail($task['activity_attempt_id'])->lease_expires_at->toJSON();
+        $this->travel(2)->seconds();
+        $this->postJson($this->renewalPath($task), $this->ownership($task), $this->workerHeaders())
+            ->assertConflict()
+            ->assertJsonPath('lease_renewed', false)
+            ->assertJsonPath('can_continue', false)
+            ->assertJsonPath('reason', 'session_not_active');
+        $this->assertSame($before, ActivityAttempt::query()->findOrFail($task['activity_attempt_id'])->lease_expires_at->toJSON());
+    }
+
     public static function businessTimeouts(): array
     {
         return [
@@ -117,7 +152,7 @@ class ActivityLeaseRenewalTest extends TestCase
             ->assertJsonPath('server_capabilities.activity_lease_renewal', false);
     }
 
-    private function claimActivity(array $policy = []): array
+    private function claimActivity(array $policy = [], ?array $session = null): array
     {
         $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'renewal-workflow');
         $start = $workflow->start('Ada');
@@ -126,14 +161,15 @@ class ActivityLeaseRenewalTest extends TestCase
         $execution = ActivityExecution::query()->where('workflow_run_id', $start->runId())->firstOrFail();
         $execution->forceFill([
             'retry_policy' => [...$execution->retry_policy, ...$policy],
+            'activity_options' => [...($execution->activity_options ?? []), 'worker_session' => $session],
             'schedule_to_close_deadline_at' => isset($policy['schedule_to_close_timeout'])
                 ? now()->addSeconds($policy['schedule_to_close_timeout']) : null,
         ])->save();
-        $this->registerWorker('renewal-worker', 'external-activities');
+        $this->registerWorker('renewal-worker', 'external-activities', capabilities: ['worker_sessions']);
 
         return $this->postJson('/api/worker/activity-tasks/poll', [
             'worker_id' => 'renewal-worker', 'task_queue' => 'external-activities',
-        ], $this->workerHeaders())->assertOk()->json('task');
+        ], $this->workerHeaders())->assertOk()->assertJsonPath('server_time', now()->toJSON())->json('task');
     }
 
     private function ownership(array $task): array

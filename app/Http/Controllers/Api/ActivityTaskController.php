@@ -31,6 +31,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
+use Workflow\V2\Contracts\ActivityLeaseRenewal;
 use Workflow\V2\Contracts\ActivityTaskBridge as ActivityTaskBridgeContract;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
@@ -217,6 +218,7 @@ class ActivityTaskController
                 ),
                 'external_executor' => $externalExecutor,
             ], static fn (mixed $v): bool => $v !== null),
+            'server_time' => now()->toJSON(),
             'poll_status' => is_string($poll['poll_status'] ?? null)
                 ? $poll['poll_status']
                 : ($claim === null ? 'empty' : 'leased'),
@@ -690,6 +692,81 @@ class ActivityTaskController
             'acknowledged_at' => $ack?->payload['acknowledged_at'] ?? null,
             'received_after_deadline' => $ack?->payload['received_after_deadline'] ?? null,
         ];
+    }
+
+    public function renewLease(Request $request, string $taskId): JsonResponse
+    {
+        if ($response = WorkerProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $bridge = app(ActivityTaskBridgeContract::class);
+        if (! $bridge instanceof ActivityLeaseRenewal) {
+            return WorkerProtocol::json([
+                'lease_renewed' => false,
+                'can_continue' => false,
+                'reason' => 'activity_lease_renewal_unavailable',
+                'error' => 'The configured activity bridge does not support runtime lease renewal.',
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'activity_attempt_id' => ['required', 'string'],
+            'lease_owner' => ['required', 'string'],
+        ]);
+        $namespace = $request->attributes->get('namespace');
+        $observed = null;
+        try {
+            if ($response = $this->guardAttemptOwnership(
+                $namespace,
+                $taskId,
+                $validated['activity_attempt_id'],
+                $validated['lease_owner'],
+                $observed,
+            )) {
+                return $response;
+            }
+
+            if (($observed['can_continue'] ?? false) !== true) {
+                return WorkerProtocol::json([
+                    ...$observed, 'lease_renewed' => false,
+                ], $this->outcomeStatus($observed['reason'] ?? null));
+            }
+
+            $workerSession = $this->storageMutations->run(
+                fn (): ?array => $this->workerSessions->heartbeatForAttempt(
+                    $namespace,
+                    $validated['activity_attempt_id'],
+                    $validated['lease_owner'],
+                ),
+            );
+            if ($workerSession !== null && ($workerSession['admitted'] ?? false) !== true) {
+                return WorkerProtocol::json([
+                    ...$observed,
+                    'lease_renewed' => false,
+                    'can_continue' => false,
+                    'reason' => $workerSession['reason'] ?? 'worker_session_renewal_failed',
+                    'worker_session' => $this->workerSessionSnapshotFromRenewal($workerSession),
+                    'worker_session_renewal' => $this->workerSessionRenewalStatusPayload($workerSession),
+                ], $this->workerSessionRenewalHttpStatus($workerSession));
+            }
+
+            $status = $this->storageMutations->run(
+                static fn (): array => $bridge->renewLease($validated['activity_attempt_id'], $validated['lease_owner']),
+            );
+        } catch (\Throwable $exception) {
+            if (! BackendLockPressure::is($exception)) {
+                throw $exception;
+            }
+
+            return BackendLockPressure::workerOperationResponse($request, false);
+        }
+
+        return WorkerProtocol::json([
+            ...$status,
+            'task_id' => $taskId,
+            'worker_session' => $workerSession['session'] ?? null,
+        ], $this->outcomeStatus($status['reason'] ?? null));
     }
 
     /**

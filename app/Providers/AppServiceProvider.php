@@ -19,6 +19,7 @@ use App\Observers\NamespaceDurableStateObserver;
 use App\Observers\WorkflowHistoryEventObserver;
 use App\Observers\WorkflowTaskObserver;
 use App\Observers\WorkflowUpdateValidationObserver;
+use App\Support\ActivityTaskLeaseConfiguration;
 use App\Support\ExternalWorkflowUpdateAdmission;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\RemoteScheduleStarter;
@@ -200,6 +201,7 @@ class AppServiceProvider extends ServiceProvider
         WorkflowPackageApiFloor::assert();
 
         WorkflowTaskLeaseConfiguration::apply();
+        ActivityTaskLeaseConfiguration::apply();
         WorkflowMemoRollingCompatibility::register();
 
         config([
