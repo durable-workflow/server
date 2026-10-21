@@ -37,10 +37,12 @@ test('proxy upstream is an exact HTTP origin without embedded credentials', () =
 
 test('proxy request uses only the configured origin for the network destination', async (context) => {
   let configuredRequests = 0;
+  let configuredRequestTarget = null;
   let attackerRequests = 0;
   const configured = http.createServer((request, response) => {
     configuredRequests++;
-    response.end(request.url);
+    configuredRequestTarget = request.url;
+    response.end('configured origin reached');
   });
   const attacker = http.createServer((_request, response) => {
     attackerRequests++;
@@ -74,8 +76,9 @@ test('proxy request uses only the configured origin for the network destination'
   });
   const chunks = [];
   for await (const chunk of response) chunks.push(chunk);
-  assert.equal(Buffer.concat(chunks).toString(), '/latest/meta-data?role=admin');
+  assert.equal(Buffer.concat(chunks).toString(), 'configured origin reached');
   assert.equal(configuredRequests, 1);
+  assert.equal(configuredRequestTarget, '/latest/meta-data?role=admin');
   assert.equal(attackerRequests, 0);
 });
 
