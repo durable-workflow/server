@@ -1110,13 +1110,41 @@ workflow ID is bound remain rejected as `instance_not_found`.
 Activity task polling returns a leased attempt identity. Clients must echo both
 `activity_attempt_id` and `lease_owner` on activity `complete`, `fail`, and
 `heartbeat` calls. When the activity execution has timeout deadlines configured,
-the poll response includes a `deadlines` object with ISO-8601 timestamps for
-`schedule_to_start`, `start_to_close`, `schedule_to_close`, and/or `heartbeat`.
+the poll response includes a `deadlines` object with UTC timestamps and six
+fractional digits for `schedule_to_start`, `start_to_close`, `schedule_to_close`,
+and/or `heartbeat`. Configured workflow deadlines are included as `run` and
+`execution`, copied from the original durable run. Missing deadlines are omitted;
+polling, observation and runtime renewal do not invent or restart them.
 Workers should use these deadlines to self-cancel before the server enforces the
 timeout. The server runs `activity:timeout-enforce` periodically to expire
 activities that exceed their deadlines. Heartbeats accept `message`, `current`,
 `total`, `unit`, and `details` fields; the server normalizes them to the package
 heartbeat-progress contract before recording the heartbeat.
+
+The optional `activity_lease_renewal` capability is available only with an
+installed bridge implementing runtime renewal. When discovery explicitly
+returns `true`, a worker can send its original `activity_attempt_id` and
+`lease_owner` to `POST /api/worker/activity-tasks/{id}/renew-lease` using the
+same namespace and worker credentials. A successful response contains
+`lease_renewed: true`, `can_continue: true`, the original task/run/execution/
+attempt/owner identity, `lease_expires_at`, `server_time`, and
+`heartbeat_recorded: false`. Validate that identity and charge the request's
+elapsed time against the returned grant before executing or publishing work.
+An HTTP success alone is not execution authority. A lost required worker
+session, expired lease or elapsed business deadline refuses renewal; this
+operation cannot revive a claim. Missing capability retains the existing
+lease/heartbeat behavior and requires no new protocol floor.
+
+Runtime renewal records no application progress or durable history. Only an
+actual acknowledged application heartbeat may advance its originally recorded
+heartbeat interval. Workers must preserve the original run, execution and
+activity deadlines, keep renewal active during argument loading and result
+publication, and recheck authority before every terminal HTTP retry. A late
+outcome is refused before resolving an external result. The package also needs
+to validate authority under its mutation locks; a preflight response is not a
+reservation. The automatic-worker and published long-activity acceptance for
+this optional candidate remain tracked in Workflow #878.
+
 When a run-level cancel or terminate command stops a leased activity task,
 heartbeat, complete, and fail responses include `run_closed_reason` and
 `run_closed_at` alongside `cancel_requested: true`.

@@ -494,12 +494,10 @@ class ActivityTaskController
                 $status['can_continue'] = false;
                 $status['reason'] = 'lease_expired';
             }
-            foreach (['heartbeat', 'start_to_close', 'schedule_to_close'] as $kind) {
-                if ($status['can_continue'] === true && isset($deadlines[$kind])
-                    && ! CarbonImmutable::parse($deadlines[$kind])->isAfter(now())) {
-                    $status['can_continue'] = false;
-                    $status['reason'] = $kind.'_timeout';
-                }
+            $expiredReason = $this->expiredDeadlineReason($deadlines);
+            if ($status['can_continue'] === true && $expiredReason !== null) {
+                $status['can_continue'] = false;
+                $status['reason'] = $expiredReason;
             }
             if ($status['can_continue'] === true && $workerSession !== null) {
                 $sessionLease = $workerSession['lease_expires_at'] ?? null;
@@ -731,6 +729,15 @@ class ActivityTaskController
                 return WorkerProtocol::json([
                     ...$observed, 'lease_renewed' => false,
                 ], $this->outcomeStatus($observed['reason'] ?? null));
+            }
+
+            $expiredReason = $this->expiredDeadlineReason(
+                $this->executionDeadlines($observed['activity_execution_id'] ?? null) ?? [],
+            );
+            if ($expiredReason !== null) {
+                return WorkerProtocol::json([
+                    ...$observed, 'lease_renewed' => false, 'can_continue' => false, 'reason' => $expiredReason,
+                ], 409);
             }
 
             $workerSession = $this->storageMutations->run(
@@ -1106,18 +1113,13 @@ class ActivityTaskController
                 $reason = 'lease_expired';
             } else {
                 $deadlines = $this->executionDeadlines($status['activity_execution_id'] ?? null) ?? [];
-                foreach (['heartbeat', 'start_to_close', 'schedule_to_close'] as $kind) {
-                    if (isset($deadlines[$kind]) && ! CarbonImmutable::parse($deadlines[$kind])->isAfter(now())) {
-                        $reason = $kind.'_timeout';
-                        break;
-                    }
-                }
+                $reason = $this->expiredDeadlineReason($deadlines);
             }
         }
 
         // Closed, cancelled and reclaimed attempts retain their existing handling,
         // including the committed completion receipt and cancellation diagnostics.
-        if (! in_array($reason, ['lease_expired', 'heartbeat_timeout', 'start_to_close_timeout', 'schedule_to_close_timeout'], true)) {
+        if (! in_array($reason, ['lease_expired', 'heartbeat_timeout', 'start_to_close_timeout', 'schedule_to_close_timeout', 'run_timeout', 'execution_timeout'], true)) {
             return null;
         }
 
@@ -1259,7 +1261,7 @@ class ActivityTaskController
         }
 
         /** @var ActivityExecution|null $execution */
-        $execution = ActivityExecution::query()->find($executionId);
+        $execution = ActivityExecution::query()->with('run')->find($executionId);
 
         if (! $execution) {
             return null;
@@ -1270,9 +1272,23 @@ class ActivityTaskController
             'start_to_close' => $this->deadlineTimestamp($execution->close_deadline_at),
             'schedule_to_close' => $this->deadlineTimestamp($execution->schedule_to_close_deadline_at),
             'heartbeat' => $this->deadlineTimestamp($execution->heartbeat_deadline_at),
+            'run' => $this->deadlineTimestamp($execution->run?->run_deadline_at),
+            'execution' => $this->deadlineTimestamp($execution->run?->execution_deadline_at),
         ], static fn (mixed $v): bool => $v !== null);
 
         return $deadlines !== [] ? $deadlines : null;
+    }
+
+    /** @param array<string, string> $deadlines */
+    private function expiredDeadlineReason(array $deadlines): ?string
+    {
+        foreach (['heartbeat', 'start_to_close', 'schedule_to_close', 'run', 'execution'] as $kind) {
+            if (isset($deadlines[$kind]) && ! CarbonImmutable::parse($deadlines[$kind])->isAfter(now())) {
+                return $kind.'_timeout';
+            }
+        }
+
+        return null;
     }
 
     private function deadlineTimestamp(?CarbonInterface $deadline): ?string
