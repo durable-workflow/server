@@ -474,7 +474,8 @@ async fn continuation_commits_one_successor_and_preserves_original_receipts_afte
         chrono::DateTime::parse_from_rfc3339(current["started_at"].as_str().unwrap()).unwrap();
     let deadline =
         chrono::DateTime::parse_from_rfc3339(current["run_deadline_at"].as_str().unwrap()).unwrap();
-    assert_eq!((deadline - start).num_seconds(), 600);
+    // Describe reports deadlines in whole seconds, as PHP's toIso8601String does.
+    assert_eq!(deadline.timestamp(), (start + chrono::Duration::seconds(600)).timestamp());
     runtime.close().await;
     let cold = database.open().await.unwrap();
     let app = router(cold.clone());
