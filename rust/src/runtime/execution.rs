@@ -479,15 +479,16 @@ impl Runtime {
         }
     }
 
-    pub(crate) async fn range_debug(
+    pub(crate) async fn run_diagnostics(
         &self,
         workflow_id: &str,
         run_id: Option<&str>,
+        include_payload: bool,
     ) -> Result<Value> {
         match &*self.storage {
-            Storage::Sqlite(store) => store.range_debug(workflow_id, run_id).await,
-            Storage::Postgres(store) => store.range_debug(workflow_id, run_id).await,
-            Storage::MySql(store) => store.range_debug(workflow_id, run_id).await,
+            Storage::Sqlite(store) => store.run_diagnostics(workflow_id, run_id, include_payload, &self.queries).await,
+            Storage::Postgres(store) => store.run_diagnostics(workflow_id, run_id, include_payload, &self.queries).await,
+            Storage::MySql(store) => store.run_diagnostics(workflow_id, run_id, include_payload, &self.queries).await,
         }
     }
     pub(crate) async fn describe(&self, workflow_id: &str, run_id: Option<&str>) -> Result<Value> {
@@ -747,6 +748,20 @@ impl Runtime {
             Storage::Sqlite(store) => store.list_workers(task_queue, status, &self.queries).await,
             Storage::Postgres(store) => store.list_workers(task_queue, status, &self.queries).await,
             Storage::MySql(store) => store.list_workers(task_queue, status, &self.queries).await,
+        }
+    }
+    pub(crate) async fn list_task_queues(&self) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.list_task_queues(&self.queries).await,
+            Storage::Postgres(store) => store.list_task_queues(&self.queries).await,
+            Storage::MySql(store) => store.list_task_queues(&self.queries).await,
+        }
+    }
+    pub(crate) async fn describe_task_queue(&self, queue: &str) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.describe_task_queue(queue, &self.queries).await,
+            Storage::Postgres(store) => store.describe_task_queue(queue, &self.queries).await,
+            Storage::MySql(store) => store.describe_task_queue(queue, &self.queries).await,
         }
     }
     pub(crate) async fn describe_worker(&self, worker_id: &str) -> Result<Value> {

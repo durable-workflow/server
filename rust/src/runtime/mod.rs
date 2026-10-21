@@ -46,6 +46,8 @@ mod run_observation_store;
 mod run_observation_waits;
 mod schedule_execution;
 mod schedule_http;
+mod run_diagnostics;
+mod task_queues;
 mod schedule_storage;
 mod schedules;
 mod schema;

@@ -165,6 +165,8 @@ pub fn router(runtime: Runtime) -> Router {
             post(deregister_fenced),
         )
         .route("/api/workers", get(list_workers))
+        .route("/api/task-queues", get(list_task_queues))
+        .route("/api/task-queues/{task_queue}", get(describe_task_queue))
         .route(
             "/api/workers/{worker_id}",
             get(describe_worker).delete(deregister),
@@ -427,7 +429,7 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     // Keep unimplemented families from reaching default-namespace selectors.
     // Further families require their own shared namespace fixtures.
     if path == "/api/workflows" {
-        return method == "POST";
+        return matches!(method, "GET" | "POST");
     }
     if path == "/api/storage/test" {
         return method == "POST";
@@ -441,6 +443,14 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
         .is_some_and(|name| !name.is_empty() && !name.contains('/'))
     {
         return method == "DELETE";
+    }
+    // Task queue views are namespace-scoped reads.
+    if path == "/api/task-queues"
+        || path
+            .strip_prefix("/api/task-queues/")
+            .is_some_and(|queue| !queue.is_empty() && !queue.contains('/'))
+    {
+        return method == "GET";
     }
     if path == "/api/workers"
         || path
@@ -744,17 +754,11 @@ async fn repair_current(
     ))
 }
 
-fn debug_selection(query: &std::collections::HashMap<String, String>) -> Result<()> {
-    if query
+/// Laravel's `$request->boolean('include_last_event_payload')`.
+fn include_last_event_payload(query: &std::collections::HashMap<String, String>) -> bool {
+    query
         .get("include_last_event_payload")
         .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "on" | "yes"))
-    {
-        return Err(refuse(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "development_range_diagnostics_payload_unqualified",
-        ));
-    }
-    Ok(())
 }
 
 async fn debug_current(
@@ -762,9 +766,8 @@ async fn debug_current(
     Path(workflow_id): Path<String>,
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<Value>> {
-    debug_selection(&query)?;
     let response = runtime
-        .range_debug(&workflow_id, None)
+        .run_diagnostics(&workflow_id, None, include_last_event_payload(&query))
         .await
         .map_err(|error| {
             super::control_plane::Operation::Debug.refusal(error, &workflow_id, None)
@@ -779,9 +782,8 @@ async fn debug_run(
     Path((workflow_id, run_id)): Path<(String, String)>,
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<Value>> {
-    debug_selection(&query)?;
     let response = runtime
-        .range_debug(&workflow_id, Some(&run_id))
+        .run_diagnostics(&workflow_id, Some(&run_id), include_last_event_payload(&query))
         .await
         .map_err(|error| {
             super::control_plane::Operation::Debug.refusal(error, &workflow_id, Some(&run_id))
@@ -1029,6 +1031,17 @@ async fn list_workers(
         )
         .await
         .map(Json)
+}
+/// `GET /api/task-queues`.
+async fn list_task_queues(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    runtime.list_task_queues().await.map(Json)
+}
+/// `GET /api/task-queues/{name}`.
+async fn describe_task_queue(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_queue): Path<String>,
+) -> Result<Json<Value>> {
+    runtime.describe_task_queue(&task_queue).await.map(Json)
 }
 async fn describe_worker(
     Extension(runtime): Extension<Runtime>,
