@@ -36,6 +36,7 @@ mod memo_limits;
 mod memos;
 pub mod mysql;
 mod namespaces;
+mod operator_dashboard;
 mod operator_metrics;
 mod poll_readiness;
 pub mod postgres;
