@@ -88,7 +88,13 @@ async fn workflow_failure_is_terminal_atomic_and_retains_one_receipt_after_cold_
     )
     .await;
     assert_eq!(changed.0, StatusCode::CONFLICT);
-    assert_eq!(changed.1["reason"], "conflicting_completion");
+    // PHP's ownership guard: the task is no longer leased and its run closed.
+    assert_eq!(changed.1["reason"], "run_closed", "{}", changed.1);
+    assert_eq!(changed.1["can_continue"], false);
+    // A task that failed its run is stored as failed, as PHP stores it.
+    assert_eq!(changed.1["task_status"], "failed");
+    assert_eq!(changed.1["run_status"], "failed");
+    assert_eq!(changed.1["stop_reason"], "run_failed");
     assert_eq!(history(&cold_app, &run).await, original);
     snapshot(&database, &cold_app, &run).await;
     assert!(
