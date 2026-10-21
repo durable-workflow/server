@@ -10,7 +10,7 @@ static NUMERIC_PREFIX: LazyLock<Regex> = LazyLock::new(|| {
         .expect("static PHP numeric prefix")
 });
 
-fn typed_null(value: &str) -> bool {
+pub(super) fn typed_null(value: &str) -> bool {
     matches!(value.to_ascii_lowercase().as_str(), "null" | "(null)")
 }
 

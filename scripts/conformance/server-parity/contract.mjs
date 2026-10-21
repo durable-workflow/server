@@ -10,6 +10,7 @@ import {checkAdmission} from './admission-contract.mjs';
 import {checkNamespaces} from './namespace-contract.mjs';
 import {checkWorkerDeregistration} from './worker-deregistration-contract.mjs';
 import {checkLateWorkflowCompletion} from './late-workflow-completion-contract.mjs';
+import {checkSearchAttributes} from './search-attribute-contract.mjs';
 import {checkWorkerListing} from './worker-listing-contract.mjs';
 import {checkWorkerReplacement} from './worker-replacement-contract.mjs';
 import {checkPatchDeployment, checkPublishedPatchArtifacts, checkPatchPackageObservation} from './patch-deployment-contract.mjs';
@@ -133,6 +134,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const namespaces = fixture.namespace_isolation ? checkNamespaces(fixture, observation, workflowId, checkObservation) : null;
   const workerDeregistration = fixture.worker_deregistration ? checkWorkerDeregistration(fixture, observation, workflowId) : null;
   const lateWorkflowCompletion = fixture.late_workflow_completion ? checkLateWorkflowCompletion(fixture, observation, workflowId) : null;
+  const searchAttributes = fixture.search_attributes ? checkSearchAttributes(fixture, observation, workflowId) : null;
   const workerListing = fixture.worker_listing ? checkWorkerListing(fixture, observation, workflowId) : null;
   const workerReplacement = fixture.worker_replacement ? checkWorkerReplacement(fixture, observation, workflowId) : null;
   const patchDeployment = fixture.patch_deployment ? (fixture.patch_deployment.legacy_marker_history
@@ -673,6 +675,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(namespaces ? {namespace_isolation: namespaces} : {}),
     ...(workerDeregistration ? {worker_deregistration: workerDeregistration} : {}),
     ...(lateWorkflowCompletion ? {late_workflow_completion: lateWorkflowCompletion} : {}),
+    ...(searchAttributes ? {search_attributes: searchAttributes} : {}),
     ...(workerListing ? {worker_listing: workerListing} : {}),
     ...(workerReplacement ? {worker_replacement: workerReplacement} : {}),
     ...(patchDeployment ? {patch_deployment: patchDeployment} : {}),
