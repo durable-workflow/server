@@ -198,6 +198,12 @@ contract fixture before its correction.
   a signal therefore waits on PHP and is refused on native. The port takes the
   snapshot at claim time and must keep query lease replay stable, so it needs
   its own fixture.
+- **Cooperative cancellation boundaries.** Published PHP delivers a run's
+  cancellation at an activity, local activity, timer, condition, signal,
+  child, parallel or selection-handle boundary. Native delivers it at a
+  timer, a child and a parallel group whose members are all timers, and
+  refuses the other boundaries, including parallel groups with other member
+  kinds, with `422 cancellation_delivery_boundary_not_available`.
 - **Terminating a child run.** Published Workflow resolves the parent with
   `ChildRunTerminated` and the `terminated` child call status. Native refuses
   this with `422 termination_propagation_not_available` until the parent-side

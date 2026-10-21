@@ -103,6 +103,9 @@ async fn encode_command(value: Value, semaphore: Arc<Semaphore>) -> Result<Strin
     })?
 }
 
+/// PHP's default `command_batch_size` structural limit.
+const PARALLEL_SPAN_LIMIT: i64 = 1000;
+
 impl<DB: Backend> Store<DB>
 where
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
@@ -190,11 +193,17 @@ where
                 )
             })?;
         let call_kind = super::text(&body, "call_kind")?;
-        if !matches!(call_kind, "timer" | "child")
-            || body
-                .get("sequence_span")
-                .filter(|v| !v.is_null())
-                .is_some_and(|v| v.as_i64() != Some(1))
+        // `validateBoundarySyntax`: only a parallel boundary spans more than
+        // one sequence, at most a command batch of them.
+        let span = match body.get("sequence_span").filter(|v| !v.is_null()) {
+            None => 1,
+            Some(value) => value
+                .as_i64()
+                .filter(|span| (1..=PARALLEL_SPAN_LIMIT).contains(span) && sequence.checked_add(*span).is_some())
+                .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_cancellation_delivery"))?,
+        };
+        if !matches!(call_kind, "timer" | "child" | "parallel")
+            || (call_kind != "parallel" && span != 1)
             || body.get("operation_sequence").is_some_and(|v| !v.is_null())
             || body
                 .get("operation_sequence_span")
@@ -245,7 +254,7 @@ where
             ));
         }
         let response = json!({"delivered":true,"task_id":task_id,"workflow_run_id":run_id,"request_id":request_id,
-            "sequence":sequence,"call_kind":call_kind,"sequence_span":1,"operation_sequence":null,
+            "sequence":sequence,"call_kind":call_kind,"sequence_span":span,"operation_sequence":null,
             "operation_sequence_span":1,"reason":null});
         let requested=Self::query("SELECT sequence,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND workflow_command_id=$2 AND event_type='CooperativeCancellationRequested' ORDER BY sequence LIMIT 1")
             .bind(&run_id).bind(request_id).fetch_optional(&mut *tx).await?
@@ -264,6 +273,7 @@ where
             .bind(&run_id).fetch_optional(&mut *tx).await? {
             let payload=DB::document_row(&delivery,"payload")?;
             if payload["workflow_command_id"]!=request_id || payload["sequence"]!=sequence || payload["call_kind"]!=call_kind
+                || payload["sequence_span"].as_i64().unwrap_or(1)!=span
                 || payload["cancellation"]!=requested["cancellation"] || DB::optional_number(&run,"cancellation_delivery_sequence")?!=Some(sequence) {
                 return Err(refuse(StatusCode::CONFLICT,"cancellation_delivery_mismatch"));
             }
@@ -289,7 +299,17 @@ where
                 "cancellation_delivery_sequence_mismatch",
             ));
         }
-        if call_kind == "child" {
+        if call_kind == "parallel" {
+            // `parallelEligibility`; a boundary at the next sequence has no
+            // authored member yet.
+            if sequence < next {
+                for timer in Self::parallel_timer_members(&mut tx, &run_id, sequence, span, request_sequence).await? {
+                    if DB::string(&timer, "status")? == "pending" {
+                        Self::cancel_root_timer(&mut tx, &run, request_id, &timer, Some(task_id), now()).await?;
+                    }
+                }
+            }
+        } else if call_kind == "child" {
             if sequence < next {
                 Self::validate_child_cancellation_boundary(
                     &mut tx,
@@ -331,11 +351,15 @@ where
             .bind(task_id)
             .execute(&mut *tx)
             .await?;
-        let payload = json!({"workflow_command_id":request_id,"workflow_run_id":run_id,"sequence":sequence,"call_kind":call_kind,
+        let mut payload = json!({"workflow_command_id":request_id,"workflow_run_id":run_id,"sequence":sequence,"call_kind":call_kind,
             "cancellation":requested["cancellation"],"task":{"id":task_id,"type":"workflow","status":"leased",
                 "available_at":DB::optional_instant(&task,"available_at")?,"leased_at":DB::optional_instant(&task,"leased_at")?,
                 "lease_owner":DB::optional_string(&task,"lease_owner")?,"lease_expires_at":expires,
                 "attempt_count":DB::number(&task,"attempt_count")?}});
+        // PHP records `sequence_span` only beyond one sequence.
+        if span != 1 {
+            payload["sequence_span"] = json!(span);
+        }
         Self::query("UPDATE workflow_runs SET cancellation_delivery_sequence=$1,cancellation_delivered_at=$2,last_progress_at=$3 WHERE id=$4")
             .bind(sequence).bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(&run_id).execute(&mut *tx).await?;
         Self::append(
@@ -349,6 +373,76 @@ where
         .await?;
         tx.commit().await?;
         Ok(response)
+    }
+
+    /// The pending timers of the parallel group a delivery names. Like
+    /// PHP's `parallelEligibility`, every member must belong to the group
+    /// at its index, and a group whose members all resolved before the
+    /// request is not eligible. Native cancels timer members only; a group
+    /// with another kind of member keeps its earlier refusal.
+    async fn parallel_timer_members(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        sequence: i64,
+        span: i64,
+        request_sequence: i64,
+    ) -> Result<Vec<DB::Row>> {
+        let mismatch = || refuse(StatusCode::CONFLICT, "cancellation_delivery_shape_mismatch");
+        let unavailable = || refuse(StatusCode::UNPROCESSABLE_ENTITY, "cancellation_delivery_boundary_not_available");
+        let events = Self::query("SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('TimerScheduled','TimerFired','TimerCancelled','ActivityScheduled','ChildWorkflowScheduled','ConditionWaitOpened','SignalWaitOpened') ORDER BY sequence LIMIT 10001")
+            .bind(run_id)
+            .fetch_all(&mut **tx)
+            .await?;
+        if events.len() > 10000 {
+            return Err(refuse(StatusCode::SERVICE_UNAVAILABLE, "cancellation_inventory_exceeds_budget"));
+        }
+        let mut members = Vec::new();
+        let mut group_id = None;
+        let mut all_resolved = true;
+        for offset in 0..span {
+            let member = sequence + offset;
+            let mut scheduled = None;
+            let mut resolved_before_request = false;
+            for event in &events {
+                let payload = DB::document_row(event, "payload")?;
+                if payload["sequence"].as_i64() != Some(member) {
+                    continue;
+                }
+                match DB::string(event, "event_type")?.as_str() {
+                    "TimerScheduled" => scheduled = Some(payload),
+                    "TimerFired" | "TimerCancelled" => {
+                        resolved_before_request |= DB::number(event, "sequence")? < request_sequence;
+                    }
+                    _ => return Err(unavailable()),
+                }
+            }
+            let scheduled = scheduled.ok_or_else(mismatch)?;
+            let path = scheduled["parallel_group_path"].as_array().ok_or_else(mismatch)?;
+            let group = path
+                .iter()
+                .find(|group| {
+                    group["parallel_group_base_sequence"].as_i64() == Some(sequence)
+                        && group["parallel_group_size"].as_i64() == Some(span)
+                })
+                .ok_or_else(mismatch)?;
+            if group["parallel_group_index"].as_i64() != Some(offset)
+                || group_id.get_or_insert_with(|| group["parallel_group_id"].clone()) != &group["parallel_group_id"]
+            {
+                return Err(mismatch());
+            }
+            all_resolved &= resolved_before_request;
+            let timer = Self::query("SELECT * FROM workflow_run_timers WHERE workflow_run_id=$1 AND sequence=$2")
+                .bind(run_id)
+                .bind(member)
+                .fetch_optional(&mut **tx)
+                .await?
+                .ok_or_else(mismatch)?;
+            members.push(timer);
+        }
+        if all_resolved {
+            return Err(refuse(StatusCode::CONFLICT, "cancellation_delivery_not_eligible"));
+        }
+        Ok(members)
     }
 
     async fn validate_child_cancellation_boundary(
