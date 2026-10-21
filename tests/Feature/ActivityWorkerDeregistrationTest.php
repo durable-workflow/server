@@ -3,7 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\WorkerRegistrationIncarnation;
-use Illuminate\Foundation\Testing\DatabaseTruncation;
+use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
@@ -26,7 +26,7 @@ use Workflow\V2\WorkflowStub;
 
 class ActivityWorkerDeregistrationTest extends TestCase
 {
-    use DatabaseTruncation;
+    use DatabaseMigrations;
     use ServerTestHelpers;
 
     protected function setUp(): void
