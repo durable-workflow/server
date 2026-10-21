@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ExternalGreetingWorkflow;
+use Tests\Support\OpenApiSchema;
 use Tests\TestCase;
 use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Models\ActivityAttempt;
@@ -43,7 +44,7 @@ class ActivityLeaseRenewalTest extends TestCase
 
         for ($renewal = 0; $renewal < 3; $renewal++) {
             $this->travel(4)->seconds();
-            $this->postJson($this->renewalPath($task), $this->ownership($task), $this->workerHeaders())
+            $response = $this->postJson($this->renewalPath($task), $this->ownership($task), $this->workerHeaders())
                 ->assertOk()
                 ->assertJsonPath('lease_renewed', true)
                 ->assertJsonPath('can_continue', true)
@@ -55,6 +56,8 @@ class ActivityLeaseRenewalTest extends TestCase
                 ->assertJsonPath('server_time', now()->toJSON())
                 ->assertJsonPath('lease_expires_at', now()->addSeconds(5)->toJSON())
                 ->assertJsonPath('server_capabilities.activity_lease_renewal', true);
+            OpenApiSchema::fromFile(resource_path('platform-protocol-specs/worker-protocol-api.openapi.yaml'))
+                ->assertReferenceMatches('#/components/schemas/ActivityTaskLeaseRenewalResponse', json_decode($response->getContent(), flags: JSON_THROW_ON_ERROR));
         }
 
         $this->assertSame($before, $execution->fresh()->getAttributes());

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "55"
+  version: "56"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -1212,6 +1212,38 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/WorkerEnvelope" }
         "409": { $ref: "#/components/responses/WorkerError" }
+  /worker/activity-tasks/{taskId}/renew-lease:
+    post:
+      operationId: renewActivityTaskLease
+      tags: [activity-tasks]
+      description: >
+        Renew runtime ownership of the original activity attempt using its
+        namespace, task, attempt and lease-owner fence. Requires affirmative
+        activity_lease_renewal discovery from the actual bound activity bridge.
+        This adds no protocol-version floor. It renews neither application
+        heartbeat progress nor any workflow, activity or required-session TTL
+        deadline, and appends no history event. Expired, replaced or closed
+        attempts cannot regain authority. A successful renewal is not authority
+        to publish a later result without independently checking the same fence.
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ActivityTaskStatusRequest" }
+      responses:
+        "200":
+          description: The original runtime lease was renewed without recording application progress.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActivityTaskLeaseRenewalResponse" }
+        "400": { $ref: "#/components/responses/WorkerError" }
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
   /worker/activity-tasks/{taskId}/complete:
     post:
       operationId: completeActivityTask
@@ -1692,6 +1724,9 @@ components:
         activity_cancellation_acknowledgement:
           type: boolean
           description: Original remote callback-stop receipts require an installed runtime primitive and worker protocol 1.20. False for earlier protocols and runtimes without that primitive.
+        activity_lease_renewal:
+          type: boolean
+          description: Runtime-only activity lease renewal is supported by the actual bound optional ActivityLeaseRenewal bridge. Independent of application heartbeat progress; false for bridges without that role.
         prepared_local_activities:
           type: boolean
           description: Preparation, prefix checkpoint, supervisor control, application heartbeat, outcome, recovery and joined-stop receipts. Requires protocol 1.20 and the actual bound PreparedLocalActivityTaskBridge role including heartbeat support. False for earlier protocols or an absent backend role.
@@ -2897,6 +2932,22 @@ components:
       properties:
         activity_attempt_id: { type: string, minLength: 1 }
         lease_owner: { type: string, minLength: 1 }
+    ActivityTaskLeaseRenewalResponse:
+      allOf:
+        - $ref: "#/components/schemas/WorkerEnvelope"
+        - type: object
+          required: [task_id, workflow_task_id, activity_attempt_id, lease_owner, lease_renewed, can_continue, heartbeat_recorded, server_time, lease_expires_at]
+          properties:
+            task_id: { type: string, minLength: 1 }
+            workflow_task_id: { type: string, minLength: 1 }
+            activity_attempt_id: { type: string, minLength: 1 }
+            lease_owner: { type: string, minLength: 1 }
+            lease_renewed: { type: boolean, const: true }
+            can_continue: { type: boolean, const: true }
+            heartbeat_recorded: { type: boolean, const: false }
+            server_time: { type: string, format: date-time }
+            lease_expires_at: { type: string, format: date-time }
+            last_heartbeat_at: { type: [string, "null"], format: date-time }
     ActivityCancellationAcknowledgementRequest:
       type: object
       additionalProperties: true
@@ -2968,6 +3019,8 @@ components:
                 start_to_close: { type: string, format: date-time }
                 schedule_to_close: { type: string, format: date-time }
                 heartbeat: { type: string, format: date-time }
+                run: { type: string, format: date-time }
+                execution: { type: string, format: date-time }
             worker_session:
               type: [object, "null"]
               additionalProperties: true
