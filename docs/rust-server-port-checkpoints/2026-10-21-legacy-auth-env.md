@@ -42,5 +42,12 @@
     files.
 - **Verification.** A unit test covers the precedence: the primary wins, the
   legacy name fills in, a set but empty primary still wins, and neither
-  gives nothing. The Sample App's polyglot run against native uses the
-  legacy token name unchanged.
+  gives nothing. A second unit test covers the refusals: the namespace and
+  protocol settings refuse other values under either name, accept
+  `default` in any case and `1.20`, and settings PHP never applies stay
+  accepted. Starting the binary with `DW_DEFAULT_NAMESPACE=billing` or
+  `WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION=1.19` exits with the setting's
+  name; `DW_DEFAULT_NAMESPACE=Default` starts. On a disposable host, the
+  Sample App's PolyglotWorkflow and its timers scenario passed against
+  native with the sample's unchanged server environment, which sets only
+  `WORKFLOW_SERVER_AUTH_TOKEN`.
