@@ -39,6 +39,23 @@ fn migrator() -> &'static Migrator {
     })
 }
 
+/// The single native migration, which a takeover records as applied once
+/// conversion has produced its schema.
+pub(super) fn migration() -> &'static Migration {
+    migrator().iter().next().expect("one native PostgreSQL migration")
+}
+
+/// The native relations, indexes and ownership marker that a fresh
+/// bootstrap adds after the frozen PHP layout. Takeover applies them to a
+/// converted PHP database instead of running the whole migration.
+pub(super) fn native_relations_sql() -> Result<String> {
+    super::upgrade::native_relations(
+        include_str!("../../migrations/postgres/0003_full_schema.sql"),
+        "CREATE TABLE public.dw_server_schema ",
+        include_str!("../../migrations/postgres/0004_worker_incarnations.sql"),
+    )
+}
+
 fn options(options: PgConnectOptions) -> PgConnectOptions {
     options
         .application_name("durable-workflow-rust-development")
@@ -54,7 +71,7 @@ async fn catalog(connection: &mut PgConnection) -> Result<Catalog> {
     Ok(sqlx::query_as(CATALOG_QUERY).fetch_all(connection).await?)
 }
 
-pub(super) async fn php_source_catalog(connection: &mut PgConnection) -> Result<Catalog> {
+pub(super) async fn php_source_catalog(connection: &mut PgConnection) -> Result<(Catalog, &'static str)> {
     verify_scope(connection).await?;
     if marked(connection).await? {
         return Err(refuse(StatusCode::CONFLICT, "upgrade_source_already_owned"));
@@ -80,20 +97,16 @@ pub(super) async fn php_source_catalog(connection: &mut PgConnection) -> Result<
         })
         .collect();
     let actual = catalog(connection).await?;
-    if actual != expected {
-        let mut current = super::upgrade::source_catalog_variant(
-            &expected,
+    let layout = super::upgrade::source_layout(
+        &actual,
+        expected,
+        [
             include_str!("../../upgrade/php-2.8.0/postgres.json"),
-        )?;
-        current.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
-        if actual != current {
-            return Err(refuse(
-                StatusCode::CONFLICT,
-                "upgrade_source_catalog_unqualified",
-            ));
-        }
-    }
-    Ok(actual)
+            include_str!("../../upgrade/php-2.9.7/postgres.json"),
+        ],
+        |row| (row.0.clone(), row.1.clone()),
+    )?;
+    Ok((actual, layout))
 }
 
 pub(super) fn source_options(options: PgConnectOptions) -> PgConnectOptions {
@@ -160,7 +173,7 @@ pub(super) async fn verify_history(connection: &mut PgConnection) -> Result<()> 
     Ok(())
 }
 
-async fn verify(connection: &mut PgConnection) -> Result<()> {
+pub(super) async fn verify(connection: &mut PgConnection) -> Result<()> {
     verify_scope(connection).await?;
     verify_history(connection).await?;
     // A canonical catalog is captured with PostgreSQL itself, not inferred
@@ -658,7 +671,11 @@ mod tests {
             verify(&mut tx).await.unwrap();
         }
         // An actual server acknowledgement at a still-uncommitted boundary.
-        std::fs::write(std::env::var("DW_SCHEMA_TEST_RECEIPT").unwrap(), phase).unwrap();
+        // The parent waits for the receipt to exist, so it must appear with
+        // its contents: write beside it and rename into place.
+        let receipt = std::env::var("DW_SCHEMA_TEST_RECEIPT").unwrap();
+        std::fs::write(format!("{receipt}.partial"), &phase).unwrap();
+        std::fs::rename(format!("{receipt}.partial"), &receipt).unwrap();
         loop {
             std::thread::park();
         }
@@ -711,5 +728,290 @@ mod tests {
             PostgresStorage::check(db.options.clone()).await.unwrap();
             db.remove().await;
         }
+    }
+
+    use crate::runtime::upgrade::{fingerprint, queue_binding::QueueSourceConfig, takeover};
+
+    const TAKEOVER_QUEUES: QueueSourceConfig<'static> = QueueSourceConfig {
+        connection: "database",
+        default_connection: "database",
+        default_queue: "default",
+    };
+
+    /// The frozen PHP layout moved to PHP 2.9.7's by the changes PHP's own
+    /// migrations make (rust/upgrade/php-2.8.0 and php-2.9.7). Inspection
+    /// must call it php-2.9.7.
+    async fn php_297(db: &Database) -> PgConnection {
+        let frozen = include_str!("../../migrations/postgres/0003_full_schema.sql");
+        let php = &frozen[..frozen.find("-- Native bookkeeping").unwrap()];
+        let mut connection = db.connection().await;
+        sqlx::raw_sql(php).execute(&mut connection).await.unwrap();
+        sqlx::raw_sql(
+            "ALTER TABLE workflow_worker_registrations ADD COLUMN registration_token varchar(32);
+             CREATE TABLE workflow_worker_registration_incarnations (token varchar(32) NOT NULL, namespace varchar(255) NOT NULL, worker_id varchar(255) NOT NULL, status varchar(32) NOT NULL, recovered_workflow_task_count integer NOT NULL DEFAULT 0, finished_at timestamp(6) without time zone, created_at timestamp(6) without time zone, updated_at timestamp(6) without time zone, PRIMARY KEY (token));
+             CREATE INDEX workflow_worker_registration_incarnations_finished_at_index ON workflow_worker_registration_incarnations (finished_at);
+             CREATE INDEX dw_worker_incarnation_scope_idx ON workflow_worker_registration_incarnations (namespace, worker_id);
+             ALTER TABLE workflow_service_calls ADD COLUMN call_deadline_at timestamp(6) without time zone;
+             CREATE INDEX wf_service_calls_deadline_idx ON workflow_service_calls (status, call_deadline_at);
+             ALTER TABLE workflow_tasks ADD COLUMN queue_delivery_reference json;",
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        connection
+    }
+
+    async fn backup_fingerprint(db: &Database) -> String {
+        fingerprint::fingerprint_postgres(db.options.clone())
+            .await
+            .unwrap()["fingerprint"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    /// Every row and the physical schema, for byte-for-byte comparisons.
+    async fn source_state(db: &Database) -> (Catalog, String) {
+        let mut connection = db.connection().await;
+        let state = (
+            catalog(&mut connection).await.unwrap(),
+            backup_fingerprint(db).await,
+        );
+        connection.close().await.unwrap();
+        state
+    }
+
+    fn takeover_refused(result: Result<Value>, expected: &str) {
+        match result {
+            Err(super::super::RuntimeError::Refused { reason, .. }) => assert_eq!(reason, expected),
+            Err(error) => panic!("unexpected takeover error: {error}"),
+            Ok(report) => panic!("takeover was accepted: {report}"),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable PostgreSQL; run the qualification_ tests explicitly"]
+    async fn qualification_takeover_converts_php_297_and_native_opens_it() {
+        let db = Database::new().await;
+        let mut connection = php_297(&db).await;
+        sqlx::raw_sql(
+            "INSERT INTO workflow_worker_registrations(worker_id,namespace,task_queue,runtime,registration_token,created_at,updated_at) VALUES ('current','default','q','php','0123456789abcdef0123456789abcdef','2026-10-20 09:00:00','2026-10-20 09:00:00');
+             INSERT INTO workflow_worker_registrations(worker_id,namespace,task_queue,runtime,created_at,updated_at) VALUES ('older','default','q','php','2026-10-20 09:00:00','2026-10-20 09:00:00');
+             INSERT INTO workflow_worker_registration_incarnations VALUES ('0123456789abcdef0123456789abcdef','default','current','active',0,NULL,'2026-10-20 09:00:00','2026-10-20 09:00:00');
+             INSERT INTO workflow_worker_registration_incarnations VALUES ('11111111111111111111111111111111','default','current','superseded',0,'2026-10-20 08:00:00','2026-10-20 07:00:00','2026-10-20 08:00:00');
+             INSERT INTO workflow_worker_registration_incarnations VALUES ('22222222222222222222222222222222','default','gone','deregistered',3,'2026-10-20 08:30:00','2026-10-20 07:00:00','2026-10-20 08:30:00');",
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        connection.close().await.unwrap();
+        let fingerprint = backup_fingerprint(&db).await;
+        let report = takeover::take_over_postgres(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES)
+            .await
+            .unwrap();
+        assert_eq!(report["status"], "taken_over", "{report}");
+        assert_eq!(report["backend"], "pgsql");
+        assert_eq!(report["source_layout"], "php-2.9.7");
+        assert_eq!(report["converted"]["incarnations_copied"], 3, "{report}");
+        assert_eq!(report["converted"]["incarnations_created"], 1, "{report}");
+        let mut connection = db.connection().await;
+        let incarnations: Vec<(String, String, String, Option<i64>, bool)> = sqlx::query_as(
+            "SELECT token,worker_id,status,recovered_workflow_task_count,finished_at IS NOT NULL FROM dw_worker_registration_incarnations ORDER BY worker_id,status",
+        )
+        .fetch_all(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(incarnations.len(), 4, "{incarnations:?}");
+        // The current worker keeps its PHP token; the retired ones keep their state.
+        assert!(incarnations.contains(&(
+            "0123456789abcdef0123456789abcdef".into(),
+            "current".into(),
+            "active".into(),
+            None,
+            false
+        )));
+        assert!(incarnations.contains(&(
+            "22222222222222222222222222222222".into(),
+            "gone".into(),
+            "deregistered".into(),
+            Some(3),
+            true
+        )));
+        assert!(incarnations.iter().any(|row| row.1 == "current" && row.2 == "superseded" && row.3.is_none() && row.4));
+        assert!(incarnations.iter().any(|row| row.1 == "older" && row.2 == "active" && row.0.len() == 32));
+        connection.close().await.unwrap();
+        let storage = PostgresStorage::open(db.options.clone()).await.unwrap();
+        storage.close().await;
+        PostgresStorage::check(db.options.clone()).await.unwrap();
+        // A second takeover finds a native database.
+        takeover_refused(
+            takeover::take_over_postgres(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES).await,
+            "upgrade_source_already_owned",
+        );
+        db.remove().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable PostgreSQL; run the qualification_ tests explicitly"]
+    async fn qualification_takeover_of_the_frozen_layout_adds_only_native_relations() {
+        let db = Database::new().await;
+        let frozen = include_str!("../../migrations/postgres/0003_full_schema.sql");
+        let mut connection = db.connection().await;
+        sqlx::raw_sql(&frozen[..frozen.find("-- Native bookkeeping").unwrap()])
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        connection.close().await.unwrap();
+        let fingerprint = backup_fingerprint(&db).await;
+        let report = takeover::take_over_postgres(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES)
+            .await
+            .unwrap();
+        assert_eq!(report["source_layout"], "frozen", "{report}");
+        PostgresStorage::check(db.options.clone()).await.unwrap();
+        db.remove().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable PostgreSQL; run the qualification_ tests explicitly"]
+    async fn qualification_takeover_refusals_leave_the_php_database_unchanged() {
+        let db = Database::new().await;
+        php_297(&db).await.close().await.unwrap();
+        let fingerprint = backup_fingerprint(&db).await;
+        let original = source_state(&db).await;
+        takeover_refused(
+            takeover::take_over_postgres(db.options.clone(), &format!("sha256:{}", "0".repeat(64)), &TAKEOVER_QUEUES).await,
+            "upgrade_backup_fingerprint_mismatch",
+        );
+        takeover_refused(
+            takeover::take_over_postgres(db.options.clone(), "not-a-fingerprint", &TAKEOVER_QUEUES).await,
+            "upgrade_backup_fingerprint_required",
+        );
+        assert_eq!(source_state(&db).await, original);
+        // A PHP connection still holding a table refuses the takeover within
+        // the lock wait instead of stalling it.
+        let mut php = db.connection().await;
+        sqlx::raw_sql("BEGIN; LOCK TABLE jobs IN ROW EXCLUSIVE MODE")
+            .execute(&mut php)
+            .await
+            .unwrap();
+        takeover_refused(
+            takeover::take_over_postgres(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES).await,
+            "upgrade_source_in_use",
+        );
+        sqlx::raw_sql("ROLLBACK").execute(&mut php).await.unwrap();
+        // A write after the backup changes the digest, so the old one is refused.
+        sqlx::raw_sql("INSERT INTO migrations(migration,batch) VALUES ('after-backup',9)")
+            .execute(&mut php)
+            .await
+            .unwrap();
+        let written = source_state(&db).await;
+        takeover_refused(
+            takeover::take_over_postgres(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES).await,
+            "upgrade_backup_fingerprint_mismatch",
+        );
+        assert_eq!(source_state(&db).await, written);
+        php.close().await.unwrap();
+        db.remove().await;
+        for (statement, expected) in [
+            (
+                "INSERT INTO workflow_service_calls(id,endpoint_name,service_name,operation_name,status,operation_mode) VALUES ('call','e','s','o','accepted','sync')",
+                "upgrade_source_service_calls_unsupported",
+            ),
+            (
+                "INSERT INTO runtime_external_payloads(id,namespace,storage_uri,storage_uri_sha256,codec,sha256,size_bytes) VALUES ('p','default','s3://b/k','x','avro','y',1)",
+                "upgrade_source_external_payloads_unsupported",
+            ),
+        ] {
+            let db = Database::new().await;
+            let mut connection = php_297(&db).await;
+            sqlx::raw_sql(statement).execute(&mut connection).await.unwrap();
+            connection.close().await.unwrap();
+            let fingerprint = backup_fingerprint(&db).await;
+            let before = source_state(&db).await;
+            takeover_refused(
+                takeover::take_over_postgres(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES).await,
+                expected,
+            );
+            assert_eq!(source_state(&db).await, before, "{expected}");
+            db.remove().await;
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "only invoked as a real subprocess by the takeover interruption qualification"]
+    async fn takeover_child() {
+        let url = std::env::var("DW_TAKEOVER_TEST_DATABASE").unwrap();
+        let fingerprint = std::env::var("DW_TAKEOVER_TEST_FINGERPRINT").unwrap();
+        // Parks just before the commit, where the parent kills this process.
+        let report = takeover::take_over_postgres(
+            PgConnectOptions::from_str(&url).unwrap(),
+            &fingerprint,
+            &TAKEOVER_QUEUES,
+        )
+        .await;
+        panic!("takeover returned instead of parking: {report:?}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "requires a disposable PostgreSQL; run the qualification_ tests explicitly"]
+    async fn qualification_takeover_killed_before_commit_leaves_php_and_retries() {
+        use std::os::unix::process::ExitStatusExt;
+        let db = Database::new().await;
+        php_297(&db).await.close().await.unwrap();
+        let fingerprint = backup_fingerprint(&db).await;
+        let original = source_state(&db).await;
+        let directory = tempfile::tempdir().unwrap();
+        let receipt = directory.path().join("boundary");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "runtime::postgres::tests::takeover_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("DW_TAKEOVER_TEST_DATABASE", &db.url)
+            .env("DW_TAKEOVER_TEST_FINGERPRINT", &fingerprint)
+            .env("DW_TAKEOVER_TEST_RECEIPT", &receipt)
+            .spawn()
+            .unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        while !receipt.exists() && tokio::time::Instant::now() < deadline {
+            if let Some(status) = child.try_wait().unwrap() {
+                panic!("child exited before the commit point: {status}");
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        if !receipt.exists() {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("child did not reach the commit point");
+        }
+        assert_eq!(std::fs::read_to_string(&receipt).unwrap(), "before-commit");
+        child.kill().unwrap();
+        assert_eq!(child.wait().unwrap().signal(), Some(9));
+        // PostgreSQL ends the killed session's transaction and its locks.
+        let released = tokio::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let mut connection = db.connection().await;
+            let sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid()")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+            connection.close().await.unwrap();
+            if sessions == 0 {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < released, "killed takeover session survived");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(source_state(&db).await, original, "partial takeover survived");
+        // The same verified backup fingerprint still takes the database over.
+        let report = takeover::take_over_postgres(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES)
+            .await
+            .unwrap();
+        assert_eq!(report["status"], "taken_over", "{report}");
+        PostgresStorage::check(db.options.clone()).await.unwrap();
+        db.remove().await;
     }
 }

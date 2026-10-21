@@ -132,11 +132,113 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     | "upgrade-inspect"
                     | "upgrade-queue-inspect"
                     | "upgrade-payload-inspect"
+                    | "upgrade-fingerprint"
+                    | "upgrade-prepare-sqlite"
+                    | "upgrade-takeover"
             )
         {
             return Err("unknown development command".into());
         }
         let backend = env::var("DB_CONNECTION").unwrap_or_default();
+        if command == "upgrade-prepare-sqlite" {
+            if backend != "sqlite" {
+                return Err("upgrade-prepare-sqlite requires DB_CONNECTION=sqlite".into());
+            }
+            let path = env::var("DB_DATABASE").map_err(|_| "DB_DATABASE is required")?;
+            return match durable_workflow_server::runtime::upgrade::prepare_sqlite_source(&path).await
+            {
+                Ok(report) => {
+                    println!("{report}");
+                    Ok(())
+                }
+                Err(error) => {
+                    let reason = match error {
+                        RuntimeError::Refused { reason, .. } => reason,
+                        _ => "upgrade_prepare_unavailable",
+                    };
+                    eprintln!("{reason}");
+                    Err("SQLite source preparation refused".into())
+                }
+            };
+        }
+        if command == "upgrade-takeover" {
+            use durable_workflow_server::runtime::upgrade::{
+                queue_binding::QueueSourceConfig, takeover,
+            };
+            if !matches!(backend.as_str(), "sqlite" | "pgsql" | "mysql" | "mariadb") {
+                eprintln!("upgrade_takeover_backend_unqualified");
+                return Err("upgrade takeover refused".into());
+            }
+            let fingerprint = env::var("DW_UPGRADE_BACKUP_FINGERPRINT")
+                .map_err(|_| "DW_UPGRADE_BACKUP_FINGERPRINT is required")?;
+            // The original Laravel queue transport, as for upgrade-queue-inspect.
+            let (connection, default_connection, default_queue) = (
+                env::var("DW_RUST_UPGRADE_QUEUE_CONNECTION")
+                    .map_err(|_| "original queue connection is required")?,
+                env::var("DW_RUST_UPGRADE_QUEUE_DEFAULT_CONNECTION")
+                    .map_err(|_| "original default queue connection is required")?,
+                env::var("DW_RUST_UPGRADE_QUEUE_DEFAULT_QUEUE")
+                    .map_err(|_| "original default transport queue is required")?,
+            );
+            let queues = QueueSourceConfig {
+                connection: &connection,
+                default_connection: &default_connection,
+                default_queue: &default_queue,
+            };
+            let result = if backend == "pgsql" {
+                takeover::take_over_postgres(postgres_options()?, &fingerprint, &queues).await
+            } else if backend != "sqlite" {
+                takeover::take_over_mysql(mysql_options()?, &fingerprint, &queues).await
+            } else {
+                let path = env::var("DB_DATABASE").map_err(|_| "DB_DATABASE is required")?;
+                takeover::take_over_sqlite(&path, &fingerprint, &queues).await
+            };
+            return match result {
+                Ok(report) => {
+                    println!("{report}");
+                    Ok(())
+                }
+                Err(error) => {
+                    let reason = match error {
+                        RuntimeError::Refused { reason, .. } => reason,
+                        _ => "upgrade_takeover_unavailable",
+                    };
+                    eprintln!("{reason}");
+                    Err("upgrade takeover refused".into())
+                }
+            };
+        }
+        if command == "upgrade-fingerprint" {
+            use durable_workflow_server::runtime::upgrade::fingerprint;
+            let result = match backend.as_str() {
+                "sqlite" => {
+                    let path = env::var("DB_DATABASE").map_err(|_| "DB_DATABASE is required")?;
+                    fingerprint::fingerprint_sqlite_cli(&path).await
+                }
+                "mysql" | "mariadb" => fingerprint::fingerprint_mysql(mysql_options()?).await,
+                "pgsql" => fingerprint::fingerprint_postgres(postgres_options()?).await,
+                _ => {
+                    return Err(
+                        "upgrade fingerprint requires DB_CONNECTION=sqlite, pgsql, mysql or mariadb"
+                            .into(),
+                    );
+                }
+            };
+            return match result {
+                Ok(report) => {
+                    println!("{report}");
+                    Ok(())
+                }
+                Err(error) => {
+                    let reason = match error {
+                        RuntimeError::Refused { reason, .. } => reason,
+                        _ => "upgrade_fingerprint_unavailable",
+                    };
+                    eprintln!("{reason}");
+                    Err("upgrade source fingerprint refused".into())
+                }
+            };
+        }
         if matches!(
             command.as_str(),
             "upgrade-inspect" | "upgrade-queue-inspect" | "upgrade-payload-inspect"
