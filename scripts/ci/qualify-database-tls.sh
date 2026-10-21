@@ -1,8 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${TLS_TEST_IMAGE:?Build the repository base image and set TLS_TEST_IMAGE.}"
+: "${TLS_TEST_IMAGE:?Set the source test image or an immutable published image digest.}"
 : "${TLS_TEST_PROJECT:?Set the unique qualification project.}"
+TLS_TEST_MODE="${TLS_TEST_MODE:-source}"
+case "$TLS_TEST_MODE" in
+    source) ;;
+    published)
+        if [[ ! "$TLS_TEST_IMAGE" =~ @sha256:[0-9a-f]{64}$ ]]; then
+            echo 'Published TLS qualification requires an immutable image digest.' >&2
+            exit 2
+        fi
+        ;;
+    *) echo 'TLS_TEST_MODE must be source or published.' >&2; exit 2 ;;
+esac
+if [[ "${GITHUB_ACTIONS:-false}" = true ]]; then
+    tls_ci_scope="${GITHUB_RUN_ID:?}-${GITHUB_RUN_ATTEMPT:?}-${GITHUB_JOB:?}"
+    if [[ "$TLS_TEST_PROJECT" != *"-$tls_ci_scope" ]]; then
+        echo 'TLS_TEST_PROJECT must end with the original GitHub run, attempt and job scope.' >&2
+        exit 2
+    fi
+fi
 tls_parent="${TLS_TEST_ROOT:-${TMPDIR:-/tmp}}"
 mkdir -p "$tls_parent"
 TLS_TEST_ROOT="$(mktemp -d "$tls_parent/dw-server-tls.XXXXXX")"
@@ -27,7 +45,11 @@ services:
 YAML
 
 compose() {
-    docker compose --project-name "$TLS_TEST_PROJECT" --file "$tls_compose" --file "$TLS_TEST_ROOT/no-ports.yaml" "$@"
+    local -a files=(--file "$tls_compose" --file "$TLS_TEST_ROOT/no-ports.yaml")
+    if [[ "$TLS_TEST_MODE" = published ]]; then
+        files+=(--file "$TLS_TEST_ROOT/published.yaml")
+    fi
+    docker compose --project-name "$TLS_TEST_PROJECT" "${files[@]}" "$@"
 }
 cleanup() {
     local result=$?
@@ -38,8 +60,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Copy committed source only; no local environment files or shared vendor state.
-git -C "$tls_repository" archive HEAD | tar -xf - -C "$TLS_TEST_ROOT/app"
+if [[ "$TLS_TEST_MODE" = source ]]; then
+    # No local environment files or shared vendor state enter source tests.
+    git -C "$tls_repository" archive HEAD | tar -xf - -C "$TLS_TEST_ROOT/app"
+else
+    # Use the installed application, vendor tree and probe shipped in the image.
+    # No product-source mount or Composer operation can replace that runtime.
+    cat > "$TLS_TEST_ROOT/published.yaml" <<'YAML'
+services:
+  php:
+    working_dir: /app
+    volumes: !override
+      - "${TLS_TEST_ROOT}/certs:/certs:ro"
+YAML
+fi
 docker run --rm --name "$TLS_TEST_PROJECT-certificates" \
     --label "com.docker.compose.project=$TLS_TEST_PROJECT" \
     --user "$TLS_TEST_UID:$TLS_TEST_GID" --entrypoint sh \
@@ -53,7 +87,9 @@ docker run --rm --name "$TLS_TEST_PROJECT-certificates" \
         printf "subjectAltName=DNS:tls-pg,DNS:tls-mysql,DNS:tls-maria\nbasicConstraints=CA:FALSE\n" > server.ext
         openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 1 -extfile server.ext -out server.pem >/dev/null 2>&1
     '
-compose run --rm --no-deps php composer install --no-dev --no-scripts --no-interaction --no-progress --prefer-dist
+if [[ "$TLS_TEST_MODE" = source ]]; then
+    compose run --rm --no-deps php composer install --no-dev --no-scripts --no-interaction --no-progress --prefer-dist
+fi
 compose up --wait --wait-timeout 240 tls-pg tls-mysql tls-maria redis
 
 probe() {

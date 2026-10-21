@@ -28,6 +28,7 @@ mod external_transport;
 mod external_wait_summary;
 mod failure_commands;
 mod history_budget;
+mod history_presentation;
 mod http;
 mod memo_json;
 mod memo_limits;

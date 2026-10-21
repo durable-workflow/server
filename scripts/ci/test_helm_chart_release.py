@@ -97,6 +97,12 @@ def evaluate_recovery_condition(
         "needs.verify.outputs.release_verification_outcome": context.get(
             "release_verification_outcome", ""
         ),
+        "needs.publish.outputs.published_database_tls_outcome": context.get(
+            "database_tls_outcome", ""
+        ),
+        "needs.verify.outputs.published_database_tls_outcome": context.get(
+            "database_tls_outcome", ""
+        ),
         "github.repository": context["repository"],
         "github.event_name": context.get("event_name", "workflow_dispatch"),
         "github.ref": context["ref"],
@@ -820,6 +826,7 @@ esac
                 "release.yml",
                 "publish-chart",
                 exact_publish_outcome="success",
+                database_tls_outcome="success",
                 repository="durable-workflow/server",
                 event_name="workflow_dispatch",
                 ref="refs/heads/main",
@@ -831,6 +838,7 @@ esac
                 "release.yml",
                 "publish-chart",
                 exact_publish_outcome="failure",
+                database_tls_outcome="success",
                 repository="durable-workflow/server",
                 event_name="workflow_dispatch",
                 ref="refs/heads/main",
@@ -856,6 +864,7 @@ esac
                 "published-release-recovery.yml",
                 "publish-chart",
                 release_verification_outcome="success",
+                database_tls_outcome="success",
                 repository="durable-workflow/server",
                 ref="refs/heads/main",
             ),
@@ -864,6 +873,20 @@ esac
         self.assertNotIn("docker/build-push-action", recovery)
         self.assertNotIn("helm push", recovery)
         self.assertNotIn("create-github-release", recovery)
+
+    def test_chart_publication_requires_the_installed_database_tls_gate(self) -> None:
+        for workflow in ["release.yml", "published-release-recovery.yml"]:
+            for outcome in ["failure", "cancelled", "skipped", ""]:
+                with self.subTest(workflow=workflow, outcome=outcome):
+                    self.assertFalse(evaluate_recovery_condition(
+                        workflow,
+                        "publish-chart",
+                        exact_publish_outcome="success",
+                        release_verification_outcome="success",
+                        database_tls_outcome=outcome,
+                        repository="durable-workflow/server",
+                        ref="refs/heads/main",
+                    ))
 
     def test_duplicate_publication_reuses_and_verifies_the_existing_package(
         self,

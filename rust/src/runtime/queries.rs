@@ -234,7 +234,7 @@ where
                 "query_snapshot_exceeds_budget",
             ));
         }
-        let task_id = ulid::Ulid::new().to_string();
+        let task_id = super::store::id();
         let key = key(&task_id)?;
         let admitted = authority::now();
         let (deadline, retained_until) = config.timing(admitted)?;
