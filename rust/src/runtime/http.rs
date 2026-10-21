@@ -441,10 +441,14 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     {
         return method == "DELETE";
     }
+    // Deregistration deletes only the namespace's own registration.
+    if path
+        .strip_prefix("/api/workers/")
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+    {
+        return matches!(method, "GET" | "DELETE");
+    }
     if path == "/api/workers"
-        || path
-            .strip_prefix("/api/workers/")
-            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
         || path == "/api/system/operator-metrics"
         || path == "/api/system/health"
     {
@@ -1004,7 +1008,9 @@ fn metrics_config(runtime: &Runtime) -> super::operator_metrics::MetricsConfig {
 }
 
 async fn operator_metrics(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
-    Ok(Json(runtime.operator_metrics(&metrics_config(&runtime)).await?))
+    Ok(Json(
+        runtime.operator_metrics(&metrics_config(&runtime)).await?,
+    ))
 }
 
 /// PHP answers 503 while a check reports an error.

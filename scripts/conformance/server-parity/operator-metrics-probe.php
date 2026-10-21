@@ -91,6 +91,7 @@ function finishHttpOperatorMetrics(Client $admin, array $fixture, string $workfl
     $client->completeWorkflowTask($task['task_id'], $worker, $task['workflow_task_attempt'],
         [['type' => 'complete_workflow', 'result' => $client->payloadCodec()->envelope($input)]]);
     $stages['completed'] = $stage();
+    $client->deregisterWorker($worker);
 
     return ['applicable' => true, 'namespace' => $namespace, 'stages' => $stages];
 }

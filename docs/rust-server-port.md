@@ -244,6 +244,8 @@ October 21, operator metrics and health:
   sections describe native: no repair loop, sticky routing or worker
   sessions, in-process long-poll wake, and native's structural limits and
   workflow task lease. `capacity_evidence` reports itself unavailable.
+- **Worker deregistration.** `DELETE /api/workers/{id}` now works in a named
+  namespace and removes only that namespace's registration, as in PHP.
 - **Decision: selected-run projections.** Native stores run waits in the
   transaction that records history, so they cannot drift. It reads
   timelines, timers and lineage from history, so those tables are reported as
@@ -271,7 +273,10 @@ October 21, operator metrics and health:
   - PHP stamps a dispatch on some new tasks and not on an activity scheduled
     from a workflow task completion, so `tasks_dispatched_last_minute`
     differs.
-  - Native refuses worker deregistration in a named namespace.
+  - PHP's maintenance loop redispatches an overdue ready task, after which
+    PHP reports it repaired, not overdue. Native runs no repair loop, so the
+    task stays overdue until a worker claims it. The fixture accepts either
+    PHP state.
   - The operator dashboards, capacity evidence, and the repair, retention,
     activity-timeout and payload-cleanup pass endpoints remain.
 

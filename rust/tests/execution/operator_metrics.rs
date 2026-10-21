@@ -178,3 +178,53 @@ async fn operator_routes_are_admin_only_and_namespace_scoped() {
     runtime.close().await;
     database.remove().await;
 }
+
+#[tokio::test]
+async fn a_named_namespace_deregisters_only_its_own_worker() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    namespaces::create(&app, "metrics-workers").await;
+    for namespace in ["default", "metrics-workers"] {
+        let registered = namespaces::scoped(
+            &app,
+            namespace,
+            "POST",
+            "/api/worker/register",
+            json!({
+            "worker_id":"shared-worker","task_queue":"test","runtime":"php",
+            "supported_workflow_types":["echo"],"supported_activity_types":[]}),
+        )
+        .await;
+        assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+    }
+    let removed = namespaces::scoped(
+        &app,
+        "metrics-workers",
+        "DELETE",
+        "/api/workers/shared-worker",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(removed.0, StatusCode::OK, "{}", removed.1);
+    let gone = namespaces::scoped(
+        &app,
+        "metrics-workers",
+        "GET",
+        "/api/workers/shared-worker",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(gone.0, StatusCode::NOT_FOUND, "{}", gone.1);
+    let kept = namespaces::scoped(
+        &app,
+        "default",
+        "GET",
+        "/api/workers/shared-worker",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(kept.0, StatusCode::OK, "{}", kept.1);
+    runtime.close().await;
+    database.remove().await;
+}

@@ -112,6 +112,20 @@ test('an uncompared projection check may differ', () => {
   observation.operator_metrics.stages.waiting.checks[2].status = 'ok';
   checkOperatorMetrics(fixture, observation, 'TEST');
 });
+test('a task PHP\'s maintenance loop already redispatched passes', () => {
+  const observation = model();
+  const stage = observation.operator_metrics.stages.waiting_after_redispatch;
+  Object.assign(stage.sections.tasks.counts, {dispatch_overdue: 0, unhealthy: 0, max_repair_count: 1});
+  Object.assign(stage.sections.tasks.timestamps, {oldest_dispatch_overdue_since: false, oldest_unhealthy_at: false});
+  stage.sections.backlog.counts.unhealthy_tasks = 0;
+  for (const check of stage.checks) if (['task_transport', 'routing_health'].includes(check.name)) check.status = 'ok';
+  assert.deepStrictEqual(checkOperatorMetrics(fixture, observation, 'TEST'), projection);
+});
+test('rejects a repaired task still reported overdue', () => {
+  const observation = model();
+  observation.operator_metrics.stages.waiting_after_redispatch.sections.tasks.counts.max_repair_count = 1;
+  assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'));
+});
 test('embedded explicitly declares the HTTP metrics inapplicable', () => assert.deepStrictEqual(checkOperatorMetrics(fixture,
   {mode: 'embedded', operator_metrics: {applicable: false, reason: 'embedded_has_no_http_operator_metrics'}}, 'test'), projection));
 for (const [label, mutate] of [
