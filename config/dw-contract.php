@@ -52,6 +52,17 @@ return [
 
     'vars' => [
 
+        'DW_OBSERVABILITY_CONTEXT_ENABLED' => [
+            'description' => 'Enable optional bounded trace context persistence, delivery and capability discovery when its optional API and schema are installed.',
+            'default' => 'false',
+            'since' => '2.10.0',
+        ],
+        'DW_OBSERVABILITY_BAGGAGE_ALLOWLIST' => [
+            'description' => 'JSON list of baggage keys permitted on run origins; default empty. Links never carry baggage.',
+            'default' => '[]',
+            'since' => '2.10.0',
+        ],
+
         // --- Server identity / mode ------------------------------------
 
         'DW_MODE' => [
@@ -599,8 +610,8 @@ return [
             'legacy' => 'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_MAX_BYTES',
         ],
         'DW_EXTERNAL_PAYLOAD_COMPLETION_MAX_BYTES' => [
-            'description' => 'Optional byte allowance for leased completion uploads; unset uses DW_EXTERNAL_PAYLOAD_MAX_BYTES.',
-            'default' => null,
+            'description' => 'Distinct bytes allowed across immutable upload slots for one leased completion; unset uses DW_EXTERNAL_PAYLOAD_MAX_BYTES.',
+            'default' => '(unset)',
             'since' => '2.3.5',
             'legacy' => 'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_COMPLETION_MAX_BYTES',
         ],
