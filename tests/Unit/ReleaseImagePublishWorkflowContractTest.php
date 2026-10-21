@@ -310,7 +310,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $dockerfile = $this->read('Dockerfile');
         $phpConfig = $this->read('docker/php-custom.ini');
 
-        $this->assertStringContainsString('FROM php:8.3-apache AS base', $dockerfile);
+        $this->assertMatchesRegularExpression('/^FROM php@sha256:[a-f0-9]{64} AS base$/m', $dockerfile);
         $this->assertStringContainsString('docker-php-ext-install opcache', $dockerfile);
         $this->assertStringContainsString('opcache.enable = 1', $phpConfig);
         $this->assertStringContainsString('opcache.enable_cli = 1', $phpConfig);
@@ -369,12 +369,12 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $dockerfile = $this->read('Dockerfile');
         $activitiesRunner = $this->read('scripts/conformance/activities-published-artifacts.sh');
 
-        $this->assertStringContainsString('FROM php:8.3-apache AS base', $dockerfile);
+        $this->assertMatchesRegularExpression('/^FROM php@sha256:[a-f0-9]{64} AS base$/m', $dockerfile);
         $this->assertStringContainsString('nodejs', $dockerfile);
         $this->assertStringContainsString('if ! require_command node; then', $activitiesRunner);
         $this->assertStringContainsString('required command not found: node', $activitiesRunner);
 
-        $baseOffset = strpos($dockerfile, 'FROM php:8.3-apache AS base');
+        $baseOffset = strpos($dockerfile, " AS base\n");
         $nodeOffset = strpos($dockerfile, 'nodejs');
         $productionOffset = strpos($dockerfile, 'FROM base AS production');
 
@@ -390,7 +390,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $dockerfile = $this->read('Dockerfile');
         $activitiesRunner = $this->read('scripts/conformance/activities-published-artifacts.sh');
 
-        $this->assertStringContainsString('FROM php:8.3-apache AS base', $dockerfile);
+        $this->assertMatchesRegularExpression('/^FROM php@sha256:[a-f0-9]{64} AS base$/m', $dockerfile);
         $this->assertStringContainsString('python3', $dockerfile);
         $this->assertStringContainsString('python3-venv', $dockerfile);
         $this->assertStringContainsString('prepare_focused_python_sdk', $activitiesRunner);
@@ -399,7 +399,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringContainsString('run_python_activity_executor', $activitiesRunner);
         $this->assertStringContainsString('activity_host_evidence missing passing ${requiredMode}/${runtime} cell', $activitiesRunner);
 
-        $baseOffset = strpos($dockerfile, 'FROM php:8.3-apache AS base');
+        $baseOffset = strpos($dockerfile, " AS base\n");
         $pythonOffset = strpos($dockerfile, 'python3');
         $productionOffset = strpos($dockerfile, 'FROM base AS production');
 
