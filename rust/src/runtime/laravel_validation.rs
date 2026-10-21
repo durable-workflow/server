@@ -229,7 +229,8 @@ fn messages(
     value: Option<&Value>,
     custom: fn(&str, Rule) -> Option<&'static str>,
 ) -> Vec<String> {
-    let attribute = field.replace('_', " ");
+    // Laravel shows a nested attribute such as `run_ids.0` as written.
+    let attribute = if field.contains('.') { field.to_owned() } else { field.replace('_', " ") };
     let nullable = rules.iter().any(|rule| matches!(rule, Nullable));
     let numeric = rules.iter().any(|rule| matches!(rule, Integer));
     let array = rules.iter().any(|rule| matches!(rule, Array));

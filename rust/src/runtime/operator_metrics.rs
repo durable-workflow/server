@@ -12,6 +12,7 @@
 use super::{
     Result,
     backend::Backend,
+    retention,
     store::{Store, now},
 };
 use chrono::{DateTime, Duration, SecondsFormat, Timelike, Utc};
@@ -1076,6 +1077,184 @@ where
             },
             "identity_policy": {"provider_credentials_exposed": false, "provider_locations_exposed": false, "reusable_reference_identities_exposed": false},
         }))
+    }
+
+    /// `HistoryRetentionEnforcer::retentionPolicy` for this namespace.
+    async fn retention_policy(&self) -> Result<retention::Policy> {
+        let row = Self::query("SELECT retention_mode,retention_days FROM workflow_namespaces WHERE name=$1")
+            .bind(self.namespace.as_ref())
+            .fetch_optional(&self.pool)
+            .await?;
+        let (mode, days) = match &row {
+            Some(row) => (DB::optional_string(row, "retention_mode")?, DB::optional_number(row, "retention_days")?),
+            None => (None, None),
+        };
+        Ok(retention::Policy::new(mode.as_deref(), days, now()))
+    }
+
+    /// `expiredRunIds`: closed, unarchived completed or failed runs past the
+    /// cutoff, oldest first.
+    async fn expired_run_ids(&self, policy: &retention::Policy, limit: i64) -> Result<Vec<String>> {
+        let Some(cutoff) = policy.cutoff else {
+            return Ok(Vec::new());
+        };
+        Self::query("SELECT id FROM workflow_run_summaries WHERE namespace=$1 AND status_bucket IN ('completed','failed') AND closed_at IS NOT NULL AND archived_at IS NULL AND closed_at<$2 ORDER BY closed_at,id LIMIT $3")
+            .bind(self.namespace.as_ref())
+            .bind(DB::bind_time(cutoff))
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(|row| DB::string(row, "id"))
+            .collect()
+    }
+
+    /// `GET /api/system/retention`.
+    pub(super) async fn retention_status(&self, limit: i64) -> Result<Value> {
+        let policy = self.retention_policy().await?;
+        let expired = self.expired_run_ids(&policy, limit).await?;
+        let mut fields = policy.fields(self.namespace.as_ref());
+        fields.insert("expired_run_count".into(), json!(expired.len()));
+        fields.insert("scan_pressure".into(), json!(expired.len() as i64 >= limit));
+        fields.insert("expired_run_ids".into(), json!(expired));
+        fields.insert("scan_limit".into(), json!(limit));
+        Ok(Value::Object(fields))
+    }
+
+    /// `POST /api/system/retention/pass`: the report, and whether any run failed.
+    pub(super) async fn retention_pass(&self, limit: i64, run_ids: Vec<String>) -> Result<(Value, bool)> {
+        let policy = self.retention_policy().await?;
+        let report = self.prune_runs(&policy, limit, run_ids).await?;
+        let failed = report["failed"].as_i64().is_some_and(|failed| failed > 0);
+        let mut fields = policy.fields(self.namespace.as_ref());
+        fields.extend(report);
+        Ok((Value::Object(fields), failed))
+    }
+
+    /// `GET /api/system/activity-timeouts`: open activity executions past a
+    /// deadline. Like PHP's `ActivityTimeoutScanner`, the scan spans every
+    /// namespace.
+    pub(super) async fn activity_timeout_status(&self, limit: i64) -> Result<Value> {
+        let at = now();
+        let expired: Vec<String> = Self::query("SELECT id FROM activity_executions WHERE status IN ('pending','running') AND ((status='pending' AND schedule_deadline_at IS NOT NULL AND schedule_deadline_at<=$1) OR (status='running' AND close_deadline_at IS NOT NULL AND close_deadline_at<=$2) OR (schedule_to_close_deadline_at IS NOT NULL AND schedule_to_close_deadline_at<=$3) OR (status='running' AND heartbeat_deadline_at IS NOT NULL AND heartbeat_deadline_at<=$4)) ORDER BY id LIMIT $5")
+            .bind(DB::bind_time(at))
+            .bind(DB::bind_time(at))
+            .bind(DB::bind_time(at))
+            .bind(DB::bind_time(at))
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(|row| DB::string(row, "id"))
+            .collect::<Result<_>>()?;
+        Ok(json!({"expired_count": expired.len(), "scan_pressure": expired.len() as i64 >= limit,
+            "expired_execution_ids": expired, "scan_limit": limit}))
+    }
+
+    /// `runInlinePass`, reported on the worker heartbeat.
+    pub(super) async fn retention_inline_pass(&self) -> Result<Value> {
+        let policy = self.retention_policy().await?;
+        if policy.forever {
+            return Ok(retention::inline_report(false, None));
+        }
+        if !retention::inline_pass_due(self.namespace.as_ref()) {
+            return Ok(retention::inline_report(true, None));
+        }
+        let report = self.prune_runs(&policy, 1, Vec::new()).await?;
+        Ok(retention::inline_report(false, Some(&report)))
+    }
+
+    /// `runPass`: the given runs, or the oldest expired ones.
+    async fn prune_runs(
+        &self,
+        policy: &retention::Policy,
+        limit: i64,
+        run_ids: Vec<String>,
+    ) -> Result<serde_json::Map<String, Value>> {
+        let run_ids = if run_ids.is_empty() { self.expired_run_ids(policy, limit).await? } else { run_ids };
+        let mut outcomes = Vec::with_capacity(run_ids.len());
+        for run_id in run_ids {
+            let outcome = match self.prune_run(policy, &run_id).await {
+                Ok(outcome) => outcome,
+                Err(error) => retention::Outcome::Error(error.to_string()),
+            };
+            outcomes.push((run_id, outcome));
+        }
+        Ok(retention::report(outcomes))
+    }
+
+    /// `pruneRun`: one run of this namespace loses its details in one
+    /// transaction, unless a hold keeps it.
+    async fn prune_run(&self, policy: &retention::Policy, run_id: &str) -> Result<retention::Outcome> {
+        use retention::Outcome::{Error, Pruned, Skipped};
+        if policy.forever {
+            return Ok(Skipped("namespace_retention_forever"));
+        }
+        let Some(summary) = Self::query("SELECT status,archived_at FROM workflow_run_summaries WHERE id=$1 AND namespace=$2")
+            .bind(run_id)
+            .bind(self.namespace.as_ref())
+            .fetch_optional(&self.pool)
+            .await?
+        else {
+            return Ok(Skipped("run_not_found"));
+        };
+        if !retention::terminal(&DB::string(&summary, "status")?) {
+            return Ok(Skipped("run_not_terminal"));
+        }
+        if DB::optional_instant(&summary, "archived_at")?.is_some() {
+            return Ok(Skipped("run_archived"));
+        }
+        if let Some(reason) = self.retention_hold(run_id).await? {
+            return Ok(Skipped(reason));
+        }
+        let mut tx = self.begin().await?;
+        let run = Self::query("SELECT status,closed_at FROM workflow_runs WHERE id=$1")
+            .bind(run_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        // `assertPrunable`.
+        if !retention::terminal(&DB::string(&run, "status")?) {
+            return Ok(Error(format!("Workflow run [{run_id}] is not terminal.")));
+        }
+        if DB::optional_instant(&run, "closed_at")?.is_none() {
+            return Ok(Error(format!("Workflow run [{run_id}] has not been closed.")));
+        }
+        let mut deleted = serde_json::Map::new();
+        deleted.insert("run_deleted".into(), json!(0));
+        // A run with message streams is held above, so none are released.
+        for key in retention::STREAM_COUNTS {
+            deleted.insert(key.into(), json!(0));
+        }
+        for (key, sql, binds) in retention::PRUNED {
+            let mut query = Self::query(sql);
+            for _ in 0..*binds {
+                query = query.bind(run_id);
+            }
+            deleted.insert((*key).into(), json!(DB::affected(query.execute(&mut *tx).await?)));
+        }
+        Self::query("UPDATE workflow_runs SET details_pruned_at=$1 WHERE id=$2 AND details_pruned_at IS NULL")
+            .bind(DB::bind_time(now()))
+            .bind(run_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(Pruned(deleted))
+    }
+
+    /// What keeps a closed run's details: an activity it abandoned that is
+    /// still open, a message stream, or a stored external payload reference,
+    /// whose cleanup native does not perform yet.
+    async fn retention_hold(&self, run_id: &str) -> Result<Option<&'static str>> {
+        for (sql, binds, reason) in retention::HOLDS {
+            let mut query = Self::scalar(sql);
+            for _ in 0..*binds {
+                query = query.bind(run_id);
+            }
+            if query.fetch_one(&self.pool).await? > 0 {
+                return Ok(Some(reason));
+            }
+        }
+        Ok(None)
     }
 }
 

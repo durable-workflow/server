@@ -198,6 +198,9 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/system/operator-dashboard/bounded/workflow-types",
             get(workflow_type_operator_dashboard),
         )
+        .route("/api/system/retention", get(retention_status))
+        .route("/api/system/retention/pass", post(retention_pass))
+        .route("/api/system/activity-timeouts", get(activity_timeout_status))
         .route("/api/workers", get(list_workers))
         .route("/api/task-queues", get(list_task_queues))
         .route("/api/task-queues/{task_queue}", get(describe_task_queue))
@@ -532,8 +535,15 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
         || path == "/api/system/operator-dashboard"
         || path == "/api/system/operator-dashboard/bounded"
         || path == "/api/system/operator-dashboard/bounded/workflow-types"
+        // Retention reads and prunes the namespace's own runs; the activity
+        // timeout scan spans namespaces in PHP too.
+        || path == "/api/system/retention"
+        || path == "/api/system/activity-timeouts"
     {
         return method == "GET";
+    }
+    if path == "/api/system/retention/pass" {
+        return method == "POST";
     }
     if let Some(path) = path.strip_prefix("/api/workflows/") {
         let parts: Vec<_> = path.split('/').collect();
@@ -1153,6 +1163,30 @@ async fn workflow_type_operator_dashboard(
             "reason":"backend_capability_unavailable","capability":"workflow_type_dashboard"})),
     )
         .into_response())
+}
+
+type QueryMap = Query<std::collections::HashMap<String, String>>;
+
+async fn retention_status(Extension(runtime): Extension<Runtime>, Query(query): QueryMap) -> Result<Json<Value>> {
+    let limit = super::retention::status_limit(query.get("limit").map(String::as_str))?;
+    Ok(Json(runtime.retention_status(limit).await?))
+}
+
+/// PHP answers 207 when any run failed to prune.
+async fn retention_pass(Extension(runtime): Extension<Runtime>, body: Option<Json<Value>>) -> Result<Response> {
+    let body = body.map_or(Value::Null, |Json(body)| body);
+    let (limit, run_ids) = super::retention::pass_request(&body)?;
+    let (report, failed) = runtime.retention_pass(limit, run_ids).await?;
+    let status = if failed { StatusCode::MULTI_STATUS } else { StatusCode::OK };
+    Ok((status, Json(report)).into_response())
+}
+
+async fn activity_timeout_status(
+    Extension(runtime): Extension<Runtime>,
+    Query(query): QueryMap,
+) -> Result<Json<Value>> {
+    let limit = super::retention::status_limit(query.get("limit").map(String::as_str))?;
+    Ok(Json(runtime.activity_timeout_status(limit).await?))
 }
 
 /// PHP answers 503 while a check reports an error.
