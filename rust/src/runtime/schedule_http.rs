@@ -234,6 +234,14 @@ async fn control(
             .edit_schedule(&schedule, operation, None, audit)
             .await
             .map(Json),
+        "backfill" => {
+            let range = super::schedule_backfill::range(&payload)?;
+            runtime.backfill_schedule(&schedule, range, audit).await.map(Json)
+        }
+        "update" => {
+            let changes = super::schedules::changes(&payload)?;
+            runtime.update_schedule(&schedule, changes, audit).await.map(Json)
+        }
         _ => {
             validate(&normalized, NOTE)?;
             let note = normalized["note"].as_str().map(str::to_owned);
@@ -265,6 +273,22 @@ pub(super) async fn trigger(
     request: Request,
 ) -> Result<Json<Value>> {
     control(runtime, schedule, "trigger", request).await
+}
+/// `POST /api/schedules/{id}/backfill`.
+pub(super) async fn backfill(
+    Extension(runtime): Extension<Runtime>,
+    Path(schedule): Path<String>,
+    request: Request,
+) -> Result<Json<Value>> {
+    control(runtime, schedule, "backfill", request).await
+}
+/// `PUT /api/schedules/{id}`.
+pub(super) async fn update(
+    Extension(runtime): Extension<Runtime>,
+    Path(schedule): Path<String>,
+    request: Request,
+) -> Result<Json<Value>> {
+    control(runtime, schedule, "update", request).await
 }
 pub(super) async fn remove(
     Extension(runtime): Extension<Runtime>,

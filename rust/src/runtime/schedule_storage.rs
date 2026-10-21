@@ -110,6 +110,99 @@ where
         Ok(json!({"schedule_id":schedule_id,"outcome":"created"}))
     }
 
+    /// `ScheduleManager::update` on a live schedule.
+    pub(super) async fn update_schedule(
+        &self,
+        schedule_id: &str,
+        changes: schedules::Changes,
+        context: Value,
+    ) -> Result<Value> {
+        let mut tx = self.begin().await?;
+        let row = self.schedule_row(&mut tx, schedule_id, false).await?;
+        let key = DB::string(&row, "id")?;
+        let mut spec = DB::optional_document_row(&row, "spec")?.unwrap_or_else(|| json!({}));
+        if let Some(changed) = changes.spec {
+            // PHP leaves this LogicException unhandled (500).
+            if let Some(problem) = schedules::spec_problem(&changed) {
+                return Err(schedules::invalid_spec(problem, schedule_id));
+            }
+            spec = changed;
+        }
+        let mut action = DB::optional_document_row(&row, "action")?.unwrap_or_else(|| json!({}));
+        if let Some(changed) = changes.action {
+            // array_merge: the given fields replace the stored ones.
+            if let (Some(stored), Some(given)) = (action.as_object_mut(), changed.as_object()) {
+                for (field, value) in given {
+                    stored.insert(field.clone(), value.clone());
+                }
+            } else {
+                action = changed;
+            }
+            action = schedules::normalize_action_timeouts(&action);
+        }
+        let mut changed_fields = vec!["spec", "action"];
+        let mut policy = DB::string(&row, "overlap_policy")?;
+        if let Some(changed) = changes.overlap_policy {
+            changed_fields.push("overlap_policy");
+            policy = changed;
+        }
+        let mut jitter = DB::number(&row, "jitter_seconds")?;
+        if let Some(changed) = changes.jitter_seconds {
+            changed_fields.push("jitter_seconds");
+            jitter = changed;
+        }
+        let mut note = DB::optional_string(&row, "note")?;
+        if let Some(changed) = changes.note {
+            changed_fields.push("note");
+            note = Some(changed);
+        }
+        let mut memo = DB::optional_document_row(&row, "memo")?;
+        if let Some(changed) = changes.memo {
+            changed_fields.push("memo");
+            memo = changed;
+        }
+        if changes.clears_search_attributes {
+            changed_fields.push("search_attributes");
+        }
+        let mut max_runs = DB::optional_number(&row, "max_runs")?;
+        let mut remaining = DB::optional_number(&row, "remaining_actions")?;
+        if let Some(changed) = changes.max_runs {
+            changed_fields.extend(["max_runs", "remaining_actions"]);
+            let fires = DB::number(&row, "fires_count")?;
+            remaining = Some(if remaining.is_none() || changed > fires {
+                changed - fires
+            } else {
+                remaining.unwrap_or_default()
+            });
+            max_runs = Some(changed);
+        }
+        let changed_at = now();
+        let next = schedules::next_fire(&spec, jitter, changed_at)?;
+        Self::query("UPDATE workflow_schedules SET spec=$1,action=$2,overlap_policy=$3,jitter_seconds=$4,note=$5,memo=$6,max_runs=$7,remaining_actions=$8,updated_at=$9 WHERE id=$10")
+            .bind(DB::document(&spec)).bind(DB::document(&action)).bind(policy.as_str()).bind(jitter)
+            .bind(note.as_deref()).bind(memo.as_ref().map(DB::document)).bind(max_runs).bind(remaining)
+            .bind(DB::bind_time(changed_at)).bind(&key).execute(&mut *tx).await?;
+        match next {
+            Some(next) => Self::query("UPDATE workflow_schedules SET next_fire_at=$1 WHERE id=$2")
+                .bind(DB::bind_time(next)).bind(&key).execute(&mut *tx).await?,
+            None => Self::query("UPDATE workflow_schedules SET next_fire_at=NULL WHERE id=$1")
+                .bind(&key).execute(&mut *tx).await?,
+        };
+        Self::append_schedule(
+            &mut tx,
+            &key,
+            "ScheduleUpdated",
+            json!({"changed_fields":changed_fields,"spec":spec,"action":action,
+                "overlap_policy":policy,"next_fire_at":next.map(iso8601)}),
+            Some(&context),
+            None,
+            None,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(json!({"schedule_id":schedule_id,"outcome":"updated"}))
+    }
+
     /// `ScheduleManager::pause`: an active or paused schedule becomes paused
     /// now, keeping its note unless one is given.
     pub(super) async fn pause_in(

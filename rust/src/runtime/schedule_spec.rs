@@ -18,13 +18,19 @@ fn members(value: &Value) -> Vec<&Value> {
 /// The next fire time without jitter, `None` when no rule yields one, or the
 /// exception PHP throws evaluating a cron expression.
 pub(crate) fn next_fire(spec: &Value, after: Timestamp) -> Result<Option<Timestamp>, CronError> {
+    Ok(next_occurrence(spec, after)?.map(|(next, _)| next))
+}
+
+/// `next_fire` and the UTC offset of PHP's result: the schedule zone's for
+/// a cron occurrence, zero for an interval. The first rule wins a tie.
+pub(crate) fn next_occurrence(spec: &Value, after: Timestamp) -> Result<Option<(Timestamp, i64)>, CronError> {
     let zone = spec
         .get("timezone")
         .and_then(Value::as_str)
         .unwrap_or("UTC");
-    let mut earliest: Option<Timestamp> = None;
-    let mut consider = |next: Timestamp| {
-        if earliest.is_none_or(|current| next < current) {
+    let mut earliest: Option<(Timestamp, i64)> = None;
+    let mut consider = |next: (Timestamp, i64)| {
+        if earliest.is_none_or(|current| next.0 < current.0) {
             earliest = Some(next);
         }
     };
@@ -32,11 +38,11 @@ pub(crate) fn next_fire(spec: &Value, after: Timestamp) -> Result<Option<Timesta
         let Some(expression) = expression.as_str().filter(|text| !text.is_empty()) else {
             continue;
         };
-        consider(Cron::parse(expression)?.next_after(after, zone)?);
+        consider(Cron::parse(expression)?.next_after_with_offset(after, zone)?);
     }
     for interval in members(spec.get("intervals").unwrap_or(&Value::Null)) {
         if let Some(next) = interval_occurrence(interval, after) {
-            consider(next);
+            consider((next, 0));
         }
     }
     Ok(earliest)
@@ -179,12 +185,20 @@ mod tests {
         for line in &lines {
             let case: Value = serde_json::from_str(line).unwrap();
             let after: Timestamp = case["after"].as_str().unwrap().parse().unwrap();
-            let actual = next_fire(&case["spec"], after)
-                .map(|next| next.map(|next| next.strftime("%Y-%m-%dT%H:%M:%S.%6fZ").to_string()))
+            let actual = next_occurrence(&case["spec"], after)
+                .map(|next| {
+                    next.map(|(next, offset)| {
+                        let sign = if offset < 0 { '-' } else { '+' };
+                        format!("{} {sign}{:02}:{:02}", next.strftime("%Y-%m-%dT%H:%M:%S.%6fZ"),
+                            offset.abs() / 3600, offset.abs() % 3600 / 60)
+                    })
+                })
                 .map_err(CronError::php_class);
             let expected = match case.get("error") {
                 Some(error) => Err(error.as_str().unwrap()),
-                None => Ok(case["next"].as_str().map(str::to_owned)),
+                None => Ok(case["next"]
+                    .as_str()
+                    .map(|next| format!("{next} {}", case["offset"].as_str().unwrap()))),
             };
             if actual != expected {
                 mismatches.push(format!("{line} -> {actual:?}"));

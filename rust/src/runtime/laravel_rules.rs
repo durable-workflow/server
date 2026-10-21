@@ -16,6 +16,10 @@ use serde_json::{Map, Value, json};
 pub(crate) enum Rule {
     Required,
     Nullable,
+    /// Validate only when the attribute is present.
+    Sometimes,
+    /// `regex:/\S/`: some character that is not whitespace.
+    NotBlank,
     /// Required when the named attribute is present and not empty.
     RequiredWith(&'static str),
     String,
@@ -26,6 +30,8 @@ pub(crate) enum Rule {
     Min(i64),
     Max(i64),
     In(&'static [&'static str]),
+    /// `date`, for the ISO-8601 shapes `schedule_backfill::php_date` reads.
+    Date,
 }
 
 pub(crate) type Rules = [(&'static str, &'static [Rule])];
@@ -182,15 +188,26 @@ fn message(rule: Rule, attribute: &str, rules: &[Rule], value: Option<&Value>) -
             "array" => format!("The {attribute} field must not have more than {limit} items."),
             _ => format!("The {attribute} field must not be greater than {limit} characters."),
         },
-        Rule::Nullable => String::new(),
+        Rule::NotBlank => format!("The {attribute} field format is invalid."),
+        Rule::Date => format!("The {attribute} field must be a valid date."),
+        Rule::Nullable | Rule::Sometimes => String::new(),
     }
 }
 
+/// Laravel's `getSize`: a numeric value under a numeric rule, otherwise
+/// an item count or the string length.
 fn size(value: &Value, rules: &[Rule]) -> Option<f64> {
     if rules.iter().any(|rule| matches!(rule, Rule::Integer)) {
-        return integer(value).map(|number| number as f64);
+        match value {
+            Value::Number(number) => return number.as_f64(),
+            Value::String(text) if super::schedule_cron::php_is_numeric(text) => {
+                return text.trim().parse().ok();
+            }
+            _ => {}
+        }
     }
     match value {
+        Value::Bool(flag) => Some(f64::from(u8::from(*flag))),
         Value::Array(items) => Some(items.len() as f64),
         Value::Object(fields) => Some(fields.len() as f64),
         Value::String(text) => Some(text.chars().count() as f64),
@@ -203,8 +220,12 @@ fn passes(rule: Rule, data: &Value, value: Option<&Value>, rules: &[Rule]) -> bo
     match rule {
         Rule::Required => filled(value),
         Rule::RequiredWith(other) => !filled(lookup(data, other)) || filled(value),
-        Rule::Nullable => true,
+        Rule::Nullable | Rule::Sometimes => true,
+        Rule::NotBlank => value.and_then(Value::as_str).is_some_and(|text| text.chars().any(|character| !character.is_whitespace())),
         Rule::String => value.is_some_and(Value::is_string),
+        Rule::Date => value
+            .and_then(Value::as_str)
+            .is_some_and(|text| super::schedule_backfill::php_date(text).is_some()),
         Rule::Array => value.is_some_and(|value| value.is_array() || value.is_object()),
         Rule::Integer => value.and_then(integer).is_some(),
         Rule::Boolean => matches!(
@@ -229,6 +250,14 @@ fn passes(rule: Rule, data: &Value, value: Option<&Value>, rules: &[Rule]) -> bo
 /// Validates `body` (already normalized) and returns Laravel's 422 failure,
 /// or nothing when every rule passes.
 pub(crate) fn validate(body: &Value, rules: &Rules) -> Result<(), RuntimeError> {
+    match failure(errors(body, rules)) {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// Every failing attribute and its messages, in Laravel's order.
+pub(crate) fn errors(body: &Value, rules: &Rules) -> Vec<(String, Vec<String>)> {
     let mut checks: Vec<(String, bool, &[Rule])> = Vec::new();
     let mut expanded = Vec::new();
     for (pattern, list) in rules {
@@ -243,11 +272,14 @@ pub(crate) fn validate(body: &Value, rules: &Rules) -> Result<(), RuntimeError> 
     for (attribute, raw, list) in checks {
         let value = lookup(body, &attribute);
         let nullable = list.iter().any(|rule| matches!(rule, Rule::Nullable));
+        if value.is_none() && list.iter().any(|rule| matches!(rule, Rule::Sometimes)) {
+            continue;
+        }
         let name = display(&attribute, raw);
         let mut messages = Vec::new();
         for rule in list {
             let implicit = matches!(rule, Rule::Required | Rule::RequiredWith(_));
-            if matches!(rule, Rule::Nullable) {
+            if matches!(rule, Rule::Nullable | Rule::Sometimes) {
                 continue;
             }
             // presentOrRuleIsImplicit, then isNotNullIfMarkedAsNullable.
@@ -269,10 +301,7 @@ pub(crate) fn validate(body: &Value, rules: &Rules) -> Result<(), RuntimeError> 
             errors.push((attribute, messages));
         }
     }
-    match failure(errors) {
-        Some(error) => Err(error),
-        None => Ok(()),
-    }
+    errors
 }
 
 /// Laravel's 422 ValidationException body: the first message, a count of the

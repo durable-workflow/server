@@ -45,6 +45,84 @@ const STORE_RULES: &Rules = &[
     ("note", &[Rule::Nullable, Rule::String, Rule::Max(1000)]),
 ];
 
+/// `ScheduleController::updateRules`, in order.
+const UPDATE_RULES: &Rules = &[
+    ("spec", &[Rule::Nullable, Rule::Array]),
+    ("spec.cron_expressions", &[Rule::Nullable, Rule::Array]),
+    ("spec.cron_expressions.*", &[Rule::String]),
+    ("spec.intervals", &[Rule::Nullable, Rule::Array]),
+    (
+        "spec.intervals.*.every",
+        &[Rule::RequiredWith("spec.intervals"), Rule::String, Rule::Max(64)],
+    ),
+    ("spec.intervals.*.offset", &[Rule::Nullable, Rule::String, Rule::Max(64)]),
+    ("spec.timezone", &[Rule::Nullable, Rule::String, Rule::Max(64)]),
+    ("action", &[Rule::Nullable, Rule::Array]),
+    ("action.workflow_type", &[Rule::Nullable, Rule::String]),
+    ("action.task_queue", &[Rule::Nullable, Rule::String]),
+    ("action.input", &[Rule::Nullable, Rule::Array]),
+    ("action.execution_timeout_seconds", &[Rule::Nullable, Rule::Integer, Rule::Min(1)]),
+    ("action.run_timeout_seconds", &[Rule::Nullable, Rule::Integer, Rule::Min(1)]),
+    ("action.workflow_execution_timeout", &[Rule::Nullable, Rule::Integer, Rule::Min(1)]),
+    ("action.workflow_run_timeout", &[Rule::Nullable, Rule::Integer, Rule::Min(1)]),
+    ("overlap_policy", &[Rule::Nullable, Rule::String, Rule::In(OVERLAP_POLICIES)]),
+    ("jitter_seconds", &[Rule::Nullable, Rule::Integer, Rule::Min(0), Rule::Max(3600)]),
+    ("max_runs", &[Rule::Nullable, Rule::Integer, Rule::Min(1)]),
+    ("memo", &[Rule::Nullable, Rule::Array]),
+    ("search_attributes", &[Rule::Nullable, Rule::Array]),
+    ("note", &[Rule::Nullable, Rule::String, Rule::Max(1000)]),
+];
+
+/// A validated schedule update: each field PHP's `ScheduleManager::update`
+/// changes, `None` where it keeps the stored value.
+pub(crate) struct Changes {
+    pub(crate) spec: Option<Value>,
+    /// The fields to merge over the stored action.
+    pub(crate) action: Option<Value>,
+    pub(crate) overlap_policy: Option<String>,
+    pub(crate) jitter_seconds: Option<i64>,
+    pub(crate) note: Option<String>,
+    /// `Some(None)` clears the memo.
+    pub(crate) memo: Option<Option<Value>>,
+    /// The body named `search_attributes` (empty: native stores none).
+    pub(crate) clears_search_attributes: bool,
+    pub(crate) max_runs: Option<i64>,
+}
+
+/// Validates an update body as PHP's `update` does, after the schedule is
+/// found.
+pub(crate) fn changes(body: &Value) -> Result<Changes> {
+    let body = normalize(body);
+    validate(&body, UPDATE_RULES)?;
+    let validated = validated(&body, UPDATE_RULES);
+    memo_size(&validated["memo"])?;
+    if !empty(&validated["search_attributes"]) {
+        return Err(refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "schedule_search_attributes_unavailable",
+        ));
+    }
+    let action = Some(validated["action"].clone()).filter(|action| !action.is_null());
+    if let Some(input) = action.as_ref().and_then(|action| action.get("input"))
+        && !input.is_null()
+    {
+        super::envelope(action.as_ref().expect("action"), "input")?;
+    }
+    let fields = validated.as_object().expect("validated object");
+    Ok(Changes {
+        spec: Some(validated["spec"].clone()).filter(|spec| !spec.is_null()),
+        action,
+        overlap_policy: validated["overlap_policy"].as_str().map(str::to_owned),
+        jitter_seconds: integer(&validated["jitter_seconds"]),
+        note: validated["note"].as_str().map(str::to_owned),
+        memo: fields
+            .contains_key("memo")
+            .then(|| Some(validated["memo"].clone()).filter(|memo| !empty(memo))),
+        clears_search_attributes: fields.contains_key("search_attributes"),
+        max_runs: integer(&validated["max_runs"]),
+    })
+}
+
 /// A validated schedule creation.
 pub(crate) struct Definition {
     pub(crate) schedule_id: Option<String>,
@@ -241,6 +319,21 @@ pub(crate) fn next_fire(spec: &Value, jitter: i64, after: DateTime<Utc>) -> Resu
     Ok(next.map(|next| {
         let seconds = next.as_second() + if jitter > 0 { random_up_to(jitter) } else { 0 };
         DateTime::from_timestamp(seconds, next.subsec_nanosecond() as u32).unwrap_or(after)
+    }))
+}
+
+/// `computeNextFireAt` without jitter, with the UTC offset PHP's result
+/// carries; failures as for `next_fire`.
+pub(crate) fn next_occurrence(spec: &Value, after: DateTime<Utc>) -> Result<Option<(DateTime<Utc>, i64)>> {
+    let at = jiff::Timestamp::new(after.timestamp(), after.timestamp_subsec_nanos() as i32)
+        .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_schedule_spec"))?;
+    let next = schedule_spec::next_occurrence(spec, at).map_err(|error| RuntimeError::Protocol {
+        status: StatusCode::UNPROCESSABLE_ENTITY,
+        response: json!({"message":format!("Schedule spec could not be evaluated ({}).", error.php_class()),
+            "reason":"invalid_schedule_spec"}),
+    })?;
+    Ok(next.and_then(|(next, offset)| {
+        DateTime::from_timestamp(next.as_second(), next.subsec_nanosecond() as u32).map(|next| (next, offset))
     }))
 }
 
