@@ -39,9 +39,12 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    /// `WorkflowController::runs`: every run in run-number order, as PHP's
+    /// `formatRunListEntry` renders it. The current run is the highest
+    /// numbered one.
     pub(super) async fn list_runs(&self, workflow: &str) -> Result<Value> {
-        let rows=Self::query("SELECT r.id,r.workflow_type,r.status,r.run_number,r.closed_reason,r.started_at,r.closed_at,i.current_run_id FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE i.id=$1 AND i.namespace=$2 ORDER BY r.run_number LIMIT 1025")
-            .bind(workflow).bind(self.namespace.as_ref()).fetch_all(&self.pool).await?;
+        let rows=Self::query("SELECT r.id,r.workflow_type,r.business_key,r.status,r.run_number,r.queue,r.compatibility,r.started_at,r.closed_at FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE i.id=$1 AND i.namespace=$2 AND r.namespace=$3 ORDER BY r.run_number LIMIT 1025")
+            .bind(workflow).bind(self.namespace.as_ref()).bind(self.namespace.as_ref()).fetch_all(&self.pool).await?;
         if rows.is_empty() {
             return Err(refuse(StatusCode::NOT_FOUND, "instance_not_found"));
         }
@@ -51,15 +54,28 @@ where
                 "workflow_runs_exceed_read_budget",
             ));
         }
+        let current = DB::string(rows.last().expect("one run"), "id")?;
+        let fleet = self.fleet_snapshots(super::store::now()).await?;
         let mut runs = Vec::with_capacity(rows.len());
         for row in rows {
             let run = DB::string(&row, "id")?;
-            runs.push(json!({"workflow_id":workflow,"run_id":run,"workflow_type":DB::string(&row,"workflow_type")?,
-                "status":DB::string(&row,"status")?,"run_number":DB::number(&row,"run_number")?,
-                "closed_reason":DB::optional_string(&row,"closed_reason")?,"is_current_run":run==DB::string(&row,"current_run_id")?,
-                "started_at":DB::instant(&row,"started_at")?,"closed_at":DB::optional_instant(&row,"closed_at")?}));
+            let status = DB::string(&row, "status")?;
+            let queue = DB::optional_string(&row, "queue")?;
+            let compatibility = DB::optional_string(&row, "compatibility")?;
+            let required = compatibility.as_deref().map(str::trim).filter(|value| !value.is_empty());
+            let (supported, reason) = super::run_diagnostics::fleet_supports(&fleet, required, queue.as_deref());
+            let memo = self.run_memo(&run).await?;
+            runs.push(json!({"run_id":run,"run_number":DB::number(&row,"run_number")?,
+                "workflow_type":DB::string(&row,"workflow_type")?,"business_key":DB::optional_string(&row,"business_key")?,
+                "status":status,"status_bucket":super::visibility::status_bucket(&status)?,
+                "is_terminal":matches!(status.as_str(), "completed" | "failed" | "cancelled" | "terminated"),
+                "is_current_run":run == current,"task_queue":queue,"compatibility":compatibility,
+                "compatibility_status":if supported { "compatible" } else { "no_compatible_worker" },
+                "compatibility_supported_in_fleet":supported,"compatibility_fleet_reason":reason,
+                "started_at":super::task_queues::json_time(DB::optional_instant(&row,"started_at")?),
+                "closed_at":super::task_queues::json_time(DB::optional_instant(&row,"closed_at")?),"memo":memo}));
         }
-        Ok(json!({"workflow_id":workflow,"namespace":self.namespace.as_ref(),"runs":runs}))
+        Ok(json!({"workflow_id":workflow,"run_count":runs.len(),"runs":runs}))
     }
 
     pub(super) async fn continue_run(
