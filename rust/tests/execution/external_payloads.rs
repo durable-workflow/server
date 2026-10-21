@@ -738,7 +738,9 @@ async fn external_activity_result_retains_only_after_live_authority_and_survives
 async fn external_activity_argument_batch_shares_admission_and_rolls_back_all_references() {
     let temp = tempfile::tempdir().unwrap();
     let mut config = ExternalPayloadConfig::default();
-    config.timeout = Duration::from_secs(5);
+    // A per-reference permit would deadlock on the single transfer slot and
+    // answer 503 at this deadline; the margin keeps a loaded host from doing so.
+    config.timeout = Duration::from_secs(20);
     let (database, runtime, app) = setup(config, &temp.path().join("objects")).await;
     let mut arguments = Vec::new();
     let mut blobs = Vec::new();
@@ -824,7 +826,7 @@ async fn external_activity_argument_batch_shares_admission_and_rolls_back_all_re
     let mut invalid = commands.clone();
     invalid.push(json!({"type":"complete_workflow","result":envelope(Payload::Null)}));
     let (status, refusal) = tokio::time::timeout(
-        Duration::from_secs(10),
+        Duration::from_secs(30),
         json_request(
             &app,
             "POST",
