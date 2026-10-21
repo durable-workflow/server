@@ -14,6 +14,13 @@ case "$TLS_TEST_MODE" in
         ;;
     *) echo 'TLS_TEST_MODE must be source or published.' >&2; exit 2 ;;
 esac
+if [[ "${GITHUB_ACTIONS:-false}" = true ]]; then
+    tls_ci_scope="${GITHUB_RUN_ID:?}-${GITHUB_RUN_ATTEMPT:?}-${GITHUB_JOB:?}"
+    if [[ "$TLS_TEST_PROJECT" != *"-$tls_ci_scope" ]]; then
+        echo 'TLS_TEST_PROJECT must end with the original GitHub run, attempt and job scope.' >&2
+        exit 2
+    fi
+fi
 tls_parent="${TLS_TEST_ROOT:-${TMPDIR:-/tmp}}"
 mkdir -p "$tls_parent"
 TLS_TEST_ROOT="$(mktemp -d "$tls_parent/dw-server-tls.XXXXXX")"
