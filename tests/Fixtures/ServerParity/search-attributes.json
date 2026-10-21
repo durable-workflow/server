@@ -1,0 +1,86 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "search-attributes",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "search attributes λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "search attributes λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "search_attributes": {
+    "created": [
+      [
+        "Customer",
+        "keyword"
+      ],
+      [
+        "OrderTotal",
+        "double"
+      ]
+    ],
+    "untrimmed": {
+      "name": "  Region\n",
+      "type": " keyword_list "
+    },
+    "duplicate": {
+      "name": "OrderTotal",
+      "type": "int"
+    },
+    "reserved": [
+      "WorkflowId",
+      "task_queue",
+      "Execution_Status"
+    ],
+    "invalid": [
+      {},
+      {
+        "name": "1st",
+        "type": "uuid"
+      },
+      {
+        "name": 7,
+        "type": 5
+      },
+      {
+        "name": "   ",
+        "type": "int"
+      },
+      {
+        "name": "Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "type": "int"
+      },
+      {
+        "name": "has-dash",
+        "type": [
+          "keyword"
+        ]
+      }
+    ],
+    "limit": 100
+  },
+  "contract": "Each namespace has its own custom search attribute registry. The unchanged published SDK lists, registers and removes definitions: a new namespace lists the eleven system attributes and renders an empty custom map as a JSON array. Request strings are trimmed before validation. Laravel validation refuses missing, non-string, malformed, over-long and unknown-type fields with 422 validation_failed and the published messages and error counts. A duplicate name is refused with 409 attribute_already_exists and keeps its original type; system names and their snake_case aliases, in any case, are refused with 409 name_reserved. A system attribute cannot be removed (409 system_attribute) and an absent one is 404 attribute_not_found. A namespace accepts 100 definitions and refuses the next with 422 search_attribute_limit_reached without storing it. Search attribute values on start and upsert, and visibility filters on them, need separate fixtures. Embedded applications have no HTTP registry."
+}
