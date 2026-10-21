@@ -1,0 +1,18 @@
+{
+  "remove": [
+    [
+      "table",
+      "workflow_tasks",
+      "workflow_tasks",
+      "CREATE TABLE \"workflow_tasks\" (\"id\" varchar not null, \"workflow_run_id\" varchar not null, \"namespace\" varchar, \"task_type\" varchar not null, \"status\" varchar not null, \"compatibility\" varchar, \"payload\" text, \"connection\" varchar, \"queue\" varchar, \"sticky_worker_id\" varchar, \"sticky_until\" datetime, \"sticky_replay_mode\" varchar, \"sticky_claimed_at\" datetime, \"available_at\" datetime, \"leased_at\" datetime, \"lease_owner\" varchar, \"lease_expires_at\" datetime, \"attempt_count\" integer not null default '0', \"last_dispatch_attempt_at\" datetime, \"last_dispatched_at\" datetime, \"last_dispatch_error\" text, \"last_claim_failed_at\" datetime, \"last_claim_error\" text, \"repair_count\" integer not null default '0', \"repair_available_at\" datetime, \"last_error\" text, \"created_at\" datetime, \"updated_at\" datetime, \"priority\" integer not null default '5', \"fairness_key\" varchar, \"fairness_weight\" integer not null default '1', primary key (\"id\"))"
+    ]
+  ],
+  "add": [
+    [
+      "table",
+      "workflow_tasks",
+      "workflow_tasks",
+      "CREATE TABLE \"workflow_tasks\" (\"id\" varchar not null, \"workflow_run_id\" varchar not null, \"namespace\" varchar, \"task_type\" varchar not null, \"status\" varchar not null, \"compatibility\" varchar, \"payload\" text, \"connection\" varchar, \"queue\" varchar, \"sticky_worker_id\" varchar, \"sticky_until\" datetime, \"sticky_replay_mode\" varchar, \"sticky_claimed_at\" datetime, \"available_at\" datetime, \"leased_at\" datetime, \"lease_owner\" varchar, \"lease_expires_at\" datetime, \"attempt_count\" integer not null default '0', \"last_dispatch_attempt_at\" datetime, \"last_dispatched_at\" datetime, \"last_dispatch_error\" text, \"last_claim_failed_at\" datetime, \"last_claim_error\" text, \"repair_count\" integer not null default '0', \"repair_available_at\" datetime, \"last_error\" text, \"created_at\" datetime, \"updated_at\" datetime, \"priority\" integer not null default '5', \"fairness_key\" varchar, \"fairness_weight\" integer not null default '1', \"queue_delivery_reference\" text, primary key (\"id\"))"
+    ]
+  ]
+}

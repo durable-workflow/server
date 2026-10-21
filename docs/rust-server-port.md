@@ -229,6 +229,108 @@ support is not evidence of multi-node safety.
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
 names, including unsuccessful observations.
 
+October 20, concurrent MySQL and MariaDB bootstrap:
+
+- **Found by.** A multi-node smoke run started three nodes together on an
+  empty MySQL database. One node exited with `409 unsupported_rust_schema`.
+- **Cause.** MySQL commits DDL on its own. Between one node creating
+  `dw_server_schema` and recording its `rust-initializing` marker, another
+  node's read-only preflight, which runs before the bootstrap lock, saw an
+  empty marker table and refused. A node killed in the same window left a
+  database that no node could start on. PostgreSQL bootstraps inside one
+  locked transaction and SQLite in one file transaction, so neither has the
+  window.
+- **Source.** Preflight accepts an empty marker table when it is the only
+  table, and the node then waits for the bootstrap lock. Under the lock, a
+  missing marker is recorded before the migration runs.
+- **Checks.** The kill qualification has a `marker-table` phase. It kills a
+  bootstrapping child right after it creates the marker table and holds the
+  bootstrap lock. A concurrent start must still be waiting after one second,
+  then complete once the child is killed. Without the preflight change, it
+  refused at once. All 15 ignored MySQL qualification tests passed on MySQL
+  8.0 and MariaDB 10.11 locally.
+
+October 21, optional caller trace context:
+
+- **Why.** PHP Server's optional tracing ([#558](https://github.com/durable-workflow/server/pull/558),
+  Workflow #773) admits a top-level `observability_context` on start, signal,
+  update, cancel and request-cancellation requests when it is enabled. PHP
+  with tracing disabled, and published PHP 2.5.14, ignore the field. Native
+  refused it with 422 `unsupported_request_field`, so a caller that sent it
+  without checking discovery would have its business request refused.
+- **Source.** Those native handlers now drop exactly that top-level field
+  before reading the request. It is not validated, stored, logged or
+  compared, so a retried start with another trace context is the same
+  request. Native never advertises
+  `worker_protocol.server_capabilities.observability_context`. Terminate,
+  every other route, the same name anywhere else in a body, and any other
+  unknown field keep their existing handling.
+- **Test.** `trace_carriers` sends each of the nine affected routes with and
+  without a carrier to two identical workflows. It checks equal outcomes,
+  equal history event types, no stored trace identifier, the refused
+  terminate carrier and a refused unknown field beside the carrier. Removing
+  the change from any one of the nine handlers fails the test.
+- **Takeover.** Decided on [#325](https://github.com/durable-workflow/server/issues/325#issuecomment-6306545520):
+  a PHP 2.10 database with Core 2.9's nullable `observability_context`
+  columns is refused until its published layout is recorded. Its recipe will
+  count and then drop the three columns, like 2.9.7's `queue_delivery_reference`.
+
+October 20, external payload storage diagnostic:
+
+- **Source.** Native serves `POST /api/storage/test` for operators, in the
+  default or a named namespace, as PHP's `StorageController::test` does:
+  - Laravel's validation messages and error counts for `driver` and the two
+    payload sizes (shared with the search attribute registry through
+    `laravel_validation`);
+  - `external_storage_not_configured`, `external_storage_disabled` and
+    `storage_driver_unavailable` refusals with PHP's bodies;
+  - a small and large generated payload written to, read back from and
+    removed from the local driver, with each one's size, SHA-256 and the
+    digest of its object URI.
+- **Shared objects.** Objects are content-addressed, so a diagnostic payload
+  can have the same bytes as a registered external payload. Native holds the
+  payload object lock across the round trip and removes the object only when
+  no registered payload refers to it. PHP removes it unconditionally.
+- **Not covered.** S3, GCS, Azure and custom drivers are refused as
+  unavailable in this runtime, as published PHP does without their SDKs.
+- **Fixture.** `storage-test` drives a fresh namespace through no policy, a
+  disabled policy, another driver, three invalid bodies and two passing round
+  trips. Published PHP 2.5.14 and native returned identical bodies, including
+  the reference identities, and embedded PHP declares it inapplicable.
+
+October 20, database TLS settings (PHP Server 2.9.10, #545):
+
+- **Source.** Native resolves PostgreSQL, MySQL and MariaDB TLS with
+  `database_tls`, the rules of PHP's `DatabaseTlsConfiguration`:
+  - `DB_SSLMODE`/`DB_SSL_MODE` and `DB_SSLROOTCERT`/`DB_SSL_ROOT_CERT`, plus a
+    `DB_URL`'s `sslmode`/`sslrootcert`;
+  - MySQL's mode names (`required`, `verify_identity`);
+  - MySQL's legacy `MYSQL_ATTR_SSL_CA`.
+
+  Refusals use PHP's messages, with reason `database_tls_configuration_invalid`:
+  - conflicting aliases;
+  - a URL that contradicts `DB_SSLMODE` or `DB_SSLROOTCERT`;
+  - unknown modes, and MySQL modes other than disable, require and
+    verify-full;
+  - verification without a readable CA bundle;
+  - a CA without a mode;
+  - required TLS over a Unix socket.
+- **Behavior change.** Native used to ignore `DB_SSLMODE` and
+  `DB_SSLROOTCERT` when `DB_URL` was set. TLS now always comes from the
+  resolved settings, and TLS spellings that only SQLx reads are removed from
+  the URL first.
+- **Startup.** Native refuses to start on an invalid configuration. When a
+  connection that required TLS fails, it refuses with
+  `database_tls_connection_failed`. PHP keeps serving and reports both as an
+  unavailable readiness check. Readiness carries PHP's `tls` snapshot when the
+  database is reachable, scoped `rust_to_configured_database_endpoint`.
+- **Known difference.** With no configured mode, native MySQL uses TLS when
+  the server offers it. PHP connects without TLS options. Both report the mode
+  as unset.
+- **Qualification.** `scripts/conformance/native-database-tls.sh` runs PHP's
+  TLS cases against the same fixtures, with the database side confirming the
+  transport.
+
 October 20, lost workflow task claims:
 
 - **Found by.** The [multi-node runs](../benchmarks/server-port/multinode/results-2026-10-20.md).
