@@ -14,7 +14,9 @@ const WORKFLOW: &str = "qualification.runtime-lease-rust";
 const ACTIVITY: &str = "qualification.blocking-rust";
 
 fn state() -> PathBuf {
-    std::env::var("STATE_DIR").unwrap_or_else(|_| "/state".into()).into()
+    std::env::var("STATE_DIR")
+        .unwrap_or_else(|_| "/state".into())
+        .into()
 }
 
 fn expected() -> Value {
@@ -38,9 +40,8 @@ async fn run_worker(client: Client) -> Result<(), Box<dyn std::error::Error>> {
     worker.register_workflow(WORKFLOW, |ctx, args| async move {
         ctx.activity_with_options(
             ACTIVITY,
-            ActivityOptions::new().retry_policy(
-                ActivityRetryPolicy::new(2).backoff_intervals([Duration::ZERO]),
-            ),
+            ActivityOptions::new()
+                .retry_policy(ActivityRetryPolicy::new(2).backoff_intervals([Duration::ZERO])),
             args,
         )
         .await
@@ -91,7 +92,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     let discovery = client.cluster_info().await?;
     if discovery["worker_protocol"]["server_capabilities"]["activity_lease_renewal"] != true {
-        return Err(IoError::new(ErrorKind::Unsupported, "runtime lease renewal is not advertised").into());
+        return Err(IoError::new(
+            ErrorKind::Unsupported,
+            "runtime lease renewal is not advertised",
+        )
+        .into());
     }
     if role == "worker" {
         return run_worker(client).await;
@@ -103,23 +108,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             WORKFLOW,
             QUEUE,
             &workflow_id,
-            WorkflowStartOptions::new().execution_timeout_seconds(420).run_timeout_seconds(420),
+            WorkflowStartOptions::new()
+                .execution_timeout_seconds(420)
+                .run_timeout_seconds(420),
             json!([360, role]),
         )
         .await?;
     let description = handle.describe().await?;
-    std::fs::write(state().join("started.json"), serde_json::to_vec(&json!({
-        "workflow_id": workflow_id, "run_id": description.run_id, "mode": role,
-    }))?)?;
-    let result = handle.result(WorkflowResultOptions {
-        timeout: Duration::from_secs(if role == "long" { 420 } else { 30 }),
-        poll_interval: Duration::from_millis(100),
-    }).await?;
+    std::fs::write(
+        state().join("started.json"),
+        serde_json::to_vec(&json!({
+            "workflow_id": workflow_id, "run_id": description.run_id, "mode": role,
+        }))?,
+    )?;
+    let result = handle
+        .result(WorkflowResultOptions {
+            timeout: Duration::from_secs(if role == "long" { 420 } else { 30 }),
+            poll_interval: Duration::from_millis(100),
+        })
+        .await?;
     let elapsed = started.elapsed().as_secs_f64();
     if result != expected() || (role == "long" && elapsed < 360.0) {
         return Err(IoError::other("original real-duration/typed-result control failed").into());
     }
-    println!("{}", json!({"mode": role, "workflow_id": workflow_id,
-        "run_id": description.run_id, "elapsed_seconds": elapsed, "result": result}));
+    println!(
+        "{}",
+        json!({"mode": role, "workflow_id": workflow_id,
+        "run_id": description.run_id, "elapsed_seconds": elapsed, "result": result})
+    );
     Ok(())
 }
