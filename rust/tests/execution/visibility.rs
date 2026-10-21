@@ -186,7 +186,13 @@ async fn visibility_advertises_canonical_cli_contract_and_bounds_pages() {
         cluster.1["control_plane"]["request_contract"]["operations"]["list"]["fields"]["status"]["canonical_values"],
         json!(["running", "completed", "failed"])
     );
-    for status in ["pending", "waiting", "cancelled", "terminated", "unknown"] {
+    // Published PHP advertises cancelled and terminated as rejected aliases
+    // but its list rule accepts them as exact statuses, as native does.
+    for status in ["cancelled", "terminated"] {
+        let accepted = request(&app, "GET", &format!("/api/workflows?status={status}"), Value::Null).await;
+        assert_eq!(accepted.0, StatusCode::OK, "{}", accepted.1);
+    }
+    for status in ["pending", "waiting", "unknown"] {
         let rejected = request(
             &app,
             "GET",

@@ -4,7 +4,7 @@
 //! driver; other drivers are refused as unavailable in this runtime.
 use super::{
     Result, Runtime, RuntimeError,
-    laravel_validation::{failure, normalized, present},
+    laravel_validation::{failure, integer, normalized, present},
     store::id,
 };
 use crate::external_payload::{REFERENCE_SCHEMA, Reference};
@@ -38,29 +38,6 @@ const LARGE: Bytes = Bytes {
     max: "The large payload bytes field must not be greater than 16777216.",
     limit: 16_777_216,
 };
-
-/// PHP's `filter_var($value, FILTER_VALIDATE_INT)`, which Laravel's
-/// `integer` rule uses: canonical decimal strings, integral numbers and true.
-fn integer(value: &Value) -> Option<i64> {
-    match value {
-        Value::Number(number) => number.as_i64().or_else(|| {
-            number
-                .as_f64()
-                .filter(|float| float.fract() == 0.0 && float.abs() < 9.0e18)
-                .map(|float| float as i64)
-        }),
-        Value::String(text) => {
-            let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
-            let canonical = digits == "0"
-                || !digits.is_empty()
-                    && !digits.starts_with('0')
-                    && digits.bytes().all(|byte| byte.is_ascii_digit());
-            canonical.then(|| text.parse().ok()).flatten()
-        }
-        Value::Bool(true) => Some(1),
-        _ => None,
-    }
-}
 
 /// Laravel's size under a numeric rule set: a numeric value's magnitude,
 /// otherwise a string's length or an array's count.

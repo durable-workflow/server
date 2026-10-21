@@ -57,13 +57,10 @@ These published PHP 2.9.8 routes have no native handler yet, by family. The
 CLI and Waterline use the first group.
 
 - **Used by the CLI or Waterline.**
-  - Schedule listing, update and backfill.
-  - Task queues and their build IDs.
+  - Task queue build IDs.
   - Namespace update, delete and external storage.
-  - Search attributes.
   - `system` repair, retention and activity-timeout passes, metrics and
     operator dashboards.
-  - Storage test.
   - Activities (standalone).
 - **Worker protocol features.**
   - Worker sessions.
@@ -78,6 +75,7 @@ CLI and Waterline use the first group.
   - Imports from embedded v2 and Waterline v1.
 - **Other families.**
   - Message streams.
+  - Durable workflow stream appends and closes.
   - Service catalogs and endpoints.
   - Nexus operations.
   - Runtime credentials.
@@ -279,6 +277,52 @@ October 21, operator metrics and health:
     PHP state.
   - The operator dashboards, capacity evidence, and the repair, retention,
     activity-timeout and payload-cleanup pass endpoints remain.
+
+October 21, Waterline reads:
+
+- **Found by.** Waterline 2.12.0 service mode in front of published PHP
+  2.5.14 and in front of native, with identical seeds. On native, the run
+  debug view failed, the cancelled and terminated filters were refused, the
+  task queue pages were empty and the run detail page reported durable
+  streams as unavailable.
+- **Run debug view.** `GET /api/workflows/{id}[/runs/{run}]/debug` follows
+  PHP's `WorkflowRunDiagnostics::forRun`: summary, worker fleet, tasks with
+  their problem badges, pending activities, queue, last event, recent
+  failures and routing findings. The last event's payload appears only when
+  `include_last_event_payload` asks for it, re-encoded as PHP's
+  `json_encode` writes it.
+- **Workflow list.** The list is scoped to the request's namespace in named
+  namespaces too, and accepts `cancelled` and `terminated` filters by exact
+  status.
+- **Task queues.** `GET /api/task-queues` and `GET /api/task-queues/{name}`
+  follow PHP's `TaskQueueController`: pollers, stats, current leases, repair
+  candidates, recent task flow, activity attempt states and admission.
+- **Durable streams.** The run's stream list, stream description and item
+  reads answer as PHP does, including the name pattern, the `from`,
+  `max_items` and `wait_seconds` rules and the refusal bodies. Native runs
+  never produce durable streams, and takeover refuses a database that holds
+  any, so every list is empty. Producer appends and closes are not
+  implemented.
+- **Last progress.** Runs record `last_progress_at` when they start, as PHP
+  does at start and child start.
+- **Deliberate differences.**
+  - Native bounds pending queries at 16 per queue, so task queue admission
+    reports that bound where PHP reports 1,024.
+  - Native tasks carry no queue-driver dispatch metadata. For tasks native
+    created, the recent added and dispatched counters are zero, and the debug
+    view's dispatch-overdue and transport states differ.
+  - The cancellation cascade view is not ported. The debug view reports
+    `cancellation_cascade_supported: false` and a null cascade.
+- **Evidence.** Debug views of seven run states match PHP except for the
+  differences above, history payload content and key order, and identifier
+  case. Task queue views differ only in the bound and counters above. Sixteen
+  stream requests, including validation edge cases, match PHP after native
+  adopted PHP's `integer` rule, and Waterline's stream panel is identical.
+  Locally, 37 parity fixtures pass on published PHP, embedded and native.
+  `visibility-current-runs` needs CI's published CLI artifact and was not run.
+- **Next.** The describe response lacks PHP's `actions` block, so Waterline
+  disables cancel, terminate, signal and repair on native. History export and
+  the bounded dashboard summary remain.
 
 October 21, starts without timeouts:
 
