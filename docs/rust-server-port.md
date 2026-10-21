@@ -229,6 +229,38 @@ support is not evidence of multi-node safety.
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
 names, including unsuccessful observations.
 
+October 21, signals before any worker registers:
+
+- **Found by.** Waterline 2.12.0 service mode was compared against
+  published PHP 2.5.14 and against native with identical seeds. A signal
+  sent to a run that no worker had picked up was accepted by PHP and
+  rejected by native with 404 `unknown_signal`, so the signal was lost.
+- **Cause.** Native records a run's command contract at start only when a
+  worker for the type has registered. It then treated a missing contract as
+  one that declares nothing, and its recorded contracts lacked PHP's
+  `declared_entry_*` fields.
+- **Source.** Admission now follows PHP's `signalAdmissionForRun`:
+  - A signal is unknown only under a complete durable contract.
+  - A run without one admits every signal (`external_contract_unavailable`).
+  - A declared signal without a parameter contract takes its arguments as
+    given.
+  - The runtime message-stream signal name is refused with 422
+    `runtime_reserved_signal` before admission, whatever the run's state,
+    and no command is recorded.
+  - A signal without `input`, or with null input, has no arguments.
+- **Contracts.** Recorded contracts now carry PHP's entry defaults (`handle`,
+  `canonical`, `external:<type>`), so they are complete.
+- **Responses.** Signal responses carry `workflow_type`. The `control_plane`
+  envelope projects exactly PHP's `PROJECTED_FIELDS`, and cancel and
+  terminate responses now carry it.
+- **Evidence.** The new `signals-before-worker` fixture sends five signals,
+  the reserved name before and after termination, and a missing workflow to
+  a run on an unserved queue. Its responses match a reviewed copy of
+  published PHP's, and its history holds the same events. Published PHP,
+  embedded and native passed it locally; native from main failed it.
+- **Next.** Durable rejected updates and PHP's query routing refusals, which
+  the same comparison found.
+
 October 21, takeover refuses schedules native cannot run:
 
 - **Found by.** A review of takeover against native's schedule support.

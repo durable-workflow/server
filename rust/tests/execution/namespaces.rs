@@ -114,10 +114,9 @@ async fn named_signal_waits_keep_both_original_runs_and_foreign_polls_isolated()
                 accepted.1["control_plane"]["command_id"],
                 accepted.1["command_id"]
             );
-            assert_eq!(
-                accepted.1["control_plane"]["resolved_run_id"],
-                starts[index]["run_id"]
-            );
+            // PHP projects only its PROJECTED_FIELDS into the envelope.
+            assert_eq!(accepted.1["resolved_run_id"], starts[index]["run_id"]);
+            assert!(accepted.1["control_plane"].get("resolved_run_id").is_none());
             assert_eq!(accepted.1["control_plane"]["operation_name"], "data");
             command_ids.push(accepted.1["command_id"].as_str().unwrap().to_owned());
             let ready = scoped(&app, namespaces[index], "GET", &history_path, Value::Null).await;
