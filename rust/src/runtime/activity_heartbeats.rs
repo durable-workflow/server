@@ -210,6 +210,9 @@ where
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
         Self::cancelled_activity_outcome(&mut tx, &task, &body).await?;
+        if DB::string(&task, "status")? == "cancelled" {
+            return Err(refuse(StatusCode::CONFLICT, "stale_attempt"));
+        }
         Self::fence(&task, &body)?;
         let attempt =
             Self::query("SELECT * FROM activity_attempts WHERE id=$1 AND workflow_task_id=$2")

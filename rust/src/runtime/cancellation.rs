@@ -560,7 +560,9 @@ where
         let reason = match run_status.as_str() {
             "cancelled" => "run_cancelled",
             "terminated" => "run_terminated",
-            _ => return Err(refuse(StatusCode::CONFLICT, "stale_attempt")),
+            // A deadline, not the run, cancelled this task. The caller
+            // answers the late outcome with PHP's stale attempt receipt.
+            _ => return Ok(()),
         };
         if let Some(attempt) = attempt {
             if DB::string(&attempt, "status")? == "cancelled"

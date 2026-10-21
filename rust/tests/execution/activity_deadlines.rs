@@ -224,6 +224,35 @@ async fn every_authored_deadline_fences_outcomes_and_resolves_once() {
             }
         }
         let history = resolution(&app, &started, "ActivityTimedOut").await;
+        if !activity.is_null() {
+            // Once the timeout closed the attempt, a late result gets PHP's
+            // stale attempt receipt, which the SDKs recognize and discard.
+            let path = |outcome: &str| {
+                format!("/api/worker/activity-tasks/{}/{outcome}", activity["task_id"].as_str().unwrap())
+            };
+            let late = request(&app, "POST", &path("complete"),
+                json!({"lease_owner":activity["lease_owner"],"activity_attempt_id":activity["activity_attempt_id"],
+                    "result":envelope(Payload::Long(-1))})).await;
+            assert_eq!(late.0, StatusCode::CONFLICT, "{field}: {}", late.1);
+            assert_eq!(
+                late.1,
+                json!({"task_id":activity["task_id"],"activity_attempt_id":activity["activity_attempt_id"],
+                    "outcome":"completed","recorded":false,"reason":"stale_attempt","next_task_id":null,
+                    "lease_owner":activity["lease_owner"],"activity_status":"failed","attempt_status":"failed",
+                    "task_status":"cancelled"}),
+                "{field}"
+            );
+            let late = request(&app, "POST", &path("fail"),
+                json!({"lease_owner":activity["lease_owner"],"activity_attempt_id":activity["activity_attempt_id"],
+                    "failure":{"type":"RuntimeException","message":"late","code":0}})).await;
+            assert_eq!(late.0, StatusCode::CONFLICT, "{field}: {}", late.1);
+            assert_eq!(
+                late.1,
+                json!({"task_id":activity["task_id"],"activity_attempt_id":activity["activity_attempt_id"],
+                    "outcome":"failed","recorded":false,"reason":"stale_attempt","next_task_id":null}),
+                "{field}"
+            );
+        }
         let timed = history
             .as_array()
             .unwrap()
