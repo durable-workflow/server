@@ -12,7 +12,7 @@ function model() {
   steps[3].response.next_fire_at = '2027-01-01T02:00:00+00:00';
   steps[3].response.created_at = '2026-10-21T05:00:00+00:00';
   return {mode: 'http', schedule_policies: {applicable: true, namespace: 'test-schedule-policies-schedules',
-    queue: 'test-schedule-policies-queue', retries: 0, steps: steps.map(step => JSON.parse(JSON.stringify(step)
+    queue: 'test-schedule-policies-queue', retries: 0, attempts: 1, steps: steps.map(step => JSON.parse(JSON.stringify(step)
       .replaceAll('@namespace', 'test-schedule-policies-schedules').replaceAll('@queue', 'test-schedule-policies-queue')))}};
 }
 const projection = {scope: 'schedule_policies'};
@@ -29,6 +29,8 @@ test('embedded explicitly declares the HTTP surface inapplicable', () => assert.
 for (const [label, mutate] of [
   ['another namespace', o => { o.schedule_policies.namespace = 'default'; }],
   ['unrecorded retries', o => { delete o.schedule_policies.retries; }],
+  ['unrecorded attempts', o => { delete o.schedule_policies.attempts; }],
+  ['a replay in the first namespace', o => { o.schedule_policies.attempts = 2; }],
   ['a missing step', o => { o.schedule_policies.steps.pop(); }],
   ['another status', o => { o.schedule_policies.steps[4].status = 422; }],
   ['a changed validation message', o => { o.schedule_policies.steps[1].response.message = 'The spec field is required.'; }],

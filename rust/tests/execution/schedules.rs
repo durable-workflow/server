@@ -397,3 +397,138 @@ async fn schedules_are_namespace_scoped_and_fire_into_their_own_namespace() {
     runtime.close().await;
     database.remove().await;
 }
+
+fn ids(page: &Value) -> Vec<&str> {
+    page["schedules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["schedule_id"].as_str().unwrap())
+        .collect()
+}
+
+async fn list(app: &Router, query: &str) -> (StatusCode, Value) {
+    request(app, "GET", &format!("/api/schedules?{query}"), Value::Null).await
+}
+
+fn encoded(text: &str) -> String {
+    form_urlencoded::byte_serialize(text.as_bytes()).collect()
+}
+
+#[tokio::test]
+async fn schedules_list_update_and_backfill_as_published_php() {
+    use super::namespaces::{create as create_namespace, scoped};
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    for (schedule, workflow_type, queue, extra) in [
+        ("alpha", "echo", "q-a", json!({"note":"first"})),
+        ("beta", "other", "q-b", json!({"paused":true,"spec":{"cron_expressions":["0 3 * * *"],"timezone":"Europe/Budapest"}})),
+        ("gamma", "echo", "q-b", json!({"note":"x AND y"})),
+        ("delta", "echo", "q-d", json!({})),
+    ] {
+        let mut body = json!({"schedule_id":schedule,"spec":{"intervals":[{"every":"P1D"}]},
+            "action":{"workflow_type":workflow_type,"task_queue":queue,"input":action()["input"]}});
+        for (field, value) in extra.as_object().unwrap() {
+            body[field] = value.clone();
+        }
+        let created = request(&app, "POST", "/api/schedules", body).await;
+        assert_eq!(created.0, StatusCode::CREATED, "{}", created.1);
+    }
+
+    // Newest first, with PHP's filters and visibility predicates.
+    let all = list(&app, "").await;
+    assert_eq!((all.0, ids(&all.1)), (StatusCode::OK, vec!["delta", "gamma", "beta", "alpha"]));
+    assert_eq!((all.1["schedule_count"].clone(), all.1["next_page_token"].clone()), (json!(4), Value::Null));
+    let beta = &all.1["schedules"][2];
+    assert_eq!((beta["paused"].clone(), beta["workflow_type"].clone()), (json!(true), json!("other")));
+    assert_eq!(ids(&list(&app, "status=paused").await.1), ["beta"]);
+    assert_eq!(ids(&list(&app, "workflow_type=echo").await.1), ["delta", "gamma", "alpha"]);
+    for (query, expected) in [
+        ("WorkflowType = \"echo\" AND TaskQueue = 'q-b'", vec!["gamma"]),
+        ("Note = 'x AND y'", vec!["gamma"]),
+        ("ScheduleId = 'alpha' and Status = \"active\"", vec!["alpha"]),
+        ("Status = 'active'", vec!["delta", "gamma", "alpha"]),
+    ] {
+        let page = list(&app, &format!("query={}", encoded(query))).await;
+        assert_eq!((page.0, ids(&page.1)), (StatusCode::OK, expected), "{query}: {}", page.1);
+    }
+    let refused = list(&app, &format!("query={}", encoded("Status != 'active'"))).await;
+    assert_eq!((refused.0, refused.1["reason"].clone()), (StatusCode::UNPROCESSABLE_ENTITY, json!("unsupported_schedule_visibility_predicate")));
+    let registered = request(&app, "POST", "/api/search-attributes", json!({"name":"Team","type":"keyword"})).await;
+    assert!(registered.0.is_success(), "{}", registered.1);
+    assert!(ids(&list(&app, &format!("query={}", encoded("Team = 'x'"))).await.1).is_empty());
+    let typed = list(&app, &format!("query={}", encoded("Team = 5"))).await;
+    assert_eq!(typed.1["message"], "Schedule visibility field [Team] requires a quoted string literal.");
+    let invalid = list(&app, "page_size=0&bogus=1").await;
+    assert_eq!((invalid.0, invalid.1["reason"].clone()), (StatusCode::UNPROCESSABLE_ENTITY, json!("unsupported_schedule_list_filter")));
+    let invalid = list(&app, "page_size=x").await;
+    assert_eq!(invalid.1["errors"], json!({"page_size":["The page size field must be an integer."]}));
+
+    // Signed continuation tokens bound to the filters and namespace.
+    let first = list(&app, "page_size=2").await;
+    assert_eq!(ids(&first.1), ["delta", "gamma"]);
+    let token = encoded(first.1["next_page_token"].as_str().unwrap());
+    let second = list(&app, &format!("page_size=2&next_page_token={token}")).await;
+    assert_eq!((ids(&second.1), second.1["next_page_token"].clone()), (vec!["beta", "alpha"], Value::Null));
+    let mismatch = list(&app, &format!("page_size=2&status=active&next_page_token={token}")).await;
+    assert_eq!((mismatch.0, mismatch.1["reason"].clone()), (StatusCode::CONFLICT, json!("schedule_page_token_filter_mismatch")));
+    assert_eq!(mismatch.1["last_safe_cursor"]["schedule_id"], "gamma");
+    let tampered = list(&app, &format!("next_page_token={}", encoded(&format!("{}0", &first.1["next_page_token"].as_str().unwrap()[..20])))).await;
+    assert_eq!((tampered.0, tampered.1["reason"].clone()), (StatusCode::BAD_REQUEST, json!("malformed_schedule_page_token")));
+    create_namespace(&app, "other").await;
+    let foreign = scoped(&app, "other", "GET", &format!("/api/schedules?page_size=2&next_page_token={token}"), Value::Null).await;
+    assert_eq!((foreign.0, foreign.1["reason"].clone()), (StatusCode::FORBIDDEN, json!("schedule_page_token_namespace_mismatch")));
+    let newest = list(&app, "page_size=1").await;
+    let stale = encoded(newest.1["next_page_token"].as_str().unwrap());
+    assert_eq!(request(&app, "DELETE", "/api/schedules/delta", Value::Null).await.0, StatusCode::OK);
+    let gone = list(&app, &format!("page_size=1&next_page_token={stale}")).await;
+    assert_eq!((gone.0, gone.1["reason"].clone()), (StatusCode::CONFLICT, json!("stale_schedule_page_token")));
+
+    // Updates merge the action and record PHP's changed fields.
+    let updated = request(&app, "PUT", "/api/schedules/alpha",
+        json!({"spec":{"cron_expressions":["0 4 * * *"],"timezone":"America/New_York"},
+            "action":{"task_queue":"q-z","workflow_execution_timeout":60},"memo":{"k":"v"},"max_runs":5})).await;
+    assert_eq!(updated, (StatusCode::OK, json!({"schedule_id":"alpha","outcome":"updated"})));
+    let alpha = request(&app, "GET", "/api/schedules/alpha", Value::Null).await.1;
+    assert_eq!((alpha["action"]["workflow_type"].clone(), alpha["action"]["task_queue"].clone()), (json!("echo"), json!("q-z")));
+    assert_eq!(alpha["action"]["execution_timeout_seconds"], 60);
+    assert_eq!((alpha["max_runs"].clone(), alpha["remaining_actions"].clone()), (json!(5), json!(5)));
+    assert!(alpha["next_fire_at"].as_str().unwrap().contains("T08:00:00+00:00") || alpha["next_fire_at"].as_str().unwrap().contains("T09:00:00+00:00"));
+    let events = audit(&app, "alpha").await;
+    assert_eq!(events.last().unwrap()["payload"]["changed_fields"], json!(["spec","action","memo","max_runs","remaining_actions"]));
+    assert_eq!(ids(&list(&app, &format!("query={}", encoded("TaskQueue = 'q-z'"))).await.1), ["alpha"]);
+    let invalid = request(&app, "PUT", "/api/schedules/alpha", json!({"overlap_policy":"bad","jitter_seconds":4000})).await;
+    assert_eq!(invalid.0, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(request(&app, "PUT", "/api/schedules/missing", json!({})).await.0, StatusCode::NOT_FOUND);
+
+    // Backfill fires each past occurrence once, in PHP's formats.
+    let created = request(&app, "POST", "/api/schedules", json!({"schedule_id":"bf",
+        "spec":{"cron_expressions":["0 3 * * *"],"intervals":[{"every":"P1D","offset":"PT6H"}],"timezone":"Europe/Budapest"},
+        "action":action(),"overlap_policy":"allow_all"})).await;
+    assert_eq!(created.0, StatusCode::CREATED, "{}", created.1);
+    let range = json!({"start_time":"2026-03-27T00:00:00Z","end_time":"2026-03-30 06:00:00+02:00"});
+    let backfill = request(&app, "POST", "/api/schedules/bf/backfill", range.clone()).await;
+    assert_eq!(backfill.0, StatusCode::OK, "{}", backfill.1);
+    let times: Vec<&str> = backfill.1["results"].as_array().unwrap().iter().map(|result| {
+        assert_eq!(result["outcome"], "started");
+        result["fire_time"].as_str().unwrap()
+    }).collect();
+    assert_eq!(times, ["2026-03-27T03:00:00+01:00", "2026-03-27T06:00:00+00:00", "2026-03-28T03:00:00+01:00",
+        "2026-03-28T06:00:00+00:00", "2026-03-29T03:00:00+02:00", "2026-03-29T06:00:00+00:00", "2026-03-30T03:00:00+02:00"]);
+    let again = request(&app, "POST", "/api/schedules/bf/backfill", range).await;
+    assert!(again.1["results"].as_array().unwrap().iter().all(|result| result == &json!({"fire_time":result["fire_time"],"outcome":"skipped"})));
+    let refused = request(&app, "POST", "/api/schedules/bf/backfill", json!({"start_time":"2026-04-01 +1 day","end_time":"2026-03-01"})).await;
+    assert_eq!(refused.1["errors"], json!({"start_time":["The start time field must be a valid date."]}));
+    let reversed = request(&app, "POST", "/api/schedules/bf/backfill", json!({"start_time":"2026-03-02","end_time":"2026-03-01"})).await;
+    assert_eq!(reversed, (StatusCode::UNPROCESSABLE_ENTITY, json!({"message":"end_time must be after start_time.","reason":"invalid_time_range"})));
+    let created = request(&app, "POST", "/api/schedules", json!({"schedule_id":"bf-quota",
+        "spec":{"intervals":[{"every":"P1D"}]},"action":action(),"overlap_policy":"buffer_one","max_runs":2})).await;
+    assert_eq!(created.0, StatusCode::CREATED, "{}", created.1);
+    let quota = request(&app, "POST", "/api/schedules/bf-quota/backfill",
+        json!({"start_time":"2026-01-01T00:00:00Z","end_time":"2026-01-06T00:00:00Z"})).await;
+    assert_eq!(quota.1["fires_attempted"], 2, "{}", quota.1);
+    assert_eq!(request(&app, "GET", "/api/schedules/bf-quota", Value::Null).await.0, StatusCode::NOT_FOUND);
+    runtime.close().await;
+    database.remove().await;
+}

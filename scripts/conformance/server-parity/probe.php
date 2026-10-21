@@ -431,6 +431,9 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $searchAttributes = isset($fixture['search_attributes']) ? finishHttpSearchAttributes($client, $fixture, $workflowId, $url) : null;
     $storageTest = isset($fixture['storage_test']) ? finishHttpStorageTest($client, $fixture, $workflowId, $url) : null;
     $schedulePolicies = isset($fixture['schedule_policies']) ? finishHttpSchedulePolicies($client, $fixture, $workflowId, $url) : null;
+    $scheduleCatalog = isset($fixture['schedule_catalog'])
+        ? finishHttpSchedulePolicies($client, $fixture, $workflowId, $url, 'schedule_catalog')
+        : null;
     $workerListing = isset($fixture['worker_listing']) ? finishHttpWorkerListing($client, $fixture, $workflowId) : null;
     $workerReplacement = isset($fixture['worker_replacement']) ? finishHttpWorkerReplacement($client, $fixture, $workflowId) : null;
     $waitingHistory = isset($fixture['waiting_for_history']) ? finishHttpWaitingHistory($client, $fixture, $workflowId, $queue, $url) : null;
@@ -523,6 +526,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'search_attributes' => $searchAttributes,
         'storage_test' => $storageTest,
         'schedule_policies' => $schedulePolicies,
+        'schedule_catalog' => $scheduleCatalog,
         'worker_listing' => $workerListing,
         'worker_replacement' => $workerReplacement,
         'waiting_for_history' => $waitingHistory,
@@ -977,6 +981,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['schedule_policies'])) {
         $observation['schedule_policies'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_schedules'];
+    }
+    if ($mode === 'embedded' && isset($fixture['schedule_catalog'])) {
+        $observation['schedule_catalog'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_schedules'];
     }
     $observation['mode'] = $mode;
     $observation['typed_output'] = typedValue($observation['output']);

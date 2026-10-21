@@ -14,6 +14,7 @@ run() { docker run --rm --pull=never --network none --user 1000:1000 --read-only
 run next-run.php 7 2000 | head -1200 > rust/tests/fixtures/cron/php-2.5.14-next-run.jsonl
 run zone-names.php > rust/tests/fixtures/cron/php-2.5.14-zone-names.jsonl
 run next-fire.php 5 1500 | head -600 > rust/tests/fixtures/cron/php-2.5.14-next-fire.jsonl
+run backfill-dates.php 3 700 > rust/tests/fixtures/cron/php-2.5.14-backfill-dates.jsonl
 ```
 
 - `next-run.php SEED COUNT`: random expressions (names, ranges, steps, lists,
@@ -25,7 +26,10 @@ run next-fire.php 5 1500 | head -600 > rust/tests/fixtures/cron/php-2.5.14-next-
   answers for three fixed cases.
 - `next-fire.php SEED COUNT`: whole schedule specifications (cron expressions,
   intervals with offsets, zones and malformed rules) with
-  `WorkflowSchedule::computeNextFireAt`.
+  `WorkflowSchedule::computeNextFireAt` and the UTC offset of its result.
+- `backfill-dates.php SEED COUNT`: backfill time strings, ISO-8601 shapes
+  (marked `iso`) and PHP's other spellings, with Laravel's `date` rule and
+  the instant `new DateTimeImmutable()` reads.
 
 The zones skipped above, and America/Edmonton, Inuvik, Vancouver and
 Winnipeg, have rules that changed after PHP's database. Native uses the newer
