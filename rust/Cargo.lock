@@ -460,6 +460,7 @@ dependencies = [
  "hmac",
  "jiff",
  "libc",
+ "log",
  "phpserz",
  "regex-lite",
  "serde",
