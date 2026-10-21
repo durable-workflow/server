@@ -19,11 +19,16 @@ cleanup() {
 }
 trap cleanup EXIT
 started=$SECONDS
-docker run --rm --name "$build_container" --user="$(id -u):$(id -g)" --cpus=1 --memory=2g --memory-swap=2g \
+# The optimized compile of the server crate peaks near 2 GiB, so a 2 GiB
+# limit intermittently OOM-killed rustc (exit 101), as it did for the tests.
+if ! docker run --rm --name "$build_container" --user="$(id -u):$(id -g)" --cpus=1 --memory=4g --memory-swap=4g \
   -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=1 \
   -e CARGO_INCREMENTAL=0 -e CARGO_PROFILE_RELEASE_DEBUG=0 \
   -v "$root:/source:ro" -v "$output/cargo:/cargo" -v "$output/target:/target" \
-  -w /source/rust "$image" bash -c 'rustc --version; cargo build --release --locked' > "$output/build.txt" 2>&1
+  -w /source/rust "$image" bash -c 'rustc --version; cargo build --release --locked' > "$output/build.txt" 2>&1; then
+  tail -n 40 "$output/build.txt" >&2
+  exit 1
+fi
 cp "$output/target/release/durable-workflow-server" "$output/server"
 compiler=$(sed -n '/^rustc [0-9]/{p;q;}' "$output/build.txt")
 test -n "$compiler"
@@ -33,7 +38,7 @@ jq -n --arg revision "$(git rev-parse HEAD)" --arg tree "$(git rev-parse HEAD:ru
   --arg compiler "$compiler" --argjson duration "$((SECONDS-started))" \
   '{source_revision:$revision,native_tree:$tree,binary_sha256:$sha,cargo_lock_sha256:$lock,compiler_image:$image,
     compiler:$compiler,profile:"release",locked:true,build_duration_seconds:$duration,
-    resources:{nano_cpus:1000000000,memory_bytes:2147483648,memory_swap_bytes:2147483648},jobs:1,incremental:false}' \
+    resources:{nano_cpus:1000000000,memory_bytes:4294967296,memory_swap_bytes:4294967296},jobs:1,incremental:false}' \
   > "$output/build.json"
 (cd "$output"; sha256sum server build.json > SHA256SUMS)
 cat "$output/build.json"
