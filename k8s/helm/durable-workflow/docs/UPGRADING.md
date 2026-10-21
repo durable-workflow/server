@@ -67,6 +67,20 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 0.3.0 / Server 2.11
+
+This chart advances the default Server minor version. Existing values retain
+their shape. Server adds the optional `activity_lease_renewal` capability and
+reads `DW_ACTIVITY_TASK_TIMEOUT` as the activity-task lease duration, in seconds
+from 1 to 86400, with the existing 300-second default.
+
+Lease maintenance requires a compatible worker that discovers the capability.
+It does not replace application heartbeats or extend an activity's authored
+timeout, execution deadline or workflow deadline. See
+[activity observation and lease maintenance](../../../../docs/worker-activity-observation.md)
+before changing worker shutdown or lease settings. Complete the ordinary
+database backup, bootstrap and worker rollout checks above.
+
 ### Chart 0.2.2 / Server 2.10
 
 This chart changes the default application image without removing or renaming
