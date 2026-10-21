@@ -26,6 +26,7 @@ on:
       - tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs
       - tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs
       - tests/Unit/ServerParitySearchAttributeContractTest.mjs
+      - tests/Unit/ServerParityStorageTestContractTest.mjs
       - tests/Unit/ServerParityWorkerListingContractTest.mjs
       - tests/Unit/ServerParityWorkerReplacementContractTest.mjs
       - tests/Unit/ServerParityWaitingHistoryContractTest.mjs
@@ -67,6 +68,7 @@ on:
       - tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs
       - tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs
       - tests/Unit/ServerParitySearchAttributeContractTest.mjs
+      - tests/Unit/ServerParityStorageTestContractTest.mjs
       - tests/Unit/ServerParityWorkerListingContractTest.mjs
       - tests/Unit/ServerParityWorkerReplacementContractTest.mjs
       - tests/Unit/ServerParityWaitingHistoryContractTest.mjs
@@ -758,8 +760,8 @@ jobs:
             schema-check > parity-evidence/tls-wrong-hostname.txt 2>&1; then
             exit 1
           fi
-          grep -Fq storage_unavailable parity-evidence/tls-untrusted.txt
-          grep -Fq storage_unavailable parity-evidence/tls-wrong-hostname.txt
+          grep -Fq database_tls_connection_failed parity-evidence/tls-untrusted.txt
+          grep -Fq database_tls_connection_failed parity-evidence/tls-wrong-hostname.txt
       - name: Collect logs and clean owned resources
         if: always()
         run: |
@@ -1299,8 +1301,8 @@ jobs:
             schema-check > parity-evidence/tls-wrong-hostname.txt 2>&1; then
             exit 1
           fi
-          grep -Fq storage_unavailable parity-evidence/tls-untrusted.txt
-          grep -Fq storage_unavailable parity-evidence/tls-wrong-hostname.txt
+          grep -Fq database_tls_connection_failed parity-evidence/tls-untrusted.txt
+          grep -Fq database_tls_connection_failed parity-evidence/tls-wrong-hostname.txt
       - name: Collect logs and clean owned resources
         if: always()
         run: |
@@ -1458,7 +1460,7 @@ jobs:
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
-            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs > parity-evidence/comparator-tests.txt
+            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs > parity-evidence/comparator-tests.txt
           docker run --rm --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
             --network=none --entrypoint node -v "$PWD:/source:ro" -w /source \
             "$image" --test tests/Unit/ServerParityCodecDeadlineLoadTest.mjs > parity-evidence/codec-load-tests.txt

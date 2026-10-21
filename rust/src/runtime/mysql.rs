@@ -448,6 +448,11 @@ async fn preflight(connection: &mut MySqlConnection, flavor: Flavor) -> Result<(
     let engines: Vec<String> = sqlx::query_scalar("SELECT engine FROM dw_server_schema")
         .fetch_all(&mut *connection)
         .await?;
+    // Another node is between creating the marker table and recording its
+    // marker (DDL commits on its own). Its bootstrap lock decides the rest.
+    if engines.is_empty() && tables == ["dw_server_schema"] {
+        return Ok(());
+    }
     if engines == ["rust-initializing"] {
         verify_initializing(connection, flavor).await?;
         Ok(())
@@ -518,6 +523,12 @@ impl MySqlStorage {
             preflight(&mut connection,flavor).await?;
             if scope(&mut connection).await?.is_empty() {
                 connection.execute(MARKER_SQL).await?;
+            }
+            // A node killed between creating the marker table and recording its
+            // marker leaves the table empty. Preflight accepted that state only
+            // when nothing else exists yet.
+            let marked:i64=sqlx::query_scalar("SELECT COUNT(*) FROM dw_server_schema").fetch_one(&mut connection).await?;
+            if marked==0 {
                 sqlx::query("INSERT INTO dw_server_schema(engine,version,bootstrap_checksum) VALUES ('rust-initializing',?,?)").bind(VERSION).bind(flavor.checksum()).execute(&mut connection).await?;
             }
             let engine:String=sqlx::query_scalar("SELECT engine FROM dw_server_schema").fetch_one(&mut connection).await?;
@@ -1010,7 +1021,12 @@ mod tests {
         .unwrap();
         assert_eq!(lock, Some(1));
         let flavor = Flavor::detect(&mut connection).await.unwrap();
-        initializing(&mut connection, flavor).await;
+        if phase == "marker-table" {
+            // Killed after the marker table is created, before its marker.
+            connection.execute(MARKER_SQL).await.unwrap();
+        } else {
+            initializing(&mut connection, flavor).await;
+        }
         if phase == "dirty-partial" {
             dirty(&mut connection, flavor).await;
             partial(&mut connection, flavor).await;
@@ -1034,7 +1050,7 @@ mod tests {
     #[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
     async fn qualification_real_kill_resumes_only_recognized_initialization() {
         use std::os::unix::process::ExitStatusExt;
-        for phase in ["marker", "dirty-partial", "before-marker"] {
+        for phase in ["marker-table", "marker", "dirty-partial", "before-marker"] {
             let db = Database::new().await;
             let directory = tempfile::tempdir().unwrap();
             let receipt = directory.path().join("boundary");
@@ -1063,6 +1079,26 @@ mod tests {
                 panic!("child did not reach {phase}");
             }
             assert_eq!(std::fs::read_to_string(receipt).unwrap(), phase);
+            if phase == "marker-table" {
+                // A node starting now sees only the empty marker table. It must
+                // wait for the holder's bootstrap lock rather than refuse.
+                let open = MySqlStorage::open(db.options.clone());
+                tokio::pin!(open);
+                tokio::select! {
+                    result = &mut open => panic!(
+                        "a concurrent start finished while the bootstrap lock was held (ok: {})",
+                        result.is_ok()
+                    ),
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                }
+                child.kill().unwrap();
+                assert_eq!(child.wait().unwrap().signal(), Some(9));
+                let storage = open.await.unwrap();
+                storage.close().await;
+                MySqlStorage::check(db.options.clone()).await.unwrap();
+                db.remove().await;
+                continue;
+            }
             child.kill().unwrap();
             assert_eq!(child.wait().unwrap().signal(), Some(9));
             let mut connection = db.connection().await;
