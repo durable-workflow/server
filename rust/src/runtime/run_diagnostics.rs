@@ -51,7 +51,7 @@ fn trimmed(value: Option<String>) -> Option<String> {
 }
 
 /// `WorkflowTaskProblem::metadata`.
-fn task_problem_badge(problem: bool, liveness: Option<&str>, wait: Option<&str>) -> Value {
+pub(super) fn task_problem_badge(problem: bool, liveness: Option<&str>, wait: Option<&str>) -> Value {
     if !problem {
         return Value::Null;
     }

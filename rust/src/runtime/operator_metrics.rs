@@ -91,6 +91,68 @@ macro_rules! dispatch_overdue {
     };
 }
 
+/// The summary columns `WorkflowRunSummary::toArray()` reports, with flags
+/// read as numbers on every backend.
+macro_rules! summary_columns {
+    () => {
+        "SELECT id,workflow_instance_id,run_number,CASE WHEN is_current_run THEN 1 ELSE 0 END AS is_current_run,engine_source,projection_schema_version,class,workflow_type,namespace,compatibility,declared_entry_mode,declared_contract_source,business_key,visibility_labels,status,status_bucket,closed_reason,connection,queue,started_at,sort_timestamp,sort_key,closed_at,archived_at,archive_command_id,archive_reason,duration_ms,wait_kind,wait_reason,wait_started_at,wait_deadline_at,open_wait_id,resume_source_kind,resume_source_id,next_task_at,liveness_state,liveness_reason,repair_blocked_reason,CASE WHEN repair_attention THEN 1 ELSE 0 END AS repair_attention,CASE WHEN task_problem THEN 1 ELSE 0 END AS task_problem,next_task_id,next_task_type,next_task_status,next_task_lease_expires_at,exception_count,history_event_count,history_size_bytes,CASE WHEN continue_as_new_recommended THEN 1 ELSE 0 END AS continue_as_new_recommended,created_at,updated_at,history_fan_out,history_budget_pressure FROM workflow_run_summaries"
+    };
+}
+
+const SUMMARY_TEXT: &[&str] = &["id", "workflow_instance_id", "engine_source", "class", "workflow_type", "namespace",
+    "compatibility", "declared_entry_mode", "declared_contract_source", "business_key", "status", "status_bucket",
+    "closed_reason", "connection", "queue", "sort_key", "archive_command_id", "archive_reason", "wait_kind", "wait_reason",
+    "open_wait_id", "resume_source_kind", "resume_source_id", "liveness_state", "liveness_reason", "repair_blocked_reason",
+    "next_task_id", "next_task_type", "next_task_status", "history_budget_pressure"];
+const SUMMARY_NUMBERS: &[&str] = &["run_number", "projection_schema_version", "duration_ms", "exception_count",
+    "history_event_count", "history_size_bytes", "history_fan_out"];
+const SUMMARY_FLAGS: &[&str] = &["is_current_run", "repair_attention", "task_problem", "continue_as_new_recommended"];
+const SUMMARY_TIMES: &[&str] = &["started_at", "sort_timestamp", "closed_at", "archived_at", "wait_started_at",
+    "wait_deadline_at", "next_task_at", "next_task_lease_expires_at", "created_at", "updated_at"];
+
+/// `RepairBlockedReason::metadata`.
+fn repair_blocked(code: Option<&str>) -> Value {
+    let (label, description, tone, visible) = match code {
+        Some("unsupported_history") => ("Replay Blocked", "Repair is blocked because only unsupported diagnostic history remains.", "dark", true),
+        Some("waiting_for_compatible_worker") => ("Compat Blocked", "Repair is blocked because the task is waiting for a compatible worker.", "warning", true),
+        Some("selected_run_not_current") => ("Historical Run", "Repair is blocked because the selected run is no longer current.", "secondary", false),
+        Some("run_closed") => ("Run Closed", "Repair is blocked because the selected run is already closed.", "secondary", false),
+        Some("repair_not_needed") => ("Repair Not Needed", "Repair is blocked because the run already has a healthy durable resume path.", "secondary", false),
+        _ => return Value::Null,
+    };
+    json!({"code": code, "label": label, "description": description, "tone": tone, "badge_visible": visible})
+}
+
+/// PHP's `$flowsPastHour / 60`: an integer when it divides evenly.
+fn per_minute(flows: i64) -> Value {
+    if flows % 60 == 0 { json!(flows / 60) } else { json!(flows as f64 / 60.0) }
+}
+
+/// Carbon's `toIso8601String()`.
+fn iso8601(at: DateTime<Utc>) -> String {
+    at.format("%Y-%m-%dT%H:%M:%S+00:00").to_string()
+}
+
+fn start_of_hour(at: DateTime<Utc>) -> DateTime<Utc> {
+    at.with_minute(0).and_then(|at| at.with_second(0)).and_then(|at| at.with_nanosecond(0)).unwrap_or(at)
+}
+
+/// `OperatorMetrics::snapshot(..., includeHistoryAudits: false)`: the history
+/// audits are marked as not requested and their counts are null.
+fn without_history_audits(metrics: &mut Value) {
+    metrics["history_audit_evaluation"] = json!("not_requested");
+    if let Some(contracts) = metrics["command_contracts"].as_object_mut() {
+        for value in contracts.values_mut() {
+            *value = Value::Null;
+        }
+    }
+    for field in ["runs_with_waits", "projected_runs_with_waits", "missing_runs_with_waits", "stale_projected_runs", "needs_rebuild"] {
+        if metrics["projections"]["run_waits"].get(field).is_some() {
+            metrics["projections"]["run_waits"][field] = Value::Null;
+        }
+    }
+}
+
 impl<DB: Backend> Store<DB>
 where
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
@@ -187,6 +249,224 @@ where
         metrics["runtime_external_payload_cleanup"] =
             self.external_payload_cleanup_metrics(config).await?;
         Ok(json!({"namespace": self.namespace.as_ref(), "operator_metrics": metrics}))
+    }
+
+    /// `SystemController::dashboardResponse` for the whole namespace. The
+    /// bounded dashboard skips PHP's history audits.
+    pub(super) async fn operator_dashboard(&self, config: &MetricsConfig, bounded: bool) -> Result<Value> {
+        let now = now();
+        let mut metrics = self.operator_metrics_snapshot(config).await?;
+        if bounded {
+            without_history_audits(&mut metrics);
+            metrics["capacity_evidence"] =
+                json!({"available": false, "reason": "native_capacity_evidence_unavailable"});
+        }
+        metrics["worker_sessions"] =
+            json!({"total": 0, "active": 0, "closed": 0, "expired": 0, "failed": 0, "orphaned": 0});
+        metrics["runtime_external_payload_cleanup"] = self.external_payload_cleanup_metrics(config).await?;
+        let hour = now - Duration::hours(1);
+        let day = now - Duration::days(1);
+        let week = now - Duration::weeks(1);
+        let flows_past_hour = self.tally(summaries!("(sort_timestamp>=$2 OR (sort_timestamp IS NULL AND created_at>=$3))"), &[hour, hour]).await?;
+        let mut dashboard = json!({
+            "flows": self.tally("SELECT COUNT(*) FROM workflow_run_summaries WHERE namespace=$1", &[]).await?,
+            "flows_per_minute": per_minute(flows_past_hour),
+            "flows_past_hour": flows_past_hour,
+            "exceptions_past_hour": self.tally("SELECT COUNT(*) FROM workflow_failures f WHERE EXISTS (SELECT 1 FROM workflow_runs r WHERE r.id=f.workflow_run_id AND r.namespace=$1) AND f.created_at>=$2", &[hour]).await?,
+            "failed_flows_past_week": self.tally(summaries!("status='failed' AND updated_at>=$2"), &[now - Duration::days(7)]).await?,
+            "max_wait_time_workflow": self.summary_row(concat!(summary_columns!(), " WHERE namespace=$1 AND status_bucket='running' AND wait_started_at IS NOT NULL ORDER BY wait_started_at,sort_timestamp,created_at,id LIMIT 1")).await?,
+            "max_duration_workflow": self.summary_row(concat!(summary_columns!(), " WHERE namespace=$1 AND duration_ms IS NOT NULL ORDER BY duration_ms DESC,sort_timestamp DESC,created_at DESC,id DESC LIMIT 1")).await?,
+            "max_exceptions_workflow": self.summary_row(concat!(summary_columns!(), " WHERE namespace=$1 AND exception_count>0 ORDER BY exception_count DESC,sort_timestamp DESC,created_at DESC,id DESC LIMIT 1")).await?,
+            "fleet_overview": {
+                "current": self.bucket_counts("SELECT status_bucket AS bucket,COUNT(*) AS n FROM workflow_run_summaries WHERE namespace=$1 AND status_bucket<>'completed' GROUP BY status_bucket", None, &["running", "failed"]).await?,
+                "trends": {
+                    "hour": self.closed_counts(hour).await?,
+                    "day": self.closed_counts(day).await?,
+                    "week": self.closed_counts(week).await?,
+                },
+            },
+            "workflow_type_health": self.workflow_type_health(week).await?,
+            "needs_attention": self.needs_attention(now).await?,
+            "fleet_trends_series": self.fleet_trends(now).await?,
+            "workflow_scope": {"namespace": self.namespace.as_ref(), "workflow_types": null, "all_workflow_types": true},
+            "time_windows": {"generated_at": iso8601(now), "total_runs": "all_retained_runs", "current_status": "current",
+                "recent_hour_from": iso8601(hour), "recent_day_from": iso8601(day), "recent_week_from": iso8601(week),
+                "trends_resolution": "hour"},
+            "operator_metrics_scope": {"namespace": self.namespace.as_ref(), "workflow_types": null},
+        });
+        dashboard["operator_metrics"] = metrics;
+        Ok(json!({"namespace": self.namespace.as_ref(), "dashboard": dashboard}))
+    }
+
+    /// One summary as Eloquent's `WorkflowRunSummary::toArray()`, or null.
+    async fn summary_row(&self, sql: &'static str) -> Result<Value> {
+        let row = Self::query(sql).bind(self.namespace.as_ref()).fetch_optional(&self.pool).await?;
+        row.map(|row| Self::summary_array(&row)).transpose().map(|row| row.unwrap_or(Value::Null))
+    }
+
+    /// The summary's columns with the model's casts, then its appends.
+    fn summary_array(row: &DB::Row) -> Result<Value> {
+        let mut fields = serde_json::Map::new();
+        for column in SUMMARY_TEXT {
+            fields.insert((*column).to_owned(), json!(DB::optional_string(row, column)?));
+        }
+        for column in SUMMARY_NUMBERS {
+            fields.insert((*column).to_owned(), json!(DB::optional_number(row, column)?));
+        }
+        for column in SUMMARY_FLAGS {
+            fields.insert((*column).to_owned(), json!(DB::optional_number(row, column)?.map(|flag| flag != 0)));
+        }
+        for column in SUMMARY_TIMES {
+            fields.insert((*column).to_owned(), time(DB::optional_instant(row, column)?));
+        }
+        fields.insert("visibility_labels".into(), DB::optional_document_row(row, "visibility_labels")?.unwrap_or(Value::Null));
+        let status = DB::optional_string(row, "status")?.unwrap_or_default();
+        let text = |field: &str| fields.get(field).cloned().unwrap_or(Value::Null);
+        let appended = json!({"instance_id": text("workflow_instance_id"), "selected_run_id": text("id"), "run_id": text("id"),
+            "exceptions_count": DB::optional_number(row, "exception_count")?.unwrap_or_default(),
+            "is_terminal": matches!(status.as_str(), "completed" | "failed" | "cancelled" | "terminated"),
+            "repair_blocked": repair_blocked(DB::optional_string(row, "repair_blocked_reason")?.as_deref()),
+            "task_problem_badge": super::run_diagnostics::task_problem_badge(
+                fields["task_problem"] == true,
+                fields["liveness_state"].as_str(),
+                fields["wait_kind"].as_str(),
+            )});
+        if let Value::Object(appended) = appended {
+            fields.extend(appended);
+        }
+        Ok(Value::Object(fields))
+    }
+
+    /// `pluck('count', 'status_bucket')` over `buckets`, zero when absent.
+    async fn bucket_counts(&self, sql: &'static str, since: Option<DateTime<Utc>>, buckets: &[&str]) -> Result<Value> {
+        let mut query = Self::query(sql).bind(self.namespace.as_ref());
+        if let Some(since) = since {
+            query = query.bind(DB::bind_time(since));
+        }
+        let mut counts = serde_json::Map::new();
+        for bucket in buckets {
+            counts.insert((*bucket).to_owned(), json!(0));
+        }
+        for row in query.fetch_all(&self.pool).await? {
+            let bucket = DB::string(&row, "bucket")?;
+            if counts.contains_key(&bucket) {
+                counts.insert(bucket, json!(DB::number(&row, "n")?));
+            }
+        }
+        Ok(Value::Object(counts))
+    }
+
+    async fn closed_counts(&self, since: DateTime<Utc>) -> Result<Value> {
+        self.bucket_counts("SELECT status_bucket AS bucket,COUNT(*) AS n FROM workflow_run_summaries WHERE namespace=$1 AND closed_at>=$2 AND status_bucket IN ('completed','failed') GROUP BY status_bucket",
+            Some(since), &["completed", "failed"]).await
+    }
+
+    /// `workflowTypeHealth`: the week's ten busiest workflow types.
+    async fn workflow_type_health(&self, week: DateTime<Utc>) -> Result<Value> {
+        let types = Self::query("SELECT workflow_type,COUNT(*) AS total_runs FROM workflow_run_summaries WHERE namespace=$1 AND created_at>=$2 GROUP BY workflow_type ORDER BY total_runs DESC LIMIT 10")
+            .bind(self.namespace.as_ref()).bind(DB::bind_time(week)).fetch_all(&self.pool).await?;
+        let mut health = Vec::with_capacity(types.len());
+        for row in types {
+            let workflow_type = DB::string(&row, "workflow_type")?;
+            let total = DB::number(&row, "total_runs")?;
+            let mut statuses = std::collections::HashMap::new();
+            for row in Self::query("SELECT status,COUNT(*) AS n FROM workflow_run_summaries WHERE namespace=$1 AND workflow_type=$2 AND created_at>=$3 GROUP BY status")
+                .bind(self.namespace.as_ref()).bind(workflow_type.as_str()).bind(DB::bind_time(week)).fetch_all(&self.pool).await?
+            {
+                statuses.insert(DB::string(&row, "status")?, DB::number(&row, "n")?);
+            }
+            let count = |status: &str| statuses.get(status).copied().unwrap_or(0);
+            let (completed, failed, cancelled, terminated) = (count("completed"), count("failed"), count("cancelled"), count("terminated"));
+            let terminal = completed + failed + cancelled + terminated;
+            let pass_rate = if terminal > 0 { completed as f64 / terminal as f64 * 100.0 } else { 0.0 };
+            let durations = Self::scalar("SELECT COUNT(*) FROM workflow_run_summaries WHERE namespace=$1 AND workflow_type=$2 AND status='completed' AND created_at>=$3 AND duration_ms IS NOT NULL")
+                .bind(self.namespace.as_ref()).bind(workflow_type.as_str()).bind(DB::bind_time(week)).fetch_one(&self.pool).await?;
+            // The upper-middle duration, as PHP's offset query picks it.
+            let median = if durations > 0 {
+                Self::query("SELECT duration_ms FROM workflow_run_summaries WHERE namespace=$1 AND workflow_type=$2 AND status='completed' AND created_at>=$3 AND duration_ms IS NOT NULL ORDER BY duration_ms LIMIT 1 OFFSET $4")
+                    .bind(self.namespace.as_ref()).bind(workflow_type.as_str()).bind(DB::bind_time(week)).bind(durations / 2)
+                    .fetch_optional(&self.pool).await?
+                    .map(|row| DB::optional_number(&row, "duration_ms")).transpose()?.flatten()
+            } else {
+                None
+            };
+            health.push(json!({"workflow_type": workflow_type, "workflow_class": workflow_type, "total_runs": total,
+                "pass_rate": (pass_rate * 10.0).round() / 10.0, "median_duration_ms": median,
+                "error_count": failed + cancelled + terminated,
+                "status_breakdown": {"completed": completed, "failed": failed, "cancelled": cancelled, "terminated": terminated}}));
+        }
+        Ok(json!(health))
+    }
+
+    /// `needsAttention`: PHP's alert rules over workers and run summaries.
+    async fn needs_attention(&self, now: DateTime<Utc>) -> Result<Value> {
+        let hour = now - Duration::hours(1);
+        let mut alerts = Vec::new();
+        let stuck = self.tally("SELECT COUNT(*) FROM workflow_worker_compatibility_heartbeats WHERE namespace=$1 AND recorded_at<$2 AND recorded_at>$3",
+            &[now - Duration::minutes(5), hour]).await?;
+        if stuck > 0 {
+            alerts.push(json!({"type": "stuck_workers", "scope": "operator_workers", "severity": "warning",
+                "message": format!("{stuck} worker(s) have not sent heartbeat in 5+ minutes"), "count": stuck,
+                "action": "Check worker health and restart if needed"}));
+        }
+        let long_running = self.tally(summaries!("status_bucket='running' AND started_at<$2 AND wait_started_at IS NULL"), &[hour]).await?;
+        if long_running > 0 {
+            alerts.push(json!({"type": "long_running", "severity": "info",
+                "message": format!("{long_running} workflow(s) running longer than 1 hour"), "count": long_running,
+                "action": "Review workflow duration expectations"}));
+        }
+        let storms = self.tally(summaries!("status_bucket='running' AND updated_at>=$2 AND exception_count>=10"), &[hour]).await?;
+        if storms > 0 {
+            alerts.push(json!({"type": "retry_storm", "severity": "error",
+                "message": format!("{storms} workflow(s) with 10+ exceptions in last hour"), "count": storms,
+                "action": "Investigate activity failures and fix root cause"}));
+        }
+        let failed = self.tally(summaries!("status='failed' AND closed_at>=$2"), &[hour]).await?;
+        let completed = self.tally(summaries!("status='completed' AND closed_at>=$2"), &[hour]).await?;
+        let total = failed + completed;
+        if total >= 10 && failed as f64 / total as f64 * 100.0 > 20.0 {
+            alerts.push(json!({"type": "high_failure_rate", "severity": "error",
+                "message": format!("{:.0}% failure rate in last hour ({failed}/{total})", failed as f64 / total as f64 * 100.0),
+                "count": failed, "action": "Review failed workflows for common patterns"}));
+        }
+        let overdue = now - Duration::minutes(30);
+        let long_waits = self.tally(summaries!("status_bucket='running' AND wait_started_at IS NOT NULL AND (task_problem=TRUE OR repair_attention=TRUE OR (wait_kind IN ('activity','child','signal','condition','update') AND wait_deadline_at<=$2) OR (next_task_status='ready' AND next_task_at<$3) OR (wait_kind='timer' AND wait_deadline_at<$4 AND (next_task_status IS NULL OR next_task_status<>'leased')))"),
+            &[now, overdue, overdue]).await?;
+        if long_waits > 0 {
+            alerts.push(json!({"type": "long_waits", "severity": "warning",
+                "message": format!("{long_waits} workflow(s) with blocked or overdue waits"), "count": long_waits,
+                "action": "Inspect wait deadlines and task dispatch before recovering work"}));
+        }
+        let critical = alerts.iter().any(|alert| alert["severity"] == "error");
+        Ok(json!({"total_alerts": alerts.len(), "has_critical": critical, "alerts": alerts}))
+    }
+
+    /// `fleetTrendsSeries`: completed and failed runs per hour for a week.
+    async fn fleet_trends(&self, now: DateTime<Utc>) -> Result<Value> {
+        let week = now - Duration::weeks(1);
+        let start = start_of_hour(week);
+        let end = start_of_hour(now);
+        let sql = match DB::NAME {
+            "PostgreSQL" => "SELECT TO_CHAR(closed_at, 'YYYY-MM-DD HH24:00:00') AS hour_bucket,status_bucket,COUNT(*) AS run_count FROM workflow_run_summaries WHERE namespace=$1 AND closed_at IS NOT NULL AND closed_at>=$2 AND closed_at<$3 AND status_bucket IN ('completed','failed') GROUP BY TO_CHAR(closed_at, 'YYYY-MM-DD HH24:00:00'),status_bucket",
+            "MySQL" => "SELECT DATE_FORMAT(closed_at, '%Y-%m-%d %H:00:00') AS hour_bucket,status_bucket,COUNT(*) AS run_count FROM workflow_run_summaries WHERE namespace=$1 AND closed_at IS NOT NULL AND closed_at>=$2 AND closed_at<$3 AND status_bucket IN ('completed','failed') GROUP BY DATE_FORMAT(closed_at, '%Y-%m-%d %H:00:00'),status_bucket",
+            _ => "SELECT STRFTIME('%Y-%m-%d %H:00:00', closed_at) AS hour_bucket,status_bucket,COUNT(*) AS run_count FROM workflow_run_summaries WHERE namespace=$1 AND closed_at IS NOT NULL AND closed_at>=$2 AND closed_at<$3 AND status_bucket IN ('completed','failed') GROUP BY STRFTIME('%Y-%m-%d %H:00:00', closed_at),status_bucket",
+        };
+        let rows = Self::query(sql).bind(self.namespace.as_ref()).bind(DB::bind_time(week)).bind(DB::bind_time(end + Duration::hours(1)))
+            .fetch_all(&self.pool).await?;
+        let mut counts = std::collections::HashMap::new();
+        for row in rows {
+            counts.insert((DB::string(&row, "hour_bucket")?, DB::string(&row, "status_bucket")?), DB::number(&row, "run_count")?);
+        }
+        let (mut timestamps, mut completed, mut failed) = (Vec::new(), Vec::new(), Vec::new());
+        let mut hour = start;
+        while hour <= end {
+            let key = hour.format("%Y-%m-%d %H:00:00").to_string();
+            timestamps.push(hour.timestamp() * 1000);
+            completed.push(counts.get(&(key.clone(), "completed".to_owned())).copied().unwrap_or(0));
+            failed.push(counts.get(&(key, "failed".to_owned())).copied().unwrap_or(0));
+            hour += Duration::hours(1);
+        }
+        Ok(json!({"timestamps": timestamps, "completed": completed, "failed": failed}))
     }
 
     /// `GET /api/system/health`, with PHP's HTTP status.

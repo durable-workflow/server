@@ -59,8 +59,8 @@ CLI and Waterline use the first group.
 - **Used by the CLI or Waterline.**
   - Task queue build IDs.
   - Namespace update, delete and external storage.
-  - `system` repair, retention and activity-timeout passes, metrics and
-    operator dashboards.
+  - `system` repair, retention and activity-timeout passes, metrics, and
+    the operator dashboard filtered by workflow type.
   - Activities (standalone).
 - **Worker protocol features.**
   - Worker sessions.
@@ -226,6 +226,36 @@ support is not evidence of multi-node safety.
 
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
 names, including unsuccessful observations.
+
+October 21, operator dashboard:
+
+- **Found by.** Waterline 2.12.0's landing page in front of native: its
+  `/waterline/api/stats` request reached native's
+  `/api/system/operator-dashboard/bounded`, which answered 501.
+- **Source.** Native serves admin-only `GET /api/system/operator-dashboard`
+  and `/bounded`, in the default or a named namespace, by the rules of
+  Workflow 2.5.5's `OperatorDashboardSummary` over the run summaries:
+  - the flow counts and rate, current running and failed runs, the hour's
+    completed and failed runs, the longest open wait and the longest
+    duration as summary rows, with the model's casts and appends;
+  - the week's ten busiest workflow types with pass rate, error count,
+    status breakdown and the upper-middle duration;
+  - PHP's attention alerts over workers and run summaries;
+  - hourly completed and failed counts for the last 169 hours;
+  - the operator metrics snapshot. The bounded variant marks the history
+    audits as not requested and reports capacity evidence unavailable.
+- **By workflow type.** `/bounded/workflow-types` applies PHP's
+  `workflow_types` validation, then answers PHP's 501
+  `backend_capability_unavailable` for an observer that cannot filter by
+  type. Native does not advertise `workflow_type_dashboard_summary`, so
+  Waterline does not ask for it. Published PHP 2.5.14 answers with
+  filtered totals; porting that filter is open.
+- **Verification.** `operator_dashboard` integration tests pass on SQLite,
+  PostgreSQL and MySQL, and the full native suite passes on SQLite. With
+  identical seeds, Waterline's stats from native and from published PHP
+  2.5.14 differ only in identifiers, timings and durations, summary
+  `history_size_bytes` (above) and sort-key precision. Before the scheduled
+  run summary correction, native also counted one run fewer.
 
 October 21, operator metrics and health:
 
