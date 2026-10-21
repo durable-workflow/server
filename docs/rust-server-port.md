@@ -248,6 +248,148 @@ October 21, starts without timeouts:
   failed with `timed_out` and records `WorkflowTimedOut`. Native still only
   refuses further commands on such a run.
 
+October 20, workflow task lease:
+
+- **Source.** Native leased a claimed workflow task for a fixed 30 seconds.
+  Published PHP leases it for `DW_WORKFLOW_TASK_TIMEOUT`, 60 seconds by
+  default, on both claim and heartbeat; 2.5.14 and 2.9.8 measured 59.9 and
+  60.0 seconds. Native now reads the same setting with the same default. The
+  activity lease stays at PHP's fixed five minutes.
+- **Checks.** The `worker-replacement-activity-lease` contract now requires
+  a claimed workflow task's lease to last about 60 seconds. A native test
+  checks claim and heartbeat on each database. Locally, published PHP and
+  native both pass the contract.
+
+October 21, schedule listing, updates and backfill:
+
+- **Listing.** `schedule_list.rs` serves `GET /api/schedules` as PHP's
+  `ScheduleController::index` does:
+  - the `status`, `workflow_type`, `query`, `page_size` and
+    `next_page_token` filters, with Laravel's rules and messages and PHP's
+    refusal bodies, including `last_safe_cursor`;
+  - the visibility query from `ScheduleVisibilityQuery`, which accepts only
+    equality predicates joined by `AND`. It works on ScheduleId, Status,
+    WorkflowType, TaskQueue, Note and registered search attributes, with
+    PHP's literal rules. A search attribute predicate matches no schedule,
+    because native schedules hold no search attribute values.
+  - continuation tokens signed as PHP signs them, with `DW_SERVER_KEY`,
+    then `APP_KEY`. When neither is set, PHP generates a key for each
+    container; native uses its auth token instead, so tokens survive
+    restarts and work on every node. Each token is bound to its namespace,
+    filters and a cursor that must still be present.
+  - newest-first order, with PHP's list items.
+
+  The SQL is assembled from fixed fragments with bound values for each
+  database family.
+- **Updates.** `PUT /api/schedules/{id}` follows `ScheduleManager::update`:
+  the action is merged with the stored one, the quota is recomputed, the
+  next fire time is recalculated, and `ScheduleUpdated` carries PHP's
+  changed fields.
+- **Backfill.** `POST /api/schedules/{id}/backfill` enumerates every
+  occurrence from the start time up to, but not including, the end time,
+  and triggers each one as `triggerForBackfill` does:
+  - no stale check;
+  - buffering policies start every occurrence;
+  - a fired occurrence is skipped;
+  - the run quota ends the backfill.
+
+  Fire times carry the offset PHP formats: the schedule zone's for a cron
+  occurrence, UTC for an interval. The Laravel `date` rule reads ISO-8601
+  dates and date-times exactly as PHP does, including hour 24, second 60,
+  fractions and offsets.
+- **Deliberate differences.**
+  - Backfill times use ISO-8601 only. PHP's other `strtotime` forms, such as
+    `2026-04-01 +1 day` or `@1700000000`, get the `date` validation message.
+  - A backfill range with more than 10,000 occurrences is refused with 422
+    `backfill_range_too_large`. PHP has no limit.
+  - An update to a specification that cannot be evaluated is a 422. PHP
+    leaves that `LogicException` unhandled and returns 500.
+- **Corrected.** Laravel sizes a non-numeric value under a numeric rule by
+  its length, so `page_size=x` reports only the integer rule. The shared
+  rules engine now does the same.
+- **Evidence.**
+  - `cron-oracle/backfill-dates.php` records PHP's `date` rule and instant
+    for 700 seeded strings. Native accepts nothing PHP refuses, reads every
+    accepted string to the same microsecond, and reads every ISO-8601 shape
+    PHP accepts, except offsets of a day or more.
+  - The next-fire corpus now also records PHP's offset, and native matches
+    all 600 cases.
+  - The new `schedule-catalog` fixture sends 72 requests. Published PHP and
+    native agreed on every normalized response locally, and a reviewed copy
+    is in `tests/Fixtures/ServerParityExpected`.
+  - A PHP-on-PostgreSQL harness matched native on 81 responses, except the
+    two deliberate differences above.
+  - Schedule tests pass on SQLite, PostgreSQL, MySQL 8.4 and MariaDB 10.11.
+- **Next.** Narrowing the takeover schedule refusal (#568) to what native
+  still cannot run.
+
+October 21, PHP schedule specifications and policies:
+
+- **Cron.** `schedule_cron.rs` ports `dragonmantank/cron-expression` 3.6.0 as
+  published PHP 2.5.14 runs it: validation, aliases, names, ranges, steps,
+  lists, `L`, `W`, `#` and `?`, the separate day-of-month and day-of-week
+  searches, the 1,000-step limit and each field's quirks. PHP's `DateTime`
+  rules around daylight-saving changes are kept: a skipped wall-clock time
+  takes the offset from before the change, a repeated one keeps the current
+  daylight flag, and hour and minute steps are applied in UTC. Zone rules come
+  from `jiff`'s bundled IANA data (2026e). Ireland and Morocco use negative
+  daylight saving in the main IANA data PHP bundles, so PHP's flag is
+  inverted there.
+- **Zones.** `schedule_zones.rs` reads names as `new DateTimeZone()` does:
+  numeric offsets (`+5`, `-0330`, `GMT+1`), PHP's 144 abbreviations first
+  (`CET` is fixed +01:00) and then IANA identifiers in any case, with matched
+  parentheses. Offsets of 26 hours or more, which PHP accepts up to 100, are
+  refused.
+- **Specifications.** `schedule_spec.rs` is `computeNextFireAt`: the earliest
+  occurrence across cron expressions in the zone and intervals counted from
+  the epoch plus an offset, with PHP's `DateInterval` grammar and its
+  365-day year and 30-day month.
+- **Corpora.** `scripts/conformance/cron-oracle` regenerates, from the frozen
+  image, 1,200 cron cases, every PHP zone spelling (1,068 lines) and 600 whole
+  specifications. Native matches all of them, and 6,000 and 2,000 more seeded
+  cases checked locally. Six zones whose rules changed after PHP's 2026.1
+  database are left out (Casablanca, El Aaiun, Edmonton, Inuvik, Vancouver,
+  Winnipeg); native uses the newer rules.
+- **Schedules.** Creation follows PHP's Laravel rules and messages (a small
+  `laravel_rules.rs` engine: trimming, empty strings as null, `*` expansion,
+  attribute names and order). It accepts any schedule id, cron and interval
+  specifications in any zone, all six overlap policies, jitter, any run
+  quota, memo, note and creation paused. Descriptions, history snapshots and
+  history pages have PHP's shapes and timestamps. Pause accepts an
+  already paused schedule and records its note; resume records its note
+  after the resumed audit. Triggers follow `triggerDetailed`: the stale and
+  status checks, quota exhaustion, buffering with a full `buffer_one`,
+  closing the latest run for `cancel_other` and `terminate_other`, the
+  ten-entry recent actions, failure accounting and the next fire time after
+  each fire. The tick drains buffered actions of finished runs before due
+  schedules. Schedules are namespace-scoped and start runs in their own
+  namespace.
+- **Deliberate differences.** PHP's unhandled 500 for resuming an active
+  schedule is a 409 `schedule_not_paused`. A tick that finds another native
+  node already fired the occurrence skips it silently instead of recording
+  `stale_occurrence`. Plain JSON array input and search attributes are
+  refused, as native start refuses them; Avro input that does not decode is
+  refused at creation.
+- **Evidence.** The new `schedule-policies` fixture sends 60 requests to a fresh
+  namespace and compares every response, without generated identities and
+  times, with a reviewed copy of published PHP's
+  (`tests/Fixtures/ServerParityExpected`). Published PHP, embedded and native
+  passed it locally, and native from main failed it. Published PHP on SQLite
+  can fail a trigger with `database is locked` against its own maintenance
+  roles, and the transaction rolls back, so the probe retries exactly that.
+  The two existing schedule fixtures still pass. A local harness running PHP
+  on PostgreSQL matched native on all 72 compared responses except the two
+  refusals above.
+- **Takeover.** The takeover schedule check from #568 now refuses only what
+  native still cannot run: search attributes, visibility labels, Laravel
+  queue routing, an unknown status, a definition native's own creation
+  refuses (such as input that is not a payload envelope), and a
+  specification it cannot evaluate. Cron schedules, schedules in any
+  namespace, notes, memo, buffered actions, jitter, quotas and every
+  overlap policy are taken over.
+- **Next.** Update, listing with visibility queries and page tokens, and
+  backfill.
+
 October 21, signals before any worker registers:
 
 - **Found by.** Waterline 2.12.0 service mode was compared against

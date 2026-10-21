@@ -1070,13 +1070,14 @@ async fn takeover_refusals_leave_the_php_database_unchanged() {
             "INSERT INTO workflow_messages(workflow_instance_id,direction,channel,stream_key,sequence) VALUES ('w','inbound','c','k',1)",
             "upgrade_source_message_streams_unsupported",
         ),
-        // Schedules native would not fire, or would describe without fields.
+        // Schedules native would describe without their search attributes,
+        // or start outside their Laravel queue routing.
         (
-            "INSERT INTO workflow_schedules(id,schedule_id,namespace,spec,action,status,overlap_policy,jitter_seconds) VALUES ('s','nightly','default','{\"cron_expressions\":[\"0 2 * * *\"],\"timezone\":\"UTC\"}','{\"workflow_type\":\"echo\",\"task_queue\":\"default\"}','active','skip',0)",
+            "INSERT INTO workflow_schedules(id,schedule_id,namespace,spec,action,status,overlap_policy,jitter_seconds,search_attributes) VALUES ('s','nightly','default','{\"cron_expressions\":[\"0 2 * * *\"],\"timezone\":\"UTC\"}','{\"workflow_type\":\"echo\",\"task_queue\":\"default\"}','active','skip',0,'{\"Customer\":\"acme\"}')",
             "upgrade_source_schedules_unsupported",
         ),
         (
-            "INSERT INTO workflow_schedules(id,schedule_id,namespace,spec,action,status,overlap_policy,jitter_seconds) VALUES ('s','daily','billing','{\"intervals\":[{\"every\":\"P1D\"}],\"timezone\":\"UTC\"}','{\"workflow_type\":\"echo\",\"task_queue\":\"default\",\"input\":{\"codec\":\"avro\",\"blob\":\"AA==\"},\"execution_timeout_seconds\":3600,\"run_timeout_seconds\":600}','paused','skip',0)",
+            "INSERT INTO workflow_schedules(id,schedule_id,namespace,spec,action,status,overlap_policy,jitter_seconds,queue) VALUES ('s','daily','billing','{\"intervals\":[{\"every\":\"P1D\"}],\"timezone\":\"UTC\"}','{\"workflow_type\":\"echo\",\"task_queue\":\"default\",\"input\":{\"codec\":\"avro\",\"blob\":\"AA==\"},\"execution_timeout_seconds\":3600,\"run_timeout_seconds\":600}','paused','skip',0,'schedules')",
             "upgrade_source_schedules_unsupported",
         ),
     ] {
@@ -1190,6 +1191,7 @@ async fn inspection_counts_unrunnable_schedules_by_reason_without_naming_them() 
         "INSERT INTO workflow_schedules(id,schedule_id,namespace,spec,action,status,overlap_policy,jitter_seconds) VALUES ('s1','nightly-billing','default','{\"cron_expressions\":[\"0 2 * * *\"],\"timezone\":\"UTC\"}','{\"workflow_type\":\"echo\",\"task_queue\":\"default\",\"input\":{\"codec\":\"avro\",\"blob\":\"AA==\"},\"execution_timeout_seconds\":3600,\"run_timeout_seconds\":600}','active','skip',0)",
         "INSERT INTO workflow_schedules(id,schedule_id,namespace,spec,action,status,overlap_policy,jitter_seconds,memo) VALUES ('s2','tenant-report','default','{}','{}','paused','skip',0,'{\"tenant\":\"private-tenant\"}')",
         "INSERT INTO workflow_schedules(id,schedule_id,namespace,spec,action,status,overlap_policy,jitter_seconds) VALUES ('s3','old','default','{}','{}','deleted','skip',0)",
+        "INSERT INTO workflow_schedules(id,schedule_id,namespace,spec,action,status,overlap_policy,jitter_seconds,search_attributes) VALUES ('s4','tagged','billing','{\"intervals\":[{\"every\":\"P1D\"}]}','{\"workflow_type\":\"echo\"}','active','skip',0,'{\"Customer\":\"private-customer\"}')",
     ] {
         mutate(&path, statement).await;
     }
@@ -1198,10 +1200,12 @@ async fn inspection_counts_unrunnable_schedules_by_reason_without_naming_them() 
     assert_eq!(inspected["status"], "unqualified");
     assert_eq!(
         inspected["schedule_inspection"],
-        serde_json::json!({"schedules":2,"unsupported":2,
-            "reasons":{"unsupported_request_field":1,"schedule_metadata_unsupported":1}})
+        // The cron schedule runs natively; an empty definition and search
+        // attribute values do not.
+        serde_json::json!({"schedules":3,"unsupported":2,
+            "reasons":{"schedule_definition_unsupported":1,"schedule_metadata_unsupported":1}})
     );
     let text = inspected.to_string();
-    assert!(!text.contains("nightly-billing") && !text.contains("private-tenant"));
+    assert!(!text.contains("nightly-billing") && !text.contains("private-tenant") && !text.contains("private-customer"));
     assert_eq!(std::fs::read(&path).unwrap(), before);
 }

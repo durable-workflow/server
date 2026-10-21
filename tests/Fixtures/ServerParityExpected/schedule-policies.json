@@ -1,0 +1,1677 @@
+[
+ {
+  "request": "POST schedules",
+  "status": 422,
+  "response": {
+   "message": "The spec field is required. (and 2 more errors)",
+   "reason": "validation_failed",
+   "errors": {
+    "spec": [
+     "The spec field is required."
+    ],
+    "action": [
+     "The action field is required."
+    ],
+    "action.workflow_type": [
+     "The action.workflow type field is required."
+    ]
+   },
+   "validation_errors": {
+    "spec": [
+     "The spec field is required."
+    ],
+    "action": [
+     "The action field is required."
+    ],
+    "action.workflow_type": [
+     "The action.workflow type field is required."
+    ]
+   }
+  }
+ },
+ {
+  "request": "POST schedules",
+  "status": 422,
+  "response": {
+   "message": "The spec.timezone field must be a string. (and 9 more errors)",
+   "reason": "validation_failed",
+   "errors": {
+    "spec.timezone": [
+     "The spec.timezone field must be a string."
+    ],
+    "action.workflow_type": [
+     "The action.workflow type field is required."
+    ],
+    "overlap_policy": [
+     "The selected overlap policy is invalid."
+    ],
+    "jitter_seconds": [
+     "The jitter seconds field must not be greater than 3600."
+    ],
+    "max_runs": [
+     "The max runs field must be at least 1."
+    ],
+    "memo": [
+     "The memo field must be an array."
+    ],
+    "paused": [
+     "The paused field must be true or false."
+    ],
+    "note": [
+     "The note field must be a string."
+    ],
+    "spec.cron_expressions.0": [
+     "The spec.cron_expressions.0 field must be a string."
+    ],
+    "spec.intervals.0.every": [
+     "The spec.intervals.0.every field is required when spec.intervals is present."
+    ]
+   },
+   "validation_errors": {
+    "spec.timezone": [
+     "The spec.timezone field must be a string."
+    ],
+    "action.workflow_type": [
+     "The action.workflow type field is required."
+    ],
+    "overlap_policy": [
+     "The selected overlap policy is invalid."
+    ],
+    "jitter_seconds": [
+     "The jitter seconds field must not be greater than 3600."
+    ],
+    "max_runs": [
+     "The max runs field must be at least 1."
+    ],
+    "memo": [
+     "The memo field must be an array."
+    ],
+    "paused": [
+     "The paused field must be true or false."
+    ],
+    "note": [
+     "The note field must be a string."
+    ],
+    "spec.cron_expressions.0": [
+     "The spec.cron_expressions.0 field must be a string."
+    ],
+    "spec.intervals.0.every": [
+     "The spec.intervals.0.every field is required when spec.intervals is present."
+    ]
+   }
+  }
+ },
+ {
+  "request": "POST schedules",
+  "status": 201,
+  "response": {
+   "schedule_id": "yearly",
+   "outcome": "created"
+  }
+ },
+ {
+  "request": "GET schedules/yearly",
+  "status": 200,
+  "response": {
+   "schedule_id": "yearly",
+   "spec": {
+    "timezone": "Europe/Budapest",
+    "cron_expressions": [
+     "0 3 1 1 *"
+    ]
+   },
+   "action": {
+    "workflow_type": "parity.v1.echo",
+    "task_queue": "@queue",
+    "input": {
+     "codec": "avro",
+     "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+    }
+   },
+   "overlap_policy": "skip",
+   "state": {
+    "status": "active",
+    "paused": false,
+    "note": "yearly report"
+   },
+   "info": {
+    "next_fire": "@v",
+    "last_fire": null,
+    "fires_count": 0,
+    "failures_count": 0,
+    "recent_actions": [],
+    "buffered_actions": [],
+    "skipped_trigger_count": 0,
+    "last_skip_reason": null,
+    "last_skipped_at": null
+   },
+   "memo": {
+    "owner": "λ"
+   },
+   "search_attributes": null,
+   "created_at": "@v",
+   "updated_at": "@v",
+   "namespace": "@namespace",
+   "status": "active",
+   "paused": false,
+   "note": "yearly report",
+   "fires_count": 0,
+   "failures_count": 0,
+   "next_fire_at": "@v",
+   "last_fired_at": null,
+   "paused_at": null,
+   "jitter_seconds": 0,
+   "max_runs": null,
+   "remaining_actions": null,
+   "latest_workflow_instance_id": null
+  }
+ },
+ {
+  "request": "POST schedules",
+  "status": 409,
+  "response": {
+   "message": "Schedule [yearly] already exists in namespace [@namespace].",
+   "reason": "schedule_already_exists",
+   "schedule_id": "yearly"
+  }
+ },
+ {
+  "request": "POST schedules",
+  "status": 422,
+  "response": {
+   "message": "Invalid cron expression: [0 3 * *].",
+   "reason": "invalid_cron_expression",
+   "schedule_id": "invalid-cron",
+   "errors": {
+    "spec.cron_expressions": [
+     "Invalid cron expression: [0 3 * *]."
+    ]
+   }
+  }
+ },
+ {
+  "request": "POST schedules",
+  "status": 422,
+  "response": {
+   "message": "Schedule spec must include at least one cron_expression or interval.",
+   "reason": "invalid_schedule_spec",
+   "schedule_id": "empty-spec",
+   "errors": {
+    "spec": [
+     "Schedule spec must include at least one cron_expression or interval."
+    ]
+   }
+  }
+ },
+ {
+  "request": "POST schedules",
+  "status": 201,
+  "response": {
+   "schedule_id": "mixed",
+   "outcome": "created"
+  }
+ },
+ {
+  "request": "GET schedules/mixed",
+  "status": 200,
+  "response": {
+   "schedule_id": "mixed",
+   "spec": {
+    "timezone": "America/New_York",
+    "cron_expressions": [
+     "15 3 1 1 *",
+     "@yearly"
+    ],
+    "intervals": [
+     {
+      "every": "P400D",
+      "offset": "PT5H"
+     }
+    ]
+   },
+   "action": {
+    "workflow_type": "parity.v1.echo",
+    "task_queue": "@queue",
+    "execution_timeout_seconds": 90,
+    "run_timeout_seconds": 30
+   },
+   "overlap_policy": "buffer_all",
+   "state": {
+    "status": "paused",
+    "paused": true,
+    "note": null
+   },
+   "info": {
+    "next_fire": "@v",
+    "last_fire": null,
+    "fires_count": 0,
+    "failures_count": 0,
+    "recent_actions": [],
+    "buffered_actions": [],
+    "skipped_trigger_count": 0,
+    "last_skip_reason": null,
+    "last_skipped_at": null
+   },
+   "memo": null,
+   "search_attributes": null,
+   "created_at": "@v",
+   "updated_at": "@v",
+   "namespace": "@namespace",
+   "status": "paused",
+   "paused": true,
+   "note": null,
+   "fires_count": 0,
+   "failures_count": 0,
+   "next_fire_at": "@v",
+   "last_fired_at": null,
+   "paused_at": "@v",
+   "jitter_seconds": 0,
+   "max_runs": 4,
+   "remaining_actions": 4,
+   "latest_workflow_instance_id": null
+  }
+ },
+ {
+  "request": "POST schedules/mixed/pause",
+  "status": 200,
+  "response": {
+   "schedule_id": "mixed",
+   "outcome": "paused"
+  }
+ },
+ {
+  "request": "POST schedules/mixed/resume",
+  "status": 422,
+  "response": {
+   "message": "The note field must be a string.",
+   "reason": "validation_failed",
+   "errors": {
+    "note": [
+     "The note field must be a string."
+    ]
+   },
+   "validation_errors": {
+    "note": [
+     "The note field must be a string."
+    ]
+   }
+  }
+ },
+ {
+  "request": "POST schedules/mixed/resume",
+  "status": 200,
+  "response": {
+   "schedule_id": "mixed",
+   "outcome": "resumed"
+  }
+ },
+ {
+  "request": "GET schedules/mixed",
+  "status": 200,
+  "response": {
+   "schedule_id": "mixed",
+   "spec": {
+    "timezone": "America/New_York",
+    "cron_expressions": [
+     "15 3 1 1 *",
+     "@yearly"
+    ],
+    "intervals": [
+     {
+      "every": "P400D",
+      "offset": "PT5H"
+     }
+    ]
+   },
+   "action": {
+    "workflow_type": "parity.v1.echo",
+    "task_queue": "@queue",
+    "execution_timeout_seconds": 90,
+    "run_timeout_seconds": 30
+   },
+   "overlap_policy": "buffer_all",
+   "state": {
+    "status": "active",
+    "paused": false,
+    "note": "back"
+   },
+   "info": {
+    "next_fire": "@v",
+    "last_fire": null,
+    "fires_count": 0,
+    "failures_count": 0,
+    "recent_actions": [],
+    "buffered_actions": [],
+    "skipped_trigger_count": 0,
+    "last_skip_reason": null,
+    "last_skipped_at": null
+   },
+   "memo": null,
+   "search_attributes": null,
+   "created_at": "@v",
+   "updated_at": "@v",
+   "namespace": "@namespace",
+   "status": "active",
+   "paused": false,
+   "note": "back",
+   "fires_count": 0,
+   "failures_count": 0,
+   "next_fire_at": "@v",
+   "last_fired_at": null,
+   "paused_at": null,
+   "jitter_seconds": 0,
+   "max_runs": 4,
+   "remaining_actions": 4,
+   "latest_workflow_instance_id": null
+  }
+ },
+ {
+  "request": "POST schedules/mixed/trigger",
+  "status": 422,
+  "response": {
+   "message": "The selected overlap policy is invalid.",
+   "reason": "validation_failed",
+   "errors": {
+    "overlap_policy": [
+     "The selected overlap policy is invalid."
+    ]
+   },
+   "validation_errors": {
+    "overlap_policy": [
+     "The selected overlap policy is invalid."
+    ]
+   }
+  }
+ },
+ {
+  "request": "POST schedules/missing/pause",
+  "status": 404,
+  "response": {
+   "message": "Schedule [missing] not found in namespace [@namespace].",
+   "reason": "schedule_not_found"
+  }
+ },
+ {
+  "request": "POST schedules",
+  "status": 201,
+  "response": {
+   "schedule_id": "policy-skip",
+   "outcome": "created"
+  }
+ },
+ {
+  "request": "POST schedules/policy-skip/trigger",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-skip",
+   "outcome": "triggered",
+   "workflow_id": "@v",
+   "run_id": "@v"
+  }
+ },
+ {
+  "request": "POST schedules/policy-skip/trigger",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-skip",
+   "outcome": "skipped",
+   "reason": "overlap_policy_skip"
+  }
+ },
+ {
+  "request": "POST schedules/policy-skip/trigger",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-skip",
+   "outcome": "skipped",
+   "reason": "overlap_policy_skip"
+  }
+ },
+ {
+  "request": "GET schedules/policy-skip",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-skip",
+   "spec": {
+    "cron_expressions": [
+     "0 0 1 1 *"
+    ]
+   },
+   "action": {
+    "workflow_type": "parity.v1.echo",
+    "task_queue": "@queue",
+    "input": {
+     "codec": "avro",
+     "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+    }
+   },
+   "overlap_policy": "skip",
+   "state": {
+    "status": "active",
+    "paused": false,
+    "note": null
+   },
+   "info": {
+    "next_fire": "@v",
+    "last_fire": "@v",
+    "fires_count": 1,
+    "failures_count": 0,
+    "recent_actions": [
+     {
+      "workflow_id": "@v",
+      "run_id": "@v",
+      "outcome": "scheduled",
+      "fired_at": "@v"
+     }
+    ],
+    "buffered_actions": [],
+    "skipped_trigger_count": 2,
+    "last_skip_reason": "overlap_policy_skip",
+    "last_skipped_at": "@v"
+   },
+   "memo": null,
+   "search_attributes": null,
+   "created_at": "@v",
+   "updated_at": "@v",
+   "namespace": "@namespace",
+   "status": "active",
+   "paused": false,
+   "note": null,
+   "fires_count": 1,
+   "failures_count": 0,
+   "next_fire_at": "@v",
+   "last_fired_at": "@v",
+   "paused_at": null,
+   "jitter_seconds": 0,
+   "max_runs": null,
+   "remaining_actions": null,
+   "latest_workflow_instance_id": "@v"
+  }
+ },
+ {
+  "request": "POST schedules",
+  "status": 201,
+  "response": {
+   "schedule_id": "policy-buffer-one",
+   "outcome": "created"
+  }
+ },
+ {
+  "request": "POST schedules/policy-buffer-one/trigger",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-buffer-one",
+   "outcome": "triggered",
+   "workflow_id": "@v",
+   "run_id": "@v"
+  }
+ },
+ {
+  "request": "POST schedules/policy-buffer-one/trigger",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-buffer-one",
+   "outcome": "buffered",
+   "buffer_depth": 1
+  }
+ },
+ {
+  "request": "POST schedules/policy-buffer-one/trigger",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-buffer-one",
+   "outcome": "buffer_full",
+   "reason": "Previous workflow is still running and buffer is at capacity."
+  }
+ },
+ {
+  "request": "GET schedules/policy-buffer-one",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-buffer-one",
+   "spec": {
+    "cron_expressions": [
+     "0 0 1 1 *"
+    ]
+   },
+   "action": {
+    "workflow_type": "parity.v1.echo",
+    "task_queue": "@queue",
+    "input": {
+     "codec": "avro",
+     "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+    }
+   },
+   "overlap_policy": "buffer_one",
+   "state": {
+    "status": "active",
+    "paused": false,
+    "note": null
+   },
+   "info": {
+    "next_fire": "@v",
+    "last_fire": "@v",
+    "fires_count": 1,
+    "failures_count": 0,
+    "recent_actions": [
+     {
+      "workflow_id": "@v",
+      "run_id": "@v",
+      "outcome": "scheduled",
+      "fired_at": "@v"
+     }
+    ],
+    "buffered_actions": [
+     {
+      "buffered_at": "@v"
+     }
+    ],
+    "skipped_trigger_count": 1,
+    "last_skip_reason": "buffer_full",
+    "last_skipped_at": "@v"
+   },
+   "memo": null,
+   "search_attributes": null,
+   "created_at": "@v",
+   "updated_at": "@v",
+   "namespace": "@namespace",
+   "status": "active",
+   "paused": false,
+   "note": null,
+   "fires_count": 1,
+   "failures_count": 0,
+   "next_fire_at": "@v",
+   "last_fired_at": "@v",
+   "paused_at": null,
+   "jitter_seconds": 0,
+   "max_runs": null,
+   "remaining_actions": null,
+   "latest_workflow_instance_id": "@v"
+  }
+ },
+ {
+  "request": "POST schedules",
+  "status": 201,
+  "response": {
+   "schedule_id": "policy-buffer-all",
+   "outcome": "created"
+  }
+ },
+ {
+  "request": "POST schedules/policy-buffer-all/trigger",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-buffer-all",
+   "outcome": "triggered",
+   "workflow_id": "@v",
+   "run_id": "@v"
+  }
+ },
+ {
+  "request": "POST schedules/policy-buffer-all/trigger",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-buffer-all",
+   "outcome": "buffered",
+   "buffer_depth": 1
+  }
+ },
+ {
+  "request": "POST schedules/policy-buffer-all/trigger",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-buffer-all",
+   "outcome": "buffered",
+   "buffer_depth": 2
+  }
+ },
+ {
+  "request": "GET schedules/policy-buffer-all",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-buffer-all",
+   "spec": {
+    "cron_expressions": [
+     "0 0 1 1 *"
+    ]
+   },
+   "action": {
+    "workflow_type": "parity.v1.echo",
+    "task_queue": "@queue",
+    "input": {
+     "codec": "avro",
+     "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+    }
+   },
+   "overlap_policy": "buffer_all",
+   "state": {
+    "status": "active",
+    "paused": false,
+    "note": null
+   },
+   "info": {
+    "next_fire": "@v",
+    "last_fire": "@v",
+    "fires_count": 1,
+    "failures_count": 0,
+    "recent_actions": [
+     {
+      "workflow_id": "@v",
+      "run_id": "@v",
+      "outcome": "scheduled",
+      "fired_at": "@v"
+     }
+    ],
+    "buffered_actions": [
+     {
+      "buffered_at": "@v"
+     },
+     {
+      "buffered_at": "@v"
+     }
+    ],
+    "skipped_trigger_count": 0,
+    "last_skip_reason": null,
+    "last_skipped_at": null
+   },
+   "memo": null,
+   "search_attributes": null,
+   "created_at": "@v",
+   "updated_at": "@v",
+   "namespace": "@namespace",
+   "status": "active",
+   "paused": false,
+   "note": null,
+   "fires_count": 1,
+   "failures_count": 0,
+   "next_fire_at": "@v",
+   "last_fired_at": "@v",
+   "paused_at": null,
+   "jitter_seconds": 0,
+   "max_runs": null,
+   "remaining_actions": null,
+   "latest_workflow_instance_id": "@v"
+  }
+ },
+ {
+  "request": "POST schedules",
+  "status": 201,
+  "response": {
+   "schedule_id": "policy-allow-all",
+   "outcome": "created"
+  }
+ },
+ {
+  "request": "POST schedules/policy-allow-all/trigger",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-allow-all",
+   "outcome": "triggered",
+   "workflow_id": "@v",
+   "run_id": "@v"
+  }
+ },
+ {
+  "request": "POST schedules/policy-allow-all/trigger",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-allow-all",
+   "outcome": "triggered",
+   "workflow_id": "@v",
+   "run_id": "@v"
+  }
+ },
+ {
+  "request": "POST schedules/policy-allow-all/trigger",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-allow-all",
+   "outcome": "triggered",
+   "workflow_id": "@v",
+   "run_id": "@v"
+  }
+ },
+ {
+  "request": "GET schedules/policy-allow-all",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-allow-all",
+   "spec": {
+    "cron_expressions": [
+     "0 0 1 1 *"
+    ]
+   },
+   "action": {
+    "workflow_type": "parity.v1.echo",
+    "task_queue": "@queue",
+    "input": {
+     "codec": "avro",
+     "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+    }
+   },
+   "overlap_policy": "allow_all",
+   "state": {
+    "status": "active",
+    "paused": false,
+    "note": null
+   },
+   "info": {
+    "next_fire": "@v",
+    "last_fire": "@v",
+    "fires_count": 3,
+    "failures_count": 0,
+    "recent_actions": [
+     {
+      "workflow_id": "@v",
+      "run_id": "@v",
+      "outcome": "scheduled",
+      "fired_at": "@v"
+     },
+     {
+      "workflow_id": "@v",
+      "run_id": "@v",
+      "outcome": "scheduled",
+      "fired_at": "@v"
+     },
+     {
+      "workflow_id": "@v",
+      "run_id": "@v",
+      "outcome": "scheduled",
+      "fired_at": "@v"
+     }
+    ],
+    "buffered_actions": [],
+    "skipped_trigger_count": 0,
+    "last_skip_reason": null,
+    "last_skipped_at": null
+   },
+   "memo": null,
+   "search_attributes": null,
+   "created_at": "@v",
+   "updated_at": "@v",
+   "namespace": "@namespace",
+   "status": "active",
+   "paused": false,
+   "note": null,
+   "fires_count": 3,
+   "failures_count": 0,
+   "next_fire_at": "@v",
+   "last_fired_at": "@v",
+   "paused_at": null,
+   "jitter_seconds": 0,
+   "max_runs": null,
+   "remaining_actions": null,
+   "latest_workflow_instance_id": "@v"
+  }
+ },
+ {
+  "request": "POST schedules",
+  "status": 201,
+  "response": {
+   "schedule_id": "policy-cancel-other",
+   "outcome": "created"
+  }
+ },
+ {
+  "request": "POST schedules/policy-cancel-other/trigger",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-cancel-other",
+   "outcome": "triggered",
+   "workflow_id": "@v",
+   "run_id": "@v"
+  }
+ },
+ {
+  "request": "POST schedules/policy-cancel-other/trigger",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-cancel-other",
+   "outcome": "triggered",
+   "workflow_id": "@v",
+   "run_id": "@v"
+  }
+ },
+ {
+  "request": "POST schedules/policy-cancel-other/trigger",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-cancel-other",
+   "outcome": "triggered",
+   "workflow_id": "@v",
+   "run_id": "@v"
+  }
+ },
+ {
+  "request": "GET schedules/policy-cancel-other",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-cancel-other",
+   "spec": {
+    "cron_expressions": [
+     "0 0 1 1 *"
+    ]
+   },
+   "action": {
+    "workflow_type": "parity.v1.echo",
+    "task_queue": "@queue",
+    "input": {
+     "codec": "avro",
+     "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+    }
+   },
+   "overlap_policy": "cancel_other",
+   "state": {
+    "status": "active",
+    "paused": false,
+    "note": null
+   },
+   "info": {
+    "next_fire": "@v",
+    "last_fire": "@v",
+    "fires_count": 3,
+    "failures_count": 0,
+    "recent_actions": [
+     {
+      "workflow_id": "@v",
+      "run_id": "@v",
+      "outcome": "scheduled",
+      "fired_at": "@v"
+     },
+     {
+      "workflow_id": "@v",
+      "run_id": "@v",
+      "outcome": "scheduled",
+      "fired_at": "@v"
+     },
+     {
+      "workflow_id": "@v",
+      "run_id": "@v",
+      "outcome": "scheduled",
+      "fired_at": "@v"
+     }
+    ],
+    "buffered_actions": [],
+    "skipped_trigger_count": 0,
+    "last_skip_reason": null,
+    "last_skipped_at": null
+   },
+   "memo": null,
+   "search_attributes": null,
+   "created_at": "@v",
+   "updated_at": "@v",
+   "namespace": "@namespace",
+   "status": "active",
+   "paused": false,
+   "note": null,
+   "fires_count": 3,
+   "failures_count": 0,
+   "next_fire_at": "@v",
+   "last_fired_at": "@v",
+   "paused_at": null,
+   "jitter_seconds": 0,
+   "max_runs": null,
+   "remaining_actions": null,
+   "latest_workflow_instance_id": "@v"
+  }
+ },
+ {
+  "request": "POST schedules",
+  "status": 201,
+  "response": {
+   "schedule_id": "policy-terminate-other",
+   "outcome": "created"
+  }
+ },
+ {
+  "request": "POST schedules/policy-terminate-other/trigger",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-terminate-other",
+   "outcome": "triggered",
+   "workflow_id": "@v",
+   "run_id": "@v"
+  }
+ },
+ {
+  "request": "POST schedules/policy-terminate-other/trigger",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-terminate-other",
+   "outcome": "triggered",
+   "workflow_id": "@v",
+   "run_id": "@v"
+  }
+ },
+ {
+  "request": "POST schedules/policy-terminate-other/trigger",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-terminate-other",
+   "outcome": "triggered",
+   "workflow_id": "@v",
+   "run_id": "@v"
+  }
+ },
+ {
+  "request": "GET schedules/policy-terminate-other",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-terminate-other",
+   "spec": {
+    "cron_expressions": [
+     "0 0 1 1 *"
+    ]
+   },
+   "action": {
+    "workflow_type": "parity.v1.echo",
+    "task_queue": "@queue",
+    "input": {
+     "codec": "avro",
+     "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+    }
+   },
+   "overlap_policy": "terminate_other",
+   "state": {
+    "status": "active",
+    "paused": false,
+    "note": null
+   },
+   "info": {
+    "next_fire": "@v",
+    "last_fire": "@v",
+    "fires_count": 3,
+    "failures_count": 0,
+    "recent_actions": [
+     {
+      "workflow_id": "@v",
+      "run_id": "@v",
+      "outcome": "scheduled",
+      "fired_at": "@v"
+     },
+     {
+      "workflow_id": "@v",
+      "run_id": "@v",
+      "outcome": "scheduled",
+      "fired_at": "@v"
+     },
+     {
+      "workflow_id": "@v",
+      "run_id": "@v",
+      "outcome": "scheduled",
+      "fired_at": "@v"
+     }
+    ],
+    "buffered_actions": [],
+    "skipped_trigger_count": 0,
+    "last_skip_reason": null,
+    "last_skipped_at": null
+   },
+   "memo": null,
+   "search_attributes": null,
+   "created_at": "@v",
+   "updated_at": "@v",
+   "namespace": "@namespace",
+   "status": "active",
+   "paused": false,
+   "note": null,
+   "fires_count": 3,
+   "failures_count": 0,
+   "next_fire_at": "@v",
+   "last_fired_at": "@v",
+   "paused_at": null,
+   "jitter_seconds": 0,
+   "max_runs": null,
+   "remaining_actions": null,
+   "latest_workflow_instance_id": "@v"
+  }
+ },
+ {
+  "request": "POST schedules",
+  "status": 201,
+  "response": {
+   "schedule_id": "quota",
+   "outcome": "created"
+  }
+ },
+ {
+  "request": "POST schedules/quota/trigger",
+  "status": 200,
+  "response": {
+   "schedule_id": "quota",
+   "outcome": "triggered",
+   "workflow_id": "@v",
+   "run_id": "@v"
+  }
+ },
+ {
+  "request": "POST schedules/quota/trigger",
+  "status": 200,
+  "response": {
+   "schedule_id": "quota",
+   "outcome": "triggered",
+   "workflow_id": "@v",
+   "run_id": "@v"
+  }
+ },
+ {
+  "request": "GET schedules/quota",
+  "status": 404,
+  "response": {
+   "message": "Schedule [quota] not found in namespace [@namespace].",
+   "reason": "schedule_not_found"
+  }
+ },
+ {
+  "request": "GET schedules/quota/history?limit=2",
+  "status": 200,
+  "response": {
+   "schedule_id": "quota",
+   "namespace": "@namespace",
+   "events": [
+    {
+     "id": "@v",
+     "sequence": 1,
+     "event_type": "ScheduleCreated",
+     "payload": {
+      "spec": {
+       "cron_expressions": [
+        "0 0 1 1 *"
+       ]
+      },
+      "action": {
+       "workflow_type": "parity.v1.echo",
+       "task_queue": "@queue",
+       "input": {
+        "codec": "avro",
+        "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+       }
+      },
+      "overlap_policy": "allow_all",
+      "next_fire_at": "@v",
+      "command_context": {
+       "source": "control_plane",
+       "context": {
+        "caller": {
+         "type": "server",
+         "label": "Standalone Server"
+        },
+        "auth": {
+         "status": "authorized",
+         "method": "token",
+         "role": "admin",
+         "roles": [
+          "admin"
+         ],
+         "principal": {
+          "subject": "legacy-token",
+          "roles": [
+           "admin"
+          ],
+          "claims": {
+           "legacy_credential": true
+          },
+          "legacy_full_access": true
+         }
+        },
+        "request": {
+         "method": "POST",
+         "path": "/api/schedules",
+         "route_name": "@v",
+         "ip": "@v",
+         "user_agent": "GuzzleHttp/8",
+         "fingerprint": "@v"
+        },
+        "server": {
+         "operation_id": "@v",
+         "namespace": "@namespace",
+         "workflow_id": "quota",
+         "command": "schedule.create",
+         "metadata": []
+        },
+        "principal": {
+         "type": "auth:token",
+         "id": "legacy-token",
+         "label": "Admin"
+        }
+       }
+      },
+      "schedule": {
+       "id": "@v",
+       "schedule_id": "quota",
+       "namespace": "@namespace",
+       "status": "active",
+       "overlap_policy": "allow_all",
+       "next_fire_at": "@v",
+       "fires_count": 0,
+       "skipped_trigger_count": 0
+      }
+     },
+     "workflow_instance_id": null,
+     "workflow_run_id": null,
+     "recorded_at": "@v"
+    },
+    {
+     "id": "@v",
+     "sequence": 2,
+     "event_type": "ScheduleTriggered",
+     "payload": {
+      "workflow_instance_id": "@v",
+      "workflow_run_id": "@v",
+      "outcome": "scheduled",
+      "effective_overlap_policy": "allow_all",
+      "trigger_number": 1,
+      "command_context": {
+       "source": "control_plane",
+       "context": {
+        "caller": {
+         "type": "server",
+         "label": "Standalone Server"
+        },
+        "auth": {
+         "status": "authorized",
+         "method": "token",
+         "role": "admin",
+         "roles": [
+          "admin"
+         ],
+         "principal": {
+          "subject": "legacy-token",
+          "roles": [
+           "admin"
+          ],
+          "claims": {
+           "legacy_credential": true
+          },
+          "legacy_full_access": true
+         }
+        },
+        "request": {
+         "method": "POST",
+         "path": "/api/schedules/quota/trigger",
+         "route_name": "@v",
+         "ip": "@v",
+         "user_agent": "GuzzleHttp/8",
+         "fingerprint": "@v"
+        },
+        "server": {
+         "operation_id": "@v",
+         "namespace": "@namespace",
+         "workflow_id": "quota",
+         "command": "schedule.trigger",
+         "metadata": []
+        },
+        "principal": {
+         "type": "auth:token",
+         "id": "legacy-token",
+         "label": "Admin"
+        }
+       }
+      },
+      "schedule": {
+       "id": "@v",
+       "schedule_id": "quota",
+       "namespace": "@namespace",
+       "status": "active",
+       "overlap_policy": "allow_all",
+       "next_fire_at": "@v",
+       "fires_count": 0,
+       "skipped_trigger_count": 0
+      }
+     },
+     "workflow_instance_id": "@v",
+     "workflow_run_id": "@v",
+     "recorded_at": "@v"
+    }
+   ],
+   "next_cursor": 2,
+   "has_more": true
+  }
+ },
+ {
+  "request": "GET schedules/quota/history?limit=2&after_sequence=2",
+  "status": 200,
+  "response": {
+   "schedule_id": "quota",
+   "namespace": "@namespace",
+   "events": [
+    {
+     "id": "@v",
+     "sequence": 3,
+     "event_type": "ScheduleTriggered",
+     "payload": {
+      "workflow_instance_id": "@v",
+      "workflow_run_id": "@v",
+      "outcome": "scheduled",
+      "effective_overlap_policy": "allow_all",
+      "trigger_number": 2,
+      "command_context": {
+       "source": "control_plane",
+       "context": {
+        "caller": {
+         "type": "server",
+         "label": "Standalone Server"
+        },
+        "auth": {
+         "status": "authorized",
+         "method": "token",
+         "role": "admin",
+         "roles": [
+          "admin"
+         ],
+         "principal": {
+          "subject": "legacy-token",
+          "roles": [
+           "admin"
+          ],
+          "claims": {
+           "legacy_credential": true
+          },
+          "legacy_full_access": true
+         }
+        },
+        "request": {
+         "method": "POST",
+         "path": "/api/schedules/quota/trigger",
+         "route_name": "@v",
+         "ip": "@v",
+         "user_agent": "GuzzleHttp/8",
+         "fingerprint": "@v"
+        },
+        "server": {
+         "operation_id": "@v",
+         "namespace": "@namespace",
+         "workflow_id": "quota",
+         "command": "schedule.trigger",
+         "metadata": []
+        },
+        "principal": {
+         "type": "auth:token",
+         "id": "legacy-token",
+         "label": "Admin"
+        }
+       }
+      },
+      "schedule": {
+       "id": "@v",
+       "schedule_id": "quota",
+       "namespace": "@namespace",
+       "status": "active",
+       "overlap_policy": "allow_all",
+       "next_fire_at": "@v",
+       "last_fired_at": "@v",
+       "fires_count": 1,
+       "skipped_trigger_count": 0,
+       "latest_workflow_instance_id": "@v"
+      }
+     },
+     "workflow_instance_id": "@v",
+     "workflow_run_id": "@v",
+     "recorded_at": "@v"
+    },
+    {
+     "id": "@v",
+     "sequence": 4,
+     "event_type": "ScheduleDeleted",
+     "payload": {
+      "reason": "max_runs_exhausted",
+      "deleted_at": "@v",
+      "command_context": {
+       "source": "control_plane",
+       "context": {
+        "caller": {
+         "type": "server",
+         "label": "Standalone Server"
+        },
+        "auth": {
+         "status": "authorized",
+         "method": "token",
+         "role": "admin",
+         "roles": [
+          "admin"
+         ],
+         "principal": {
+          "subject": "legacy-token",
+          "roles": [
+           "admin"
+          ],
+          "claims": {
+           "legacy_credential": true
+          },
+          "legacy_full_access": true
+         }
+        },
+        "request": {
+         "method": "POST",
+         "path": "/api/schedules/quota/trigger",
+         "route_name": "@v",
+         "ip": "@v",
+         "user_agent": "GuzzleHttp/8",
+         "fingerprint": "@v"
+        },
+        "server": {
+         "operation_id": "@v",
+         "namespace": "@namespace",
+         "workflow_id": "quota",
+         "command": "schedule.trigger",
+         "metadata": []
+        },
+        "principal": {
+         "type": "auth:token",
+         "id": "legacy-token",
+         "label": "Admin"
+        }
+       }
+      },
+      "schedule": {
+       "id": "@v",
+       "schedule_id": "quota",
+       "namespace": "@namespace",
+       "status": "deleted",
+       "overlap_policy": "allow_all",
+       "last_fired_at": "@v",
+       "deleted_at": "@v",
+       "fires_count": 2,
+       "skipped_trigger_count": 0,
+       "latest_workflow_instance_id": "@v"
+      }
+     },
+     "workflow_instance_id": null,
+     "workflow_run_id": null,
+     "recorded_at": "@v"
+    }
+   ],
+   "next_cursor": null,
+   "has_more": false
+  }
+ },
+ {
+  "request": "GET schedules/quota/history?after_sequence=x",
+  "status": 422,
+  "response": {
+   "message": "after_sequence must be a non-negative integer.",
+   "reason": "invalid_after_sequence"
+  }
+ },
+ {
+  "request": "POST schedules/policy-skip/trigger",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-skip",
+   "outcome": "triggered",
+   "workflow_id": "@v",
+   "run_id": "@v"
+  }
+ },
+ {
+  "request": "POST schedules/policy-skip/pause",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-skip",
+   "outcome": "paused"
+  }
+ },
+ {
+  "request": "POST schedules/policy-skip/pause",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-skip",
+   "outcome": "paused"
+  }
+ },
+ {
+  "request": "POST schedules/policy-skip/trigger",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-skip",
+   "outcome": "skipped",
+   "reason": "status_not_triggerable"
+  }
+ },
+ {
+  "request": "GET schedules/policy-skip",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-skip",
+   "spec": {
+    "cron_expressions": [
+     "0 0 1 1 *"
+    ]
+   },
+   "action": {
+    "workflow_type": "parity.v1.echo",
+    "task_queue": "@queue",
+    "input": {
+     "codec": "avro",
+     "blob": "wwHioz3/VYAiNwwCBIKAgICAgIAgAA=="
+    }
+   },
+   "overlap_policy": "skip",
+   "state": {
+    "status": "paused",
+    "paused": true,
+    "note": "again"
+   },
+   "info": {
+    "next_fire": "@v",
+    "last_fire": "@v",
+    "fires_count": 2,
+    "failures_count": 0,
+    "recent_actions": [
+     {
+      "workflow_id": "@v",
+      "run_id": "@v",
+      "outcome": "scheduled",
+      "fired_at": "@v"
+     },
+     {
+      "workflow_id": "@v",
+      "run_id": "@v",
+      "outcome": "scheduled",
+      "fired_at": "@v"
+     }
+    ],
+    "buffered_actions": [],
+    "skipped_trigger_count": 3,
+    "last_skip_reason": "status_not_triggerable",
+    "last_skipped_at": "@v"
+   },
+   "memo": null,
+   "search_attributes": null,
+   "created_at": "@v",
+   "updated_at": "@v",
+   "namespace": "@namespace",
+   "status": "paused",
+   "paused": true,
+   "note": "again",
+   "fires_count": 2,
+   "failures_count": 0,
+   "next_fire_at": "@v",
+   "last_fired_at": "@v",
+   "paused_at": "@v",
+   "jitter_seconds": 0,
+   "max_runs": null,
+   "remaining_actions": null,
+   "latest_workflow_instance_id": "@v"
+  }
+ },
+ {
+  "request": "DELETE schedules/policy-skip",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-skip",
+   "outcome": "deleted"
+  }
+ },
+ {
+  "request": "DELETE schedules/policy-skip",
+  "status": 404,
+  "response": {
+   "message": "Schedule [policy-skip] not found in namespace [@namespace].",
+   "reason": "schedule_not_found"
+  }
+ },
+ {
+  "request": "GET schedules/policy-skip/history?after_sequence=7",
+  "status": 200,
+  "response": {
+   "schedule_id": "policy-skip",
+   "namespace": "@namespace",
+   "events": [
+    {
+     "id": "@v",
+     "sequence": 8,
+     "event_type": "ScheduleTriggerSkipped",
+     "payload": {
+      "reason": "status_not_triggerable",
+      "skipped_trigger_count": 3,
+      "last_skipped_at": "@v",
+      "command_context": {
+       "source": "control_plane",
+       "context": {
+        "caller": {
+         "type": "server",
+         "label": "Standalone Server"
+        },
+        "auth": {
+         "status": "authorized",
+         "method": "token",
+         "role": "admin",
+         "roles": [
+          "admin"
+         ],
+         "principal": {
+          "subject": "legacy-token",
+          "roles": [
+           "admin"
+          ],
+          "claims": {
+           "legacy_credential": true
+          },
+          "legacy_full_access": true
+         }
+        },
+        "request": {
+         "method": "POST",
+         "path": "/api/schedules/policy-skip/trigger",
+         "route_name": "@v",
+         "ip": "@v",
+         "user_agent": "GuzzleHttp/8",
+         "fingerprint": "@v"
+        },
+        "server": {
+         "operation_id": "@v",
+         "namespace": "@namespace",
+         "workflow_id": "policy-skip",
+         "command": "schedule.trigger",
+         "metadata": []
+        },
+        "principal": {
+         "type": "auth:token",
+         "id": "legacy-token",
+         "label": "Admin"
+        }
+       }
+      },
+      "schedule": {
+       "id": "@v",
+       "schedule_id": "policy-skip",
+       "namespace": "@namespace",
+       "status": "paused",
+       "overlap_policy": "skip",
+       "next_fire_at": "@v",
+       "last_fired_at": "@v",
+       "paused_at": "@v",
+       "last_skip_reason": "status_not_triggerable",
+       "last_skipped_at": "@v",
+       "fires_count": 2,
+       "skipped_trigger_count": 3,
+       "latest_workflow_instance_id": "@v",
+       "note": "again"
+      }
+     },
+     "workflow_instance_id": null,
+     "workflow_run_id": null,
+     "recorded_at": "@v"
+    },
+    {
+     "id": "@v",
+     "sequence": 9,
+     "event_type": "ScheduleDeleted",
+     "payload": {
+      "reason": "deleted",
+      "deleted_at": "@v",
+      "command_context": {
+       "source": "control_plane",
+       "context": {
+        "caller": {
+         "type": "server",
+         "label": "Standalone Server"
+        },
+        "auth": {
+         "status": "authorized",
+         "method": "token",
+         "role": "admin",
+         "roles": [
+          "admin"
+         ],
+         "principal": {
+          "subject": "legacy-token",
+          "roles": [
+           "admin"
+          ],
+          "claims": {
+           "legacy_credential": true
+          },
+          "legacy_full_access": true
+         }
+        },
+        "request": {
+         "method": "DELETE",
+         "path": "/api/schedules/policy-skip",
+         "route_name": "@v",
+         "ip": "@v",
+         "user_agent": "GuzzleHttp/8",
+         "fingerprint": "@v"
+        },
+        "server": {
+         "operation_id": "@v",
+         "namespace": "@namespace",
+         "workflow_id": "policy-skip",
+         "command": "schedule.delete",
+         "metadata": []
+        },
+        "principal": {
+         "type": "auth:token",
+         "id": "legacy-token",
+         "label": "Admin"
+        }
+       }
+      },
+      "schedule": {
+       "id": "@v",
+       "schedule_id": "policy-skip",
+       "namespace": "@namespace",
+       "status": "deleted",
+       "overlap_policy": "skip",
+       "last_fired_at": "@v",
+       "paused_at": "@v",
+       "deleted_at": "@v",
+       "last_skip_reason": "status_not_triggerable",
+       "last_skipped_at": "@v",
+       "fires_count": 2,
+       "skipped_trigger_count": 3,
+       "latest_workflow_instance_id": "@v",
+       "note": "again"
+      }
+     },
+     "workflow_instance_id": null,
+     "workflow_run_id": null,
+     "recorded_at": "@v"
+    }
+   ],
+   "next_cursor": null,
+   "has_more": false
+  }
+ }
+]

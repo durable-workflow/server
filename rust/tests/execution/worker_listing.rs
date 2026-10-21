@@ -351,3 +351,27 @@ async fn a_replacement_registration_releases_the_activity_lease_at_once() {
     runtime.close().await;
     database.remove().await;
 }
+
+#[tokio::test]
+async fn a_workflow_task_lease_lasts_the_published_sixty_seconds() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "lease-worker", json!(["echo"]), json!([])).await;
+    start(&app, "lease-sixty").await;
+    let remaining = |expires: &Value| {
+        let expires = chrono::DateTime::parse_from_rfc3339(expires.as_str().unwrap()).unwrap();
+        (expires.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_milliseconds()
+    };
+    let task = poll(&app, "lease-worker", "workflow").await;
+    let claimed = remaining(&task["lease_expires_at"]);
+    assert!((58_000..=60_500).contains(&claimed), "{claimed} ms");
+    let (status, heartbeat) = request(&app, "POST",
+        &format!("/api/worker/workflow-tasks/{}/heartbeat", task["task_id"].as_str().unwrap()),
+        json!({"lease_owner": task["lease_owner"], "workflow_task_attempt": task["workflow_task_attempt"]})).await;
+    assert_eq!(status, StatusCode::OK, "{heartbeat}");
+    let renewed = remaining(&heartbeat["lease_expires_at"]);
+    assert!((58_000..=60_500).contains(&renewed), "{renewed} ms");
+    runtime.close().await;
+    database.remove().await;
+}

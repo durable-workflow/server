@@ -1,0 +1,700 @@
+{"value":"now","iso":false,"valid":false}
+{"value":"yesterday","iso":false,"valid":false}
+{"value":"tomorrow 05:00","iso":false,"valid":false}
+{"value":"next monday","iso":false,"valid":false}
+{"value":"+1 day","iso":false,"valid":false}
+{"value":"2026-04-01 +1 day","iso":false,"valid":true,"at":"1775088000.000000"}
+{"value":"@1700000000","iso":false,"valid":true,"at":"1700000000.000000"}
+{"value":"@1700000000.5","iso":false,"valid":true,"at":"1700000000.500000"}
+{"value":"1700000000","iso":false,"valid":false}
+{"value":"20260401","iso":false,"valid":true,"at":"1775001600.000000"}
+{"value":"20260401T050000Z","iso":false,"valid":true,"at":"1775019600.000000"}
+{"value":"2026-4-1","iso":false,"valid":true,"at":"1775001600.000000"}
+{"value":"2026-04-1T5:00","iso":false,"valid":true,"at":"1775019600.000000"}
+{"value":"2026/04/01","iso":false,"valid":true,"at":"1775001600.000000"}
+{"value":"04/01/2026","iso":false,"valid":true,"at":"1775001600.000000"}
+{"value":"01.04.2026","iso":false,"valid":true,"at":"1775001600.000000"}
+{"value":"1 April 2026","iso":false,"valid":true,"at":"1775001600.000000"}
+{"value":"April 1, 2026","iso":false,"valid":true,"at":"1775001600.000000"}
+{"value":"Wed, 01 Apr 2026 05:00:00 GMT","iso":false,"valid":true,"at":"1775019600.000000"}
+{"value":"2026-04-01T05:00:00 UTC","iso":false,"valid":true,"at":"1775019600.000000"}
+{"value":"2026-04-01T05:00:00 Europe/Budapest","iso":false,"valid":true,"at":"1775012400.000000"}
+{"value":"2026-04-01T05:00:00+05:30:00","iso":false,"valid":true,"at":"1774999800.000000"}
+{"value":"2026-04-01T05:00:00.000000Z","iso":false,"valid":true,"at":"1775019600.000000"}
+{"value":"2026-04-01T05","iso":false,"valid":true,"at":"1775019600.000000"}
+{"value":"2026-04-01T","iso":false,"valid":true,"at":"1775026800.000000"}
+{"value":"2026-W14-3","iso":false,"valid":true,"at":"1775001600.000000"}
+{"value":"2026-091","iso":false,"valid":false}
+{"value":"-2026-04-01","iso":false,"valid":false}
+{"value":"12026-04-01","iso":false,"valid":true,"at":"1143892920.000000"}
+{"value":"0000-00-00","iso":false,"valid":false}
+{"value":"0001-01-01","iso":false,"valid":true,"at":"-62135596800.000000"}
+{"value":"9999-12-31T23:59:59Z","iso":false,"valid":true,"at":"253402300799.000000"}
+{"value":"garbage","iso":false,"valid":false}
+{"value":"T05:00:00","iso":false,"valid":false}
+{"value":"05:00","iso":false,"valid":false}
+{"value":"2026-04-01T05:00:00ZZ","iso":false,"valid":false}
+{"value":"2026-04-01T05:00:00+2","iso":false,"valid":true,"at":"1775012400.000000"}
+{"value":"2026-04-01T05:00:00-0","iso":false,"valid":true,"at":"1775019600.000000"}
+{"value":"2026-04-01  05:00:00","iso":false,"valid":true,"at":"1775019600.000000"}
+{"value":"2026-04-01T05:00:00.Z","iso":false,"valid":true,"at":"1775019600.000000"}
+{"value":"2026-04-01T05:00:00,5Z","iso":false,"valid":false}
+{"value":"2026-02-29","iso":false,"valid":false}
+{"value":"2028-02-29T00:00:00Z","iso":false,"valid":true,"at":"1835395200.000000"}
+{"value":"2100-02-29","iso":false,"valid":false}
+{"value":"2000-02-29","iso":false,"valid":true,"at":"951782400.000000"}
+{"value":"2026-04-01T05:00:00 +02:00","iso":false,"valid":true,"at":"1775012400.000000"}
+{"value":"2026-04-01T05:00:00+02:00 ","iso":false,"valid":true,"at":"1775012400.000000"}
+{"value":" 2026-04-01","iso":false,"valid":true,"at":"1775001600.000000"}
+{"value":"2026-04-01T05:00:00GMT+2","iso":false,"valid":true,"at":"1775012400.000000"}
+{"value":"2075-04-00","iso":true,"valid":false}
+{"value":"2083-11-22T13:54:29.2-1259","iso":true,"valid":true,"at":"3594164009.200000"}
+{"value":"2032-03-17T13:56:16-07","iso":true,"valid":true,"at":"1963169776.000000"}
+{"value":"2001-11-09t00:37:25.976908-25","iso":true,"valid":true,"at":"1005356245.976908"}
+{"value":"2067-12-17T08:48","iso":true,"valid":true,"at":"3091337280.000000"}
+{"value":"1999-01-28T16:25:50z","iso":true,"valid":true,"at":"917540750.000000"}
+{"value":"2032-05-11T12:17:00.5993","iso":true,"valid":true,"at":"1967890620.599300"}
+{"value":"2081-08-13t04:60:44Z","iso":true,"valid":false}
+{"value":"2022-08-18 18:25:35.469","iso":true,"valid":true,"at":"1660847135.469000"}
+{"value":"2009-12-26T04:60:51.70291Z","iso":true,"valid":false}
+{"value":"2095-11-13 23:53:44.690601031-05","iso":true,"valid":true,"at":"3972084824.690601"}
+{"value":"2012-07-31T22:12:56","iso":true,"valid":true,"at":"1343772776.000000"}
+{"value":"2095-08-28","iso":true,"valid":true,"at":"3965328000.000000"}
+{"value":"1999-04-10T23:00:28-0200","iso":true,"valid":true,"at":"923792428.000000"}
+{"value":"2018-12-28","iso":true,"valid":true,"at":"1545955200.000000"}
+{"value":"1999-06-22","iso":true,"valid":true,"at":"930009600.000000"}
+{"value":"1971-10-32T21:40","iso":true,"valid":false}
+{"value":"2083-02-27t02:02:54.43315-00:30","iso":true,"valid":true,"at":"3570921174.433150"}
+{"value":"2048-04-30","iso":true,"valid":true,"at":"2471817600.000000"}
+{"value":"2000-10-09t20:59-0859","iso":true,"valid":true,"at":"971157480.000000"}
+{"value":"2082-05-03T19:37:07+10","iso":true,"valid":true,"at":"3545026627.000000"}
+{"value":"2400-01-14T00:60:57Z","iso":true,"valid":false}
+{"value":"2400-01-32T10:45:37Z","iso":true,"valid":false}
+{"value":"1992-12-24t09:06:00.80121321","iso":true,"valid":true,"at":"725187960.801213"}
+{"value":"2077-06-25T21:07:60","iso":true,"valid":true,"at":"3391880880.000000"}
+{"value":"2024-10-28T25:34:57 +23:00","iso":true,"valid":false}
+{"value":"2058-11-21T19:60:00Z","iso":true,"valid":false}
+{"value":"2005-04-20T11:07","iso":true,"valid":true,"at":"1113995220.000000"}
+{"value":"2023-07-00 02:00:00","iso":true,"valid":false}
+{"value":"2079-01-28T04:42:55","iso":true,"valid":true,"at":"3442106575.000000"}
+{"value":"2098-13-28T10:40:27.198882","iso":true,"valid":false}
+{"value":"2100-03-13","iso":true,"valid":true,"at":"4108579200.000000"}
+{"value":"2069-05-12T11:30:41 -15","iso":true,"valid":true,"at":"3135637841.000000"}
+{"value":"2040-04-14T08:07:35Z","iso":true,"valid":true,"at":"2218003655.000000"}
+{"value":"2075-02-25","iso":true,"valid":true,"at":"3318278400.000000"}
+{"value":"2096-09-22T24:45:52.868801075","iso":true,"valid":true,"at":"3999199552.868801"}
+{"value":"2000-07-20T23:34-07:45","iso":true,"valid":true,"at":"964163940.000000"}
+{"value":"2000-11-19T11:36:59Z","iso":true,"valid":true,"at":"974633819.000000"}
+{"value":"2100-11-31","iso":true,"valid":false}
+{"value":"1987-06-14T05:25:37.56303","iso":true,"valid":true,"at":"550646737.563030"}
+{"value":"1986-04-28t16:06z","iso":true,"valid":true,"at":"515088360.000000"}
+{"value":"1999-11-26T07:59:17z","iso":true,"valid":true,"at":"943603157.000000"}
+{"value":"1995-09-01t13:16","iso":true,"valid":true,"at":"809961360.000000"}
+{"value":"2024-12-21T03:20:33","iso":true,"valid":true,"at":"1734751233.000000"}
+{"value":"2013-04-01T02:33:44","iso":true,"valid":true,"at":"1364783624.000000"}
+{"value":"2070-11-24T03:18Z","iso":true,"valid":true,"at":"3184024680.000000"}
+{"value":"2000-02-05","iso":true,"valid":true,"at":"949708800.000000"}
+{"value":"2015-01-04 19:30:54+06","iso":true,"valid":true,"at":"1420378254.000000"}
+{"value":"2034-05-30t01:53:45-0130","iso":true,"valid":true,"at":"2032572225.000000"}
+{"value":"1977-12-13t21:41:57+02:30","iso":true,"valid":true,"at":"250888317.000000"}
+{"value":"2020-04-21T02:01:47","iso":true,"valid":true,"at":"1587434507.000000"}
+{"value":"1987-06-10T08:14:37.785767227Z","iso":true,"valid":true,"at":"550311277.785767"}
+{"value":"2045-06-31t02:09:46-08","iso":true,"valid":false}
+{"value":"2015-05-28 19:03:44z","iso":true,"valid":true,"at":"1432839824.000000"}
+{"value":"2099-02-09T00:41:25.73023Z","iso":true,"valid":true,"at":"4074280885.730230"}
+{"value":"2400-11-29t11:11:32+11","iso":true,"valid":true,"at":"13598237492.000000"}
+{"value":"2100-10-05","iso":true,"valid":true,"at":"4126377600.000000"}
+{"value":"2000-04-09t17:35:18-00:00","iso":true,"valid":true,"at":"955301718.000000"}
+{"value":"2055-01-19 13:60:60+1200","iso":true,"valid":false}
+{"value":"2022-05-25T10:17:48+08","iso":true,"valid":true,"at":"1653445068.000000"}
+{"value":"1985-05-19T11:49:46Z","iso":true,"valid":true,"at":"485351386.000000"}
+{"value":"2022-11-19T13:54","iso":true,"valid":true,"at":"1668866040.000000"}
+{"value":"2048-10-01 25:15:31.8948022 +0745","iso":true,"valid":false}
+{"value":"2051-11-27T06:29:00Z","iso":true,"valid":true,"at":"2584679340.000000"}
+{"value":"2000-08-29T00:19:41Z","iso":true,"valid":true,"at":"967508381.000000"}
+{"value":"2000-05-05T04:51:16.3432 -1000","iso":true,"valid":true,"at":"957538276.343200"}
+{"value":"2061-10-22t13:21:07+00","iso":true,"valid":true,"at":"2897212867.000000"}
+{"value":"1976-07-01T09:32:25-03:45","iso":true,"valid":true,"at":"205075045.000000"}
+{"value":"2030-08-20t00:44:31+0230","iso":true,"valid":true,"at":"1913408071.000000"}
+{"value":"2055-05-25t06:58:20.525623+02:00","iso":true,"valid":true,"at":"2694833900.525623"}
+{"value":"2024-09-15t08:15:37Z","iso":true,"valid":true,"at":"1726388137.000000"}
+{"value":"2099-07-30t10:35","iso":true,"valid":true,"at":"4089090900.000000"}
+{"value":"2089-03-01","iso":true,"valid":true,"at":"3760473600.000000"}
+{"value":"2043-11-18t00:14 +1130","iso":true,"valid":true,"at":"2331377040.000000"}
+{"value":"2077-07-05t13:59","iso":true,"valid":true,"at":"3392719140.000000"}
+{"value":"2044-08-04 06:60:17.7206194","iso":true,"valid":false}
+{"value":"2000-09-22T03:36:45.8-1200","iso":true,"valid":true,"at":"969637005.800000"}
+{"value":"1970-05-24 00:41:19Z","iso":true,"valid":true,"at":"12357679.000000"}
+{"value":"2099-11-20t10:22:38","iso":true,"valid":true,"at":"4098853358.000000"}
+{"value":"1979-03-20T20:33:01+02:30","iso":true,"valid":true,"at":"290800981.000000"}
+{"value":"1996-08-05T11:16:43.1484 +0000","iso":true,"valid":true,"at":"839243803.148400"}
+{"value":"1976-11-25t14:46:59","iso":true,"valid":true,"at":"217781219.000000"}
+{"value":"1984-06-16","iso":true,"valid":true,"at":"456192000.000000"}
+{"value":"2035-05-19T11:36:14+0545","iso":true,"valid":true,"at":"2063166674.000000"}
+{"value":"1985-01-07T11:24:19","iso":true,"valid":true,"at":"473945059.000000"}
+{"value":"2073-06-08T22:10:45Z","iso":true,"valid":true,"at":"3264185445.000000"}
+{"value":"1993-09-32T05:03:60.7051929Z","iso":true,"valid":false}
+{"value":"1999-08-21T15:18:49 +09:45","iso":true,"valid":true,"at":"935213629.000000"}
+{"value":"2073-07-17 20:42:15-06","iso":true,"valid":true,"at":"3267571335.000000"}
+{"value":"2026-11-03 00:10:52.889283143 -14","iso":true,"valid":true,"at":"1793715052.889283"}
+{"value":"2063-04-27T08:35:40","iso":true,"valid":true,"at":"2944888540.000000"}
+{"value":"1971-07-15","iso":true,"valid":true,"at":"48384000.000000"}
+{"value":"2094-08-16T08:45:26","iso":true,"valid":true,"at":"3932786726.000000"}
+{"value":"1997-07-31T16:09:22-03","iso":true,"valid":true,"at":"870376162.000000"}
+{"value":"2021-04-12 18:02:37","iso":true,"valid":true,"at":"1618250557.000000"}
+{"value":"2000-01-03T18:14:57.1-0045","iso":true,"valid":true,"at":"946925997.100000"}
+{"value":"2030-12-28 21:50:03.5511990+11:30","iso":true,"valid":true,"at":"1924683603.551199"}
+{"value":"2002-03-04T17:59:15.74784z","iso":true,"valid":true,"at":"1015264755.747840"}
+{"value":"2001-12-32 17:44:55.7z","iso":true,"valid":false}
+{"value":"2031-10-14t00:00:20-01","iso":true,"valid":true,"at":"1949706020.000000"}
+{"value":"2021-05-04 15:17:41+07:00","iso":true,"valid":true,"at":"1620116261.000000"}
+{"value":"2090-07-04T04:20:34+00:00","iso":true,"valid":true,"at":"3802825234.000000"}
+{"value":"2029-09-25","iso":true,"valid":true,"at":"1884988800.000000"}
+{"value":"2067-03-07T21:59:11+00:45","iso":true,"valid":true,"at":"3066758051.000000"}
+{"value":"1979-06-24 14:48:41","iso":true,"valid":true,"at":"299083721.000000"}
+{"value":"2090-11-25T09:21Z","iso":true,"valid":true,"at":"3815284860.000000"}
+{"value":"2005-05-24 00:40","iso":true,"valid":true,"at":"1116895200.000000"}
+{"value":"1992-04-11T03:27:08-0000","iso":true,"valid":true,"at":"702962828.000000"}
+{"value":"1970-04-18","iso":true,"valid":true,"at":"9244800.000000"}
+{"value":"2000-12-28T22:27:58 +0600","iso":true,"valid":true,"at":"978020878.000000"}
+{"value":"2059-04-03T04:42:58 +10:45","iso":true,"valid":true,"at":"2816531878.000000"}
+{"value":"2086-09-14 05:59","iso":true,"valid":true,"at":"3682821540.000000"}
+{"value":"1973-07-08T12:07:23z","iso":true,"valid":true,"at":"110981243.000000"}
+{"value":"1977-10-16T16:56:59Z","iso":true,"valid":true,"at":"245869019.000000"}
+{"value":"2066-04-04 06:18","iso":true,"valid":true,"at":"3037587480.000000"}
+{"value":"1995-09-20T00:00:07.67972","iso":true,"valid":true,"at":"811555207.679720"}
+{"value":"2006-04-03T00:43:50","iso":true,"valid":true,"at":"1144025030.000000"}
+{"value":"1972-09-12T08:11-09:00","iso":true,"valid":true,"at":"85165860.000000"}
+{"value":"1971-03-18T01:09:05-1200","iso":true,"valid":true,"at":"38149745.000000"}
+{"value":"2046-11-15T18:28:06","iso":true,"valid":true,"at":"2425919286.000000"}
+{"value":"2099-02-09T01:03:57Z","iso":true,"valid":true,"at":"4074282237.000000"}
+{"value":"2015-10-04t12:04:51+03:45","iso":true,"valid":true,"at":"1443946791.000000"}
+{"value":"1997-08-27T20:00:53-04","iso":true,"valid":true,"at":"872726453.000000"}
+{"value":"1980-12-00","iso":true,"valid":false}
+{"value":"2061-03-22t00:59:09.8053Z","iso":true,"valid":true,"at":"2878678749.805300"}
+{"value":"2027-01-22t06:07:39.5681Z","iso":true,"valid":true,"at":"1800598059.568100"}
+{"value":"2400-09-31","iso":true,"valid":false}
+{"value":"2011-10-13T16:37:28","iso":true,"valid":true,"at":"1318523848.000000"}
+{"value":"2020-03-27","iso":true,"valid":true,"at":"1585267200.000000"}
+{"value":"2041-01-21t15:45:05.76","iso":true,"valid":true,"at":"2242395905.760000"}
+{"value":"2010-03-02t16:07","iso":true,"valid":true,"at":"1267546020.000000"}
+{"value":"2063-09-15t07:43:34.9+14","iso":true,"valid":true,"at":"2957017414.900000"}
+{"value":"2049-08-06T03:42 -05:30","iso":true,"valid":true,"at":"2511853920.000000"}
+{"value":"2000-01-27T23:55:09Z","iso":true,"valid":true,"at":"949017309.000000"}
+{"value":"2024-02-04t06:38Z","iso":true,"valid":true,"at":"1707028680.000000"}
+{"value":"2097-06-09t18:05:29+0700","iso":true,"valid":true,"at":"4021614329.000000"}
+{"value":"2028-12-20 09:29z","iso":true,"valid":true,"at":"1860917340.000000"}
+{"value":"1975-01-32T19:35:08","iso":true,"valid":false}
+{"value":"2021-02-16T09:59:15.6Z","iso":true,"valid":true,"at":"1613469555.600000"}
+{"value":"2088-08-07T12:48:28+11","iso":true,"valid":true,"at":"3742681708.000000"}
+{"value":"2059-04-28","iso":true,"valid":true,"at":"2818713600.000000"}
+{"value":"2005-07-05T00:00:59Z","iso":true,"valid":true,"at":"1120521659.000000"}
+{"value":"2024-04-00T17:38:36.1300Z","iso":true,"valid":false}
+{"value":"2004-05-17T16:57:17-11","iso":true,"valid":true,"at":"1084852637.000000"}
+{"value":"2400-04-27","iso":true,"valid":true,"at":"13579574400.000000"}
+{"value":"1990-11-05T22:48:61Z","iso":true,"valid":false}
+{"value":"2075-04-17T00:23:00","iso":true,"valid":true,"at":"3322686180.000000"}
+{"value":"2400-01-25T18:43:42.997+0130","iso":true,"valid":true,"at":"13571601222.997000"}
+{"value":"2012-09-07T25:52:52Z","iso":true,"valid":false}
+{"value":"2032-12-26 12:57:25+02:59","iso":true,"valid":true,"at":"1987667905.000000"}
+{"value":"2014-09-12T03:60:48.702448Z","iso":true,"valid":false}
+{"value":"1970-11-12T24:09:50.575906","iso":true,"valid":true,"at":"27302990.575906"}
+{"value":"2000-04-25T06:30:33-07","iso":true,"valid":true,"at":"956669433.000000"}
+{"value":"2082-04-22","iso":true,"valid":true,"at":"3544041600.000000"}
+{"value":"2017-05-29","iso":true,"valid":true,"at":"1496016000.000000"}
+{"value":"2080-01-31 17:60:42.25786123 -24:00","iso":true,"valid":false}
+{"value":"2072-06-04t00:41:59+1059","iso":true,"valid":true,"at":"3232186979.000000"}
+{"value":"1986-06-32t01:41:37.6963825+10","iso":true,"valid":false}
+{"value":"2039-03-00T20:10:40 -05:00","iso":true,"valid":false}
+{"value":"2400-10-01T23:27:00+04:30","iso":true,"valid":true,"at":"13593207420.000000"}
+{"value":"2023-06-28T15:38","iso":true,"valid":true,"at":"1687966680.000000"}
+{"value":"2093-12-20 07:48:28 +1100","iso":true,"valid":true,"at":"3912094108.000000"}
+{"value":"2008-06-07t18:39:11+23","iso":true,"valid":true,"at":"1212781151.000000"}
+{"value":"2027-04-10T19:41:61","iso":true,"valid":false}
+{"value":"1980-06-21t22:59:01","iso":true,"valid":true,"at":"330476341.000000"}
+{"value":"2400-08-11T09:49:42Z","iso":true,"valid":true,"at":"13588768182.000000"}
+{"value":"1984-01-03T11:32","iso":true,"valid":true,"at":"441977520.000000"}
+{"value":"1984-02-02T19:59:24","iso":true,"valid":true,"at":"444599964.000000"}
+{"value":"2018-10-10T12:51:27.1690674","iso":true,"valid":true,"at":"1539175887.169067"}
+{"value":"2094-04-20","iso":true,"valid":true,"at":"3922560000.000000"}
+{"value":"2063-08-26","iso":true,"valid":true,"at":"2955312000.000000"}
+{"value":"2044-05-30","iso":true,"valid":true,"at":"2348179200.000000"}
+{"value":"2041-05-02T17:11:10z","iso":true,"valid":true,"at":"2251127470.000000"}
+{"value":"2016-08-14T00:46:04+0530","iso":true,"valid":true,"at":"1471115764.000000"}
+{"value":"1993-07-05","iso":true,"valid":true,"at":"741830400.000000"}
+{"value":"2092-08-11T19:05:02.857122290 +05","iso":true,"valid":true,"at":"3869301902.857122"}
+{"value":"2400-07-26t19:13:60.29590032","iso":true,"valid":true,"at":"13587419640.295900"}
+{"value":"2050-02-24","iso":true,"valid":true,"at":"2529273600.000000"}
+{"value":"2015-03-30T21:47:48.175935976","iso":true,"valid":true,"at":"1427752068.175935"}
+{"value":"2100-01-25t13:31:15.2642270+09","iso":true,"valid":true,"at":"4104534675.264227"}
+{"value":"2070-05-16T16:29:48.4361395z","iso":true,"valid":true,"at":"3167483388.436139"}
+{"value":"2081-02-24T01:45-02:30","iso":true,"valid":true,"at":"3507596100.000000"}
+{"value":"1985-05-21T12:21","iso":true,"valid":true,"at":"485526060.000000"}
+{"value":"2088-10-11 13:13:49.69+04","iso":true,"valid":true,"at":"3748324429.690000"}
+{"value":"1983-04-08 23:27:40","iso":true,"valid":true,"at":"418692460.000000"}
+{"value":"2027-03-17t09:26:46.758782121-01:00","iso":true,"valid":true,"at":"1805279206.758782"}
+{"value":"1995-03-00T17:14:11Z","iso":true,"valid":false}
+{"value":"2072-12-02T15:43:11z","iso":true,"valid":true,"at":"3247918991.000000"}
+{"value":"2074-03-23 20:36:51","iso":true,"valid":true,"at":"3289063011.000000"}
+{"value":"2020-08-00 21:60:01z","iso":true,"valid":false}
+{"value":"2089-06-23T25:33:20z","iso":true,"valid":false}
+{"value":"2008-07-29T04:60z","iso":true,"valid":false}
+{"value":"2046-08-07T15:36","iso":true,"valid":true,"at":"2417268960.000000"}
+{"value":"2400-06-24","iso":true,"valid":true,"at":"13584585600.000000"}
+{"value":"2055-04-18T03:05:09z","iso":true,"valid":true,"at":"2691630309.000000"}
+{"value":"1994-08-01T18:43:00z","iso":true,"valid":true,"at":"775766580.000000"}
+{"value":"2024-01-17t09:21:38Z","iso":true,"valid":true,"at":"1705483298.000000"}
+{"value":"2085-10-30T05:04:33.419604213 -04","iso":true,"valid":true,"at":"3655271073.419604"}
+{"value":"2014-09-27T07:33:00.3799+09","iso":true,"valid":true,"at":"1411770780.379900"}
+{"value":"1994-04-25T00:31Z","iso":true,"valid":true,"at":"767233860.000000"}
+{"value":"2027-04-25T02:24:44-04","iso":true,"valid":true,"at":"1808634284.000000"}
+{"value":"2072-06-27T01:51:21+0159","iso":true,"valid":true,"at":"3234210741.000000"}
+{"value":"2076-02-14t08:34:30Z","iso":true,"valid":true,"at":"3348894870.000000"}
+{"value":"2011-10-25T17:52:58z","iso":true,"valid":true,"at":"1319565178.000000"}
+{"value":"2100-04-13T24:13:48.6207404Z","iso":true,"valid":true,"at":"4111344828.620740"}
+{"value":"2095-03-04 01:43","iso":true,"valid":true,"at":"3950041380.000000"}
+{"value":"2039-05-01","iso":true,"valid":true,"at":"2187820800.000000"}
+{"value":"2000-07-23","iso":true,"valid":true,"at":"964310400.000000"}
+{"value":"2004-01-28t11:13Z","iso":true,"valid":true,"at":"1075288380.000000"}
+{"value":"1999-10-27T18:31:16.71985195-0500","iso":true,"valid":true,"at":"941067076.719851"}
+{"value":"2079-08-18T10:11:38.9172190","iso":true,"valid":true,"at":"3459579098.917219"}
+{"value":"2035-07-09t07:17:36","iso":true,"valid":true,"at":"2067578256.000000"}
+{"value":"2071-06-23","iso":true,"valid":true,"at":"3202243200.000000"}
+{"value":"2000-10-21 03:50z","iso":true,"valid":true,"at":"972100200.000000"}
+{"value":"2088-05-00T02:56:20-07:00","iso":true,"valid":false}
+{"value":"2075-11-24 12:25","iso":true,"valid":true,"at":"3341823900.000000"}
+{"value":"2059-01-12T24:59-05","iso":true,"valid":true,"at":"2809663140.000000"}
+{"value":"2087-06-19t04:60","iso":true,"valid":false}
+{"value":"2010-00-13t13:29:54-05","iso":true,"valid":false}
+{"value":"2100-08-25 14:42:28z","iso":true,"valid":true,"at":"4122888148.000000"}
+{"value":"2080-01-21 01:24+03","iso":true,"valid":true,"at":"3473015040.000000"}
+{"value":"2076-12-03 15:07:00z","iso":true,"valid":true,"at":"3374233620.000000"}
+{"value":"1996-06-14T13:49","iso":true,"valid":true,"at":"834760140.000000"}
+{"value":"2033-10-12 04:60:10","iso":true,"valid":false}
+{"value":"2086-03-31t08:00-1000","iso":true,"valid":true,"at":"3668436000.000000"}
+{"value":"2097-07-08 05:41:54.2866Z","iso":true,"valid":true,"at":"4024100514.286600"}
+{"value":"2000-05-05T07:56:25 -03","iso":true,"valid":true,"at":"957524185.000000"}
+{"value":"1974-07-26","iso":true,"valid":true,"at":"144028800.000000"}
+{"value":"2011-01-03 00:00:48","iso":true,"valid":true,"at":"1294012848.000000"}
+{"value":"1999-03-25T08:58","iso":true,"valid":true,"at":"922352280.000000"}
+{"value":"2050-01-12t23:37:39 +0600","iso":true,"valid":true,"at":"2525621859.000000"}
+{"value":"2009-13-07T01:20:05.982405","iso":true,"valid":false}
+{"value":"2008-03-05T05:10:12","iso":true,"valid":true,"at":"1204693812.000000"}
+{"value":"2063-01-00t24:19:07","iso":true,"valid":false}
+{"value":"2078-10-16T14:32:57.9629610","iso":true,"valid":true,"at":"3433156377.962961"}
+{"value":"2400-01-30","iso":true,"valid":true,"at":"13571971200.000000"}
+{"value":"2045-09-31T10:05:52Z","iso":true,"valid":false}
+{"value":"2073-11-07t04:42 -03:45","iso":true,"valid":true,"at":"3277268820.000000"}
+{"value":"2100-09-04 10:00:46.56847 +11:30","iso":true,"valid":true,"at":"4123693846.568470"}
+{"value":"2000-02-29t22:08:02.219z","iso":true,"valid":true,"at":"951862082.219000"}
+{"value":"2000-10-28T20:22 -09:00","iso":true,"valid":true,"at":"972796920.000000"}
+{"value":"2085-12-28T00:39:17.7074z","iso":true,"valid":true,"at":"3660338357.707400"}
+{"value":"2051-12-20","iso":true,"valid":true,"at":"2586643200.000000"}
+{"value":"2015-04-29T21:58:13.543453","iso":true,"valid":true,"at":"1430344693.543453"}
+{"value":"2019-01-03T18:45:42.163410867Z","iso":true,"valid":true,"at":"1546541142.163410"}
+{"value":"2069-11-25T09:40:38z","iso":true,"valid":true,"at":"3152598038.000000"}
+{"value":"1972-02-07","iso":true,"valid":true,"at":"66268800.000000"}
+{"value":"2068-05-06T20:03:52-0960","iso":true,"valid":false}
+{"value":"2026-10-15","iso":true,"valid":true,"at":"1792022400.000000"}
+{"value":"2019-05-16 23:19+07:45","iso":true,"valid":true,"at":"1558020840.000000"}
+{"value":"1990-12-03T15:02+10:45","iso":true,"valid":true,"at":"660197820.000000"}
+{"value":"2012-01-23T10:24:45-2430","iso":true,"valid":true,"at":"1327402485.000000"}
+{"value":"1970-05-23T24:38:40","iso":true,"valid":true,"at":"12357520.000000"}
+{"value":"2050-02-00T12:60:18 -09:00","iso":true,"valid":false}
+{"value":"2067-08-15T04:52-04","iso":true,"valid":true,"at":"3080623920.000000"}
+{"value":"2078-07-32T07:09:00","iso":true,"valid":false}
+{"value":"2100-04-26","iso":true,"valid":true,"at":"4112380800.000000"}
+{"value":"1998-10-14T15:50:59.282407826","iso":true,"valid":true,"at":"908380259.282407"}
+{"value":"2064-08-22T13:46:18.82496+09","iso":true,"valid":true,"at":"2986605978.824960"}
+{"value":"1970-09-31T23:00","iso":true,"valid":false}
+{"value":"2043-07-28T02:47:54Z","iso":true,"valid":true,"at":"2321664474.000000"}
+{"value":"2036-05-21T22:09:46-1130","iso":true,"valid":true,"at":"2095061986.000000"}
+{"value":"2083-04-28t22:00:54","iso":true,"valid":true,"at":"3576175254.000000"}
+{"value":"2100-04-12T14:42:53.8184092","iso":true,"valid":true,"at":"4111224173.818409"}
+{"value":"2031-04-24","iso":true,"valid":true,"at":"1934755200.000000"}
+{"value":"2049-12-10 21:52","iso":true,"valid":true,"at":"2522785920.000000"}
+{"value":"1970-11-18T02:20:38.4417","iso":true,"valid":true,"at":"27742838.441700"}
+{"value":"2037-12-17 04:05:29z","iso":true,"valid":true,"at":"2144635529.000000"}
+{"value":"2005-10-29t06:21:08z","iso":true,"valid":true,"at":"1130566868.000000"}
+{"value":"2400-01-00t00:37:00.3+01:30","iso":true,"valid":false}
+{"value":"2011-08-30T23:24:20+14:00","iso":true,"valid":true,"at":"1314696260.000000"}
+{"value":"2000-08-04t25:35Z","iso":true,"valid":false}
+{"value":"1970-05-27T23:46:21.37z","iso":true,"valid":true,"at":"12699981.370000"}
+{"value":"2050-09-00 23:08:06+09:45","iso":true,"valid":false}
+{"value":"2054-02-19 18:00:16Z","iso":true,"valid":true,"at":"2655136816.000000"}
+{"value":"2000-02-09 23:42 -00:45","iso":true,"valid":true,"at":"950142420.000000"}
+{"value":"2002-12-18 20:38+23","iso":true,"valid":true,"at":"1040161080.000000"}
+{"value":"1970-05-29T12:41:40+02","iso":true,"valid":true,"at":"12825700.000000"}
+{"value":"2087-08-12 20:49 -1100","iso":true,"valid":true,"at":"3711599340.000000"}
+{"value":"2078-05-28 15:12:19","iso":true,"valid":true,"at":"3420976339.000000"}
+{"value":"2050-05-20t13:07:25","iso":true,"valid":true,"at":"2536664845.000000"}
+{"value":"2000-11-28","iso":true,"valid":true,"at":"975369600.000000"}
+{"value":"1970-03-01T02:58:07Z","iso":true,"valid":true,"at":"5108287.000000"}
+{"value":"2030-07-20T07:38:41.2181","iso":true,"valid":true,"at":"1910763521.218100"}
+{"value":"2014-06-32","iso":true,"valid":false}
+{"value":"2002-10-12t18:30:27Z","iso":true,"valid":true,"at":"1034447427.000000"}
+{"value":"1982-12-25T08:31:50-05","iso":true,"valid":true,"at":"409671110.000000"}
+{"value":"2012-10-26","iso":true,"valid":true,"at":"1351209600.000000"}
+{"value":"1988-09-08","iso":true,"valid":true,"at":"589680000.000000"}
+{"value":"1977-01-31","iso":true,"valid":true,"at":"223516800.000000"}
+{"value":"2014-12-28T11:52:30","iso":true,"valid":true,"at":"1419767550.000000"}
+{"value":"2017-03-15","iso":true,"valid":true,"at":"1489536000.000000"}
+{"value":"2024-04-29","iso":true,"valid":true,"at":"1714348800.000000"}
+{"value":"2039-04-00 08:18:15Z","iso":true,"valid":false}
+{"value":"2002-09-01T14:55:50 +25","iso":true,"valid":true,"at":"1030802150.000000"}
+{"value":"2092-07-17 19:45:50+00:00","iso":true,"valid":true,"at":"3867162350.000000"}
+{"value":"2060-04-18T19:59 +15:45","iso":true,"valid":true,"at":"2849487240.000000"}
+{"value":"2030-06-00T07:47:40.37232 +11:45","iso":true,"valid":false}
+{"value":"2064-11-14 22:09:31 +10:30","iso":true,"valid":true,"at":"2993888371.000000"}
+{"value":"1972-11-28","iso":true,"valid":true,"at":"91756800.000000"}
+{"value":"2002-12-24T09:21:51-05:45","iso":true,"valid":true,"at":"1040742411.000000"}
+{"value":"2010-04-19T17:59:22.721300539","iso":true,"valid":true,"at":"1271699962.721300"}
+{"value":"2072-08-25 13:46:33-15:30","iso":true,"valid":true,"at":"3239414193.000000"}
+{"value":"2038-07-11T06:36-07:45","iso":true,"valid":true,"at":"2162470860.000000"}
+{"value":"1984-08-26T08:10:24.905235Z","iso":true,"valid":true,"at":"462355824.905235"}
+{"value":"2095-09-06T21:49-0800","iso":true,"valid":true,"at":"3966212940.000000"}
+{"value":"2010-01-28T05:09:10","iso":true,"valid":true,"at":"1264655350.000000"}
+{"value":"2099-01-06T18:52","iso":true,"valid":true,"at":"4071408720.000000"}
+{"value":"2012-04-10T03:28-10","iso":true,"valid":true,"at":"1334064480.000000"}
+{"value":"2024-06-21T01:09+01:00","iso":true,"valid":true,"at":"1718928540.000000"}
+{"value":"2042-06-08T18:21z","iso":true,"valid":true,"at":"2285864460.000000"}
+{"value":"2068-07-06T07:45:41.4Z","iso":true,"valid":true,"at":"3108786341.400000"}
+{"value":"2024-03-07 11:05:32 -08:00","iso":true,"valid":true,"at":"1709838332.000000"}
+{"value":"1990-02-14","iso":true,"valid":true,"at":"634953600.000000"}
+{"value":"1983-03-15T16:59","iso":true,"valid":true,"at":"416595540.000000"}
+{"value":"2075-11-15T08:59:23-0300","iso":true,"valid":true,"at":"3341044763.000000"}
+{"value":"1986-06-25T10:01:17-0745","iso":true,"valid":true,"at":"520105577.000000"}
+{"value":"1980-13-27 13:08:37.6532-0230","iso":true,"valid":false}
+{"value":"2055-08-09T13:29:57.108372+0900","iso":true,"valid":true,"at":"2701398597.108372"}
+{"value":"2082-02-28t04:47:47.2-02:45","iso":true,"valid":true,"at":"3539489567.200000"}
+{"value":"2023-04-05 19:08z","iso":true,"valid":true,"at":"1680721680.000000"}
+{"value":"1983-07-28 05:35Z","iso":true,"valid":true,"at":"428218500.000000"}
+{"value":"2065-10-27","iso":true,"valid":true,"at":"3023827200.000000"}
+{"value":"1978-03-00 13:48:16.8-08:00","iso":true,"valid":false}
+{"value":"2400-08-01T16:22:26.997937 -00","iso":true,"valid":true,"at":"13587927746.997937"}
+{"value":"2098-12-00T20:48:29.50752-0500","iso":true,"valid":false}
+{"value":"2024-06-26T25:27:15-06","iso":true,"valid":false}
+{"value":"2017-02-29T20:46:17","iso":true,"valid":false}
+{"value":"2028-07-14T00:46:45.2972350Z","iso":true,"valid":true,"at":"1847148405.297235"}
+{"value":"2023-06-05 07:59:56Z","iso":true,"valid":true,"at":"1685951996.000000"}
+{"value":"2024-04-28","iso":true,"valid":true,"at":"1714262400.000000"}
+{"value":"1999-05-08","iso":true,"valid":true,"at":"926121600.000000"}
+{"value":"2015-05-14T22:15:08.56578476Z","iso":true,"valid":true,"at":"1431641708.565784"}
+{"value":"2018-11-22T13:46:29z","iso":true,"valid":true,"at":"1542894389.000000"}
+{"value":"2051-05-07t19:57:15Z","iso":true,"valid":true,"at":"2567102235.000000"}
+{"value":"2045-01-29T15:10:49.8222169-08","iso":true,"valid":true,"at":"2369344249.822216"}
+{"value":"2034-02-31T02:40:28z","iso":true,"valid":false}
+{"value":"2020-07-06T21:56:25.58927258Z","iso":true,"valid":true,"at":"1594072585.589272"}
+{"value":"1999-01-05T03:37:07z","iso":true,"valid":true,"at":"915507427.000000"}
+{"value":"2100-08-16T18:00:37","iso":true,"valid":true,"at":"4122122437.000000"}
+{"value":"1977-05-11","iso":true,"valid":true,"at":"232156800.000000"}
+{"value":"2099-08-05T10:08:05Z","iso":true,"valid":true,"at":"4089607685.000000"}
+{"value":"2060-10-22","iso":true,"valid":true,"at":"2865628800.000000"}
+{"value":"2070-02-30 16:00:46 +0430","iso":true,"valid":false}
+{"value":"2094-12-24T19:44:16.830141 +05","iso":true,"valid":true,"at":"3944040256.830141"}
+{"value":"2039-06-21 12:40:34.175748209Z","iso":true,"valid":true,"at":"2192272834.175748"}
+{"value":"2034-12-14T23:60:08.1","iso":true,"valid":false}
+{"value":"2008-10-15","iso":true,"valid":true,"at":"1224028800.000000"}
+{"value":"2086-00-18t03:45:16.882159653","iso":true,"valid":false}
+{"value":"2041-08-20t20:27:00.1035 -10:00","iso":true,"valid":true,"at":"2260679220.103500"}
+{"value":"2064-04-16T21:59:59-0800","iso":true,"valid":true,"at":"2975637599.000000"}
+{"value":"2011-09-22t00:28:22-04:00","iso":true,"valid":true,"at":"1316665702.000000"}
+{"value":"2400-12-31T00:56:11","iso":true,"valid":true,"at":"13601004971.000000"}
+{"value":"2058-07-28","iso":true,"valid":true,"at":"2795040000.000000"}
+{"value":"1995-02-18T20:45:53Z","iso":true,"valid":true,"at":"793140353.000000"}
+{"value":"2066-06-12","iso":true,"valid":true,"at":"3043526400.000000"}
+{"value":"2017-07-26","iso":true,"valid":true,"at":"1501027200.000000"}
+{"value":"2100-03-18T06:29:52Z","iso":true,"valid":true,"at":"4109034592.000000"}
+{"value":"2100-05-09 06:59z","iso":true,"valid":true,"at":"4113529140.000000"}
+{"value":"1999-06-08T02:60:60+00","iso":true,"valid":false}
+{"value":"2037-10-25T23:30:02.26432","iso":true,"valid":true,"at":"2140126202.264320"}
+{"value":"1973-03-23","iso":true,"valid":true,"at":"101692800.000000"}
+{"value":"2079-07-17","iso":true,"valid":true,"at":"3456777600.000000"}
+{"value":"2036-03-22T10:53:37-04:45","iso":true,"valid":true,"at":"2089813117.000000"}
+{"value":"2078-07-26T11:04:18.459253Z","iso":true,"valid":true,"at":"3426059058.459253"}
+{"value":"1974-04-17T05:52-0230","iso":true,"valid":true,"at":"135418920.000000"}
+{"value":"2400-07-25 23:07:38","iso":true,"valid":true,"at":"13587347258.000000"}
+{"value":"1970-01-19","iso":true,"valid":true,"at":"1555200.000000"}
+{"value":"1999-06-27 11:25:56","iso":true,"valid":true,"at":"930482756.000000"}
+{"value":"1988-10-30T20:10:61z","iso":true,"valid":false}
+{"value":"1985-09-11 20:48:55z","iso":true,"valid":true,"at":"495319735.000000"}
+{"value":"2052-05-08T14:01:33","iso":true,"valid":true,"at":"2598789693.000000"}
+{"value":"2061-06-28 15:33","iso":true,"valid":true,"at":"2887198380.000000"}
+{"value":"1976-01-14T12:28:23.753 -0400","iso":true,"valid":true,"at":"190484903.753000"}
+{"value":"2099-04-14 22:19:00Z","iso":true,"valid":true,"at":"4079888340.000000"}
+{"value":"1999-09-00t00:04:59-1400","iso":true,"valid":false}
+{"value":"2029-10-22T00:51:51.89959-11","iso":true,"valid":true,"at":"1887364311.899590"}
+{"value":"2099-11-18 12:12:21-00","iso":true,"valid":true,"at":"4098687141.000000"}
+{"value":"2093-05-29t13:44","iso":true,"valid":true,"at":"3894443040.000000"}
+{"value":"1981-05-09T14:07:52z","iso":true,"valid":true,"at":"358265272.000000"}
+{"value":"2099-12-26T21:38:02Z","iso":true,"valid":true,"at":"4102004282.000000"}
+{"value":"2021-09-06T04:56:32-0745","iso":true,"valid":true,"at":"1630932092.000000"}
+{"value":"2003-01-32 00:49+11","iso":true,"valid":false}
+{"value":"2061-10-07T05:25Z","iso":true,"valid":true,"at":"2895888300.000000"}
+{"value":"2064-01-32T02:06:47.16544090z","iso":true,"valid":false}
+{"value":"2065-04-08t01:38-05:30","iso":true,"valid":true,"at":"3006400080.000000"}
+{"value":"2050-07-31 09:49","iso":true,"valid":true,"at":"2542873740.000000"}
+{"value":"2002-02-31T16:33:00z","iso":true,"valid":false}
+{"value":"1994-04-19T14:31 -00:00","iso":true,"valid":true,"at":"766765860.000000"}
+{"value":"2100-05-19t21:08-11","iso":true,"valid":true,"at":"4114483680.000000"}
+{"value":"2012-04-16T00:49:31","iso":true,"valid":true,"at":"1334537371.000000"}
+{"value":"2057-08-20T09:13:12Z","iso":true,"valid":true,"at":"2765524392.000000"}
+{"value":"2047-07-05T00:41:29.904z","iso":true,"valid":true,"at":"2445900089.904000"}
+{"value":"1981-04-28T22:40:27Z","iso":true,"valid":true,"at":"357345627.000000"}
+{"value":"1971-09-02","iso":true,"valid":true,"at":"52617600.000000"}
+{"value":"1987-11-23","iso":true,"valid":true,"at":"564624000.000000"}
+{"value":"2080-02-26T20:59:07-25","iso":true,"valid":true,"at":"3476296747.000000"}
+{"value":"2050-01-03T10:07","iso":true,"valid":true,"at":"2524817220.000000"}
+{"value":"2069-08-32T17:18:55+00:45","iso":true,"valid":false}
+{"value":"2040-02-11 16:02:51 -08","iso":true,"valid":true,"at":"2212617771.000000"}
+{"value":"2050-05-32t00:53:55.25602 +0030","iso":true,"valid":false}
+{"value":"1992-12-17T23:22:59.629161","iso":true,"valid":true,"at":"724634579.629161"}
+{"value":"2062-10-23","iso":true,"valid":true,"at":"2928787200.000000"}
+{"value":"2100-11-13T13:22:49-06","iso":true,"valid":true,"at":"4129816969.000000"}
+{"value":"2066-01-15","iso":true,"valid":true,"at":"3030739200.000000"}
+{"value":"2063-04-14T08:50:54+05","iso":true,"valid":true,"at":"2943748254.000000"}
+{"value":"2100-01-27T06:03:33.372 +0130","iso":true,"valid":true,"at":"4104707613.372000"}
+{"value":"2052-07-03T19:26:40+0245","iso":true,"valid":true,"at":"2603637700.000000"}
+{"value":"2062-05-05T14:46:33z","iso":true,"valid":true,"at":"2914065993.000000"}
+{"value":"2039-12-09T00:19:18-1200","iso":true,"valid":true,"at":"2207045958.000000"}
+{"value":"2000-07-11","iso":true,"valid":true,"at":"963273600.000000"}
+{"value":"2100-06-16 20:21:28-07:30","iso":true,"valid":true,"at":"4116887488.000000"}
+{"value":"1995-12-31T07:37Z","iso":true,"valid":true,"at":"820395420.000000"}
+{"value":"1981-11-07 08:14:46z","iso":true,"valid":true,"at":"373968886.000000"}
+{"value":"2092-11-10 20:33:00 +1000","iso":true,"valid":true,"at":"3877151580.000000"}
+{"value":"2024-07-21 07:59:42 +12","iso":true,"valid":true,"at":"1721505582.000000"}
+{"value":"2078-08-10T02:60:06.220203","iso":true,"valid":false}
+{"value":"2004-02-22","iso":true,"valid":true,"at":"1077408000.000000"}
+{"value":"2098-05-20","iso":true,"valid":true,"at":"4051382400.000000"}
+{"value":"2051-12-18T03:57","iso":true,"valid":true,"at":"2586484620.000000"}
+{"value":"2091-09-19T13:55:29.83856231Z","iso":true,"valid":true,"at":"3841048529.838562"}
+{"value":"1997-12-19 00:32:48+0045","iso":true,"valid":true,"at":"882488868.000000"}
+{"value":"2091-11-25t03:15:49","iso":true,"valid":true,"at":"3846798949.000000"}
+{"value":"2033-12-17 06:16:08.357753907Z","iso":true,"valid":true,"at":"2018412968.357753"}
+{"value":"1977-04-16T08:34:37.6926 -0500","iso":true,"valid":true,"at":"230045677.692600"}
+{"value":"2094-03-16","iso":true,"valid":true,"at":"3919536000.000000"}
+{"value":"2045-05-07","iso":true,"valid":true,"at":"2377728000.000000"}
+{"value":"2024-04-02t16:50:59.1+0500","iso":true,"valid":true,"at":"1712058659.100000"}
+{"value":"1993-05-06T22:45:02+04:00","iso":true,"valid":true,"at":"736713902.000000"}
+{"value":"2000-03-15t23:04:15.41Z","iso":true,"valid":true,"at":"953161455.410000"}
+{"value":"2040-09-00 09:42:57.281365 -0300","iso":true,"valid":false}
+{"value":"1992-03-19T19:21:08","iso":true,"valid":true,"at":"701032868.000000"}
+{"value":"1992-11-32T20:50+1100","iso":true,"valid":false}
+{"value":"2015-12-14t00:00:22","iso":true,"valid":true,"at":"1450051222.000000"}
+{"value":"2072-10-06 21:07","iso":true,"valid":true,"at":"3243013620.000000"}
+{"value":"1973-01-27","iso":true,"valid":true,"at":"96940800.000000"}
+{"value":"1985-13-05T01:56:12 +07:45","iso":true,"valid":false}
+{"value":"2018-11-21","iso":true,"valid":true,"at":"1542758400.000000"}
+{"value":"2011-06-20 02:60:07","iso":true,"valid":false}
+{"value":"2039-02-15 19:40:53z","iso":true,"valid":true,"at":"2181411653.000000"}
+{"value":"2024-12-12 18:19:12","iso":true,"valid":true,"at":"1734027552.000000"}
+{"value":"2031-11-14 08:19:26.8Z","iso":true,"valid":true,"at":"1952410766.800000"}
+{"value":"1985-10-27T22:00:17.4951034","iso":true,"valid":true,"at":"499298417.495103"}
+{"value":"2038-04-12T22:18:00","iso":true,"valid":true,"at":"2154723480.000000"}
+{"value":"2027-06-18T00:13:44.3256","iso":true,"valid":true,"at":"1813277624.325600"}
+{"value":"2025-05-15T22:15:37Z","iso":true,"valid":true,"at":"1747347337.000000"}
+{"value":"1988-08-10T09:35+12:00","iso":true,"valid":true,"at":"587165700.000000"}
+{"value":"2098-02-28 16:25:13.9939759z","iso":true,"valid":true,"at":"4044443113.993975"}
+{"value":"2067-07-11","iso":true,"valid":true,"at":"3077568000.000000"}
+{"value":"1994-06-27t04:23:60 -0345","iso":true,"valid":true,"at":"772704540.000000"}
+{"value":"1999-04-14t15:59:44 -0200","iso":true,"valid":true,"at":"924112784.000000"}
+{"value":"2037-06-30T08:60:28.4143865","iso":true,"valid":false}
+{"value":"2090-03-12T23:25:01-00","iso":true,"valid":true,"at":"3793044301.000000"}
+{"value":"1997-11-03T00:53:29.222917+12:00","iso":true,"valid":true,"at":"878475209.222917"}
+{"value":"2029-02-26T11:14:22 +07:60","iso":true,"valid":false}
+{"value":"2006-12-22","iso":true,"valid":true,"at":"1166745600.000000"}
+{"value":"1971-03-02t23:58:55.291562z","iso":true,"valid":true,"at":"36806335.291562"}
+{"value":"2023-07-20T22:40:14.6+04","iso":true,"valid":true,"at":"1689878414.600000"}
+{"value":"2100-02-04 10:03:28.4+0400","iso":true,"valid":true,"at":"4105404208.400000"}
+{"value":"2018-10-21T15:45 +10","iso":true,"valid":true,"at":"1540100700.000000"}
+{"value":"2002-08-27t04:20:00 +08","iso":true,"valid":true,"at":"1030393200.000000"}
+{"value":"2034-01-04","iso":true,"valid":true,"at":"2019945600.000000"}
+{"value":"1999-06-13","iso":true,"valid":true,"at":"929232000.000000"}
+{"value":"2073-11-24T14:30:13Z","iso":true,"valid":true,"at":"3278759413.000000"}
+{"value":"2025-09-21T19:57:21z","iso":true,"valid":true,"at":"1758484641.000000"}
+{"value":"2091-05-08T09:14:57","iso":true,"valid":true,"at":"3829454097.000000"}
+{"value":"2014-06-22T18:00:49","iso":true,"valid":true,"at":"1403460049.000000"}
+{"value":"1989-12-12","iso":true,"valid":true,"at":"629424000.000000"}
+{"value":"2074-04-00T16:04+01","iso":true,"valid":false}
+{"value":"1983-09-13T03:45:38z","iso":true,"valid":true,"at":"432272738.000000"}
+{"value":"2004-12-14T11:52:21.86","iso":true,"valid":true,"at":"1103025141.860000"}
+{"value":"2100-08-04T18:37:00-0900","iso":true,"valid":true,"at":"4121120220.000000"}
+{"value":"1976-04-09T00:28:07.767146901Z","iso":true,"valid":true,"at":"197857687.767146"}
+{"value":"2064-03-13","iso":true,"valid":true,"at":"2972592000.000000"}
+{"value":"2009-03-00 23:00:50.48941296","iso":true,"valid":false}
+{"value":"2004-11-10T00:18:00Z","iso":true,"valid":true,"at":"1100045880.000000"}
+{"value":"2040-10-28t10:54-10:00","iso":true,"valid":true,"at":"2235070440.000000"}
+{"value":"2093-06-04 10:17-03","iso":true,"valid":true,"at":"3894959820.000000"}
+{"value":"2066-10-18T00:27:59-0530","iso":true,"valid":true,"at":"3054607079.000000"}
+{"value":"1999-08-29t24:27:22Z","iso":true,"valid":true,"at":"935972842.000000"}
+{"value":"2092-06-14T09:42:21.64418945","iso":true,"valid":true,"at":"3864274941.644189"}
+{"value":"1980-05-16T03:04Z","iso":true,"valid":true,"at":"327294240.000000"}
+{"value":"1970-10-03 11:31:20-07:30","iso":true,"valid":true,"at":"23828480.000000"}
+{"value":"2083-12-28T20:33:08z","iso":true,"valid":true,"at":"3597251588.000000"}
+{"value":"2001-08-16","iso":true,"valid":true,"at":"997920000.000000"}
+{"value":"2100-04-20T11:21","iso":true,"valid":true,"at":"4111903260.000000"}
+{"value":"1998-01-13 09:59:59.2271041-12","iso":true,"valid":true,"at":"884728799.227104"}
+{"value":"2001-08-31T17:35:19z","iso":true,"valid":true,"at":"999279319.000000"}
+{"value":"2010-04-15t06:49","iso":true,"valid":true,"at":"1271314140.000000"}
+{"value":"2000-02-27T07:17:30-24:30","iso":true,"valid":true,"at":"951724050.000000"}
+{"value":"2059-03-09 06:03-00","iso":true,"valid":true,"at":"2814415380.000000"}
+{"value":"2080-04-28","iso":true,"valid":true,"at":"3481488000.000000"}
+{"value":"2019-03-23 12:14:32.6379+03:00","iso":true,"valid":true,"at":"1553332472.637900"}
+{"value":"2073-08-31T04:60:24Z","iso":true,"valid":false}
+{"value":"2400-02-19T24:15:24+00","iso":true,"valid":true,"at":"13573786524.000000"}
+{"value":"2000-02-28T16:03:07Z","iso":true,"valid":true,"at":"951753787.000000"}
+{"value":"2065-01-02t19:51:55+12","iso":true,"valid":true,"at":"2998108315.000000"}
+{"value":"2100-04-07T08:26:21 +01:45","iso":true,"valid":true,"at":"4110763281.000000"}
+{"value":"2000-09-31","iso":true,"valid":false}
+{"value":"2058-11-26T07:38:20+06","iso":true,"valid":true,"at":"2805500300.000000"}
+{"value":"2054-12-18 23:30:00","iso":true,"valid":true,"at":"2681249400.000000"}
+{"value":"2074-08-08t19:00:23.46","iso":true,"valid":true,"at":"3300980423.460000"}
+{"value":"1979-04-22t23:34:52.8","iso":true,"valid":true,"at":"293672092.800000"}
+{"value":"2085-02-30T21:21:48-04","iso":true,"valid":false}
+{"value":"2017-10-27T07:07:13+00","iso":true,"valid":true,"at":"1509088033.000000"}
+{"value":"2098-06-10","iso":true,"valid":true,"at":"4053196800.000000"}
+{"value":"1993-09-16T10:53:45Z","iso":true,"valid":true,"at":"748176825.000000"}
+{"value":"2008-06-25 03:50:14Z","iso":true,"valid":true,"at":"1214365814.000000"}
+{"value":"2400-12-17T05:46 +0045","iso":true,"valid":true,"at":"13599810060.000000"}
+{"value":"1983-01-27T22:25:56z","iso":true,"valid":true,"at":"412554356.000000"}
+{"value":"1989-06-10","iso":true,"valid":true,"at":"613440000.000000"}
+{"value":"2051-07-09T08:50:59Z","iso":true,"valid":true,"at":"2572505459.000000"}
+{"value":"2100-01-03T03:19:03","iso":true,"valid":true,"at":"4102629543.000000"}
+{"value":"2050-02-21 13:11","iso":true,"valid":true,"at":"2529061860.000000"}
+{"value":"2037-03-25T25:26:31.39Z","iso":true,"valid":false}
+{"value":"2056-01-31T19:28:30-04","iso":true,"valid":true,"at":"2716586910.000000"}
+{"value":"1987-12-09 16:17z","iso":true,"valid":true,"at":"566065020.000000"}
+{"value":"1996-02-01T03:00:36.7638683","iso":true,"valid":true,"at":"823143636.763868"}
+{"value":"2052-12-10t06:22:18+10","iso":true,"valid":true,"at":"2617388538.000000"}
+{"value":"2100-08-00T08:56:18","iso":true,"valid":false}
+{"value":"1992-00-11T02:02:52Z","iso":true,"valid":false}
+{"value":"2086-09-12 22:25:20","iso":true,"valid":true,"at":"3682707920.000000"}
+{"value":"2043-01-20 02:44+07","iso":true,"valid":true,"at":"2305309440.000000"}
+{"value":"2061-13-27 04:00:25Z","iso":true,"valid":false}
+{"value":"2010-01-20","iso":true,"valid":true,"at":"1263945600.000000"}
+{"value":"2400-07-26 20:47:24.638570","iso":true,"valid":true,"at":"13587425244.638570"}
+{"value":"1989-05-30T14:45","iso":true,"valid":true,"at":"612542700.000000"}
+{"value":"2012-11-23t15:29:05Z","iso":true,"valid":true,"at":"1353684545.000000"}
+{"value":"1971-03-02","iso":true,"valid":true,"at":"36720000.000000"}
+{"value":"2098-01-17 18:14:44.300628","iso":true,"valid":true,"at":"4040820884.300628"}
+{"value":"2093-06-28T10:00:41Z","iso":true,"valid":true,"at":"3897021641.000000"}
+{"value":"1995-12-04T08:08z","iso":true,"valid":true,"at":"818064480.000000"}
+{"value":"2023-01-02T07:33:38-06:30","iso":true,"valid":true,"at":"1672668218.000000"}
+{"value":"2084-06-08","iso":true,"valid":true,"at":"3611260800.000000"}
+{"value":"1992-07-13 25:39:36.535 -1200","iso":true,"valid":false}
+{"value":"1985-04-30t10:51:08","iso":true,"valid":true,"at":"483706268.000000"}
+{"value":"1975-06-21t23:21:55","iso":true,"valid":true,"at":"172624915.000000"}
+{"value":"2090-02-00t07:12:36Z","iso":true,"valid":false}
+{"value":"2046-11-28","iso":true,"valid":true,"at":"2426976000.000000"}
+{"value":"2030-12-20t12:15:48.10310703+0845","iso":true,"valid":true,"at":"1923967848.103107"}
+{"value":"1970-11-00 10:01:22.24682","iso":true,"valid":false}
+{"value":"2062-01-23T09:11:14","iso":true,"valid":true,"at":"2905233074.000000"}
+{"value":"2069-12-29T11:18:36Z","iso":true,"valid":true,"at":"3155541516.000000"}
+{"value":"2100-05-11T02:55:61.14642230 -1000","iso":true,"valid":false}
+{"value":"2017-05-06 10:09:39Z","iso":true,"valid":true,"at":"1494065379.000000"}
+{"value":"2031-06-26t02:38:30.52148","iso":true,"valid":true,"at":"1940207910.521480"}
+{"value":"2048-12-31 05:09:29.983-0000","iso":true,"valid":true,"at":"2493004169.983000"}
+{"value":"1994-12-22 00:01:33.126558+0200","iso":true,"valid":true,"at":"788047293.126558"}
+{"value":"1975-10-16T17:60:02+06","iso":true,"valid":false}
+{"value":"2075-08-17T08:59:37+01","iso":true,"valid":true,"at":"3333254377.000000"}
+{"value":"1978-05-27 15:00:01","iso":true,"valid":true,"at":"265129201.000000"}
+{"value":"2024-06-26","iso":true,"valid":true,"at":"1719360000.000000"}
+{"value":"1975-10-00T06:37:45","iso":true,"valid":false}
+{"value":"2082-01-15T00:17Z","iso":true,"valid":true,"at":"3535661820.000000"}
+{"value":"1970-12-20T18:32:07.4 +03:30","iso":true,"valid":true,"at":"30553327.400000"}
+{"value":"1981-03-05t14:03:17-0630","iso":true,"valid":true,"at":"352672397.000000"}
+{"value":"2076-03-07 13:21:03+04:00","iso":true,"valid":true,"at":"3350798463.000000"}
+{"value":"2400-03-11t00:46:60","iso":true,"valid":true,"at":"13575516420.000000"}
+{"value":"2087-01-30T21:04Z","iso":true,"valid":true,"at":"3694799040.000000"}
+{"value":"1995-12-26","iso":true,"valid":true,"at":"819936000.000000"}
+{"value":"2100-05-21t04:38:23.418755","iso":true,"valid":true,"at":"4114557503.418755"}
+{"value":"2000-04-06T17:16:20+02:45","iso":true,"valid":true,"at":"955031480.000000"}
+{"value":"1994-12-28 17:25:16","iso":true,"valid":true,"at":"788635516.000000"}
+{"value":"1974-11-23","iso":true,"valid":true,"at":"154396800.000000"}
+{"value":"1970-12-26 20:39Z","iso":true,"valid":true,"at":"31091940.000000"}
+{"value":"2400-04-16T14:40:43+06","iso":true,"valid":true,"at":"13578655243.000000"}
+{"value":"2098-10-20T02:27:02Z","iso":true,"valid":true,"at":"4064610422.000000"}
+{"value":"2024-07-29 01:44:20","iso":true,"valid":true,"at":"1722217460.000000"}
+{"value":"2057-01-12T24:03","iso":true,"valid":true,"at":"2746569780.000000"}
+{"value":"2002-02-21T14:02 -01","iso":true,"valid":true,"at":"1014303720.000000"}
+{"value":"2006-03-29","iso":true,"valid":true,"at":"1143590400.000000"}
+{"value":"2075-04-04t06:16:50+0560","iso":true,"valid":false}
+{"value":"2015-00-16T23:02:30.6734z","iso":true,"valid":false}
+{"value":"1999-09-31 00:60:57 +0630","iso":true,"valid":false}
+{"value":"1970-12-06t10:50 -1245","iso":true,"valid":true,"at":"29374500.000000"}
+{"value":"2075-06-32T12:46+04","iso":true,"valid":false}
+{"value":"1972-09-23T22:00:54-11","iso":true,"valid":true,"at":"86173254.000000"}
+{"value":"2063-08-12T23:60:04-00:30","iso":true,"valid":false}
+{"value":"2026-04-31T11:37:46z","iso":true,"valid":false}
+{"value":"2100-08-17T03:42:50+05","iso":true,"valid":true,"at":"4122139370.000000"}
+{"value":"2024-02-06T11:51:22+0800","iso":true,"valid":true,"at":"1707191482.000000"}
+{"value":"1983-05-28 08:39:28.178995060","iso":true,"valid":true,"at":"422959168.178995"}
+{"value":"2064-10-32T07:43+05:00","iso":true,"valid":false}
+{"value":"2047-02-17T15:50:48Z","iso":true,"valid":true,"at":"2434031448.000000"}
+{"value":"2028-10-24T14:42:00.5415106","iso":true,"valid":true,"at":"1856011320.541510"}
+{"value":"2044-01-10t05:59z","iso":true,"valid":true,"at":"2336018340.000000"}
+{"value":"2100-09-30T23:19:52.8408","iso":true,"valid":true,"at":"4126029592.840800"}
+{"value":"1999-09-02T14:50:41","iso":true,"valid":true,"at":"936283841.000000"}
+{"value":"1984-01-09 18:54:30Z","iso":true,"valid":true,"at":"442522470.000000"}
+{"value":"2027-11-09 06:08 -05","iso":true,"valid":true,"at":"1825758480.000000"}
+{"value":"2011-12-25T00:59:06.726416-05","iso":true,"valid":true,"at":"1324792746.726416"}
+{"value":"2064-11-04t12:37:31.31+07","iso":true,"valid":true,"at":"2993002651.310000"}
+{"value":"2023-03-21T07:15:44z","iso":true,"valid":true,"at":"1679382944.000000"}
+{"value":"2009-11-03T11:40:39","iso":true,"valid":true,"at":"1257248439.000000"}
+{"value":"1994-11-14T02:60:53+12:00","iso":true,"valid":false}
+{"value":"1970-08-15 05:58:55","iso":true,"valid":true,"at":"19547935.000000"}
+{"value":"2083-01-15T05:23:55Z","iso":true,"valid":true,"at":"3567216235.000000"}
+{"value":"2048-03-05 04:33:04.810Z","iso":true,"valid":true,"at":"2466995584.810000"}
+{"value":"2049-09-16T23:33:53Z","iso":true,"valid":true,"at":"2515448033.000000"}
+{"value":"2064-03-09t05:49:57 -04:00","iso":true,"valid":true,"at":"2972281797.000000"}
+{"value":"1970-05-24t18:43:13+0930","iso":true,"valid":true,"at":"12388393.000000"}
+{"value":"2010-01-22t01:44:23-0730","iso":true,"valid":true,"at":"1264151663.000000"}
+{"value":"1973-02-20t24:41:52.4718+0000","iso":true,"valid":true,"at":"99103312.471800"}
+{"value":"2092-05-11 22:12:45.5251z","iso":true,"valid":true,"at":"3861382365.525100"}
+{"value":"2034-02-10T23:10-23:00","iso":true,"valid":true,"at":"2023308600.000000"}
+{"value":"1999-05-02","iso":true,"valid":true,"at":"925603200.000000"}
+{"value":"1986-11-28T02:46Z","iso":true,"valid":true,"at":"533529960.000000"}
+{"value":"2045-07-02T22:07:14.64145147","iso":true,"valid":true,"at":"2382646034.641451"}
+{"value":"1980-07-21T25:29:61+00","iso":true,"valid":false}
+{"value":"1992-07-32t00:58:27-08","iso":true,"valid":false}
+{"value":"2093-06-12 10:60Z","iso":true,"valid":false}
+{"value":"1995-01-28T12:32:47Z","iso":true,"valid":true,"at":"791296367.000000"}
+{"value":"2075-09-25T15:37:44.9336","iso":true,"valid":true,"at":"3336651464.933600"}
+{"value":"2061-12-32T24:50:61","iso":true,"valid":false}
+{"value":"1983-01-28","iso":true,"valid":true,"at":"412560000.000000"}
+{"value":"2080-11-27T21:56:28","iso":true,"valid":true,"at":"3499970188.000000"}
+{"value":"2021-07-22","iso":true,"valid":true,"at":"1626912000.000000"}
+{"value":"2043-04-31","iso":true,"valid":false}
+{"value":"1999-08-18T20:36:25.20613 +06:00","iso":true,"valid":true,"at":"934986985.206130"}
+{"value":"2000-11-06T00:18:57z","iso":true,"valid":true,"at":"973469937.000000"}
+{"value":"1999-06-17t23:45:57.8683-04:00","iso":true,"valid":true,"at":"929677557.868300"}
+{"value":"2024-09-29T15:45:49","iso":true,"valid":true,"at":"1727624749.000000"}
+{"value":"2056-06-29T12:50:38","iso":true,"valid":true,"at":"2729508638.000000"}
+{"value":"2075-02-26T18:59:06 +03","iso":true,"valid":true,"at":"3318422346.000000"}
+{"value":"2089-06-18T16:60:07","iso":true,"valid":false}
+{"value":"2077-11-26","iso":true,"valid":true,"at":"3405110400.000000"}
+{"value":"2025-03-28t07:14:31","iso":true,"valid":true,"at":"1743146071.000000"}
+{"value":"2400-12-29t23:37:45.845783","iso":true,"valid":true,"at":"13600913865.845783"}
+{"value":"2099-09-14","iso":true,"valid":true,"at":"4093027200.000000"}
+{"value":"2065-06-30 06:54:55.334501140z","iso":true,"valid":true,"at":"3013570495.334501"}
+{"value":"2060-03-07T18:43:14+04:30","iso":true,"valid":true,"at":"2845894394.000000"}
+{"value":"2029-12-15 12:00Z","iso":true,"valid":true,"at":"1892030400.000000"}
+{"value":"2026-11-25T18:41:12z","iso":true,"valid":true,"at":"1795632072.000000"}
+{"value":"2006-02-15T20:19:45.795629747","iso":true,"valid":true,"at":"1140034785.795629"}
+{"value":"2051-11-29T13:22:38.30858015","iso":true,"valid":true,"at":"2584876958.308580"}
+{"value":"2053-10-15T01:03:55","iso":true,"valid":true,"at":"2644103035.000000"}
+{"value":"2058-12-09","iso":true,"valid":true,"at":"2806617600.000000"}
+{"value":"2073-06-28t15:35:41-02","iso":true,"valid":true,"at":"3265896941.000000"}
+{"value":"2078-12-27t19:18:15-11","iso":true,"valid":true,"at":"3439433895.000000"}
+{"value":"2023-10-28T11:43:52Z","iso":true,"valid":true,"at":"1698493432.000000"}
+{"value":"2024-05-04T19:33:60.796285","iso":true,"valid":true,"at":"1714851240.796285"}
+{"value":"2091-06-29T20:12:40-04","iso":true,"valid":true,"at":"3834000760.000000"}
+{"value":"2084-02-04T23:00","iso":true,"valid":true,"at":"3600543600.000000"}
+{"value":"1981-12-17t21:11:48+00","iso":true,"valid":true,"at":"377471508.000000"}
+{"value":"1994-07-25","iso":true,"valid":true,"at":"775094400.000000"}
+{"value":"2009-12-27 07:47:58+0145","iso":true,"valid":true,"at":"1261893778.000000"}
+{"value":"2024-03-09","iso":true,"valid":true,"at":"1709942400.000000"}
+{"value":"1999-01-19T13:16-06","iso":true,"valid":true,"at":"916773360.000000"}
+{"value":"2088-06-07T13:22:34 -03:30","iso":true,"valid":true,"at":"3737465554.000000"}
+{"value":"2100-09-31t16:47:60.8220790 -01","iso":true,"valid":false}
+{"value":"2048-04-28 04:60:50.5362 -0300","iso":true,"valid":false}

@@ -29,7 +29,10 @@ function finishHttpWorkerReplacement(Client $client, array $fixture, string $wor
     $handle = $client->startWorkflow($definition['workflow_type'], $peerId, $queue, [$fixture['input']]);
     $state['peer_run_id'] = $handle->selectedRunId;
     $task = $client->pollWorkflowTask($worker, $queue, 5);
-    $state['scheduled'] = $client->completeWorkflowTask($task['task_id'], $worker, $task['workflow_task_attempt'], [[
+    // A claimed workflow task is leased for the configured workflow task timeout.
+    $state['workflow_lease_seconds'] = round((float) (new DateTimeImmutable($task['lease_expires_at']))->format('U.u')
+        - microtime(true), 1);
+    $state['scheduled'] =$client->completeWorkflowTask($task['task_id'], $worker, $task['workflow_task_attempt'], [[
         'type' => 'schedule_activity', 'activity_type' => $definition['activity_type'],
         'arguments' => $client->payloadCodec()->envelope([$fixture['input']]),
         'retry_policy' => ['max_attempts' => 1, 'backoff_seconds' => []],
