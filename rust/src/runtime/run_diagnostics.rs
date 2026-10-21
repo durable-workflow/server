@@ -440,28 +440,6 @@ where
         Ok(snapshots)
     }
 
-    pub(super) fn fleet_supports(snapshots: &[(String, Option<String>, Vec<String>, DateTime<Utc>)], compatibility: Option<&str>, queue: Option<&str>) -> (bool, Option<String>) {
-        let Some(required) = compatibility else {
-            return (true, None);
-        };
-        let matching: Vec<_> = snapshots
-            .iter()
-            .filter(|(_, worker_queue, _, _)| queue.is_none() || worker_queue.as_deref() == queue)
-            .collect();
-        if matching.iter().any(|(_, _, supported, _)| supported.iter().any(|marker| marker == "*" || marker == required)) {
-            return (true, None);
-        }
-        let advertised: BTreeSet<&str> = matching.iter().flat_map(|(_, _, supported, _)| supported.iter().map(String::as_str)).collect();
-        let suffix = if advertised.is_empty() {
-            String::new()
-        } else {
-            format!(" Active workers there advertise [{}].", advertised.into_iter().collect::<Vec<_>>().join(", "))
-        };
-        (false, Some(format!(
-            "No active worker heartbeat for task queue [{}] advertises compatibility [{required}].{suffix}",
-            queue.unwrap_or("default")
-        )))
-    }
 
     /// `WorkerCompatibilityFleet::summaryForNamespace`.
     fn fleet_summary(&self, snapshots: &[(String, Option<String>, Vec<String>, DateTime<Utc>)]) -> Value {
@@ -506,7 +484,7 @@ where
             let payload_text = |field: &str| payload[field].as_str().map(str::trim).filter(|text| !text.is_empty()).map(str::to_owned);
             let compatibility = trimmed(DB::optional_string(row, "compatibility")?).or(run_compatibility.clone());
             let queue = DB::optional_string(row, "queue")?.or(run_queue.clone());
-            let (in_fleet, fleet_reason) = Self::fleet_supports(fleet, compatibility.as_deref(), queue.as_deref());
+            let (in_fleet, fleet_reason) = fleet_supports(fleet, compatibility.as_deref(), queue.as_deref());
             let replay_blocked = payload["replay_blocked"] == true;
             let wait_kind = payload_text("workflow_wait_kind");
             let resume = payload_text("resume_source_kind");
@@ -565,7 +543,7 @@ where
         {
             let compatibility = summary.text("compatibility").or(run_compatibility.clone());
             let queue = summary.text("queue").or(trimmed(run_queue.clone()));
-            let (in_fleet, fleet_reason) = Self::fleet_supports(fleet, compatibility.as_deref(), queue.as_deref());
+            let (in_fleet, fleet_reason) = fleet_supports(fleet, compatibility.as_deref(), queue.as_deref());
             tasks.push(json!({"id":format!("missing:workflow:{task_id}"),"type":"workflow","status":"missing",
                 "transport_state":"missing","task_missing":true,"synthetic":true,"expected_task_id":task_id,
                 "summary":"Workflow task referenced by the run summary is missing.","compatibility":compatibility,
@@ -802,28 +780,7 @@ where
         let summary = self.diagnostic_summary(&run_id).await?;
         let fleet = self.fleet_snapshots(at).await?;
         let rows = self.task_rows(&run, &summary, at, &fleet).await?;
-        let pending_tasks: Vec<Value> = rows
-            .iter()
-            .map(|task| {
-                compact(json!({"task_id":task["id"],"task_type":task["type"],"status":task["status"],
-                    "transport_state":task["transport_state"],"summary":task["summary"],"queue":task["queue"],
-                    "compatibility":task["compatibility"],"compatibility_supported":task["compatibility_supported"],
-                    "compatibility_reason":task["compatibility_reason"],
-                    "compatibility_supported_in_fleet":task["compatibility_supported_in_fleet"],
-                    "compatibility_fleet_reason":task["compatibility_fleet_reason"],"available_at":task["available_at"],
-                    "leased_at":task["leased_at"],"lease_owner":task["lease_owner"],"lease_expires_at":task["lease_expires_at"],
-                    "lease_expired":task["lease_expired"],"attempt_count":task["attempt_count"],"repair_count":task["repair_count"],
-                    "dispatch_failed":task["dispatch_failed"],"dispatch_overdue":task["dispatch_overdue"],
-                    "claim_failed":task["claim_failed"],"last_error":task["last_error"],
-                    "last_dispatch_error":task["last_dispatch_error"],"last_claim_error":task["last_claim_error"],
-                    "repair_available_at":task["repair_available_at"],"workflow_wait_kind":task["workflow_wait_kind"],
-                    "workflow_open_wait_id":task["workflow_open_wait_id"],
-                    "workflow_resume_source_kind":task["workflow_resume_source_kind"],
-                    "workflow_resume_source_id":task["workflow_resume_source_id"],"replay_blocked":task["replay_blocked"],
-                    "replay_blocked_reason":task["replay_blocked_reason"],"task_missing":task["task_missing"],
-                    "expected_task_id":task["expected_task_id"],"synthetic":task["synthetic"]}))
-            })
-            .collect();
+        let pending_tasks: Vec<Value> = rows.iter().map(pending_task_view).collect();
         let activities = self.pending_activities(&run, at).await?;
         let run_queue = trimmed(DB::optional_string(&run, "queue")?);
         let task_queue = match &run_queue {
@@ -839,62 +796,38 @@ where
             }
         }
         let last_event = self.last_event(&run_id, include_payload).await?;
-        let next_event = if let Some(task_id) = summary.text("next_task_id") {
-            compact(json!({"source":"run_summary","task_id":task_id,"task_type":summary.get("next_task_type"),
-                "task_status":summary.get("next_task_status"),"available_at":summary.get("next_task_at"),
-                "lease_expires_at":summary.get("next_task_lease_expires_at"),"wait_deadline_at":summary.get("wait_deadline_at")}))
-        } else {
-            rows.iter()
-                .find_map(|task| {
-                    let available = [&task["available_at"], &task["lease_expires_at"]].into_iter().find(|time| !time.is_null())?;
-                    Some(compact(json!({"source":"open_task","task_id":task["id"],"task_type":task["type"],
-                        "task_status":task["status"],"available_at":available})))
-                })
-                .unwrap_or(Value::Null)
-        };
         let (failures, truncated) = self.recent_failures(&run).await?;
-        let task_problem = summary.present.then(|| summary.get("task_problem") == true);
-        let execution = compact(json!({"status":status,"status_bucket":summary.get("status_bucket"),"is_terminal":terminal,
-            "workflow_type":DB::optional_string(&run,"workflow_type")?,"task_queue":DB::optional_string(&run,"queue")?,
-            "compatibility":DB::optional_string(&run,"compatibility")?,"run_number":DB::optional_number(&run,"run_number")?.unwrap_or(0),
-            "started_at":json_time(DB::optional_instant(&run,"started_at")?),"closed_at":json_time(DB::optional_instant(&run,"closed_at")?),
-            "last_progress_at":json_time(DB::optional_instant(&run,"last_progress_at")?),"wait_kind":summary.get("wait_kind"),
-            "wait_reason":summary.get("wait_reason"),"liveness_state":summary.get("liveness_state"),
-            "liveness_reason":summary.get("liveness_reason"),
-            "repair_attention":summary.present.then(|| summary.get("repair_attention") == true),"task_problem":task_problem,
-            "task_problem_badge":if summary.present {
-                task_problem_badge(task_problem == Some(true), summary.text("liveness_state").as_deref(), summary.text("wait_kind").as_deref())
-            } else { Value::Null },
-            "last_event":last_event,"next_scheduled_event":next_event}));
-        let diagnostic_status = if terminal {
-            "terminal"
-        } else if summary.get("task_problem") == true || summary.get("repair_attention") == true {
-            "needs_attention"
-        } else if !pending_tasks.is_empty() || !activities.is_empty() {
-            "pending_work"
-        } else if summary.text("wait_kind").is_some() {
-            "waiting"
-        } else if task_queue["stats"]["approximate_backlog_count"].as_i64().unwrap_or(0) > 0 {
-            "queue_backlog"
-        } else {
-            "running"
+        let fields = RunFields {
+            workflow_id: DB::string(&run, "workflow_instance_id")?,
+            run_id,
+            status,
+            workflow_type: DB::optional_string(&run, "workflow_type")?,
+            queue: DB::optional_string(&run, "queue")?,
+            compatibility: DB::optional_string(&run, "compatibility")?,
+            run_number: DB::optional_number(&run, "run_number")?.unwrap_or(0),
+            started_at: DB::optional_instant(&run, "started_at")?,
+            closed_at: DB::optional_instant(&run, "closed_at")?,
+            last_progress_at: DB::optional_instant(&run, "last_progress_at")?,
         };
-        let compatibility = trimmed(summary.text("compatibility")).or(trimmed(DB::optional_string(&run, "compatibility")?));
-        let queue = summary.text("queue").or(run_queue.clone());
-        let (in_fleet, fleet_reason) = Self::fleet_supports(&fleet, compatibility.as_deref(), queue.as_deref());
-        let pollers = task_queue["pollers"].clone();
-        let mut payload = json!({"generated_at":json_time(Some(at)),"workflow_id":DB::string(&run,"workflow_instance_id")?,
-            "run_id":run_id,"namespace":self.namespace.as_ref(),"diagnostic_status":diagnostic_status,"execution":execution,
-            "pending_workflow_tasks":pending_tasks,"pending_activities":activities,"task_queue":task_queue,
-            "activity_task_queues":if activity_queues.is_empty() { json!([]) } else { Value::Object(activity_queues) },
-            "recent_failures":failures,"recent_failures_truncated":truncated,
-            "latest_workflow_task_failure":self.latest_task_failure(&run_id).await?,
-            "compatibility":compact(json!({"run":{"compatibility":DB::optional_string(&run,"compatibility")?,
-                "summary_compatibility":summary.get("compatibility"),"task_queue":DB::optional_string(&run,"queue")?,
-                "compatibility_supported_in_fleet":in_fleet,"compatibility_fleet_reason":fleet_reason},
-                "task_queue_pollers":if pollers.is_array() { pollers } else { json!([]) },
-                "namespace_worker_fleet":self.fleet_summary(&fleet)})),
-            "cancellation_cascade_supported":false,"cancellation_cascade":null});
+        let latest_failure = self.latest_task_failure(&fields.run_id).await?;
+        let mut payload = diagnostics_payload(Diagnostics {
+            at,
+            namespace: self.namespace.as_ref(),
+            run: &fields,
+            terminal,
+            summary: &summary,
+            rows: &rows,
+            pending_tasks,
+            activities,
+            task_queue,
+            activity_queues,
+            last_event,
+            failures,
+            truncated,
+            latest_failure,
+            fleet: &fleet,
+            fleet_summary: self.fleet_summary(&fleet),
+        });
         let mut findings = findings(&payload);
         if !terminal {
             findings.extend(self.routing_findings(&run, &rows, at, &fleet, config).await?);
@@ -902,6 +835,151 @@ where
         payload["findings"] = json!(findings);
         Ok(payload)
     }
+}
+
+/// `WorkerCompatibilityFleet::detailsForNamespace` support for a marker.
+pub(super) fn fleet_supports(snapshots: &[(String, Option<String>, Vec<String>, DateTime<Utc>)], compatibility: Option<&str>, queue: Option<&str>) -> (bool, Option<String>) {
+    let Some(required) = compatibility else {
+        return (true, None);
+    };
+    let matching: Vec<_> = snapshots
+        .iter()
+        .filter(|(_, worker_queue, _, _)| queue.is_none() || worker_queue.as_deref() == queue)
+        .collect();
+    if matching.iter().any(|(_, _, supported, _)| supported.iter().any(|marker| marker == "*" || marker == required)) {
+        return (true, None);
+    }
+    let advertised: BTreeSet<&str> = matching.iter().flat_map(|(_, _, supported, _)| supported.iter().map(String::as_str)).collect();
+    let suffix = if advertised.is_empty() {
+        String::new()
+    } else {
+        format!(" Active workers there advertise [{}].", advertised.into_iter().collect::<Vec<_>>().join(", "))
+    };
+    (false, Some(format!(
+        "No active worker heartbeat for task queue [{}] advertises compatibility [{required}].{suffix}",
+        queue.unwrap_or("default")
+    )))
+}
+
+/// The run fields the diagnostics view reports.
+struct RunFields {
+    workflow_id: String,
+    run_id: String,
+    status: String,
+    workflow_type: Option<String>,
+    queue: Option<String>,
+    compatibility: Option<String>,
+    run_number: i64,
+    started_at: Option<DateTime<Utc>>,
+    closed_at: Option<DateTime<Utc>>,
+    last_progress_at: Option<DateTime<Utc>>,
+}
+
+/// Everything `forRun` reports, gathered from the store.
+struct Diagnostics<'a> {
+    at: DateTime<Utc>,
+    namespace: &'a str,
+    run: &'a RunFields,
+    terminal: bool,
+    summary: &'a Summary,
+    rows: &'a [Value],
+    pending_tasks: Vec<Value>,
+    activities: Vec<Value>,
+    task_queue: Value,
+    activity_queues: Map<String, Value>,
+    last_event: Value,
+    failures: Vec<Value>,
+    truncated: bool,
+    latest_failure: Value,
+    fleet: &'a [(String, Option<String>, Vec<String>, DateTime<Utc>)],
+    fleet_summary: Value,
+}
+
+/// `nextScheduledEvent`: the summary's next task, else the first open task
+/// with a time.
+fn next_event_view(summary: &Summary, rows: &[Value]) -> Value {
+    if let Some(task_id) = summary.text("next_task_id") {
+        return compact(json!({"source":"run_summary","task_id":task_id,"task_type":summary.get("next_task_type"),
+            "task_status":summary.get("next_task_status"),"available_at":summary.get("next_task_at"),
+            "lease_expires_at":summary.get("next_task_lease_expires_at"),"wait_deadline_at":summary.get("wait_deadline_at")}));
+    }
+    rows.iter()
+        .find_map(|task| {
+            let available = [&task["available_at"], &task["lease_expires_at"]].into_iter().find(|time| !time.is_null())?;
+            Some(compact(json!({"source":"open_task","task_id":task["id"],"task_type":task["type"],
+                "task_status":task["status"],"available_at":available})))
+        })
+        .unwrap_or(Value::Null)
+}
+
+/// The assembled `WorkflowRunDiagnostics::forRun` payload before findings.
+/// Kept outside the generic store so each backend shares one compiled copy.
+fn diagnostics_payload(view: Diagnostics<'_>) -> Value {
+    let Diagnostics { at, namespace, run, terminal, summary, rows, pending_tasks, activities, task_queue,
+        activity_queues, last_event, failures, truncated, latest_failure, fleet, fleet_summary } = view;
+    let task_problem = summary.present.then(|| summary.get("task_problem") == true);
+    let execution = compact(json!({"status":run.status,"status_bucket":summary.get("status_bucket"),"is_terminal":terminal,
+        "workflow_type":run.workflow_type,"task_queue":run.queue,"compatibility":run.compatibility,"run_number":run.run_number,
+        "started_at":json_time(run.started_at),"closed_at":json_time(run.closed_at),
+        "last_progress_at":json_time(run.last_progress_at),"wait_kind":summary.get("wait_kind"),
+        "wait_reason":summary.get("wait_reason"),"liveness_state":summary.get("liveness_state"),
+        "liveness_reason":summary.get("liveness_reason"),
+        "repair_attention":summary.present.then(|| summary.get("repair_attention") == true),"task_problem":task_problem,
+        "task_problem_badge":if summary.present {
+            task_problem_badge(task_problem == Some(true), summary.text("liveness_state").as_deref(), summary.text("wait_kind").as_deref())
+        } else { Value::Null },
+        "last_event":last_event,"next_scheduled_event":next_event_view(summary, rows)}));
+    let diagnostic_status = if terminal {
+        "terminal"
+    } else if summary.get("task_problem") == true || summary.get("repair_attention") == true {
+        "needs_attention"
+    } else if !pending_tasks.is_empty() || !activities.is_empty() {
+        "pending_work"
+    } else if summary.text("wait_kind").is_some() {
+        "waiting"
+    } else if task_queue["stats"]["approximate_backlog_count"].as_i64().unwrap_or(0) > 0 {
+        "queue_backlog"
+    } else {
+        "running"
+    };
+    let compatibility = trimmed(summary.text("compatibility")).or(trimmed(run.compatibility.clone()));
+    let queue = summary.text("queue").or(trimmed(run.queue.clone()));
+    let (in_fleet, fleet_reason) = fleet_supports(fleet, compatibility.as_deref(), queue.as_deref());
+    let pollers = task_queue["pollers"].clone();
+    json!({"generated_at":json_time(Some(at)),"workflow_id":run.workflow_id,
+        "run_id":run.run_id,"namespace":namespace,"diagnostic_status":diagnostic_status,"execution":execution,
+        "pending_workflow_tasks":pending_tasks,"pending_activities":activities,"task_queue":task_queue,
+        "activity_task_queues":if activity_queues.is_empty() { json!([]) } else { Value::Object(activity_queues) },
+        "recent_failures":failures,"recent_failures_truncated":truncated,
+        "latest_workflow_task_failure":latest_failure,
+        "compatibility":compact(json!({"run":{"compatibility":run.compatibility,
+            "summary_compatibility":summary.get("compatibility"),"task_queue":run.queue,
+            "compatibility_supported_in_fleet":in_fleet,"compatibility_fleet_reason":fleet_reason},
+            "task_queue_pollers":if pollers.is_array() { pollers } else { json!([]) },
+            "namespace_worker_fleet":fleet_summary})),
+        "cancellation_cascade_supported":false,"cancellation_cascade":null})
+}
+
+/// One `pending_workflow_tasks` entry. Kept outside the generic store so
+/// each backend shares one compiled copy of these large literals.
+fn pending_task_view(task: &Value) -> Value {
+    compact(json!({"task_id":task["id"],"task_type":task["type"],"status":task["status"],
+        "transport_state":task["transport_state"],"summary":task["summary"],"queue":task["queue"],
+        "compatibility":task["compatibility"],"compatibility_supported":task["compatibility_supported"],
+        "compatibility_reason":task["compatibility_reason"],
+        "compatibility_supported_in_fleet":task["compatibility_supported_in_fleet"],
+        "compatibility_fleet_reason":task["compatibility_fleet_reason"],"available_at":task["available_at"],
+        "leased_at":task["leased_at"],"lease_owner":task["lease_owner"],"lease_expires_at":task["lease_expires_at"],
+        "lease_expired":task["lease_expired"],"attempt_count":task["attempt_count"],"repair_count":task["repair_count"],
+        "dispatch_failed":task["dispatch_failed"],"dispatch_overdue":task["dispatch_overdue"],
+        "claim_failed":task["claim_failed"],"last_error":task["last_error"],
+        "last_dispatch_error":task["last_dispatch_error"],"last_claim_error":task["last_claim_error"],
+        "repair_available_at":task["repair_available_at"],"workflow_wait_kind":task["workflow_wait_kind"],
+        "workflow_open_wait_id":task["workflow_open_wait_id"],
+        "workflow_resume_source_kind":task["workflow_resume_source_kind"],
+        "workflow_resume_source_id":task["workflow_resume_source_id"],"replay_blocked":task["replay_blocked"],
+        "replay_blocked_reason":task["replay_blocked_reason"],"task_missing":task["task_missing"],
+        "expected_task_id":task["expected_task_id"],"synthetic":task["synthetic"]}))
 }
 
 /// `activePollers`: fresh pollers whose status is active.
