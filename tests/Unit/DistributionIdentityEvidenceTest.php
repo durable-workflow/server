@@ -107,6 +107,40 @@ final class DistributionIdentityEvidenceTest extends TestCase
         $this->assertStringContainsString('missing executed distribution evidence', $validation['stderr']);
     }
 
+    public function test_distribution_versions_reject_ambiguous_invalid_prereleases_promptly(): void
+    {
+        $store = $this->root.'/invalid-version.json';
+        $invalidVersion = '0.0.0-0.'.str_repeat('--.', 24).'!';
+        $startedAt = hrtime(true);
+
+        $result = $this->runCommand(
+            'record-digest',
+            $store,
+            'sdk-rust',
+            $invalidVersion,
+            'durable-workflow.crate',
+            str_repeat('a', 64),
+        );
+
+        $elapsedSeconds = (hrtime(true) - $startedAt) / 1_000_000_000;
+        $this->assertSame(1, $result['exit']);
+        $this->assertStringContainsString('invalid exact distribution version', $result['stderr']);
+        $this->assertLessThan(1.0, $elapsedSeconds, 'invalid distribution versions must be rejected in bounded time');
+        $this->assertFileDoesNotExist($store);
+
+        foreach (['1.2.3', '1.2.3-0', '1.2.3-alpha.1', '1.2.3-01a', '1.2.3---'] as $version) {
+            $accepted = $this->runCommand(
+                'record-digest',
+                $this->root.'/accepted-'.hash('sha256', $version).'.json',
+                'sdk-rust',
+                $version,
+                'durable-workflow.crate',
+                str_repeat('b', 64),
+            );
+            $this->assertSame(0, $accepted['exit'], $accepted['stderr']);
+        }
+    }
+
     /** @return array{exit: int, stdout: string, stderr: string} */
     private function runCommand(string ...$arguments): array
     {
