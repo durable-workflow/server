@@ -29,7 +29,8 @@
     configuration, but no code reads those entries. The structural limits
     PHP enforces come from the Workflow package's own `DW_V2_LIMIT_*`
     settings. Ignoring these four settings matches PHP. Of the package
-    limits, native enforces only the memo size; #612 tracks the rest. `DW_MAX_TASKS_PER_POLL` only widens
+    limits PHP applies to external workers, native enforces only the memo
+    size; #612 tracks the rest. `DW_MAX_TASKS_PER_POLL` only widens
     PHP's candidate scan (ten candidates for each task); a poll still claims
     one task, so native's own scan width is not a contract difference.
   - **PHP process roles and topology.** `DW_MODE`, `DW_SERVER_ID`,

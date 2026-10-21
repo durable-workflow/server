@@ -102,11 +102,12 @@ contract fixture before its correction.
   each priority tier across fairness keys by their weights
   (`TaskFairnessScheduler`); native stores the keys and weights but does not
   rebalance yet.
-- **Structural limits.** Published PHP enforces the Workflow package's
-  structural limits (pending activities, children, timers, signals and
-  updates, command batch size, payload size, search attribute size and
-  history transaction size), configured by `DW_V2_LIMIT_*`. Native enforces
-  only the memo size limit. #612 tracks the rest.
+- **Structural limits.** For external workers, published PHP enforces four
+  of the Workflow package's `DW_V2_LIMIT_*` limits: the memo size, the
+  command batch size as a bound on parallel group metadata, the pending
+  signal and update counts with their payload size at intake, and the
+  payload size of an activity's result. Native enforces only the memo size.
+  #612 tracks the rest.
 - **Malformed input envelopes.** Published PHP refuses a malformed `input`
   envelope on start, signal, update and query with `422 validation_failed`,
   using Laravel messages on `input.codec` or `input.blob`. The cases are a
