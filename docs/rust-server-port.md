@@ -102,6 +102,13 @@ contract fixture before its correction.
   each priority tier across fairness keys by their weights
   (`TaskFairnessScheduler`); native stores the keys and weights but does not
   rebalance yet.
+- **PHP settings native ignores.** Native uses PHP's defaults for
+  `DW_DEFAULT_NAMESPACE`, `DW_MAX_HISTORY_EVENTS`,
+  `DW_MAX_PENDING_ACTIVITIES`, `DW_MAX_PENDING_CHILDREN`,
+  `DW_MAX_TASKS_PER_POLL`, `DW_ACTIVITY_TASK_TIMEOUT` and
+  `DW_WORKER_PROTOCOL_VERSION`, and does not read their configured values.
+  A deployment that changed one of them would get different behavior from
+  native. Native should refuse to start on a value it cannot honor.
 - **Key order inside plain JSON input.** For input that is not an envelope,
   PHP encodes nested objects as Avro maps in request order; native encodes
   them with sorted keys. The decoded values are equal, but the blobs differ.

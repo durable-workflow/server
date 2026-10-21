@@ -81,6 +81,22 @@ fn auth_value(key: &str) -> Result<Option<String>, Box<dyn Error>> {
     }
 }
 
+/// `EnvAuditor::env`: the primary name when it is set, else PHP's legacy
+/// `WORKFLOW_SERVER_*` name.
+fn aliased<F>(lookup: F, primary: &str, legacy: &str) -> Result<Option<String>, Box<dyn Error>>
+where
+    F: Fn(&str) -> Result<Option<String>, Box<dyn Error>>,
+{
+    match lookup(primary)? {
+        Some(value) => Ok(Some(value)),
+        None => lookup(legacy),
+    }
+}
+
+fn auth_setting(primary: &str, legacy: &str) -> Result<Option<String>, Box<dyn Error>> {
+    aliased(auth_value, primary, legacy)
+}
+
 fn validate_auth_configuration() -> Result<(), Box<dyn Error>> {
     // Unqualified credentials must not silently leave a full-access legacy
     // guard in place. These profiles require their own contract qualification.
@@ -96,9 +112,6 @@ fn validate_auth_configuration() -> Result<(), Box<dyn Error>> {
         "DW_PRINCIPAL_TOKENS",
         "WORKFLOW_SERVER_AUTH_PROVIDER",
         "WORKFLOW_SERVER_PRINCIPAL_TOKENS",
-        "WORKFLOW_SERVER_WORKER_TOKEN",
-        "WORKFLOW_SERVER_OPERATOR_TOKEN",
-        "WORKFLOW_SERVER_ADMIN_TOKEN",
     ] {
         if auth_value(key)?.is_some_and(|value| !value.is_empty()) {
             return Err("unsupported development authentication configuration".into());
@@ -406,10 +419,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     validate_auth_configuration()?;
-    let worker_token = auth_value("DW_WORKER_TOKEN")?;
-    let operator_token = auth_value("DW_OPERATOR_TOKEN")?;
-    let admin_token = auth_value("DW_ADMIN_TOKEN")?;
-    let token = auth_value("DW_AUTH_TOKEN")?.ok_or("DW_AUTH_TOKEN is required")?;
+    // Published PHP reads each token under its `DW_*` name, or else its
+    // legacy `WORKFLOW_SERVER_*` name, so an unchanged deployment starts.
+    let worker_token = auth_setting("DW_WORKER_TOKEN", "WORKFLOW_SERVER_WORKER_TOKEN")?;
+    let operator_token = auth_setting("DW_OPERATOR_TOKEN", "WORKFLOW_SERVER_OPERATOR_TOKEN")?;
+    let admin_token = auth_setting("DW_ADMIN_TOKEN", "WORKFLOW_SERVER_ADMIN_TOKEN")?;
+    let token = auth_setting("DW_AUTH_TOKEN", "WORKFLOW_SERVER_AUTH_TOKEN")?
+        .ok_or("DW_AUTH_TOKEN (or WORKFLOW_SERVER_AUTH_TOKEN) is required")?;
     if token.trim().is_empty() {
         return Err("DW_AUTH_TOKEN must not be empty".into());
     }
@@ -470,4 +486,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
     .await?;
     runtime.close().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod auth_env_tests {
+    use super::*;
+
+    fn lookup(values: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Result<Option<String>, Box<dyn Error>> {
+        move |key| Ok(values.iter().find(|(name, _)| *name == key).map(|(_, value)| (*value).to_owned()))
+    }
+
+    #[test]
+    fn primary_names_win_and_legacy_names_fill_in_like_php() {
+        let both = lookup(&[("DW_AUTH_TOKEN", "primary"), ("WORKFLOW_SERVER_AUTH_TOKEN", "legacy")]);
+        assert_eq!(aliased(both, "DW_AUTH_TOKEN", "WORKFLOW_SERVER_AUTH_TOKEN").unwrap().as_deref(), Some("primary"));
+        let legacy = lookup(&[("WORKFLOW_SERVER_AUTH_TOKEN", "legacy")]);
+        assert_eq!(aliased(legacy, "DW_AUTH_TOKEN", "WORKFLOW_SERVER_AUTH_TOKEN").unwrap().as_deref(), Some("legacy"));
+        // A set but empty primary still wins, as PHP's env() returns it.
+        let empty = lookup(&[("DW_AUTH_TOKEN", ""), ("WORKFLOW_SERVER_AUTH_TOKEN", "legacy")]);
+        assert_eq!(aliased(empty, "DW_AUTH_TOKEN", "WORKFLOW_SERVER_AUTH_TOKEN").unwrap().as_deref(), Some(""));
+        let neither = lookup(&[]);
+        assert_eq!(aliased(neither, "DW_AUTH_TOKEN", "WORKFLOW_SERVER_AUTH_TOKEN").unwrap(), None);
+    }
 }
