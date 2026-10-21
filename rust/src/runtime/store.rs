@@ -25,6 +25,7 @@ pub(super) struct Store<DB: Backend> {
     pub(super) memo_codec: Arc<Semaphore>,
     pub(super) memo_size_limit: Option<usize>,
     pub(super) history_budget: super::history_budget::Config,
+    pub(super) search_attribute_limit: i64,
 }
 /// A ULID that sorts after every earlier one from this process, as Laravel's
 /// (Symfony's) generator does. Rows created in the same millisecond, such as
@@ -86,6 +87,7 @@ where
             memo_codec: Arc::new(Semaphore::new(1)),
             memo_size_limit: Some(262_144),
             history_budget: super::history_budget::Config::default(),
+            search_attribute_limit: 100,
         }
     }
     pub(super) fn in_namespace(&self, namespace: &str) -> Self {
@@ -96,6 +98,7 @@ where
             memo_codec: self.memo_codec.clone(),
             memo_size_limit: self.memo_size_limit,
             history_budget: self.history_budget,
+            search_attribute_limit: self.search_attribute_limit,
         }
     }
     pub(super) async fn database_live(&self) -> bool {

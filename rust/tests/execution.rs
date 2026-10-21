@@ -37,6 +37,9 @@ mod role_tokens;
 #[path = "execution/namespaces.rs"]
 mod namespaces;
 
+#[path = "execution/search_attributes.rs"]
+mod search_attributes;
+
 #[path = "execution/named_timers.rs"]
 mod named_timers;
 
