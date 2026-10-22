@@ -359,6 +359,7 @@ impl Runtime {
     delegate!(delete_search_attribute(name: &str) -> Result<Value>);
     delegate!(set_external_policy(name: &str, body: Value) -> Result<Value>);
     delegate!(update_namespace(name: &str, body: Value) -> Result<Value>);
+    delegate!(delete_namespace(name: &str) -> Result<Value>);
     delegate!(
         upload_external_local(
             local: crate::external_payload::LocalStorage,

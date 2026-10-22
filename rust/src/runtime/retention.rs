@@ -61,6 +61,8 @@ macro_rules! reference {
     };
 }
 
+pub(super) use reference;
+
 /// The run's payload columns that can hold an external reference. History
 /// events repeat these payloads, so they are not scanned again.
 const REFERENCES_SQL: &str = concat!(
