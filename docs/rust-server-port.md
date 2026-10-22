@@ -239,6 +239,12 @@ contract fixture before its correction.
   raises an uncaught `InvalidArgumentException` while applying the command.
   Native refuses the completion with `422 search_attribute_limit_exceeded`
   and PHP's message, and records nothing.
+- **Cooperative cancellation boundaries.** Published PHP delivers a run's
+  cancellation at an activity, local activity, timer, condition, signal,
+  child, parallel or selection-handle boundary. Native delivers it at a
+  timer, a child and a parallel group whose members are all timers, and
+  refuses the other boundaries, including parallel groups with other member
+  kinds, with `422 cancellation_delivery_boundary_not_available`.
 - **Terminating a child run.** Published Workflow resolves the parent with
   `ChildRunTerminated` and the `terminated` child call status. Native refuses
   this with `422 termination_propagation_not_available` until the parent-side
