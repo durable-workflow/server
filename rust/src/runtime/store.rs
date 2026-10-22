@@ -821,6 +821,56 @@ where
         Ok(Some(payload))
     }
 
+    /// `PendingMessageTask::hasDeliverableSignal`: a received signal the
+    /// open wait can take, after the one this task applied. Server 2.10.0
+    /// holds a worker's close for it, since the worker read history before
+    /// that signal committed.
+    pub(super) async fn deliverable_signal(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        applied: Option<&str>,
+    ) -> Result<bool> {
+        let Some(wait) = Self::open_wait(tx, run_id).await? else {
+            return Ok(false);
+        };
+        if Self::condition_timeout_fired(tx, run_id, &wait).await? {
+            return Ok(false);
+        }
+        let after = match applied {
+            Some(signal) => Self::query("SELECT command_sequence FROM workflow_signal_records WHERE id=$1 AND workflow_run_id=$2")
+                .bind(signal).bind(run_id).fetch_optional(&mut **tx).await?
+                .map(|row| DB::optional_number(&row, "command_sequence").map(|sequence| (sequence, signal.to_owned())))
+                .transpose()?,
+            None => None,
+        };
+        let signals = Self::query("SELECT id,signal_name,signal_wait_id,command_sequence FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received' ORDER BY command_sequence,id LIMIT 100")
+            .bind(run_id).fetch_all(&mut **tx).await?;
+        for signal in signals {
+            if wait.get("signal_name").is_some()
+                && (wait["signal_name"] != DB::string(&signal, "signal_name")?
+                    || wait["signal_wait_id"] != DB::string(&signal, "signal_wait_id")?)
+            {
+                continue;
+            }
+            // `signalFollows`: a later command sequence, an unsequenced
+            // signal after a sequenced one, then the identifier order.
+            if let Some((applied_sequence, applied_id)) = &after {
+                let sequence = DB::optional_number(&signal, "command_sequence")?;
+                let follows = match (sequence, applied_sequence) {
+                    (Some(sequence), Some(applied)) if sequence != *applied => sequence > *applied,
+                    (None, Some(_)) => true,
+                    (Some(_), None) => false,
+                    _ => DB::string(&signal, "id")?.as_str() > applied_id.as_str(),
+                };
+                if !follows {
+                    continue;
+                }
+            }
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     /// `PendingMessageTask::createForRun`: while the run has no open
     /// workflow task, deliver its next message. An accepted update goes
     /// unless an earlier signal is unapplied; a signal when its wait is open.
@@ -2098,8 +2148,14 @@ where
                 Self::apply_update(&mut tx, &run, &task, command, sequence + 1).await?;
             } else if command["type"] == "continue_as_new" {
                 sequence += 1;
-                self.continue_run(&mut tx, &run, &task, command, sequence)
-                    .await?;
+                if Self::cancellation_request(&run)?.is_none()
+                    && Self::deliverable_signal(&mut tx, &run_id, task_payload["workflow_signal_id"].as_str()).await?
+                {
+                    Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1").bind(&run_id).execute(&mut *tx).await?;
+                } else {
+                    self.continue_run(&mut tx, &run, &task, command, sequence)
+                        .await?;
+                }
             } else if command["type"] == "start_child_workflow" {
                 sequence += 1;
                 Self::start_child(&mut tx, &run, task_id, command, sequence).await?;
@@ -2327,20 +2383,18 @@ where
             } else {
                 if Self::cancellation_request(&run)?.is_some() {
                     Self::finish_root_cancellation(&mut tx, &run, Some(&task)).await?;
+                } else if Self::deliverable_signal(&mut tx, &run_id, task_payload["workflow_signal_id"].as_str()).await? {
+                    // A signal committed after the worker read history: give
+                    // it a turn before the close (Server 2.10.0).
+                    Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1").bind(&run_id).execute(&mut *tx).await?;
                 } else {
-                    let outstanding: i64 = Self::scalar("SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status NOT IN ('completed','failed')")
+                    // Published PHP completes a run whatever is still open. Its
+                    // activities, timers and waits stay as they are, and an open
+                    // abandoned child keeps running. Native cannot yet apply the
+                    // other parent-close policies, so it still refuses those.
+                    let enforced = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','failed') AND parent_close_policy<>'abandon'")
                     .bind(&run_id).fetch_one(&mut *tx).await?;
-                    let wait = Self::open_wait(&mut tx, &run_id).await?;
-                    let wait_pending = if let Some(wait) = wait {
-                        !Self::condition_timeout_fired(&mut tx, &run_id, &wait).await?
-                    } else {
-                        false
-                    };
-                    let timers: i64 = Self::scalar("SELECT COUNT(*) FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending'")
-                    .bind(&run_id).fetch_one(&mut *tx).await?;
-                    let children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','failed')")
-                    .bind(&run_id).fetch_one(&mut *tx).await?;
-                    if outstanding != 0 || timers != 0 || children != 0 || wait_pending {
+                    if enforced != 0 {
                         return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
                     }
                     let output = match external.get(&index) {
@@ -2570,6 +2624,7 @@ where
                 response: receipt,
             });
         }
+        Self::closed_run_outcome(&mut tx, &task, &body, "completed").await?;
         Self::fence(&task, &body)?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
@@ -2918,6 +2973,34 @@ where
             return Err(refuse(StatusCode::CONFLICT, "lease_expired"));
         }
         Ok(())
+    }
+
+    /// An activity result for a run that completed or failed while the
+    /// activity was open: PHP's `run_closed` outcome, recorded nowhere.
+    /// Cancelled and terminated runs keep their own receipts.
+    pub(super) async fn closed_run_outcome(
+        tx: &mut Transaction<'_, DB>,
+        task: &DB::Row,
+        body: &Value,
+        outcome: &str,
+    ) -> Result<()> {
+        if DB::string(task, "status")? != "leased"
+            || DB::optional_string(task, "lease_owner")?.as_deref() != Some(text(body, "lease_owner")?)
+        {
+            return Ok(());
+        }
+        let run = Self::query("SELECT status FROM workflow_runs WHERE id=$1")
+            .bind(DB::string(task, "workflow_run_id")?)
+            .fetch_one(&mut **tx)
+            .await?;
+        if !matches!(DB::string(&run, "status")?.as_str(), "completed" | "failed") {
+            return Ok(());
+        }
+        Err(super::RuntimeError::Protocol {
+            status: StatusCode::CONFLICT,
+            response: json!({"task_id": DB::string(task, "id")?, "activity_attempt_id": text(body, "activity_attempt_id")?,
+                "outcome": outcome, "recorded": false, "reason": "run_closed", "next_task_id": null}),
+        })
     }
 
     pub(super) async fn active_run(tx: &mut Transaction<'_, DB>, run_id: &str) -> Result<DB::Row> {
