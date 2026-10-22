@@ -1536,7 +1536,8 @@ async fn deliver_cancellation(
     runtime
         .deliver_cancellation(&task_id, body, request_protocol(&headers)?)
         .await
-        .map(Json)
+        // `WorkerProtocol::json`: every answer carries the worker envelope.
+        .map(|body| Json(worker_response(body)))
 }
 async fn complete_workflow(
     Extension(runtime): Extension<Runtime>,
@@ -1570,7 +1571,7 @@ async fn complete_workflow(
     }
     let attempt = body["workflow_task_attempt"].clone();
     runtime
-        .complete_workflow(&task_id, body, Some(request.principal().clone()))
+        .complete_workflow(&task_id, body, Some(request.principal().clone()), headers.get("x-durable-workflow-protocol-version").and_then(|value| value.to_str().ok()))
         .await
         .map_err(|error| {
             completion_refusal(

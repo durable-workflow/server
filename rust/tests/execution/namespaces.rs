@@ -531,9 +531,10 @@ async fn same_worker_id_isolated_claims_completion_and_deregistration_by_namespa
         &path,
         completion(
             &first_task,
-            // Timers have separate positive namespace coverage. Child commands
-            // remain outside this namespace slice and must fail atomically.
-            json!([child_command(9007199254740993)]),
+            // Timers and children have separate positive namespace coverage.
+            // Side effects remain outside this namespace slice and must fail
+            // atomically.
+            json!([{"type":"record_side_effect","result":envelope(Payload::Long(9007199254740993))}]),
         ),
     )
     .await;
@@ -699,4 +700,52 @@ async fn named_namespaces_serve_the_run_reads_waterline_uses() {
     assert_eq!(debug["run_id"], started["run_id"], "{debug}");
     runtime.close().await;
     database.remove().await;
+}
+
+// A child lives in its parent's namespace, as published PHP's
+// ChildWorkflowNamespaceProjection places it, and its result resumes the
+// parent there.
+#[tokio::test]
+async fn a_named_namespace_child_runs_and_resolves_in_its_parents_namespace() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    create(&app, "alpha").await;
+    let registered = scoped(&app, "alpha", "POST", "/api/worker/register", json!({
+        "worker_id":"family","task_queue":"test","runtime":"php",
+        "supported_workflow_types":["echo","child"],"supported_activity_types":[]})).await;
+    assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+    let parent = start_scoped(&app, "alpha", "named-parent").await;
+    let poll = || async {
+        let (status, body) = scoped(&app, "alpha", "POST", "/api/worker/workflow-tasks/poll",
+            json!({"worker_id":"family","task_queue":"test","timeout_seconds":0})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["task"]["task_id"].is_string(), "{body}");
+        body["task"].clone()
+    };
+    let finish = |task: Value, commands: Value| {
+        let app = app.clone();
+        async move {
+            let path = format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap());
+            let (status, body) = scoped(&app, "alpha", "POST", &path, completion(&task, commands)).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+    };
+    let task = poll().await;
+    assert_eq!(task["run_id"], parent["run_id"]);
+    finish(task, json!([child_command(1)])).await;
+
+    let child = poll().await;
+    assert_ne!(child["run_id"], parent["run_id"]);
+    let child_path = format!("/api/workflows/{}", child["workflow_id"].as_str().unwrap());
+    let (status, described) = scoped(&app, "alpha", "GET", &child_path, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{described}");
+    assert_eq!(described["namespace"], "alpha", "{described}");
+    assert_eq!(request(&app, "GET", &child_path, Value::Null).await.0, StatusCode::NOT_FOUND);
+    finish(child, json!([{"type":"complete_workflow","result":envelope(Payload::Long(7))}])).await;
+
+    let resumed = poll().await;
+    assert_eq!(resumed["run_id"], parent["run_id"]);
+    finish(resumed, json!([{"type":"complete_workflow","result":envelope(Payload::Null)}])).await;
+    let (_, described) = scoped(&app, "alpha", "GET", "/api/workflows/named-parent", Value::Null).await;
+    assert_eq!(described["status"], "completed", "{described}");
 }

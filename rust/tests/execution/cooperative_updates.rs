@@ -7,7 +7,7 @@ async fn claim(app: &Router, timeout: i64) -> Value {
     response.1["task"].clone()
 }
 
-pub(super) async fn pending(database: &TestDatabase, app: &Router) -> (Value, Value, Value, Value) {
+pub(super) async fn pending(_database: &TestDatabase, app: &Router) -> (Value, Value, Value, Value) {
     let registered = request_protocol(app, "POST", "/api/worker/register",
         json!({"worker_id":"cooperative-update-worker","task_queue":"test","runtime":"php",
             "supported_workflow_types":["echo"],"supported_activity_types":[],
@@ -36,28 +36,6 @@ pub(super) async fn pending(database: &TestDatabase, app: &Router) -> (Value, Va
     let update_task = claim(app, 0).await;
     assert_eq!(update_task["workflow_update_id"], accepted.1["update_id"]);
 
-    // The supported root path has no open durable boundary. Keep the existing
-    // refusal until the original signal timer really resolves that wait.
-    let blocked = request(
-        app,
-        "POST",
-        "/api/workflows/cooperative-update/request-cancellation",
-        json!({"reason":"not admitted yet","cleanup_timeout_seconds":30}),
-    )
-    .await;
-    assert_eq!(blocked.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", blocked.1);
-    assert_eq!(
-        blocked.1["reason"],
-        "cooperative_cancellation_propagation_not_available"
-    );
-    assert_eq!(
-        task_retry::rows(
-            database,
-            "SELECT COUNT(*) FROM workflow_commands WHERE command_type='request_cancellation'"
-        )
-        .await,
-        0
-    );
     let history = run_history(app, &run["workflow_id"], &run["run_id"]).await;
     let timer = history
         .as_array()

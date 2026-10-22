@@ -200,13 +200,32 @@ contract fixture before its correction.
   cancellation requests (`/update/{name}`, `/repair`,
   `/request-cancellation`, instance- or run-scoped) in a named namespace with
   `422 development_namespace_operation_unqualified`.
-- **Child cancellation policies.** Native accepts a child only with the
-  `abandon` parent close and cancellation policies, and refuses others with
-  `422 unsupported_child_options`. Published PHP also requests the child's
-  cancellation when its parent is cancelled (`request_cancellation`), and
-  waits for the child's cancellation before resolving the parent
-  (`wait_cancellation_completed`). The Sample App's children scenario uses
-  both in its cancellation case. Its PHP worker stops on the refusal.
+- **Named-namespace worker commands.** In a named namespace, native
+  accepts only `complete_workflow`, `fail_workflow`, `schedule_activity`,
+  `start_timer`, `start_child_workflow` and a single wait in a workflow task.
+  It refuses any other command, such as side effects, version markers,
+  memo and search attribute upserts, updates and continue-as-new, with
+  `422 development_namespace_command_unqualified`. Published PHP accepts
+  them in any namespace.
+- **Child cancellation cascade, remaining parts.** Native propagates a
+  parent's cooperative cancellation to its child under `try_cancel` and
+  `wait_cancellation_completed`, as PHP does. The rest is open:
+  - **Cascade view evidence native never writes.** Run debug carries
+    PHP's `cancellation_cascade` view. Native writes no scoped
+    (`cancellation-context/v2`) contexts and no activity stop receipts, so
+    after a takeover a PHP-written scoped request reads as
+    `request_context_invalid`, and a PHP-written stop receipt as
+    `callback_state: unknown`.
+  - **Parent close.** Published PHP applies `request_cancel`, `terminate` and
+    `request_cancellation` to a child that is still open when its parent
+    completes, fails, is cancelled, is terminated or times out
+    (`ParentClosePolicyEnforcer`). Native applies `request_cancellation`
+    when a cooperatively cancelled parent closes. It refuses a parent's
+    completion, cancellation and termination while a child is open, and
+    closes a timed-out or failed parent without acting on open children.
+  - **Root conflicts.** PHP records a rejected command when a child refuses
+    a request under another root. Native records only the refusal on the
+    parent's events.
 - **Signals that arrive before a completion (Server 2.10.0).** Published
   PHP drops a worker's `complete_workflow` or `continue_as_new` while a
   deliverable signal waits and no cancellation is pending. It applies the
@@ -263,9 +282,10 @@ contract fixture before its correction.
 - **Cooperative cancellation boundaries.** Published PHP delivers a run's
   cancellation at an activity, local activity, timer, condition, signal,
   child, parallel or selection-handle boundary. Native delivers it at a
-  timer, a child and a parallel group whose members are all timers, and
-  refuses the other boundaries, including parallel groups with other member
-  kinds, with `422 cancellation_delivery_boundary_not_available`.
+  timer, a condition or signal wait, a child and a parallel group whose
+  members are all timers. It refuses the other boundaries, including
+  parallel groups with other member kinds, with
+  `422 cancellation_delivery_boundary_not_available`.
 - **Activity results after a deadline, before its timeout runs.** Published
   PHP records a completion that arrives after an activity deadline has
   passed when its separate timeout command has not yet closed the attempt.
@@ -707,8 +727,6 @@ October 21, Waterline reads:
   - Native tasks carry no queue-driver dispatch metadata. For tasks native
     created, the recent added and dispatched counters are zero, and the debug
     view's dispatch-overdue and transport states differ.
-  - The cancellation cascade view is not ported. The debug view reports
-    `cancellation_cascade_supported: false` and a null cascade.
 - **Evidence.** Debug views of seven run states match PHP except for the
   differences above, history payload content and key order, and identifier
   case. Task queue views differ only in the bound and counters above. Sixteen
