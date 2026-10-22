@@ -428,8 +428,14 @@ async fn buffered_condition_input_keeps_zero_and_positive_timer_semantics_distin
                 StatusCode::OK
             );
             // The zero timeout fired before the condition took the buffered
-            // signal. Closing the run rejects that unapplied signal, as
-            // Server 2.10.0's PendingSignalCloser does.
+            // signal. That signal is declared, so it can still advance the
+            // run without a wait: Server 2.10.0 holds the close and delivers
+            // it first (`PendingMessageTask`), and nothing is rejected.
+            if seconds == 0 {
+                let delivery = claim(&app, namespace, "condition-worker", 0).await;
+                assert_eq!(delivery["resume_source_kind"], "workflow_signal", "{delivery}");
+                assert_eq!(finish(&app, namespace, &delivery, close(false)).await.0, StatusCode::OK);
+            }
             assert_eq!(
                 task_retry::rows(
                     &database,
@@ -444,7 +450,7 @@ async fn buffered_condition_input_keeps_zero_and_positive_timer_semantics_distin
                     "SELECT COUNT(*) FROM workflow_signal_records WHERE status='rejected' AND rejection_reason='run_closed_before_signal_applied'"
                 )
                 .await,
-                if seconds == 0 { 1 } else { 0 }
+                0
             );
             runtime.close().await;
             database.remove().await;

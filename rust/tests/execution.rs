@@ -97,6 +97,8 @@ mod signal_rejection;
 mod cooperative_waits;
 #[path = "execution/child_policies.rs"]
 mod child_policies;
+#[path = "execution/declared_signals.rs"]
+mod declared_signals;
 #[path = "execution/child_cascade.rs"]
 mod child_cascade;
 #[path = "execution/completion_open_work.rs"]

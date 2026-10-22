@@ -942,7 +942,14 @@ impl Runtime {
         }
     }
     delegate!(task_history(task_id: &str, body: Value) -> Result<Value>);
-    delegate!(fail_workflow_task(task_id: &str, body: Value) -> Result<Value>);
+    pub(crate) async fn fail_workflow_task(&self, task_id: &str, body: Value) -> Result<Value> {
+        let codec = self.transition_codec.clone();
+        match &*self.storage {
+            Storage::Sqlite(store) => store.fail_workflow_task(task_id, body, codec).await,
+            Storage::Postgres(store) => store.fail_workflow_task(task_id, body, codec).await,
+            Storage::MySql(store) => store.fail_workflow_task(task_id, body, codec).await,
+        }
+    }
     pub(crate) async fn complete_workflow(
         &self,
         task_id: &str,
