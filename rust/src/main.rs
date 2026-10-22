@@ -623,7 +623,10 @@ mod startup_tests {
         ))));
         assert!(!unreachable(&RuntimeError::Database(sqlx::Error::RowNotFound)));
         assert!(!unreachable(&RuntimeError::Io(refused())));
+    }
 }
+
+#[cfg(test)]
 mod auth_env_tests {
     use super::*;
 

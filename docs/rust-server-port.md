@@ -92,7 +92,6 @@ contract fixture before its correction.
   PHP fills them from `workflow_run_waits` and
   `workflow_run_timeline_entries`. No SDK replayer or bundle verifier reads
   either section.
-
 - **Search attributes on start.** Published PHP validates `search_attributes`
   against the namespace registry and stores them as typed rows. Native
   answers a start that names any with
@@ -119,17 +118,9 @@ contract fixture before its correction.
   signal and update counts with their payload size at intake, and the
   payload size of an activity's result. Native enforces only the memo size.
   #612 tracks the rest.
-- **Malformed input envelopes.** Published PHP refuses a malformed `input`
-  envelope on start, signal, update and query with `422 validation_failed`,
-  using Laravel messages on `input.codec` or `input.blob`. The cases are a
-  codec that is not `avro`, a missing codec, a blob that is empty or not a
-  string, and a blob Avro cannot decode. Native answers with its own reasons
-  instead: `unsupported_payload_codec`, `invalid_payload_envelope`, or an
-  `invalid_*_arguments` reason.
 - **Key order inside plain JSON input.** For input that is not an envelope,
   PHP encodes nested objects as Avro maps in request order; native encodes
   them with sorted keys. The decoded values are equal, but the blobs differ.
-
 - **Child completion while the parent has an open workflow task.** Published
   Workflow records the child resolution and reuses the parent's existing ready
   or leased workflow task (`WorkflowExecutor::dispatchParentResumeTasks`).
@@ -161,7 +152,6 @@ contract fixture before its correction.
   and native then correctly fences the attempt. A heartbeat timeout comfortably
   above the request timeout, still inside the 9-second load wave, needs its own
   reviewed profile change.
-
 - **A valid workflow task claim held by a stale worker.** Published PHP
   refuses a request whose lease is otherwise valid when its owner's
   registration is no longer fresh (`409 stale_worker_registration`). Native's
@@ -204,27 +194,12 @@ contract fixture before its correction.
   `upgrade_source_catalog_unqualified` until its recipe lands. The recipe must
   also refuse rows that carry trace context until native implements the
   contract. The boundary is agreed on #325.
-- **Queries while a workflow task is open.** Native answers a query from a
-  history snapshot taken at admission, so it refuses with 409
-  `query_snapshot_busy` while the run has a ready or leased workflow task.
-  Published PHP admits the query. A workflow task leased at admission fixes
-  the query's history cutoff at that point. The query's claim then waits
-  while a workflow task is leased, or while an earlier resume task (signal,
-  update, activity, child or timer) is ready and not yet in history. A
-  run's first workflow task does not hold the claim. A query sent right after
-  a signal therefore waits on PHP and is refused on native. The port takes the
-  snapshot at claim time and must keep query lease replay stable, so it needs
-  its own fixture.
 - **Stop signal in the published image.** The published Server image declares
   `STOPSIGNAL SIGWINCH`, Apache's graceful stop. Native stops gracefully on
   `SIGTERM` or `SIGINT` and ignores `SIGWINCH`, so `docker stop` on the
   published image with the native binary as its entrypoint waits out its
   timeout and kills the process. A native image must declare
   `STOPSIGNAL SIGTERM`.
-- **Search attribute upserts.** Native has no `upsert_search_attributes`
-  workflow command and refuses it with `unsupported_workflow_command`. The
-  Sample App's search attribute scenario stops there, on its Rust worker's
-  first upsert.
 - **Visibility query evaluation.** Published PHP filters a structured list
   `query` in SQL. Native reads the queried attribute keys once, then
   evaluates candidate runs in list order, 500 at a time, until it has the
