@@ -204,6 +204,10 @@ contract fixture before its correction.
   published image with the native binary as its entrypoint waits out its
   timeout and kills the process. A native image must declare
   `STOPSIGNAL SIGTERM`.
+- **Search attribute upserts.** Native has no `upsert_search_attributes`
+  workflow command and refuses it with `unsupported_workflow_command`. The
+  Sample App's search attribute scenario stops there, on its Rust worker's
+  first upsert.
 - **Terminating a child run.** Published Workflow resolves the parent with
   `ChildRunTerminated` and the `terminated` child call status. Native refuses
   this with `422 termination_propagation_not_available` until the parent-side

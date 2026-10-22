@@ -1585,19 +1585,19 @@ where
         .bind(&run_id)
         .fetch_one(&mut *tx)
         .await?;
-        if signals != 0
-            || updates != 0
-            || payload["workflow_signal_id"].is_string()
-            || payload["workflow_update_id"].is_string()
-            || Self::cancellation_request(&run)?.is_some()
+        // Published PHP retries a failed task as it is, with any signal or
+        // update it carries; its waiting acknowledgement with pending
+        // messages still needs its own contract.
+        if waiting
+            && (signals != 0
+                || updates != 0
+                || payload["workflow_signal_id"].is_string()
+                || payload["workflow_update_id"].is_string()
+                || Self::cancellation_request(&run)?.is_some())
         {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,
-                if waiting {
-                    "development_workflow_task_waiting_messages_unqualified"
-                } else {
-                    "development_workflow_task_retry_messages_unqualified"
-                },
+                "development_workflow_task_waiting_messages_unqualified",
             ));
         }
         if !waiting {
@@ -2975,8 +2975,9 @@ pub(super) async fn prepare_control_arguments(
             Err(error) if request => return Err(super::input_envelope::undecodable(&arguments, &error)),
             _ => return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid)),
         };
+        // `signalValueFromRecord`: no arguments apply as true, one as itself.
         let value = match values.as_slice() {
-            [] => crate::codec::Value::Null,
+            [] => crate::codec::Value::Boolean(true),
             [value] => value.clone(),
             _ => crate::codec::Value::Array(values.clone()),
         };
