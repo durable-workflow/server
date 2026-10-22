@@ -75,12 +75,11 @@ Environment overrides:
   DW_SIGNALS_QUERIES_NAMESPACE              Namespace for the adversarial shard. Defaults to default.
   DW_SIGNALS_QUERIES_CLI_BIN                Optional configured dw binary path; does not prove published install.
   DW_SIGNALS_QUERIES_PYTHON                 Optional configured Python executable; does not prove published install.
-  DW_SIGNALS_QUERIES_PHP_DOCKER_IMAGE       Docker image used to install and run the published PHP package.
-                                             Defaults to composer:2.
   DW_SIGNALS_QUERIES_WATERLINE_PHP_DOCKER_IMAGE
                                              Docker image used to install and run the published Waterline observer.
                                              Defaults to durableworkflow/server:<DW_SERVER_VERSION> so pdo_mysql
-                                             is available when observing a MySQL-backed server.
+                                             is available when observing a MySQL-backed server. Composer in it
+                                             trusts only the checked CA file in <result-dir>/.composer-trust.
   DW_SIGNALS_QUERIES_KEEP_RUN_ROOT          Set to 1 to keep the adversarial shard scratch directory.
   DW_SIGNALS_QUERIES_CLEANUP_TERMINATION_READY_FILE
                                              Regression-only checkpoint written after every bind-mounted
@@ -1975,7 +1974,8 @@ except PackageNotFoundError:
 
 
 def sdk_php_docker_image() -> str:
-    return env_text("DW_SIGNALS_QUERIES_PHP_DOCKER_IMAGE") or "composer:2"
+    # The pinned image's CA store is checked (GHSA-6q48-6c7w-9gw2).
+    return "composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee"
 
 
 class PhpSdkArtifactError(RuntimeError):
@@ -13781,12 +13781,31 @@ def docker_run_for_project(
         ])
     for key, value in sorted((extra_env or {}).items()):
         docker_command.extend(["-e", f"{key}={value}"])
+    docker_command.extend(composer_trust_options())
 
     docker_command.extend([
         image or sdk_php_docker_image(),
         *command,
     ])
     return docker_command
+
+
+def composer_trust_dir() -> Path:
+    return Path(os.environ.get("RESULT_DIR") or ".") / ".composer-trust"
+
+
+def composer_trust_options() -> list[str]:
+    # Composer in a published Server image trusts only the CA file the wrapper
+    # checked and an empty directory, whatever that image's store holds
+    # (GHSA-6q48-6c7w-9gw2). A missing file makes Composer refuse.
+    return [
+        "-v",
+        f"{composer_trust_dir()}:/composer-trust:ro",
+        "-e",
+        "COMPOSER_CAFILE=/composer-trust/ca.pem",
+        "-e",
+        "COMPOSER_CAPATH=/composer-trust/no-ca-directory",
+    ]
 
 
 def waterline_create_project_command(
@@ -13915,6 +13934,20 @@ def _run_waterline_observer_probe(
     waterline_root.mkdir(parents=True, exist_ok=True)
     composer_cache_dir.mkdir(parents=True, exist_ok=True)
     log_file = result_dir / "waterline-signals-queries-observer.log"
+    trust_command = [
+        "sh",
+        str(Path(os.environ["REPO_ROOT"]) / "scripts" / "ci" / "checked-ca.sh"),
+        str(composer_trust_dir()),
+    ]
+    trust = run_command(trust_command, log_file=log_file, timeout=300)
+    if trust.returncode != 0:
+        return waterline_observer_setup_result(
+            status="runner_blocked",
+            reason="The checked Composer CA file could not be prepared (GHSA-6q48-6c7w-9gw2).",
+            blocker_kind="composer_trust",
+            failed_command=trust_command,
+            command_result=trust,
+        ), {"error": "composer_trust", "log_file": log_file.name}
     create_command = waterline_create_project_command(
         waterline_root,
         composer_cache_dir,

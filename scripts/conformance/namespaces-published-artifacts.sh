@@ -968,7 +968,7 @@ PY
 
   set +e
   docker run --rm --user "$host_uid_gid" -e HOME=/tmp -e COMPOSER_HOME=/tmp/composer \
-    -v "$waterline_app:/app" -w /app composer:2 \
+    -v "$waterline_app:/app" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \
     composer create-project laravel/laravel . --no-interaction --no-progress \
     > "$result_dir/waterline-create-project.log" 2>&1
   waterline_create_status=$?
@@ -984,7 +984,7 @@ PY
 
     set +e
     docker run --rm --user "$host_uid_gid" -e HOME=/tmp -e COMPOSER_HOME=/tmp/composer \
-      -v "$waterline_app:/app" -w /app composer:2 \
+      -v "$waterline_app:/app" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \
       composer require --no-interaction --no-progress \
         "durable-workflow/waterline:${waterline_version}@beta" \
         "durable-workflow/workflow:${workflow_php_version}@beta" \
@@ -1004,7 +1004,7 @@ PY
       -e DB_DATABASE=/app/database/database.sqlite \
       -e WATERLINE_ENGINE_SOURCE=v2 \
       -e WATERLINE_ALLOW_UNAUTHENTICATED=true \
-      composer:2 php artisan key:generate --force \
+      composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan key:generate --force \
       > "$result_dir/waterline-key-generate.log" 2>&1
     waterline_key_status=$?
     set -e
@@ -1020,7 +1020,7 @@ PY
       -e DB_DATABASE=/app/database/database.sqlite \
       -e WATERLINE_ENGINE_SOURCE=v2 \
       -e WATERLINE_ALLOW_UNAUTHENTICATED=true \
-      composer:2 php artisan migrate --force \
+      composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan migrate --force \
       > "$result_dir/waterline-migrate.log" 2>&1
     waterline_migrate_status=$?
     set -e
@@ -1037,7 +1037,7 @@ PY
       -e DB_DATABASE=/app/database/database.sqlite \
       -e WATERLINE_ENGINE_SOURCE=v2 \
       -e WATERLINE_ALLOW_UNAUTHENTICATED=true \
-      composer:2 php artisan waterline:namespace-conformance \
+      composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan waterline:namespace-conformance \
         --run-id "published-namespaces-${RUN_ID:-waterline}" \
         "${waterline_artifact_args[@]}" \
         --output /result/waterline-namespace-result.json \

@@ -113,7 +113,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertIsInt($loginIndex);
         $this->assertLessThan($loginIndex, $auditIndex);
         $this->assertSame(
-            'composer audit --working-dir=release-source --locked --no-dev --no-interaction',
+            'docker run --rm --user "$(id -u):$(id -g)" -e COMPOSER_HOME=/tmp/composer -v "$PWD/release-source:/app:ro" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee audit --locked --no-dev --no-interaction',
             $steps[$auditIndex]['run'],
         );
         $this->assertArrayNotHasKey('continue-on-error', $steps[$auditIndex]);
@@ -125,7 +125,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
             static fn (array $step): bool => ($step['name'] ?? null) === 'Audit locked PHP dependencies',
         ));
         $this->assertCount(1, $audits);
-        $this->assertSame('composer audit --locked --no-interaction', $audits[0]['run']);
+        $this->assertSame('docker run --rm --user "$(id -u):$(id -g)" -e COMPOSER_HOME=/tmp/composer -v "$PWD:/app:ro" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee audit --locked --no-interaction', $audits[0]['run']);
         $this->assertArrayNotHasKey('continue-on-error', $audits[0]);
         $this->assertArrayNotHasKey('if', $audits[0]);
     }

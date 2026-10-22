@@ -10,7 +10,7 @@
       "restart": "no"
     },
     "composer-installer": {
-      "image": "docker.io/library/composer:2.10.2",
+      "image": "docker.io/library/composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee",
       "platform": "linux/amd64",
       "network_mode": "bridge",
       "working_dir": "/capacity",

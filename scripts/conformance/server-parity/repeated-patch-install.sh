@@ -9,6 +9,7 @@ if ! test -e composer.json; then
 fi
 cp "$DW_PARITY_EMBEDDED_PROFILE/composer.json" "$DW_PARITY_EMBEDDED_PROFILE/composer.lock" .
 printf '%s  composer.lock\n' "$DW_PARITY_EMBEDDED_LOCK_SHA256" | sha256sum -c -
+sh "$(dirname "$0")/../../ci/composer-trust-guard.sh" >&2
 composer install --no-dev --no-scripts --no-cache --no-interaction --no-progress --prefer-dist --optimize-autoloader
 rm -f bootstrap/cache/packages.php bootstrap/cache/services.php bootstrap/cache/routes-v7.php
 php artisan package:discover --ansi

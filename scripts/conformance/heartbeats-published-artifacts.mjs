@@ -60,7 +60,8 @@ const STALE_WORKER_ID = `heartbeat-${CELL}-stale-${SUFFIX}`;
 const FRESH_WORKER_ID = `heartbeat-${CELL}-fresh-${SUFFIX}`;
 const WORKFLOW_TYPE = `conformance.heartbeat.${CELL}`;
 const TOKEN = env('DW_HEARTBEATS_AUTH_TOKEN') || 'dev-token';
-const PHP_IMAGE = env('DW_HEARTBEATS_PHP_IMAGE') || 'composer:2';
+// The pinned image's CA store is checked (GHSA-6q48-6c7w-9gw2).
+const PHP_IMAGE = 'composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee';
 const PYTHON_IMAGE = env('DW_HEARTBEATS_PYTHON_IMAGE') || 'python:3.12-slim';
 const RUST_IMAGE = env('DW_HEARTBEATS_RUST_IMAGE') || 'rust:1.86.0-slim-bookworm';
 const SERVER_VERSION = env('DW_SERVER_VERSION');

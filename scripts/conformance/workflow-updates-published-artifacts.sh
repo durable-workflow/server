@@ -4261,6 +4261,10 @@ run_operator_diagnostics_shard() {
     write_operator_diagnostics_shard_status runner_blocked "Composer is required to install the pinned Packagist durable-workflow/waterline package." composer_unavailable true
     return 0
   fi
+  if ! sh "$script_dir/../ci/composer-trust-guard.sh" > "$result_dir/operator-composer-trust.log" 2>&1; then
+    write_operator_diagnostics_shard_status runner_blocked "Composer's CA trust includes a root withdrawn under GHSA-6q48-6c7w-9gw2; see operator-composer-trust.log." composer_trust true
+    return 0
+  fi
 
   if [[ -z "$operator_port" ]]; then
     operator_port="$(choose_tcp_port)"

@@ -8,6 +8,7 @@ real-pip controls, which bootstrap the hash-pinned pip 26.2.2.
 from __future__ import annotations
 
 import http.server
+import json
 import os
 import re
 import shutil
@@ -17,6 +18,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -40,24 +42,41 @@ case "$*" in
 esac
 """
 
-# pip installs, downloads and upgrades, in shell, YAML, Python or JS argument
-# lists: "pip install", "-m pip --isolated install", "'-m', 'pip', 'install'".
 SEPARATOR = r"""[\s'",]+"""
-PIP_COMMAND = re.compile(
-    rf"""\bpip3?(?:{SEPARATOR}--[\w-]+(?:=[^\s'",]+)?)*{SEPARATOR}(?:install|download)\b"""
+# Every place pip can make a request: "pip install", "-m pip --isolated
+# download", "'-m', 'pip', 'wheel'" and the like in shell, YAML, Python or JS
+# argument lists; any "-m pip" whose arguments come from elsewhere; and the
+# actions that run pip themselves.
+PIP_SINK = re.compile(
+    rf"""-m{SEPARATOR}pip\b|\bpip3?(?:{SEPARATOR}--[\w-]+(?:=[^\s'",]+)?)*{SEPARATOR}(?:install|download|wheel|index)\b"""
+    r"""|uses:\s*(?:helm/chart-testing-action|durable-workflow/\.github/\.github/actions/bootstrap-patched-pip)@"""
 )
-PATCHED = re.compile(r"bootstrap-patched-pip|patched-pip\.sh|PATCHED_PIP_BOOTSTRAP")
-SCANNED = ("scripts", "tests/Fixtures", "tests/Integration", "benchmarks", "docker")
-# Mentions that are not executed pip commands.
-NOT_EXECUTED = {
-    "scripts/conformance/server-parity/published-sdk-patch/identity.mjs": "assertion text about pip's install report",
-}
-# Workflow jobs whose pip use the repository cannot confine yet.
-UNCONFINED_JOBS = {
-    # The central policy fixes this job's exact steps and forbids job env.
-    # It is confined when the central bootstrap action itself confines pip.
-    ("phpunit-feature.yml", "action-policy"),
-}
+SCANNED = (".github/workflows", "scripts", "tests/Fixtures", "tests/Integration", "benchmarks", "docker")
+# The reviewed sinks: exact line, count per file, and how each is confined.
+MANIFEST = ROOT / "tests" / "Unit" / "Support" / "pip-sinks.json"
+
+
+def pip_sinks(root: Path) -> Counter[tuple[str, str]]:
+    files = [path for directory in SCANNED for path in sorted((root / directory).rglob("*")) if path.is_file()]
+    files += [path for path in (root / "Dockerfile", *sorted(root.glob("docker-compose*.yml"))) if path.is_file()]
+    sinks: Counter[tuple[str, str]] = Counter()
+    for path in files:
+        try:
+            text = path.read_text()
+        except (UnicodeDecodeError, OSError):
+            continue
+        for match in PIP_SINK.finditer(text):
+            start = text.rfind("\n", 0, match.start()) + 1
+            end = text.find("\n", match.start())
+            sinks[(path.relative_to(root).as_posix(), text[start:end if end >= 0 else None].strip())] += 1
+    return sinks
+
+
+def unreviewed_sinks(root: Path, entries: list[dict[str, object]]) -> tuple[list[str], list[str]]:
+    reviewed = Counter({(str(entry["path"]), str(entry["line"])): int(entry["count"]) for entry in entries})
+    found = pip_sinks(root)
+    describe = lambda sinks: [f"{path}: {line} (x{count})" for (path, line), count in sorted(sinks.items())]
+    return describe(found - reviewed), describe(reviewed - found)
 
 
 def make_root(directory: Path, common_name: str) -> str:
@@ -190,6 +209,12 @@ class _RecordingHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
+class _QuietServer(http.server.ThreadingHTTPServer):
+    # A refused handshake drops the connection; that is the expected outcome.
+    def handle_error(self, request: object, client_address: object) -> None:
+        pass
+
+
 class RealPipTrustTest(unittest.TestCase):
     """Real pip 26.2.2 against a root trusted only through the OS store.
 
@@ -232,7 +257,7 @@ class RealPipTrustTest(unittest.TestCase):
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(f"{leaf}.pem", f"{leaf}.key")
-        cls.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RecordingHandler)
+        cls.server = _QuietServer(("127.0.0.1", 0), _RecordingHandler)
         cls.server.paths = []  # type: ignore[attr-defined]
         cls.server.socket = context.wrap_socket(cls.server.socket, server_side=True)
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
@@ -334,27 +359,47 @@ class RealPipTrustTest(unittest.TestCase):
 
 
 class PatchedPipInventoryTest(unittest.TestCase):
-    def test_every_script_pip_command_follows_the_patched_bootstrap(self) -> None:
-        unpatched = []
-        for directory in SCANNED:
-            for path in sorted((ROOT / directory).rglob("*")):
-                relative = path.relative_to(ROOT).as_posix()
-                if not path.is_file() or relative in NOT_EXECUTED or path.parent == CI:
-                    continue
-                try:
-                    text = path.read_text()
-                except (UnicodeDecodeError, OSError):
-                    continue
-                first_bootstrap = PATCHED.search(text)
-                for command in PIP_COMMAND.finditer(text):
-                    line = text[text.rfind("\n", 0, command.start()) + 1:text.find("\n", command.end())]
-                    if "patched-pip.sh" in line:
-                        continue
-                    if first_bootstrap is None or first_bootstrap.start() > command.start():
-                        number = text.count("\n", 0, command.start()) + 1
-                        unpatched.append(f"{relative}:{number}: {line.strip()}")
+    def setUp(self) -> None:
+        self.entries = json.loads(MANIFEST.read_text())["sinks"]
 
-        self.assertEqual([], unpatched, "start these pip commands from scripts/ci/bootstrap-patched-pip.sh")
+    def test_every_pip_sink_is_reviewed(self) -> None:
+        unreviewed, stale = unreviewed_sinks(ROOT, self.entries)
+
+        self.assertEqual([], unreviewed, f"confine these pip sinks, then record them in {MANIFEST.name}")
+        self.assertEqual([], stale, f"remove these entries from {MANIFEST.name}")
+
+    def test_every_reviewed_sink_names_its_confinement(self) -> None:
+        for entry in self.entries:
+            with self.subTest(entry["path"]):
+                self.assertTrue(str(entry.get("confinement", "")).strip())
+
+    def test_unconfined_sinks_fail_the_review(self) -> None:
+        work = Path(tempfile.mkdtemp(prefix="dw-pip-sinks-"))
+        self.addCleanup(shutil.rmtree, work, ignore_errors=True)
+        cases = {
+            # Mentioning the bootstrap does not confine a later install.
+            "scripts/conformance/mention-only.sh": "# sh scripts/ci/bootstrap-patched-pip.sh is our policy\npython -m pip install durable-workflow\n",
+            "scripts/conformance/wheel.sh": "pip wheel --wheel-dir /tmp/w durable-workflow\n",
+            "scripts/conformance/index.sh": "python3 -m pip index versions durable-workflow\n",
+            "scripts/conformance/args.py": "subprocess.run([python, '-m', 'pip', *arguments])\n",
+            # Echoing the confinement strings does not confine the job.
+            ".github/workflows/echo.yml": "jobs:\n  echo:\n    steps:\n      - run: |\n"
+            "          echo bootstrap-patched-pip@ PIP_USE_DEPRECATED=legacy-certs\n"
+            "          python -m pip install PyYAML\n",
+        }
+        for relative, text in cases.items():
+            (work / relative).parent.mkdir(parents=True, exist_ok=True)
+            (work / relative).write_text(text)
+        # A second sink added to a reviewed file fails as well.
+        reviewed = "scripts/conformance/sagas-published-artifacts.sh"
+        (work / reviewed).parent.mkdir(parents=True, exist_ok=True)
+        (work / reviewed).write_text((ROOT / reviewed).read_text() + '\npython -m pip install "durable-workflow==$python_version" httpx\n')
+
+        unreviewed, _ = unreviewed_sinks(work, self.entries)
+
+        for relative in [*cases, reviewed]:
+            with self.subTest(relative):
+                self.assertTrue(any(item.startswith(f"{relative}: ") for item in unreviewed), unreviewed)
 
     def test_isolated_pip_commands_keep_legacy_certs(self) -> None:
         # --isolated ignores the venv's pip.conf, so the command itself must
@@ -374,31 +419,6 @@ class PatchedPipInventoryTest(unittest.TestCase):
                         loose.append(f"{path.relative_to(ROOT).as_posix()}:{text.count(chr(10), 0, command.start()) + 1}")
 
         self.assertEqual([], loose)
-
-    def test_every_workflow_job_with_pip_confines_it(self) -> None:
-        unconfined = []
-        for workflow in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
-            text = workflow.read_text()
-            jobs = text.split("\njobs:\n", 1)[1] if "\njobs:\n" in text else ""
-            for job in re.split(r"\n(?=  [\w-]+:\s*\n)", "\n" + jobs):
-                name = re.match(r"\s*([\w-]+):", job)
-                if not name or not PIP_COMMAND.search(job):
-                    continue
-                key = (workflow.name, name.group(1))
-                if key in UNCONFINED_JOBS:
-                    continue
-                confined = "patched-pip.sh" in job or (
-                    "bootstrap-patched-pip@" in job and re.search(r"PIP_USE_DEPRECATED[=:]\s*legacy-certs", job)
-                )
-                if not confined:
-                    unconfined.append(f"{workflow.name} job {name.group(1)}")
-
-        self.assertEqual([], unconfined, "bootstrap pip and confine it to its checked bundle in these jobs")
-
-    def test_known_unconfined_jobs_still_exist(self) -> None:
-        for workflow, job in UNCONFINED_JOBS:
-            text = (ROOT / ".github" / "workflows" / workflow).read_text()
-            self.assertRegex(text, rf"\n  {re.escape(job)}:\s*\n", f"remove the stale exception for {workflow} {job}")
 
 
 if __name__ == "__main__":

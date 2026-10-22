@@ -245,8 +245,8 @@ class ReplayConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('container_user="$(id -u):$(id -g)"', $source);
         $this->assertStringContainsString('COMPOSER_HOME=/tmp/composer', $source);
         $this->assertStringContainsString('COMPOSER_CACHE_DIR=/tmp/composer-cache', $source);
-        $this->assertStringContainsString('docker run --rm "${composer_env_args[@]}" -v "$waterline_app:/app" -w /app composer:2', $source);
-        $this->assertStringNotContainsString('docker run --rm -v "$waterline_app:/app" -w /app composer:2', $source);
+        $this->assertStringContainsString('docker run --rm "${composer_env_args[@]}" -v "$waterline_app:/app" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee', $source);
+        $this->assertStringNotContainsString('docker run --rm -v "$waterline_app:/app" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee', $source);
         $this->assertStringContainsString('"durable-workflow/waterline:${waterline_version}@beta"', $source);
         $this->assertStringContainsString('"durable-workflow/workflow:${workflow_php_version}@beta"', $source);
         $this->assertStringContainsString('"durable-workflow/sdk:${php_sdk_version}@beta"', $source);

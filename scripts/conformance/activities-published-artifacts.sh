@@ -154,10 +154,32 @@ run_in_published_server_container() {
     runner_args+=(--keep-run-root)
   fi
 
+  # Composer inside the published image trusts only the pinned Composer
+  # image's CA store and an empty directory (GHSA-6q48-6c7w-9gw2), whichever
+  # copy of this runner the image holds. The digest fixes that store's
+  # content; composer_trust_test.py checks it, and so does blocked_roots.py
+  # when this runner sits in a checkout.
+  local trust_dir="$result_dir/.composer-trust"
+  mkdir -p "$trust_dir/no-ca-directory"
+  docker run --rm --network none --entrypoint cat \
+    composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \
+    /etc/ssl/certs/ca-certificates.crt > "$trust_dir/ca.pem"
+  if [[ ! -s "$trust_dir/ca.pem" ]]; then
+    printf '%s\n' 'could not read the pinned Composer CA store' >&2
+    return 2
+  fi
+  if [[ -f "$script_dir/../ci/blocked_roots.py" ]]; then
+    python3 -I "$script_dir/../ci/blocked_roots.py" "$trust_dir/ca.pem" >&2 || return 2
+  fi
+  chmod 0555 "$trust_dir/no-ca-directory"
+
   docker run --rm \
     --user "$host_user" \
     --entrypoint bash \
     -v "$result_dir:/result" \
+    -v "$result_dir/.composer-trust:/composer-trust:ro" \
+    -e COMPOSER_CAFILE=/composer-trust/ca.pem \
+    -e COMPOSER_CAPATH=/composer-trust/no-ca-directory \
     "${docker_env[@]}" \
     "$server_image" \
     /app/scripts/conformance/activities-published-artifacts.sh \
@@ -365,6 +387,7 @@ prepare_published_php_activity_artifacts() {
 
   if ! (
     cd "$project_dir"
+    sh "$script_dir/../ci/composer-trust-guard.sh" &&
     COMPOSER_HOME="$run_root/composer-home" \
     COMPOSER_CACHE_DIR="$composer_cache" \
     composer install --no-interaction --no-progress --prefer-dist --no-scripts

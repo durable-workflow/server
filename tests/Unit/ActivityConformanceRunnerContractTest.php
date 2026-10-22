@@ -47,7 +47,9 @@ class ActivityConformanceRunnerContractTest extends TestCase
         copy($repoRoot.'/scripts/conformance/activities-published-artifacts.sh', $runnerDir.'/activities-published-artifacts.sh');
         file_put_contents(
             $binDir.'/docker',
-            "#!/usr/bin/env bash\nprintf '%s\\n' \"\$@\" > \"\$FAKE_DOCKER_LOG\"\n",
+            "#!/usr/bin/env bash\n"
+            ."if [[ \" \$* \" == *' --entrypoint cat '* ]]; then printf '%s\\n' '-----BEGIN CERTIFICATE-----'; exit 0; fi\n"
+            ."printf '%s\\n' \"\$@\" > \"\$FAKE_DOCKER_LOG\"\n",
         );
         chmod($binDir.'/docker', 0755);
 
@@ -83,6 +85,11 @@ class ActivityConformanceRunnerContractTest extends TestCase
                 $arguments,
             );
             $this->assertContains($resultDir.':/result', $arguments);
+            $this->assertContains($resultDir.'/.composer-trust:/composer-trust:ro', $arguments);
+            $this->assertContains('COMPOSER_CAFILE=/composer-trust/ca.pem', $arguments);
+            $this->assertContains('COMPOSER_CAPATH=/composer-trust/no-ca-directory', $arguments);
+            $this->assertFileExists($resultDir.'/.composer-trust/ca.pem');
+            $this->assertSame([], array_values(array_diff(scandir($resultDir.'/.composer-trust/no-ca-directory'), ['.', '..'])));
             $this->assertContains('DW_ACTIVITIES_CONTAINER_HANDOFF=1', $arguments);
             $this->assertContains('DW_ACTIVITIES_CONTAINER_REMOVED_ON_EXIT=1', $arguments);
             $this->assertContains('DW_ACTIVITIES_RUNNER_SOURCE='.$serverImage, $arguments);

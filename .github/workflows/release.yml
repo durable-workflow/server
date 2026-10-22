@@ -98,7 +98,9 @@ jobs:
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
       - name: Audit immutable PHP release dependencies
-        run: composer audit --working-dir=release-source --locked --no-dev --no-interaction
+        # In the pinned Composer image, whose CA store is checked (GHSA-6q48-6c7w-9gw2).
+        run: >-
+          docker run --rm --user "$(id -u):$(id -g)" -e COMPOSER_HOME=/tmp/composer -v "$PWD/release-source:/app:ro" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee audit --locked --no-dev --no-interaction
 
       - name: Validate release publish context and credentials
         id: release_publish

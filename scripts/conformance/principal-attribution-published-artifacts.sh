@@ -895,7 +895,7 @@ def run_in_composer_container(root: Path, workdir: Path, command: list[str], *, 
         "COMPOSER_HOME=/work/composer-home",
         "-e",
         "COMPOSER_CACHE_DIR=/work/composer-cache",
-        "composer:2",
+        "composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee",
         *command,
     ]
 
@@ -1411,7 +1411,7 @@ waterline_key_status=not_invoked
 waterline_migrate_status=not_invoked
 waterline_command_status=not_invoked
 waterline_report_validation_status=not_invoked
-if docker run --rm --user "$(id -u):$(id -g)" -v "$waterline_app:/app" -w /app composer:2 \
+if docker run --rm --user "$(id -u):$(id -g)" -v "$waterline_app:/app" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \
   composer create-project laravel/laravel . --no-interaction --no-progress \
   > "$result_dir/waterline-create-project.log" 2>&1; then
   waterline_create_status=0
@@ -1423,7 +1423,7 @@ if [[ "$waterline_create_status" == 0 ]]; then
   mkdir -p "$waterline_app/database"
   : > "$waterline_app/database/database.sqlite"
 
-  if docker run --rm --user "$(id -u):$(id -g)" -v "$waterline_app:/app" -w /app composer:2 \
+  if docker run --rm --user "$(id -u):$(id -g)" -v "$waterline_app:/app" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \
     composer require --no-interaction --no-progress \
       "durable-workflow/waterline:${waterline_version}@beta" \
       "durable-workflow/workflow:${workflow_php_version}@beta" \
@@ -1444,7 +1444,7 @@ if [[ "$waterline_require_status" == 0 ]]; then
     -e DB_DATABASE=/app/database/database.sqlite \
     -e WATERLINE_ENGINE_SOURCE=v2 \
     -e WATERLINE_ALLOW_UNAUTHENTICATED=true \
-    composer:2 php artisan key:generate --force \
+    composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan key:generate --force \
     > "$result_dir/waterline-key-generate.log" 2>&1; then
     waterline_key_status=0
   else
@@ -1461,7 +1461,7 @@ if [[ "$waterline_key_status" == 0 ]]; then
     -e DB_DATABASE=/app/database/database.sqlite \
     -e WATERLINE_ENGINE_SOURCE=v2 \
     -e WATERLINE_ALLOW_UNAUTHENTICATED=true \
-    composer:2 php artisan migrate --force \
+    composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan migrate --force \
     > "$result_dir/waterline-migrate.log" 2>&1; then
     waterline_migrate_status=0
   else
@@ -1479,7 +1479,7 @@ if [[ "$waterline_migrate_status" == 0 ]]; then
     -e DB_DATABASE=/app/database/database.sqlite \
     -e WATERLINE_ENGINE_SOURCE=v2 \
     -e WATERLINE_ALLOW_UNAUTHENTICATED=true \
-    composer:2 php artisan waterline:principal-attribution-conformance \
+    composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan waterline:principal-attribution-conformance \
       --run-id "published-principal-${RUN_ID:-waterline}" \
       "${waterline_artifact_args[@]}" \
       --output /result/waterline-principal-attribution-result.json \
@@ -2135,7 +2135,7 @@ def run_php_code(code: str, env: dict[str, str], *, timeout: int = 45) -> subpro
         return subprocess.CompletedProcess(
             [PHP_BIN, "-r", "<principal-attribution-client>"],
             127,
-            stdout=f"PHP binary missing ({PHP_BIN}) and docker is unavailable for composer:2 fallback",
+            stdout=f"PHP binary missing ({PHP_BIN}) and docker is unavailable for composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee fallback",
         )
 
     app_dir = PHP_SDK_AUTOLOAD.parent.parent
@@ -2162,7 +2162,7 @@ def run_php_code(code: str, env: dict[str, str], *, timeout: int = 45) -> subpro
     ]
     for name, value in container_env.items():
         docker_command.extend(["-e", f"{name}={value}"])
-    docker_command.extend(["composer:2", "php", "-r", code])
+    docker_command.extend(["composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee", "php", "-r", code])
 
     return subprocess.run(
         docker_command,

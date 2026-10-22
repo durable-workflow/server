@@ -77,13 +77,18 @@ jobs:
         run: php scripts/ci/test-workflow-package-authority.php
 
       - name: Install worker OpenAPI validation dependencies
+        # In the pinned Composer image, whose CA store is checked, not with the
+        # runner's own store (GHSA-6q48-6c7w-9gw2).
         run: >-
-          composer install
+          docker run --rm --user "$(id -u):$(id -g)" -e COMPOSER_HOME=/tmp/composer
+          -v "$PWD:/app" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee
+          install
           --no-dev
           --no-scripts
           --no-interaction
           --no-progress
           --prefer-dist
+          --ignore-platform-reqs
 
       - name: Require versioned worker OpenAPI evolution
         env:
@@ -91,7 +96,9 @@ jobs:
         run: php scripts/ci/check-worker-openapi-evolution.php "$OPENAPI_BASE_REF"
 
       - name: Audit locked PHP dependencies
-        run: composer audit --locked --no-interaction
+        # In the pinned Composer image, whose CA store is checked (GHSA-6q48-6c7w-9gw2).
+        run: >-
+          docker run --rm --user "$(id -u):$(id -g)" -e COMPOSER_HOME=/tmp/composer -v "$PWD:/app:ro" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee audit --locked --no-interaction
 
       - name: Require durable codec evidence
         env:
@@ -110,6 +117,16 @@ jobs:
 
       - name: Prove pip starts from the patched, root-checked bootstrap
         run: python3 -m unittest tests/Unit/Support/patched_pip_test.py
+
+      - name: Prove cargo trusts only a checked CA file and an empty directory
+        env:
+          DW_REQUIRE_CARGO_TRUST_TEST: '1'
+        run: python3 -m unittest tests/Unit/Support/cargo_trust_test.py
+
+      - name: Prove Composer runs pinned or confined to a checked CA file
+        env:
+          DW_REQUIRE_COMPOSER_TRUST_TEST: '1'
+        run: python3 -m unittest tests/Unit/Support/composer_trust_test.py
 
   feature:
     name: PHPUnit feature suite
@@ -132,8 +149,6 @@ jobs:
 
       - name: Cache public mirrored build inputs under their canonical image names
         run: |
-          docker pull mirror.gcr.io/library/composer:2
-          docker tag mirror.gcr.io/library/composer:2 composer:2
           docker pull mirror.gcr.io/library/php:8.3-apache
           docker tag mirror.gcr.io/library/php:8.3-apache php:8.3-apache
 
@@ -187,7 +202,8 @@ jobs:
           FROM durable-workflow-server-phpunit-base
           RUN apt-get update \
               && apt-get install -y --no-install-recommends git \
-              && rm -rf /var/lib/apt/lists/*
+              && rm -rf /var/lib/apt/lists/* \
+              && server-verify-trust final
           DOCKERFILE
           docker network create \
             "dw-server-feature-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"

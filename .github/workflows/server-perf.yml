@@ -197,9 +197,10 @@ jobs:
       - name: Compile exact first-party capacity adapters
         run: |
           php -l benchmarks/capacity/v1/bindings/php/capacity_adapter.php
-          composer install \
-            --working-dir=benchmarks/capacity/v1/bindings/php \
-            --no-dev --no-interaction --no-progress --prefer-dist
+          # The pinned Composer image's checked CA store, not the runner's.
+          docker run --rm --user "$(id -u):$(id -g)" -e COMPOSER_HOME=/tmp/composer \
+            -v "$PWD:/app" -w /app/benchmarks/capacity/v1/bindings/php composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \
+            install --no-dev --no-interaction --no-progress --prefer-dist --ignore-platform-reqs
           DURABLE_WORKFLOW_RUNTIME_URL=http://127.0.0.1 \
           DURABLE_WORKFLOW_TASK_QUEUE=capacity-check \
             php benchmarks/capacity/v1/bindings/php/capacity_adapter.php check
@@ -231,7 +232,7 @@ jobs:
         run: |
           # Stream sources into the test container so containerized runners avoid host bind-path assumptions.
           tar --exclude=.git --exclude=vendor --exclude=build -cf - . \
-            | docker run --rm -i -w /app composer:2 \
+            | docker run --rm -i -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \
                 sh -lc 'tar -xf - -C /app && cp -a /app/workflow-package /workflow && php scripts/ci/prepare-release-workflow-composer-metadata.php && composer update durable-workflow/workflow --with-dependencies --minimal-changes --no-install --no-scripts --no-autoloader --no-interaction --no-progress --prefer-dist && composer install --no-interaction --no-progress --prefer-dist && vendor/bin/phpunit tests/Unit/BoundedGrowthPolicyTest.php tests/Unit/ServerPerfHarnessContractTest.php --colors=never'
 
       - name: Clean up capacity contract Docker resources

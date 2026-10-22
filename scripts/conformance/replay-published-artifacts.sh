@@ -1654,9 +1654,15 @@ set +e
 sh "$script_dir/../ci/bootstrap-patched-pip.sh" "$run_root/python-venv/bin/python" > "$result_dir/python-pip-upgrade.log" 2>&1
 python_pip_status=$?
 mkdir -p "$run_root/python-distributions"
-python -m pip download --no-deps --dest "$run_root/python-distributions" \
-  "durable-workflow==${python_sdk_version}" > "$result_dir/python-download.log" 2>&1
-python_download_status=$?
+# Without the patched pip, no Python SDK request is made at all.
+if [[ "$python_pip_status" -eq 0 ]]; then
+  python -m pip download --no-deps --dest "$run_root/python-distributions" \
+    "durable-workflow==${python_sdk_version}" > "$result_dir/python-download.log" 2>&1
+  python_download_status=$?
+else
+  printf '%s\n' 'The patched pip bootstrap failed; see python-pip-upgrade.log.' > "$result_dir/python-download.log"
+  python_download_status=1
+fi
 if [[ "$python_download_status" -eq 0 ]]; then
   python3 "$script_dir/distribution_identities.py" record-unique \
     "$distribution_identity_file" sdk-python "$python_sdk_version" \
@@ -1928,7 +1934,7 @@ fi
 waterline_app="$run_root/waterline-app"
 mkdir -p "$waterline_app"
 set +e
-docker run --rm "${composer_env_args[@]}" -v "$waterline_app:/app" -w /app composer:2 \
+docker run --rm "${composer_env_args[@]}" -v "$waterline_app:/app" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \
   composer require --no-interaction --no-progress \
     "durable-workflow/waterline:${waterline_version}@beta" \
     "durable-workflow/workflow:${workflow_php_version}@beta" \
@@ -1975,7 +1981,7 @@ if [[ "$waterline_install_status" -eq 0 ]]; then
     -v "$waterline_app:/app" \
     -v "$run_root/waterline-probe.php:/probe.php:ro" \
     -w /app \
-    composer:2 php /probe.php \
+    composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php /probe.php \
     > "$result_dir/waterline-probe.json" 2> "$result_dir/waterline-probe.log"
   waterline_probe_status=$?
   set -e
