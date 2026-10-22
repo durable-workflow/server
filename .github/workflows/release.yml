@@ -247,6 +247,21 @@ jobs:
           WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
         run: scripts/ci/verify-release-exact-images.sh
 
+      - name: Verify published image trust stores
+        id: trust_stores
+        if: ${{ always() && success() && steps.exact.outputs.exact_publish_outcome == 'success' }}
+        env:
+          RELEASE_IMAGE: ${{ env.DOCKERHUB_IMAGE }}:${{ steps.release_publish.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # GHSA-6q48-6c7w-9gw2: every published architecture's system, PHP,
+          # Composer, Node and venv stores, checked offline in the image.
+          IFS=',' read -ra platforms <<<"$RELEASE_IMAGE_PLATFORMS"
+          for platform in "${platforms[@]}"; do
+            docker run --rm --pull always --platform "$platform" --network none \
+              --entrypoint server-verify-trust "$RELEASE_IMAGE"
+          done
+
       - name: Verify bare image first-run readiness
         id: first_run_readiness
         if: ${{ always() && success() && steps.exact.outputs.exact_publish_outcome == 'success' }}

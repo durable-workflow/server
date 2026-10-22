@@ -177,6 +177,7 @@ jobs:
           docker build --target base -t durable-workflow-server-phpunit-base .
           docker run --rm --entrypoint sh durable-workflow-server-phpunit-base \
             -c 'node --version >/dev/null && python3 -m venv /tmp/dw-conformance-venv && test -x /tmp/dw-conformance-venv/bin/python3'
+          docker run --rm --network none --entrypoint server-verify-trust durable-workflow-server-phpunit-base
           docker build -t durable-workflow-server-corpus-validator - <<'DOCKERFILE'
           FROM durable-workflow-server-phpunit-base
           RUN apt-get update \
