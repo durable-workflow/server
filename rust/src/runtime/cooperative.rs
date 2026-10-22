@@ -227,8 +227,8 @@ where
                 "active_claim_cancellation_not_supported",
             ));
         }
-        let worker=Self::query("SELECT status,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace='default' AND worker_id=$1")
-            .bind(super::text(&body,"lease_owner")?).fetch_optional(&mut *tx).await?
+        let worker=Self::query("SELECT status,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
+            .bind(DB::string(&task, "namespace")?).bind(super::text(&body,"lease_owner")?).fetch_optional(&mut *tx).await?
             .ok_or_else(|| refuse(StatusCode::CONFLICT,"stale_worker_registration"))?;
         if DB::string(&worker, "status")? != "active"
             || DB::instant(&worker, "last_heartbeat_at")? <= now() - chrono::Duration::seconds(60)
@@ -734,7 +734,7 @@ where
     }
 
     pub(super) async fn expire_cooperative_deadlines(&self) -> Result<()> {
-        const EXPIRED: &str = "SELECT * FROM workflow_runs WHERE namespace='default' AND status IN ('pending','running','waiting') AND cancellation_request_command_id IS NOT NULL AND cancellation_deadline_at<=$1 ORDER BY cancellation_deadline_at,id LIMIT 50";
+        const EXPIRED: &str = "SELECT * FROM workflow_runs WHERE status IN ('pending','running','waiting') AND cancellation_request_command_id IS NOT NULL AND cancellation_deadline_at<=$1 ORDER BY cancellation_deadline_at,id LIMIT 50";
         if Self::query(EXPIRED)
             .bind(DB::bind_time(now()))
             .fetch_optional(&self.pool)

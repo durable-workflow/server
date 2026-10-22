@@ -503,8 +503,8 @@ where
             return Err(refuse(StatusCode::CONFLICT, "update_not_pending"));
         }
         let name = DB::string(&update, "update_name")?;
-        let worker = Self::query("SELECT status,last_heartbeat_at,supported_workflow_types,capabilities,workflow_command_contracts FROM workflow_worker_registrations WHERE namespace='default' AND worker_id=$1")
-            .bind(DB::string(task,"lease_owner")?).fetch_optional(&mut **tx).await?
+        let worker = Self::query("SELECT status,last_heartbeat_at,supported_workflow_types,capabilities,workflow_command_contracts FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
+            .bind(DB::string(task, "namespace")?).bind(DB::string(task,"lease_owner")?).fetch_optional(&mut **tx).await?
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "update_worker_unavailable"))?;
         if !Self::update_worker_supported(&worker, &DB::string(run, "workflow_type")?, &name)? {
             return Err(refuse(StatusCode::CONFLICT, "update_worker_unavailable"));
