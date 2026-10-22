@@ -723,7 +723,7 @@ where
                 "delivery_history_event_id":delivery_id,"delivery_sequence":delivery_sequence,"finished_at":timestamp(at)}});
         Self::append_by_command_id(tx, &run_id, "WorkflowCancelled", terminal.clone(), task_id, &request_id).await?;
         Self::close_pending_updates(tx, &run_id, task).await?;
-        Self::enforce_parent_close_policies(tx, run, "cancelled").await?;
+        Self::enforce_parent_close_policies(tx, run, "cancelled", 0).await?;
         Self::resolve_child(
             tx,
             run,

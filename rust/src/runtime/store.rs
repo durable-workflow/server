@@ -2388,10 +2388,11 @@ where
                     Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1").bind(&run_id).execute(&mut *tx).await?;
                 } else {
                     // Published PHP completes a run whatever is still open. Its
-                    // activities, timers and waits stay as they are, and an open
-                    // abandoned child keeps running. Native cannot yet apply the
-                    // other parent-close policies, so it still refuses those.
-                    let enforced = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','terminated','failed') AND parent_close_policy<>'abandon'")
+                    // activities, timers and waits stay as they are, and its
+                    // open children follow their parent-close policies. Only a
+                    // `request_cancellation` child still refuses: PHP gives it a
+                    // new cancellation origin, which native does not have yet.
+                    let enforced = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','terminated','failed') AND parent_close_policy='request_cancellation'")
                     .bind(&run_id).fetch_one(&mut *tx).await?;
                     if enforced != 0 {
                         return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
@@ -2417,6 +2418,7 @@ where
                     Self::query("UPDATE workflow_runs SET status='completed',closed_reason='completed',output=$1,closed_at=$2 WHERE id=$3")
                     .bind(&output).bind(DB::bind_time(closed_at)).bind(&run_id).execute(&mut *tx).await?;
                     Self::close_pending_updates(&mut tx, &run_id, Some(&task)).await?;
+                    Self::enforce_parent_close_policies(&mut tx, &run, "completed", 0).await?;
                     Self::complete_child(&mut tx, &run, &output, closed_at).await?;
                 }
             }

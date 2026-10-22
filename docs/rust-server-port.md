@@ -216,15 +216,21 @@ contract fixture before its correction.
     after a takeover a PHP-written scoped request reads as
     `request_context_invalid`, and a PHP-written stop receipt as
     `callback_state: unknown`.
-  - **Parent close.** Published PHP applies `request_cancel`, `terminate` and
-    `request_cancellation` to a child that is still open when its parent
-    completes, fails, is cancelled, is terminated or times out
-    (`ParentClosePolicyEnforcer`). Native applies `request_cancellation`
-    when a cooperatively cancelled parent closes. A parent completes over
-    open `abandon` children, as in PHP. Native refuses a parent's completion
-    while a child under another policy is open, refuses its cancellation and
-    termination while any child is open, and closes a timed-out or failed
-    parent without acting on open children.
+  - **Parent close, `request_cancellation` without a cooperative request.**
+    Published PHP applies every parent-close policy when a parent completes,
+    fails, is cancelled, is terminated or times out
+    (`ParentClosePolicyEnforcer`). Native does too, except that it applies
+    `request_cancellation` only when the parent closes under a cooperative
+    cancellation request. Otherwise PHP first creates a new cancellation
+    origin (`ParentCloseCancellation::ensureOrigin`), which native does not
+    have. Native therefore refuses a parent's completion, cancellation and
+    termination while such a child is open. It leaves that child open when
+    the parent fails or times out.
+  - **Children native cannot close yet.** When a policy would cancel or
+    terminate a child that itself has an open `request_cancellation` child,
+    a live query, or more than 1,000 open activities or timers, native
+    records `ParentClosePolicyFailed` with the refusal it would give an HTTP
+    cancel or terminate and leaves the child open. PHP closes it.
   - **Root conflicts.** PHP records a rejected command when a child refuses
     a request under another root. Native records only the refusal on the
     parent's events.

@@ -10,6 +10,7 @@ use super::{
     store::{Store, id, now},
 };
 use axum::http::StatusCode;
+use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 use std::sync::Arc;
@@ -40,7 +41,7 @@ pub(crate) enum TerminalCommand {
 }
 
 impl TerminalCommand {
-    fn command_type(self) -> &'static str {
+    pub(super) fn command_type(self) -> &'static str {
         match self {
             Self::Cancel => "cancel",
             Self::Terminate => "terminate",
@@ -70,7 +71,7 @@ impl TerminalCommand {
         }
     }
 
-    fn propagation_unavailable(self) -> &'static str {
+    pub(super) fn propagation_unavailable(self) -> &'static str {
         match self {
             Self::Cancel => "cancellation_propagation_not_available",
             Self::Terminate => "termination_propagation_not_available",
@@ -247,7 +248,11 @@ where
             .bind(&run_id)
             .fetch_one(&mut *tx)
             .await?;
-            let pending_children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','terminated','failed')")
+            // Open children follow their parent-close policies below. Only a
+            // `request_cancellation` child still refuses: PHP gives it a new
+            // cancellation origin (`ParentCloseCancellation::ensureOrigin`),
+            // which native does not have yet.
+            let pending_children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','terminated','failed') AND parent_close_policy='request_cancellation'")
                 .bind(&run_id).fetch_one(&mut *tx).await?;
             let pending_queries =
                 self.query_entries(&mut tx)
@@ -303,39 +308,63 @@ where
             tx.commit().await?;
             return Ok((StatusCode::CONFLICT, response));
         }
+        Self::finish_close(&mut tx, &run, command, &command_id, reason.as_deref(), at, 0).await?;
+        tx.commit().await?;
+        self.wake.notify_waiters();
+        Ok((StatusCode::OK, response))
+    }
+
+    /// The close itself once its command is recorded: the requested and
+    /// terminal events, its open work cancelled, its failure, its own
+    /// parent-close policies and the resolution of its parent.
+    pub(super) async fn finish_close(
+        tx: &mut Transaction<'_, DB>,
+        run: &DB::Row,
+        command: TerminalCommand,
+        command_id: &str,
+        reason: Option<&str>,
+        at: DateTime<Utc>,
+        depth: u8,
+    ) -> Result<()> {
+        let run_id = DB::string(run, "id")?;
+        let workflow_id = DB::string(run, "workflow_instance_id")?;
+        let activities = Self::query("SELECT * FROM activity_executions WHERE workflow_run_id=$1 AND status IN ('pending','running') ORDER BY id LIMIT 1001")
+            .bind(&run_id).fetch_all(&mut **tx).await?;
+        let timers = Self::query("SELECT * FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending' ORDER BY id LIMIT 1001")
+            .bind(&run_id).fetch_all(&mut **tx).await?;
         let mut identity = json!({"workflow_command_id":command_id,"workflow_instance_id":workflow_id,"workflow_run_id":run_id});
-        if let Some(reason) = &reason {
+        if let Some(reason) = reason {
             identity["reason"] = json!(reason);
         }
         let (requested_event, terminal_event) = command.events();
         let mut requested = identity.clone();
         requested["command_type"] = json!(command.command_type());
         Self::append(
-            &mut tx,
+            tx,
             &run_id,
             requested_event,
             requested,
             None,
-            Some(&command_id),
+            Some(command_id),
         )
         .await?;
         Self::query("UPDATE workflow_tasks SET status='cancelled',lease_expires_at=NULL,last_error=NULL WHERE workflow_run_id=$1 AND status IN ('ready','leased')")
-            .bind(&run_id).execute(&mut *tx).await?;
-        Self::cancel_open_activities(&mut tx, &run_id, Some(&command_id), activities, at).await?;
+            .bind(&run_id).execute(&mut **tx).await?;
+        Self::cancel_open_activities(tx, &run_id, Some(command_id), activities, at).await?;
         for timer in timers {
             let timer_id = DB::string(&timer, "id")?;
             Self::query("UPDATE workflow_run_timers SET status='cancelled' WHERE id=$1")
                 .bind(&timer_id)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await?;
-            let payload = Self::timer_cancellation_payload(&mut tx, &run_id, &timer, at).await?;
+            let payload = Self::timer_cancellation_payload(tx, &run_id, &timer, at).await?;
             Self::append(
-                &mut tx,
+                tx,
                 &run_id,
                 "TimerCancelled",
                 payload,
                 None,
-                Some(&command_id),
+                Some(command_id),
             )
             .await?;
         }
@@ -356,7 +385,7 @@ where
         let exception = command.exception();
         Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,handled,exception_class,message,file,line,trace_preview,created_at,updated_at) VALUES ($1,$2,'workflow_run',$3,$4,$5,FALSE,$6,$7,'',0,'',$8,$9)")
             .bind(&failure_id).bind(&run_id).bind(&run_id).bind(closed_as).bind(closed_as).bind(exception).bind(&message)
-            .bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut *tx).await?;
+            .bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut **tx).await?;
         let mut terminal = identity;
         terminal["failure_id"] = json!(failure_id);
         terminal["failure_category"] = json!(closed_as);
@@ -364,26 +393,25 @@ where
         terminal["exception_class"] = json!(exception);
         terminal["message"] = json!(message);
         Self::query("UPDATE workflow_runs SET status=$1,closed_reason=$2,closed_at=$3,last_progress_at=$4 WHERE id=$5")
-            .bind(closed_as).bind(closed_as).bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(&run_id).execute(&mut *tx).await?;
+            .bind(closed_as).bind(closed_as).bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(&run_id).execute(&mut **tx).await?;
         Self::append(
-            &mut tx,
+            tx,
             &run_id,
             terminal_event,
             terminal.clone(),
             None,
-            Some(&command_id),
+            Some(command_id),
         )
         .await?;
-        Self::close_pending_updates(&mut tx, &run_id, None).await?;
+        Self::close_pending_updates(tx, &run_id, None).await?;
+        Box::pin(Self::enforce_parent_close_policies(tx, run, closed_as, depth)).await?;
         let resolution = match command {
             TerminalCommand::Cancel => ChildResolution::Cancelled(&terminal),
             TerminalCommand::Terminate => ChildResolution::Terminated(&terminal),
         };
-        Self::resolve_child(&mut tx, &run, resolution, at).await?;
+        Self::resolve_child(tx, run, resolution, at).await?;
         tx.summary_changed(&run_id);
-        tx.commit().await?;
-        self.wake.notify_waiters();
-        Ok((StatusCode::OK, response))
+        Ok(())
     }
 
     pub(super) async fn timer_cancellation_payload(
@@ -530,6 +558,7 @@ where
             "run_deadline_at":iso(run_deadline),"task":Self::task_snapshot(task)?});
         Self::append(tx, &run_id, "WorkflowTimedOut", timed_out.clone(), Some(&task_id), None).await?;
         Self::close_pending_updates(tx, &run_id, Some(task)).await?;
+        Self::enforce_parent_close_policies(tx, run, "timed_out", 0).await?;
         Self::query("UPDATE workflow_tasks SET status='completed',lease_expires_at=NULL WHERE id=$1")
             .bind(&task_id)
             .execute(&mut **tx)
