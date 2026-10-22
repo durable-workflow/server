@@ -823,8 +823,11 @@ async fn external_activity_argument_batch_shares_admission_and_rolls_back_all_re
     let before = json_request(&app, "GET", &history_path, "operator-token", Value::Null)
         .await
         .1;
+    // A second open wait is refused after both activities claimed their
+    // arguments, so the whole batch, claims included, must roll back.
     let mut invalid = commands.clone();
-    invalid.push(json!({"type":"complete_workflow","result":envelope(Payload::Null)}));
+    invalid.push(json!({"type":"open_signal_wait","signal_name":"first"}));
+    invalid.push(json!({"type":"open_signal_wait","signal_name":"second"}));
     let (status, refusal) = tokio::time::timeout(
         Duration::from_secs(30),
         json_request(

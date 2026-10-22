@@ -220,20 +220,22 @@ contract fixture before its correction.
     `request_cancellation` to a child that is still open when its parent
     completes, fails, is cancelled, is terminated or times out
     (`ParentClosePolicyEnforcer`). Native applies `request_cancellation`
-    when a cooperatively cancelled parent closes. It refuses a parent's
-    completion, cancellation and termination while a child is open, and
-    closes a timed-out or failed parent without acting on open children.
+    when a cooperatively cancelled parent closes. A parent completes over
+    open `abandon` children, as in PHP. Native refuses a parent's completion
+    while a child under another policy is open, refuses its cancellation and
+    termination while any child is open, and closes a timed-out or failed
+    parent without acting on open children.
   - **Root conflicts.** PHP records a rejected command when a child refuses
     a request under another root. Native records only the refusal on the
     parent's events.
-- **Signals that arrive before a completion (Server 2.10.0).** Published
-  PHP drops a worker's `complete_workflow` or `continue_as_new` while a
-  deliverable signal waits and no cancellation is pending. It applies the
-  task's other commands and keeps the run open for a signal task. Its
-  continue-as-new also moves received signals with a declared handler, and
-  accepted updates, to the new run. Native closes the run, and refuses
-  continue-as-new while any signal is received. Native does reject a closed
-  run's unapplied signals as PHP does.
+- **Several open operations at once.** Published PHP lets a run hold any
+  number of open activities, timers, children and waits. Native refuses
+  `409 pending_durable_operations` when a task opens a wait while another
+  wait is open, or starts a child while other work is outstanding.
+- **Continue-as-new with received signals (Server 2.10.0).** Published
+  PHP's continue-as-new moves received signals that have a declared
+  handler, and accepted updates, to the new run. Native refuses
+  continue-as-new while a signal is received and no open wait can take it.
 - **Trace context (Workflow #773 / workflow#788, not yet published).** A
   Workflow minor will add nullable `observability_context` columns on runs,
   commands and tasks, plus an entry in schedule metadata. Native-owned
