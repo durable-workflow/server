@@ -133,6 +133,13 @@ try {
         } catch (error) {
           item.error = error.message;
           record.cases.push(item);
+          // A product failure leaves the next fixtures meaningful: each uses
+          // its own workflow. Report it and keep recording, so one run shows
+          // every difference. A runner-blocked case still stops the record.
+          if (item.outcome === 'product-fail') {
+            console.error(`${fixture.id}: ${error.message}`);
+            continue;
+          }
           record.outcome = item.outcome;
           record.finished_at = new Date().toISOString();
           writeRecord(values.output, record, originals);
@@ -141,6 +148,13 @@ try {
         record.cases.push(item);
       }
       if (record.cases.length === 0) throw new Error('No fixtures found');
+      const failed = record.cases.filter(item => item.outcome !== 'pass').map(item => item.fixture_id);
+      if (failed.length > 0) {
+        record.outcome = 'product-fail';
+        record.finished_at = new Date().toISOString();
+        writeRecord(values.output, record, originals);
+        throw new Error(`${failed.length} fixture(s) differ: ${failed.join(', ')}`);
+      }
       record.outcome = 'pass';
       record.finished_at = new Date().toISOString();
       writeRecord(values.output, record, originals);
