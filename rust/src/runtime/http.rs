@@ -261,6 +261,10 @@ pub fn router(runtime: Runtime) -> Router {
             post(heartbeat_activity),
         )
         .route(
+            "/api/worker/activity-tasks/{task_id}/renew-lease",
+            post(renew_activity_lease),
+        )
+        .route(
             "/api/worker/activity-tasks/{task_id}/fail",
             post(fail_activity),
         )
@@ -698,7 +702,7 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
                 | [
                     "activity-tasks",
                     _,
-                    "complete" | "fail" | "heartbeat" | "status"
+                    "complete" | "fail" | "heartbeat" | "status" | "renew-lease"
                 ]
         );
     }
@@ -1748,6 +1752,14 @@ async fn heartbeat_activity(
         .heartbeat_activity(&task_id, body, request_protocol(&headers)?)
         .await
         .map(Json)
+}
+
+async fn renew_activity_lease(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    runtime.renew_activity_lease(&task_id, body).await.map(Json)
 }
 
 async fn activity_status(

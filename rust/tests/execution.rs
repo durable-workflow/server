@@ -130,6 +130,9 @@ mod worker_pressure;
 #[path = "execution/version_markers.rs"]
 mod version_markers;
 
+#[path = "execution/activity_lease_renewal.rs"]
+mod activity_lease_renewal;
+
 #[path = "execution/activity_deadlines.rs"]
 mod activity_deadlines;
 
