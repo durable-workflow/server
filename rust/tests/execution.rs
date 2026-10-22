@@ -81,6 +81,8 @@ mod worker_listing;
 mod activity_failure_fields;
 #[path = "execution/query_worker_results.rs"]
 mod query_worker_results;
+#[path = "execution/continue_messages.rs"]
+mod continue_messages;
 #[path = "execution/payload_limits.rs"]
 mod payload_limits;
 #[path = "execution/start_definition.rs"]
