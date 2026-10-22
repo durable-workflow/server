@@ -9,10 +9,9 @@
 //! still references any refuses before changing anything, with PHP's answer
 //! for unavailable external payload storage.
 use super::retention::reference;
-use super::{Result, RuntimeError, backend::Backend, store::Store};
+use super::{Result, RuntimeError};
 use axum::http::StatusCode;
 use serde_json::{Map, Value, json};
-use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
 /// The namespace's runs, instances and tasks, as subqueries. Each takes the
 /// namespace in its own numbered placeholder.
@@ -168,18 +167,7 @@ pub(super) fn not_found(name: &str) -> RuntimeError {
     }
 }
 
-impl<DB: Backend> Store<DB>
-where
-    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
-    DB::Arguments: IntoArguments<DB>,
-    for<'q> &'q str: Encode<'q, DB> + Type<DB>,
-    for<'q> Option<&'q str>: Encode<'q, DB>,
-    for<'q> Option<DB::EncodedDocument>: Encode<'q, DB>,
-    for<'q> String: Encode<'q, DB> + Type<DB>,
-    for<'q> i64: Encode<'q, DB> + Type<DB>,
-    for<'r> i64: Decode<'r, DB>,
-    usize: ColumnIndex<DB::Row>,
-{
+store_methods! {
     pub(super) async fn delete_namespace(&self, name: &str) -> Result<Value> {
         let name = name.to_ascii_lowercase();
         let mut tx = self.begin().await?;
