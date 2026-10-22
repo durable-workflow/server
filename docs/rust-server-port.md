@@ -123,21 +123,26 @@ contract fixture before its correction.
 - **Child completion while the parent has an open workflow task.** Published
   Workflow records the child resolution and reuses the parent's existing ready
   or leased workflow task (`WorkflowExecutor::dispatchParentResumeTasks`).
-  Native resolution refuses the child's completion with
-  `409 child_parent_task_conflict` unless the parent has a cooperative
-  cancellation request. Current native admission keeps this path latent:
-  updates are refused with `update_snapshot_busy` and signals create no resume
-  while the parent waits on a child, because only signal and condition waits
-  count as open waits. Widening update or signal admission at child waits must
-  first replace the refusal with PHP's reuse, and confirm that the parent's
-  existing task observes the new resolution or is followed by another resume.
-- **Update admission outside signal and condition waits.** Native updates
-  require a quiescent signal or condition wait and refuse other states with
-  `update_snapshot_busy`, so a parent waiting on a child cannot accept one.
-  Published `WorkflowStub` update admission rejects only a non-current selected
-  run, an inactive run, an unknown update, invalid arguments, blocked execution
-  or structural limits. This needs a reviewed contract decision and fixtures
-  before either implementation changes.
+  Native gives the resolution its own resume task when the parent's open
+  tasks only deliver updates, as activity and timer resolutions do. With any
+  other open task it refuses the child's completion with
+  `409 child_parent_task_conflict`, unless the parent has a cooperative
+  cancellation request. Signals still create no resume while the parent
+  waits on a child, because only signal and condition waits count as open
+  waits.
+- **Update delivery into a ready task.** Published PHP admits an update
+  whenever its run is active and merges it into the run's ready workflow
+  task, if one exists (`ExternalWorkflowUpdateAdmission::wakeWorkflowTask`).
+  Native gives each update its own task once the run has no open workflow
+  task. The Rust SDK treats a task carrying `workflow_update_id` as an update
+  task, so a merged first task would not replay the workflow.
+- **Declared signals without an open wait.** For a run whose workflow class
+  the server cannot load, which includes every external-worker run, PHP
+  delivers a received signal that the run's durable contract declares, even
+  without an open signal wait (`PendingMessageTask::signalCanAdvanceRun`).
+  Native delivers a signal only to an open signal or condition wait. It
+  refuses a waiting-for-history acknowledgement while a signal is pending,
+  because no task would deliver it afterwards.
 - **Timer firing under the CPU deadline profile on slower hosts.** In local
   MySQL 8.0 cells, where eight dense readers saturate the one-CPU database and
   the one-CPU native server, one of six runs fired the three-second timer
