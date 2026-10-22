@@ -30,6 +30,21 @@ pub(super) struct Store<DB: Backend> {
     /// How long a claimed workflow task stays leased (DW_WORKFLOW_TASK_TIMEOUT).
     pub(super) workflow_task_lease_seconds: i64,
     pub(super) search_attribute_limit: i64,
+    /// When a silent registration stops counting (`server.workers.stale_after_seconds`).
+    pub(super) worker_stale_after_seconds: i64,
+}
+/// The `closed_reason` a terminal history event gives its run, or `None` for
+/// an event that does not close the run.
+fn closed_reason(event_type: &str) -> Option<&'static str> {
+    Some(match event_type {
+        "WorkflowCompleted" => "completed",
+        "WorkflowContinuedAsNew" => "continued",
+        "WorkflowFailed" => "failed",
+        "WorkflowCancelled" => "cancelled",
+        "WorkflowTerminated" => "terminated",
+        "WorkflowTimedOut" => "timed_out",
+        _ => return None,
+    })
 }
 /// A ULID that sorts after every earlier one from this process, as Laravel's
 /// (Symfony's) generator does. Rows created in the same millisecond, such as
@@ -93,6 +108,7 @@ where
             history_budget: super::history_budget::Config::default(),
             workflow_task_lease_seconds: 60,
             search_attribute_limit: 100,
+            worker_stale_after_seconds: 30,
         }
     }
     pub(super) fn in_namespace(&self, namespace: &str) -> Self {
@@ -105,6 +121,7 @@ where
             history_budget: self.history_budget,
             workflow_task_lease_seconds: self.workflow_task_lease_seconds,
             search_attribute_limit: self.search_attribute_limit,
+            worker_stale_after_seconds: self.worker_stale_after_seconds,
         }
     }
     pub(super) async fn database_live(&self) -> bool {
@@ -178,6 +195,7 @@ where
             Some(&memo),
             arguments.as_deref(),
             context.as_ref(),
+            self.worker_stale_after_seconds,
         )
         .await?;
         tx.commit().await?;
@@ -194,6 +212,7 @@ where
         memo: Option<&super::memos::PreparedMemo>,
         external_arguments: Option<&str>,
         context: Option<&Value>,
+        stale_after: i64,
     ) -> Result<Value> {
         let request = super::start_request::validate(body)?;
         // PHP names an instance the request leaves unnamed.
@@ -291,6 +310,10 @@ where
         started["run_timeout_seconds"] = json!(run_timeout);
         started["execution_deadline_at"] = json!(execution_deadline);
         started["run_deadline_at"] = json!(run_deadline);
+        if let Some(fingerprint) = Self::start_definition_fingerprint(tx, namespace, queue, workflow_type, stale_after).await? {
+            started["workflow_definition_fingerprint"] = json!(fingerprint);
+            started["workflow_definition_fingerprint_source"] = json!("worker");
+        }
         // PHP filters null fields out of the started payload, then adds the
         // declared contract.
         if let Some(fields) = started.as_object_mut() {
@@ -313,6 +336,31 @@ where
             "outcome": "started_new", "command_status": "accepted", "command_source": "control_plane", "reason": null,
             "rejection_reason": null, "message": null}),
         )
+    }
+
+    /// `WorkflowStartVersionPin::definitionFingerprintForCohort` over the
+    /// queue's active registrations: unexpired or never heartbeated, and
+    /// not draining or deregistered.
+    async fn start_definition_fingerprint(
+        tx: &mut Transaction<'_, DB>,
+        namespace: &str,
+        queue: &str,
+        workflow_type: &str,
+        stale_after: i64,
+    ) -> Result<Option<String>> {
+        let cutoff = now() - chrono::Duration::seconds(stale_after.max(1));
+        let rows = Self::query("SELECT build_id,supported_workflow_types,workflow_definition_fingerprints,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND task_queue=$2 AND (last_heartbeat_at IS NULL OR last_heartbeat_at>=$3) AND (status IS NULL OR status='active')")
+            .bind(namespace).bind(queue).bind(DB::bind_time(cutoff)).fetch_all(&mut **tx).await?;
+        let mut workers = Vec::with_capacity(rows.len());
+        for row in &rows {
+            workers.push(super::start_definition::CohortWorker {
+                build_id: DB::optional_string(row, "build_id")?,
+                workflow_types: DB::optional_document_row(row, "supported_workflow_types")?.unwrap_or(Value::Null),
+                fingerprints: DB::optional_document_row(row, "workflow_definition_fingerprints")?.unwrap_or(Value::Null),
+                heartbeated: DB::optional_instant(row, "last_heartbeat_at")?.is_some(),
+            });
+        }
+        Ok(super::start_definition::fingerprint(&workers, workflow_type))
     }
 
     /// `DefaultWorkflowControlPlane::start` for an instance that already has
@@ -2556,6 +2604,7 @@ where
             &DB::string(&run, "queue")?,
             json!({"activity_execution_id": activity_id}),
             &metadata,
+            true,
         )
         .await?;
         tx.commit().await?;
@@ -2671,6 +2720,7 @@ where
                 &DB::string(&timer, "queue")?,
                 resume,
                 &metadata,
+                true,
             )
             .await?;
         }
@@ -2900,6 +2950,34 @@ where
         command_id: Option<&str>,
         recorded_at: Option<DateTime<Utc>>,
     ) -> Result<()> {
+        Self::record(tx, run_id, event_type, payload, task_id, command_id, recorded_at, true).await
+    }
+
+    /// Records an event linked to a command by id only, as PHP does when it
+    /// passes a command id string rather than the command model: the event
+    /// carries no command snapshot.
+    async fn append_by_command_id(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        event_type: &str,
+        payload: Value,
+        task_id: Option<&str>,
+        command_id: &str,
+    ) -> Result<()> {
+        Self::record(tx, run_id, event_type, payload, task_id, Some(command_id), None, false).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn record(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        event_type: &str,
+        payload: Value,
+        task_id: Option<&str>,
+        command_id: Option<&str>,
+        recorded_at: Option<DateTime<Utc>>,
+        command_snapshot: bool,
+    ) -> Result<()> {
         // The backend transition lock protects this read and write together.
         // MySQL has no UPDATE RETURNING; all adapters use this same allocation.
         let row = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
@@ -2918,7 +2996,7 @@ where
         // `WorkflowHistoryEvent::record`: an event recorded with a command
         // carries that command's snapshot.
         let mut payload = payload;
-        if let Some(command_id) = command_id
+        if let Some(command_id) = command_id.filter(|_| command_snapshot)
             && payload.as_object().is_some_and(|fields| !fields.contains_key("command"))
             && let Some(snapshot) = Self::command_snapshot(tx, command_id).await?
         {
@@ -2932,7 +3010,44 @@ where
         Self::project_condition_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         Self::project_child_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         Self::project_update_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
+        if let Some(reason) = closed_reason(event_type) {
+            let task = payload.get("task").cloned();
+            Box::pin(Self::reject_received_signals(tx, run_id, reason, task_id, task)).await?;
+        }
         tx.summary_changed(run_id);
+        Ok(())
+    }
+
+    /// `PendingSignalCloser::closeForTerminalEvent`: once a run closes, each
+    /// signal it received but never applied is rejected, in arrival order.
+    /// The original command keeps its acceptance; `SignalRejected` records
+    /// the later disposition. PHP records it with the signal's command id,
+    /// so it has no command snapshot, and with the terminal event's task, so
+    /// it repeats that event's task snapshot.
+    async fn reject_received_signals(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        terminal_reason: &str,
+        task_id: Option<&str>,
+        task: Option<Value>,
+    ) -> Result<()> {
+        let signals = Self::query("SELECT id,workflow_command_id,signal_name,signal_wait_id,command_sequence FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received' ORDER BY CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END,command_sequence,received_at,id")
+            .bind(run_id).fetch_all(&mut **tx).await?;
+        for signal in signals {
+            let (signal_id, command_id) = (DB::string(&signal, "id")?, DB::string(&signal, "workflow_command_id")?);
+            let closed_at = now();
+            Self::query("UPDATE workflow_signal_records SET status='rejected',outcome='rejected_not_active',rejection_reason='run_closed_before_signal_applied',rejected_at=$1,closed_at=$2 WHERE id=$3")
+                .bind(DB::bind_time(closed_at)).bind(DB::bind_time(closed_at)).bind(&signal_id).execute(&mut **tx).await?;
+            let mut payload = json!({"workflow_command_id": command_id, "signal_id": signal_id,
+                "signal_name": DB::string(&signal, "signal_name")?,
+                "signal_wait_id": DB::optional_string(&signal, "signal_wait_id")?,
+                "command_sequence": DB::optional_number(&signal, "command_sequence")?,
+                "rejection_reason": "run_closed_before_signal_applied", "terminal_reason": terminal_reason});
+            if let Some(task) = &task {
+                payload["task"] = task.clone();
+            }
+            Self::append_by_command_id(tx, run_id, "SignalRejected", payload, task_id, &command_id).await?;
+        }
         Ok(())
     }
 

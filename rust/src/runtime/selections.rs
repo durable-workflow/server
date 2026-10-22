@@ -241,24 +241,65 @@ where
         }), None, None).await
     }
 
+    /// Wakes the workflow after a member's close, or returns `None` when
+    /// published PHP's `ParallelChildGroup::shouldWakeParentOnClosure` would
+    /// not: a successful close inside an all-of group waits until every
+    /// member of every enclosing group has closed successfully. A failed
+    /// member wakes it at once. Selections resolve their own winner.
     pub(super) async fn selection_resume(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
         queue: &str,
         payload: Value,
         metadata: &Value,
-    ) -> Result<String> {
+        successful: bool,
+    ) -> Result<Option<String>> {
         if metadata.get("parallel_group_id").is_some() {
+            if successful && !is_selection(metadata) && !Self::all_groups_closed(tx, run_id, metadata).await? {
+                return Ok(None);
+            }
             // A leased worker may be replaying an older history snapshot.
             // Coalesce only a ready wakeup, otherwise preserve a later task
             // even if the active lease subsequently acknowledges waiting.
             let open = Self::query("SELECT id FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status='ready' ORDER BY available_at,id LIMIT 1")
                 .bind(run_id).fetch_optional(&mut **tx).await?;
             if let Some(task) = open {
-                return DB::string(&task, "id");
+                return DB::string(&task, "id").map(Some);
             }
         }
-        Self::create_task(tx, run_id, queue, "workflow", payload).await
+        Self::create_task(tx, run_id, queue, "workflow", payload).await.map(Some)
+    }
+
+    /// `groupCompletedSuccessfully` for each all-of group on a member's path:
+    /// every member sequence has a fired timer or a completed activity.
+    async fn all_groups_closed(tx: &mut Transaction<'_, DB>, run_id: &str, metadata: &Value) -> Result<bool> {
+        let Some(path) = metadata["parallel_group_path"].as_array() else {
+            return Ok(true);
+        };
+        for group in path {
+            let (Some(base), Some(size)) = (
+                group["parallel_group_base_sequence"].as_i64(),
+                group["parallel_group_size"].as_i64(),
+            ) else {
+                return Ok(true);
+            };
+            let last = base + size - 1;
+            let mut closed = std::collections::BTreeSet::new();
+            for (sql, done) in [
+                ("SELECT sequence,status FROM workflow_run_timers WHERE workflow_run_id=$1 AND sequence>=$2 AND sequence<=$3", "fired"),
+                ("SELECT sequence,status FROM activity_executions WHERE workflow_run_id=$1 AND sequence>=$2 AND sequence<=$3", "completed"),
+            ] {
+                for row in Self::query(sql).bind(run_id).bind(base).bind(last).fetch_all(&mut **tx).await? {
+                    if DB::string(&row, "status")? == done {
+                        closed.insert(DB::number(&row, "sequence")?);
+                    }
+                }
+            }
+            if (base..=last).any(|sequence| !closed.contains(&sequence)) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Only the proven timer-won, unclaimed losing activity checkpoint widens

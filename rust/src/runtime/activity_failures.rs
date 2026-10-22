@@ -518,6 +518,7 @@ where
                 &DB::string(&run, "queue")?,
                 json!({"activity_execution_id":activity_id}),
                 &metadata,
+                false,
             )
             .await?;
             tx.commit().await?;

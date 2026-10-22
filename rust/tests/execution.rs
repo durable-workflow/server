@@ -83,6 +83,10 @@ mod activity_failure_fields;
 mod query_worker_results;
 #[path = "execution/payload_limits.rs"]
 mod payload_limits;
+#[path = "execution/start_definition.rs"]
+mod start_definition;
+#[path = "execution/signal_rejection.rs"]
+mod signal_rejection;
 #[path = "execution/query_open_tasks.rs"]
 mod query_open_tasks;
 #[path = "execution/retry_message_tasks.rs"]
