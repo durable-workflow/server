@@ -935,6 +935,7 @@ impl Runtime {
         task_id: &str,
         body: Value,
         worker: Option<super::runtime_credentials::Principal>,
+        protocol: Option<&str>,
     ) -> Result<Value> {
         let external = self.prepare_command_payloads(&body).await?;
         if let Some(commands) = body["commands"].as_array() {
@@ -984,17 +985,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker)
+                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol)
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker)
+                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol)
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker)
+                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol)
                     .await
             }
         }

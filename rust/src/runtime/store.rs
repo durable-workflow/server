@@ -1828,6 +1828,7 @@ where
         transition_codec: Arc<Semaphore>,
         external: super::external_resolution::PreparedCommands,
         worker: Option<super::runtime_credentials::Principal>,
+        protocol: Option<&str>,
     ) -> Result<Value> {
         let commands = body["commands"]
             .as_array()
@@ -1996,6 +1997,34 @@ where
             );
         }
         Self::workflow_task_guard(&mut tx, &task, &body).await?;
+        // `childCancellationPolicyGuard`: a child that requests cancellation
+        // on parent close, or propagates the parent's cancellation, needs a
+        // cooperative worker's claim and a protocol 1.20 request.
+        if let Some(command) = commands.iter().find(|command| command["type"] == "start_child_workflow")
+            && super::children::policies(command)?.cooperative()
+        {
+            let mut unavailable = Vec::new();
+            if !protocol
+                .and_then(|version| version.strip_prefix("1."))
+                .and_then(|minor| minor.parse::<u32>().ok())
+                .is_some_and(|minor| minor >= 20)
+            {
+                unavailable.push("request_protocol");
+            }
+            if !Self::claim_supports_cancellation(&task)? {
+                unavailable.push("worker_claim_capability");
+            }
+            if !unavailable.is_empty() {
+                return Err(super::RuntimeError::Protocol {
+                    status: StatusCode::CONFLICT,
+                    response: json!({"task_id": task_id, "workflow_task_attempt": body["workflow_task_attempt"],
+                        "worker_id": DB::optional_string(&task, "lease_owner")?, "outcome": "rejected", "recorded": false,
+                        "reason": "child_cancellation_policy_not_supported", "required_capability": "cooperative_cancellation",
+                        "minimum_protocol_version": "1.20", "requested_version": protocol, "unavailable": unavailable,
+                        "remediation": "Use a runtime with child cancellation policies and a claim from a cooperative worker on protocol 1.20 or newer."}),
+                });
+            }
+        }
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
         // `timeoutIfDeadlineExpired`: published PHP applies a run's deadlines

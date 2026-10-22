@@ -45,17 +45,65 @@ pub(super) fn validate_child(command: &Value) -> Result<()> {
                 .as_str()
                 .is_none_or(|queue| queue.trim().is_empty() || queue.len() > 191)
         })
-        || ["parent_close_policy", "cancellation_policy"]
-            .iter()
-            .any(|field| command.get(*field).is_some_and(|value| value != "abandon"))
     {
         return Err(refuse(
             StatusCode::UNPROCESSABLE_ENTITY,
             "unsupported_child_options",
         ));
     }
+    policies(command)?;
     envelope(command, "arguments")?;
     Ok(())
+}
+
+const PARENT_CLOSE_POLICIES: [&str; 4] = ["abandon", "request_cancel", "request_cancellation", "terminate"];
+const CANCELLATION_POLICIES: [&str; 3] = ["try_cancel", "wait_cancellation_completed", "abandon"];
+
+/// A child's parent-close and cancellation policies.
+pub(super) struct ChildPolicies {
+    pub(super) parent_close: String,
+    pub(super) cancellation: String,
+}
+
+impl ChildPolicies {
+    /// `WorkerController::childCancellationPolicyGuard`: these policies need
+    /// a cooperative claim on protocol 1.20.
+    pub(super) fn cooperative(&self) -> bool {
+        self.parent_close == "request_cancellation" || self.cancellation != "abandon"
+    }
+}
+
+/// Published PHP's rules for the two policies. Laravel trims the request and
+/// turns blank strings into null, so a blank policy is the default `abandon`.
+/// The request rules (`nullable|string`, and `in:` for the cancellation
+/// policy) refuse first; the command normalizer then checks the parent-close
+/// value.
+pub(super) fn policies(command: &Value) -> Result<ChildPolicies> {
+    let mut errors = Vec::new();
+    let mut read = |field: &str| match command.get(field) {
+        None | Some(Value::Null) => None,
+        Some(Value::String(text)) => Some(text.trim().to_owned()).filter(|text| !text.is_empty()),
+        Some(_) => {
+            errors.push((format!("commands.0.{field}"), vec![format!("The commands.0.{field} field must be a string.")]));
+            None
+        }
+    };
+    let parent_close = read("parent_close_policy");
+    let cancellation = read("cancellation_policy");
+    if cancellation.as_deref().is_some_and(|value| !CANCELLATION_POLICIES.contains(&value)) {
+        errors.push(("commands.0.cancellation_policy".into(), vec!["The selected commands.0.cancellation_policy is invalid.".into()]));
+    }
+    if let Some(error) = super::laravel_validation::failure_messages(errors) {
+        return Err(error);
+    }
+    if parent_close.as_deref().is_some_and(|value| !PARENT_CLOSE_POLICIES.contains(&value)) {
+        let message = "The parent_close_policy must be one of: abandon, request_cancel, request_cancellation, terminate.";
+        return Err(super::laravel_validation::failure(vec![("commands.0.parent_close_policy", vec![message])]).expect("one message"));
+    }
+    Ok(ChildPolicies {
+        parent_close: parent_close.unwrap_or_else(|| "abandon".into()),
+        cancellation: cancellation.unwrap_or_else(|| "abandon".into()),
+    })
 }
 
 impl<DB: Backend> Store<DB>
@@ -231,6 +279,7 @@ where
                 text(command, "queue").map(str::to_owned)
             })?;
         let arguments = envelope(command, "arguments")?;
+        let policies = policies(command)?;
         let child_instance = id();
         let child_run = id();
         let call = id();
@@ -241,12 +290,12 @@ where
             .bind(&child_instance).bind(workflow_type).bind(workflow_type).bind(&child_run).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
         Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,namespace,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,started_at,created_at,updated_at,last_progress_at) VALUES ($1,$2,'default',$3,$4,1,'pending','avro',$5,$6,$7,$8,$9,$10)")
             .bind(&child_run).bind(&child_instance).bind(workflow_type).bind(workflow_type).bind(&arguments).bind(&queue).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
-        Self::query("INSERT INTO workflow_child_calls(parent_workflow_run_id,parent_workflow_instance_id,sequence,child_workflow_type,child_workflow_class,resolved_child_instance_id,resolved_child_run_id,parent_close_policy,queue,status,scheduled_at,started_at,arguments,metadata,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'abandon',$8,'started',$9,$10,$11,$12,$13,$14)")
-            .bind(&parent_run).bind(&parent_instance).bind(sequence).bind(workflow_type).bind(workflow_type).bind(&child_instance).bind(&child_run).bind(&queue).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at))
-            .bind(DB::document(&json!({"payload":arguments}))).bind(DB::document(&json!({"child_call_id":call,"attempt_count":1,"cancellation_policy":"abandon"}))).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
-        Self::query("INSERT INTO workflow_links(id,link_type,sequence,parent_workflow_instance_id,parent_workflow_run_id,child_workflow_instance_id,child_workflow_run_id,is_primary_parent,parent_close_policy,created_at,updated_at) VALUES ($1,'child_workflow',$2,$3,$4,$5,$6,TRUE,'abandon',$7,$8)")
-            .bind(&call).bind(sequence).bind(&parent_instance).bind(&parent_run).bind(&child_instance).bind(&child_run).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
-        let scheduled = json!({"sequence":sequence,"workflow_link_id":call,"child_call_id":call,"child_workflow_instance_id":child_instance,"child_workflow_run_id":child_run,"child_workflow_class":workflow_type,"child_workflow_type":workflow_type,"parent_close_policy":"abandon","cancellation_policy":"abandon","retry_policy":null,"timeout_policy":null});
+        Self::query("INSERT INTO workflow_child_calls(parent_workflow_run_id,parent_workflow_instance_id,sequence,child_workflow_type,child_workflow_class,resolved_child_instance_id,resolved_child_run_id,parent_close_policy,cancellation_propagation,queue,status,scheduled_at,started_at,arguments,metadata,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,($9<>'abandon'),$10,'started',$11,$12,$13,$14,$15,$16)")
+            .bind(&parent_run).bind(&parent_instance).bind(sequence).bind(workflow_type).bind(workflow_type).bind(&child_instance).bind(&child_run).bind(&policies.parent_close).bind(&policies.cancellation).bind(&queue).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at))
+            .bind(DB::document(&json!({"payload":arguments}))).bind(DB::document(&json!({"child_call_id":call,"attempt_count":1,"cancellation_policy":policies.cancellation}))).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
+        Self::query("INSERT INTO workflow_links(id,link_type,sequence,parent_workflow_instance_id,parent_workflow_run_id,child_workflow_instance_id,child_workflow_run_id,is_primary_parent,parent_close_policy,created_at,updated_at) VALUES ($1,'child_workflow',$2,$3,$4,$5,$6,TRUE,$7,$8,$9)")
+            .bind(&call).bind(sequence).bind(&parent_instance).bind(&parent_run).bind(&child_instance).bind(&child_run).bind(&policies.parent_close).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
+        let scheduled = json!({"sequence":sequence,"workflow_link_id":call,"child_call_id":call,"child_workflow_instance_id":child_instance,"child_workflow_run_id":child_run,"child_workflow_class":workflow_type,"child_workflow_type":workflow_type,"parent_close_policy":policies.parent_close,"cancellation_policy":policies.cancellation,"retry_policy":null,"timeout_policy":null});
         Self::append(
             tx,
             &parent_run,

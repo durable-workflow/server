@@ -1570,7 +1570,7 @@ async fn complete_workflow(
     }
     let attempt = body["workflow_task_attempt"].clone();
     runtime
-        .complete_workflow(&task_id, body, Some(request.principal().clone()))
+        .complete_workflow(&task_id, body, Some(request.principal().clone()), headers.get("x-durable-workflow-protocol-version").and_then(|value| value.to_str().ok()))
         .await
         .map_err(|error| {
             completion_refusal(

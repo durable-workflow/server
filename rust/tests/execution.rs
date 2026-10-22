@@ -89,6 +89,8 @@ mod start_definition;
 mod signal_rejection;
 #[path = "execution/cooperative_waits.rs"]
 mod cooperative_waits;
+#[path = "execution/child_policies.rs"]
+mod child_policies;
 #[path = "execution/query_open_tasks.rs"]
 mod query_open_tasks;
 #[path = "execution/retry_message_tasks.rs"]
@@ -1135,9 +1137,13 @@ async fn sequential_children_commit_original_links_results_and_one_parent_resump
     for (index, value) in [9007199254740993_i64, 42].into_iter().enumerate() {
         let command = child_command(value);
         if index == 0 {
+            // A cooperative policy needs a cooperative claim on protocol 1.20.
+            let mut cooperative = command.clone();
+            cooperative["cancellation_policy"] = json!("try_cancel");
+            let refused = finish_task(&app_a, &parent_task, json!([cooperative])).await;
+            assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
+            assert_eq!(refused.1["reason"], "child_cancellation_policy_not_supported");
             for (field, option) in [
-                ("parent_close_policy", json!("terminate")),
-                ("cancellation_policy", json!("try_cancel")),
                 ("retry_policy", json!({"maximum_attempts":2})),
                 ("run_timeout_seconds", json!(10)),
                 ("queue", json!("")),
