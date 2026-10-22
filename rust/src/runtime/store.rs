@@ -2556,6 +2556,7 @@ where
             &DB::string(&run, "queue")?,
             json!({"activity_execution_id": activity_id}),
             &metadata,
+            true,
         )
         .await?;
         tx.commit().await?;
@@ -2671,6 +2672,7 @@ where
                 &DB::string(&timer, "queue")?,
                 resume,
                 &metadata,
+                true,
             )
             .await?;
         }

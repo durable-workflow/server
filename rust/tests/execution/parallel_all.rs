@@ -424,31 +424,20 @@ async fn activity_barrier_keeps_out_of_order_results_and_later_wakeup_across_col
         );
         assert_eq!(task["arguments"], activity(index as i64)["arguments"]);
     }
+    // Published PHP (ParallelChildGroup::shouldWakeParentOnActivityClosure)
+    // keeps the barrier closed: a successful member wakes the workflow only
+    // once every member has completed.
     let done = complete_activity(&app_b, &tasks[2], 9007199254740995).await;
     assert_eq!(done.0, StatusCode::OK, "{}", done.1);
-    let leased = poll(&app_a, "all-worker", "workflow").await;
-    assert_eq!(leased["task_id"], done.1["next_task_id"]);
-    assert_eq!(
-        finish_task(
-            &app_a,
-            &leased,
-            json!([{"type":"complete_workflow","result":envelope(Payload::Null)}])
-        )
-        .await
-        .0,
-        StatusCode::CONFLICT
-    );
+    assert_eq!(done.1["next_task_id"], Value::Null, "{}", done.1);
+    assert!(poll(&app_a, "all-worker", "workflow").await.is_null());
     observe(&database, &app_b, &run).await;
     let later = complete_activity(&app_b, &tasks[0], 9007199254740993).await;
     assert_eq!(later.0, StatusCode::OK, "{}", later.1);
-    assert_ne!(later.1["next_task_id"], leased["task_id"]);
-    let waiting=request(&app_a,"POST",&format!("/api/worker/workflow-tasks/{}/fail",leased["task_id"].as_str().unwrap()),
-        json!({"lease_owner":leased["lease_owner"],"workflow_task_attempt":leased["workflow_task_attempt"],
-        "failure":{"type":"WorkflowTaskWaitingForHistory","message":"all barrier still has one original member"}})).await;
-    assert_eq!(waiting.0, StatusCode::OK, "{}", waiting.1);
+    assert_eq!(later.1["next_task_id"], Value::Null, "{}", later.1);
     let last = complete_activity(&app_b, &tasks[1], 9007199254740994).await;
     assert_eq!(last.0, StatusCode::OK, "{}", last.1);
-    assert_eq!(last.1["next_task_id"], later.1["next_task_id"]);
+    assert!(last.1["next_task_id"].is_string(), "{}", last.1);
     let before_duplicate = run_history(&app_a, &run["workflow_id"], &run["run_id"]).await;
     assert_eq!(
         complete_activity(&app_a, &tasks[1], 9007199254740994)
@@ -461,7 +450,7 @@ async fn activity_barrier_keeps_out_of_order_results_and_later_wakeup_across_col
         before_duplicate
     );
     let resumed = poll(&app_a, "all-worker", "workflow").await;
-    assert_eq!(resumed["task_id"], later.1["next_task_id"]);
+    assert_eq!(resumed["task_id"], last.1["next_task_id"]);
     let result = envelope(Payload::Array(vec![
         Payload::Long(9007199254740993),
         Payload::Long(9007199254740994),
@@ -655,11 +644,9 @@ async fn retry_and_terminal_failure_preserve_member_identity_and_sibling_complet
         complete_activity(&app, &sibling, 9007199254740994).await.0,
         StatusCode::OK
     );
-    let replay = poll(&app, "retry-all", "workflow").await;
-    let waiting=request(&app,"POST",&format!("/api/worker/workflow-tasks/{}/fail",replay["task_id"].as_str().unwrap()),
-        json!({"lease_owner":replay["lease_owner"],"workflow_task_attempt":replay["workflow_task_attempt"],
-        "failure":{"type":"WorkflowTaskWaitingForHistory","message":"one original retry is pending"}})).await;
-    assert_eq!(waiting.0, StatusCode::OK, "{}", waiting.1);
+    // The sibling's completion leaves the barrier closed while the other
+    // member's retry is pending, as in published PHP.
+    assert!(poll(&app, "retry-all", "workflow").await.is_null());
     drop(app);
     first.close().await;
     let second = database.open().await.unwrap();
@@ -883,7 +870,7 @@ async fn immediate_root_cancellation_retains_each_nested_member_and_original_tim
 }
 
 #[tokio::test]
-async fn member_timeout_preserves_the_other_original_timer_and_resumes_after_all_outcomes() {
+async fn member_timeout_wakes_once_and_keeps_the_other_original_timer() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
@@ -944,19 +931,12 @@ async fn member_timeout_preserves_the_other_original_timer_and_resumes_after_all
         json!({"lease_owner":replay["lease_owner"],"workflow_task_attempt":replay["workflow_task_attempt"],
             "failure":{"type":"WorkflowTaskWaitingForHistory","message":"original all timer is still pending"}})).await;
     assert_eq!(waiting.0, StatusCode::OK, "{}", waiting.1);
-    wait_for_timer(&app, &run).await;
-    let resumed = poll(&app, "expiry-all", "workflow").await;
-    assert_eq!(
-        finish_task(
-            &app,
-            &resumed,
-            json!([{"type":"complete_workflow","result":envelope(Payload::Boolean(false))}])
-        )
-        .await
-        .0,
-        StatusCode::OK
-    );
-    no_selection(&run_history(&app, &run["workflow_id"], &run["run_id"]).await);
+    // The member's timeout already woke the workflow. Published PHP's barrier
+    // never reopens for the group's later successful closures, so the
+    // original timer fires without another workflow task.
+    let fired = wait_for_timer(&app, &run).await;
+    assert!(poll(&app, "expiry-all", "workflow").await.is_null());
+    no_selection(&fired);
     observe(&database, &app, &run).await;
     runtime.close().await;
     database.remove().await;
@@ -1158,5 +1138,38 @@ async fn nested_mixed_barrier_retains_all_paths_and_original_timer_after_cold_re
     no_selection(&history);
     observe(&database, &app, &run).await;
     second.close().await;
+    database.remove().await;
+}
+
+// Published PHP's RunTimerTask creates no workflow task for a timer whose
+// all-of group still has an unfired member (shouldWakeParentOnTimerClosure).
+// A replaced worker woken early would replay a partly fired group.
+#[tokio::test]
+async fn a_timer_group_wakes_the_workflow_only_after_its_last_member_fires() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "staggered", json!(["echo"]), json!([])).await;
+    let run = start(&app, "staggered-timers").await;
+    let task = poll(&app, "staggered", "workflow").await;
+    let commands = json!([0, 2].into_iter().enumerate().map(|(index, delay)| with_path(
+        json!({"type":"start_timer","delay_seconds":delay}), vec![entry(1, 2, index, "timer")])).collect::<Vec<_>>());
+    assert_eq!(finish_task(&app, &task, commands).await.0, StatusCode::OK);
+    let fired = |history: &Value| history.as_array().unwrap().iter().filter(|event| event["event_type"] == "TimerFired").count();
+    let first = wait_for_timer(&app, &run).await;
+    assert_eq!(fired(&first), 1, "{first}");
+    let waiting = request(&app, "POST", "/api/worker/workflow-tasks/poll",
+        json!({"worker_id":"staggered","task_queue":"test","timeout_seconds":1})).await;
+    assert!(waiting.1["task"].is_null(), "{}", waiting.1);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while fired(&run_history(&app, &run["workflow_id"], &run["run_id"]).await) < 2 {
+        assert!(tokio::time::Instant::now() < deadline, "the second timer did not fire");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let resumed = poll(&app, "staggered", "workflow").await;
+    assert!(resumed["task_id"].is_string(), "{resumed}");
+    let complete = json!([{"type":"complete_workflow","result":envelope(Payload::Null)}]);
+    assert_eq!(finish_task(&app, &resumed, complete).await.0, StatusCode::OK);
+    runtime.close().await;
     database.remove().await;
 }
