@@ -44,7 +44,12 @@ async fn a_run_parked_in_a_signal_wait_takes_cancellation_there_and_cleans_up() 
     assert_eq!(delivered.0, StatusCode::OK, "{}", delivered.1);
     assert_eq!(delivered.1["delivered"], true, "{}", delivered.1);
 
-    let cleanup = json!([{"type":"record_side_effect","result":envelope(Payload::Long(7))},
+    // Published SDKs send the encoded result as a string, as the PHP SDK's
+    // `$codec->encode()` does, optionally naming its codec. An envelope is
+    // accepted too.
+    let blob = envelope(Payload::Long(7))["blob"].clone();
+    let cleanup = json!([{"type":"record_side_effect","result":blob,"payload_codec":"avro"},
+        {"type":"record_side_effect","result":envelope(Payload::Long(7))},
         {"type":"complete_workflow","result":envelope(Payload::Null)}]);
     let finished = finish_task(&app, &root, cleanup).await;
     assert_eq!(finished.0, StatusCode::OK, "{}", finished.1);
@@ -53,9 +58,12 @@ async fn a_run_parked_in_a_signal_wait_takes_cancellation_there_and_cleans_up() 
     assert_eq!((delivery["payload"]["call_kind"].clone(), delivery["payload"]["sequence"].clone()), (json!("signal"), json!(1)));
     assert_eq!(delivery["principal"], Value::Null, "{delivery}");
     assert!(delivery["payload"].get("command").is_none(), "{delivery}");
-    let side_effect = event(&history, "SideEffectRecorded");
-    assert_eq!(side_effect["payload"]["sequence"], 2, "{side_effect}");
-    assert!(side_effect["payload"]["result"].is_object() || side_effect["payload"]["result"].is_string(), "{side_effect}");
+    // History reads present the result as an envelope, as PHP does.
+    let side_effects: Vec<_> = history.as_array().unwrap().iter().filter(|event| event["event_type"] == "SideEffectRecorded").collect();
+    assert_eq!(side_effects.len(), 2, "{history}");
+    for (side_effect, sequence) in side_effects.iter().zip([2, 3]) {
+        assert_eq!((side_effect["payload"]["sequence"].clone(), side_effect["payload"]["result"].clone()), (json!(sequence), json!({"codec":"avro","blob":blob})), "{side_effect}");
+    }
     let cancelled = event(&history, "WorkflowCancelled");
     assert_eq!(cancelled["principal"], Value::Null, "{cancelled}");
     assert_eq!(cancelled["payload"]["cancellation_cleanup"]["outcome"], "completed", "{cancelled}");
