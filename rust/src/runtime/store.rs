@@ -30,6 +30,8 @@ pub(super) struct Store<DB: Backend> {
     /// How long a claimed workflow task stays leased (DW_WORKFLOW_TASK_TIMEOUT).
     pub(super) workflow_task_lease_seconds: i64,
     pub(super) search_attribute_limit: i64,
+    /// When a silent registration stops counting (`server.workers.stale_after_seconds`).
+    pub(super) worker_stale_after_seconds: i64,
 }
 /// A ULID that sorts after every earlier one from this process, as Laravel's
 /// (Symfony's) generator does. Rows created in the same millisecond, such as
@@ -93,6 +95,7 @@ where
             history_budget: super::history_budget::Config::default(),
             workflow_task_lease_seconds: 60,
             search_attribute_limit: 100,
+            worker_stale_after_seconds: 30,
         }
     }
     pub(super) fn in_namespace(&self, namespace: &str) -> Self {
@@ -105,6 +108,7 @@ where
             history_budget: self.history_budget,
             workflow_task_lease_seconds: self.workflow_task_lease_seconds,
             search_attribute_limit: self.search_attribute_limit,
+            worker_stale_after_seconds: self.worker_stale_after_seconds,
         }
     }
     pub(super) async fn database_live(&self) -> bool {
@@ -178,6 +182,7 @@ where
             Some(&memo),
             arguments.as_deref(),
             context.as_ref(),
+            self.worker_stale_after_seconds,
         )
         .await?;
         tx.commit().await?;
@@ -194,6 +199,7 @@ where
         memo: Option<&super::memos::PreparedMemo>,
         external_arguments: Option<&str>,
         context: Option<&Value>,
+        stale_after: i64,
     ) -> Result<Value> {
         let request = super::start_request::validate(body)?;
         // PHP names an instance the request leaves unnamed.
@@ -291,6 +297,10 @@ where
         started["run_timeout_seconds"] = json!(run_timeout);
         started["execution_deadline_at"] = json!(execution_deadline);
         started["run_deadline_at"] = json!(run_deadline);
+        if let Some(fingerprint) = Self::start_definition_fingerprint(tx, namespace, queue, workflow_type, stale_after).await? {
+            started["workflow_definition_fingerprint"] = json!(fingerprint);
+            started["workflow_definition_fingerprint_source"] = json!("worker");
+        }
         // PHP filters null fields out of the started payload, then adds the
         // declared contract.
         if let Some(fields) = started.as_object_mut() {
@@ -313,6 +323,31 @@ where
             "outcome": "started_new", "command_status": "accepted", "command_source": "control_plane", "reason": null,
             "rejection_reason": null, "message": null}),
         )
+    }
+
+    /// `WorkflowStartVersionPin::definitionFingerprintForCohort` over the
+    /// queue's active registrations: unexpired or never heartbeated, and
+    /// not draining or deregistered.
+    async fn start_definition_fingerprint(
+        tx: &mut Transaction<'_, DB>,
+        namespace: &str,
+        queue: &str,
+        workflow_type: &str,
+        stale_after: i64,
+    ) -> Result<Option<String>> {
+        let cutoff = now() - chrono::Duration::seconds(stale_after.max(1));
+        let rows = Self::query("SELECT build_id,supported_workflow_types,workflow_definition_fingerprints,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND task_queue=$2 AND (last_heartbeat_at IS NULL OR last_heartbeat_at>=$3) AND (status IS NULL OR status='active')")
+            .bind(namespace).bind(queue).bind(DB::bind_time(cutoff)).fetch_all(&mut **tx).await?;
+        let mut workers = Vec::with_capacity(rows.len());
+        for row in &rows {
+            workers.push(super::start_definition::CohortWorker {
+                build_id: DB::optional_string(row, "build_id")?,
+                workflow_types: DB::optional_document_row(row, "supported_workflow_types")?.unwrap_or(Value::Null),
+                fingerprints: DB::optional_document_row(row, "workflow_definition_fingerprints")?.unwrap_or(Value::Null),
+                heartbeated: DB::optional_instant(row, "last_heartbeat_at")?.is_some(),
+            });
+        }
+        Ok(super::start_definition::fingerprint(&workers, workflow_type))
     }
 
     /// `DefaultWorkflowControlPlane::start` for an instance that already has

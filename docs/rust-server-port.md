@@ -182,15 +182,19 @@ contract fixture before its correction.
   then did not stop within the 5-second shutdown budget. Forty local
   repetitions of that case alone passed. Find what holds the query thread
   after the fence before changing either side.
-- **Workflow definition evolution (published in Server 2.10.0).** Published
-  PHP routes a run whose recorded workflow definition is gone to a
-  replacement definition that passes strict replay. It then reports
-  `definition_routing` on task queues and run diagnostics. It also records
-  each worker's protocol version under `_worker_protocol_version` in its
-  stored process metrics, which the worker listing shows. Native has none of
-  this. The Sample App's timers scenario now needs it: its application
-  upgrade phase requires one worker-sourced definition fingerprint in the
-  history of a Python class upgrade.
+- **Workflow definition routing (Server 2.10.0).** Native records the
+  definition fingerprint a start's worker cohort agrees on, as PHP does.
+  Published PHP 2.10.0 also routes a task for such a run by that
+  fingerprint. It prefers a live worker advertising the recorded definition.
+  Otherwise it offers the task only to a worker that advertises
+  `workflow_entry_arguments_validation`. It reports `definition_routing` in
+  describe, repair, debug and task queues, and stores each worker's protocol
+  version under `_worker_protocol_version` in its process metrics. Native
+  offers such a task to any worker and reports none of this.
+- **Start build-id pin.** Published PHP pins a new run to its start cohort's
+  build id: a promoted build-id rollout, else the single build id among the
+  live workers for the type, else among all the queue's live workers. Native
+  starts every run unpinned, and has no build-id rollouts.
 - **Child cancellation policies.** Native accepts a child only with the
   `abandon` parent close and cancellation policies, and refuses others with
   `422 unsupported_child_options`. Published PHP also requests the child's
