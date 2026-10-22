@@ -34,6 +34,8 @@ pub struct Runtime {
     storage: Arc<Storage>,
     pub(crate) token: Arc<str>,
     pub(crate) role_tokens: [Option<Arc<str>>; 3],
+    /// `DW_AUTH_DRIVER=none` and `DW_RUNTIME_CREDENTIALS_ENABLED`.
+    pub(crate) auth: AuthOptions,
     scheduler: Arc<TimerScheduler>,
     signal_codec: Arc<Semaphore>,
     // Codec work done while holding the transition lock takes this permit,
@@ -110,6 +112,15 @@ impl Drop for TimerScheduler {
     }
 }
 
+/// How requests authenticate beyond the configured tokens.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct AuthOptions {
+    /// `DW_AUTH_DRIVER=none`: every request is the anonymous administrator.
+    pub(crate) anonymous: bool,
+    /// Database runtime credentials authenticate bearer tokens.
+    pub(crate) runtime_credentials: bool,
+}
+
 macro_rules! delegate {
     ($name:ident($($arg:ident: $ty:ty),* $(,)?) -> $output:ty) => {
         pub(crate) async fn $name(&self, $($arg:$ty),*) -> $output {
@@ -141,6 +152,11 @@ impl Runtime {
     ) -> Self {
         self.role_tokens = [worker, operator, admin]
             .map(|token| token.filter(|value| !value.is_empty()).map(Arc::from));
+        self
+    }
+
+    pub fn with_auth_options(mut self, anonymous: bool, runtime_credentials: bool) -> Self {
+        self.auth = AuthOptions { anonymous, runtime_credentials };
         self
     }
 
@@ -209,6 +225,7 @@ impl Runtime {
             storage: Arc::new(storage),
             token: token.into(),
             role_tokens: [None, None, None],
+            auth: AuthOptions::default(),
             scheduler: Arc::new(TimerScheduler::new()),
             signal_codec: Arc::new(Semaphore::new(1)),
             transition_codec: Arc::new(Semaphore::new(1)),
@@ -278,6 +295,7 @@ impl Runtime {
             storage: Arc::new(storage),
             token: self.token.clone(),
             role_tokens: self.role_tokens.clone(),
+            auth: self.auth,
             scheduler: self.scheduler.clone(),
             signal_codec: self.signal_codec.clone(),
             transition_codec: self.transition_codec.clone(),
@@ -299,12 +317,19 @@ impl Runtime {
     delegate!(operator_metrics(config: &super::operator_metrics::MetricsConfig) -> Result<Value>);
     delegate!(system_health(config: &super::operator_metrics::MetricsConfig) -> Result<(bool, Value)>);
     delegate!(operator_dashboard(config: &super::operator_metrics::MetricsConfig, bounded: bool) -> Result<Value>);
+    delegate!(repair_status() -> Result<Value>);
     delegate!(retention_status(limit: i64) -> Result<Value>);
     delegate!(retention_pass(limit: i64, run_ids: Vec<String>) -> Result<(Value, bool)>);
     delegate!(activity_timeout_status(limit: i64) -> Result<Value>);
     delegate!(activity_timeout_pass(limit: i64, ids: Vec<String>) -> Result<(Value, bool)>);
     delegate!(create_namespace(body: Value) -> Result<Value>);
     delegate!(list_search_attributes() -> Result<Value>);
+    delegate!(runtime_credential_principal(token: &str) -> Result<Option<super::runtime_credentials::Principal>>);
+    delegate!(list_runtime_credentials() -> Result<Value>);
+    delegate!(show_runtime_credential(id: &str) -> Result<Value>);
+    delegate!(upsert_runtime_credential(id: &str, body: Value) -> Result<(axum::http::StatusCode, Value)>);
+    delegate!(rotate_runtime_credential(id: &str, body: Value) -> Result<Value>);
+    delegate!(revoke_runtime_credential(id: &str) -> Result<Value>);
     delegate!(
         storage_test_round_trip(
             local: &crate::external_payload::LocalStorage,
@@ -356,6 +381,7 @@ impl Runtime {
     /// empty input is no arguments and any list or object other than an
     /// envelope is its values, both encoded here. An envelope is left as sent.
     async fn plain_arguments(&self, body: &Value) -> Result<Option<String>> {
+        super::input_envelope::check(body)?;
         let arguments = match super::start_request::input(body) {
             super::start_request::Input::Envelope => return Ok(None),
             super::start_request::Input::Empty => Vec::new(),
@@ -378,17 +404,38 @@ impl Runtime {
         }
     }
 
+    /// Refuses an envelope blob the codec cannot decode, with PHP's message.
+    async fn decodable(&self, blob: &Value) -> Result<()> {
+        let Some(blob) = blob.as_str().map(str::to_owned) else {
+            return Ok(());
+        };
+        let permit = self.signal_codec.clone().acquire_owned().await
+            .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let codec = crate::codec::ValueCodec::new()
+                .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?;
+            codec.decode(&blob).map(drop).map_err(|error| super::input_envelope::undecodable(&blob, &error))
+        })
+        .await
+        .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?
+    }
+
     pub(crate) async fn start(&self, body: Value) -> Result<Value> {
         // PHP validates the request before it reads the memo or the input.
         let mut body = super::start_request::normalized(body);
+        super::input_envelope::transport(&body)?;
         super::start_request::validate(&body)?;
         if body["search_attributes"].as_object().is_some_and(|fields| !fields.is_empty())
             || body["search_attributes"].as_array().is_some_and(|items| !items.is_empty())
         {
             return Err(refuse(StatusCode::NOT_IMPLEMENTED, "start_search_attributes_unavailable"));
         }
-        if let Some(blob) = self.plain_arguments(&body).await? {
-            body["input"] = json!({"codec": "avro", "blob": blob});
+        match self.plain_arguments(&body).await? {
+            Some(blob) => body["input"] = json!({"codec": "avro", "blob": blob}),
+            // PHP 2.5.14 answers an undecodable start blob with a 500
+            // (server#601); native refuses it as PHP's signal does.
+            None => self.decodable(&body["input"]["blob"]).await?,
         }
         let memo =
             super::memos::prepare_initial(self.signal_codec.clone(), body["memo"].clone()).await?;
@@ -448,6 +495,7 @@ impl Runtime {
         body: Value,
     ) -> Result<Value> {
         let body = super::start_request::normalized(body);
+        super::input_envelope::transport(&body)?;
         super::command_requests::signal(&body)?;
         let arguments = self.command_arguments(&body).await?;
         let prepared = super::store::prepare_control_arguments(
@@ -455,6 +503,7 @@ impl Runtime {
             name.to_owned(),
             arguments,
             "invalid_signal_arguments",
+            true,
         )
         .await?;
         match &*self.storage {
@@ -496,47 +545,18 @@ impl Runtime {
             }
         }
     }
-    pub(crate) async fn repair_range_blocked(
+    pub(crate) async fn repair_workflow(
         &self,
         workflow_id: &str,
         run_id: Option<&str>,
         body: Value,
         context: Value,
-    ) -> Result<Value> {
+    ) -> Result<(StatusCode, Value)> {
+        let codec = self.transition_codec.clone();
         match &*self.storage {
-            Storage::Sqlite(store) => {
-                store
-                    .repair_range_blocked(
-                        workflow_id,
-                        run_id,
-                        body,
-                        context,
-                        self.transition_codec.clone(),
-                    )
-                    .await
-            }
-            Storage::Postgres(store) => {
-                store
-                    .repair_range_blocked(
-                        workflow_id,
-                        run_id,
-                        body,
-                        context,
-                        self.transition_codec.clone(),
-                    )
-                    .await
-            }
-            Storage::MySql(store) => {
-                store
-                    .repair_range_blocked(
-                        workflow_id,
-                        run_id,
-                        body,
-                        context,
-                        self.transition_codec.clone(),
-                    )
-                    .await
-            }
+            Storage::Sqlite(store) => store.repair_workflow(workflow_id, run_id, body, context, codec).await,
+            Storage::Postgres(store) => store.repair_workflow(workflow_id, run_id, body, context, codec).await,
+            Storage::MySql(store) => store.repair_workflow(workflow_id, run_id, body, context, codec).await,
         }
     }
 
@@ -587,6 +607,7 @@ impl Runtime {
         body: Value,
     ) -> Result<(StatusCode, Value)> {
         let body = super::start_request::normalized(body);
+        super::input_envelope::transport(&body)?;
         super::command_requests::update(&body)?;
         let arguments = self.command_arguments(&body).await?;
         if arguments.len() > super::queries::ARGUMENT_BYTES {
@@ -600,6 +621,7 @@ impl Runtime {
             name.to_owned(),
             arguments,
             "invalid_update_arguments",
+            true,
         )
         .await?;
         match &*self.storage {
@@ -632,6 +654,7 @@ impl Runtime {
         // nullable|array; other request fields are ignored, as in PHP.
         // Laravel trims strings and turns empty ones into null first.
         let body = super::start_request::normalized(body);
+        super::input_envelope::transport(&body)?;
         let invalid = |field: &'static str, message: &'static str| {
             let mut error = super::laravel_validation::failure(vec![(field, vec![message])]).expect("one message");
             if let super::RuntimeError::Protocol { response, .. } = &mut error {

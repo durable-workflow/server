@@ -94,13 +94,10 @@ pub(super) async fn request(request: Request, workflow_id: &str) -> Result<(Valu
     if !headers.is_array() {
         request["headers"] = headers;
     }
-    let subject = if principal.legacy_credential {
-        "legacy-token".into()
-    } else {
-        format!("role:{}", principal.role)
-    };
-    let claims = if principal.legacy_credential {
-        json!({"legacy_credential":true})
+    // The authenticated principal, as `Principal::toAuditContext` records it.
+    let subject = principal.principal.subject.clone();
+    let claims = if principal.principal.claims.as_object().is_some_and(|claims| !claims.is_empty()) {
+        principal.principal.claims.clone()
     } else {
         json!([])
     };
@@ -109,14 +106,19 @@ pub(super) async fn request(request: Request, workflow_id: &str) -> Result<(Valu
         "operator" => "Operator",
         _ => "Worker",
     };
+    let mut audit = json!({"subject":subject,"roles":principal.principal.roles,"claims":claims,
+        "legacy_full_access":principal.legacy_full_access});
+    if let Some(tenant) = &principal.principal.tenant {
+        audit["tenant"] = json!(tenant);
+    }
     let metadata = payload["request_id"]
         .as_str()
         .map_or(json!([]), |value| json!({"request_id":value}));
     let context = json!({
         "caller":{"type":"server","label":"Standalone Server"},
-        "auth":{"status":"authorized","method":"token","role":principal.role,"roles":[principal.role],
-            "principal":{"subject":subject,"roles":[principal.role],"claims":claims,"legacy_full_access":principal.legacy_full_access}},
-        "principal":{"type":"auth:token","id":subject,"label":label},
+        "auth":{"status":"authorized","method":principal.principal.method,"role":principal.role,"roles":principal.principal.roles,
+            "principal":audit},
+        "principal":{"type":format!("auth:{}",principal.principal.method),"id":subject,"label":label},
         "request":request,"server":{"operation_id":id(),"namespace":"default","workflow_id":workflow_id,
             "command":"repair","metadata":metadata}});
     Ok((payload, context))

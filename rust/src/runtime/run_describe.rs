@@ -113,29 +113,13 @@ where
     /// `WorkflowRun::typedSearchAttributes`, sorted by key; PHP renders an
     /// empty set as `[]`.
     async fn typed_search_attributes(&self, run_id: &str) -> Result<Value> {
-        // `key` needs dialect quoting, so select every column; the map sorts.
-        let rows = Self::query("SELECT *,CASE WHEN value_bool IS NULL THEN NULL WHEN value_bool THEN 1 ELSE 0 END AS value_bool_flag FROM workflow_search_attributes WHERE workflow_run_id=$1")
-            .bind(run_id)
-            .fetch_all(&self.pool)
-            .await?;
-        let mut attributes = Map::new();
-        for row in rows {
-            let value = match DB::string(&row, "type")?.as_str() {
-                "string" => json!(DB::optional_string(&row, "value_string")?),
-                "keyword" => json!(DB::optional_string(&row, "value_keyword")?),
-                "keyword_list" => DB::optional_string(&row, "value_keyword_list")?
-                    .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-                    .filter(Value::is_array)
-                    .unwrap_or_else(|| json!([])),
-                "int" => json!(DB::optional_number(&row, "value_int")?),
-                "float" => json!(DB::optional_float(&row, "value_float")?),
-                "bool" => json!(DB::optional_number(&row, "value_bool_flag")?.map(|flag| flag != 0)),
-                "datetime" => json_time(DB::optional_instant(&row, "value_datetime")?),
-                _ => Value::Null,
-            };
-            attributes.insert(DB::string(&row, "key")?, value);
-        }
-        Ok(if attributes.is_empty() { json!([]) } else { Value::Object(attributes) })
+        let mut connection = self.pool.acquire().await?;
+        let rows = Self::typed_rows(&mut connection, run_id).await?;
+        Ok(if rows.is_empty() {
+            json!([])
+        } else {
+            Value::Object(rows.into_iter().map(|(key, value)| (key, value.json())).collect())
+        })
     }
 
     /// The rows `HistoryExport::forRun` reads for one run, as JSON.

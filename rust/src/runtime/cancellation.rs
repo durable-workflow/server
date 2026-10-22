@@ -535,7 +535,7 @@ where
         tx.summary_changed(&run_id);
         Ok(json!({"task_id":task_id,"workflow_task_attempt":attempt,"outcome":"completed","recorded":false,
             "run_id":run_id,"run_status":"failed","created_task_ids":[],"reason":"run_timed_out",
-            "protocol_version":"1.20","server_capabilities":super::store::capabilities()}))
+            "protocol_version":super::WORKER_PROTOCOL_VERSION,"server_capabilities":super::store::capabilities()}))
     }
 
     pub(super) async fn cancelled_activity_outcome(
@@ -560,7 +560,9 @@ where
         let reason = match run_status.as_str() {
             "cancelled" => "run_cancelled",
             "terminated" => "run_terminated",
-            _ => return Err(refuse(StatusCode::CONFLICT, "stale_attempt")),
+            // A deadline, not the run, cancelled this task. The caller
+            // answers the late outcome with PHP's stale attempt receipt.
+            _ => return Ok(()),
         };
         if let Some(attempt) = attempt {
             if DB::string(&attempt, "status")? == "cancelled"

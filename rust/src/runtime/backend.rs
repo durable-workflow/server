@@ -11,6 +11,9 @@ pub(super) trait Backend: Database {
     type EncodedTime: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
     type EncodedOptionalTime: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
     type EncodedDocument: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
+    type EncodedInteger: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
+    type EncodedFloat: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
+    type EncodedFlag: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
     const HISTORY_PAGE: &'static str;
     // Multi-statement reads that must observe one committed state. SQLite's
     // deferred read transaction already keeps one WAL snapshot.
@@ -30,6 +33,8 @@ pub(super) trait Backend: Database {
     const POLL_RECEIPT_CLEANUP_SQL: &'static str = super::store::POLL_RECEIPT_CLEANUP_SQL;
     const TIMER_TASK_SQL: &'static str;
     const TIMER_SCHEDULE_SQL: &str = "SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='TimerScheduled' AND payload->>'timer_id'=$2 ORDER BY sequence DESC LIMIT 1";
+    /// The history sequence of a signal's `SignalReceived` event.
+    const SIGNAL_RECEIVED_SEQUENCE_SQL: &str = "SELECT sequence FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SignalReceived' AND payload->>'signal_id'=$2 ORDER BY sequence LIMIT 1";
     const SELECTION_RESOLUTION_SQL: &'static str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SelectionResolved' AND payload->>'selection_group_id'=$2 ORDER BY sequence LIMIT 1";
     // Frozen run command/task repair counters use each backend's actual width.
     const REPAIR_COUNTER_MAX: i64 = i32::MAX as i64;
@@ -55,6 +60,11 @@ pub(super) trait Backend: Database {
     const MEMO_UPSERT: &'static str = "INSERT INTO workflow_memos(workflow_run_id,workflow_instance_id,\"key\",value,upserted_at_sequence,inherited_from_parent,created_at,updated_at,portable_value,portable_value_sequence) VALUES ($1,$2,$3,$4,$5,false,$6,$7,$8,$9) ON CONFLICT(workflow_run_id,\"key\") DO UPDATE SET value=excluded.value,upserted_at_sequence=excluded.upserted_at_sequence,inherited_from_parent=false,updated_at=excluded.updated_at,portable_value=excluded.portable_value,portable_value_sequence=excluded.portable_value_sequence";
     const MEMO_DELETE: &'static str =
         "DELETE FROM workflow_memos WHERE workflow_run_id=$1 AND \"key\"=$2";
+    const SEARCH_ATTRIBUTE_ROWS: &'static str = "SELECT \"key\" AS attribute_key,type,value_string,value_keyword,value_int,value_float,CASE WHEN value_bool IS NULL THEN NULL WHEN value_bool THEN 1 ELSE 0 END AS value_bool,value_datetime,value_keyword_list FROM workflow_search_attributes WHERE workflow_run_id=$1 ORDER BY \"key\" LIMIT 1001";
+    const SEARCH_ATTRIBUTE_UPSERT: &'static str = "INSERT INTO workflow_search_attributes(workflow_run_id,workflow_instance_id,\"key\",type,value_string,value_keyword,value_keyword_list,value_int,value_float,value_bool,value_datetime,upserted_at_sequence,inherited_from_parent,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,false,$13,$14) ON CONFLICT(workflow_run_id,\"key\") DO UPDATE SET workflow_instance_id=excluded.workflow_instance_id,type=excluded.type,value_string=excluded.value_string,value_keyword=excluded.value_keyword,value_keyword_list=excluded.value_keyword_list,value_int=excluded.value_int,value_float=excluded.value_float,value_bool=excluded.value_bool,value_datetime=excluded.value_datetime,upserted_at_sequence=excluded.upserted_at_sequence,inherited_from_parent=false,updated_at=excluded.updated_at";
+    const SEARCH_ATTRIBUTE_DELETE: &'static str = "DELETE FROM workflow_search_attributes WHERE workflow_run_id=$1 AND \"key\"=$2";
+    const SEARCH_ATTRIBUTE_KEY_ROWS: &'static str = "SELECT a.workflow_run_id,a.\"key\" AS attribute_key,a.type,a.value_string,a.value_keyword,a.value_int,a.value_float,CASE WHEN a.value_bool IS NULL THEN NULL WHEN a.value_bool THEN 1 ELSE 0 END AS value_bool,a.value_datetime,a.value_keyword_list FROM workflow_search_attributes a JOIN workflow_runs r ON r.id=a.workflow_run_id WHERE r.namespace=$1 AND a.\"key\"=$2";
+    const SEARCH_ATTRIBUTE_INHERIT: &'static str = "INSERT INTO workflow_search_attributes(workflow_run_id,workflow_instance_id,\"key\",type,value_string,value_keyword,value_keyword_list,value_int,value_float,value_bool,value_datetime,upserted_at_sequence,inherited_from_parent,created_at,updated_at) SELECT $1,$2,\"key\",type,value_string,value_keyword,value_keyword_list,value_int,value_float,value_bool,value_datetime,1,true,$3,$4 FROM workflow_search_attributes WHERE workflow_run_id=$5";
     fn statement(sql: &'static str) -> Cow<'static, str> {
         Cow::Borrowed(sql)
     }
@@ -62,6 +72,9 @@ pub(super) trait Backend: Database {
     fn bind_time(time: DateTime<Utc>) -> Self::EncodedTime;
     fn optional_time(time: Option<DateTime<Utc>>) -> Self::EncodedOptionalTime;
     fn document(value: &Value) -> Self::EncodedDocument;
+    fn optional_integer(value: Option<i64>) -> Self::EncodedInteger;
+    fn optional_float_value(value: Option<f64>) -> Self::EncodedFloat;
+    fn optional_flag(value: Option<bool>) -> Self::EncodedFlag;
     fn optional_document(value: &Value) -> Option<Self::EncodedDocument> {
         (!value.is_null()).then(|| Self::document(value))
     }
@@ -103,6 +116,18 @@ fn sqlite_instant(value: String) -> Result<DateTime<Utc>> {
 }
 
 impl Backend for Sqlite {
+    type EncodedInteger = Option<i64>;
+    type EncodedFloat = Option<f64>;
+    type EncodedFlag = Option<bool>;
+    fn optional_integer(value: Option<i64>) -> Option<i64> {
+        value
+    }
+    fn optional_float_value(value: Option<f64>) -> Option<f64> {
+        value
+    }
+    fn optional_flag(value: Option<bool>) -> Option<bool> {
+        value
+    }
     const ACTIVITY_METADATA_HISTORY: &'static str = "SELECT sequence,event_type,CASE WHEN projection_bytes<=8388608 THEN payload ELSE NULL END AS payload,workflow_task_id,recorded_at,projection_count FROM (SELECT sequence,event_type,payload,workflow_task_id,recorded_at,COUNT(*) OVER () AS projection_count,SUM(length(CAST(payload AS BLOB))) OVER (ORDER BY sequence) AS projection_bytes FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled') ORDER BY sequence LIMIT 10001) AS page ORDER BY sequence";
     const PHP_CONNECTION: &str = "sqlite";
     // Carbon's millisecond comparison rounds at half a millisecond. Parse only
@@ -159,6 +184,7 @@ ORDER BY t.available_order,t.id LIMIT 100
     type EncodedDocument = String;
     const TIMER_TASK_SQL: &'static str = "SELECT id,payload FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='timer' AND status='ready' AND json_extract(payload,'$.timer_id')=$2 AND namespace=$3";
     const TIMER_SCHEDULE_SQL: &str = "SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='TimerScheduled' AND json_extract(payload,'$.timer_id')=$2 ORDER BY sequence DESC LIMIT 1";
+    const SIGNAL_RECEIVED_SEQUENCE_SQL: &str = "SELECT sequence FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SignalReceived' AND json_extract(payload,'$.signal_id')=$2 ORDER BY sequence LIMIT 1";
     const HISTORY_PAGE: &'static str = "SELECT * FROM (SELECT *,SUM(length(CAST(payload AS BLOB))) OVER (ORDER BY sequence) AS page_bytes FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence LIMIT $3) AS page WHERE page_bytes<=8388608 ORDER BY sequence";
     // Normalize only the two supported UTC storage shapes. Removing trailing
     // fractional zeros preserves exact decimal ordering, including earlier
@@ -277,6 +303,18 @@ impl Encode<'_, Postgres> for PostgresDocument {
 }
 
 impl Backend for Postgres {
+    type EncodedInteger = Option<i64>;
+    type EncodedFloat = Option<f64>;
+    type EncodedFlag = Option<bool>;
+    fn optional_integer(value: Option<i64>) -> Option<i64> {
+        value
+    }
+    fn optional_float_value(value: Option<f64>) -> Option<f64> {
+        value
+    }
+    fn optional_flag(value: Option<bool>) -> Option<bool> {
+        value
+    }
     const READ_SNAPSHOT_BEGIN: &'static str = "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY";
     const PHP_CONNECTION: &str = "pgsql";
     fn optional_float(row: &Self::Row, field: &str) -> Result<Option<f64>> {
@@ -360,6 +398,23 @@ impl Backend for Postgres {
 }
 
 impl Backend for MySql {
+    type EncodedInteger = Option<i64>;
+    type EncodedFloat = Option<f64>;
+    type EncodedFlag = Option<bool>;
+    fn optional_integer(value: Option<i64>) -> Option<i64> {
+        value
+    }
+    fn optional_float_value(value: Option<f64>) -> Option<f64> {
+        value
+    }
+    fn optional_flag(value: Option<bool>) -> Option<bool> {
+        value
+    }
+    const SEARCH_ATTRIBUTE_ROWS: &'static str = "SELECT `key` AS attribute_key,type,value_string,value_keyword,value_int,value_float,CASE WHEN value_bool IS NULL THEN NULL WHEN value_bool THEN 1 ELSE 0 END AS value_bool,value_datetime,value_keyword_list FROM workflow_search_attributes WHERE workflow_run_id=$1 ORDER BY `key` LIMIT 1001";
+    const SEARCH_ATTRIBUTE_UPSERT: &'static str = "INSERT INTO workflow_search_attributes(workflow_run_id,workflow_instance_id,`key`,type,value_string,value_keyword,value_keyword_list,value_int,value_float,value_bool,value_datetime,upserted_at_sequence,inherited_from_parent,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,false,$13,$14) ON DUPLICATE KEY UPDATE workflow_instance_id=VALUES(workflow_instance_id),type=VALUES(type),value_string=VALUES(value_string),value_keyword=VALUES(value_keyword),value_keyword_list=VALUES(value_keyword_list),value_int=VALUES(value_int),value_float=VALUES(value_float),value_bool=VALUES(value_bool),value_datetime=VALUES(value_datetime),upserted_at_sequence=VALUES(upserted_at_sequence),inherited_from_parent=false,updated_at=VALUES(updated_at)";
+    const SEARCH_ATTRIBUTE_DELETE: &'static str = "DELETE FROM workflow_search_attributes WHERE workflow_run_id=$1 AND `key`=$2";
+    const SEARCH_ATTRIBUTE_KEY_ROWS: &'static str = "SELECT a.workflow_run_id,a.`key` AS attribute_key,a.type,a.value_string,a.value_keyword,a.value_int,a.value_float,CASE WHEN a.value_bool IS NULL THEN NULL WHEN a.value_bool THEN 1 ELSE 0 END AS value_bool,a.value_datetime,a.value_keyword_list FROM workflow_search_attributes a JOIN workflow_runs r ON r.id=a.workflow_run_id WHERE r.namespace=$1 AND a.`key`=$2";
+    const SEARCH_ATTRIBUTE_INHERIT: &'static str = "INSERT INTO workflow_search_attributes(workflow_run_id,workflow_instance_id,`key`,type,value_string,value_keyword,value_keyword_list,value_int,value_float,value_bool,value_datetime,upserted_at_sequence,inherited_from_parent,created_at,updated_at) SELECT $1,$2,`key`,type,value_string,value_keyword,value_keyword_list,value_int,value_float,value_bool,value_datetime,1,true,$3,$4 FROM workflow_search_attributes WHERE workflow_run_id=$5";
     const READ_SNAPSHOT_BEGIN: &'static str = "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY";
     const ACTIVITY_METADATA_HISTORY: &'static str = "SELECT h.sequence,h.event_type,CASE WHEN page.projection_bytes<=8388608 THEN h.payload ELSE NULL END AS payload,h.workflow_task_id,h.recorded_at,page.projection_count FROM (SELECT id,sequence,COUNT(*) OVER () AS projection_count,SUM(payload_bytes) OVER (ORDER BY sequence) AS projection_bytes FROM (SELECT id,sequence,octet_length(CAST(payload AS CHAR CHARACTER SET utf8mb4)) AS payload_bytes FROM workflow_history_events FORCE INDEX (workflow_history_events_workflow_run_id_sequence_unique) WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled')) AS sizes ORDER BY sequence LIMIT 10001) AS page JOIN workflow_history_events h ON h.id=page.id ORDER BY page.sequence";
     const PHP_CONNECTION: &str = "mysql";
@@ -400,6 +455,7 @@ impl Backend for MySql {
     const QUERY_POLL_EXPIRED: &'static str = "SELECT `key` FROM dw_query_cache WHERE `key` LIKE 'dw-native-query-poll:%' AND expiration<=$1 ORDER BY `key` LIMIT 32";
     const TIMER_TASK_SQL: &'static str = "SELECT id,payload FROM workflow_tasks WHERE workflow_run_id=? AND task_type='timer' AND status='ready' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.timer_id'))=? AND BINARY namespace=BINARY ?";
     const TIMER_SCHEDULE_SQL: &str = "SELECT payload FROM workflow_history_events WHERE workflow_run_id=? AND event_type='TimerScheduled' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.timer_id'))=? ORDER BY sequence DESC LIMIT 1";
+    const SIGNAL_RECEIVED_SEQUENCE_SQL: &str = "SELECT sequence FROM workflow_history_events WHERE workflow_run_id=? AND event_type='SignalReceived' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.signal_id'))=? ORDER BY sequence LIMIT 1";
     // First use the preserved run/sequence index to materialize only IDs and
     // byte counts for this bounded page. Sorting JSON payloads in the window
     // exhausts MySQL's default sort buffer before the size rejection can run.
@@ -411,6 +467,7 @@ impl Backend for MySql {
         if !sql.contains('$')
             || sql == Self::TIMER_TASK_SQL
             || sql == Self::TIMER_SCHEDULE_SQL
+            || sql == Self::SIGNAL_RECEIVED_SEQUENCE_SQL
             || sql == Self::RANGE_REPAIR_TASK_SQL
             || sql == Self::SELECTION_RESOLUTION_SQL
             || sql == Self::ACTIVITY_OPEN_TASK_SQL
