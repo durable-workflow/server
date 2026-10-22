@@ -1842,7 +1842,7 @@ where
             if self.namespace.as_ref() != "default"
                 && !matches!(
                     command_type,
-                    "complete_workflow" | "fail_workflow" | "schedule_activity" | "start_timer"
+                    "complete_workflow" | "fail_workflow" | "schedule_activity" | "start_timer" | "start_child_workflow"
                 )
                 && !(commands.len() == 1
                     && matches!(command_type, "open_condition_wait" | "open_signal_wait"))
