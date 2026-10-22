@@ -1656,7 +1656,7 @@ python_pip_status=$?
 mkdir -p "$run_root/python-distributions"
 # Without the patched pip, no Python SDK request is made at all.
 if [[ "$python_pip_status" -eq 0 ]]; then
-  python -m pip download --no-deps --dest "$run_root/python-distributions" \
+  python -I -m pip download --no-deps --dest "$run_root/python-distributions" \
     "durable-workflow==${python_sdk_version}" > "$result_dir/python-download.log" 2>&1
   python_download_status=$?
 else
@@ -1670,7 +1670,7 @@ if [[ "$python_download_status" -eq 0 ]]; then
 fi
 python_distribution="$(find "$run_root/python-distributions" -maxdepth 1 -type f -print -quit)"
 if [[ "$python_download_status" -eq 0 && -n "$python_distribution" ]]; then
-  python -m pip install "$python_distribution" > "$result_dir/python-install.log" 2>&1
+  python -I -m pip install "$python_distribution" > "$result_dir/python-install.log" 2>&1
   python_install_status=$?
 else
   printf '%s\n' 'Python SDK distribution download or identity capture failed.' > "$result_dir/python-install.log"

@@ -254,13 +254,13 @@ prepare_focused_python_sdk() {
   mkdir -p "$distribution_dir"
   if python3 -m venv "$venv" >/dev/null 2>"$install_log" \
     && sh "$script_dir/../ci/bootstrap-patched-pip.sh" "$venv/bin/python" >>"$install_log" 2>&1 \
-    && "$venv/bin/python" -m pip download --disable-pip-version-check --no-deps \
+    && "$venv/bin/python" -I -m pip download --disable-pip-version-check --no-deps \
       --dest "$distribution_dir" "durable-workflow==${DW_PYTHON_SDK_VERSION}" >>"$install_log" 2>&1 \
     && python3 "$script_dir/distribution_identities.py" record-unique \
       "$distribution_identity_file" sdk-python "$DW_PYTHON_SDK_VERSION" "$distribution_dir" '*' \
       >>"$install_log" 2>&1 \
     && distribution="$(find "$distribution_dir" -maxdepth 1 -type f -print -quit)" \
-    && "$venv/bin/python" -m pip install --disable-pip-version-check --no-input "$distribution" >>"$install_log" 2>&1; then
+    && "$venv/bin/python" -I -m pip install --disable-pip-version-check --no-input "$distribution" >>"$install_log" 2>&1; then
     export DW_ACTIVITIES_PYTHON_BIN="$venv/bin/python"
     return 0
   fi

@@ -17,5 +17,5 @@ trap 'exit 143' TERM
 python3 -m venv "$work/pip"
 sh "$here/bootstrap-patched-pip.sh" "$work/pip/bin/python" >&2
 status=0
-"$work/pip/bin/python" -m pip "$@" || status=$?
+"$work/pip/bin/python" -I -m pip "$@" || status=$?
 exit "$status"

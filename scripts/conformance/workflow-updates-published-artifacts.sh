@@ -3023,7 +3023,7 @@ run_python_sdk_shard() {
     write_python_sdk_shard_status runner_blocked "The Python SDK shard virtual environment did not expose a Python executable." python_venv_python true
     return 0
   fi
-  if ! "$venv_python" -m pip --version > "$result_dir/python-sdk-pip-version.log" 2>&1; then
+  if ! "$venv_python" -I -m pip --version > "$result_dir/python-sdk-pip-version.log" 2>&1; then
     write_python_sdk_shard_status runner_blocked "pip is required inside the disposable Python SDK shard environment; see python-sdk-pip-version.log." pip_unavailable true
     return 0
   fi
@@ -3034,7 +3034,7 @@ run_python_sdk_shard() {
 
   # --isolated skips the venv's pip.conf, so confine trust to pip's verified
   # bundle here too.
-  if ! PIP_CONFIG_FILE=/dev/null "$venv_python" -m pip --isolated install \
+  if ! PIP_CONFIG_FILE=/dev/null "$venv_python" -I -m pip --isolated install \
     --use-deprecated=legacy-certs \
     --disable-pip-version-check \
     --no-input \

@@ -474,7 +474,7 @@ if [[ -n "${DW_PYTHON_SDK_VERSION:-}" ]]; then
   if require_command python3; then
     if python3 -m venv "$run_root/.venv" >"$result_dir/python-install.log" 2>&1 \
       && sh "$script_dir/../ci/bootstrap-patched-pip.sh" "$run_root/.venv/bin/python" >>"$result_dir/python-install.log" 2>&1 \
-      && "$run_root/.venv/bin/python" -m pip install "durable-workflow==${DW_PYTHON_SDK_VERSION}" >>"$result_dir/python-install.log" 2>&1; then
+      && "$run_root/.venv/bin/python" -I -m pip install "durable-workflow==${DW_PYTHON_SDK_VERSION}" >>"$result_dir/python-install.log" 2>&1; then
       python_status="available"
       python_reason=""
       python_source="pypi"

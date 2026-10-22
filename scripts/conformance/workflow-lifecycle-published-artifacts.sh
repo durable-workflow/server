@@ -926,7 +926,7 @@ PY
     executor="venv_pypi_install"
 
     if ! sh "$script_dir/../ci/bootstrap-patched-pip.sh" "$python_bin" >"$result_dir/python-sdk-lifecycle-pip-install.log" 2>&1 \
-      || ! "$python_bin" -m pip install --disable-pip-version-check --no-input "durable-workflow==${sdk_version}" >>"$result_dir/python-sdk-lifecycle-pip-install.log" 2>&1; then
+      || ! "$python_bin" -I -m pip install --disable-pip-version-check --no-input "durable-workflow==${sdk_version}" >>"$result_dir/python-sdk-lifecycle-pip-install.log" 2>&1; then
       local install_error
       install_error="$(python_sdk_last_log_line "$result_dir/python-sdk-lifecycle-pip-install.log" 'pip exited without diagnostic output.')"
       write_python_sdk_runner_blocked \

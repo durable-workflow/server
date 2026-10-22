@@ -195,7 +195,7 @@ async function main() {
         version: pythonVersion,
         source: 'pypi_release',
         status: 'pass',
-        command: `python3 -m pip install durable-workflow==${pythonVersion}`,
+        command: `python3 -I -m pip install durable-workflow==${pythonVersion}`,
       },
       {
         artifact: 'sdk-php',
@@ -381,7 +381,7 @@ async function main() {
           version: pythonVersion,
           source: 'pypi_release',
           status: 'pass',
-          command: `python3 -m pip install durable-workflow==${pythonVersion}`,
+          command: `python3 -I -m pip install durable-workflow==${pythonVersion}`,
         },
         {
           artifact: 'sdk-php',
@@ -1129,7 +1129,7 @@ async function installPythonWorker(shardRoot) {
   runRequired('python3', ['-m', 'venv', venv], { logPath: installLog });
   const pythonBin = path.join(venv, 'bin', 'python');
   runRequired('sh', [PATCHED_PIP_BOOTSTRAP, pythonBin], { logPath: installLog, append: true });
-  runRequired(pythonBin, ['-m', 'pip', 'install', `durable-workflow==${pythonVersion}`], {
+  runRequired(pythonBin, ['-I', '-m', 'pip', 'install', `durable-workflow==${pythonVersion}`], {
     logPath: installLog,
     append: true,
   });
@@ -1539,7 +1539,7 @@ function publishedPythonWorkerExecution() {
         version: pythonVersion,
         source: 'pypi_release',
         status: 'pass',
-        command: `python3 -m pip install durable-workflow==${pythonVersion}`,
+        command: `python3 -I -m pip install durable-workflow==${pythonVersion}`,
       },
     ],
   };

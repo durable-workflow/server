@@ -12,6 +12,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && rm -r /var/lib/apt/lists/* \
     && python3 /opt/dw-ci/blocked_roots.py /etc/ssl/certs/ca-certificates.crt
 COPY --from=composer /usr/bin/composer /usr/bin/composer
+# Composer trusts only the pinned image's checked store and an empty directory.
+COPY --from=composer /etc/ssl/certs/ca-certificates.crt /etc/composer-trust/ca.pem
+RUN install -d -m 0555 /etc/composer-trust/no-ca-directory \
+    && python3 /opt/dw-ci/blocked_roots.py /etc/composer-trust/ca.pem
+ENV COMPOSER_CAFILE=/etc/composer-trust/ca.pem COMPOSER_CAPATH=/etc/composer-trust/no-ca-directory
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 # The Python SDK lives in a venv whose pip is the hash-pinned release and
 # trusts only its verified bundle; python3 resolves to that venv.

@@ -1902,6 +1902,7 @@ def ensure_python_sdk(run_root: Path, log_file: Path) -> tuple[str, dict[str, An
     download = run_command(
         [
             str(python_bin),
+            "-I",
             "-m",
             "pip",
             "download",
@@ -1918,7 +1919,7 @@ def ensure_python_sdk(run_root: Path, log_file: Path) -> tuple[str, dict[str, An
     distribution = unique_distribution_file(distribution_dir, "*")
     record_distribution_file("sdk-python", sdk_version, distribution)
     install = run_command(
-        [str(python_bin), "-m", "pip", "install", str(distribution)],
+        [str(python_bin), "-I", "-m", "pip", "install", str(distribution)],
         log_file=log_file,
         timeout=240,
     )

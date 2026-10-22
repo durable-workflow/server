@@ -477,7 +477,7 @@ python3 -m venv "$run_root/.venv"
 sh "$script_dir/../ci/bootstrap-patched-pip.sh" "$run_root/.venv/bin/python" > "$result_dir/pip-upgrade.log" 2>&1 \
   || fail_blocked "the patched pip bootstrap failed; see pip-upgrade.log"
 mkdir -p "$run_root/python-distributions"
-python -m pip download --no-deps --dest "$run_root/python-distributions" \
+python -I -m pip download --no-deps --dest "$run_root/python-distributions" \
   "durable-workflow==$python_version" > "$result_dir/python-sdk-download.log" 2>&1 \
   || fail_blocked "PyPI durable-workflow==$python_version download failed"
 python3 "$script_dir/distribution_identities.py" record-unique \
@@ -485,7 +485,7 @@ python3 "$script_dir/distribution_identities.py" record-unique \
   "$run_root/python-distributions" '*' \
   || fail_blocked "PyPI durable-workflow==$python_version did not retain one consumed distribution file"
 python_distribution="$(find "$run_root/python-distributions" -maxdepth 1 -type f -print -quit)"
-python -m pip install "$python_distribution" > "$result_dir/python-sdk-install.log" 2>&1 \
+python -I -m pip install "$python_distribution" > "$result_dir/python-sdk-install.log" 2>&1 \
   || fail_blocked "PyPI durable-workflow==$python_version install failed"
 
 if ! curl -fsSL --retry 3 -o "$run_root/cli/install.sh" "$cli_installer_url"; then

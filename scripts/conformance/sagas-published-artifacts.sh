@@ -1103,7 +1103,7 @@ python3 -m venv "$run_root/.venv"
 # shellcheck disable=SC1091
 . "$run_root/.venv/bin/activate"
 sh "$script_dir/../ci/bootstrap-patched-pip.sh" "$run_root/.venv/bin/python"
-python -m pip install "durable-workflow==$python_version" httpx
+python -I -m pip install "durable-workflow==$python_version" httpx
 
 mkdir -p "$run_root/php-worker" "$run_root/cli/bin" "$run_root/waterline-app" "$run_root/logs"
 docker run --rm -v "$run_root/php-worker:/app" composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \

@@ -2058,7 +2058,7 @@ async function installSchedulesPythonLifecycleArtifact(shardRoot, artifactVersio
   await execLogged('sh', [PATCHED_PIP_BOOTSTRAP, pythonBin], path.join(resultDir, 'schedules-python-lifecycle-pip-upgrade.log'));
   await execLogged(
     pythonBin,
-    ['-m', 'pip', 'install', `durable-workflow==${pythonVersion}`],
+    ['-I', '-m', 'pip', 'install', `durable-workflow==${pythonVersion}`],
     path.join(resultDir, 'schedules-python-lifecycle-install.log'),
   );
   markArtifactSource(artifactSources, 'sdk-python', pythonPackageArtifactSource(pythonVersion), artifactVersions);
@@ -6699,7 +6699,7 @@ async function installSchedulesPythonArtifact(shardRoot, artifactVersions, artif
   await execLogged('sh', [PATCHED_PIP_BOOTSTRAP, pythonBin], path.join(resultDir, 'schedules-cross-language-python-pip-upgrade.log'));
   await execLogged(
     pythonBin,
-    ['-m', 'pip', 'install', `durable-workflow==${pythonVersion}`],
+    ['-I', '-m', 'pip', 'install', `durable-workflow==${pythonVersion}`],
     path.join(resultDir, 'schedules-cross-language-python-install.log'),
   );
   markArtifactSource(artifactSources, 'sdk-python', pythonPackageArtifactSource(pythonVersion), artifactVersions);

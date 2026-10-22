@@ -21,11 +21,15 @@ import re
 import shutil
 import ssl
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
 from collections import Counter
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sink_guards  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[3]
 CI = ROOT / "scripts" / "ci"
@@ -40,6 +44,27 @@ COMPOSER_SINK = re.compile(
 )
 SCANNED = (".github/workflows", "scripts", "tests/Fixtures", "tests/Integration", "benchmarks", "docker")
 MANIFEST = ROOT / "tests" / "Unit" / "Support" / "composer-sinks.json"
+SELF_CHECKS = {
+    # A Composer image reference is confined by being the pinned digest.
+    "pinned-reference": lambda occurrence: re.sub(r"^(?:docker\.io/)?(?:library/)?", "", occurrence.text) == PINNED_COMPOSER,
+    "evidence-record": sink_guards.evidence_record(ROOT),
+}
+# How a reviewed sink is confined, checked against the source (sink_guards).
+GUARDS = {
+    # The enclosing docker run or service uses the pinned image.
+    "pinned-image": sink_guards.GuardType(re.compile(re.escape(PINNED_COMPOSER)), -1),
+    # A Dockerfile stage built from the pinned image.
+    "pinned-stage": sink_guards.GuardType(re.compile(r"^\s*FROM\s"), -1, contains=PINNED_COMPOSER),
+    # COMPOSER_CAFILE (with an empty COMPOSER_CAPATH) set before the request.
+    "checked-ca": sink_guards.GuardType(re.compile(r"COMPOSER_CAFILE"), -1),
+    # composer-trust-guard.sh refuses an affected store first.
+    "trust-guard": sink_guards.GuardType(re.compile(r"composer-trust-guard\.sh"), -1),
+    # This repository's Server image, whose stores server-verify-trust checks.
+    "server-verify": sink_guards.GuardType(re.compile(r"server-verify-trust"), -1),
+    "server-base-build": sink_guards.GuardType(re.compile(r"docker build --target base "), -1),
+    # docker_run_for_project, which always adds the checked CA pair.
+    "trusted-builder": sink_guards.GuardType(re.compile(r"docker_run_for_project\("), -1),
+}
 
 
 def scanned_files(root: Path) -> list[Path]:
@@ -49,17 +74,7 @@ def scanned_files(root: Path) -> list[Path]:
 
 
 def composer_sinks(root: Path) -> Counter[tuple[str, str]]:
-    sinks: Counter[tuple[str, str]] = Counter()
-    for path in scanned_files(root):
-        try:
-            text = path.read_text()
-        except (UnicodeDecodeError, OSError):
-            continue
-        for match in COMPOSER_SINK.finditer(text):
-            start = text.rfind("\n", 0, match.start()) + 1
-            end = text.find("\n", match.start())
-            sinks[(path.relative_to(root).as_posix(), text[start:end if end >= 0 else None].strip())] += 1
-    return sinks
+    return sink_guards.counts(sink_guards.occurrences(root, scanned_files(root), COMPOSER_SINK))
 
 
 def unreviewed_sinks(root: Path, entries: list[dict[str, object]]) -> tuple[list[str], list[str]]:
@@ -80,6 +95,40 @@ def docker_or_skip(test: unittest.TestCase) -> None:
 class ComposerInventoryTest(unittest.TestCase):
     def setUp(self) -> None:
         self.entries = json.loads(MANIFEST.read_text())["sinks"]
+
+    def guard_problems(self, root: Path, paths: list[str] | None = None) -> list[str]:
+        files = scanned_files(root) if paths is None else [root / path for path in paths]
+        found = sink_guards.occurrences(root, files, COMPOSER_SINK)
+        return sink_guards.guard_problems(root, found, self.entries, GUARDS, SELF_CHECKS)
+
+    def test_every_sink_keeps_its_recorded_guard(self) -> None:
+        self.assertEqual([], self.guard_problems(ROOT), f"restore the guard or update {MANIFEST.name}")
+
+    def test_removing_a_guard_fails_although_the_sink_is_unchanged(self) -> None:
+        work = Path(tempfile.mkdtemp(prefix="dw-composer-guards-"))
+        self.addCleanup(shutil.rmtree, work, ignore_errors=True)
+        relative = "scripts/conformance/server-parity/corrected-marker-embedded-install.sh"
+        source = (ROOT / relative).read_text().split("\n")
+        guard = next(i for i, line in enumerate(source) if GUARDS["trust-guard"].pattern.search(line))
+        (work / relative).parent.mkdir(parents=True)
+        (work / relative).write_text("\n".join(source))
+
+        self.assertEqual([], self.guard_problems(work, [relative]))
+
+        (work / relative).write_text("\n".join(source[:guard] + source[guard + 1:]))
+
+        self.assertEqual([], unreviewed_sinks(work, self.entries)[0])
+        problems = self.guard_problems(work, [relative])
+        self.assertTrue(any("composer install" in problem for problem in problems), problems)
+
+    def test_a_pinned_stage_guard_must_name_the_pinned_image(self) -> None:
+        work = Path(tempfile.mkdtemp(prefix="dw-composer-stage-"))
+        self.addCleanup(shutil.rmtree, work, ignore_errors=True)
+        relative = "scripts/perf/Dockerfile.sdk"
+        (work / relative).parent.mkdir(parents=True)
+        (work / relative).write_text((ROOT / relative).read_text().replace(PINNED_COMPOSER, "composer:2"))
+
+        self.assertTrue(self.guard_problems(work, [relative]))
 
     def test_every_composer_image_is_the_pinned_digest(self) -> None:
         floating = []

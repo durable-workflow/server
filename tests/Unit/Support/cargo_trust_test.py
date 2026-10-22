@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import http.server
 import os
+import re
 import shutil
 import ssl
 import subprocess
@@ -157,5 +158,11 @@ class CargoTrustTest(unittest.TestCase):
         dockerfile = (root / "tests/Integration/StorageAdmission/sdk/Dockerfile").read_text()
         stage = dockerfile.split("AS rust-worker", 1)[1].split("\nFROM ", 1)[0]
         cargo = stage.index("RUN cargo ")
-        for setting in ("CARGO_HTTP_CAINFO=", "SSL_CERT_DIR=/etc/server-trust/no-ca-directory", "SSL_CERT_FILE="):
-            self.assertIn(setting, stage[:cargo], setting)
+        before = stage[:cargo]
+        # SSL_CERT_FILE selects the same checked Server bundle; it is not cleared.
+        clean = "/etc/server-trust/ca-certificates.crt"
+        for setting in (f"CARGO_HTTP_CAINFO={clean}", f"SSL_CERT_FILE={clean}",
+                        "SSL_CERT_DIR=/etc/server-trust/no-ca-directory"):
+            self.assertRegex(before, rf"(?m)^(?:ENV |\s+){re.escape(setting)}(?:\s|\\|$)", setting)
+        self.assertIn(f'RUN python3 /etc/server-trust/blocked_roots.py "$CARGO_HTTP_CAINFO"', before)
+        self.assertIn(f"COPY --from=server-trust /etc/ssl/certs/ca-certificates.crt {clean}", before)

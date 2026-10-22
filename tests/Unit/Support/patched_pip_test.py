@@ -21,6 +21,9 @@ import unittest
 from collections import Counter
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sink_guards  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[3]
 CI = ROOT / "scripts" / "ci"
 PIP_WHEEL = (
@@ -56,20 +59,59 @@ SCANNED = (".github/workflows", "scripts", "tests/Fixtures", "tests/Integration"
 MANIFEST = ROOT / "tests" / "Unit" / "Support" / "pip-sinks.json"
 
 
-def pip_sinks(root: Path) -> Counter[tuple[str, str]]:
+# How a reviewed sink is confined, checked against the source (sink_guards).
+GUARDS = {
+    # A call that installs the patched, root-checked pip, earlier in the same
+    # script or job: bootstrap-patched-pip.sh run by sh, the central action,
+    # or the runners' own calls. Path definitions alone do not count.
+    "bootstrap": sink_guards.GuardType(re.compile(
+        r"""\bsh\s+["']?[^\s"']*bootstrap-patched-pip\.sh"""
+        r"""|uses:\s*durable-workflow/\.github/\.github/actions/bootstrap-patched-pip@"""
+        r"""|'sh',\s*\[PATCHED_PIP_BOOTSTRAP"""
+        r"""|\brun\w*\(\s*(?:bootstrap_command\b|\["sh",\s*str\(bootstrap\))"""
+    ), -1),
+    # The bootstrap's own install of the hash-pinned wheel, in the same command.
+    "pinned-wheel": sink_guards.GuardType(re.compile(r"#sha256=[0-9a-f]{64}"), 1),
+}
+CENTRAL_ACTION = "durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7"
+SELF_CHECKS = {
+    # The Security-accepted central action is itself the bootstrap.
+    "accepted-action": lambda occurrence: occurrence.line == f"uses: {CENTRAL_ACTION}  # clean-trust",
+    # "pip --version" makes no request.
+    "version-query": lambda occurrence: re.search(r"-m pip --version\b", occurrence.line) is not None,
+    "evidence-record": sink_guards.evidence_record(ROOT),
+}
+# A networked "-m pip" runs from checked-out or mounted source, so Python must
+# not import a pip from the working directory: "-I" comes first.
+MODULE_PIP = re.compile(r"""-m[\s'",\\]+pip\b""")
+
+
+def scanned_files(root: Path) -> list[Path]:
     files = [path for directory in SCANNED for path in sorted((root / directory).rglob("*")) if path.is_file()]
-    files += [path for path in (root / "Dockerfile", *sorted(root.glob("docker-compose*.yml"))) if path.is_file()]
-    sinks: Counter[tuple[str, str]] = Counter()
-    for path in files:
-        try:
-            text = path.read_text()
-        except (UnicodeDecodeError, OSError):
+    return files + [path for path in (root / "Dockerfile", *sorted(root.glob("docker-compose*.yml"))) if path.is_file()]
+
+
+def pip_sinks(root: Path) -> Counter[tuple[str, str]]:
+    return sink_guards.counts(sink_guards.occurrences(root, scanned_files(root), PIP_SINK))
+
+
+def unisolated_module_pips(root: Path, exceptions: list[dict[str, object]]) -> list[str]:
+    """Every "-m pip" without "-I" before it, apart from the recorded exceptions."""
+    allowed = Counter((str(entry["path"]), str(entry["line"])) for entry in exceptions)
+    found = []
+    for occurrence in sink_guards.occurrences(root, scanned_files(root), MODULE_PIP):
+        if sink_guards.COMMENT.match(occurrence.line):
             continue
-        for match in PIP_SINK.finditer(text):
-            start = text.rfind("\n", 0, match.start()) + 1
-            end = text.find("\n", match.start())
-            sinks[(path.relative_to(root).as_posix(), text[start:end if end >= 0 else None].strip())] += 1
-    return sinks
+        source = (root / occurrence.path).read_text().split("\n")
+        before = "\n".join(source[:occurrence.index] + [source[occurrence.index][:occurrence.column]])
+        if re.search(r"""-I[\s'",\\]*$""", before):
+            continue
+        key = (occurrence.path, occurrence.line)
+        if allowed[key] > 0:
+            allowed[key] -= 1
+            continue
+        found.append(f"{occurrence.path}:{occurrence.index + 1}: {occurrence.line}")
+    return found
 
 
 def unreviewed_sinks(root: Path, entries: list[dict[str, object]]) -> tuple[list[str], list[str]]:
@@ -358,9 +400,117 @@ class RealPipTrustTest(unittest.TestCase):
                 temporary.rmdir()
 
 
+    def poisoned_directory(self) -> tuple[Path, Path]:
+        """A working directory whose pip.py and pip/ package write a marker."""
+        directory = Path(tempfile.mkdtemp(prefix="dw-poisoned-cwd-", dir=self.work))
+        marker = directory / "imported-checkout-pip"
+        payload = f"open({str(marker)!r}, 'a').write('checked-out pip ran\\n')\n"
+        (directory / "pip.py").write_text(payload)
+        (directory / "pip").mkdir()
+        (directory / "pip" / "__init__.py").write_text(payload)
+        (directory / "pip" / "__main__.py").write_text(payload)
+        return directory, marker
+
+    def test_a_poisoned_working_directory_shadows_pip_without_isolation(self) -> None:
+        # The control: from this directory an unisolated "-m pip" runs the
+        # checked-out package instead of the bootstrapped client.
+        directory, marker = self.poisoned_directory()
+        subprocess.run([self.python, "-m", "pip", "--version"], cwd=directory, capture_output=True,
+                       env=self.base_environment())
+
+        self.assertTrue(marker.exists())
+
+    def test_patched_pip_wrapper_ignores_a_poisoned_working_directory(self) -> None:
+        directory, marker = self.poisoned_directory()
+        result = subprocess.run(["sh", str(CI / "patched-pip.sh"), "--version"], cwd=directory,
+                                capture_output=True, text=True, env=self.base_environment())
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("pip 26.2.2", result.stdout)
+        self.assertFalse(marker.exists(), "the wrapper imported pip from its working directory")
+
+    def test_the_bootstrapped_venv_ignores_a_poisoned_working_directory_with_isolation(self) -> None:
+        directory, marker = self.poisoned_directory()
+        result = subprocess.run([self.python, "-I", "-m", "pip", "--version"], cwd=directory,
+                                capture_output=True, text=True, env=self.base_environment())
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("pip 26.2.2", result.stdout)
+        self.assertFalse(marker.exists())
+
+
 class PatchedPipInventoryTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.entries = json.loads(MANIFEST.read_text())["sinks"]
+        self.manifest = json.loads(MANIFEST.read_text())
+        self.entries = self.manifest["sinks"]
+
+    def guard_problems(self, root: Path, paths: list[str] | None = None) -> list[str]:
+        files = scanned_files(root) if paths is None else [root / path for path in paths]
+        found = sink_guards.occurrences(root, files, PIP_SINK)
+        return sink_guards.guard_problems(root, found, self.entries, GUARDS, SELF_CHECKS)
+
+    def test_every_sink_keeps_its_recorded_guard(self) -> None:
+        self.assertEqual([], self.guard_problems(ROOT), f"restore the guard or update {MANIFEST.name}")
+
+    def test_removing_a_guard_fails_although_the_sink_is_unchanged(self) -> None:
+        work = Path(tempfile.mkdtemp(prefix="dw-pip-guards-"))
+        self.addCleanup(shutil.rmtree, work, ignore_errors=True)
+        relative = "scripts/conformance/sagas-published-artifacts.sh"
+        sink = 'python -I -m pip install "durable-workflow==$python_version" httpx'
+        source = (ROOT / relative).read_text().split("\n")
+        index = next(i for i, line in enumerate(source) if line.strip() == sink)
+        guard = next(i for i in range(index - 1, -1, -1) if GUARDS["bootstrap"].pattern.search(source[i]))
+        (work / relative).parent.mkdir(parents=True)
+        (work / relative).write_text("\n".join(source))
+
+        self.assertEqual([], self.guard_problems(work, [relative]))
+
+        (work / relative).write_text("\n".join(source[:guard] + source[guard + 1:]))
+
+        self.assertEqual([], unreviewed_sinks(work, self.entries)[0])
+        problems = self.guard_problems(work, [relative])
+        self.assertTrue(any(sink[:40] in problem for problem in problems), problems)
+
+    def test_a_guard_type_must_match_its_sink(self) -> None:
+        entries = [dict(entry, guards=[dict(guard, type="comment", line=None, distance=None) for guard in entry["guards"]])
+                   if entry["path"] == "scripts/conformance/sagas-published-artifacts.sh" else entry
+                   for entry in self.entries]
+        found = sink_guards.occurrences(ROOT, [ROOT / "scripts/conformance/sagas-published-artifacts.sh"], PIP_SINK)
+
+        self.assertTrue(sink_guards.guard_problems(ROOT, found, entries, GUARDS, SELF_CHECKS))
+
+    def test_every_networked_module_pip_is_isolated(self) -> None:
+        self.assertEqual([], unisolated_module_pips(ROOT, self.manifest["isolation_exceptions"]))
+
+    def test_unisolated_module_pips_fail(self) -> None:
+        work = Path(tempfile.mkdtemp(prefix="dw-pip-isolation-"))
+        self.addCleanup(shutil.rmtree, work, ignore_errors=True)
+        cases = {
+            "scripts/shell.sh": ('"$venv/bin/python" -m pip install durable-workflow\n', 1),
+            "scripts/list.py": ('run([str(python), "-m", "pip", "install", "x"])\n', 1),
+            "scripts/split.py": ('command = [\n    str(python),\n    "-m",\n    "pip",\n]\n', 1),
+            "scripts/array.mjs": ("run(python, ['-m', 'pip', 'install', 'x']);\n", 1),
+            "scripts/isolated.sh": ('"$venv/bin/python" -I -m pip install durable-workflow\n', 0),
+            "scripts/isolated.mjs": ("run(python, ['-I', '-m', 'pip', 'install', 'x']);\n", 0),
+            "scripts/comment.sh": ("# python -m pip install durable-workflow\n", 0),
+        }
+        for relative, (text, _) in cases.items():
+            (work / relative).parent.mkdir(parents=True, exist_ok=True)
+            (work / relative).write_text(text)
+        # An exception covers only its exact line.
+        exceptions = [{"path": "scripts/shell.sh", "line": "python -m pip install other"}]
+
+        found = unisolated_module_pips(work, exceptions)
+
+        for relative, (_, expected) in cases.items():
+            with self.subTest(relative):
+                self.assertEqual(expected, sum(item.startswith(f"{relative}:") for item in found), found)
+
+    def test_every_isolation_exception_is_owned_and_still_needed(self) -> None:
+        for exception in self.manifest["isolation_exceptions"]:
+            with self.subTest(exception["path"]):
+                self.assertTrue(str(exception.get("owner", "")).strip() and str(exception.get("reason", "")).strip())
+                self.assertIn(exception["line"], [line.strip() for line in (ROOT / exception["path"]).read_text().split("\n")])
 
     def test_every_pip_sink_is_reviewed(self) -> None:
         unreviewed, stale = unreviewed_sinks(ROOT, self.entries)

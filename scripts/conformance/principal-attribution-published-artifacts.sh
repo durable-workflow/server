@@ -845,6 +845,7 @@ def smoke_python(root: Path, version: str, source: str) -> dict[str, Any]:
 
     install_command = [
         str(python),
+        "-I",
         "-m",
         "pip",
         "install",

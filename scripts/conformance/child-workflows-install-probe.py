@@ -154,7 +154,7 @@ try:
     # Start from the patched, bundle-only pip (GHSA-6q48-6c7w-9gw2).
     bootstrap_command = ["sh", str(PATCHED_PIP_BOOTSTRAP), str(python_bin)]
     bootstrap_code, bootstrap_output = run(bootstrap_command) if create_code == 0 else (1, create_output)
-    install_command = [str(python_bin), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", f"durable-workflow=={python_version}"]
+    install_command = [str(python_bin), "-I", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", f"durable-workflow=={python_version}"]
     install_code, install_output = run(install_command) if bootstrap_code == 0 else (1, bootstrap_output)
     probe_command = [str(python_bin), "-c", "import importlib.metadata as m; print(m.version('durable-workflow'))"]
     probe_code, probe_output = run(probe_command) if install_code == 0 else (1, install_output)

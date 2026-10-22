@@ -515,7 +515,7 @@ if ! sh "$script_dir/../ci/bootstrap-patched-pip.sh" "$run_root/.venv/bin/python
   blocked_result "patched pip bootstrap failed; see python-pip-upgrade.log" "$started_at"
   exit 1
 fi
-if ! "$run_root/.venv/bin/python" -m pip install "durable-workflow==$python_sdk_version" > "$result_dir/python-sdk-install.log" 2>&1; then
+if ! "$run_root/.venv/bin/python" -I -m pip install "durable-workflow==$python_sdk_version" > "$result_dir/python-sdk-install.log" 2>&1; then
   blocked_result "durable-workflow==$python_sdk_version install failed; see python-sdk-install.log" "$started_at"
   exit 1
 fi

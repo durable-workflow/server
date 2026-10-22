@@ -790,6 +790,14 @@ ACT
 #!/usr/bin/env bash
 set -euo pipefail
 real_python=$real_python
+# The runner must isolate pip from its working directory.
+if [[ "\${1:-}" == "-m" && "\${2:-}" == "pip" ]]; then
+  printf '%s\n' 'pip run without -I' >&2
+  exit 97
+fi
+if [[ "\${1:-}" == "-I" ]]; then
+  shift
+fi
 if [[ "\${1:-}" == "-m" && "\${2:-}" == "pip" ]]; then
   if [[ "\${3:-}" == "download" ]]; then
     destination=""
