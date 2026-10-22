@@ -195,15 +195,6 @@ contract fixture before its correction.
   build id: a promoted build-id rollout, else the single build id among the
   live workers for the type, else among all the queue's live workers. Native
   starts every run unpinned, and has no build-id rollouts.
-- **Workflow definition evolution (published in Server 2.10.0).** Published
-  PHP routes a run whose recorded workflow definition is gone to a
-  replacement definition that passes strict replay. It then reports
-  `definition_routing` on task queues and run diagnostics. It also records
-  each worker's protocol version under `_worker_protocol_version` in its
-  stored process metrics, which the worker listing shows. Native has none of
-  this. The Sample App's timers scenario now needs it: its application
-  upgrade phase requires one worker-sourced definition fingerprint in the
-  history of a Python class upgrade.
 - **Named-namespace workflow commands.** Published PHP serves every workflow
   route in any namespace. Native refuses updates, repair and cooperative
   cancellation requests (`/update/{name}`, `/repair`,
