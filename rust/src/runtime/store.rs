@@ -676,12 +676,13 @@ where
                     "declared_signals":names,"signal_admission":"handler_not_declared","reason":reason,
                     "message":format!("Workflow signal [{name}] is unknown for workflow type [{workflow_type}]: the durable command contract does not declare that handler. Command contract source [durable_history], declared signals [{labels}].")});
             }
-            prepared.command = prepare_rejected_signal_command(
+            prepared.command = prepare_rejected_command(
                 transition_codec,
                 name.to_owned(),
                 prepared.values.clone(),
                 validation_errors.clone(),
                 diagnostics.clone(),
+                "signal_codec_unavailable",
             )
             .await?;
             let rejected_at = now();
@@ -3415,60 +3416,60 @@ pub(super) async fn prepare_control_arguments(
     .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?
 }
 
-async fn prepare_rejected_signal_command(
+/// The Avro command payload of a rejected signal or update: its name, the
+/// original arguments, the validation errors and any diagnostics.
+pub(super) async fn prepare_rejected_command(
     semaphore: Arc<Semaphore>,
     name: String,
     values: Vec<crate::codec::Value>,
     validation_errors: Value,
     diagnostics: Value,
+    unavailable: &'static str,
 ) -> Result<String> {
     let permit = semaphore
         .acquire_owned()
         .await
-        .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?;
+        .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, unavailable))?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         use crate::codec::Value as Payload;
         // Only small server-authored diagnostics cross this conversion.
         // Original customer arguments remain official decoded Values, so a
         // JSON projection cannot round an int64 or turn bytes into strings.
-        fn diagnostic(value: Value) -> Result<Payload> {
-            Ok(match value {
+        // A number has no exact diagnostic form, so it is refused.
+        fn diagnostic(value: Value) -> Option<Payload> {
+            Some(match value {
                 Value::Null => Payload::Null,
                 Value::Bool(value) => Payload::Boolean(value),
                 Value::String(value) => Payload::String(value),
                 Value::Array(values) => {
-                    Payload::Array(values.into_iter().map(diagnostic).collect::<Result<_>>()?)
+                    Payload::Array(values.into_iter().map(diagnostic).collect::<Option<_>>()?)
                 }
                 Value::Object(values) => Payload::Map(
                     values
                         .into_iter()
-                        .map(|(key, value)| Ok((key, diagnostic(value)?)))
-                        .collect::<Result<_>>()?,
+                        .map(|(key, value)| Some((key, diagnostic(value)?)))
+                        .collect::<Option<_>>()?,
                 ),
-                Value::Number(_) => {
-                    return Err(refuse(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "signal_codec_unavailable",
-                    ));
-                }
+                Value::Number(_) => return None,
             })
         }
-        let Payload::Map(mut command) = diagnostic(diagnostics)? else {
-            return Err(refuse(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "signal_codec_unavailable",
-            ));
+        let unavailable = || refuse(StatusCode::SERVICE_UNAVAILABLE, unavailable);
+        let Some(Payload::Map(mut command)) = diagnostic(diagnostics) else {
+            return Err(unavailable());
         };
         command.insert("name".into(), Payload::String(name));
         command.insert("arguments".into(), Payload::Array(values));
-        command.insert("validation_errors".into(), diagnostic(validation_errors)?);
+        command.insert(
+            "validation_errors".into(),
+            diagnostic(validation_errors).ok_or_else(unavailable)?,
+        );
         crate::codec::ValueCodec::new()
             .and_then(|codec| codec.encode(&Payload::Map(command)))
-            .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))
+            .map_err(|_| unavailable())
     })
     .await
-    .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?
+    .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, unavailable))?
 }
 
 fn signal_argument_errors(contract: &Value, name: &str, values: &[crate::codec::Value]) -> Value {

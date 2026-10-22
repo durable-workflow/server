@@ -635,17 +635,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .update_workflow(workflow_id, run_id, name, body, prepared, context)
+                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone())
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .update_workflow(workflow_id, run_id, name, body, prepared, context)
+                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone())
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .update_workflow(workflow_id, run_id, name, body, prepared, context)
+                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone())
                     .await
             }
         }

@@ -28,6 +28,10 @@ struct ExpectedUpdate {
 
 impl UpdateSummaryHistory {
     pub(super) fn apply(&mut self, kind: &str, payload: &Value) -> bool {
+        // A rejected update opens no wait and changes no summary.
+        if kind == "UpdateRejected" {
+            return nonempty(payload, "update_id").is_some();
+        }
         let (
             Some(id),
             Some(command),
