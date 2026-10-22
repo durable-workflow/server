@@ -69,6 +69,11 @@ services:
         exec sleep infinity
     tmpfs:
       - /opt/venv:rw,exec,uid=1000,gid=1000,size=268435456
+    healthcheck:
+      test: [CMD, /opt/venv/bin/python, -c, "import durable_workflow"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
     volumes:
       - ${KEY_PHASE_ROOT:?}:/phase
       - ./consumer.py:/fixture/consumer.py:ro
