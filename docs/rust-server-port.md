@@ -255,9 +255,6 @@ contract fixture before its correction.
   `none` driver or database runtime credentials, which published PHP does
   not. Without a tenant-bound administrator, native does not read a namespace
   route's target from a JSON body `name`.
-- **Query audit principal.** Published PHP records the requester's
-  principal and command context on a query task, and returns the principal
-  on the query response and the worker's query task. Native records neither.
 - **Described command previews.** Published PHP's run description gives
   each command `payload_preview_omitted` and, for a cancel or terminate, its
   decoded `reason`. Native's described commands carry neither.

@@ -172,3 +172,63 @@ async fn the_none_driver_records_the_anonymous_server_principal() {
     runtime.close().await;
     database.remove().await;
 }
+
+#[tokio::test]
+async fn query_tasks_and_answers_carry_the_requester_principal() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone().with_auth_options(false, true));
+    for (id, token, subject, roles) in [
+        ("operator-q", OPERATOR_TOKEN, "svc:operator", json!(["operator"])),
+        ("worker-q", WORKER_TOKEN, "svc:worker", json!(["worker"])),
+    ] {
+        let (status, body) = call(&app, Some("test-token"), "PUT", &format!("/api/runtime-credentials/{id}"),
+            json!({"token":token,"subject":subject,"roles":roles,"tenant":"default"}), &[]).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    let (status, body) = call(&app, Some(WORKER_TOKEN), "POST", "/api/worker/register", json!({
+        "worker_id":"ctx-query-worker","task_queue":"test","runtime":"php","supported_workflow_types":["echo"],
+        "supported_activity_types":[],"capabilities":["query_tasks"],"workflow_command_contracts":{"echo":{
+        "queries":["state"],"query_contracts":[{"name":"state","parameters":[]}]}}}), &[]).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, started) = call(&app, Some(OPERATOR_TOKEN), "POST", "/api/workflows", forged_start("ctx-query"), &[]).await;
+    assert_eq!(status, StatusCode::CREATED, "{started}");
+    let path = format!("/api/workflows/ctx-query/runs/{}/query/state", started["run_id"].as_str().unwrap());
+    let asked = {
+        let app = app.clone();
+        tokio::spawn(async move {
+            call(&app, Some(OPERATOR_TOKEN), "POST", &path,
+                json!({"input":envelope(Payload::Array(vec![])),"principal":"mallory"}), &FORGED_HEADERS).await
+        })
+    };
+    let claim = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let (status, body) = call(&app, Some(WORKER_TOKEN), "POST", "/api/worker/query-tasks/poll",
+                json!({"worker_id":"ctx-query-worker","task_queue":"test","timeout_seconds":0}), &[]).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            if !body["task"].is_null() {
+                break body["task"].clone();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("query task");
+    let operator = json!({"type":"auth:runtime-token","id":"svc:operator","label":"Operator"});
+    assert_eq!(claim["principal"], operator, "{claim}");
+    assert_eq!(claim["command_context"]["source"], "control_plane");
+    assert_eq!(claim["command_context"]["context"]["server"]["command"], "query");
+    assert_eq!(claim["command_context"]["context"]["server"]["metadata"], json!({"query_name":"state"}));
+    let (status, body) = call(&app, Some(WORKER_TOKEN), "POST",
+        &format!("/api/worker/query-tasks/{}/complete", claim["query_task_id"].as_str().unwrap()),
+        json!({"lease_owner":"ctx-query-worker","query_task_attempt":claim["query_task_attempt"],
+            "result_envelope":envelope(Payload::Long(3))}), &[]).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, answer) = asked.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    // The audit principal is the authenticated operator, apart from any
+    // application value the query returns.
+    assert_eq!(answer["principal"], operator, "{answer}");
+    runtime.close().await;
+    database.remove().await;
+}

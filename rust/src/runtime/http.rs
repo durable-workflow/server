@@ -1688,24 +1688,34 @@ async fn fail_activity(
 ) -> Result<Json<Value>> {
     runtime.fail_activity(&task_id, body).await.map(Json)
 }
+/// The query's command context, as PHP's controller builds it.
+fn query_context(request: &CommandRequest, body: &Value, workflow_id: &str, name: &str) -> Value {
+    let context = request.context(body, workflow_id, "query", metadata(&[("query_name", Some(json!(name)))]));
+    json!({"source":"control_plane","context":context})
+}
+
 async fn query_current(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path((workflow_id, name)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    let command = query_context(&request, &body, &workflow_id, &name);
     let (status, body) = runtime
-        .query_workflow(&workflow_id, None, &name, body)
+        .query_workflow(&workflow_id, None, &name, body, Some(command))
         .await
         .map_err(|error| super::control_plane::Operation::Query(&name).refusal(error, &workflow_id, None))?;
     Ok((status, Json(super::control_plane::Operation::Query(&name).response(body))))
 }
 async fn query_run(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path((workflow_id, run_id, name)): Path<(String, String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    let command = query_context(&request, &body, &workflow_id, &name);
     let (status, body) = runtime
-        .query_workflow(&workflow_id, Some(&run_id), &name, body)
+        .query_workflow(&workflow_id, Some(&run_id), &name, body, Some(command))
         .await
         .map_err(|error| {
             super::control_plane::Operation::Query(&name).refusal(error, &workflow_id, Some(&run_id))

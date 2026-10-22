@@ -57,8 +57,8 @@
     names generated per deployment. Native records names only for the named
     schedule routes.
   - **Query principal.** Query responses and query tasks do not yet carry
-    PHP's `principal` and `command_context`. That follows the query admission
-    change in #619.
+    PHP's `principal` and `command_context`. The query principal checkpoint
+    adds them.
   - **Server address.** Without a peer address, as in in-process tests,
     native leaves out `ip`. PHP always has one.
   - **Described command previews.** PHP's described commands also carry

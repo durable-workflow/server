@@ -654,6 +654,7 @@ impl Runtime {
         run_id: Option<&str>,
         name: &str,
         body: Value,
+        command: Option<Value>,
     ) -> Result<(StatusCode, Value)> {
         // `validateOperationName`, `workflowBound`, then `input` =>
         // nullable|array; other request fields are ignored, as in PHP.
@@ -697,17 +698,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries)
+                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries, command.as_ref())
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries)
+                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries, command.as_ref())
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries)
+                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries, command.as_ref())
                     .await
             }
         }
