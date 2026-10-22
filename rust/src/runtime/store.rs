@@ -1848,12 +1848,8 @@ where
         // replay block, without a retry, until an operator repairs the run.
         let range_blocked =
             range_blocked || (!waiting && super::task_failures::blocks_replay(&body["failure"]));
-        if !waiting && self.namespace.as_ref() != "default" {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "development_workflow_task_retry_namespace_unqualified",
-            ));
-        }
+        // The task is read within the request's namespace, and its retry
+        // copies the run's namespace.
         let mut tx = self.begin().await?;
         let task = self.task_row(&mut tx, task_id).await?;
         if DB::string(&task, "task_type")? != "workflow" {
