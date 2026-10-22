@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {isDeepStrictEqual} from 'node:util';
 
 // Reviewed operator metrics and health of one namespace, as published PHP
 // 2.5.14 reports them through a run's stages. Counts must match exactly, with
@@ -75,6 +76,13 @@ const EXPECTED = {
 const REPAIRED = {...EXPECTED.waiting_after_redispatch, tasks: {open: 1, ready: 1, ready_due_or_delayed: 1},
   backlog: {runnable_or_delayed_tasks: 1, tasks_added_last_minute: 1}};
 const REPAIRED_WARNINGS = ['command_contract_snapshots'];
+// PHP's TaskWatchdog repairs the task and projects the run before
+// TaskDispatcher redispatches it and projects the run again. Until then the
+// task is still overdue and the run reads as needing repair. Metrics and
+// health are separate requests, so published PHP's health may be at that
+// point of its repair, or past it, while its metrics are not. Native runs no
+// repair loop and is held to the state its metrics show.
+const REPAIRING_WARNINGS = ['command_contract_snapshots', 'task_transport', 'routing_health', 'durable_resume_paths'];
 // Checks other than ok at each stage (the uncompared check aside).
 const WARNINGS = {
   empty: [],
@@ -149,9 +157,12 @@ function checkStage(name, stage, namespace, family) {
   assert.deepStrictEqual(stage.checks.map(check => [check.name, check.category]), CHECKS, `${label} check names`);
   const statuses = stage.checks.filter(check => check.name !== UNCOMPARED_CHECK);
   assert.ok(statuses.every(check => ['ok', 'warning'].includes(check.status)), `${label} no check errors`);
-  assert.deepStrictEqual(statuses.filter(check => check.status !== 'ok').map(check => check.name), expectedWarnings,
-    `${label} warnings`);
-  const warning = expectedWarnings.length > 0 || stage.checks.some(check => check.status === 'warning');
+  const warnings = statuses.filter(check => check.status !== 'ok').map(check => check.name);
+  const later = name === 'waiting_after_redispatch' && stage.runtime === 'php' && !repaired
+    ? [REPAIRING_WARNINGS, REPAIRED_WARNINGS] : [];
+  const settled = [expectedWarnings, ...later].find(list => isDeepStrictEqual(list, warnings)) ?? expectedWarnings;
+  assert.deepStrictEqual(warnings, settled, `${label} warnings`);
+  const warning = settled.length > 0 || stage.checks.some(check => check.status === 'warning');
   assert.deepStrictEqual([stage.health_status, stage.health.status, stage.health.healthy], [200, warning ? 'warning' : 'ok', true],
     `${label} health`);
   assert.deepStrictEqual(stage.retention, ['bounded', 30], `${label} namespace retention`);
