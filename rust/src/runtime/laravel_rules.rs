@@ -25,7 +25,11 @@ pub(crate) enum Rule {
     String,
     Array,
     Integer,
+    /// `numeric`: PHP's `is_numeric`.
+    Numeric,
     Boolean,
+    /// `required_array_keys`: an array holding each named key.
+    RequiredArrayKeys(&'static [&'static str]),
     /// A size floor: a number, string length or item count, by type rule.
     Min(i64),
     Max(i64),
@@ -97,13 +101,24 @@ fn expand(data: &Value, pattern: &str) -> Vec<String> {
                     Some(Value::Object(fields)) => next.extend(fields.keys().map(|key| joined(key))),
                     _ => {}
                 }
-            } else {
+            } else if prefix.is_empty()
+                || !pattern_has_wildcard_before(pattern, &prefix)
+                || lookup(data, &prefix).is_some_and(|item| item.is_array() || item.is_object())
+            {
+                // Laravel initializes `item.field` only under array items
+                // (`data_set` with `*`), so a scalar item has no such field.
                 next.push(joined(segment));
             }
         }
         paths = next;
     }
     paths
+}
+
+/// Whether `prefix`, a path built from `pattern`, already passed a `*`.
+fn pattern_has_wildcard_before(pattern: &str, prefix: &str) -> bool {
+    let depth = prefix.split('.').count();
+    pattern.split('.').take(depth).any(|segment| segment == "*")
 }
 
 /// Laravel's displayable attribute: expanded `*` attributes keep their raw
@@ -163,7 +178,7 @@ fn php_string(value: &Value) -> Option<String> {
 }
 
 fn message(rule: Rule, attribute: &str, rules: &[Rule], value: Option<&Value>) -> String {
-    let kind = if rules.iter().any(|rule| matches!(rule, Rule::Integer)) {
+    let kind = if rules.iter().any(|rule| matches!(rule, Rule::Integer | Rule::Numeric)) {
         "numeric"
     } else if rules.iter().any(|rule| matches!(rule, Rule::Array)) || value.is_some_and(Value::is_array) {
         "array"
@@ -178,6 +193,10 @@ fn message(rule: Rule, attribute: &str, rules: &[Rule], value: Option<&Value>) -
         Rule::String => format!("The {attribute} field must be a string."),
         Rule::Array => format!("The {attribute} field must be an array."),
         Rule::Integer => format!("The {attribute} field must be an integer."),
+        Rule::Numeric => format!("The {attribute} field must be a number."),
+        Rule::RequiredArrayKeys(keys) => {
+            format!("The {attribute} field must contain entries for: {}.", keys.join(", "))
+        }
         Rule::Boolean => format!("The {attribute} field must be true or false."),
         Rule::In(_) => format!("The selected {attribute} is invalid."),
         Rule::Min(limit) => match kind {
@@ -199,7 +218,7 @@ fn message(rule: Rule, attribute: &str, rules: &[Rule], value: Option<&Value>) -
 /// Laravel's `getSize`: a numeric value under a numeric rule, otherwise
 /// an item count or the string length.
 fn size(value: &Value, rules: &[Rule]) -> Option<f64> {
-    if rules.iter().any(|rule| matches!(rule, Rule::Integer)) {
+    if rules.iter().any(|rule| matches!(rule, Rule::Integer | Rule::Numeric)) {
         match value {
             Value::Number(number) => return number.as_f64(),
             Value::String(text) if super::schedule_cron::php_is_numeric(text) => {
@@ -231,6 +250,14 @@ fn passes(rule: Rule, data: &Value, value: Option<&Value>, rules: &[Rule]) -> bo
             .is_some_and(|text| super::schedule_backfill::php_date(text).is_some()),
         Rule::Array => value.is_some_and(|value| value.is_array() || value.is_object()),
         Rule::Integer => value.and_then(integer).is_some(),
+        Rule::Numeric => value.is_some_and(|value| match value {
+            Value::Number(_) => true,
+            Value::String(text) => super::schedule_cron::php_is_numeric(text),
+            _ => false,
+        }),
+        Rule::RequiredArrayKeys(keys) => value
+            .and_then(Value::as_object)
+            .is_some_and(|fields| keys.iter().all(|key| fields.contains_key(*key))),
         Rule::Boolean => matches!(
             value,
             Some(Value::Bool(_))

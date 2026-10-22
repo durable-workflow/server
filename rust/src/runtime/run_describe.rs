@@ -268,6 +268,11 @@ where
         fields.insert("compatibility_status".into(), json!(if supported { "compatible" } else { "no_compatible_worker" }));
         fields.insert("compatibility_supported_in_fleet".into(), json!(supported));
         fields.insert("compatibility_fleet_reason".into(), json!(fleet_reason));
+        // `ServerWorkflowControlPlane::withDefinitionRouting`.
+        let mut tx = self.begin_read().await?;
+        let routing = self.definition_inspect(&mut tx, run, None).await?;
+        tx.commit().await?;
+        fields.insert("definition_routing".into(), routing);
         fields.insert("payload_previews".into(), json!({"input_omitted":input_omitted,"output_omitted":output_omitted,
             "max_encoded_bytes":max_payload_bytes()}));
         fields.insert("last_progress_at".into(), iso8601(DB::optional_instant(run, "last_progress_at")?));

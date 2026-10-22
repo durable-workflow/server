@@ -883,18 +883,22 @@ impl Runtime {
             page_size: i64,
         ) -> Result<Value>
     );
-    pub(crate) async fn register(&self, body: Value) -> Result<Value> {
+    #[cfg(test)]
+    pub(crate) async fn register_unversioned(&self, body: Value) -> Result<Value> {
+        self.register(body, None).await
+    }
+    pub(crate) async fn register(&self, body: Value, protocol: Option<&str>) -> Result<Value> {
         match &*self.storage {
-            Storage::Sqlite(store) => store.register(body, &self.queries).await,
-            Storage::Postgres(store) => store.register(body, &self.queries).await,
-            Storage::MySql(store) => store.register(body, &self.queries).await,
+            Storage::Sqlite(store) => store.register(body, &self.queries, protocol).await,
+            Storage::Postgres(store) => store.register(body, &self.queries, protocol).await,
+            Storage::MySql(store) => store.register(body, &self.queries, protocol).await,
         }
     }
-    pub(crate) async fn worker_heartbeat(&self, body: Value) -> Result<Value> {
+    pub(crate) async fn worker_heartbeat(&self, body: Value, protocol: Option<&str>) -> Result<Value> {
         match &*self.storage {
-            Storage::Sqlite(store) => store.worker_heartbeat(body, &self.queries).await,
-            Storage::Postgres(store) => store.worker_heartbeat(body, &self.queries).await,
-            Storage::MySql(store) => store.worker_heartbeat(body, &self.queries).await,
+            Storage::Sqlite(store) => store.worker_heartbeat(body, &self.queries, protocol).await,
+            Storage::Postgres(store) => store.worker_heartbeat(body, &self.queries, protocol).await,
+            Storage::MySql(store) => store.worker_heartbeat(body, &self.queries, protocol).await,
         }
     }
     pub(crate) async fn list_workers(

@@ -21,6 +21,7 @@ mod children;
 mod command_context;
 mod command_requests;
 mod continuations;
+mod definition_routing;
 mod control_plane;
 mod cooperative;
 mod cross_kind_poll;
@@ -101,6 +102,7 @@ mod wait_timeouts;
 mod worker_contracts;
 mod worker_incarnations;
 mod worker_management;
+mod worker_admission;
 mod workflow_failures;
 mod workflow_task_guard;
 

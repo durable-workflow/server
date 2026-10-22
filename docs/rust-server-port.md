@@ -171,9 +171,6 @@ contract fixture before its correction.
   deep. Native checks every body as PHP does before any route, but its
   handlers parse with serde_json's 128-level limit. A body nested 129 to 512
   levels deep passes the check and is then refused with a plain-text 400.
-- **Registration without a capability manifest.** At protocol 1.19,
-  published PHP 2.5.14 refuses a registration that has no
-  `capability_manifest` (422). Native accepts it.
 - **Python worker shutdown after a late synchronous query handler (not yet
   diagnosed).** In the SQLite query-authority cohort on #515's run
   39431491496, the published Python SDK 2.5.15 client in `late-handler-sync`
@@ -182,15 +179,6 @@ contract fixture before its correction.
   then did not stop within the 5-second shutdown budget. Forty local
   repetitions of that case alone passed. Find what holds the query thread
   after the fence before changing either side.
-- **Workflow definition routing (Server 2.10.0).** Native records the
-  definition fingerprint a start's worker cohort agrees on, as PHP does.
-  Published PHP 2.10.0 also routes a task for such a run by that
-  fingerprint. It prefers a live worker advertising the recorded definition.
-  Otherwise it offers the task only to a worker that advertises
-  `workflow_entry_arguments_validation`. It reports `definition_routing` in
-  describe, repair, debug and task queues, and stores each worker's protocol
-  version under `_worker_protocol_version` in its process metrics. Native
-  offers such a task to any worker and reports none of this.
 - **Start build-id pin.** Published PHP pins a new run to its start cohort's
   build id: a promoted build-id rollout, else the single build id among the
   live workers for the type, else among all the queue's live workers. Native
