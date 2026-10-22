@@ -1361,6 +1361,7 @@ const COMPATIBILITY_HEARTBEAT_TTL_SECONDS: i64 = 30;
 /// Runtime settings the document reports.
 pub(crate) struct MetricsConfig {
     pub(crate) workflow_task_lease_seconds: i64,
+    pub(crate) activity_task_lease_seconds: i64,
     pub(crate) abandoned_upload_expiry_seconds: i64,
 }
 
@@ -1491,7 +1492,7 @@ fn matching_role(config: &MetricsConfig) -> Value {
             "availability_ceiling_seconds": null,
             "wake_signal_ttl_seconds": null,
             "workflow_task_lease_seconds": config.workflow_task_lease_seconds,
-            "activity_task_lease_seconds": 300,
+            "activity_task_lease_seconds": config.activity_task_lease_seconds,
         },
     })
 }
