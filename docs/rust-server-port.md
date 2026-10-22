@@ -200,6 +200,13 @@ contract fixture before its correction.
   cancellation requests (`/update/{name}`, `/repair`,
   `/request-cancellation`, instance- or run-scoped) in a named namespace with
   `422 development_namespace_operation_unqualified`.
+- **Named-namespace worker commands.** In a named namespace, native
+  accepts only `complete_workflow`, `fail_workflow`, `schedule_activity`,
+  `start_timer`, `start_child_workflow` and a single wait in a workflow task.
+  It refuses any other command, such as side effects, version markers,
+  memo and search attribute upserts, updates and continue-as-new, with
+  `422 development_namespace_command_unqualified`. Published PHP accepts
+  them in any namespace.
 - **Child cancellation cascade, remaining parts.** Native propagates a
   parent's cooperative cancellation to its child under `try_cancel` and
   `wait_cancellation_completed`, as PHP does. The rest is open:

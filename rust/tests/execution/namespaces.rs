@@ -531,9 +531,10 @@ async fn same_worker_id_isolated_claims_completion_and_deregistration_by_namespa
         &path,
         completion(
             &first_task,
-            // Timers have separate positive namespace coverage. Child commands
-            // remain outside this namespace slice and must fail atomically.
-            json!([child_command(9007199254740993)]),
+            // Timers and children have separate positive namespace coverage.
+            // Side effects remain outside this namespace slice and must fail
+            // atomically.
+            json!([{"type":"record_side_effect","result":envelope(Payload::Long(9007199254740993))}]),
         ),
     )
     .await;
