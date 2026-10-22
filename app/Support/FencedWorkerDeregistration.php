@@ -14,14 +14,18 @@ use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 final class FencedWorkerDeregistration
 {
-    public function __construct(private readonly WorkflowTaskLeaseRecovery $recovery) {}
+    public function __construct(
+        private readonly WorkflowTaskLeaseRecovery $recovery,
+        private readonly ActivityTaskLeaseRecovery $activityRecovery,
+    ) {}
 
     public static function available(): bool
     {
         // Independent connection handles cannot commit one receipt covering
         // both registration deletion and workflow-task recovery.
         return ((new WorkerRegistration)->getConnectionName() ?? config('database.default'))
-            === ((new WorkflowTask)->getConnectionName() ?? config('database.default'));
+            === ((new WorkflowTask)->getConnectionName() ?? config('database.default'))
+            && (! ActivityTaskLeaseRecovery::supported() || ActivityTaskLeaseRecovery::sharesRegistrationConnection());
     }
 
     /** @return array{status: int, body: array<string, mixed>} */
@@ -65,6 +69,7 @@ final class FencedWorkerDeregistration
             }
 
             $worker->forceFill(['status' => WorkerRegistration::STATUS_SUPERSEDED])->save();
+            $this->activityRecovery->recoverForStoppedWorker($namespace, $workerId);
             $tasks = WorkflowTask::query()
                 ->where('namespace', $namespace)
                 ->where('task_type', TaskType::Workflow->value)

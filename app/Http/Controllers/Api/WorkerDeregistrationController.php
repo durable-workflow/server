@@ -22,8 +22,21 @@ final class WorkerDeregistrationController
             return $response;
         }
 
+        return $this->completeLegacyDeregistration($request, $workerId);
+    }
+
+    private function completeLegacyDeregistration(Request $request, string $workerId): JsonResponse
+    {
         $namespace = (string) $request->attributes->get('namespace');
-        $recoveredWorkflowTaskCount = $this->registrar->deregister($request, $namespace, $workerId);
+        try {
+            $recoveredWorkflowTaskCount = $this->registrar->deregister($request, $namespace, $workerId);
+        } catch (\Throwable $exception) {
+            if (! BackendLockPressure::is($exception)) {
+                throw $exception;
+            }
+
+            return BackendLockPressure::workerOperationResponse($request, false);
+        }
 
         if ($recoveredWorkflowTaskCount === null) {
             return WorkerProtocol::json([

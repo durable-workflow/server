@@ -34,3 +34,20 @@ Stopping an activity process cannot undo external effects. Safe retries still
 require idempotency or reconciliation. This endpoint supplies the observation
 contract for connected SDK qualification and does not by itself prove callback
 supervision, graceful shutdown or cold replacement in any SDK.
+
+## Original workflow deadlines and optional renewal
+
+The `deadlines` map on activity polls and observations includes `run` and
+`execution` when the durable run has those original bounds. Timestamps are UTC
+with six fractional digits. Missing values are omitted; an observation or
+runtime renewal cannot restart the workflow clock. The Server refuses an
+already elapsed bound before resolving external completion/failure payloads.
+
+Runtime maintenance is separate from this read-only status route. The optional
+`activity_lease_renewal` capability enables
+`POST /api/worker/activity-tasks/{taskId}/renew-lease`, with the original
+`activity_attempt_id`, `lease_owner`, namespace and worker credentials. It is
+not an application heartbeat and does not record history or reset progress
+timeouts. Only an actual stored application heartbeat can advance its recorded
+progress interval. See the [Server reference](server-reference.md#worker-protocol)
+and Workflow #878 for the source-candidate and published-consumer boundaries.

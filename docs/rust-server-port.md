@@ -77,7 +77,6 @@ CLI and Waterline use the first group.
   - Durable workflow stream appends and closes.
   - Service catalogs and endpoints.
   - Nexus operations.
-  - Runtime credentials.
   - Deployments.
   - Bridge adapters.
 ## Known gaps found in review
@@ -92,7 +91,6 @@ contract fixture before its correction.
   PHP fills them from `workflow_run_waits` and
   `workflow_run_timeline_entries`. No SDK replayer or bundle verifier reads
   either section.
-
 - **Search attributes on start.** Published PHP validates `search_attributes`
   against the namespace registry and stores them as typed rows. Native
   answers a start that names any with
@@ -102,35 +100,49 @@ contract fixture before its correction.
   each priority tier across fairness keys by their weights
   (`TaskFairnessScheduler`); native stores the keys and weights but does not
   rebalance yet.
-- **Malformed input envelopes.** Published PHP refuses a malformed `input`
-  envelope on start, signal, update and query with `422 validation_failed`,
-  using Laravel messages on `input.codec` or `input.blob`. The cases are a
-  codec that is not `avro`, a missing codec, a blob that is empty or not a
-  string, and a blob Avro cannot decode. Native answers with its own reasons
-  instead: `unsupported_payload_codec`, `invalid_payload_envelope`, or an
-  `invalid_*_arguments` reason.
+- **Undecodable query input before routing.** Native decodes query
+  arguments at admission and refuses an undecodable blob with
+  `invalid_query_arguments`. Published PHP first looks for a query worker,
+  and answers `409 query_worker_unavailable` when there is none.
+- **External payload references on signal, update and query.** Published
+  PHP resolves `{codec, external_payload}` input on these routes; native
+  supports it only on start.
+- **Repair of a run without a recoverable task.** Published PHP's repair
+  creates a run's missing task, and recovers an expired activity-task lease
+  with its attempt. Native refuses both with
+  `development_workflow_task_repair_unqualified`.
+- **Structural limits.** For external workers, published PHP enforces four
+  of the Workflow package's `DW_V2_LIMIT_*` limits: the memo size, the
+  command batch size as a bound on parallel group metadata, the pending
+  signal and update counts with their payload size at intake, and the
+  payload size of an activity's result. Native enforces only the memo size.
+  #612 tracks the rest.
 - **Key order inside plain JSON input.** For input that is not an envelope,
   PHP encodes nested objects as Avro maps in request order; native encodes
   them with sorted keys. The decoded values are equal, but the blobs differ.
-
 - **Child completion while the parent has an open workflow task.** Published
   Workflow records the child resolution and reuses the parent's existing ready
   or leased workflow task (`WorkflowExecutor::dispatchParentResumeTasks`).
-  Native resolution refuses the child's completion with
-  `409 child_parent_task_conflict` unless the parent has a cooperative
-  cancellation request. Current native admission keeps this path latent:
-  updates are refused with `update_snapshot_busy` and signals create no resume
-  while the parent waits on a child, because only signal and condition waits
-  count as open waits. Widening update or signal admission at child waits must
-  first replace the refusal with PHP's reuse, and confirm that the parent's
-  existing task observes the new resolution or is followed by another resume.
-- **Update admission outside signal and condition waits.** Native updates
-  require a quiescent signal or condition wait and refuse other states with
-  `update_snapshot_busy`, so a parent waiting on a child cannot accept one.
-  Published `WorkflowStub` update admission rejects only a non-current selected
-  run, an inactive run, an unknown update, invalid arguments, blocked execution
-  or structural limits. This needs a reviewed contract decision and fixtures
-  before either implementation changes.
+  Native gives the resolution its own resume task when the parent's open
+  tasks only deliver updates, as activity and timer resolutions do. With any
+  other open task it refuses the child's completion with
+  `409 child_parent_task_conflict`, unless the parent has a cooperative
+  cancellation request. Signals still create no resume while the parent
+  waits on a child, because only signal and condition waits count as open
+  waits.
+- **Update delivery into a ready task.** Published PHP admits an update
+  whenever its run is active and merges it into the run's ready workflow
+  task, if one exists (`ExternalWorkflowUpdateAdmission::wakeWorkflowTask`).
+  Native gives each update its own task once the run has no open workflow
+  task. The Rust SDK treats a task carrying `workflow_update_id` as an update
+  task, so a merged first task would not replay the workflow.
+- **Declared signals without an open wait.** For a run whose workflow class
+  the server cannot load, which includes every external-worker run, PHP
+  delivers a received signal that the run's durable contract declares, even
+  without an open signal wait (`PendingMessageTask::signalCanAdvanceRun`).
+  Native delivers a signal only to an open signal or condition wait. It
+  refuses a waiting-for-history acknowledgement while a signal is pending,
+  because no task would deliver it afterwards.
 - **Timer firing under the CPU deadline profile on slower hosts.** In local
   MySQL 8.0 cells, where eight dense readers saturate the one-CPU database and
   the one-CPU native server, one of six runs fired the three-second timer
@@ -144,7 +156,6 @@ contract fixture before its correction.
   and native then correctly fences the attempt. A heartbeat timeout comfortably
   above the request timeout, still inside the 9-second load wave, needs its own
   reviewed profile change.
-
 - **A valid workflow task claim held by a stale worker.** Published PHP
   refuses a request whose lease is otherwise valid when its owner's
   registration is no longer fresh (`409 stale_worker_registration`). Native's
@@ -171,14 +182,22 @@ contract fixture before its correction.
   then did not stop within the 5-second shutdown budget. Forty local
   repetitions of that case alone passed. Find what holds the query thread
   after the fence before changing either side.
-- **Workflow definition evolution (PHP main after #525, not yet released).**
-  Current PHP routes a run whose recorded workflow definition is gone to a
+- **Workflow definition evolution (published in Server 2.10.0).** Published
+  PHP routes a run whose recorded workflow definition is gone to a
   replacement definition that passes strict replay. It then reports
   `definition_routing` on task queues and run diagnostics. It also records
   each worker's protocol version under `_worker_protocol_version` in its
-  stored process metrics. That entry shows up in the worker listing. Native
-  follows the frozen published reference, which has none of this. Port it
-  with its own fixture once it is published.
+  stored process metrics, which the worker listing shows. Native has none of
+  this. The Sample App's timers scenario now needs it: its application
+  upgrade phase requires one worker-sourced definition fingerprint in the
+  history of a Python class upgrade.
+- **Child cancellation policies.** Native accepts a child only with the
+  `abandon` parent close and cancellation policies, and refuses others with
+  `422 unsupported_child_options`. Published PHP also requests the child's
+  cancellation when its parent is cancelled (`request_cancellation`), and
+  waits for the child's cancellation before resolving the parent
+  (`wait_cancellation_completed`). The Sample App's children scenario uses
+  both in its cancellation case. Its PHP worker stops on the refusal.
 - **Trace context (Workflow #773 / workflow#788, not yet published).** A
   Workflow minor will add nullable `observability_context` columns on runs,
   commands and tasks, plus an entry in schedule metadata. Native-owned
@@ -187,22 +206,79 @@ contract fixture before its correction.
   `upgrade_source_catalog_unqualified` until its recipe lands. The recipe must
   also refuse rows that carry trace context until native implements the
   contract. The boundary is agreed on #325.
-- **Queries while a workflow task is open.** Native answers a query from a
-  history snapshot taken at admission, so it refuses with 409
-  `query_snapshot_busy` while the run has a ready or leased workflow task.
-  Published PHP admits the query. A workflow task leased at admission fixes
-  the query's history cutoff at that point. The query's claim then waits
-  while a workflow task is leased, or while an earlier resume task (signal,
-  update, activity, child or timer) is ready and not yet in history. A
-  run's first workflow task does not hold the claim. A query sent right after
-  a signal therefore waits on PHP and is refused on native. The port takes the
-  snapshot at claim time and must keep query lease replay stable, so it needs
-  its own fixture.
+- **Stop signal in the published image.** The published Server image declares
+  `STOPSIGNAL SIGWINCH`, Apache's graceful stop. Native stops gracefully on
+  `SIGTERM` or `SIGINT` and ignores `SIGWINCH`, so `docker stop` on the
+  published image with the native binary as its entrypoint waits out its
+  timeout and kills the process. A native image must declare
+  `STOPSIGNAL SIGTERM`.
+- **Visibility query evaluation.** Published PHP filters a structured list
+  `query` in SQL. Native reads the queried attribute keys once, then
+  evaluates candidate runs in list order, 500 at a time, until it has the
+  requested page. A query that matches few runs in a large namespace reads
+  every run of that namespace.
+- **Visibility query text comparisons.** PHP compares keyword and text
+  values with the database collation, which is case-insensitive in the
+  published MySQL schema. Native compares them exactly on every backend.
+- **Visibility query key order.** When one command or query has several
+  errors, native reports them in sorted key order rather than request order.
+- **Inherited memos and search attributes on child runs.** Published PHP
+  copies the parent's memos and search attributes to a child run and to a
+  retried child (`inheritTypedVisibilityMetadata`). Native copies both only
+  on continue-as-new.
+- **Search attribute datetime forms.** `Carbon::parse` accepts relative and
+  free-form dates. Native accepts RFC 3339, and a date or date and time
+  without an offset read as UTC, and refuses other forms as PHP refuses an
+  unparsable one.
+- **Search attribute datetimes with an offset.** Published PHP stores a
+  typed datetime written with an offset, such as `2026-10-08T12:34:56+02:00`,
+  as that wall-clock time in UTC (`12:34:56Z`), which is a different
+  instant ([workflow#898](https://github.com/durable-workflow/workflow/issues/898)).
+  Native stores the instant written (`10:34:56Z`).
+- **Worker payload datums.** Published PHP refuses a worker command payload,
+  such as a `complete_workflow` result, that is not one complete Avro Value
+  (`422 validation_failed` on `commands.N.result.blob`). Native checks only
+  the envelope's transport shape and accepts it.
+- **Search attribute limits.** Over 100 attributes or 64 KB per run, PHP
+  raises an uncaught `InvalidArgumentException` while applying the command.
+  Native refuses the completion with `422 search_attribute_limit_exceeded`
+  and PHP's message, and records nothing.
+- **Cooperative cancellation boundaries.** Published PHP delivers a run's
+  cancellation at an activity, local activity, timer, condition, signal,
+  child, parallel or selection-handle boundary. Native delivers it at a
+  timer, a child and a parallel group whose members are all timers, and
+  refuses the other boundaries, including parallel groups with other member
+  kinds, with `422 cancellation_delivery_boundary_not_available`.
+- **Activity results after a deadline, before its timeout runs.** Published
+  PHP records a completion that arrives after an activity deadline has
+  passed when its separate timeout command has not yet closed the attempt.
+  Native refuses it with the deadline's timeout reason, because its own
+  timeout pass runs in every server process.
+- **A repeated identical activity result.** Published PHP answers a repeat
+  of the result that finished an activity task with `409 stale_attempt`.
+  Native returns its earlier idempotent receipt (`200`, `already_completed`).
+- **Worker-plane error bodies.** Published PHP adds `protocol_version` to
+  every worker-plane response, including validation failures, and answers an
+  unknown activity task with `task_id`, `activity_attempt_id`, `error` and
+  `reason`. Native's worker-plane errors carry only Laravel's validation
+  fields or `message` and `reason`.
 - **Terminating a child run.** Published Workflow resolves the parent with
   `ChildRunTerminated` and the `terminated` child call status. Native refuses
   this with `422 termination_propagation_not_available` until the parent-side
   wait, child summary and failure projections for `ChildRunTerminated` have a
   fixture.
+- **Authentication beyond role tokens and runtime credentials.** Native
+  refuses principal tokens (`DW_PRINCIPAL_TOKENS`), custom providers and the
+  signature driver at startup. It still requires `DW_AUTH_TOKEN` with the
+  `none` driver or database runtime credentials, which published PHP does
+  not. Without a tenant-bound administrator, native does not read a namespace
+  route's target from a JSON body `name`.
+- **Described command previews.** Published PHP's run description gives
+  each command `payload_preview_omitted` and, for a cancel or terminate, its
+  decoded `reason`. Native's described commands carry neither.
+- **Command route names.** Published PHP records each request's route name in
+  its command context, and its unnamed workflow routes get a name generated
+  per deployment. Native records names only for the named schedule routes.
 
 ## Contract and verification inventory
 

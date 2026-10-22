@@ -516,6 +516,8 @@ async fn worker_reported_range_failure_requires_explicit_original_task_repair_ac
     assert_eq!(repaired["requested_run_id"], Value::Null);
     assert_eq!(repaired["resolved_run_id"], started["run_id"]);
     assert_eq!(rows(&database, "SELECT COUNT(*) FROM workflow_tasks WHERE status='ready' AND attempt_count=1 AND repair_count=1 AND lease_owner IS NULL AND lease_expires_at IS NULL AND last_error IS NULL").await, 1);
+    // PHP dispatches the repaired task, so it is not overdue right after.
+    assert_eq!(rows(&database, "SELECT COUNT(*) FROM workflow_tasks WHERE status='ready' AND repair_count=1 AND last_dispatched_at>=updated_at AND last_dispatch_attempt_at=last_dispatched_at").await, 1);
     assert_eq!(rows(&database, "SELECT COUNT(*) FROM workflow_commands WHERE command_type='repair' AND target_scope='instance' AND requested_workflow_run_id IS NULL").await, 1);
     let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
     assert_eq!(
@@ -553,10 +555,10 @@ async fn worker_reported_range_failure_requires_explicit_original_task_repair_ac
             ("task_type".into(), Payload::String("workflow".into())),
         ]))
     );
-    assert_eq!(
-        request(&app, "POST", &repair_path, json!({})).await.0,
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
+    // As in PHP, repairing again records that no repair was needed.
+    let again = request(&app, "POST", &repair_path, json!({})).await;
+    assert_eq!(again.0, StatusCode::OK, "{}", again.1);
+    assert_eq!(again.1["outcome"], "repair_not_needed");
     assert_eq!(
         report(&app, &task, body.clone()).await.0,
         StatusCode::CONFLICT
@@ -621,24 +623,19 @@ async fn two_nodes_commit_one_range_repair_with_server_derived_audit_identity() 
         request(&a, "POST", &path, spoof),
         request(&b, "POST", &path, json!({}))
     );
-    let (accepted, refused) = if left.0 == StatusCode::OK {
-        (left, right)
-    } else {
-        (right, left)
-    };
-    assert_eq!(accepted.0, StatusCode::OK, "{}", accepted.1);
-    assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", refused.1);
-    assert_eq!(
-        refused.1["reason"],
-        "development_workflow_task_repair_unqualified"
-    );
+    // One repair dispatches the task. As in PHP, the other then finds
+    // nothing to repair and records that.
+    assert_eq!((left.0, right.0), (StatusCode::OK, StatusCode::OK), "{} {}", left.1, right.1);
+    let mut outcomes = [left.1["outcome"].clone(), right.1["outcome"].clone()];
+    outcomes.sort_by_key(|outcome| outcome.to_string());
+    assert_eq!(outcomes, [json!("repair_dispatched"), json!("repair_not_needed")]);
     assert_eq!(
         rows(
             &database,
             "SELECT COUNT(*) FROM workflow_commands WHERE command_type='repair'"
         )
         .await,
-        1
+        2
     );
     assert_eq!(
         rows(

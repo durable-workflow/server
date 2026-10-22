@@ -7,7 +7,7 @@ use super::{
     backend::Backend,
     children::ChildResolution,
     refuse,
-    store::{Store, id, now, reject_fields},
+    store::{Store, id, now},
 };
 use axum::http::StatusCode;
 use serde_json::{Value, json};
@@ -82,7 +82,8 @@ pub(super) async fn prepare_reason(
     body: &Value,
     semaphore: Arc<Semaphore>,
 ) -> Result<(Option<String>, Option<String>)> {
-    reject_fields(body, &["reason"])?;
+    // Laravel validates only its rules' fields and ignores the rest, such
+    // as a client's `request_id` or identity fields a gateway adds.
     let reason = match body.get("reason").filter(|v| !v.is_null()) {
         None => None,
         Some(value) => Some(
@@ -219,6 +220,7 @@ where
         selected_run: Option<&str>,
         reason: Option<String>,
         blob: Option<String>,
+        context: Option<Value>,
     ) -> Result<(StatusCode, Value)> {
         let mut tx = self.begin().await?;
         let run = Self::query("SELECT r.* FROM workflow_instances i JOIN workflow_runs r ON r.id=i.current_run_id WHERE i.id=$1 AND i.namespace=$2")
@@ -284,11 +286,12 @@ where
         let outcome = if closed { None } else { Some(command.closed()) };
         // The frozen HTTP selected-run route guards the current run but records
         // an instance-scoped command. Preserve this public receipt representation.
-        Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,target_scope,source,status,outcome,rejection_reason,workflow_type,payload_codec,payload,command_sequence,accepted_at,applied_at,rejected_at) VALUES ($1,$2,$3,$4,$5,'instance','control_plane',$6,$7,$8,$9,'avro',$10,$11,CASE WHEN $12='accepted' THEN $13 ELSE NULL END,CASE WHEN $14='accepted' THEN $15 ELSE NULL END,CASE WHEN $16='rejected' THEN $17 ELSE NULL END)")
+        Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,target_scope,source,status,outcome,rejection_reason,workflow_type,payload_codec,payload,command_sequence,accepted_at,applied_at,rejected_at,context) VALUES ($1,$2,$3,$4,$5,'instance','control_plane',$6,$7,$8,$9,'avro',$10,$11,CASE WHEN $12='accepted' THEN $13 ELSE NULL END,CASE WHEN $14='accepted' THEN $15 ELSE NULL END,CASE WHEN $16='rejected' THEN $17 ELSE NULL END,$18)")
             .bind(&command_id).bind(workflow_id).bind(&run_id).bind(&run_id).bind(command.command_type()).bind(status).bind(outcome).bind(rejection)
             .bind(DB::string(&run,"workflow_type")?).bind(if closed {None} else {blob.as_deref()}).bind(command_sequence)
             .bind(status).bind(DB::bind_time(at)).bind(status).bind(DB::bind_time(at))
-            .bind(status).bind(DB::bind_time(at)).execute(&mut *tx).await?;
+            .bind(status).bind(DB::bind_time(at)).bind(DB::optional_document(context.as_ref().unwrap_or(&Value::Null)))
+            .execute(&mut *tx).await?;
         Self::query("UPDATE workflow_runs SET last_command_sequence=$1 WHERE id=$2")
             .bind(command_sequence)
             .bind(&run_id)
@@ -535,7 +538,7 @@ where
         tx.summary_changed(&run_id);
         Ok(json!({"task_id":task_id,"workflow_task_attempt":attempt,"outcome":"completed","recorded":false,
             "run_id":run_id,"run_status":"failed","created_task_ids":[],"reason":"run_timed_out",
-            "protocol_version":"1.20","server_capabilities":super::store::capabilities()}))
+            "protocol_version":super::WORKER_PROTOCOL_VERSION,"server_capabilities":super::store::capabilities()}))
     }
 
     pub(super) async fn cancelled_activity_outcome(
@@ -560,7 +563,9 @@ where
         let reason = match run_status.as_str() {
             "cancelled" => "run_cancelled",
             "terminated" => "run_terminated",
-            _ => return Err(refuse(StatusCode::CONFLICT, "stale_attempt")),
+            // A deadline, not the run, cancelled this task. The caller
+            // answers the late outcome with PHP's stale attempt receipt.
+            _ => return Ok(()),
         };
         if let Some(attempt) = attempt {
             if DB::string(&attempt, "status")? == "cancelled"

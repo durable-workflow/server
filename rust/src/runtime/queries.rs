@@ -32,6 +32,33 @@ enum QueryClaim {
     StaleWorker,
     // A newer poll request from the same worker replaced this one.
     Superseded,
+    // `pendingTaskWorkflowBlockStatus`: every matching query waits on its run.
+    Blocked(&'static str),
+}
+
+const LEASED_WORKFLOW_TASKS: &str = "SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status='leased' AND (lease_expires_at IS NULL OR lease_expires_at>$2)";
+
+/// Laravel binds "now" in whole seconds when PHP compares task leases.
+fn lease_now() -> chrono::DateTime<chrono::Utc> {
+    use chrono::Timelike;
+    let at = super::store::now();
+    at.with_nanosecond(0).unwrap_or(at)
+}
+
+/// The resume kinds PHP's `isWorkflowResumePayload` recognizes. Native's
+/// activity and ordinary timer resumes name their source without a kind.
+fn resume_kind(payload: &Value) -> Option<&'static str> {
+    match payload["resume_source_kind"].as_str() {
+        Some("workflow_signal") => Some("workflow_signal"),
+        Some("workflow_update") => Some("workflow_update"),
+        Some("activity_execution") => Some("activity_execution"),
+        Some("child_workflow_run") => Some("child_workflow_run"),
+        Some("timer") => Some("timer"),
+        Some(_) => None,
+        None if payload["activity_execution_id"].is_string() => Some("activity_execution"),
+        None if payload["timer_id"].is_string() => Some("timer"),
+        None => None,
+    }
 }
 
 fn poll_result(task: Option<Value>, status: &str) -> Value {
@@ -273,12 +300,13 @@ where
         arguments: String,
         values: Vec<crate::codec::Value>,
         config: &QueryTaskConfig,
+        command: Option<&Value>,
     ) -> Result<(StatusCode, Value)> {
         let wait_until =
             tokio::time::Instant::now() + Duration::from_secs(config.timeout_seconds.max(0) as u64);
         loop {
             match self
-                .query_attempt(workflow_id, selected_run, name, &arguments, &values, config)
+                .query_attempt(workflow_id, selected_run, name, &arguments, &values, config, command)
                 .await?
             {
                 QueryAttempt::Answered(answer) => return Ok(answer),
@@ -302,6 +330,7 @@ where
         arguments: &str,
         values: &[crate::codec::Value],
         config: &QueryTaskConfig,
+        command: Option<&Value>,
     ) -> Result<QueryAttempt> {
         // PHP's refusal order: terminal run, query contract, then route. These
         // reads run before the transaction so that no request holds one
@@ -338,15 +367,16 @@ where
         if !admits_queries(&status) {
             return Err(run_not_active(workflow_id, &run_id, name, &status));
         }
-        let busy = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased')")
-            .bind(&run_id).fetch_one(&mut *tx).await?;
-        // Native answers from a snapshot taken here, so it refuses while a
-        // workflow task is open. PHP admits the query and holds its claim
-        // instead; see the port log's known gaps.
-        if busy != 0 {
-            return Err(query_refusal(StatusCode::CONFLICT, workflow_id, &run_id, name, "query_snapshot_busy",
-                &format!("Workflow query [{name}] cannot run while run [{run_id}] has an open workflow task. Retry after the task completes.")));
-        }
+        // `enqueue`: a workflow task leased now fixes the query's history
+        // cutoff at the run's current sequence. Without one, the claim reads
+        // the history it finds then. Either way the query waits for its claim.
+        let observed = DB::number(&run, "last_history_sequence")?;
+        let leased = Self::scalar(LEASED_WORKFLOW_TASKS)
+            .bind(&run_id)
+            .bind(DB::bind_time(lease_now()))
+            .fetch_one(&mut *tx)
+            .await?;
+        let cutoff = (leased != 0).then_some(observed);
         let entries = self.query_entries(&mut tx).await?;
         if entries.len() >= MAX_ENTRIES
             || entries
@@ -360,6 +390,8 @@ where
                 "query_task_queue_full",
             ));
         }
+        // Native delivers one bounded history page; a run already past it
+        // cannot be queried.
         let (history, next) = Self::history_page_connection(&mut tx, &run_id, 0, 1000).await?;
         if next.is_some() || serde_json::to_vec(&history)?.len() > SNAPSHOT_BYTES {
             return Err(refuse(
@@ -367,6 +399,7 @@ where
                 "query_snapshot_exceeds_budget",
             ));
         }
+        drop(history);
         let task_id = super::store::id();
         let key = key(&task_id)?;
         let admitted = authority::now();
@@ -376,10 +409,18 @@ where
             "workflow_type":DB::string(&run,"workflow_type")?,"workflow_class":DB::string(&run,"workflow_class")?,
             "task_queue":DB::string(&run,"queue")?,"payload_codec":"avro","query_name":name,
             "workflow_arguments":wire(&DB::string(&run,"arguments")?),"query_arguments":wire(&arguments),
-            "run_status":status,"history_events":history,"last_history_sequence":DB::number(&run,"last_history_sequence")?,
-            "history_cutoff_sequence":DB::number(&run,"last_history_sequence")?,
+            "run_status":status,"last_history_sequence":observed,
+            "history_observed_sequence":observed,"history_cutoff_sequence":cutoff,
             "query_admitted_at":authority::wire(admitted),"query_deadline_at":authority::wire(deadline),
             "receipt_expires_at":authority::wire(retained_until)});
+        // `WorkflowQueryTaskBroker`: the task keeps the request's command
+        // context and its principal, which the worker and the answer receive.
+        if let Some(command) = command {
+            task["command_context"] = command.clone();
+            if let Some(principal) = query_principal(command) {
+                task["principal"] = principal;
+            }
+        }
         authority::expire(&mut task, authority::now())?;
         if serde_json::to_vec(&task)?.len() > SNAPSHOT_BYTES {
             return Err(refuse(
@@ -416,16 +457,18 @@ where
             let task: Value = serde_json::from_str(&DB::string(&row, "value")?)?;
             match task["status"].as_str() {
                 Some("completed") => {
-                    return Ok(QueryAttempt::Answered((
-                        StatusCode::OK,
-                        json!({"workflow_id":workflow_id,"run_id":run_id,"target_scope":"instance",
-                            "query_name":name,"result":null,"result_envelope":task["result_envelope"],"reason":null}),
-                    )));
+                    let mut answer = json!({"workflow_id":workflow_id,"run_id":run_id,"target_scope":"instance",
+                        "query_name":name,"result":null,"result_envelope":task["result_envelope"],"reason":null});
+                    if task["principal"].is_object() {
+                        answer["principal"] = task["principal"].clone();
+                    }
+                    return Ok(QueryAttempt::Answered((StatusCode::OK, answer)));
                 }
                 Some("failed") => {
                     let status = match task["failure"]["reason"].as_str() {
                         Some("rejected_unknown_query") => StatusCode::NOT_FOUND,
                         Some("invalid_query_arguments") => StatusCode::UNPROCESSABLE_ENTITY,
+                        Some("query_snapshot_exceeds_budget") => StatusCode::PAYLOAD_TOO_LARGE,
                         _ => StatusCode::CONFLICT,
                     };
                     let mut body = task["failure"].clone();
@@ -561,6 +604,7 @@ where
         // Only the first probe claims under the lock unconditionally; later
         // probes claim after a lock-free read finds something to claim or refuse.
         let mut first = true;
+        let mut held = false;
         let mut pace = super::poll_readiness::ReadPace::new();
         loop {
             let wake = self.wake.notified();
@@ -571,11 +615,17 @@ where
                         return Ok(poll_result(None, "stale_worker_registration"));
                     }
                     QueryClaim::Superseded => return Ok(poll_result(None, "empty")),
-                    QueryClaim::Empty => {}
+                    // `performPoll`: a query held by a ready resume task ends
+                    // the poll at once; one held by a leased task waits.
+                    QueryClaim::Blocked("workflow_task_pending") => {
+                        return Ok(poll_result(None, "workflow_task_pending"));
+                    }
+                    QueryClaim::Blocked(_) => held = true,
+                    QueryClaim::Empty => held = false,
                 }
             }
             if tokio::time::Instant::now() >= deadline {
-                return Ok(poll_result(None, "empty"));
+                return Ok(poll_result(None, if held { "workflow_task_leased" } else { "empty" }));
             }
             if self
                 .poll_queue_changed(&body, "query", &mut cross_kind)
@@ -669,15 +719,37 @@ where
         }
         let at = super::store::now();
         let query_now = authority::wire(at);
-        Ok(Self::query(DB::POLL_WAKE_QUERIES_SQL)
+        let candidates = Self::query(DB::POLL_WAKE_QUERIES_SQL)
             .bind(at.timestamp())
             .bind(self.namespace.as_ref())
             .bind(text(body, "task_queue")?)
             .bind(query_now.clone())
             .bind(query_now)
-            .fetch_optional(&self.pool)
-            .await?
-            .is_some())
+            .fetch_all(&self.pool)
+            .await?;
+        if candidates.is_empty() {
+            return Ok(false);
+        }
+        // A query held by a leased workflow task stays held until that task
+        // ends, which wakes this poll; reading that needs no write lock.
+        let mut read = self.begin_read().await?;
+        let mut ready = false;
+        for candidate in candidates {
+            let Some(row) = Self::query(DB::QUERY_CACHE_GET)
+                .bind(DB::string(&candidate, "id")?)
+                .fetch_optional(&mut *read)
+                .await?
+            else {
+                continue;
+            };
+            let task: Value = serde_json::from_str(&DB::string(&row, "value")?)?;
+            if Self::query_hold(&mut read, &task).await? != Some("workflow_task_leased") {
+                ready = true;
+                break;
+            }
+        }
+        read.commit().await?;
+        Ok(ready)
     }
 
     async fn claim_query(
@@ -723,6 +795,7 @@ where
         {
             return Ok(QueryClaim::Empty);
         }
+        let mut held = None;
         for (key, mut task) in self.query_entries(&mut tx).await? {
             if !matches!(task["status"].as_str(), Some("pending" | "leased"))
                 || task["namespace"] != self.namespace.as_ref()
@@ -768,6 +841,16 @@ where
                     continue;
                 }
             }
+            if let Some(hold) = Self::query_hold(&mut tx, &task).await? {
+                if held != Some("workflow_task_leased") {
+                    held = Some(hold);
+                }
+                continue;
+            }
+            if !Self::query_delivery_history(&mut tx, &mut task).await? {
+                Self::put_query(&mut tx, &key, &task, authority::expiration(&task)?).await?;
+                continue;
+            }
             let next_attempt = task["query_task_attempt"]
                 .as_i64()
                 .and_then(|attempt| attempt.checked_add(1))
@@ -790,7 +873,103 @@ where
         }
         // Commit cleanup even when no compatible task is found.
         tx.commit().await?;
-        Ok(QueryClaim::Empty)
+        Ok(held.map_or(QueryClaim::Empty, QueryClaim::Blocked))
+    }
+
+    /// `canClaimPendingTaskForPoller`'s run checks, in PHP's order. A live
+    /// workflow task lease holds the claim. So does a due resume task (signal,
+    /// update, activity, child or timer) whose effect the query cannot see,
+    /// except one created after a query with a cutoff was admitted, or a
+    /// signal whose `SignalReceived` the query already observed.
+    async fn query_hold(conn: &mut DB::Connection, task: &Value) -> Result<Option<&'static str>> {
+        let run_id = task["run_id"].as_str().unwrap_or_default();
+        let leased = Self::scalar(LEASED_WORKFLOW_TASKS)
+            .bind(run_id)
+            .bind(DB::bind_time(lease_now()))
+            .fetch_one(&mut *conn)
+            .await?;
+        if leased != 0 {
+            return Ok(Some("workflow_task_leased"));
+        }
+        let ready = Self::query("SELECT payload,available_at,created_at FROM workflow_tasks WHERE workflow_run_id=$1 AND queue=$2 AND task_type='workflow' AND status='ready' ORDER BY id")
+            .bind(run_id)
+            .bind(task["task_queue"].as_str().unwrap_or_default())
+            .fetch_all(&mut *conn)
+            .await?;
+        let at = super::store::now();
+        let cutoff = !task["history_cutoff_sequence"].is_null();
+        let admitted = authority::timestamp(&task["query_admitted_at"]);
+        let observed = task["history_observed_sequence"].as_i64().unwrap_or(0);
+        for row in ready {
+            if DB::optional_instant(&row, "available_at")?.is_some_and(|available| available > at) {
+                continue;
+            }
+            if cutoff
+                && let (Some(admitted), Some(created)) =
+                    (admitted, DB::optional_instant(&row, "created_at")?)
+                && created > admitted
+            {
+                continue;
+            }
+            let payload = DB::document_row(&row, "payload")?;
+            let Some(kind) = resume_kind(&payload) else {
+                continue;
+            };
+            if kind == "workflow_signal"
+                && observed >= 1
+                && let Some(signal) = payload["workflow_signal_id"]
+                    .as_str()
+                    .or(payload["resume_source_id"].as_str())
+            {
+                let received = Self::query(DB::SIGNAL_RECEIVED_SEQUENCE_SQL)
+                    .bind(run_id)
+                    .bind(signal)
+                    .fetch_optional(&mut *conn)
+                    .await?;
+                if let Some(received) = received
+                    && DB::number(&received, "sequence")? <= observed
+                {
+                    continue;
+                }
+            }
+            return Ok(Some("workflow_task_pending"));
+        }
+        Ok(None)
+    }
+
+    /// `queryTaskPayload`: the history a claim delivers, read at claim time
+    /// and never past the admitted cutoff or the run's current history. A run
+    /// that grew past native's one bounded page fails the query instead.
+    async fn query_delivery_history(conn: &mut DB::Connection, task: &mut Value) -> Result<bool> {
+        let run_id = task["run_id"].as_str().unwrap_or_default().to_owned();
+        let run = Self::query("SELECT status,last_history_sequence FROM workflow_runs WHERE id=$1")
+            .bind(&run_id)
+            .fetch_one(&mut *conn)
+            .await?;
+        let last = DB::number(&run, "last_history_sequence")?;
+        let cutoff = task["history_cutoff_sequence"]
+            .as_i64()
+            .map(|cutoff| cutoff.min(last).max(0));
+        let (mut history, next) = Self::history_page_connection(conn, &run_id, 0, 1000).await?;
+        let covered = history
+            .last()
+            .and_then(|event| event["sequence"].as_i64())
+            .unwrap_or(0);
+        if let Some(cutoff) = cutoff {
+            history.retain(|event| event["sequence"].as_i64().is_some_and(|sequence| sequence <= cutoff));
+        }
+        let complete = next.is_none() || cutoff.is_some_and(|cutoff| covered >= cutoff);
+        if !complete || serde_json::to_vec(&history)?.len() > SNAPSHOT_BYTES {
+            task["status"] = json!("failed");
+            task["failure"] = json!({"reason":"query_snapshot_exceeds_budget",
+                "message":"The run's history is larger than one query snapshot."});
+            return Ok(false);
+        }
+        task["run_status"] = json!(DB::string(&run, "status")?);
+        task["history_events"] = json!(history);
+        task["last_history_sequence"] = json!(cutoff.unwrap_or(last));
+        task["history_cutoff_sequence"] = json!(cutoff);
+        Ok(true)
     }
 
     fn cached_query(row: &DB::Row, id: &str, namespace: &str) -> Result<Value> {
@@ -1027,4 +1206,16 @@ where
         self.wake.notify_waiters();
         Ok(Some(decision))
     }
+}
+
+/// `commandContextPrincipal`: the context principal's type, id and label.
+fn query_principal(command: &Value) -> Option<Value> {
+    let principal = &command["context"]["principal"];
+    let fields: serde_json::Map<String, Value> = ["type", "id", "label"]
+        .into_iter()
+        .filter_map(|field| {
+            principal[field].as_str().filter(|value| !value.is_empty()).map(|value| (field.to_owned(), json!(value)))
+        })
+        .collect();
+    (!fields.is_empty()).then_some(Value::Object(fields))
 }

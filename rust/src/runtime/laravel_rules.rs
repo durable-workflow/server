@@ -32,6 +32,8 @@ pub(crate) enum Rule {
     In(&'static [&'static str]),
     /// `date`, for the ISO-8601 shapes `schedule_backfill::php_date` reads.
     Date,
+    /// `regex:...`, as a predicate on the string.
+    Pattern(fn(&str) -> bool),
 }
 
 pub(crate) type Rules = [(&'static str, &'static [Rule])];
@@ -188,7 +190,7 @@ fn message(rule: Rule, attribute: &str, rules: &[Rule], value: Option<&Value>) -
             "array" => format!("The {attribute} field must not have more than {limit} items."),
             _ => format!("The {attribute} field must not be greater than {limit} characters."),
         },
-        Rule::NotBlank => format!("The {attribute} field format is invalid."),
+        Rule::NotBlank | Rule::Pattern(_) => format!("The {attribute} field format is invalid."),
         Rule::Date => format!("The {attribute} field must be a valid date."),
         Rule::Nullable | Rule::Sometimes => String::new(),
     }
@@ -223,6 +225,7 @@ fn passes(rule: Rule, data: &Value, value: Option<&Value>, rules: &[Rule]) -> bo
         Rule::Nullable | Rule::Sometimes => true,
         Rule::NotBlank => value.and_then(Value::as_str).is_some_and(|text| text.chars().any(|character| !character.is_whitespace())),
         Rule::String => value.is_some_and(Value::is_string),
+        Rule::Pattern(matches) => value.and_then(Value::as_str).is_some_and(matches),
         Rule::Date => value
             .and_then(Value::as_str)
             .is_some_and(|text| super::schedule_backfill::php_date(text).is_some()),
