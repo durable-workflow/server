@@ -6,7 +6,6 @@ use super::{
     backend::Backend,
     refuse,
     store::{Store, id, now, reject_fields},
-    wire,
 };
 use axum::http::StatusCode;
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -642,6 +641,7 @@ where
         reason: Option<String>,
         budget: i64,
         codec: Arc<Semaphore>,
+        context: Option<Value>,
     ) -> Result<(StatusCode, Value)> {
         let mut tx = self.begin().await?;
         let instance = Self::query(
@@ -724,7 +724,21 @@ where
         let request_id = id();
         let at = now();
         let deadline = at + chrono::Duration::seconds(budget);
-        let requester = json!({"type":"auth:token","id":"legacy-token","label":"Admin"});
+        // The authenticated request's context; a direct call records the
+        // legacy administrator.
+        let command_context = context.unwrap_or_else(|| json!({"caller":{"type":"server","label":"Standalone Server"},
+            "auth":{"status":"authorized","method":"token","role":"admin"},
+            "principal":{"type":"auth:token","id":"legacy-token","label":"Admin"}}));
+        // `WorkflowStub`: the requester is the context's principal, or else
+        // its caller.
+        let source = if command_context["principal"].is_object() { &command_context["principal"] } else { &command_context["caller"] };
+        let mut requester = serde_json::Map::new();
+        for field in ["type", "id", "label"] {
+            if let Some(value) = source.get(field) {
+                requester.insert(field.into(), value.clone());
+            }
+        }
+        let requester = Value::Object(requester);
         let context = json!({"schema":"durable-workflow.cancellation-context/v1", "request_id":request_id,
             "root_request_id":request_id,"root_workflow_instance_id":workflow_id,"root_workflow_run_id":run_id,
             "parent_request_id":null,"reason":reason,"requester":requester,"source":"control_plane",
@@ -734,8 +748,6 @@ where
         let sequence = DB::number(&run, "last_command_sequence")?
             .checked_add(1)
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "command_sequence_exhausted"))?;
-        let command_context = json!({"caller":{"type":"server","label":"Standalone Server"},
-            "auth":{"status":"authorized","method":"token","role":"admin"},"principal":requester});
         let target_scope = if selected_run.is_some() {
             "run"
         } else {
@@ -748,11 +760,7 @@ where
         Self::query("UPDATE workflow_runs SET cancellation_request_command_id=$1,cancellation_requested_at=$2,cancellation_deadline_at=$3,last_progress_at=$4,last_command_sequence=$5 WHERE id=$6")
             .bind(&request_id).bind(DB::bind_time(at)).bind(DB::bind_time(deadline)).bind(DB::bind_time(at)).bind(sequence).bind(run_id).execute(&mut *tx).await?;
         let mut payload = json!({"workflow_command_id":request_id,"workflow_instance_id":workflow_id,"workflow_run_id":run_id,
-            "command_type":"request_cancellation","cleanup_deadline_at":timestamp(deadline),"cancellation":context,
-            "command":{"id":request_id,"sequence":sequence,"type":"request_cancellation","target_scope":target_scope,
-                "requested_run_id":selected_run,"resolved_run_id":run_id,"source":"control_plane","context":command_context,
-                "status":"accepted","outcome":"cancellation_requested","payload_codec":"avro","payload":wire(&blob),
-                "accepted_at":timestamp(at),"applied_at":timestamp(at)}});
+            "command_type":"request_cancellation","cleanup_deadline_at":timestamp(deadline),"cancellation":context});
         if let Some(reason) = reason {
             payload["reason"] = json!(reason);
         }

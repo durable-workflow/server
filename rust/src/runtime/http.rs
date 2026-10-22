@@ -12,13 +12,12 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
 
+use super::command_context::CommandRequest;
 use super::runtime_credentials::Principal;
 use super::{Result, Runtime, cancellation::TerminalCommand, refuse, store::capabilities};
 
 #[derive(Clone)]
 pub(super) struct AuthenticatedPrincipal {
-    pub(super) role: &'static str,
-    pub(super) legacy_full_access: bool,
     pub(super) principal: super::runtime_credentials::Principal,
 }
 
@@ -382,12 +381,6 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         )
         .await;
     };
-    let legacy_full_access = principal.legacy_full_access;
-    let role = match principal.primary_role() {
-        Some("worker") => "worker",
-        Some("operator") => "operator",
-        _ => "admin",
-    };
     let allowed_roles: &[&str] = if path == "/api/external-payloads/v1"
         && request.method() == Method::POST
         && request
@@ -541,8 +534,6 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
             .insert(runtime.in_namespace(&namespace));
     }
     request.extensions_mut().insert(AuthenticatedPrincipal {
-        role,
-        legacy_full_access,
         principal,
     });
     let mut response = next.run(request).await;
@@ -848,13 +839,51 @@ fn without_trace_carrier(mut body: Value) -> Value {
     body
 }
 
+/// The operation fields PHP records in a command context, without nulls;
+/// `[]` when there are none.
+fn metadata(fields: &[(&str, Option<Value>)]) -> Value {
+    let fields: serde_json::Map<String, Value> = fields
+        .iter()
+        .filter_map(|(name, value)| value.clone().filter(|value| !value.is_null()).map(|value| ((*name).to_owned(), value)))
+        .collect();
+    if fields.is_empty() { json!([]) } else { Value::Object(fields) }
+}
+
+fn present(body: &Value, field: &str) -> Option<Value> {
+    body.get(field).filter(|value| !value.is_null()).cloned()
+}
+
+fn signal_context(request: &CommandRequest, body: &Value, workflow_id: &str, name: &str) -> Value {
+    request.context(body, workflow_id, "signal", metadata(&[
+        ("request_id", present(body, "request_id")),
+        ("signal_name", Some(json!(name))),
+    ]))
+}
+
+fn update_context(request: &CommandRequest, body: &Value, workflow_id: &str, name: &str) -> Value {
+    request.context(body, workflow_id, "update", metadata(&[
+        ("request_id", present(body, "request_id")),
+        ("update_name", Some(json!(name))),
+        ("wait_for", Some(present(body, "wait_for").unwrap_or(json!("accepted")))),
+    ]))
+}
+
 async fn start(
     Extension(runtime): Extension<Runtime>,
+    command: CommandRequest,
     Json(body): Json<super::memo_json::StartBody>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    // PHP names the target `pending` until the start assigns an id.
+    let target = body.0["workflow_id"].as_str().filter(|id| !id.is_empty()).unwrap_or("pending");
+    let queue = body.0.get("task_queue").filter(|queue| !queue.is_null()).cloned().unwrap_or(json!("default"));
+    let context = command.context(&body.0, target, "start", metadata(&[
+        ("workflow_type", body.0.get("workflow_type").cloned()),
+        ("task_queue", Some(queue)),
+        ("duplicate_policy", body.0.get("duplicate_policy").cloned()),
+    ]));
     let body = without_trace_carrier(body.0);
     let workflow_id = body["workflow_id"].as_str().unwrap_or("").to_owned();
-    let result = runtime.start(body).await.map_err(|error| {
+    let result = runtime.start(body, Some(context)).await.map_err(|error| {
         super::control_plane::Operation::Start.refusal(error, &workflow_id, None)
     })?;
     // Clients such as the CLI require the control-plane contract on every
@@ -903,6 +932,7 @@ async fn list_runs(
 
 async fn close(
     runtime: Runtime,
+    request: CommandRequest,
     command: TerminalCommand,
     workflow_id: &str,
     run_id: Option<&str>,
@@ -912,8 +942,22 @@ async fn close(
         TerminalCommand::Cancel => super::control_plane::Operation::Cancel,
         TerminalCommand::Terminate => super::control_plane::Operation::Terminate,
     };
+    let name = match command {
+        TerminalCommand::Cancel => "cancel",
+        TerminalCommand::Terminate => "terminate",
+    };
+    let context = request.context(&body, workflow_id, name, metadata(&[
+        ("request_id", present(&body, "request_id")),
+        ("reason", present(&body, "reason")),
+    ]));
+    // Cancellation ignores a top-level trace carrier; termination keeps its
+    // existing request handling.
+    let body = match command {
+        TerminalCommand::Cancel => without_trace_carrier(body),
+        TerminalCommand::Terminate => body,
+    };
     let (status, response) = runtime
-        .close_workflow(command, workflow_id, run_id, body)
+        .close_workflow(command, workflow_id, run_id, body, Some(context))
         .await
         .map_err(|error| operation().refusal(error, workflow_id, run_id))?;
     Ok((status, Json(operation().response(response))))
@@ -921,19 +965,22 @@ async fn close(
 
 async fn cancel_current(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path(workflow_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
-    close(runtime, TerminalCommand::Cancel, &workflow_id, None, without_trace_carrier(body)).await
+    close(runtime, request, TerminalCommand::Cancel, &workflow_id, None, body).await
 }
 
 async fn terminate_current(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path(workflow_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
     close(
         runtime,
+        request,
         TerminalCommand::Terminate,
         &workflow_id,
         None,
@@ -1017,26 +1064,30 @@ async fn repair_run(
 
 async fn cancel_run(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path((workflow_id, run_id)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
     close(
         runtime,
+        request,
         TerminalCommand::Cancel,
         &workflow_id,
         Some(&run_id),
-        without_trace_carrier(body),
+        body,
     )
     .await
 }
 
 async fn terminate_run(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path((workflow_id, run_id)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
     close(
         runtime,
+        request,
         TerminalCommand::Terminate,
         &workflow_id,
         Some(&run_id),
@@ -1047,33 +1098,39 @@ async fn terminate_run(
 
 async fn request_cancellation_current(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path(workflow_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    let context = request.context(&body, &workflow_id, "request_cancellation", json!([]));
     let (status, response) = runtime
-        .request_cancellation(&workflow_id, None, without_trace_carrier(body))
+        .request_cancellation(&workflow_id, None, without_trace_carrier(body), Some(context))
         .await?;
     Ok((status, Json(response)))
 }
 
 async fn request_cancellation_run(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path((workflow_id, run_id)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    let context = request.context(&body, &workflow_id, "request_cancellation", json!([]));
     let (status, response) = runtime
-        .request_cancellation(&workflow_id, Some(&run_id), without_trace_carrier(body))
+        .request_cancellation(&workflow_id, Some(&run_id), without_trace_carrier(body), Some(context))
         .await?;
     Ok((status, Json(response)))
 }
 
 async fn signal_current(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path((workflow_id, name)): Path<(String, String)>,
     Json(super::memo_json::StartBody(body)): Json<super::memo_json::StartBody>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    let context = signal_context(&request, &body, &workflow_id, &name);
     let response = runtime
-        .signal(&workflow_id, None, &name, without_trace_carrier(body))
+        .signal(&workflow_id, None, &name, without_trace_carrier(body), Some(context))
         .await
         .map_err(|error| {
             super::control_plane::Operation::Signal(&name).refusal(error, &workflow_id, None)
@@ -1086,33 +1143,39 @@ async fn signal_current(
 
 async fn update_current(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path((workflow_id, name)): Path<(String, String)>,
     Json(super::memo_json::StartBody(body)): Json<super::memo_json::StartBody>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    let context = update_context(&request, &body, &workflow_id, &name);
     let (status, result) = runtime
-        .update_workflow(&workflow_id, None, &name, without_trace_carrier(body))
+        .update_workflow(&workflow_id, None, &name, without_trace_carrier(body), Some(context))
         .await?;
     Ok((status, Json(result)))
 }
 
 async fn update_run(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path((workflow_id, run_id, name)): Path<(String, String, String)>,
     Json(super::memo_json::StartBody(body)): Json<super::memo_json::StartBody>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    let context = update_context(&request, &body, &workflow_id, &name);
     let (status, result) = runtime
-        .update_workflow(&workflow_id, Some(&run_id), &name, without_trace_carrier(body))
+        .update_workflow(&workflow_id, Some(&run_id), &name, without_trace_carrier(body), Some(context))
         .await?;
     Ok((status, Json(result)))
 }
 
 async fn signal_run(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path((workflow_id, run_id, name)): Path<(String, String, String)>,
     Json(super::memo_json::StartBody(body)): Json<super::memo_json::StartBody>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    let context = signal_context(&request, &body, &workflow_id, &name);
     let response = runtime
-        .signal(&workflow_id, Some(&run_id), &name, without_trace_carrier(body))
+        .signal(&workflow_id, Some(&run_id), &name, without_trace_carrier(body), Some(context))
         .await
         .map_err(|error| {
             super::control_plane::Operation::Signal(&name).refusal(
@@ -1441,6 +1504,7 @@ async fn deliver_cancellation(
 }
 async fn complete_workflow(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path(task_id): Path<String>,
     headers: HeaderMap,
     Json(body): Json<Value>,
@@ -1454,7 +1518,7 @@ async fn complete_workflow(
     }
     let attempt = body["workflow_task_attempt"].clone();
     runtime
-        .complete_workflow(&task_id, body)
+        .complete_workflow(&task_id, body, Some(request.principal().clone()))
         .await
         .map_err(|error| {
             completion_refusal(

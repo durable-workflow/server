@@ -4,7 +4,6 @@ use super::{
     backend::Backend,
     refuse,
     store::{Store, id, now},
-    wire,
 };
 use axum::http::StatusCode;
 use serde_json::{Value, json};
@@ -138,15 +137,6 @@ where
             "workflow_command_id":command_id,"workflow_instance_id":workflow_id,"workflow_run_id":run_id,
             "command_type":"repair","outcome":"repair_dispatched","liveness_state":"workflow_replay_blocked",
             "wait_kind":wait_kind,"task_id":task_id,"task_type":"workflow","task":Self::task_snapshot(&repaired)?,
-            "command":{"id":command_id,"sequence":sequence,"type":"repair","target_scope":"instance",
-                "resolved_run_id":run_id,"status":"accepted","outcome":"repair_dispatched",
-                "source":"control_plane","payload_codec":"avro","payload":wire(&command_payload),
-                "context":{"principal":context["principal"]},
-                "caller_label":context["caller"]["label"],"auth_status":context["auth"]["status"],
-                "auth_method":context["auth"]["method"],"principal_type":context["principal"]["type"],
-                "principal_id":context["principal"]["id"],"principal_label":context["principal"]["label"],
-                "request_method":context["request"]["method"],"request_path":context["request"]["path"],
-                "request_fingerprint":context["request"]["fingerprint"],"accepted_at":timestamp,"applied_at":timestamp}
         }), Some(&task_id), Some(&command_id)).await?;
         tx.commit().await?;
         self.wake.notify_waiters();

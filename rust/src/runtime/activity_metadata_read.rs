@@ -166,13 +166,13 @@ mod tests {
         )
         .await
         .unwrap();
-        runtime.start(start("snapshot-first")).await.unwrap();
+        runtime.start(start("snapshot-first"), None).await.unwrap();
         let pool = runtime.sqlite_pool();
         let count = "SELECT COUNT(*) FROM workflow_history_events";
         let mut read = pool.begin_with(Sqlite::READ_SNAPSHOT_BEGIN).await.unwrap();
         let before: i64 = sqlx::query_scalar(count).fetch_one(&mut *read).await.unwrap();
         // A real runtime write commits on another WAL connection meanwhile.
-        runtime.start(start("snapshot-second")).await.unwrap();
+        runtime.start(start("snapshot-second"), None).await.unwrap();
         let during: i64 = sqlx::query_scalar(count).fetch_one(&mut *read).await.unwrap();
         assert_eq!(during, before);
         read.rollback().await.unwrap();

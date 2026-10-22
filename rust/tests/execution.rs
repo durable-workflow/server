@@ -53,6 +53,8 @@ mod named_timers;
 #[path = "execution/named_signal_timeouts.rs"]
 mod named_signal_timeouts;
 
+#[path = "execution/command_context.rs"]
+mod command_context;
 #[path = "execution/runtime_credentials.rs"]
 mod runtime_credentials;
 #[path = "execution/selected_run_signals.rs"]
@@ -733,6 +735,18 @@ impl TestDatabase {
             }
         }
     }
+}
+
+/// `HistoryController::eventPrincipal`: the principal fields of an event's
+/// command snapshot, or null.
+fn event_principal(payload: &Value) -> Value {
+    let mut principal = serde_json::Map::new();
+    for (field, key) in [("principal_type", "type"), ("principal_id", "id"), ("principal_label", "label")] {
+        if let Some(value) = payload["command"][field].as_str().filter(|value| !value.is_empty()) {
+            principal.insert(key.into(), json!(value));
+        }
+    }
+    if principal.is_empty() { Value::Null } else { Value::Object(principal) }
 }
 
 #[tokio::test]
@@ -2427,7 +2441,7 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
             .iter()
             .map(|event| {
                 json!({"sequence":event["sequence"],"event_type":event["event_type"],
-            "payload":event["payload"],"timestamp":event["recorded_at"],"principal":null})
+            "payload":event["payload"],"timestamp":event["recorded_at"],"principal":event_principal(&event["payload"])})
             })
             .collect(),
     );
@@ -4730,7 +4744,7 @@ async fn terminal_activity_failures_resume_once_and_preserve_original_failure() 
             .map(|event| {
                 json!({
                     "sequence":event["sequence"],"event_type":event["event_type"],
-                    "timestamp":event["recorded_at"],"payload":event["payload"],"principal":null
+                    "timestamp":event["recorded_at"],"payload":event["payload"],"principal":event_principal(&event["payload"])
                 })
             })
             .collect();

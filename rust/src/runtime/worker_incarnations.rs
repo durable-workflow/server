@@ -319,9 +319,7 @@ where
             .await?;
         Self::append(tx,&run_id,"RepairRequested",json!({"workflow_command_id":command_id,"workflow_instance_id":workflow_id,
             "workflow_run_id":run_id,"command_type":"repair","outcome":"repair_dispatched","liveness_state":"repair_needed",
-            "wait_kind":"workflow-task","task_id":task_id,"task_type":"workflow","task":Self::task_snapshot(&repaired)?,
-            "command":{"id":command_id,"sequence":command_sequence,"type":"repair","target_scope":"run","requested_run_id":run_id,
-                "resolved_run_id":run_id,"status":"accepted","outcome":"repair_dispatched","source":"control_plane","payload_codec":"avro","payload":payload,"context":context}}),
+            "wait_kind":"workflow-task","task_id":task_id,"task_type":"workflow","task":Self::task_snapshot(&repaired)?}),
             Some(&task_id),Some(&command_id)).await?;
         Ok(())
     }
