@@ -79,6 +79,8 @@ mod worker_deregistration;
 mod worker_listing;
 #[path = "execution/activity_failure_fields.rs"]
 mod activity_failure_fields;
+#[path = "execution/signal_rejection.rs"]
+mod signal_rejection;
 #[path = "execution/query_open_tasks.rs"]
 mod query_open_tasks;
 #[path = "execution/retry_message_tasks.rs"]

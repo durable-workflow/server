@@ -31,6 +31,19 @@ pub(super) struct Store<DB: Backend> {
     pub(super) workflow_task_lease_seconds: i64,
     pub(super) search_attribute_limit: i64,
 }
+/// The `closed_reason` a terminal history event gives its run, or `None` for
+/// an event that does not close the run.
+fn closed_reason(event_type: &str) -> Option<&'static str> {
+    Some(match event_type {
+        "WorkflowCompleted" => "completed",
+        "WorkflowContinuedAsNew" => "continued",
+        "WorkflowFailed" => "failed",
+        "WorkflowCancelled" => "cancelled",
+        "WorkflowTerminated" => "terminated",
+        "WorkflowTimedOut" => "timed_out",
+        _ => return None,
+    })
+}
 /// A ULID that sorts after every earlier one from this process, as Laravel's
 /// (Symfony's) generator does. Rows created in the same millisecond, such as
 /// the activity tasks of one completion, keep their creation order in
@@ -2932,7 +2945,37 @@ where
         Self::project_condition_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         Self::project_child_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         Self::project_update_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
+        if let Some(reason) = closed_reason(event_type) {
+            Box::pin(Self::reject_received_signals(tx, run_id, reason, task_id)).await?;
+        }
         tx.summary_changed(run_id);
+        Ok(())
+    }
+
+    /// `PendingSignalCloser::closeForTerminalEvent`: once a run closes, each
+    /// signal it received but never applied is rejected, in arrival order.
+    /// The original command keeps its acceptance; `SignalRejected` records
+    /// the later disposition.
+    async fn reject_received_signals(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        terminal_reason: &str,
+        task_id: Option<&str>,
+    ) -> Result<()> {
+        let signals = Self::query("SELECT id,workflow_command_id,signal_name,signal_wait_id,command_sequence FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received' ORDER BY CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END,command_sequence,received_at,id")
+            .bind(run_id).fetch_all(&mut **tx).await?;
+        for signal in signals {
+            let (signal_id, command_id) = (DB::string(&signal, "id")?, DB::string(&signal, "workflow_command_id")?);
+            let closed_at = now();
+            Self::query("UPDATE workflow_signal_records SET status='rejected',outcome='rejected_not_active',rejection_reason='run_closed_before_signal_applied',rejected_at=$1,closed_at=$2 WHERE id=$3")
+                .bind(DB::bind_time(closed_at)).bind(DB::bind_time(closed_at)).bind(&signal_id).execute(&mut **tx).await?;
+            let payload = json!({"workflow_command_id": command_id, "signal_id": signal_id,
+                "signal_name": DB::string(&signal, "signal_name")?,
+                "signal_wait_id": DB::optional_string(&signal, "signal_wait_id")?,
+                "command_sequence": DB::optional_number(&signal, "command_sequence")?,
+                "rejection_reason": "run_closed_before_signal_applied", "terminal_reason": terminal_reason});
+            Self::append(tx, run_id, "SignalRejected", payload, task_id, Some(&command_id)).await?;
+        }
         Ok(())
     }
 
