@@ -1,6 +1,6 @@
 //! One durable execution state machine for typed database adapters.
 use super::transaction::Transaction;
-use super::{Result, backend::Backend, envelope, refuse, text, wire};
+use super::{Result, backend::Backend, envelope, refuse, side_effect_result, text, wire};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value, json};
@@ -1952,8 +1952,8 @@ where
                     version_marker_payload(command)?;
                 }
                 "record_side_effect" => {
-                    reject_fields(command, &["type", "result"])?;
-                    envelope(command, "result")?;
+                    reject_fields(command, &["type", "result", "payload_codec"])?;
+                    side_effect_result(command)?;
                 }
                 "upsert_search_attributes" => {
                     reject_fields(command, &["type", "attributes", "attribute_types"])?;
@@ -2162,7 +2162,7 @@ where
             } else if command["type"] == "record_side_effect" {
                 // `applyRecordSideEffect`: one authored sequence and its result.
                 sequence += 1;
-                let result = envelope(command, "result")?;
+                let result = side_effect_result(command)?;
                 let payload = json!({"sequence": sequence, "result": wire(&result), "task": Self::task_snapshot(&task)?});
                 Self::append(&mut tx, &run_id, "SideEffectRecorded", payload, Some(task_id), None).await?;
             } else if command["type"] == "record_version_marker" {
