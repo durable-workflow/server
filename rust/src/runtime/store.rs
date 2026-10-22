@@ -2948,6 +2948,34 @@ where
         command_id: Option<&str>,
         recorded_at: Option<DateTime<Utc>>,
     ) -> Result<()> {
+        Self::record(tx, run_id, event_type, payload, task_id, command_id, recorded_at, true).await
+    }
+
+    /// Records an event linked to a command by id only, as PHP does when it
+    /// passes a command id string rather than the command model: the event
+    /// carries no command snapshot.
+    async fn append_by_command_id(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        event_type: &str,
+        payload: Value,
+        task_id: Option<&str>,
+        command_id: &str,
+    ) -> Result<()> {
+        Self::record(tx, run_id, event_type, payload, task_id, Some(command_id), None, false).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn record(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        event_type: &str,
+        payload: Value,
+        task_id: Option<&str>,
+        command_id: Option<&str>,
+        recorded_at: Option<DateTime<Utc>>,
+        command_snapshot: bool,
+    ) -> Result<()> {
         // The backend transition lock protects this read and write together.
         // MySQL has no UPDATE RETURNING; all adapters use this same allocation.
         let row = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
@@ -2966,7 +2994,7 @@ where
         // `WorkflowHistoryEvent::record`: an event recorded with a command
         // carries that command's snapshot.
         let mut payload = payload;
-        if let Some(command_id) = command_id
+        if let Some(command_id) = command_id.filter(|_| command_snapshot)
             && payload.as_object().is_some_and(|fields| !fields.contains_key("command"))
             && let Some(snapshot) = Self::command_snapshot(tx, command_id).await?
         {
@@ -2981,7 +3009,8 @@ where
         Self::project_child_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         Self::project_update_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         if let Some(reason) = closed_reason(event_type) {
-            Box::pin(Self::reject_received_signals(tx, run_id, reason, task_id)).await?;
+            let task = payload.get("task").cloned();
+            Box::pin(Self::reject_received_signals(tx, run_id, reason, task_id, task)).await?;
         }
         tx.summary_changed(run_id);
         Ok(())
@@ -2990,12 +3019,15 @@ where
     /// `PendingSignalCloser::closeForTerminalEvent`: once a run closes, each
     /// signal it received but never applied is rejected, in arrival order.
     /// The original command keeps its acceptance; `SignalRejected` records
-    /// the later disposition.
+    /// the later disposition. PHP records it with the signal's command id,
+    /// so it has no command snapshot, and with the terminal event's task, so
+    /// it repeats that event's task snapshot.
     async fn reject_received_signals(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
         terminal_reason: &str,
         task_id: Option<&str>,
+        task: Option<Value>,
     ) -> Result<()> {
         let signals = Self::query("SELECT id,workflow_command_id,signal_name,signal_wait_id,command_sequence FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received' ORDER BY CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END,command_sequence,received_at,id")
             .bind(run_id).fetch_all(&mut **tx).await?;
@@ -3004,12 +3036,15 @@ where
             let closed_at = now();
             Self::query("UPDATE workflow_signal_records SET status='rejected',outcome='rejected_not_active',rejection_reason='run_closed_before_signal_applied',rejected_at=$1,closed_at=$2 WHERE id=$3")
                 .bind(DB::bind_time(closed_at)).bind(DB::bind_time(closed_at)).bind(&signal_id).execute(&mut **tx).await?;
-            let payload = json!({"workflow_command_id": command_id, "signal_id": signal_id,
+            let mut payload = json!({"workflow_command_id": command_id, "signal_id": signal_id,
                 "signal_name": DB::string(&signal, "signal_name")?,
                 "signal_wait_id": DB::optional_string(&signal, "signal_wait_id")?,
                 "command_sequence": DB::optional_number(&signal, "command_sequence")?,
                 "rejection_reason": "run_closed_before_signal_applied", "terminal_reason": terminal_reason});
-            Self::append(tx, run_id, "SignalRejected", payload, task_id, Some(&command_id)).await?;
+            if let Some(task) = &task {
+                payload["task"] = task.clone();
+            }
+            Self::append_by_command_id(tx, run_id, "SignalRejected", payload, task_id, &command_id).await?;
         }
         Ok(())
     }
