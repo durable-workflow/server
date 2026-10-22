@@ -108,6 +108,7 @@ mod start_definition;
 mod start_request;
 mod storage_test;
 mod store;
+mod system_metrics;
 mod system_health;
 mod task_failures;
 mod task_repair;

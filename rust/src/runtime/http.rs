@@ -203,6 +203,7 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route("/api/system/operator-metrics", get(operator_metrics))
         .route("/api/system/health", get(system_health))
+        .route("/api/system/metrics", get(system_metrics).post(system_metrics))
         .route("/api/system/operator-dashboard", get(operator_dashboard))
         .route("/api/system/operator-dashboard/bounded", get(bounded_operator_dashboard))
         .route(
@@ -645,6 +646,10 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     if path == "/api/system/retention/pass" || path == "/api/system/activity-timeouts/pass" {
         return method == "POST";
     }
+    // The metrics describe the namespace's own state, read by GET or POST.
+    if path == "/api/system/metrics" {
+        return matches!(method, "GET" | "POST");
+    }
     if let Some(path) = path.strip_prefix("/api/workflows/") {
         let parts: Vec<_> = path.split('/').collect();
         if matches!(
@@ -704,7 +709,7 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
                 | ["workflow-tasks" | "activity-tasks", "poll"]
                 | ["query-tasks", "poll"]
                 | ["query-tasks", _, "complete" | "fail" | "status"]
-                | ["workflow-tasks", _, "complete" | "history" | "heartbeat"]
+                | ["workflow-tasks", _, "complete" | "fail" | "history" | "heartbeat"]
                 | [
                     "activity-tasks",
                     _,
@@ -1471,6 +1476,10 @@ async fn activity_timeout_status(
 ) -> Result<Json<Value>> {
     let limit = super::retention::status_limit(query.get("limit").map(String::as_str))?;
     Ok(Json(runtime.activity_timeout_status(limit).await?))
+}
+
+async fn system_metrics(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    Ok(Json(runtime.system_metrics().await?))
 }
 
 /// PHP answers 503 while a check reports an error.

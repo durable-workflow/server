@@ -616,6 +616,39 @@ async fn same_worker_id_isolated_claims_completion_and_deregistration_by_namespa
 }
 
 #[tokio::test]
+async fn named_namespace_workflow_task_failure_retries_only_in_its_own_namespace() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    for name in ["alpha", "beta"] {
+        create(&app, name).await;
+        let (status, body) = scoped(&app, name, "POST", "/api/worker/register", json!({
+            "worker_id":"shared-worker","task_queue":"test","runtime":"php",
+            "supported_workflow_types":["echo"],"supported_activity_types":[]})).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    let run = start_scoped(&app, "alpha", "retry-alpha").await;
+    let poll = json!({"worker_id":"shared-worker","task_queue":"test","timeout_seconds":0});
+    let task = scoped(&app, "alpha", "POST", "/api/worker/workflow-tasks/poll", poll.clone()).await.1["task"].clone();
+    let path = format!("/api/worker/workflow-tasks/{}/fail", task["task_id"].as_str().unwrap());
+    let body = json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"],
+        "failure":{"message":"named failure","type":"RuntimeException"}});
+    let refused = scoped(&app, "beta", "POST", &path, body.clone()).await;
+    assert_eq!(refused.0, StatusCode::NOT_FOUND, "{}", refused.1);
+    assert_eq!(refused.1["reason"], "task_not_found");
+
+    let (status, failed) = scoped(&app, "alpha", "POST", &path, body).await;
+    assert_eq!(status, StatusCode::OK, "{failed}");
+    assert_eq!([&failed["outcome"], &failed["recorded"]], [&json!("failed"), &json!(true)]);
+    let foreign = scoped(&app, "beta", "POST", "/api/worker/workflow-tasks/poll", poll.clone()).await;
+    assert_eq!(foreign.0, StatusCode::OK, "{}", foreign.1);
+    assert!(foreign.1["task"].is_null(), "{}", foreign.1);
+    let retry = scoped(&app, "alpha", "POST", "/api/worker/workflow-tasks/poll", poll).await.1["task"].clone();
+    assert_eq!(retry["task_id"], failed["next_task_id"], "{retry}");
+    assert_eq!([&retry["run_id"], &retry["workflow_task_attempt"]], [&run["run_id"], &json!(2)]);
+}
+
+#[tokio::test]
 async fn namespace_updates_follow_published_retention_rules() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();

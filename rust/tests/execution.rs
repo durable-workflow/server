@@ -133,6 +133,9 @@ mod version_markers;
 #[path = "execution/activity_lease_renewal.rs"]
 mod activity_lease_renewal;
 
+#[path = "execution/system_metrics.rs"]
+mod system_metrics;
+
 #[path = "execution/activity_deadlines.rs"]
 mod activity_deadlines;
 
