@@ -697,7 +697,7 @@ where
             .execute(&mut *tx)
             .await?;
         Self::append(&mut tx, &current_run, "SignalReceived", json!({"workflow_command_id":command_id,"signal_id":signal_id,"workflow_instance_id":workflow_id,"workflow_run_id":current_run,"signal_name":name,"signal_wait_id":wait_id,"arguments":wire(&prepared.arguments),"payload_codec":"avro"}), None, Some(&command_id)).await?;
-        Self::enqueue_pending_signal(&mut tx, &current_run, &DB::string(&run, "queue")?).await?;
+        Self::enqueue_next_message(&mut tx, &current_run, &DB::string(&run, "queue")?).await?;
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(
@@ -773,7 +773,10 @@ where
         Ok(Some(payload))
     }
 
-    async fn enqueue_pending_signal(
+    /// `PendingMessageTask::createForRun`: while the run has no open
+    /// workflow task, deliver its next message. An accepted update goes
+    /// unless an earlier signal is unapplied; a signal when its wait is open.
+    pub(super) async fn enqueue_next_message(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
         queue: &str,
@@ -791,6 +794,32 @@ where
         let open = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased')")
             .bind(run_id).fetch_one(&mut **tx).await?;
         if open != 0 {
+            return Ok(());
+        }
+        // `nextReadyUpdate`: the earliest accepted update, unless an earlier
+        // signal is still unapplied. That signal then goes first.
+        let update = Self::query("SELECT id,workflow_command_id,command_sequence FROM workflow_updates WHERE workflow_run_id=$1 AND status='accepted' ORDER BY CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END,command_sequence,accepted_at,created_at,id LIMIT 1")
+            .bind(run_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+        if let Some(update) = update
+            && Self::blocking_signal(
+                tx,
+                run_id,
+                DB::optional_number(&update, "command_sequence")?,
+                None,
+            )
+            .await?
+            .is_none()
+        {
+            Self::create_update_task(
+                tx,
+                run_id,
+                queue,
+                &DB::string(&update, "id")?,
+                &DB::string(&update, "workflow_command_id")?,
+            )
+            .await?;
             return Ok(());
         }
         let Some(wait) = Self::open_wait(tx, run_id).await? else {
@@ -1614,18 +1643,14 @@ where
         let mut payload = DB::document_row(&task, "payload")?;
         let signals = Self::scalar("SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received'")
             .bind(&run_id).fetch_one(&mut *tx).await?;
-        let updates = Self::scalar(
-            "SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id=$1 AND status='accepted'",
-        )
-        .bind(&run_id)
-        .fetch_one(&mut *tx)
-        .await?;
         // Published PHP retries a failed task as it is, with any signal or
-        // update it carries; its waiting acknowledgement with pending
-        // messages still needs its own contract.
+        // update it carries. A waiting acknowledgement for a task that
+        // carries a message still needs its own contract. A pending update
+        // is delivered after the acknowledgement, as PHP does. A pending
+        // signal is refused: PHP delivers a declared one without an open
+        // wait, which native does not.
         if waiting
             && (signals != 0
-                || updates != 0
                 || payload["workflow_signal_id"].is_string()
                 || payload["workflow_update_id"].is_string()
                 || Self::cancellation_request(&run)?.is_some())
@@ -1732,11 +1757,19 @@ where
             .bind(&run_id)
             .execute(&mut *tx)
             .await?;
+        // PHP releases the run and schedules its next message together.
+        Self::enqueue_next_message(&mut tx, &run_id, &DB::string(&run, "queue")?).await?;
+        let next = Self::query("SELECT id FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status='ready' ORDER BY created_at DESC,id DESC LIMIT 1")
+            .bind(&run_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .map(|row| DB::string(&row, "id"))
+            .transpose()?;
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(
             json!({"task_id":task_id,"workflow_task_attempt":body["workflow_task_attempt"],
-            "outcome":"waiting_for_history","recorded":true,"reason":null,"next_task_id":null}),
+            "outcome":"waiting_for_history","recorded":true,"reason":null,"next_task_id":next}),
         )
     }
 
@@ -2266,7 +2299,7 @@ where
         Self::record_completion(&mut tx, task_id, &body).await?;
         Self::resume_undelivered_cancellation(&mut tx, &run_id, &DB::string(&run, "queue")?)
             .await?;
-        Self::enqueue_pending_signal(&mut tx, &run_id, &DB::string(&run, "queue")?).await?;
+        Self::enqueue_next_message(&mut tx, &run_id, &DB::string(&run, "queue")?).await?;
         let current = Self::query("SELECT status FROM workflow_runs WHERE id=$1")
             .bind(&run_id)
             .fetch_one(&mut *tx)
