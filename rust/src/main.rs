@@ -14,6 +14,85 @@ fn tls_settings(driver: Driver) -> Result<(Settings, Option<String>), Box<dyn Er
     Ok((settings, url.map(|url| url.without_tls)))
 }
 
+/// Published PHP boots while its database is unavailable
+/// (`server:assert-php-database --allow-unavailable`), so an unchanged
+/// Compose file may start the server before the database accepts
+/// connections. Native waits for the database instead of exiting. Only a
+/// database that cannot be reached yet is awaited; a refused login or a
+/// configuration error still stops the process.
+async fn open_when_reachable<F, Fut>(open: F) -> Result<Option<Runtime>, RuntimeError>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<Runtime, RuntimeError>>,
+{
+    // One listener covers every attempt: the pool retries a refused
+    // connection inside each one, and a stop request must not wait for it.
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
+    let mut delay = std::time::Duration::from_millis(250);
+    let mut waiting = false;
+    loop {
+        let attempt = tokio::select! {
+            result = open() => result,
+            () = &mut shutdown => return Ok(None),
+        };
+        match attempt {
+            Err(error) if unreachable(&error) => {
+                if !waiting {
+                    eprintln!("database unavailable ({error}); waiting for it to accept connections");
+                    waiting = true;
+                }
+                tokio::select! {
+                    () = tokio::time::sleep(delay) => {}
+                    () = &mut shutdown => return Ok(None),
+                }
+                delay = (delay * 2).min(std::time::Duration::from_secs(5));
+            }
+            Err(error) => return Err(error),
+            Ok(runtime) => {
+                if waiting {
+                    eprintln!("database reachable");
+                }
+                return Ok(Some(runtime));
+            }
+        }
+    }
+}
+
+/// A database that is not accepting connections yet: the connection is
+/// refused or drops, its host does not resolve yet, the pool times out, or
+/// PostgreSQL is still starting (SQLSTATE 57P03).
+fn unreachable(error: &RuntimeError) -> bool {
+    fn retryable(error: &sqlx::Error) -> bool {
+        match error {
+            sqlx::Error::Io(_) | sqlx::Error::PoolTimedOut => true,
+            sqlx::Error::Database(error) => error.code().as_deref() == Some("57P03"),
+            _ => false,
+        }
+    }
+    match error {
+        RuntimeError::Database(error) => retryable(error),
+        RuntimeError::Migration(sqlx::migrate::MigrateError::Execute(error)) => retryable(error),
+        _ => false,
+    }
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("install SIGTERM handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! { () = ctrl_c => {}, _ = terminate => {} }
+}
+
 /// A connection that required TLS and failed is reported as PHP reports it.
 fn tls_connection_error(settings: &Settings, error: RuntimeError) -> Box<dyn Error> {
     if settings.required() && matches!(error, RuntimeError::Database(_)) {
@@ -426,17 +505,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         "pgsql" => {
             let (tls, _) = tls_settings(Driver::Postgres)?;
-            let runtime = Runtime::open_postgres(postgres_options()?, token)
-                .await
-                .map_err(|error| tls_connection_error(&tls, error))?;
+            let options = postgres_options()?;
+            let Some(runtime) =
+                open_when_reachable(|| Runtime::open_postgres(options.clone(), token.clone()))
+                    .await
+                    .map_err(|error| tls_connection_error(&tls, error))?
+            else {
+                return Ok(());
+            };
             database_tls::record(&tls);
             runtime
         }
         "mysql" | "mariadb" => {
             let (tls, _) = tls_settings(Driver::MySql)?;
-            let runtime = Runtime::open_mysql(mysql_options()?, token)
-                .await
-                .map_err(|error| tls_connection_error(&tls, error))?;
+            let options = mysql_options()?;
+            let Some(runtime) =
+                open_when_reachable(|| Runtime::open_mysql(options.clone(), token.clone()))
+                    .await
+                    .map_err(|error| tls_connection_error(&tls, error))?
+            else {
+                return Ok(());
+            };
             database_tls::record(&tls);
             runtime
         }
@@ -454,20 +543,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
         listener,
         router(runtime.clone()).into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(async {
-        let ctrl_c = tokio::signal::ctrl_c();
-        #[cfg(unix)]
-        let terminate = async {
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("install SIGTERM handler")
-                .recv()
-                .await;
-        };
-        #[cfg(not(unix))]
-        let terminate = std::future::pending::<()>();
-        tokio::select! { _ = ctrl_c => {}, _ = terminate => {} }
-    })
+    .with_graceful_shutdown(shutdown_signal())
     .await?;
     runtime.close().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+
+    #[test]
+    fn only_an_unreachable_database_is_awaited() {
+        let refused = || std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
+        assert!(unreachable(&RuntimeError::Database(sqlx::Error::Io(refused()))));
+        assert!(unreachable(&RuntimeError::Database(sqlx::Error::PoolTimedOut)));
+        assert!(unreachable(&RuntimeError::Migration(
+            sqlx::migrate::MigrateError::Execute(sqlx::Error::Io(refused()))
+        )));
+        assert!(!unreachable(&RuntimeError::Database(sqlx::Error::Configuration(
+            "bad url".into()
+        ))));
+        assert!(!unreachable(&RuntimeError::Database(sqlx::Error::RowNotFound)));
+        assert!(!unreachable(&RuntimeError::Io(refused())));
+    }
 }

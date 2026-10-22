@@ -187,6 +187,23 @@ contract fixture before its correction.
   `upgrade_source_catalog_unqualified` until its recipe lands. The recipe must
   also refuse rows that carry trace context until native implements the
   contract. The boundary is agreed on #325.
+- **Queries while a workflow task is open.** Native answers a query from a
+  history snapshot taken at admission, so it refuses with 409
+  `query_snapshot_busy` while the run has a ready or leased workflow task.
+  Published PHP admits the query. A workflow task leased at admission fixes
+  the query's history cutoff at that point. The query's claim then waits
+  while a workflow task is leased, or while an earlier resume task (signal,
+  update, activity, child or timer) is ready and not yet in history. A
+  run's first workflow task does not hold the claim. A query sent right after
+  a signal therefore waits on PHP and is refused on native. The port takes the
+  snapshot at claim time and must keep query lease replay stable, so it needs
+  its own fixture.
+- **Stop signal in the published image.** The published Server image declares
+  `STOPSIGNAL SIGWINCH`, Apache's graceful stop. Native stops gracefully on
+  `SIGTERM` or `SIGINT` and ignores `SIGWINCH`, so `docker stop` on the
+  published image with the native binary as its entrypoint waits out its
+  timeout and kills the process. A native image must declare
+  `STOPSIGNAL SIGTERM`.
 - **Terminating a child run.** Published Workflow resolves the parent with
   `ChildRunTerminated` and the `terminated` child call status. Native refuses
   this with `422 termination_propagation_not_available` until the parent-side
