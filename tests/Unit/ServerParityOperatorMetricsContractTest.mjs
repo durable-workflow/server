@@ -158,6 +158,44 @@ test('rejects PHP health behind metrics that show the task redispatched', () => 
   setChecks(stage, {durable_resume_paths: 'warning'});
   assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /warnings/);
 });
+// Metrics read while PHP's repair is committed but the task not yet
+// redispatched: still overdue, repaired once, and the run needs repair.
+const midRepair = (observation, runtime = 'php') => {
+  const stage = observation.operator_metrics.stages.waiting_after_redispatch;
+  stage.runtime = runtime;
+  stage.sections.tasks.counts.max_repair_count = 1;
+  stage.sections.runs.counts.repair_needed = 1;
+  stage.sections.runs.timestamps.oldest_repair_needed_at = true;
+  stage.sections.backlog.counts.repair_needed_runs = 1;
+  return stage;
+};
+test('published PHP metrics read while its maintenance loop repairs the task pass', () => {
+  const observation = model();
+  setChecks(midRepair(observation), {durable_resume_paths: 'warning'});
+  assert.deepStrictEqual(checkOperatorMetrics(fixture, observation, 'TEST'), projection);
+});
+test('published PHP health read after the repair its metrics caught midway passes', () => {
+  const observation = model();
+  setChecks(midRepair(observation), {task_transport: 'ok', routing_health: 'ok'});
+  assert.deepStrictEqual(checkOperatorMetrics(fixture, observation, 'TEST'), projection);
+});
+test('rejects PHP health behind metrics caught mid-repair', () => {
+  const observation = model();
+  midRepair(observation);
+  assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /warnings/);
+});
+test('rejects native metrics showing a repair native never runs', () => {
+  const observation = model();
+  setChecks(midRepair(observation, 'rust'), {durable_resume_paths: 'warning'});
+  assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /counts/);
+});
+test('rejects a run needing repair without a repaired task', () => {
+  const observation = model();
+  const stage = midRepair(observation);
+  stage.sections.tasks.counts.max_repair_count = 0;
+  setChecks(stage, {durable_resume_paths: 'warning'});
+  assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /counts/);
+});
 test('rejects a repair warning at another stage', () => {
   const observation = model();
   setChecks(observation.operator_metrics.stages.waiting, {durable_resume_paths: 'warning'});
