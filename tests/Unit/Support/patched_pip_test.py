@@ -42,8 +42,9 @@ esac
 
 # pip installs, downloads and upgrades, in shell, YAML, Python or JS argument
 # lists: "pip install", "-m pip --isolated install", "'-m', 'pip', 'install'".
+SEPARATOR = r"""[\s'",]+"""
 PIP_COMMAND = re.compile(
-    r"""\bpip3?(?:['"]?\s*,?\s*['"]?--[\w-]+(?:=\S+)?)*['"]?\s*,?\s*['"]?(?:install|download)\b"""
+    rf"""\bpip3?(?:{SEPARATOR}--[\w-]+(?:=[^\s'",]+)?)*{SEPARATOR}(?:install|download)\b"""
 )
 PATCHED = re.compile(r"bootstrap-patched-pip|patched-pip\.sh|PATCHED_PIP_BOOTSTRAP")
 SCANNED = ("scripts", "tests/Fixtures", "tests/Integration", "benchmarks", "docker")
@@ -229,6 +230,7 @@ class RealPipTrustTest(unittest.TestCase):
         cls.empty_store_dir.mkdir()
 
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(f"{leaf}.pem", f"{leaf}.key")
         cls.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RecordingHandler)
         cls.server.paths = []  # type: ignore[attr-defined]
@@ -366,7 +368,7 @@ class PatchedPipInventoryTest(unittest.TestCase):
                     text = path.read_text()
                 except (UnicodeDecodeError, OSError):
                     continue
-                for command in re.finditer(r"pip['\"]?\s*,?\s*['\"]?--isolated\b", text):
+                for command in re.finditer(rf"\bpip{SEPARATOR}--isolated\b", text):
                     following = text[command.start():command.start() + 400]
                     if "legacy-certs" not in following:
                         loose.append(f"{path.relative_to(ROOT).as_posix()}:{text.count(chr(10), 0, command.start()) + 1}")
@@ -386,7 +388,7 @@ class PatchedPipInventoryTest(unittest.TestCase):
                 if key in UNCONFINED_JOBS:
                     continue
                 confined = "patched-pip.sh" in job or (
-                    "bootstrap-patched-pip@" in job and "PIP_USE_DEPRECATED=legacy-certs" in job
+                    "bootstrap-patched-pip@" in job and re.search(r"PIP_USE_DEPRECATED[=:]\s*legacy-certs", job)
                 )
                 if not confined:
                     unconfined.append(f"{workflow.name} job {name.group(1)}")
