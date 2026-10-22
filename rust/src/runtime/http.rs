@@ -271,8 +271,10 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/worker/query-tasks/{task_id}/fail", post(fail_query))
         .fallback(unavailable)
         .layer(middleware::from_fn(empty_list_body))
-        .layer(DefaultBodyLimit::max(3 * 1024 * 1024))
+        // `payload_limits` reads and bounds every body first.
+        .layer(DefaultBodyLimit::disable())
         .layer(middleware::from_fn_with_state(runtime.clone(), guard))
+        .layer(middleware::from_fn(super::payload_limits::enforce))
         .with_state(runtime)
 }
 
@@ -758,7 +760,7 @@ async fn delete_search_attribute(
     Ok(Json(runtime.delete_search_attribute(&name).await?))
 }
 
-async fn admission_error(
+pub(super) async fn admission_error(
     request: Request,
     worker: bool,
     status: StatusCode,
