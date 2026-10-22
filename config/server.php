@@ -617,7 +617,7 @@ return [
 
     'lease' => [
         'workflow_task_timeout' => (int) EnvAuditor::env('DW_WORKFLOW_TASK_TIMEOUT', 'WORKFLOW_TASK_TIMEOUT', 60),
-        'activity_task_timeout' => (int) EnvAuditor::env('DW_ACTIVITY_TASK_TIMEOUT', 'ACTIVITY_TASK_TIMEOUT', 300),
+        'activity_task_timeout' => EnvAuditor::env('DW_ACTIVITY_TASK_TIMEOUT', 'ACTIVITY_TASK_TIMEOUT', 300),
     ],
 
     /*

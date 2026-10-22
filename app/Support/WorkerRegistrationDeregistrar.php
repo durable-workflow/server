@@ -15,6 +15,7 @@ final class WorkerRegistrationDeregistrar
 {
     public function __construct(
         private readonly WorkflowTaskLeaseRecovery $workflowTaskLeaseRecovery,
+        private readonly ActivityTaskLeaseRecovery $activityTaskLeaseRecovery,
     ) {}
 
     public function deregister(Request $request, string $namespace, string $workerId): ?int
@@ -38,6 +39,8 @@ final class WorkerRegistrationDeregistrar
             $worker
                 ->forceFill(['status' => WorkerRegistration::STATUS_SUPERSEDED])
                 ->save();
+
+            $this->activityTaskLeaseRecovery->recoverForStoppedWorker($namespace, $workerId);
 
             return WorkflowTask::query()
                 ->where('namespace', $namespace)

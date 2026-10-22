@@ -276,6 +276,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
         Route::post('/activity-tasks/{taskId}/complete', [ActivityTaskController::class, 'complete']);
         Route::post('/activity-tasks/{taskId}/fail', [ActivityTaskController::class, 'fail']);
         Route::post('/activity-tasks/{taskId}/heartbeat', [ActivityTaskController::class, 'heartbeat']);
+        Route::post('/activity-tasks/{taskId}/renew-lease', [ActivityTaskController::class, 'renewLease']);
     });
 
     // ── Workers (Management) ──────────────────────────────────────────
