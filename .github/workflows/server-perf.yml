@@ -206,7 +206,7 @@ jobs:
             php benchmarks/capacity/v1/bindings/php/capacity_adapter.php check
           rm -rf benchmarks/capacity/v1/bindings/php/vendor
 
-          python3 -I -m pip install \
+          python3 -I -m pip install --require-hashes --only-binary :all: --no-deps \
             --requirement benchmarks/capacity/v1/bindings/python/requirements.lock \
             --target build/capacity-python-adapter
           PYTHONPATH=build/capacity-python-adapter \

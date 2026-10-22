@@ -64,7 +64,8 @@ Install each adapter from its own immutable package manifest before a run:
   (cd benchmarks/capacity/v1/bindings/php && composer install --no-dev)
   python3 -m venv /tmp/capacity-venv
   sh scripts/ci/bootstrap-patched-pip.sh /tmp/capacity-venv/bin/python
-  /tmp/capacity-venv/bin/python -m pip install -r benchmarks/capacity/v1/bindings/python/requirements.lock
+  /tmp/capacity-venv/bin/python -m pip install --require-hashes --only-binary :all: --no-deps \
+    -r benchmarks/capacity/v1/bindings/python/requirements.lock
   (cd benchmarks/capacity/v1/bindings/rust && cargo build --release --locked)
 
 Activate `/tmp/capacity-venv` before running the Python adapter. The bootstrap

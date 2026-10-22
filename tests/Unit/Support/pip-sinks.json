@@ -35,9 +35,9 @@
     },
     {
       "path": ".github/workflows/server-perf.yml",
-      "line": "python3 -I -m pip install \\",
+      "line": "python3 -I -m pip install --require-hashes --only-binary :all: --no-deps \\",
       "count": 1,
-      "confinement": "Central bootstrap earlier in the job, then PIP_CERT (checked bundle) and PIP_USE_DEPRECATED=legacy-certs are set for the job. `-I` keeps a checked-out `pip` package from shadowing the installed client."
+      "confinement": "Central bootstrap earlier in the job, then PIP_CERT (checked bundle) and PIP_USE_DEPRECATED=legacy-certs are set for the job. `-I` keeps a checked-out `pip` package from shadowing the installed client. The lock hashes every pinned file; --require-hashes, --only-binary :all: and --no-deps install only those files."
     },
     {
       "path": ".github/workflows/server-perf.yml",
@@ -47,15 +47,15 @@
     },
     {
       "path": "benchmarks/capacity/v1/README.md",
-      "line": "/tmp/capacity-venv/bin/python -m pip install -r benchmarks/capacity/v1/bindings/python/requirements.lock",
+      "line": "/tmp/capacity-venv/bin/python -m pip install --require-hashes --only-binary :all: --no-deps \\",
       "count": 1,
-      "confinement": "Documentation; the instructions bootstrap /tmp/capacity-venv first."
+      "confinement": "Documentation; the instructions bootstrap /tmp/capacity-venv first. The lock hashes every pinned file; --require-hashes, --only-binary :all: and --no-deps install only those files."
     },
     {
       "path": "benchmarks/capacity/v1/topologies/local-docker/compose.json",
-      "line": "\"command\": [\"sh\", \"-ec\", \"/usr/local/bin/python3 -m venv /tmp/capacity-venv; sh /dw-ci/bootstrap-patched-pip.sh /tmp/capacity-venv/bin/python; python3 -m pip install --disable-pip-version-check --no-cache-dir --no-deps -r requirements.lock; test \\\"$(python3 -c 'import importlib.metadata; print(importlib.metadata.version(\\\"durable-workflow\\\"))')\\\" = 2.0.1; touch /tmp/capacity-adapter-ready; exec tail -f /dev/null\"],",
+      "line": "\"command\": [\"sh\", \"-ec\", \"/usr/local/bin/python3 -m venv /tmp/capacity-venv; sh /dw-ci/bootstrap-patched-pip.sh /tmp/capacity-venv/bin/python; python3 -m pip install --disable-pip-version-check --no-cache-dir --require-hashes --only-binary :all: --no-deps -r requirements.lock; test \\\"$(python3 -c 'import importlib.metadata; print(importlib.metadata.version(\\\"durable-workflow\\\"))')\\\" = 2.0.1; touch /tmp/capacity-adapter-ready; exec tail -f /dev/null\"],",
       "count": 1,
-      "confinement": "sh -e: bootstrap-patched-pip.sh on /tmp/capacity-venv, then that venv (first on PATH) installs."
+      "confinement": "sh -e: bootstrap-patched-pip.sh on /tmp/capacity-venv, then that venv (first on PATH) installs. The lock hashes every pinned file; --require-hashes, --only-binary :all: and --no-deps install only those files."
     },
     {
       "path": "scripts/ci/bootstrap-patched-pip.sh",

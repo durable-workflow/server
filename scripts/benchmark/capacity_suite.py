@@ -1195,17 +1195,25 @@ def _validate_adapter_dependency(
             raise ContractError(
                 "Python adapter must require the suite's exact SDK artifact"
             )
-        locked_requirements = (
-            (adapter_root / "requirements.lock").read_text().splitlines()
-        )
+        # Each line pins one package and lists the hashes pip must match.
+        locked_lines = [
+            line.split()
+            for line in (adapter_root / "requirements.lock").read_text().splitlines()
+            if line.strip()
+        ]
+        locked_requirements = [words[0] for words in locked_lines]
         if f"durable-workflow=={expected_version}" not in locked_requirements or any(
-            "==" not in requirement
-            for requirement in locked_requirements
-            if requirement
+            "==" not in requirement for requirement in locked_requirements
         ):
             raise ContractError(
                 "Python adapter lock must pin its complete dependency graph"
             )
+        if any(
+            len(words) < 2
+            or any(not word.startswith("--hash=sha256:") for word in words[1:])
+            for words in locked_lines
+        ):
+            raise ContractError("Python adapter lock must hash every pinned package")
         return
     try:
         manifest = tomllib.loads((adapter_root / "Cargo.toml").read_text())
