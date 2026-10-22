@@ -1718,12 +1718,11 @@ where
                 // message, without synthesizing PHP reason/sequence fields.
                 || (kind == "RustWorkflowTaskFailure"
                     && super::task_failures::blocks_replay(&body["failure"])));
-        if !waiting && !range_blocked && super::task_failures::blocks_replay(&body["failure"]) {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "development_workflow_task_failure_unqualified",
-            ));
-        }
+        // Published PHP records every replay-blocking failure the same way
+        // (`workflowTaskFailureBlocksReplay`): the task stays failed with its
+        // replay block, without a retry, until an operator repairs the run.
+        let range_blocked =
+            range_blocked || (!waiting && super::task_failures::blocks_replay(&body["failure"]));
         if !waiting && self.namespace.as_ref() != "default" {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,

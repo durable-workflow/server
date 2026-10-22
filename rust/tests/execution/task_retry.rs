@@ -198,16 +198,16 @@ async fn concurrent_failure_and_completion_have_one_committed_outcome() {
 }
 
 #[tokio::test]
-async fn replay_failures_and_invalid_reports_leave_the_original_lease_usable() {
+async fn invalid_reports_leave_the_original_lease_usable() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
     register(&app, "retry-worker", json!(["echo"]), json!([])).await;
     start(&app, "retry-refusals").await;
     let task = poll(&app, "retry-worker", "workflow").await;
+    // Replay-blocking reports are recorded, as PHP does; see
+    // `every_replay_blocking_failure_is_recorded_without_a_retry_like_php`.
     for value in [
-        json!({"message":"non-deterministic replay","type":"WorkerFailure"}),
-        json!({"message":"ordinary text","reason":"duplicate_version_marker"}),
         json!({"message":"temporary","sequence":0}),
         json!({"message":"temporary","type":7}),
     ] {
@@ -657,4 +657,42 @@ async fn two_nodes_commit_one_range_repair_with_server_derived_audit_identity() 
     first.close().await;
     second.close().await;
     database.remove().await;
+}
+
+// Published PHP records every failure `workflowTaskFailureBlocksReplay`
+// matches, not only the range cases: a structured replay reason, an SDK's
+// nondeterminism error, or an encoding failure after the server refused the
+// completion. The task stays failed with its replay block and no retry, and
+// the run waits for repair.
+#[tokio::test]
+async fn every_replay_blocking_failure_is_recorded_without_a_retry_like_php() {
+    for (index, failure) in [
+        json!({"type":"DurableWorkflow\\Exception\\NonDeterministicWorkflow","message":"Recorded command differs.",
+            "reason":"workflow_nondeterministic","sequence":1}),
+        json!({"type":"NonDeterminismError","message":"workflow code produced a different command at sequence 1"}),
+        json!({"type":"DurableWorkflow\\Exception\\TransportException",
+            "message":"unsupported_payload_codec: workflow payload codec is not supported"}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let database = TestDatabase::new().await;
+        let app = router(database.open().await.unwrap());
+        register(&app, "replay-worker", json!(["echo"]), json!([])).await;
+        let started = start(&app, &format!("replay-blocked-{index}")).await;
+        let task = poll(&app, "replay-worker", "workflow").await;
+        let prefix = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+        let body = json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"],"failure":failure});
+        let accepted = report(&app, &task, body).await;
+        assert_eq!(accepted.0, StatusCode::OK, "{}", accepted.1);
+        assert_eq!((accepted.1["recorded"].clone(), accepted.1["next_task_id"].clone()), (json!(true), Value::Null), "{}", accepted.1);
+        assert_eq!(poll(&app, "replay-worker", "workflow").await, Value::Null, "no retry task");
+        assert_eq!(run_history(&app, &started["workflow_id"], &started["run_id"]).await, prefix);
+        let path = format!("/api/workflows/{}/runs/{}/debug", started["workflow_id"].as_str().unwrap(), started["run_id"].as_str().unwrap());
+        let (status, debug) = request(&app, "GET", &path, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{debug}");
+        assert_eq!(debug["latest_workflow_task_failure"]["replay_blocked"], true, "{debug}");
+        let summary = run_observation_active_summaries::observe(&app, "default", &started).await;
+        assert_eq!(summary["liveness_state"], "workflow_replay_blocked", "{summary}");
+    }
 }
