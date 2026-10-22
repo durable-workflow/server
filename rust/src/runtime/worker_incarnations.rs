@@ -142,7 +142,7 @@ mod tests {
             .unwrap();
         let definition = json!({"worker_id":"original-worker","task_queue":"original-queue",
             "runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":[]});
-        runtime.register(definition.clone()).await.unwrap();
+        runtime.register_unversioned(definition.clone()).await.unwrap();
         let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", path.display()))
             .await
             .unwrap();
@@ -154,7 +154,7 @@ mod tests {
         let mut replacement = definition;
         replacement["task_queue"] = json!("replacement-queue");
         assert!(matches!(
-            runtime.register(replacement).await,
+            runtime.register_unversioned(replacement).await,
             Err(RuntimeError::Database(_))
         ));
         let after: Vec<(String,String,String,String,Option<i64>,Option<String>,String,String)> =
