@@ -29,6 +29,10 @@ pub(super) struct Store<DB: Backend> {
     pub(super) history_budget: super::history_budget::Config,
     /// How long a claimed workflow task stays leased (DW_WORKFLOW_TASK_TIMEOUT).
     pub(super) workflow_task_lease_seconds: i64,
+    /// How long a claimed activity task stays leased (DW_ACTIVITY_TASK_TIMEOUT).
+    pub(super) activity_task_lease_seconds: i64,
+    /// How long a completion wait for an update lasts by default.
+    pub(super) update_wait_seconds: i64,
     pub(super) search_attribute_limit: i64,
     /// When a silent registration stops counting (`server.workers.stale_after_seconds`).
     pub(super) worker_stale_after_seconds: i64,
@@ -107,6 +111,8 @@ where
             memo_size_limit: Some(262_144),
             history_budget: super::history_budget::Config::default(),
             workflow_task_lease_seconds: 60,
+            activity_task_lease_seconds: 300,
+            update_wait_seconds: 10,
             search_attribute_limit: 100,
             worker_stale_after_seconds: 30,
         }
@@ -120,6 +126,8 @@ where
             memo_size_limit: self.memo_size_limit,
             history_budget: self.history_budget,
             workflow_task_lease_seconds: self.workflow_task_lease_seconds,
+            activity_task_lease_seconds: self.activity_task_lease_seconds,
+            update_wait_seconds: self.update_wait_seconds,
             search_attribute_limit: self.search_attribute_limit,
             worker_stale_after_seconds: self.worker_stale_after_seconds,
         }
@@ -676,12 +684,13 @@ where
                     "declared_signals":names,"signal_admission":"handler_not_declared","reason":reason,
                     "message":format!("Workflow signal [{name}] is unknown for workflow type [{workflow_type}]: the durable command contract does not declare that handler. Command contract source [durable_history], declared signals [{labels}].")});
             }
-            prepared.command = prepare_rejected_signal_command(
+            prepared.command = prepare_rejected_command(
                 transition_codec,
                 name.to_owned(),
                 prepared.values.clone(),
                 validation_errors.clone(),
                 diagnostics.clone(),
+                "signal_codec_unavailable",
             )
             .await?;
             let rejected_at = now();
@@ -1444,7 +1453,7 @@ where
                 .checked_add(1)
                 .ok_or_else(|| refuse(StatusCode::CONFLICT, "task_attempt_exhausted"))?;
             let expires = if kind == "activity" && Self::cancellation_request(&run)?.is_none() {
-                now() + chrono::Duration::seconds(300)
+                now() + chrono::Duration::seconds(self.activity_task_lease_seconds)
             } else {
                 self.cancellation_lease_expiry(&run)?
             };
@@ -3417,60 +3426,60 @@ pub(super) async fn prepare_control_arguments(
     .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?
 }
 
-async fn prepare_rejected_signal_command(
+/// The Avro command payload of a rejected signal or update: its name, the
+/// original arguments, the validation errors and any diagnostics.
+pub(super) async fn prepare_rejected_command(
     semaphore: Arc<Semaphore>,
     name: String,
     values: Vec<crate::codec::Value>,
     validation_errors: Value,
     diagnostics: Value,
+    unavailable: &'static str,
 ) -> Result<String> {
     let permit = semaphore
         .acquire_owned()
         .await
-        .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?;
+        .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, unavailable))?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         use crate::codec::Value as Payload;
         // Only small server-authored diagnostics cross this conversion.
         // Original customer arguments remain official decoded Values, so a
         // JSON projection cannot round an int64 or turn bytes into strings.
-        fn diagnostic(value: Value) -> Result<Payload> {
-            Ok(match value {
+        // A number has no exact diagnostic form, so it is refused.
+        fn diagnostic(value: Value) -> Option<Payload> {
+            Some(match value {
                 Value::Null => Payload::Null,
                 Value::Bool(value) => Payload::Boolean(value),
                 Value::String(value) => Payload::String(value),
                 Value::Array(values) => {
-                    Payload::Array(values.into_iter().map(diagnostic).collect::<Result<_>>()?)
+                    Payload::Array(values.into_iter().map(diagnostic).collect::<Option<_>>()?)
                 }
                 Value::Object(values) => Payload::Map(
                     values
                         .into_iter()
-                        .map(|(key, value)| Ok((key, diagnostic(value)?)))
-                        .collect::<Result<_>>()?,
+                        .map(|(key, value)| Some((key, diagnostic(value)?)))
+                        .collect::<Option<_>>()?,
                 ),
-                Value::Number(_) => {
-                    return Err(refuse(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "signal_codec_unavailable",
-                    ));
-                }
+                Value::Number(_) => return None,
             })
         }
-        let Payload::Map(mut command) = diagnostic(diagnostics)? else {
-            return Err(refuse(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "signal_codec_unavailable",
-            ));
+        let unavailable = || refuse(StatusCode::SERVICE_UNAVAILABLE, unavailable);
+        let Some(Payload::Map(mut command)) = diagnostic(diagnostics) else {
+            return Err(unavailable());
         };
         command.insert("name".into(), Payload::String(name));
         command.insert("arguments".into(), Payload::Array(values));
-        command.insert("validation_errors".into(), diagnostic(validation_errors)?);
+        command.insert(
+            "validation_errors".into(),
+            diagnostic(validation_errors).ok_or_else(unavailable)?,
+        );
         crate::codec::ValueCodec::new()
             .and_then(|codec| codec.encode(&Payload::Map(command)))
-            .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))
+            .map_err(|_| unavailable())
     })
     .await
-    .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?
+    .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, unavailable))?
 }
 
 fn signal_argument_errors(contract: &Value, name: &str, values: &[crate::codec::Value]) -> Value {

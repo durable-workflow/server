@@ -12,9 +12,102 @@ use super::laravel_validation::{Rule, failure_messages, rule_errors};
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Semaphore;
 
 const MAX_UPDATES_PER_RUN: i64 = 64;
+
+/// What `rejectUpdateCommand` records for one refused update.
+struct UpdateRejection<'a, R> {
+    workflow_id: &'a str,
+    instance: &'a R,
+    run: &'a R,
+    name: &'a str,
+    prepared: &'a PreparedControlArguments,
+    request_id: Option<&'a str>,
+    context: Option<Value>,
+    reason: &'static str,
+    outcome: &'static str,
+    validation_errors: Value,
+}
+
+/// `DefaultWorkflowControlPlane::updateStatus` for a rejected update.
+fn rejection_status(outcome: &str) -> StatusCode {
+    match outcome {
+        "rejected_unknown_update" => StatusCode::NOT_FOUND,
+        "rejected_invalid_arguments" => StatusCode::UNPROCESSABLE_ENTITY,
+        _ => StatusCode::CONFLICT,
+    }
+}
+
+/// `WorkflowStub::normalizePositionalCommandArguments` errors for an update
+/// whose contract native can check: required, null and type messages, then
+/// any extra arguments.
+fn update_argument_errors(contract: &Value, name: &str, values: &[crate::codec::Value]) -> Value {
+    use crate::codec::Value as Payload;
+    let parameters = contract["declared_update_contracts"]
+        .as_array()
+        .and_then(|contracts| contracts.iter().find(|contract| contract["name"] == name))
+        .and_then(|contract| contract["parameters"].as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut errors = serde_json::Map::new();
+    let mut push = |label: &str, message: String| {
+        if let Some(messages) = errors
+            .entry(label.to_owned())
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+        {
+            messages.push(json!(message));
+        }
+    };
+    let check = |parameter: &Value, value: &Payload| -> Option<String> {
+        let label = parameter["name"].as_str().unwrap_or("argument");
+        if matches!(value, Payload::Null) {
+            let allows_null = parameter["allows_null"]
+                .as_bool()
+                .unwrap_or(parameter["type"].is_null() || parameter["type"] == "");
+            return (!allows_null).then(|| format!("The {label} argument cannot be null."));
+        }
+        let kind = parameter["type"].as_str().map(str::trim).unwrap_or_default();
+        let valid = match kind {
+            "" | "mixed" => true,
+            "array" => matches!(value, Payload::Array(_) | Payload::Map(_)),
+            "int" => matches!(value, Payload::Long(_)),
+            "float" => matches!(value, Payload::Double(_) | Payload::Long(_)),
+            "bool" => matches!(value, Payload::Boolean(_)),
+            "string" => matches!(value, Payload::String(_)),
+            _ => true,
+        };
+        (!valid).then(|| format!("The {label} argument must be of type {kind}."))
+    };
+    let mut consumed = 0;
+    for parameter in &parameters {
+        let label = parameter["name"].as_str().unwrap_or("argument");
+        if parameter["variadic"] == true {
+            while let Some(value) = values.get(consumed) {
+                if let Some(message) = check(parameter, value) {
+                    push(label, message);
+                }
+                consumed += 1;
+            }
+            continue;
+        }
+        if let Some(value) = values.get(consumed) {
+            if let Some(message) = check(parameter, value) {
+                push(label, message);
+            }
+            consumed += 1;
+        } else if parameter["required"] == true {
+            push(label, format!("The {label} argument is required."));
+        }
+    }
+    if consumed < values.len() {
+        push("arguments", format!("Too many arguments were provided for update [{name}]."));
+    }
+    Value::Object(errors)
+}
 const UPDATE_ROW: &str = "SELECT u.*,c.workflow_type,c.message_sequence FROM workflow_updates u JOIN workflow_commands c ON c.id=u.workflow_command_id WHERE u.id=$1";
 
 #[derive(Clone, Copy)]
@@ -209,6 +302,7 @@ where
         body: Value,
         prepared: PreparedControlArguments,
         context: Option<Value>,
+        codec: Arc<Semaphore>,
     ) -> Result<(StatusCode, Value)> {
         if name.trim().is_empty() || name.len() > 255 {
             return Err(refuse(
@@ -263,20 +357,36 @@ where
             }
             DB::string(&existing, "id")?
         } else {
-            let run = Self::active_run(&mut tx, &run_id)
+            let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
+                .bind(&run_id)
+                .fetch_one(&mut *tx)
                 .await
-                .map_err(|error| at_update_lookup(error, UpdateLookup::AdmissionRun))?;
+                .map_err(|error| at_update_lookup(error.into(), UpdateLookup::AdmissionRun))?;
+            let active = matches!(
+                DB::string(&run, "status")?.as_str(),
+                "pending" | "running" | "waiting"
+            );
+            // A closed run's update is rejected durably, as in PHP. A live
+            // run keeps the cancellation deadline fence.
+            if active {
+                Self::active_run(&mut tx, &run_id)
+                    .await
+                    .map_err(|error| at_update_lookup(error, UpdateLookup::AdmissionRun))?;
+            }
             let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
                 .bind(&run_id).fetch_one(&mut *tx).await
                 .map_err(|error| at_update_lookup(error.into(), UpdateLookup::StartContract))?;
             let contract = DB::document_row(&started, "payload")?;
-            if !contract["declared_updates"]
+            // `WorkflowStub::submitUpdate`'s order: a closed run, an unknown
+            // update, then invalid arguments. Each records a rejection.
+            let rejection = if !active {
+                Some(("run_not_active", "rejected_not_active", json!([])))
+            } else if !contract["declared_updates"]
                 .as_array()
                 .is_some_and(|names| names.iter().any(|value| value == name))
             {
-                return Err(refuse(StatusCode::NOT_FOUND, "unknown_update"));
-            }
-            if contract["declared_update_validators"]
+                Some(("unknown_update", "rejected_unknown_update", json!([])))
+            } else if contract["declared_update_validators"]
                 .as_array()
                 .is_some_and(|names| names.iter().any(|value| value == name))
             {
@@ -284,15 +394,63 @@ where
                     StatusCode::UNPROCESSABLE_ENTITY,
                     "update_validation_not_implemented",
                 ));
+            } else {
+                match validate_arguments(
+                    &contract,
+                    "declared_update_contracts",
+                    name,
+                    &prepared.values,
+                    "unsupported_update_contract",
+                    "invalid_update_arguments",
+                ) {
+                    Ok(()) => None,
+                    Err(super::RuntimeError::Refused {
+                        reason: "invalid_update_arguments",
+                        ..
+                    }) => Some((
+                        "invalid_update_arguments",
+                        "rejected_invalid_arguments",
+                        update_argument_errors(&contract, name, &prepared.values),
+                    )),
+                    Err(error) => return Err(error),
+                }
+            };
+            if let Some((reason, outcome, validation_errors)) = rejection {
+                let update_id = Self::reject_update(
+                    &mut tx,
+                    codec,
+                    UpdateRejection {
+                        workflow_id,
+                        instance: &instance,
+                        run: &run,
+                        name,
+                        prepared: &prepared,
+                        request_id,
+                        context: context.clone(),
+                        reason,
+                        outcome,
+                        validation_errors,
+                    },
+                )
+                .await?;
+                tx.commit().await?;
+                let update = Self::query(UPDATE_ROW)
+                    .bind(&update_id)
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err(|error| at_update_lookup(error.into(), UpdateLookup::ReceiptRead))?;
+                return Ok((
+                    rejection_status(outcome),
+                    // A rejected completion wait reports the timeout it
+                    // would have used, as `attemptUpdateWithArguments` does.
+                    Self::update_result(
+                        &update,
+                        wait_for,
+                        false,
+                        (wait_for == "completed").then_some(timeout.unwrap_or(self.update_wait_seconds)),
+                    )?,
+                ));
             }
-            validate_arguments(
-                &contract,
-                "declared_update_contracts",
-                name,
-                &prepared.values,
-                "unsupported_update_contract",
-                "invalid_update_arguments",
-            )?;
             // Published PHP admits an update whenever its run is active. It is
             // queued behind an earlier signal that is not applied yet
             // (`UpdateCommandGate::blockingSignal`).
@@ -364,8 +522,13 @@ where
         // A completion wait owns neither the transaction nor a pool connection.
         tx.commit().await?;
         self.wake.notify_waiters();
+        // `UpdateWaitPolicy`: a completion wait lasts the requested seconds,
+        // else DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS, and only a
+        // completion wait reports them.
+        let wait_seconds = timeout.unwrap_or(self.update_wait_seconds);
+        let reported = (wait_for == "completed").then_some(wait_seconds);
         let deadline =
-            tokio::time::Instant::now() + Duration::from_secs(timeout.unwrap_or(30) as u64);
+            tokio::time::Instant::now() + Duration::from_secs(wait_seconds as u64);
         loop {
             let wake = self.wake.notified();
             let update = Self::query(UPDATE_ROW)
@@ -376,6 +539,13 @@ where
             let status = DB::string(&update, "status")?;
             let completed = status == "completed";
             let failed = status == "failed";
+            if status == "rejected" {
+                let outcome = DB::optional_string(&update, "outcome")?;
+                return Ok((
+                    rejection_status(outcome.as_deref().unwrap_or_default()),
+                    Self::update_result(&update, wait_for, false, reported)?,
+                ));
+            }
             let timed_out = wait_for == "completed"
                 && !completed
                 && !failed
@@ -389,11 +559,81 @@ where
                     } else {
                         StatusCode::ACCEPTED
                     },
-                    Self::update_result(&update, wait_for, timed_out, timeout)?,
+                    Self::update_result(&update, wait_for, timed_out, reported)?,
                 ));
             }
             tokio::select! { _ = wake => {}, _ = tokio::time::sleep(Duration::from_millis(50)) => {} }
         }
+    }
+
+    /// `WorkflowStub::rejectUpdateCommand`: a rejected command and update,
+    /// and an `UpdateRejected` event on the run. Nothing is delivered.
+    async fn reject_update(
+        tx: &mut Transaction<'_, DB>,
+        codec: Arc<Semaphore>,
+        rejection: UpdateRejection<'_, DB::Row>,
+    ) -> Result<String> {
+        let UpdateRejection {
+            workflow_id,
+            instance,
+            run,
+            name,
+            prepared,
+            request_id,
+            context,
+            reason,
+            outcome,
+            validation_errors,
+        } = rejection;
+        let run_id = DB::string(run, "id")?;
+        let payload = super::store::prepare_rejected_command(
+            codec,
+            name.to_owned(),
+            prepared.values.clone(),
+            validation_errors.clone(),
+            json!({}),
+            "update_codec_unavailable",
+        )
+        .await?;
+        let command_id = id();
+        let update_id = id();
+        let command_sequence = DB::number(run, "last_command_sequence")?
+            .checked_add(1)
+            .ok_or_else(|| refuse(StatusCode::CONFLICT, "command_sequence_exhausted"))?;
+        let message_sequence = DB::number(instance, "last_message_sequence")?
+            .checked_add(1)
+            .ok_or_else(|| refuse(StatusCode::CONFLICT, "message_sequence_exhausted"))?;
+        let rejected_at = now();
+        let context = context.unwrap_or_else(|| json!({"request":{"request_id":request_id},"update_name":name}));
+        Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,source,status,outcome,workflow_type,payload_codec,payload,rejection_reason,command_sequence,message_sequence,rejected_at,context,request_id) VALUES ($1,$2,$3,$4,'update','control_plane','rejected',$5,$6,'avro',$7,$8,$9,$10,$11,$12,$13)")
+            .bind(&command_id).bind(workflow_id).bind(&run_id).bind(&run_id).bind(outcome).bind(DB::string(run, "workflow_type")?)
+            .bind(&payload).bind(reason).bind(command_sequence).bind(message_sequence).bind(DB::bind_time(rejected_at))
+            .bind(DB::document(&context)).bind(request_id).execute(&mut **tx).await?;
+        Self::query("INSERT INTO workflow_updates(id,workflow_command_id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,update_name,status,outcome,command_sequence,payload_codec,arguments,validation_errors,rejection_reason,rejected_at,closed_at) VALUES ($1,$2,$3,$4,$5,$6,'rejected',$7,$8,'avro',$9,$10,$11,$12,$13)")
+            .bind(&update_id).bind(&command_id).bind(workflow_id).bind(&run_id).bind(&run_id).bind(name).bind(outcome)
+            .bind(command_sequence).bind(&prepared.arguments).bind(DB::document(&validation_errors)).bind(reason)
+            .bind(DB::bind_time(rejected_at)).bind(DB::bind_time(rejected_at)).execute(&mut **tx).await?;
+        Self::query("UPDATE workflow_runs SET last_command_sequence=$1 WHERE id=$2")
+            .bind(command_sequence)
+            .bind(&run_id)
+            .execute(&mut **tx)
+            .await?;
+        Self::query("UPDATE workflow_instances SET last_message_sequence=$1 WHERE id=$2")
+            .bind(message_sequence)
+            .bind(workflow_id)
+            .execute(&mut **tx)
+            .await?;
+        // PHP drops null and empty fields from this event.
+        let mut event = json!({"workflow_command_id":command_id,"update_id":update_id,
+            "workflow_instance_id":workflow_id,"workflow_run_id":run_id,"update_name":name,
+            "arguments":wire(&prepared.arguments)});
+        if validation_errors.as_object().is_some_and(|errors| !errors.is_empty()) {
+            event["validation_errors"] = validation_errors;
+        }
+        Self::append(tx, &run_id, "UpdateRejected", event, None, Some(&command_id))
+            .await
+            .map_err(|error| at_update_lookup(error, UpdateLookup::HistoryAppend))?;
+        Ok(update_id)
     }
 
     fn update_result(
@@ -424,17 +664,23 @@ where
         // MariaDB promotes COALESCE(unsigned BIGINT,0) to DECIMAL. Preserve
         // the physical nullable integer and its exact logical value instead.
         let sequence = DB::optional_number(update, "workflow_sequence")?;
+        let rejected = status == "rejected";
+        let rejection_reason = DB::optional_string(update, "rejection_reason")?;
+        let validation_errors = DB::optional_document_row(update, "validation_errors")?
+            .filter(|errors| !errors.is_null())
+            .unwrap_or_else(|| json!([]));
         let response = json!({
-            "accepted":true,"workflow_id":DB::string(update,"workflow_instance_id")?,"run_id":DB::string(update,"workflow_run_id")?,
+            "accepted":!rejected,"workflow_id":DB::string(update,"workflow_instance_id")?,"run_id":DB::string(update,"workflow_run_id")?,
             "resolved_run_id":DB::string(update,"resolved_workflow_run_id")?,"requested_run_id":null,"target_scope":"instance",
             "workflow_type":DB::string(update,"workflow_type")?,"command_id":DB::string(update,"workflow_command_id")?,
-            "command_sequence":DB::number(update,"command_sequence")?,"command_status":"accepted","command_source":"control_plane",
+            "command_sequence":DB::number(update,"command_sequence")?,"command_status":if rejected {"rejected"} else {"accepted"},"command_source":"control_plane",
             "update_id":DB::string(update,"id")?,"update_name":DB::string(update,"update_name")?,"update_status":status,
             "workflow_sequence":sequence,
             "outcome":DB::optional_string(update,"outcome")?,"result":null,"result_envelope":result.as_deref().map(wire),
             "failure_id":failure_id,"failure_message":failure_message,
-            "accepted_at":DB::instant(update,"accepted_at")?,"applied_at":DB::optional_instant(update,"applied_at")?,
-            "closed_at":DB::optional_instant(update,"closed_at")?,"reason":null,"rejection_reason":null,"validation_errors":[],
+            "accepted_at":DB::optional_instant(update,"accepted_at")?,"applied_at":DB::optional_instant(update,"applied_at")?,
+            "closed_at":DB::optional_instant(update,"closed_at")?,"reason":if rejected {json!(rejection_reason)} else {Value::Null},
+            "rejection_reason":rejection_reason,"validation_errors":validation_errors,
             "wait_for":wait_for,"wait_timed_out":timed_out,"wait_timeout_seconds":timeout
         });
         let name = response["update_name"].as_str().unwrap_or_default().to_owned();

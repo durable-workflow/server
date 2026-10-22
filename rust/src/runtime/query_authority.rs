@@ -17,6 +17,12 @@ pub struct QueryTaskConfig {
     pub worker_heartbeat_interval_seconds: i64,
     /// How long a claimed workflow task stays leased, as PHP's DW_WORKFLOW_TASK_TIMEOUT.
     pub workflow_task_lease_seconds: i64,
+    /// How long a claimed activity task stays leased, as PHP's
+    /// `ActivityTaskLeaseConfiguration` (DW_ACTIVITY_TASK_TIMEOUT).
+    pub activity_task_lease_seconds: i64,
+    /// `UpdateWaitPolicy::completionTimeoutSeconds`
+    /// (DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS).
+    pub update_wait_completion_timeout_seconds: i64,
     pub poll_timeout_seconds: i64,
 }
 
@@ -29,6 +35,8 @@ impl Default for QueryTaskConfig {
             worker_stale_after_seconds: 30,
             worker_heartbeat_interval_seconds: 10,
             workflow_task_lease_seconds: 60,
+            activity_task_lease_seconds: 300,
+            update_wait_completion_timeout_seconds: 10,
             poll_timeout_seconds: 5,
         }
     }
@@ -94,6 +102,9 @@ impl QueryTaskConfig {
             // PHP clamps the advertised cadence to one second through an hour.
             worker_heartbeat_interval_seconds: heartbeat.clamp(1, 3600),
             workflow_task_lease_seconds: lease.max(1),
+            activity_task_lease_seconds: crate::config_audit::activity_task_lease_seconds(|key| env::var(key).ok())
+                .map_err(|_| refuse(StatusCode::BAD_REQUEST, "invalid_activity_task_timeout"))?,
+            update_wait_completion_timeout_seconds: crate::config_audit::update_wait_completion_timeout_seconds(|key| env::var(key).ok()),
             poll_timeout_seconds: integer(
                 "DW_QUERY_TASK_POLL_TIMEOUT",
                 "WORKFLOW_SERVER_QUERY_TASK_POLL_TIMEOUT",

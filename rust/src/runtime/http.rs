@@ -1332,8 +1332,9 @@ async fn worker_heartbeat(
 }
 fn metrics_config(runtime: &Runtime) -> super::operator_metrics::MetricsConfig {
     super::operator_metrics::MetricsConfig {
-        // Native leases a claimed workflow task for 30 seconds.
-        workflow_task_lease_seconds: 30,
+        // `MatchingRoleSnapshot` reports the configured task leases.
+        workflow_task_lease_seconds: runtime.queries.workflow_task_lease_seconds,
+        activity_task_lease_seconds: runtime.queries.activity_task_lease_seconds,
         abandoned_upload_expiry_seconds: runtime.external.abandoned_seconds.max(1),
     }
 }

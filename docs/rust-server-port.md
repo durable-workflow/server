@@ -117,6 +117,14 @@ contract fixture before its correction.
   signal and update counts with their payload size at intake, and the
   payload size of an activity's result. Native enforces only the memo size.
   #612 tracks the rest.
+- **Environment settings.** Of PHP's 164 contract settings, native honors
+  38 and ignores 57 that change nothing it serves. It refuses to start on a
+  non-default value of the other 69
+  ([checkpoint](rust-server-port-checkpoints/2026-10-22-environment-contract.md)).
+  Several of those are cheap to honor: the history page sizes, repair
+  timing and the multi-node declaration. Native's defaults still differ from
+  PHP's for three honored settings: the worker poll timeout, history page
+  size and operation name length.
 - **Key order inside plain JSON input.** For input that is not an envelope,
   PHP encodes nested objects as Avro maps in request order; native encodes
   them with sorted keys. The decoded values are equal, but the blobs differ.
@@ -238,10 +246,6 @@ contract fixture before its correction.
   number of open activities, timers, children and waits. Native refuses
   `409 pending_durable_operations` when a task opens a wait while another
   wait is open, or starts a child while other work is outstanding.
-- **Continue-as-new with received signals (Server 2.10.0).** Published
-  PHP's continue-as-new moves received signals that have a declared
-  handler, and accepted updates, to the new run. Native refuses
-  continue-as-new while a signal is received and no open wait can take it.
 - **Trace context (Workflow #773 / workflow#788, not yet published).** A
   Workflow minor will add nullable `observability_context` columns on runs,
   commands and tasks, plus an entry in schedule metadata. Native-owned
