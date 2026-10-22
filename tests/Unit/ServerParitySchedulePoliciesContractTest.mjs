@@ -61,3 +61,12 @@ test('an outcome difference shows the trigger responses', () => {
   assert.throws(() => checkSchedulePolicies(fixture, observation, workflowId),
     /skip trigger outcomes \["skipped","skipped","skipped"\], expected \["triggered","skipped","skipped"\]: .*"reason":"overlap_policy_skip"/);
 });
+test('a fifth sequence in its own namespace passes, a sixth does not', () => {
+  const fifth = model();
+  const replayed = JSON.parse(JSON.stringify(fifth.schedule_policies).replaceAll('test-schedule-policies-schedules', 'test-schedule-policies-schedules-r5'));
+  fifth.schedule_policies = {...replayed, attempts: 5};
+  assert.deepStrictEqual(checkSchedulePolicies(fixture, fifth, workflowId), projection);
+  const sixth = model();
+  sixth.schedule_policies = {...JSON.parse(JSON.stringify(sixth.schedule_policies).replaceAll('test-schedule-policies-schedules', 'test-schedule-policies-schedules-r6')), attempts: 6};
+  assert.throws(() => checkSchedulePolicies(fixture, sixth, workflowId), /recorded sequence attempts/);
+});

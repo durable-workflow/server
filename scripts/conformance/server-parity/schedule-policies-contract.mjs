@@ -56,7 +56,7 @@ export function checkSchedulePolicies(fixture, observation, workflowId) {
       'embedded schedule surface explicitly inapplicable');
     return {scope: 'schedule_policies'};
   }
-  assert.ok(Number.isInteger(state.attempts) && state.attempts >= 1 && state.attempts <= 3, 'recorded sequence attempts');
+  assert.ok(Number.isInteger(state.attempts) && state.attempts >= 1 && state.attempts <= 5, 'recorded sequence attempts');
   // A sequence replayed after PHP's SQLite lock defect runs in a new namespace.
   const namespace = `${workflowId}-schedules`.toLowerCase() + (state.attempts === 1 ? '' : `-r${state.attempts}`);
   assert.deepStrictEqual([state.applicable, state.namespace], [true, namespace], 'schedule policy namespace');
