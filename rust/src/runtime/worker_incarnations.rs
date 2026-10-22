@@ -129,7 +129,6 @@ pub(super) async fn token() -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::runtime::{Runtime, RuntimeError};
     use serde_json::json;
 
