@@ -421,7 +421,7 @@ impl Runtime {
         .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?
     }
 
-    pub(crate) async fn start(&self, body: Value) -> Result<Value> {
+    pub(crate) async fn start(&self, body: Value, context: Option<Value>) -> Result<Value> {
         // PHP validates the request before it reads the memo or the input.
         let mut body = super::start_request::normalized(body);
         super::input_envelope::transport(&body)?;
@@ -441,9 +441,9 @@ impl Runtime {
             super::memos::prepare_initial(self.signal_codec.clone(), body["memo"].clone()).await?;
         let external = self.prepare_external(&body["input"]).await?;
         match &*self.storage {
-            Storage::Sqlite(store) => store.start(body, memo, external).await,
-            Storage::Postgres(store) => store.start(body, memo, external).await,
-            Storage::MySql(store) => store.start(body, memo, external).await,
+            Storage::Sqlite(store) => store.start(body, memo, external, context).await,
+            Storage::Postgres(store) => store.start(body, memo, external, context).await,
+            Storage::MySql(store) => store.start(body, memo, external, context).await,
         }
     }
     pub(crate) async fn create_schedule(
@@ -493,6 +493,7 @@ impl Runtime {
         run_id: Option<&str>,
         name: &str,
         body: Value,
+        context: Option<Value>,
     ) -> Result<Value> {
         let body = super::start_request::normalized(body);
         super::input_envelope::transport(&body)?;
@@ -516,6 +517,7 @@ impl Runtime {
                         body,
                         prepared,
                         self.transition_codec.clone(),
+                        context,
                     )
                     .await
             }
@@ -528,6 +530,7 @@ impl Runtime {
                         body,
                         prepared,
                         self.transition_codec.clone(),
+                        context,
                     )
                     .await
             }
@@ -540,6 +543,7 @@ impl Runtime {
                         body,
                         prepared,
                         self.transition_codec.clone(),
+                        context,
                     )
                     .await
             }
@@ -605,6 +609,7 @@ impl Runtime {
         run_id: Option<&str>,
         name: &str,
         body: Value,
+        context: Option<Value>,
     ) -> Result<(StatusCode, Value)> {
         let body = super::start_request::normalized(body);
         super::input_envelope::transport(&body)?;
@@ -627,17 +632,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .update_workflow(workflow_id, run_id, name, body, prepared)
+                    .update_workflow(workflow_id, run_id, name, body, prepared, context)
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .update_workflow(workflow_id, run_id, name, body, prepared)
+                    .update_workflow(workflow_id, run_id, name, body, prepared, context)
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .update_workflow(workflow_id, run_id, name, body, prepared)
+                    .update_workflow(workflow_id, run_id, name, body, prepared, context)
                     .await
             }
         }
@@ -649,6 +654,7 @@ impl Runtime {
         run_id: Option<&str>,
         name: &str,
         body: Value,
+        command: Option<Value>,
     ) -> Result<(StatusCode, Value)> {
         // `validateOperationName`, `workflowBound`, then `input` =>
         // nullable|array; other request fields are ignored, as in PHP.
@@ -692,17 +698,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries)
+                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries, command.as_ref())
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries)
+                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries, command.as_ref())
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries)
+                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries, command.as_ref())
                     .await
             }
         }
@@ -916,7 +922,12 @@ impl Runtime {
     delegate!(deliver_cancellation(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     delegate!(task_history(task_id: &str, body: Value) -> Result<Value>);
     delegate!(fail_workflow_task(task_id: &str, body: Value) -> Result<Value>);
-    pub(crate) async fn complete_workflow(&self, task_id: &str, body: Value) -> Result<Value> {
+    pub(crate) async fn complete_workflow(
+        &self,
+        task_id: &str,
+        body: Value,
+        worker: Option<super::runtime_credentials::Principal>,
+    ) -> Result<Value> {
         let external = self.prepare_command_payloads(&body).await?;
         if let Some(commands) = body["commands"].as_array() {
             for command in commands
@@ -965,17 +976,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external)
+                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker)
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external)
+                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker)
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external)
+                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker)
                     .await
             }
         }
@@ -986,23 +997,24 @@ impl Runtime {
         workflow_id: &str,
         run_id: Option<&str>,
         body: Value,
+        context: Option<Value>,
     ) -> Result<(StatusCode, Value)> {
         let (reason, blob) =
             super::cancellation::prepare_reason(&body, self.signal_codec.clone()).await?;
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .close_workflow(command, workflow_id, run_id, reason, blob)
+                    .close_workflow(command, workflow_id, run_id, reason, blob, context)
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .close_workflow(command, workflow_id, run_id, reason, blob)
+                    .close_workflow(command, workflow_id, run_id, reason, blob, context)
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .close_workflow(command, workflow_id, run_id, reason, blob)
+                    .close_workflow(command, workflow_id, run_id, reason, blob, context)
                     .await
             }
         }
@@ -1012,6 +1024,7 @@ impl Runtime {
         workflow_id: &str,
         run_id: Option<&str>,
         body: Value,
+        context: Option<Value>,
     ) -> Result<(StatusCode, Value)> {
         let (reason, budget) = super::cooperative::validate_request(&body)?;
         match &*self.storage {
@@ -1023,6 +1036,7 @@ impl Runtime {
                         reason,
                         budget,
                         self.transition_codec.clone(),
+                        context,
                     )
                     .await
             }
@@ -1034,6 +1048,7 @@ impl Runtime {
                         reason,
                         budget,
                         self.transition_codec.clone(),
+                        context,
                     )
                     .await
             }
@@ -1045,6 +1060,7 @@ impl Runtime {
                         reason,
                         budget,
                         self.transition_codec.clone(),
+                        context,
                     )
                     .await
             }

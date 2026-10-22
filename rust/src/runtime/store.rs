@@ -163,6 +163,7 @@ where
         body: Value,
         memo: super::memos::PreparedMemo,
         external: Option<super::external_resolution::PreparedExternal>,
+        context: Option<Value>,
     ) -> Result<Value> {
         let mut tx = self.begin().await?;
         let arguments = external.as_ref().map(|prepared| prepared.stored());
@@ -176,6 +177,7 @@ where
             &self.namespace,
             Some(&memo),
             arguments.as_deref(),
+            context.as_ref(),
         )
         .await?;
         tx.commit().await?;
@@ -191,6 +193,7 @@ where
         namespace: &str,
         memo: Option<&super::memos::PreparedMemo>,
         external_arguments: Option<&str>,
+        context: Option<&Value>,
     ) -> Result<Value> {
         let request = super::start_request::validate(body)?;
         // PHP names an instance the request leaves unnamed.
@@ -218,7 +221,7 @@ where
                         "outcome":"rejected_workflow_id_reserved_in_namespace","rejection_reason":"workflow_id_reserved_in_namespace",
                         "message":format!("Workflow [{workflow_id}] is already reserved in another namespace.")})});
             }
-            return Self::start_existing(tx, &existing, &request, workflow_id, namespace, &arguments).await;
+            return Self::start_existing(tx, &existing, &request, workflow_id, namespace, &arguments, context).await;
         }
         let run_id = id();
         let command_id = id();
@@ -258,8 +261,9 @@ where
                     .await?;
             }
         }
-        Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,source,status,outcome,workflow_type,payload_codec,payload,command_sequence,accepted_at,applied_at) VALUES ($1,$2,$3,$4,'start','control_plane','accepted','started_new',$5,'avro',$6,1,$7,$8)")
-            .bind(&command_id).bind(workflow_id).bind(&run_id).bind(&run_id).bind(workflow_type).bind(&arguments).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
+        Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,source,status,outcome,workflow_type,payload_codec,payload,command_sequence,accepted_at,applied_at,context) VALUES ($1,$2,$3,$4,'start','control_plane','accepted','started_new',$5,'avro',$6,1,$7,$8,$9)")
+            .bind(&command_id).bind(workflow_id).bind(&run_id).bind(&run_id).bind(workflow_type).bind(&arguments).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at))
+            .bind(DB::optional_document(context.unwrap_or(&Value::Null))).execute(&mut **tx).await?;
         Self::query("UPDATE workflow_runs SET last_command_sequence=1 WHERE id=$1")
             .bind(&run_id)
             .execute(&mut **tx)
@@ -322,6 +326,7 @@ where
         workflow_id: &str,
         namespace: &str,
         arguments: &str,
+        context: Option<&Value>,
     ) -> Result<Value> {
         let run_id = DB::string(existing, "id")?;
         let status = DB::string(existing, "status")?;
@@ -338,10 +343,11 @@ where
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "command_sequence_exhausted"))?;
         let workflow_type = DB::string(existing, "workflow_type")?;
         let decided = |when: bool| DB::optional_time(when.then_some(at));
-        Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,source,status,outcome,workflow_type,payload_codec,payload,rejection_reason,command_sequence,accepted_at,applied_at,rejected_at) VALUES ($1,$2,$3,$4,'start','control_plane',$5,$6,$7,'avro',$8,$9,$10,$11,$12,$13)")
+        Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,source,status,outcome,workflow_type,payload_codec,payload,rejection_reason,command_sequence,accepted_at,applied_at,rejected_at,context) VALUES ($1,$2,$3,$4,'start','control_plane',$5,$6,$7,'avro',$8,$9,$10,$11,$12,$13,$14)")
             .bind(&command_id).bind(workflow_id).bind(&run_id).bind(&run_id).bind(command_status).bind(outcome)
             .bind(&workflow_type).bind(arguments).bind(rejection).bind(sequence)
-            .bind(decided(returned)).bind(decided(returned)).bind(decided(!returned)).execute(&mut **tx).await?;
+            .bind(decided(returned)).bind(decided(returned)).bind(decided(!returned))
+            .bind(DB::optional_document(context.unwrap_or(&Value::Null))).execute(&mut **tx).await?;
         Self::query("UPDATE workflow_runs SET last_command_sequence=$1 WHERE id=$2")
             .bind(sequence)
             .bind(&run_id)
@@ -414,7 +420,7 @@ where
         // refused signals which intentionally have no workflow history event.
         // Select metadata only: large customer payloads are never decoded or
         // copied merely to display the command's target and admission result.
-        let command_rows = Self::query("SELECT c.id,c.command_sequence,c.command_type,c.target_scope,c.requested_workflow_run_id,c.resolved_workflow_run_id,c.source,c.status,c.outcome,c.rejection_reason,c.workflow_type,c.workflow_class,c.accepted_at,c.applied_at,c.rejected_at,s.signal_name FROM workflow_commands c LEFT JOIN workflow_signal_records s ON s.workflow_command_id=c.id WHERE c.workflow_run_id=$1 AND c.workflow_instance_id=$2 ORDER BY c.command_sequence,c.created_at,c.id")
+        let command_rows = Self::query("SELECT c.id,c.command_sequence,c.command_type,c.target_scope,c.requested_workflow_run_id,c.resolved_workflow_run_id,c.source,c.status,c.outcome,c.rejection_reason,c.workflow_type,c.workflow_class,c.accepted_at,c.applied_at,c.rejected_at,c.context,s.signal_name FROM workflow_commands c LEFT JOIN workflow_signal_records s ON s.workflow_command_id=c.id WHERE c.workflow_run_id=$1 AND c.workflow_instance_id=$2 ORDER BY c.command_sequence,c.created_at,c.id")
             .bind(DB::string(&row, "id")?).bind(workflow_id).fetch_all(&self.pool).await?;
         let mut commands = Vec::with_capacity(command_rows.len());
         for command in command_rows {
@@ -428,10 +434,11 @@ where
                 "workflow_type":DB::optional_string(&command,"workflow_type")?,"workflow_class":DB::optional_string(&command,"workflow_class")?,
                 "accepted_at":DB::optional_instant(&command,"accepted_at")?,"applied_at":DB::optional_instant(&command,"applied_at")?,
                 "rejected_at":DB::optional_instant(&command,"rejected_at")?});
-            public
-                .as_object_mut()
-                .expect("command object")
-                .retain(|_, value| !value.is_null());
+            let fields = public.as_object_mut().expect("command object");
+            if let Some(context) = DB::optional_document_row(&command, "context")? {
+                fields.extend(super::command_context::described(&context));
+            }
+            fields.retain(|_, value| !value.is_null());
             commands.push(public);
         }
         let current = DB::optional_string(&row,"current_run_id")?.as_deref() == Some(DB::string(&row,"id")?.as_str());
@@ -496,7 +503,11 @@ where
         body: Value,
         mut prepared: PreparedControlArguments,
         transition_codec: Arc<Semaphore>,
+        context: Option<Value>,
     ) -> Result<Value> {
+        // The authenticated request's context; a direct call records only
+        // the request id and signal name.
+        let context = context.unwrap_or_else(|| json!({"request":{"request_id":body["request_id"]},"signal_name":name}));
         if name.trim().is_empty() || name.len() > 255 {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -629,7 +640,7 @@ where
             Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,source,status,outcome,workflow_type,payload_codec,payload,rejection_reason,command_sequence,message_sequence,rejected_at,context) VALUES ($1,$2,$3,$4,'signal','control_plane','rejected',$5,$6,'avro',$7,$8,$9,$10,$11,$12)")
                 .bind(&command_id).bind(workflow_id).bind(&current_run).bind(&current_run).bind(outcome).bind(&workflow_type)
                 .bind(&prepared.command).bind(reason).bind(command_sequence).bind(message_sequence).bind(DB::bind_time(rejected_at))
-                .bind(DB::document(&json!({"request":{"request_id":body["request_id"]},"signal_name":name}))).execute(&mut *tx).await?;
+                .bind(DB::document(&context)).execute(&mut *tx).await?;
             Self::query("INSERT INTO workflow_signal_records(id,workflow_command_id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,signal_name,status,outcome,command_sequence,payload_codec,arguments,validation_errors,rejection_reason,rejected_at,closed_at) VALUES ($1,$2,$3,$4,$5,$6,'rejected',$7,$8,'avro',$9,$10,$11,$12,$13)")
                 .bind(&signal_id).bind(&command_id).bind(workflow_id).bind(&current_run).bind(&current_run).bind(name)
                 .bind(outcome).bind(command_sequence).bind(&prepared.arguments).bind(DB::document(&validation_errors)).bind(reason)
@@ -671,7 +682,7 @@ where
         Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,source,status,outcome,workflow_type,payload_codec,payload,command_sequence,message_sequence,accepted_at,context) VALUES ($1,$2,$3,$4,'signal','control_plane','accepted','signal_received',$5,'avro',$6,$7,$8,$9,$10)")
             .bind(&command_id).bind(workflow_id).bind(&current_run).bind(&current_run).bind(DB::string(&run, "workflow_type")?)
             .bind(&prepared.command).bind(command_sequence).bind(message_sequence).bind(DB::bind_time(accepted_at))
-            .bind(DB::document(&json!({"request":{"request_id":body["request_id"]},"signal_name":name}))).execute(&mut *tx).await?;
+            .bind(DB::document(&context)).execute(&mut *tx).await?;
         Self::query("INSERT INTO workflow_signal_records(id,workflow_command_id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,signal_name,signal_wait_id,status,outcome,command_sequence,payload_codec,arguments,received_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'received','signal_received',$8,'avro',$9,$10)")
             .bind(&signal_id).bind(&command_id).bind(workflow_id).bind(&current_run).bind(&current_run).bind(name).bind(&wait_id)
             .bind(command_sequence).bind(&prepared.arguments).bind(DB::bind_time(accepted_at)).execute(&mut *tx).await?;
@@ -685,7 +696,7 @@ where
             .bind(workflow_id)
             .execute(&mut *tx)
             .await?;
-        Self::append(&mut tx, &current_run, "SignalReceived", json!({"workflow_command_id":command_id,"signal_id":signal_id,"workflow_instance_id":workflow_id,"workflow_run_id":current_run,"signal_name":name,"signal_wait_id":wait_id,"arguments":wire(&prepared.arguments),"payload_codec":"avro", "command":{"id":command_id,"sequence":command_sequence,"message_sequence":message_sequence,"type":"signal","target_scope":"instance","resolved_run_id":current_run,"status":"accepted","outcome":"signal_received"}}), None, Some(&command_id)).await?;
+        Self::append(&mut tx, &current_run, "SignalReceived", json!({"workflow_command_id":command_id,"signal_id":signal_id,"workflow_instance_id":workflow_id,"workflow_run_id":current_run,"signal_name":name,"signal_wait_id":wait_id,"arguments":wire(&prepared.arguments),"payload_codec":"avro"}), None, Some(&command_id)).await?;
         Self::enqueue_pending_signal(&mut tx, &current_run, &DB::string(&run, "queue")?).await?;
         tx.commit().await?;
         self.wake.notify_waiters();
@@ -1735,6 +1746,7 @@ where
         body: Value,
         transition_codec: Arc<Semaphore>,
         external: super::external_resolution::PreparedCommands,
+        worker: Option<super::runtime_credentials::Principal>,
     ) -> Result<Value> {
         let commands = body["commands"]
             .as_array()
@@ -2260,6 +2272,9 @@ where
             .fetch_one(&mut *tx)
             .await?;
         let run_status = DB::string(&current, "status")?;
+        if let Some(worker) = &worker {
+            Self::attribute_worker_terminal(&mut tx, &run_id, task_id, worker).await?;
+        }
         tx.summary_changed(&run_id);
         tx.commit().await?;
         self.wake.notify_waiters();
@@ -2867,6 +2882,15 @@ where
             .execute(&mut **tx)
             .await?;
         let recorded_at = recorded_at.unwrap_or_else(now);
+        // `WorkflowHistoryEvent::record`: an event recorded with a command
+        // carries that command's snapshot.
+        let mut payload = payload;
+        if let Some(command_id) = command_id
+            && payload.as_object().is_some_and(|fields| !fields.contains_key("command"))
+            && let Some(snapshot) = Self::command_snapshot(tx, command_id).await?
+        {
+            payload["command"] = snapshot;
+        }
         Self::query("INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,workflow_task_id,workflow_command_id,recorded_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
         .bind(id()).bind(run_id).bind(sequence).bind(event_type).bind(DB::document(&payload)).bind(task_id).bind(command_id).bind(DB::bind_time(recorded_at)).execute(&mut **tx).await?;
         Self::project_activity_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
@@ -2877,6 +2901,80 @@ where
         Self::project_update_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         tx.summary_changed(run_id);
         Ok(())
+    }
+
+    /// `WorkerTerminalEventAttribution::record`: the completion or failure a
+    /// workflow task recorded names the worker that reported it, in the same
+    /// transaction.
+    async fn attribute_worker_terminal(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        task_id: &str,
+        worker: &super::runtime_credentials::Principal,
+    ) -> Result<()> {
+        let Some(event) = Self::query("SELECT id,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND workflow_task_id=$2 AND event_type IN ('WorkflowCompleted','WorkflowFailed') ORDER BY sequence DESC LIMIT 1")
+            .bind(run_id)
+            .bind(task_id)
+            .fetch_optional(&mut **tx)
+            .await?
+        else {
+            return Ok(());
+        };
+        let mut payload = DB::document_row(&event, "payload")?;
+        super::command_context::worker_terminal(&mut payload, &DB::string(&event, "event_type")?, worker);
+        Self::query("UPDATE workflow_history_events SET payload=$1 WHERE id=$2")
+            .bind(DB::document(&payload))
+            .bind(DB::string(&event, "id")?)
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
+    }
+
+    /// `WorkflowHistoryEvent::commandSnapshot` of a stored command. A
+    /// signal's or update's name comes from its record, as PHP reads it from
+    /// the command payload.
+    pub(super) async fn command_snapshot(tx: &mut Transaction<'_, DB>, command_id: &str) -> Result<Option<Value>> {
+        let Some(row) = Self::query("SELECT * FROM workflow_commands WHERE id=$1")
+            .bind(command_id)
+            .fetch_optional(&mut **tx)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let command_type = DB::optional_string(&row, "command_type")?;
+        let target_name = match command_type.as_deref() {
+            Some("signal") => Self::query("SELECT signal_name FROM workflow_signal_records WHERE workflow_command_id=$1")
+                .bind(command_id).fetch_optional(&mut **tx).await?
+                .map(|record| DB::optional_string(&record, "signal_name")).transpose()?.flatten(),
+            Some("update") => Self::query("SELECT update_name FROM workflow_updates WHERE workflow_command_id=$1")
+                .bind(command_id).fetch_optional(&mut **tx).await?
+                .map(|record| DB::optional_string(&record, "update_name")).transpose()?.flatten(),
+            _ => None,
+        };
+        let time = |field: &str| -> Result<Option<String>> {
+            Ok(DB::optional_instant(&row, field)?.map(|at| at.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()))
+        };
+        Ok(Some(super::command_context::snapshot(super::command_context::CommandColumns {
+            id: command_id.to_owned(),
+            sequence: DB::optional_number(&row, "command_sequence")?,
+            message_sequence: DB::optional_number(&row, "message_sequence")?,
+            command_type,
+            target_scope: DB::optional_string(&row, "target_scope")?,
+            requested_run_id: DB::optional_string(&row, "requested_workflow_run_id")?,
+            resolved_run_id: DB::optional_string(&row, "resolved_workflow_run_id")?,
+            target_name,
+            payload_codec: DB::optional_string(&row, "payload_codec")?,
+            payload: DB::optional_string(&row, "payload")?,
+            source: DB::optional_string(&row, "source")?,
+            context: DB::optional_document_row(&row, "context")?.unwrap_or(Value::Null),
+            request_id: DB::optional_string(&row, "request_id")?,
+            status: DB::optional_string(&row, "status")?,
+            outcome: DB::optional_string(&row, "outcome")?,
+            rejection_reason: DB::optional_string(&row, "rejection_reason")?,
+            accepted_at: time("accepted_at")?,
+            applied_at: time("applied_at")?,
+            rejected_at: time("rejected_at")?,
+        })))
     }
 
     pub(super) fn activity_payload(activity: &DB::Row) -> Result<Value> {

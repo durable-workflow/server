@@ -255,6 +255,12 @@ contract fixture before its correction.
   `none` driver or database runtime credentials, which published PHP does
   not. Without a tenant-bound administrator, native does not read a namespace
   route's target from a JSON body `name`.
+- **Described command previews.** Published PHP's run description gives
+  each command `payload_preview_omitted` and, for a cancel or terminate, its
+  decoded `reason`. Native's described commands carry neither.
+- **Command route names.** Published PHP records each request's route name in
+  its command context, and its unnamed workflow routes get a name generated
+  per deployment. Native records names only for the named schedule routes.
 
 ## Contract and verification inventory
 

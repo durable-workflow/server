@@ -25,7 +25,7 @@ const NEUTRAL_EXCEPTION_KEYS: [&str; 12] = [
 const DIAGNOSTIC_KEYS: [&str; 2] = ["diagnostics", "runtime_diagnostics"];
 /// PHP's stored provider reference, which only PHP's external payload store
 /// can resolve. Takeover refuses sources that hold any, so it is left as is.
-const PHP_EXTERNAL_REFERENCE: &str = "dw-external-payload:v1:";
+pub(super) const PHP_EXTERNAL_REFERENCE: &str = "dw-external-payload:v1:";
 
 pub(super) fn payload(mut payload: Value, event_type: &str) -> Value {
     let Value::Object(fields) = &mut payload else {

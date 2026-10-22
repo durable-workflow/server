@@ -8,7 +8,6 @@ use super::{
     refuse,
     store::{Store, id, now},
     transaction::Transaction,
-    wire,
 };
 use axum::http::StatusCode;
 use chrono::{DateTime, Duration, Utc};
@@ -305,15 +304,6 @@ where
             "workflow_command_id":command_id,"workflow_instance_id":workflow_id,"workflow_run_id":run_id,
             "command_type":"repair","outcome":outcome,"liveness_state":repair.liveness,
             "wait_kind":repair.wait_kind,"task_id":task_id,"task_type":task_type,
-            "command":{"id":command_id,"sequence":sequence,"type":"repair","target_scope":"instance",
-                "resolved_run_id":run_id,"status":"accepted","outcome":outcome,
-                "source":"control_plane","payload_codec":"avro","payload":wire(repair.payload),
-                "context":{"principal":context["principal"]},
-                "caller_label":context["caller"]["label"],"auth_status":context["auth"]["status"],
-                "auth_method":context["auth"]["method"],"principal_type":context["principal"]["type"],
-                "principal_id":context["principal"]["id"],"principal_label":context["principal"]["label"],
-                "request_method":context["request"]["method"],"request_path":context["request"]["path"],
-                "request_fingerprint":context["request"]["fingerprint"],"accepted_at":timestamp,"applied_at":timestamp}
         });
         if let Some(task) = repair.task {
             event["task"] = Self::task_snapshot(task)?;

@@ -597,7 +597,7 @@ mod timestamp_tests {
         )
         .await
         .unwrap();
-        runtime.start(json!({"workflow_id":"timestamp-fences", "workflow_type":"echo", "task_queue":"test", "input":{"codec":"avro","blob":"wwHioz3/VYAiNwA="}})).await.unwrap();
+        runtime.start(json!({"workflow_id":"timestamp-fences", "workflow_type":"echo", "task_queue":"test", "input":{"codec":"avro","blob":"wwHioz3/VYAiNwA="}}), None).await.unwrap();
         let pool = runtime.sqlite_pool();
         let clock = DateTime::parse_from_rfc3339("2026-01-02T03:04:05.123456Z")
             .unwrap()

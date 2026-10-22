@@ -211,6 +211,7 @@ where
         name: &str,
         body: Value,
         prepared: PreparedControlArguments,
+        context: Option<Value>,
     ) -> Result<(StatusCode, Value)> {
         if name.trim().is_empty() || name.len() > 255 {
             return Err(refuse(
@@ -361,7 +362,7 @@ where
             Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,source,status,workflow_type,payload_codec,payload,command_sequence,message_sequence,accepted_at,context,request_id) VALUES ($1,$2,$3,$4,'update','control_plane','accepted',$5,'avro',$6,$7,$8,$9,$10,$11)")
                 .bind(&command_id).bind(workflow_id).bind(&run_id).bind(&run_id).bind(DB::string(&run, "workflow_type")?)
                 .bind(&prepared.command).bind(command_sequence).bind(message_sequence).bind(DB::bind_time(accepted_at))
-                .bind(DB::document(&json!({"request":{"request_id":request_id},"update_name":name}))).bind(request_id).execute(&mut *tx).await?;
+                .bind(DB::document(&context.clone().unwrap_or_else(|| json!({"request":{"request_id":request_id},"update_name":name})))).bind(request_id).execute(&mut *tx).await?;
             Self::query("INSERT INTO workflow_updates(id,workflow_command_id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,update_name,status,command_sequence,payload_codec,arguments,accepted_at) VALUES ($1,$2,$3,$4,$5,$6,'accepted',$7,'avro',$8,$9)")
                 .bind(&update_id).bind(&command_id).bind(workflow_id).bind(&run_id).bind(&run_id).bind(name).bind(command_sequence)
                 .bind(&prepared.arguments).bind(DB::bind_time(accepted_at)).execute(&mut *tx).await?;
@@ -378,8 +379,7 @@ where
             Self::append(&mut tx, &run_id, "UpdateAccepted", json!({
                 "workflow_command_id":command_id,"update_id":update_id,"workflow_instance_id":workflow_id,
                 "workflow_run_id":run_id,"update_name":name,"arguments":wire(&prepared.arguments),"ordering_state":"ready",
-                "request_id":request_id,"command":{"id":command_id,"sequence":command_sequence,"message_sequence":message_sequence,
-                    "type":"update","target_scope":"instance","resolved_run_id":run_id,"status":"accepted","outcome":null}
+                "request_id":request_id
             }), None, Some(&command_id)).await
                 .map_err(|error| at_update_lookup(error, UpdateLookup::HistoryAppend))?;
             let task_id = Self::create_task(&mut tx, &run_id, &DB::string(&run, "queue")?, "workflow",
@@ -535,9 +535,7 @@ where
         }
         let payload = json!({
             "workflow_command_id":command_id,"update_id":update_id,"workflow_instance_id":workflow_id,
-            "workflow_run_id":run_id,"update_name":name,"sequence":sequence,
-            "command":{"id":command_id,"sequence":DB::number(&update,"command_sequence")?,"message_sequence":message_sequence,
-                "type":"update","target_scope":"instance","resolved_run_id":run_id,"status":"accepted","outcome":null}
+            "workflow_run_id":run_id,"update_name":name,"sequence":sequence
         });
         if let Some(failure) = failure {
             let failure_id = id();

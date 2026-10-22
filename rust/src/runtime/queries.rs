@@ -300,12 +300,13 @@ where
         arguments: String,
         values: Vec<crate::codec::Value>,
         config: &QueryTaskConfig,
+        command: Option<&Value>,
     ) -> Result<(StatusCode, Value)> {
         let wait_until =
             tokio::time::Instant::now() + Duration::from_secs(config.timeout_seconds.max(0) as u64);
         loop {
             match self
-                .query_attempt(workflow_id, selected_run, name, &arguments, &values, config)
+                .query_attempt(workflow_id, selected_run, name, &arguments, &values, config, command)
                 .await?
             {
                 QueryAttempt::Answered(answer) => return Ok(answer),
@@ -329,6 +330,7 @@ where
         arguments: &str,
         values: &[crate::codec::Value],
         config: &QueryTaskConfig,
+        command: Option<&Value>,
     ) -> Result<QueryAttempt> {
         // PHP's refusal order: terminal run, query contract, then route. These
         // reads run before the transaction so that no request holds one
@@ -411,6 +413,14 @@ where
             "history_observed_sequence":observed,"history_cutoff_sequence":cutoff,
             "query_admitted_at":authority::wire(admitted),"query_deadline_at":authority::wire(deadline),
             "receipt_expires_at":authority::wire(retained_until)});
+        // `WorkflowQueryTaskBroker`: the task keeps the request's command
+        // context and its principal, which the worker and the answer receive.
+        if let Some(command) = command {
+            task["command_context"] = command.clone();
+            if let Some(principal) = query_principal(command) {
+                task["principal"] = principal;
+            }
+        }
         authority::expire(&mut task, authority::now())?;
         if serde_json::to_vec(&task)?.len() > SNAPSHOT_BYTES {
             return Err(refuse(
@@ -447,11 +457,12 @@ where
             let task: Value = serde_json::from_str(&DB::string(&row, "value")?)?;
             match task["status"].as_str() {
                 Some("completed") => {
-                    return Ok(QueryAttempt::Answered((
-                        StatusCode::OK,
-                        json!({"workflow_id":workflow_id,"run_id":run_id,"target_scope":"instance",
-                            "query_name":name,"result":null,"result_envelope":task["result_envelope"],"reason":null}),
-                    )));
+                    let mut answer = json!({"workflow_id":workflow_id,"run_id":run_id,"target_scope":"instance",
+                        "query_name":name,"result":null,"result_envelope":task["result_envelope"],"reason":null});
+                    if task["principal"].is_object() {
+                        answer["principal"] = task["principal"].clone();
+                    }
+                    return Ok(QueryAttempt::Answered((StatusCode::OK, answer)));
                 }
                 Some("failed") => {
                     let status = match task["failure"]["reason"].as_str() {
@@ -1195,4 +1206,16 @@ where
         self.wake.notify_waiters();
         Ok(Some(decision))
     }
+}
+
+/// `commandContextPrincipal`: the context principal's type, id and label.
+fn query_principal(command: &Value) -> Option<Value> {
+    let principal = &command["context"]["principal"];
+    let fields: serde_json::Map<String, Value> = ["type", "id", "label"]
+        .into_iter()
+        .filter_map(|field| {
+            principal[field].as_str().filter(|value| !value.is_empty()).map(|value| (field.to_owned(), json!(value)))
+        })
+        .collect();
+    (!fields.is_empty()).then_some(Value::Object(fields))
 }

@@ -248,6 +248,19 @@ fn validate_auth_configuration() -> Result<(), Box<dyn Error>> {
             return Err("unsupported development authentication configuration".into());
         }
     }
+    // Native records only the authenticated principal. It cannot record a
+    // trusted gateway's forwarded caller and auth headers as PHP can when
+    // this is on, so it refuses to start rather than drop them silently.
+    for key in [
+        "DW_TRUST_FORWARDED_ATTRIBUTION_HEADERS",
+        "WORKFLOW_SERVER_TRUST_FORWARDED_ATTRIBUTION_HEADERS",
+    ] {
+        if auth_value(key)?.is_some_and(|value| {
+            matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes")
+        }) {
+            return Err(format!("{key} is not supported: native never trusts forwarded attribution headers").into());
+        }
+    }
     for key in [
         "DW_AUTH_BACKWARD_COMPATIBLE",
         "WORKFLOW_SERVER_AUTH_BACKWARD_COMPATIBLE",

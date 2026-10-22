@@ -16,6 +16,7 @@ mod backend;
 mod cancellation;
 mod child_summary;
 mod children;
+mod command_context;
 mod command_requests;
 mod continuations;
 mod control_plane;
