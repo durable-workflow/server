@@ -1,7 +1,15 @@
-FROM composer:2 AS phpredis-source
+# Fixed TLS toolchains (GHSA-6q48-6c7w-9gw2), pinned by version and digest.
+FROM composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee AS composer
+FROM node:22.23.4-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS node
+
+FROM composer AS phpredis-source
 
 ARG PHPREDIS_VERSION=6.3.0
 ARG PHPREDIS_COMMIT=df4fab2de7fc327c54c94a13af2b9542e4fbd720
+
+# Check the store this stage downloads through before its first download.
+COPY docker/trust/ /usr/local/lib/server-trust/
+RUN sh /usr/local/lib/server-trust/verify-trust.sh system
 
 RUN git clone --depth 1 --branch "${PHPREDIS_VERSION}" https://github.com/phpredis/phpredis.git /phpredis \
     && cd /phpredis \
@@ -21,13 +29,21 @@ RUN php -r 'if (PHP_MAJOR_VERSION !== 8 || PHP_MINOR_VERSION !== 3 || PHP_VERSIO
 
 COPY --from=phpredis-source /phpredis /usr/src/php/ext/redis
 
+# The image's trust checks; `server-verify-trust` reruns them on any image.
+COPY docker/trust/ /usr/local/lib/server-trust/
+
 # Published conformance runners execute from the exact Server image.
-# Keep their Node and Python runtimes available alongside the service.
-RUN apt-get update && apt-get install -y \
+# Keep their Node and Python runtimes available alongside the service. Node
+# comes from the pinned stage, not Debian's end-of-life package. The system
+# store is checked before the first download.
+RUN chmod 0755 /usr/local/lib/server-trust/verify-trust.sh \
+    && ln -s /usr/local/lib/server-trust/verify-trust.sh /usr/local/bin/server-verify-trust \
+    && server-verify-trust system \
+    && apt-get update && apt-get install -y --no-install-recommends \
     curl \
     libpq-dev \
+    libstdc++6 \
     libzip-dev \
-    nodejs \
     python3 \
     python3-venv \
     unzip \
@@ -36,7 +52,11 @@ RUN apt-get update && apt-get install -y \
     && usermod --uid 1000 --gid 1000 www-data \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+COPY --from=composer /usr/bin/composer /usr/bin/composer
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+
+# Every store the image's runtimes use, before the production stage downloads.
+RUN server-verify-trust final
 
 # Source qualification exercises the actual startup path from this base too.
 COPY --chmod=0755 docker/ensure-sqlite-database.sh /usr/local/bin/server-ensure-sqlite

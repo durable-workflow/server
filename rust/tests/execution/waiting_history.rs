@@ -161,8 +161,11 @@ async fn invalid_or_stale_waiting_reports_leave_original_attempt_usable() {
     database.remove().await;
 }
 
+// A declared signal received while the worker reports waiting for history
+// gets its own task once the acknowledgement commits, as PHP's
+// `PendingMessageTask` delivers it without an open wait.
 #[tokio::test]
-async fn waiting_report_refuses_undelivered_signals_without_releasing_replay() {
+async fn waiting_report_delivers_a_declared_signal_afterwards() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
@@ -173,19 +176,19 @@ async fn waiting_report_refuses_undelivered_signals_without_releasing_replay() {
     let task = poll(&app, "waiting-worker", "workflow").await;
     assert_eq!(request(&app,"POST",&format!("/api/workflows/waiting-buffered-signal/runs/{}/signal/payload",started["run_id"].as_str().unwrap()),
         json!({"input":envelope(Payload::Array(vec![Payload::Array(vec![Payload::Long(9007199254740993)])])),"request_id":"waiting-signal"})).await.0,StatusCode::ACCEPTED);
-    let prefix = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
-    let refusal = report(&app, &task, waiting(&task, waiting_failure())).await;
-    assert_eq!(refusal.0, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(
-        refusal.1["reason"],
-        "development_workflow_task_waiting_messages_unqualified"
-    );
-    assert_eq!(
-        run_history(&app, &started["workflow_id"], &started["run_id"]).await,
-        prefix
-    );
-    assert_eq!(request(&app,"POST",&format!("/api/worker/workflow-tasks/{}/heartbeat",task["task_id"].as_str().unwrap()),
-        json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"]})).await.0,StatusCode::OK);
+    let acknowledged = report(&app, &task, waiting(&task, waiting_failure())).await;
+    assert_eq!(acknowledged.0, StatusCode::OK, "{}", acknowledged.1);
+    let delivery = poll(&app, "waiting-worker", "workflow").await;
+    assert_eq!(delivery["run_id"], started["run_id"], "{delivery}");
+    assert_ne!(delivery["task_id"], task["task_id"]);
+    // The SDKs acknowledge a task without new commands as waiting for history.
+    let (status, body) = report(&app, &delivery, waiting(&delivery, waiting_failure())).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let applied: Vec<_> = history.as_array().unwrap().iter().filter(|event| event["event_type"] == "SignalApplied").collect();
+    assert_eq!(applied.len(), 1, "{history}");
+    assert_eq!(applied[0]["payload"]["signal_name"], "payload");
+    assert!(applied[0]["payload"].get("sequence").is_none(), "{history}");
     runtime.close().await;
     database.remove().await;
 }

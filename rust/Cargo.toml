@@ -10,6 +10,10 @@ description = "Development of the compatible Rust Durable Workflow Server"
 [dependencies]
 apache-avro = { version = "=0.22.0", default-features = false }
 base64 = "0.22"
+# History compression for workers that accept it (already in the lock through
+# apache-avro and sqlx).
+crc = "3.4"
+miniz_oxide = "0.9"
 thiserror = "2"
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "query", "tokio"] }
 serde = { version = "1", features = ["derive"] }
