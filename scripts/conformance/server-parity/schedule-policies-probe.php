@@ -12,7 +12,8 @@ use GuzzleHttp\Client as SchedulePoliciesHttp;
 // the contract normalizes generated identities and times.
 //
 // Published PHP on SQLite can lose a write race with its own maintenance
-// roles ("database is locked"). A read is simply sent again. A write may
+// roles: "database is locked", or from Server 2.10 the structured, retryable
+// 503 backend_lock_pressure refusal. A read is simply sent again. A write may
 // already have committed when it reports the lock, so it is sent again only
 // when its schedule reads the same as before it; otherwise, and when a
 // backfill records a lost occurrence as a failure, the whole sequence is
@@ -51,7 +52,8 @@ function finishHttpSchedulePolicies(Client $admin, array $fixture, string $workf
 
             return [$response->getStatusCode(), (string) $response->getBody()];
         };
-        $lockFailure = static fn (int $status, string $text): bool => $status === 500 && str_contains($text, 'database is locked');
+        $lockFailure = static fn (int $status, string $text): bool => $status === 500 && str_contains($text, 'database is locked')
+            || $status === 503 && str_contains($text, '"reason":"backend_lock_pressure"');
         // The schedule as it reads now, to tell a lock failure that rolled
         // back (unchanged) from one reported after its commit.
         $snapshot = static function (?string $schedule) use ($request, $lockFailure, &$retries): ?string {
@@ -100,7 +102,8 @@ function finishHttpSchedulePolicies(Client $admin, array $fixture, string $workf
         // Records a step; true once a response reports the lock.
         $record = static function (array $step) use (&$steps, &$locked): bool {
             $steps[] = $step;
-            $locked = str_contains(json_encode($step['response']), 'database is locked');
+            $text = json_encode($step['response']);
+            $locked = str_contains($text, 'database is locked') || str_contains($text, '"reason":"backend_lock_pressure"');
 
             return $locked;
         };

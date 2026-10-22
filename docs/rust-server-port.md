@@ -384,6 +384,28 @@ support is not evidence of multi-node safety.
 
 ## Decisions
 
+- **October 22: the parity reference moves from published Server 2.5.14 to 2.11.1.**
+  Published PHP has moved on, and the Sample App and current consumers resolve
+  2.10 or later.
+  - A local run measured the change. It ran the shared fixtures against the
+    2.11.1 image (`sha256:bf8bed13…`) with the consumer tuple unchanged.
+  - Three reviewed expectations followed 2.5.14 and differ under 2.11.1:
+    - **`signals-before-worker`:** signals a run closed before applying are
+      recorded as `SignalRejected` after its terminal event.
+    - **`worker-listing`:** every registration's stored process metrics carry
+      its `_worker_protocol_version`, including one that reported no metrics.
+    - **`schedule-policies`:** under SQLite lock pressure PHP refuses with the
+      structured, retryable `503 backend_lock_pressure` rather than "database
+      is locked".
+  - Native already behaved as 2.11.1 does in the first two. The first two
+    expectations move to 2.11.1. The probe now retries the third refusal under
+    its existing rule: a write is sent again only when its schedule reads
+    unchanged.
+  - The frozen 2.5.14 tuple remains in `tests/Fixtures/ServerParityBaselines`
+    for the takeover cohorts that pin it.
+  - The consumer tuple (PHP SDK 2.2.6, Python 2.5.0, Rust 3.4.1, CLI 2.2.0,
+    Waterline 2.3.1) is unchanged. The embedded target now runs Workflow 2.10.2
+    from the 2.11.1 image.
 - Shared fixtures are expectations reviewed against public contracts, not PHP
   recordings promoted to expected behavior. The recorder keeps raw observations;
   the comparator checks the declared fixture projection. Coverage is explicit.

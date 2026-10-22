@@ -9,6 +9,10 @@ const SUMMARY_FIELDS = ['worker_id', 'namespace', 'task_queue', 'runtime', 'sdk_
 // Reviewed worker management contract (WorkerManagementController and the
 // worker registration and heartbeat facts it reports). Embedded applications
 // have no HTTP worker registration, so the projection is the definition alone.
+// From Server 2.10 every registration stores its protocol version in its
+// process metrics, including one that reports no metrics.
+const PROTOCOL = {_worker_protocol_version: '1.19'};
+
 export function checkWorkerListing(fixture, observation, workflowId) {
   const definition = fixture.worker_listing;
   const state = observation.worker_listing;
@@ -50,7 +54,7 @@ export function checkWorkerListing(fixture, observation, workflowId) {
     max_concurrent_worker_sessions: capacity.sessions,
     task_slots: {...definition.stored_task_slots, workflow_capacity: capacity.workflow,
       activity_capacity: capacity.activity, session_capacity: capacity.sessions},
-    process_metrics: {process_uptime_seconds: 0, process_id: state.probe_pid},
+    process_metrics: {process_uptime_seconds: 0, process_id: state.probe_pid, ...PROTOCOL},
     heartbeat_interval_seconds: null, status: 'active'};
   // The published SDK's registration defaults.
   const secondFacts = {worker_id: second, namespace: 'default', task_queue: queues[1], runtime: 'php', build_id: null,
@@ -59,7 +63,7 @@ export function checkWorkerListing(fixture, observation, workflowId) {
     max_concurrent_activity_tasks: 1, max_concurrent_worker_sessions: 10,
     task_slots: {workflow_available: null, activity_available: null, session_available: null,
       workflow_capacity: 1, activity_capacity: 1, session_capacity: 10},
-    process_metrics: null, heartbeat_interval_seconds: null, status: 'active'};
+    process_metrics: PROTOCOL, heartbeat_interval_seconds: null, status: 'active'};
   const registered = {[first]: state.first_registration, [second]: state.second_registration};
   const summary = (worker, facts, label) => {
     equal(Object.keys(worker).sort(), [...SUMMARY_FIELDS].sort(), `${label} summary fields`);
@@ -106,7 +110,7 @@ export function checkWorkerListing(fixture, observation, workflowId) {
   // task slots and process metrics it did not report.
   described(state.after_reregistration, {...firstFacts,
     task_slots: {...firstFacts.task_slots, workflow_available: null, activity_available: null, session_available: null},
-    process_metrics: null}, 'after re-registration');
+    process_metrics: PROTOCOL}, 'after re-registration');
   equal(state.after_reregistration.registered_at, state.described.registered_at, 're-registration keeps the registration time');
   return projection;
 }
