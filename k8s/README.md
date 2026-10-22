@@ -16,6 +16,27 @@ release and pin its Docker Hub tag:
 durableworkflow/server:2.11.0
 ```
 
+## Application logs
+
+The raw ConfigMap sets `LOG_CHANNEL=stderr` for the API, worker and scheduler.
+Read application logs with `kubectl logs` or your cluster's log collector. This
+also works with existing published images when the setting is supplied explicitly.
+
+Set `LOG_LEVEL` to select the minimum severity. For newline-delimited JSON, add
+this ConfigMap entry:
+
+```yaml
+LOG_STDERR_FORMATTER: 'Monolog\Formatter\JsonFormatter'
+```
+
+An explicit `LOG_CHANNEL` override selects another Laravel channel. File channels
+need their own persistent storage and collection; Kubernetes does not collect
+`storage/logs/laravel.log` automatically. Restart persistent roles after changing
+logging settings because configuration is cached at startup. `DW_LOG_FORMAT` is
+not a supported setting.
+
+## Image selection
+
 Before production use, patch every workload image to the exact published tag or
 digest you intend to run:
 

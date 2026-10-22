@@ -132,6 +132,26 @@ Driver, or any GitOps secret bridge that produces a Kubernetes `Secret`.
 | `ServiceAccount` (`*`) | Namespace-scoped SA for every workload. | `serviceAccount.create: false` |
 | `NetworkPolicy` (`*-server`) | Optional ingress allow-list to the API. | `networkPolicy.enabled: false` (default) |
 
+## Application logs
+
+The chart defaults `config.extraEnv.LOG_CHANNEL` to `stderr` for the API, worker,
+scheduler and bootstrap job. Use `kubectl logs` or the cluster's log collector.
+To choose the minimum severity and emit newline-delimited JSON:
+
+```yaml
+config:
+  extraEnv:
+    LOG_CHANNEL: "stderr"
+    LOG_LEVEL: "info"
+    LOG_STDERR_FORMATTER: 'Monolog\Formatter\JsonFormatter'
+```
+
+These explicit settings also work with existing published Server images. Override
+`LOG_CHANNEL` to select a different Laravel channel. File channels require their
+own storage and collection. Restart persistent roles after changing logging
+settings because configuration is cached at startup. `DW_LOG_FORMAT` is not a
+supported setting.
+
 ## Database TLS
 
 For an authenticated encrypted database connection, pre-create a CA bundle

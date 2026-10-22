@@ -39,3 +39,5 @@ annotations:
       description: Package Server 2.11 with capability-gated activity lease maintenance and configurable lease duration.
     - kind: added
       description: Document compatible worker rollout and the distinction between leases and application deadlines.
+    - kind: fixed
+      description: Send application logs to container stderr by default and verify actual API, worker and scheduler logging before chart publication.
