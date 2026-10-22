@@ -34,8 +34,12 @@ exact result. Preserve failed originals; never extend their observers.
 Use the PHP fixture's read-only snapshot and verification patterns for the exact
 original task/attempt bindings and stopped SQL. Record actual worker/API exits,
 any intentionally killed owner, remaining stale registrations and audit hashes.
-The Rust fixture's two executor threads let one callback block while asynchronous
-maintenance runs; this is functional acceptance, not a capacity comparison.
+The Rust blocking case tests progress-independent maintenance on a two-thread
+executor. Thread count alone is not evidence that maintenance continues. The
+published 4.2.0 failure is tracked in
+[Rust SDK #117](https://github.com/durable-workflow/sdk-rust/issues/117).
+Keep that failed original distinct from the passing owner-loss control. This is
+functional acceptance, not a capacity comparison.
 Retire the phase's dependencies/compiler/DB/raw state at its declared boundary.
 
 ## Read-only audit inputs
