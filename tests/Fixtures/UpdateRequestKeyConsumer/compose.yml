@@ -1,0 +1,86 @@
+services:
+  bootstrap:
+    image: ${KEY_SERVER_IMAGE:?Set an immutable published image}
+    user: "1000:1000"
+    cpus: 1
+    mem_limit: 512m
+    memswap_limit: 512m
+    command: [server-bootstrap]
+    environment: &server_environment
+      DB_CONNECTION: sqlite
+      DB_DATABASE: /data/database.sqlite
+      DB_SQLITE_JOURNAL_MODE: DELETE
+      CACHE_STORE: file
+      QUEUE_CONNECTION: database
+      DW_MODE: ${KEY_MODE:?Select service or embedded}
+      DW_POLLING_CACHE_PATH: /data/poll-cache
+      DW_AUTH_DRIVER: token
+      DW_AUTH_TOKEN: update-key-consumer
+      DW_ADMIN_TOKEN: update-key-consumer
+      DW_WORKER_TOKEN: update-key-worker
+      DW_BOOTSTRAP_RETRIES: 1
+      DW_V2_LIMIT_PENDING_UPDATES: ${KEY_PENDING_LIMIT:-500}
+      DW_V2_LIMIT_PAYLOAD_SIZE_BYTES: ${KEY_PAYLOAD_LIMIT:-2097152}
+    volumes: &server_volumes
+      - ${KEY_PHASE_ROOT:?Set a disposable phase directory}/data:/data
+      - ./definition.php:/fixture/definition.php:ro
+      - ./consumer.ini:/usr/local/etc/php/conf.d/zz-key-consumer.ini:ro
+
+  api:
+    image: ${KEY_SERVER_IMAGE:?}
+    user: "1000:1000"
+    cpus: 1
+    mem_limit: 512m
+    memswap_limit: 512m
+    environment: *server_environment
+    volumes: *server_volumes
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+
+  queue:
+    image: ${KEY_SERVER_IMAGE:?}
+    user: "1000:1000"
+    cpus: 1
+    mem_limit: 512m
+    memswap_limit: 512m
+    environment: *server_environment
+    volumes: *server_volumes
+    command: [php, artisan, queue:work, --queue=default, --sleep=1, --tries=1]
+    profiles: [embedded]
+    depends_on:
+      api:
+        condition: service_healthy
+
+  client:
+    image: ${KEY_CLIENT_IMAGE:?Set a pinned ordinary Python image}
+    user: "1000:1000"
+    init: true
+    cpus: 1
+    mem_limit: 512m
+    memswap_limit: 512m
+    environment:
+      HOME: /tmp
+      KEY_MODE: ${KEY_MODE:?}
+      KEY_COHORT: ${KEY_COHORT:?Set a new original cohort identity}
+    entrypoint: [sh, -ec]
+    command:
+      - |
+        python -m venv /opt/venv
+        /opt/venv/bin/pip install --index-url https://pypi.org/simple --no-cache-dir --quiet durable-workflow==2.6.1
+        exec sleep infinity
+    tmpfs:
+      - /opt/venv:rw,exec,uid=1000,gid=1000,size=268435456
+    healthcheck:
+      test: [CMD, /opt/venv/bin/python, -c, "import durable_workflow"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - ${KEY_PHASE_ROOT:?}:/phase
+      - ./consumer.py:/fixture/consumer.py:ro
+      - ./definition.py:/fixture/definition.py:ro
+      - ./intake_limits.py:/fixture/intake_limits.py:ro
+    depends_on:
+      api:
+        condition: service_healthy
