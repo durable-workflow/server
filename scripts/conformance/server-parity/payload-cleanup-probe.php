@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use DurableWorkflow\Client;
 use GuzzleHttp\Client as PayloadCleanupHttp;
+use GuzzleHttp\HandlerStack;
 
 // The external payload cleanup status and pass of a fresh namespace over raw
 // HTTP: the status before and after passes, each pass's report, and the
@@ -14,8 +15,10 @@ function finishHttpPayloadCleanup(Client $admin, array $fixture, string $workflo
     $namespace = strtolower($workflowId.'-cleanup');
     $admin->createNamespace($namespace, 'payload cleanup λ', 30);
     $token = getenv('DW_PARITY_TOKEN') ?: null;
+    $stack = HandlerStack::create();
+    $stack->push(LockPressurePollRetries::middleware(), 'lock_pressure_poll_retry');
     $http = new PayloadCleanupHttp(['base_uri' => rtrim($url, '/').'/api/system/', 'http_errors' => false,
-        'connect_timeout' => 1, 'timeout' => 30]);
+        'connect_timeout' => 1, 'timeout' => 30, 'handler' => $stack]);
     $raw = static function (string $method, string $path, mixed $body = null) use ($http, $token, $namespace): array {
         $response = $http->request($method, $path, ['headers' => array_filter([
             'Authorization' => $token === null ? null : 'Bearer '.$token,

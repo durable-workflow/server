@@ -5,6 +5,7 @@ declare(strict_types=1);
 use DurableWorkflow\Client;
 use DurableWorkflow\Exception\ServerException;
 use GuzzleHttp\Client as NamespaceDeleteHttp;
+use GuzzleHttp\HandlerStack;
 
 // Deleting a namespace that holds a search attribute definition and a started,
 // unclaimed run, through the published SDK; then the namespace's reads, a
@@ -16,8 +17,12 @@ function finishHttpNamespaceDelete(Client $admin, array $fixture, string $workfl
     $namespace = strtolower($workflowId.'-delete');
     $doomed = $workflowId.'-doomed';
     $token = getenv('DW_PARITY_TOKEN') ?: null;
+    // The published SQLite reference may refuse a delete with its retryable
+    // 503 backend_lock_pressure while its maintenance loop holds the file.
+    $stack = HandlerStack::create();
+    $stack->push(LockPressurePollRetries::middleware(), 'lock_pressure_poll_retry');
     $http = new NamespaceDeleteHttp(['base_uri' => rtrim($url, '/').'/api/', 'http_errors' => false,
-        'connect_timeout' => 1, 'timeout' => 30]);
+        'connect_timeout' => 1, 'timeout' => 30, 'handler' => $stack]);
     $raw = static function (string $method, string $path, string $scope, ?array $body = null) use ($http, $token): array {
         $response = $http->request($method, $path, ['headers' => array_filter([
             'Authorization' => $token === null ? null : 'Bearer '.$token,
