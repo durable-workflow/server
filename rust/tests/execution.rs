@@ -85,6 +85,8 @@ mod query_worker_results;
 mod rejected_updates;
 #[path = "execution/continue_messages.rs"]
 mod continue_messages;
+#[path = "execution/update_wait.rs"]
+mod update_wait;
 #[path = "execution/payload_limits.rs"]
 mod payload_limits;
 #[path = "execution/start_definition.rs"]

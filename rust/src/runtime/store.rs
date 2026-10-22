@@ -29,6 +29,10 @@ pub(super) struct Store<DB: Backend> {
     pub(super) history_budget: super::history_budget::Config,
     /// How long a claimed workflow task stays leased (DW_WORKFLOW_TASK_TIMEOUT).
     pub(super) workflow_task_lease_seconds: i64,
+    /// How long a claimed activity task stays leased (DW_ACTIVITY_TASK_TIMEOUT).
+    pub(super) activity_task_lease_seconds: i64,
+    /// How long a completion wait for an update lasts by default.
+    pub(super) update_wait_seconds: i64,
     pub(super) search_attribute_limit: i64,
     /// When a silent registration stops counting (`server.workers.stale_after_seconds`).
     pub(super) worker_stale_after_seconds: i64,
@@ -107,6 +111,8 @@ where
             memo_size_limit: Some(262_144),
             history_budget: super::history_budget::Config::default(),
             workflow_task_lease_seconds: 60,
+            activity_task_lease_seconds: 300,
+            update_wait_seconds: 10,
             search_attribute_limit: 100,
             worker_stale_after_seconds: 30,
         }
@@ -120,6 +126,8 @@ where
             memo_size_limit: self.memo_size_limit,
             history_budget: self.history_budget,
             workflow_task_lease_seconds: self.workflow_task_lease_seconds,
+            activity_task_lease_seconds: self.activity_task_lease_seconds,
+            update_wait_seconds: self.update_wait_seconds,
             search_attribute_limit: self.search_attribute_limit,
             worker_stale_after_seconds: self.worker_stale_after_seconds,
         }
@@ -1445,7 +1453,7 @@ where
                 .checked_add(1)
                 .ok_or_else(|| refuse(StatusCode::CONFLICT, "task_attempt_exhausted"))?;
             let expires = if kind == "activity" && Self::cancellation_request(&run)?.is_none() {
-                now() + chrono::Duration::seconds(300)
+                now() + chrono::Duration::seconds(self.activity_task_lease_seconds)
             } else {
                 self.cancellation_lease_expiry(&run)?
             };

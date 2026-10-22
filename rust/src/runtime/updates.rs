@@ -441,7 +441,14 @@ where
                     .map_err(|error| at_update_lookup(error.into(), UpdateLookup::ReceiptRead))?;
                 return Ok((
                     rejection_status(outcome),
-                    Self::update_result(&update, wait_for, false, timeout)?,
+                    // A rejected completion wait reports the timeout it
+                    // would have used, as `attemptUpdateWithArguments` does.
+                    Self::update_result(
+                        &update,
+                        wait_for,
+                        false,
+                        (wait_for == "completed").then_some(timeout.unwrap_or(self.update_wait_seconds)),
+                    )?,
                 ));
             }
             // Published PHP admits an update whenever its run is active. It is
@@ -515,8 +522,13 @@ where
         // A completion wait owns neither the transaction nor a pool connection.
         tx.commit().await?;
         self.wake.notify_waiters();
+        // `UpdateWaitPolicy`: a completion wait lasts the requested seconds,
+        // else DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS, and only a
+        // completion wait reports them.
+        let wait_seconds = timeout.unwrap_or(self.update_wait_seconds);
+        let reported = (wait_for == "completed").then_some(wait_seconds);
         let deadline =
-            tokio::time::Instant::now() + Duration::from_secs(timeout.unwrap_or(30) as u64);
+            tokio::time::Instant::now() + Duration::from_secs(wait_seconds as u64);
         loop {
             let wake = self.wake.notified();
             let update = Self::query(UPDATE_ROW)
@@ -531,7 +543,7 @@ where
                 let outcome = DB::optional_string(&update, "outcome")?;
                 return Ok((
                     rejection_status(outcome.as_deref().unwrap_or_default()),
-                    Self::update_result(&update, wait_for, false, timeout)?,
+                    Self::update_result(&update, wait_for, false, reported)?,
                 ));
             }
             let timed_out = wait_for == "completed"
@@ -547,7 +559,7 @@ where
                     } else {
                         StatusCode::ACCEPTED
                     },
-                    Self::update_result(&update, wait_for, timed_out, timeout)?,
+                    Self::update_result(&update, wait_for, timed_out, reported)?,
                 ));
             }
             tokio::select! { _ = wake => {}, _ = tokio::time::sleep(Duration::from_millis(50)) => {} }
