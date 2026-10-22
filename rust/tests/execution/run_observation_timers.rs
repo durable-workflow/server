@@ -318,6 +318,13 @@ async fn run_observation_timer_summary_refresh_requires_retained_matching_wait()
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
+    // Runs started before any worker declared a contract: their signals stay
+    // pending behind the timer without a task of their own. (A declared
+    // signal of a durable-contract run gets one.)
+    let runs = [
+        start(&app, "timer-summary-authority-false").await,
+        start(&app, "timer-summary-authority-true").await,
+    ];
     let registered = request(
         &app,
         "POST",
@@ -332,9 +339,8 @@ async fn run_observation_timer_summary_refresh_requires_retained_matching_wait()
     )
     .await;
     assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
-    for missing in [false, true] {
+    for (missing, run) in [false, true].into_iter().zip(runs) {
         let workflow = format!("timer-summary-authority-{missing}");
-        let run = start(&app, &workflow).await;
         let task = poll(&app, "timer-summary-authority", "workflow").await;
         assert_eq!(
             finish_task(

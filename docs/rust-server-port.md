@@ -143,13 +143,6 @@ contract fixture before its correction.
   Native gives each update its own task once the run has no open workflow
   task. The Rust SDK treats a task carrying `workflow_update_id` as an update
   task, so a merged first task would not replay the workflow.
-- **Declared signals without an open wait.** For a run whose workflow class
-  the server cannot load, which includes every external-worker run, PHP
-  delivers a received signal that the run's durable contract declares, even
-  without an open signal wait (`PendingMessageTask::signalCanAdvanceRun`).
-  Native delivers a signal only to an open signal or condition wait. It
-  refuses a waiting-for-history acknowledgement while a signal is pending,
-  because no task would deliver it afterwards.
 - **Timer firing under the CPU deadline profile on slower hosts.** In local
   MySQL 8.0 cells, where eight dense readers saturate the one-CPU database and
   the one-CPU native server, one of six runs fired the three-second timer

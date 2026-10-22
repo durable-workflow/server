@@ -127,14 +127,18 @@ async fn a_signal_received_during_the_closing_task_defers_the_completion() {
     assert_eq!(events_of(&history, "WorkflowCompleted").len(), 1, "{history}");
 }
 
-// A received signal the open wait cannot take does not hold the close. The
-// run completes and rejects that signal, as PHP does.
+// A received signal that cannot advance the run does not hold the close: the
+// open wait cannot take it, and a run started before any worker declared a
+// contract delivers nothing without a wait. The run completes and rejects
+// that signal, as PHP does. (On a run with a durable contract every admitted
+// signal is declared, and a declared signal holds the close; see
+// declared_signals.rs.)
 #[tokio::test]
 async fn a_signal_the_open_wait_cannot_take_does_not_defer_the_completion() {
     let database = TestDatabase::new().await;
     let app = router(database.open().await.unwrap());
-    assert_eq!(request(&app, "POST", "/api/worker/register", signal_worker("closer")).await.0, StatusCode::CREATED);
     let started = start(&app, "undeferred-close").await;
+    assert_eq!(request(&app, "POST", "/api/worker/register", signal_worker("closer")).await.0, StatusCode::CREATED);
     let first = poll(&app, "closer", "workflow").await;
     let (status, body) = finish_task(&app, &first, json!([{"type":"start_timer","delay_seconds":1},
         {"type":"open_signal_wait","signal_name":"go"}])).await;

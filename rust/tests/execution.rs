@@ -101,6 +101,8 @@ mod child_policies;
 mod parent_close_policies;
 #[path = "execution/history_pages.rs"]
 mod history_pages;
+#[path = "execution/declared_signals.rs"]
+mod declared_signals;
 #[path = "execution/child_cascade.rs"]
 mod child_cascade;
 #[path = "execution/completion_open_work.rs"]
