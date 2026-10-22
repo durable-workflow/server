@@ -232,10 +232,6 @@ contract fixture before its correction.
   number of open activities, timers, children and waits. Native refuses
   `409 pending_durable_operations` when a task opens a wait while another
   wait is open, or starts a child while other work is outstanding.
-- **Continue-as-new with received signals (Server 2.10.0).** Published
-  PHP's continue-as-new moves received signals that have a declared
-  handler, and accepted updates, to the new run. Native refuses
-  continue-as-new while a signal is received and no open wait can take it.
 - **Trace context (Workflow #773 / workflow#788, not yet published).** A
   Workflow minor will add nullable `observability_context` columns on runs,
   commands and tasks, plus an entry in schedule metadata. Native-owned

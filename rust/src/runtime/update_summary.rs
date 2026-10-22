@@ -56,7 +56,9 @@ impl UpdateSummaryHistory {
         if kind == "UpdateAccepted" {
             if self.updates.len() >= 64
                 || self.updates.contains_key(id)
-                || payload["ordering_state"] != "ready"
+                // A run continued from a predecessor takes its pending update
+                // without an ordering state, ready for delivery.
+                || payload.get("ordering_state").is_some_and(|state| state != "ready")
             {
                 return false;
             }

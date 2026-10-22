@@ -83,6 +83,8 @@ mod activity_failure_fields;
 mod query_worker_results;
 #[path = "execution/rejected_updates.rs"]
 mod rejected_updates;
+#[path = "execution/continue_messages.rs"]
+mod continue_messages;
 #[path = "execution/payload_limits.rs"]
 mod payload_limits;
 #[path = "execution/start_definition.rs"]
