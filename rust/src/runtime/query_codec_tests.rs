@@ -39,7 +39,7 @@ async fn original(timeout_seconds: i64) -> Original {
     let started = runtime
         .start(
             json!({"workflow_id":"codec-query-original","workflow_type":"echo","task_queue":"test",
-        "input":envelope(Payload::Array(vec![]))}),
+        "input":envelope(Payload::Array(vec![]))}), None,
         )
         .await
         .unwrap();
@@ -54,7 +54,7 @@ async fn original(timeout_seconds: i64) -> Original {
         .clone();
     runtime.complete_workflow(workflow["task_id"].as_str().unwrap(),json!({"lease_owner":"codec-worker",
         "workflow_task_attempt":workflow["workflow_task_attempt"],"last_history_sequence":workflow["last_history_sequence"],
-        "commands":[{"type":"complete_workflow","result":envelope(Payload::Long(7))}]})).await.unwrap();
+        "commands":[{"type":"complete_workflow","result":envelope(Payload::Long(7))}]}), None).await.unwrap();
     let pool = runtime.sqlite_pool().clone();
     let history_before: Vec<(i64,String,String)> = sqlx::query_as("SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 ORDER BY sequence")
         .bind(started["run_id"].as_str().unwrap()).fetch_all(&pool).await.unwrap();
@@ -67,6 +67,7 @@ async fn original(timeout_seconds: i64) -> Original {
                     None,
                     "state",
                     json!({"input":envelope(Payload::Array(vec![]))}),
+                    None,
                 )
                 .await
         })

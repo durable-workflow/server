@@ -14,7 +14,7 @@ use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 use std::env;
 
 /// PHP's `SearchAttributeDefinition::SYSTEM_ATTRIBUTES`.
-const SYSTEM_ATTRIBUTES: [(&str, &str); 11] = [
+pub(super) const SYSTEM_ATTRIBUTES: [(&str, &str); 11] = [
     ("WorkflowType", "keyword"),
     ("WorkflowId", "keyword"),
     ("RunId", "keyword"),

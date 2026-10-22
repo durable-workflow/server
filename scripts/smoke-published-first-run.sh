@@ -20,8 +20,8 @@ RECOVERED_SERVER_LOG="${ARTIFACT_DIR}/recovered-server.log"
 HEALTH_LOG="${ARTIFACT_DIR}/docker-health.log"
 
 cleanup() {
-    docker rm -f "$CONTAINER" "$BOOTSTRAP_CONTAINER" >/dev/null 2>&1 || true
-    docker volume rm -f "$DATABASE_VOLUME" >/dev/null 2>&1 || true
+    # Workflow always-steps own deletion, including cancellation after partial setup.
+    docker stop "$CONTAINER" "$BOOTSTRAP_CONTAINER" >/dev/null 2>&1 || true
     rm -rf "$ARTIFACT_DIR"
 }
 
@@ -146,7 +146,8 @@ for expected in ("server-bootstrap", "authentication", "/api/ready"):
 assert "server-bootstrap" in docker_health_log, docker_health_log
 PY
 
-docker rm -f "$CONTAINER" >/dev/null
+docker stop "$CONTAINER" >/dev/null
+docker rename "$CONTAINER" "${SCOPE}-unbootstrapped"
 
 docker run --rm \
     --name "$BOOTSTRAP_CONTAINER" \
@@ -190,4 +191,7 @@ assert ready.get("checks", {}).get("auth", {}).get("status") == "ok", ready
 assert os.environ["AUTH_TOKEN"] not in Path(os.environ["RECOVERED_SERVER_LOG"]).read_text()
 PY
 
-echo "Published Server first-run readiness smoke passed"
+DW_LOGGING_SMOKE_SCOPE="${SCOPE}-logs" \
+    node "$(dirname "$0")/ci/verify-container-logging.mjs"
+
+echo "Published Server first-run readiness and container logging smoke passed"

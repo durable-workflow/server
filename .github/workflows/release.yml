@@ -198,7 +198,7 @@ jobs:
 
       - name: Build and push exact image tags
         id: build
-        # A cold signed PHP source build under ARM emulation exceeds 45 minutes.
+        # Bound cold multi-architecture extension and application builds.
         timeout-minutes: 120
         continue-on-error: true
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7
@@ -213,7 +213,6 @@ jobs:
           cache-to: ${{ steps.cache.outputs.cache_to }}
           provenance: false
           build-args: |
-            PHP_BUILD_JOBS=4
             PHPREDIS_VERSION=${{ env.PHPREDIS_VERSION }}
             PHPREDIS_COMMIT=${{ env.PHPREDIS_COMMIT }}
             WORKFLOW_PACKAGE_SOURCE=${{ steps.workflow.outputs.source }}
@@ -297,9 +296,14 @@ jobs:
         if: always()
         env:
           DW_FIRST_RUN_SCOPE: release-first-run-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          LOGGING_TEST_PROJECT: release-first-run-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-logs
         run: |
+          docker ps -aq --filter "label=com.docker.compose.project=$LOGGING_TEST_PROJECT" | xargs -r docker rm -f >/dev/null 2>&1 || true
+          docker network ls -q --filter "label=com.docker.compose.project=$LOGGING_TEST_PROJECT" | xargs -r docker network rm >/dev/null 2>&1 || true
+          docker volume ls -q --filter "label=com.docker.compose.project=$LOGGING_TEST_PROJECT" | xargs -r docker volume rm -f >/dev/null 2>&1 || true
           docker rm -f \
             "${DW_FIRST_RUN_SCOPE}-server" \
+            "${DW_FIRST_RUN_SCOPE}-unbootstrapped" \
             "${DW_FIRST_RUN_SCOPE}-bootstrap" >/dev/null 2>&1 || true
           docker volume rm -f \
             "${DW_FIRST_RUN_SCOPE}-database" >/dev/null 2>&1 || true

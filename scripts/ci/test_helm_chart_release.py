@@ -91,6 +91,7 @@ def evaluate_recovery_condition(
 ) -> bool:
     expression = job_condition(workflow_source(workflow), job)
     replacements = {
+        "needs.verify.result": context.get("verify_result", "success"),
         "needs.publish.outputs.exact_publish_outcome": context.get(
             "exact_publish_outcome", ""
         ),
@@ -887,6 +888,22 @@ esac
                         repository="durable-workflow/server",
                         ref="refs/heads/main",
                     ))
+
+    def test_recovery_requires_the_complete_image_verification_job(self) -> None:
+        for result in ["success", "failure", "cancelled", "skipped", ""]:
+            with self.subTest(result=result):
+                self.assertEqual(
+                    result == "success",
+                    evaluate_recovery_condition(
+                        "published-release-recovery.yml",
+                        "publish-chart",
+                        verify_result=result,
+                        release_verification_outcome="success",
+                        database_tls_outcome="success",
+                        repository="durable-workflow/server",
+                        ref="refs/heads/main",
+                    ),
+                )
 
     def test_duplicate_publication_reuses_and_verifies_the_existing_package(
         self,

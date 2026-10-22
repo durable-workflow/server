@@ -133,7 +133,7 @@ where
             "lease_expires_at":expires,"last_heartbeat_at":DB::optional_instant(&attempt,"last_heartbeat_at")?.or(DB::optional_instant(&activity,"last_heartbeat_at")?),
             "run_status":run_status,"run_closed_reason":DB::optional_string(&run,"closed_reason")?,"run_closed_at":DB::optional_instant(&run,"closed_at")?,
             "activity_status":activity_status,"attempt_status":attempt_status,"task_status":task_status,
-            "deadlines":null,"worker_session":null,"protocol_version":protocol,"server_capabilities":super::store::capabilities()});
+            "deadlines":super::activity_deadlines::deadlines_view::<DB>(&activity)?,"worker_session":null,"protocol_version":protocol,"server_capabilities":super::store::capabilities()});
         Ok((response, Self::cancellation_request(&run)?.is_none()))
     }
 
@@ -210,6 +210,9 @@ where
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
         Self::cancelled_activity_outcome(&mut tx, &task, &body).await?;
+        if DB::string(&task, "status")? == "cancelled" {
+            return Err(refuse(StatusCode::CONFLICT, "stale_attempt"));
+        }
         Self::fence(&task, &body)?;
         let attempt =
             Self::query("SELECT * FROM activity_attempts WHERE id=$1 AND workflow_task_id=$2")

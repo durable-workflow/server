@@ -34,7 +34,7 @@ async fn runtime(directory: &tempfile::TempDir) -> Runtime {
 async fn start(runtime: &Runtime, workflow_id: &str) {
     runtime
         .start(json!({"workflow_id":workflow_id,"workflow_type":"echo","task_queue":"test",
-            "input":envelope(Payload::Array(vec![]))}))
+            "input":envelope(Payload::Array(vec![]))}), None)
         .await
         .unwrap();
 }
@@ -58,7 +58,7 @@ async fn complete(runtime: &Runtime, task: &Value, commands: Value) -> Result<Va
         .complete_workflow(
             task["task_id"].as_str().unwrap(),
             json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"],
-                "commands":commands}),
+                "commands":commands}), None,
         )
         .await
 }
@@ -74,7 +74,7 @@ async fn cancellation_request_does_not_wait_for_read_codec_capacity() {
         runtime.request_cancellation(
             "codec-cancel",
             None,
-            json!({"reason":"held read permit","cleanup_timeout_seconds":30}),
+            json!({"reason":"held read permit","cleanup_timeout_seconds":30}), None,
         ),
     )
     .await
@@ -104,7 +104,7 @@ async fn signal_resumed_completion_does_not_wait_for_read_codec_capacity() {
             "payload",
             json!({"input":envelope(Payload::Array(vec![Payload::Map(
                 std::collections::BTreeMap::from([("count".into(), Payload::Long(7))]),
-            )]))}),
+            )]))}), None,
         )
         .await
         .unwrap();

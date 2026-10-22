@@ -30,19 +30,21 @@ be followed by a forward update.
 
 ## Image build provenance
 
-While the official Apache image is being published, this image builds PHP
-8.3.36 from the upstream release tarball on an immutable Apache foundation.
-The build verifies the tarball's fixed SHA-256 and detached signature against
-the published PHP release keyring, whose SHA-256 is also fixed. Configure
-options follow docker-library/php revision
-`f6048b5f6e3c2202ee082665a4ccc0d90de291a3`.
+Current development pins the official PHP 8.3.36 Apache image by its immutable
+multi-architecture digest. The official manifest became available after the
+initial security fix was prepared. The build still checks the actual CLI
+version before installing the application. Release qualification must also
+check the real Apache handler and normal API, worker and binary transport
+behavior. A base tag or image label alone does not establish a working patched
+image.
 
-The resulting CLI, Apache module, runtime libraries, headers and extension
-source replace the older foundation's PHP artifacts. The build checks the
-actual CLI version before installing the application. Release qualification
-must additionally check the real Apache handler and normal API, worker and
-binary transport behavior. Source checksums or an image label alone do not
-establish a working patched image.
+Immutable Server 2.10.1 and the one-time 2.9.12 security source retain their
+signed-source fallback. Those builds verify the upstream PHP tarball and release
+keyring SHA-256 values and detached signature, then replace the CLI, Apache
+module, runtime libraries, headers and extension source on the older pinned
+foundation. Configure options follow docker-library/php revision
+`f6048b5f6e3c2202ee082665a4ccc0d90de291a3`. The change to the official base applies
+only to later source revisions and does not replace either existing tag.
 
 ## Configuration reductions are incomplete
 

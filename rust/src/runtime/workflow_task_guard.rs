@@ -15,7 +15,7 @@ pub(super) fn refusal(
     fields: Value,
 ) -> RuntimeError {
     let mut response = json!({"task_id":task_id,"workflow_task_attempt":attempt,"error":error,"reason":reason,
-        "protocol_version":"1.20","server_capabilities":super::store::capabilities()});
+        "protocol_version":super::WORKER_PROTOCOL_VERSION,"server_capabilities":super::store::capabilities()});
     if let (Some(response), Value::Object(fields)) = (response.as_object_mut(), fields) {
         response.extend(fields);
     }

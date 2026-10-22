@@ -43,6 +43,8 @@ mod namespaces;
 mod late_workflow_claims;
 #[path = "execution/search_attributes.rs"]
 mod search_attributes;
+#[path = "execution/search_attribute_upserts.rs"]
+mod search_attribute_upserts;
 
 #[path = "execution/storage_test.rs"]
 mod storage_test;
@@ -53,6 +55,14 @@ mod named_timers;
 #[path = "execution/named_signal_timeouts.rs"]
 mod named_signal_timeouts;
 
+#[path = "execution/command_context.rs"]
+mod command_context;
+#[path = "execution/signal_claims.rs"]
+mod signal_claims;
+#[path = "execution/parallel_cancellation.rs"]
+mod parallel_cancellation;
+#[path = "execution/runtime_credentials.rs"]
+mod runtime_credentials;
 #[path = "execution/selected_run_signals.rs"]
 mod selected_run_signals;
 
@@ -69,6 +79,12 @@ mod worker_deregistration;
 mod worker_listing;
 #[path = "execution/activity_failure_fields.rs"]
 mod activity_failure_fields;
+#[path = "execution/query_open_tasks.rs"]
+mod query_open_tasks;
+#[path = "execution/retry_message_tasks.rs"]
+mod retry_message_tasks;
+#[path = "execution/signal_applied_values.rs"]
+mod signal_applied_values;
 
 #[path = "execution/worker_pressure.rs"]
 mod worker_pressure;
@@ -89,8 +105,12 @@ mod query_responses;
 mod history_export;
 #[path = "execution/input_envelopes.rs"]
 mod input_envelopes;
+#[path = "execution/workflow_repair.rs"]
+mod workflow_repair;
 #[path = "execution/history_retention.rs"]
 mod history_retention;
+#[path = "execution/repair_status.rs"]
+mod repair_status;
 #[path = "execution/activity_timeout_pass.rs"]
 mod activity_timeout_pass;
 #[path = "execution/start_request.rs"]
@@ -735,6 +755,18 @@ impl TestDatabase {
             }
         }
     }
+}
+
+/// `HistoryController::eventPrincipal`: the principal fields of an event's
+/// command snapshot, or null.
+fn event_principal(payload: &Value) -> Value {
+    let mut principal = serde_json::Map::new();
+    for (field, key) in [("principal_type", "type"), ("principal_id", "id"), ("principal_label", "label")] {
+        if let Some(value) = payload["command"][field].as_str().filter(|value| !value.is_empty()) {
+            principal.insert(key.into(), json!(value));
+        }
+    }
+    if principal.is_empty() { Value::Null } else { Value::Object(principal) }
 }
 
 #[tokio::test]
@@ -2354,15 +2386,9 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
         started["run_id"].as_str().unwrap()
     );
     let input = json!({"input":envelope(Payload::Array(vec![Payload::Long(9007199254740993)]))});
-    assert_eq!(
-        request(&a, "POST", &query_path, input.clone()).await.1["reason"],
-        "query_snapshot_busy"
-    );
+    // Queries during an open workflow task wait for their claim; see
+    // `query_open_tasks`.
     let workflow_task = poll(&a, "query-a", "workflow").await;
-    assert_eq!(
-        request(&a, "POST", &query_path, input.clone()).await.1["reason"],
-        "query_snapshot_busy"
-    );
     let complete_path = format!(
         "/api/worker/workflow-tasks/{}/complete",
         workflow_task["task_id"].as_str().unwrap()
@@ -2430,7 +2456,7 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
             .iter()
             .map(|event| {
                 json!({"sequence":event["sequence"],"event_type":event["event_type"],
-            "payload":event["payload"],"timestamp":event["recorded_at"],"principal":null})
+            "payload":event["payload"],"timestamp":event["recorded_at"],"principal":event_principal(&event["payload"])})
             })
             .collect(),
     );
@@ -3705,6 +3731,10 @@ async fn cooperative_delivery_cleanup_and_original_deadline_survive_fresh_runtim
             assert_eq!(status.1["heartbeat_recorded"], false);
             assert_eq!(status.1["lease_expires_at"], activity["lease_expires_at"]);
             assert_eq!(status.1["last_heartbeat_at"], Value::Null);
+            // An activity without deadlines: PHP omits the claim field and
+            // reports null on status.
+            assert!(activity.get("deadlines").is_none(), "{activity}");
+            assert_eq!(status.1["deadlines"], Value::Null);
             let mut wrong_owner = status_body.clone();
             wrong_owner["lease_owner"] = json!("other-owner");
             assert_eq!(
@@ -3853,6 +3883,9 @@ async fn cooperative_delivery_cleanup_and_original_deadline_survive_fresh_runtim
         assert_eq!(described.1["output_envelope"], Value::Null);
         let instant = |value: &Value| chrono::DateTime::parse_from_rfc3339(value.as_str().unwrap()).unwrap();
         assert_eq!(instant(&cleanup["finished_at"]), instant(&described.1["closed_at"]));
+        // PHP writes the cleanup's `finished_at` as the run's `closed_at`
+        // string (`CancellationCascadeView`), so the two are equal as text.
+        assert_eq!(cleanup["finished_at"], described.1["closed_at"]);
         if !cleanup_activity.is_null() {
             let observed = request_protocol(&app,"POST",
                 &format!("/api/worker/activity-tasks/{}/status",cleanup_activity["task_id"].as_str().unwrap()),
@@ -4422,23 +4455,26 @@ async fn reported_activity_failure_commits_one_persistent_retry_and_fences_old_o
         poll(&app_b, "worker", "activity").await.is_null(),
         "retry waits the actual one-second backoff"
     );
+    // A different late outcome from the failed attempt is stale, as in PHP.
     let mut conflicting = fail.clone();
     conflicting["failure"]["message"] = json!("different");
+    let refused = request(&app_b, "POST", &fail_path, conflicting).await;
+    assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
     assert_eq!(
-        request(&app_b, "POST", &fail_path, conflicting).await.0,
-        StatusCode::CONFLICT
+        refused.1,
+        json!({"task_id":first["task_id"],"activity_attempt_id":first["activity_attempt_id"],
+            "outcome":"failed","recorded":false,"reason":"stale_attempt","next_task_id":null})
     );
     let old_complete_path = format!(
         "/api/worker/activity-tasks/{}/complete",
         first["task_id"].as_str().unwrap()
     );
     let old_complete = json!({"lease_owner":"worker","activity_attempt_id":first["activity_attempt_id"],"result":envelope(Payload::Long(-1))});
-    assert_eq!(
-        request(&app_b, "POST", &old_complete_path, old_complete.clone())
-            .await
-            .0,
-        StatusCode::CONFLICT
-    );
+    let refused = request(&app_b, "POST", &old_complete_path, old_complete.clone()).await;
+    assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
+    assert_eq!(refused.1["reason"], "stale_attempt");
+    assert_eq!(refused.1["attempt_status"], "failed");
+    assert_eq!(refused.1["task_status"], "completed");
     node_a.close().await;
     let recovered = database.open().await.unwrap();
     let app_c = router(recovered.clone());
@@ -4469,6 +4505,16 @@ async fn reported_activity_failure_commits_one_persistent_retry_and_fences_old_o
     assert_eq!(second["arguments"], arguments);
     assert_eq!(second["attempt_number"], 2);
     assert_ne!(second["activity_attempt_id"], first["activity_attempt_id"]);
+    // While the retry runs, the first attempt's late result is still the
+    // stale receipt PHP returns to that attempt's owner.
+    let refused = request(&app_b, "POST", &old_complete_path, old_complete.clone()).await;
+    assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
+    assert_eq!(
+        refused.1,
+        json!({"task_id":first["task_id"],"activity_attempt_id":first["activity_attempt_id"],
+            "outcome":"completed","recorded":false,"reason":"stale_attempt","next_task_id":null,
+            "lease_owner":"worker","activity_status":"running","attempt_status":"failed","task_status":"completed"})
+    );
     assert_eq!(
         request(&app_b, "POST", &old_complete_path, old_complete)
             .await
@@ -4733,7 +4779,7 @@ async fn terminal_activity_failures_resume_once_and_preserve_original_failure() 
             .map(|event| {
                 json!({
                     "sequence":event["sequence"],"event_type":event["event_type"],
-                    "timestamp":event["recorded_at"],"payload":event["payload"],"principal":null
+                    "timestamp":event["recorded_at"],"payload":event["payload"],"principal":event_principal(&event["payload"])
                 })
             })
             .collect();

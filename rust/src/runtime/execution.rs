@@ -34,6 +34,8 @@ pub struct Runtime {
     storage: Arc<Storage>,
     pub(crate) token: Arc<str>,
     pub(crate) role_tokens: [Option<Arc<str>>; 3],
+    /// `DW_AUTH_DRIVER=none` and `DW_RUNTIME_CREDENTIALS_ENABLED`.
+    pub(crate) auth: AuthOptions,
     scheduler: Arc<TimerScheduler>,
     signal_codec: Arc<Semaphore>,
     // Codec work done while holding the transition lock takes this permit,
@@ -110,6 +112,15 @@ impl Drop for TimerScheduler {
     }
 }
 
+/// How requests authenticate beyond the configured tokens.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct AuthOptions {
+    /// `DW_AUTH_DRIVER=none`: every request is the anonymous administrator.
+    pub(crate) anonymous: bool,
+    /// Database runtime credentials authenticate bearer tokens.
+    pub(crate) runtime_credentials: bool,
+}
+
 macro_rules! delegate {
     ($name:ident($($arg:ident: $ty:ty),* $(,)?) -> $output:ty) => {
         pub(crate) async fn $name(&self, $($arg:$ty),*) -> $output {
@@ -141,6 +152,11 @@ impl Runtime {
     ) -> Self {
         self.role_tokens = [worker, operator, admin]
             .map(|token| token.filter(|value| !value.is_empty()).map(Arc::from));
+        self
+    }
+
+    pub fn with_auth_options(mut self, anonymous: bool, runtime_credentials: bool) -> Self {
+        self.auth = AuthOptions { anonymous, runtime_credentials };
         self
     }
 
@@ -209,6 +225,7 @@ impl Runtime {
             storage: Arc::new(storage),
             token: token.into(),
             role_tokens: [None, None, None],
+            auth: AuthOptions::default(),
             scheduler: Arc::new(TimerScheduler::new()),
             signal_codec: Arc::new(Semaphore::new(1)),
             transition_codec: Arc::new(Semaphore::new(1)),
@@ -278,6 +295,7 @@ impl Runtime {
             storage: Arc::new(storage),
             token: self.token.clone(),
             role_tokens: self.role_tokens.clone(),
+            auth: self.auth,
             scheduler: self.scheduler.clone(),
             signal_codec: self.signal_codec.clone(),
             transition_codec: self.transition_codec.clone(),
@@ -299,12 +317,19 @@ impl Runtime {
     delegate!(operator_metrics(config: &super::operator_metrics::MetricsConfig) -> Result<Value>);
     delegate!(system_health(config: &super::operator_metrics::MetricsConfig) -> Result<(bool, Value)>);
     delegate!(operator_dashboard(config: &super::operator_metrics::MetricsConfig, bounded: bool) -> Result<Value>);
+    delegate!(repair_status() -> Result<Value>);
     delegate!(retention_status(limit: i64) -> Result<Value>);
     delegate!(retention_pass(limit: i64, run_ids: Vec<String>) -> Result<(Value, bool)>);
     delegate!(activity_timeout_status(limit: i64) -> Result<Value>);
     delegate!(activity_timeout_pass(limit: i64, ids: Vec<String>) -> Result<(Value, bool)>);
     delegate!(create_namespace(body: Value) -> Result<Value>);
     delegate!(list_search_attributes() -> Result<Value>);
+    delegate!(runtime_credential_principal(token: &str) -> Result<Option<super::runtime_credentials::Principal>>);
+    delegate!(list_runtime_credentials() -> Result<Value>);
+    delegate!(show_runtime_credential(id: &str) -> Result<Value>);
+    delegate!(upsert_runtime_credential(id: &str, body: Value) -> Result<(axum::http::StatusCode, Value)>);
+    delegate!(rotate_runtime_credential(id: &str, body: Value) -> Result<Value>);
+    delegate!(revoke_runtime_credential(id: &str) -> Result<Value>);
     delegate!(
         storage_test_round_trip(
             local: &crate::external_payload::LocalStorage,
@@ -396,7 +421,7 @@ impl Runtime {
         .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?
     }
 
-    pub(crate) async fn start(&self, body: Value) -> Result<Value> {
+    pub(crate) async fn start(&self, body: Value, context: Option<Value>) -> Result<Value> {
         // PHP validates the request before it reads the memo or the input.
         let mut body = super::start_request::normalized(body);
         super::input_envelope::transport(&body)?;
@@ -416,9 +441,9 @@ impl Runtime {
             super::memos::prepare_initial(self.signal_codec.clone(), body["memo"].clone()).await?;
         let external = self.prepare_external(&body["input"]).await?;
         match &*self.storage {
-            Storage::Sqlite(store) => store.start(body, memo, external).await,
-            Storage::Postgres(store) => store.start(body, memo, external).await,
-            Storage::MySql(store) => store.start(body, memo, external).await,
+            Storage::Sqlite(store) => store.start(body, memo, external, context).await,
+            Storage::Postgres(store) => store.start(body, memo, external, context).await,
+            Storage::MySql(store) => store.start(body, memo, external, context).await,
         }
     }
     pub(crate) async fn create_schedule(
@@ -468,6 +493,7 @@ impl Runtime {
         run_id: Option<&str>,
         name: &str,
         body: Value,
+        context: Option<Value>,
     ) -> Result<Value> {
         let body = super::start_request::normalized(body);
         super::input_envelope::transport(&body)?;
@@ -491,6 +517,7 @@ impl Runtime {
                         body,
                         prepared,
                         self.transition_codec.clone(),
+                        context,
                     )
                     .await
             }
@@ -503,6 +530,7 @@ impl Runtime {
                         body,
                         prepared,
                         self.transition_codec.clone(),
+                        context,
                     )
                     .await
             }
@@ -515,52 +543,24 @@ impl Runtime {
                         body,
                         prepared,
                         self.transition_codec.clone(),
+                        context,
                     )
                     .await
             }
         }
     }
-    pub(crate) async fn repair_range_blocked(
+    pub(crate) async fn repair_workflow(
         &self,
         workflow_id: &str,
         run_id: Option<&str>,
         body: Value,
         context: Value,
-    ) -> Result<Value> {
+    ) -> Result<(StatusCode, Value)> {
+        let codec = self.transition_codec.clone();
         match &*self.storage {
-            Storage::Sqlite(store) => {
-                store
-                    .repair_range_blocked(
-                        workflow_id,
-                        run_id,
-                        body,
-                        context,
-                        self.transition_codec.clone(),
-                    )
-                    .await
-            }
-            Storage::Postgres(store) => {
-                store
-                    .repair_range_blocked(
-                        workflow_id,
-                        run_id,
-                        body,
-                        context,
-                        self.transition_codec.clone(),
-                    )
-                    .await
-            }
-            Storage::MySql(store) => {
-                store
-                    .repair_range_blocked(
-                        workflow_id,
-                        run_id,
-                        body,
-                        context,
-                        self.transition_codec.clone(),
-                    )
-                    .await
-            }
+            Storage::Sqlite(store) => store.repair_workflow(workflow_id, run_id, body, context, codec).await,
+            Storage::Postgres(store) => store.repair_workflow(workflow_id, run_id, body, context, codec).await,
+            Storage::MySql(store) => store.repair_workflow(workflow_id, run_id, body, context, codec).await,
         }
     }
 
@@ -609,6 +609,7 @@ impl Runtime {
         run_id: Option<&str>,
         name: &str,
         body: Value,
+        context: Option<Value>,
     ) -> Result<(StatusCode, Value)> {
         let body = super::start_request::normalized(body);
         super::input_envelope::transport(&body)?;
@@ -631,17 +632,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .update_workflow(workflow_id, run_id, name, body, prepared)
+                    .update_workflow(workflow_id, run_id, name, body, prepared, context)
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .update_workflow(workflow_id, run_id, name, body, prepared)
+                    .update_workflow(workflow_id, run_id, name, body, prepared, context)
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .update_workflow(workflow_id, run_id, name, body, prepared)
+                    .update_workflow(workflow_id, run_id, name, body, prepared, context)
                     .await
             }
         }
@@ -653,6 +654,7 @@ impl Runtime {
         run_id: Option<&str>,
         name: &str,
         body: Value,
+        command: Option<Value>,
     ) -> Result<(StatusCode, Value)> {
         // `validateOperationName`, `workflowBound`, then `input` =>
         // nullable|array; other request fields are ignored, as in PHP.
@@ -696,17 +698,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries)
+                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries, command.as_ref())
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries)
+                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries, command.as_ref())
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries)
+                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries, command.as_ref())
                     .await
             }
         }
@@ -920,7 +922,12 @@ impl Runtime {
     delegate!(deliver_cancellation(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     delegate!(task_history(task_id: &str, body: Value) -> Result<Value>);
     delegate!(fail_workflow_task(task_id: &str, body: Value) -> Result<Value>);
-    pub(crate) async fn complete_workflow(&self, task_id: &str, body: Value) -> Result<Value> {
+    pub(crate) async fn complete_workflow(
+        &self,
+        task_id: &str,
+        body: Value,
+        worker: Option<super::runtime_credentials::Principal>,
+    ) -> Result<Value> {
         let external = self.prepare_command_payloads(&body).await?;
         if let Some(commands) = body["commands"].as_array() {
             for command in commands
@@ -969,17 +976,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external)
+                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker)
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external)
+                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker)
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external)
+                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker)
                     .await
             }
         }
@@ -990,23 +997,24 @@ impl Runtime {
         workflow_id: &str,
         run_id: Option<&str>,
         body: Value,
+        context: Option<Value>,
     ) -> Result<(StatusCode, Value)> {
         let (reason, blob) =
             super::cancellation::prepare_reason(&body, self.signal_codec.clone()).await?;
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .close_workflow(command, workflow_id, run_id, reason, blob)
+                    .close_workflow(command, workflow_id, run_id, reason, blob, context)
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .close_workflow(command, workflow_id, run_id, reason, blob)
+                    .close_workflow(command, workflow_id, run_id, reason, blob, context)
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .close_workflow(command, workflow_id, run_id, reason, blob)
+                    .close_workflow(command, workflow_id, run_id, reason, blob, context)
                     .await
             }
         }
@@ -1016,6 +1024,7 @@ impl Runtime {
         workflow_id: &str,
         run_id: Option<&str>,
         body: Value,
+        context: Option<Value>,
     ) -> Result<(StatusCode, Value)> {
         let (reason, budget) = super::cooperative::validate_request(&body)?;
         match &*self.storage {
@@ -1027,6 +1036,7 @@ impl Runtime {
                         reason,
                         budget,
                         self.transition_codec.clone(),
+                        context,
                     )
                     .await
             }
@@ -1038,6 +1048,7 @@ impl Runtime {
                         reason,
                         budget,
                         self.transition_codec.clone(),
+                        context,
                     )
                     .await
             }
@@ -1049,6 +1060,7 @@ impl Runtime {
                         reason,
                         budget,
                         self.transition_codec.clone(),
+                        context,
                     )
                     .await
             }

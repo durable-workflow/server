@@ -387,7 +387,6 @@ where
                 json!({"task_id":task_id,"activity_attempt_id":attempt_id,"outcome":"failed","recorded":false,"reason":"already_completed"}),
             );
         }
-        Self::fence(&task, &body)?;
         let attempt =
             Self::query("SELECT * FROM activity_attempts WHERE id=$1 AND workflow_task_id=$2")
                 .bind(attempt_id)
@@ -396,6 +395,15 @@ where
                 .await?
                 .ok_or_else(|| refuse(StatusCode::CONFLICT, "stale_attempt"))?;
         let count = DB::number(&attempt, "attempt_number")?;
+        // As for completions, PHP judges the attempt before the task's lease.
+        if DB::string(&attempt, "status")? != "running" || count != DB::number(&task, "attempt_count")? {
+            return Err(super::RuntimeError::Protocol {
+                status: StatusCode::CONFLICT,
+                response: json!({"task_id":task_id,"activity_attempt_id":attempt_id,"outcome":"failed",
+                    "recorded":false,"reason":"stale_attempt","next_task_id":null}),
+            });
+        }
+        Self::fence(&task, &body)?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         Self::active_run(&mut tx, &run_id).await?;
         let activity_id = DB::string(&attempt, "activity_execution_id")?;

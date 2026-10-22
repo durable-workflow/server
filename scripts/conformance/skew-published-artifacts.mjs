@@ -5,6 +5,8 @@ import path from 'node:path';
 import process from 'node:process';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
+import { proxyHttpRequest, proxyTargetUrl } from './proxy-target.mjs';
 import { isExactPythonRelease, isExactSemverRelease } from './version-identities.mjs';
 
 const RESULT_SCHEMA = 'durable-workflow.v2.skew-refusal-matrix.result';
@@ -3356,6 +3358,7 @@ function normalizeArtifactHeaders(headers) {
 
 async function withRecordingProxy({ targetUrl, artifactProxyHost = null }, callback) {
   const captures = [];
+  const targetOrigin = new URL(targetUrl);
   const server = http.createServer(async (request, response) => {
     const chunks = [];
     request.on('data', (chunk) => chunks.push(chunk));
@@ -3366,7 +3369,7 @@ async function withRecordingProxy({ targetUrl, artifactProxyHost = null }, callb
       delete headers.connection;
       delete headers['content-length'];
 
-      const requestUrl = new URL(request.url ?? '/', targetUrl);
+      const requestUrl = proxyTargetUrl(request.url, targetOrigin);
       const capture = {
         id: `proxy-${captures.length + 1}`,
         request: {
@@ -3383,20 +3386,29 @@ async function withRecordingProxy({ targetUrl, artifactProxyHost = null }, callb
       };
 
       try {
-        const upstream = await fetch(requestUrl, {
-          method: request.method,
-          headers,
-          body: requestBody.length > 0 ? requestBody : undefined,
+        const upstream = await new Promise((resolve, reject) => {
+          const forwarded = proxyHttpRequest(request.url, targetOrigin, {
+            method: request.method,
+            headers,
+          }, resolve);
+          forwarded.once('error', reject);
+          forwarded.end(requestBody.length > 0 ? requestBody : undefined);
         });
-        const text = await upstream.text();
+        const responseChunks = [];
+        for await (const chunk of upstream) responseChunks.push(Buffer.from(chunk));
+        const encoded = Buffer.concat(responseChunks);
+        const encoding = String(upstream.headers['content-encoding'] ?? 'identity').toLowerCase();
+        const decoders = { identity: (value) => value, gzip: gunzipSync, deflate: inflateSync, br: brotliDecompressSync };
+        if (!(encoding in decoders)) throw new Error(`Unsupported proxy response encoding: ${encoding}`);
+        const text = decoders[encoding](encoded).toString('utf8');
         const parsed = parseJson(text);
-        const responseHeaders = Object.fromEntries(upstream.headers.entries());
+        const responseHeaders = normalizeArtifactHeaders(upstream.headers);
         capture.response = {
-          status: upstream.status,
+          status: upstream.statusCode ?? 502,
           headers: responseHeaders,
           body: parsed ?? text,
         };
-        response.statusCode = upstream.status;
+        response.statusCode = upstream.statusCode ?? 502;
         for (const [key, value] of Object.entries(responseHeaders)) {
           if (['content-encoding', 'content-length', 'transfer-encoding', 'connection'].includes(key.toLowerCase())) {
             continue;
