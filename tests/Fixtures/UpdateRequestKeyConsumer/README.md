@@ -45,3 +45,39 @@ project's containers, network, dependencies, SQLite data and exports at the
 declared cleanup boundary. Preserve borrowed images and other projects. A
 passing upgrade does not qualify the separate intake-limit image controls or
 the broader signal/update retry contract in shared #216.
+
+## Published intake-limit and retained-rejection controls
+
+Use a separate fresh project with the corrected published image and
+`KEY_MODE=service`. Keep the same normal Python 2.6.1 installation. This cohort
+creates four ordinary waiting runs: pending-update and payload-size controls
+in both default and named namespaces. Each run retains its 60/120-second
+run/execution deadlines; every consumer stage has a 30-second total bound.
+
+1. Start API/client with `KEY_PENDING_LIMIT=0 KEY_PAYLOAD_LIMIT=0`, then run
+   `/opt/venv/bin/python /fixture/intake_limits.py create` in the client.
+   The real Worker commits each original wait, stops, and two pending updates
+   are admitted before testing the limits.
+2. Stop the API with SIGTERM and require exit 0/no OOM. Run
+   `intake_limits.py audit-original` in an ordinary Python container, with the
+   phase root mounted read-only, its evidence directory mounted at `/evidence`
+   writable, a private `/audit` tmpfs and no network.
+3. Recreate only the API with `KEY_PENDING_LIMIT=1 KEY_PAYLOAD_LIMIT=0`.
+   Run the consumer's `pending_update_count` stage. Both namespaces must return
+   HTTP 409, `structural_limit_exceeded`, the pending-count kind and limit 1.
+4. Stop the API. Recreate it with `KEY_PENDING_LIMIT=0 KEY_PAYLOAD_LIMIT=1`
+   and run `payload_size`. Both namespaces must return the payload-size refusal.
+   Stop it and run `audit-refused` with the same read-only mounts.
+5. Recreate the API with both limits 0. Run `retained`, which changes the proxy
+   header, handler and arguments while keeping each rejected caller key.
+   Every response must retain its original rejection, update/command identities
+   and limit metadata. Stop the API and run `audit-retained`.
+
+A new limit refusal deliberately records one `UpdateRejected` event. The audit
+requires exactly four such events, preserved original history rows, unchanged
+tasks and original run state/deadlines. Only the corresponding run sequence and
+progress bookkeeping may advance. Retained retries permit no durable row changes
+at all, and the complete stopped database hash must stay exact. Each audit also
+checks zero repairs, registrations and failed jobs. Do not extend an original's
+deadline or resume an unsuccessful cohort as a new pass. Retire raw databases,
+SDK dependencies, runtime and network after review; preserve borrowed images.

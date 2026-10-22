@@ -19,6 +19,8 @@ services:
       DW_ADMIN_TOKEN: update-key-consumer
       DW_WORKER_TOKEN: update-key-worker
       DW_BOOTSTRAP_RETRIES: 1
+      DW_V2_LIMIT_PENDING_UPDATES: ${KEY_PENDING_LIMIT:-500}
+      DW_V2_LIMIT_PAYLOAD_SIZE_BYTES: ${KEY_PAYLOAD_LIMIT:-2097152}
     volumes: &server_volumes
       - ${KEY_PHASE_ROOT:?Set a disposable phase directory}/data:/data
       - ./definition.php:/fixture/definition.php:ro
@@ -78,6 +80,7 @@ services:
       - ${KEY_PHASE_ROOT:?}:/phase
       - ./consumer.py:/fixture/consumer.py:ro
       - ./definition.py:/fixture/definition.py:ro
+      - ./intake_limits.py:/fixture/intake_limits.py:ro
     depends_on:
       api:
         condition: service_healthy
