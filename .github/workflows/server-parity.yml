@@ -554,6 +554,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
+          native_record_status=0
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR -e MYSQL_IMAGE "$image" scripts/conformance/server-parity.mjs record \
@@ -564,7 +565,8 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json || native_record_status=$?
+          compare_status=0
           docker run --rm --user=1000:1000 --entrypoint node --network=none \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
             scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json \
@@ -574,7 +576,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json > parity-evidence/comparison.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json > parity-evidence/comparison.json || compare_status=$?
           bash scripts/conformance/server-parity/published-sdk-patch-profile.sh mysql http://parity-php:8080 http://parity-native-a:8080
           bash scripts/conformance/server-parity/repeated-patch-profile.sh mysql http://parity-php:8080 http://parity-native-a:8080
           bash scripts/conformance/server-parity/legacy-marker-profile.sh mysql http://parity-php:8080 http://parity-native-a:8080
@@ -686,6 +688,10 @@ jobs:
             catalog php_ref > parity-evidence/catalog-after.json
           cmp parity-evidence/php-before.json parity-evidence/php-after.json
           cmp parity-evidence/catalog-before.json parity-evidence/catalog-after.json
+          # A native fixture difference fails the step only after every later
+          # check has run, so one difference cannot hide the rest.
+          test "$native_record_status" -eq 0
+          test "$compare_status" -eq 0
       - name: Compare separate configured role-token cohort
         run: bash scripts/conformance/server-parity/role-profile.sh mysql
       - name: Back up, take over and resume a separate published PHP upgrade source
@@ -1051,6 +1057,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
+          native_record_status=0
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR "$image" scripts/conformance/server-parity.mjs record \
@@ -1061,7 +1068,8 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json || native_record_status=$?
+          compare_status=0
           docker run --rm --user=1000:1000 --entrypoint node --network=none \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
             scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json \
@@ -1071,7 +1079,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json > parity-evidence/comparison.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json > parity-evidence/comparison.json || compare_status=$?
           bash scripts/conformance/server-parity/published-sdk-patch-profile.sh pgsql http://parity-php:8080 http://parity-native-a:8080
           bash scripts/conformance/server-parity/repeated-patch-profile.sh pgsql http://parity-php:8080 http://parity-native-a:8080
           bash scripts/conformance/server-parity/legacy-marker-profile.sh pgsql http://parity-php:8080 http://parity-native-a:8080
@@ -1183,6 +1191,10 @@ jobs:
             catalog php_ref > parity-evidence/catalog-after.json
           cmp parity-evidence/php-before.json parity-evidence/php-after.json
           cmp parity-evidence/catalog-before.json parity-evidence/catalog-after.json
+          # A native fixture difference fails the step only after every later
+          # check has run, so one difference cannot hide the rest.
+          test "$native_record_status" -eq 0
+          test "$compare_status" -eq 0
       - name: Compare separate configured role-token cohort
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
@@ -1542,6 +1554,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
+          native_record_status=0
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR "$image" scripts/conformance/server-parity.mjs record \
@@ -1552,7 +1565,8 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json || native_record_status=$?
+          compare_status=0
           docker run --rm --user=1000:1000 --entrypoint node \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
             scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json \
@@ -1562,7 +1576,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json > parity-evidence/comparison.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json > parity-evidence/comparison.json || compare_status=$?
           bash scripts/conformance/server-parity/published-sdk-patch-profile.sh sqlite http://parity-server:8080 http://parity-rust:8080
           bash scripts/conformance/server-parity/repeated-patch-profile.sh sqlite http://parity-server:8080 http://parity-rust:8080
           bash scripts/conformance/server-parity/legacy-marker-profile.sh sqlite http://parity-server:8080 http://parity-rust:8080
@@ -1673,6 +1687,10 @@ jobs:
               php scripts/conformance/server-parity/cooperative-restart.php finish http://parity-recovered:8080 /evidence/cooperative-restart-receipt.json > /evidence/cooperative-restart-finish.json
               php scripts/conformance/server-parity/restart.php finish http://parity-recovered:8080 /evidence/restart-receipt.json > /evidence/restart-finish.json
             '
+          # A native fixture difference fails the step only after every later
+          # check has run, so one difference cannot hide the rest.
+          test "$native_record_status" -eq 0
+          test "$compare_status" -eq 0
       - name: Compare separate configured role-token cohort
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
