@@ -1027,7 +1027,7 @@ where
 
     /// PHP's `RuntimeExternalPayloadCleanupMetrics`: the expired registrations
     /// and the namespace's recorded cleanup passes.
-    async fn external_payload_cleanup_metrics(&self, config: &MetricsConfig) -> Result<Value> {
+    pub(super) async fn external_payload_cleanup_metrics(&self, config: &MetricsConfig) -> Result<Value> {
         let bound = whole_second(now());
         let stats =
             Self::query("SELECT * FROM runtime_external_payload_cleanup_stats WHERE namespace=$1")

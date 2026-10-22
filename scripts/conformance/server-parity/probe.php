@@ -434,6 +434,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $serviceCatalog = isset($fixture['service_catalog']) ? finishHttpServiceCatalog($client, $fixture, $workflowId, $url) : null;
     $systemMetrics = isset($fixture['system_metrics']) ? finishHttpSystemMetrics($client, $fixture, $workflowId, $url) : null;
     $prometheusMetrics = isset($fixture['prometheus_metrics']) ? finishHttpPrometheusMetrics($client, $fixture, $workflowId, $url) : null;
+    $payloadCleanup = isset($fixture['payload_cleanup']) ? finishHttpPayloadCleanup($client, $fixture, $workflowId, $url) : null;
     $namespaceDelete = isset($fixture['namespace_delete']) ? finishHttpNamespaceDelete($client, $fixture, $workflowId, $queue, $url) : null;
     $schedulePolicies = isset($fixture['schedule_policies']) ? finishHttpSchedulePolicies($client, $fixture, $workflowId, $url) : null;
     $scheduleCatalog = isset($fixture['schedule_catalog'])
@@ -538,6 +539,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'service_catalog' => $serviceCatalog,
         'system_metrics' => $systemMetrics,
         'prometheus_metrics' => $prometheusMetrics,
+        'payload_cleanup' => $payloadCleanup,
         'namespace_delete' => $namespaceDelete,
         'schedule_policies' => $schedulePolicies,
         'schedule_catalog' => $scheduleCatalog,
@@ -846,6 +848,7 @@ try {
     require __DIR__.'/service-catalog-probe.php';
     require __DIR__.'/system-metrics-probe.php';
     require __DIR__.'/prometheus-metrics-probe.php';
+    require __DIR__.'/payload-cleanup-probe.php';
     require __DIR__.'/namespace-delete-probe.php';
     require __DIR__.'/schedule-policies-probe.php';
     require __DIR__.'/signals-before-worker-probe.php';
@@ -1016,6 +1019,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['prometheus_metrics'])) {
         $observation['prometheus_metrics'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_metrics'];
+    }
+    if ($mode === 'embedded' && isset($fixture['payload_cleanup'])) {
+        $observation['payload_cleanup'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_system_routes'];
     }
     if ($mode === 'embedded' && isset($fixture['namespace_delete'])) {
         $observation['namespace_delete'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_namespaces'];

@@ -1,4 +1,6 @@
 use super::*;
+#[path = "external_payloads/cleanup.rs"]
+mod cleanup;
 #[path = "external_payloads/completion_uploads.rs"]
 mod completion_uploads;
 use axum::{body::Bytes, http::HeaderMap};
@@ -125,7 +127,11 @@ async fn json_request(
 }
 
 async fn unclaimed(database: &TestDatabase) -> i64 {
-    let query = "SELECT COUNT(*) FROM runtime_external_payloads WHERE retained_at IS NULL AND expires_at IS NOT NULL";
+    count(database, "SELECT COUNT(*) FROM runtime_external_payloads WHERE retained_at IS NULL AND expires_at IS NOT NULL").await
+}
+
+/// One integer the database answers.
+async fn count(database: &TestDatabase, query: &'static str) -> i64 {
     match database {
         TestDatabase::Sqlite(dir) => {
             let pool = sqlx::SqlitePool::connect(&format!(

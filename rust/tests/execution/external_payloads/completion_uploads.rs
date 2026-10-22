@@ -446,3 +446,30 @@ async fn activity_completion_during_upload_cannot_reopen_its_closed_allowance() 
     runtime.close().await;
     database.remove().await;
 }
+
+#[tokio::test]
+async fn cleanup_renews_a_live_completion_budget_and_drops_a_closed_one() {
+    let (_provider, database, _runtime, app, task, bytes) = original(120).await;
+    let uploaded = upload(&app, "worker-token", "default", &context(&task), bytes, None).await;
+    assert_eq!(uploaded.0, StatusCode::CREATED, "{}", uploaded.2);
+    assert_eq!(count(&database, "SELECT COUNT(*) FROM runtime_payload_completion_budgets").await, 1);
+    database.execute("UPDATE runtime_payload_completion_budgets SET expires_at='2000-01-01 00:00:00'").await;
+    let path = "/api/system/external-payload-cleanup/pass";
+    let (code, body) = json_request(&app, "POST", path, "admin-token", json!({})).await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    // The activity can still complete, so its allowance gets another period.
+    assert_eq!(
+        count(&database, "SELECT COUNT(*) FROM runtime_payload_completion_budgets WHERE expires_at>'2001-01-01'").await,
+        1
+    );
+    let (code, body) = json_request(&app, "POST",
+        &format!("/api/worker/activity-tasks/{}/complete", task["task_id"].as_str().unwrap()), "worker-token",
+        json!({"activity_attempt_id": task["activity_attempt_id"], "lease_owner": task["lease_owner"],
+            "result": envelope(Payload::Array(vec![]))})).await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    database.execute("UPDATE runtime_payload_completion_budgets SET expires_at='2000-01-01 00:00:00'").await;
+    let (code, body) = json_request(&app, "POST", path, "admin-token", json!({})).await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    // A closed activity cannot resume its upload: the allowance is dropped.
+    assert_eq!(count(&database, "SELECT COUNT(*) FROM runtime_payload_completion_budgets").await, 0);
+}

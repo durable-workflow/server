@@ -102,8 +102,8 @@ These published PHP routes on this tree have no native handler yet, by family.
 
 - **Used by the CLI or Waterline.**
   - Standalone activities: list, describe and start.
-  - The repair pass, and external payload cleanup and its pass. (Namespace
-    delete is served with the `namespace-delete` fixture. The JSON
+  - The repair pass. (Namespace delete is served with the
+    `namespace-delete` fixture. The JSON
     `GET|POST /api/system/metrics` is served with the `system-metrics`
     fixture: namespace failure, durable-state and payload counts are exact;
     native enforces no admission, durable-state or payload quota, so limits
@@ -112,7 +112,8 @@ These published PHP routes on this tree have no native handler yet, by family.
     without its summary. The Prometheus summary
     `GET /api/system/prometheus-metrics` is served with the
     `prometheus-metrics` fixture, with PHP's default limit of 100 series per
-    family.)
+    family. External payload cleanup and its pass are served with the
+    `payload-cleanup` fixture.)
   - Task queue priority and fairness.
 - **Worker protocol features.**
   - Worker sessions.
