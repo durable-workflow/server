@@ -210,6 +210,20 @@ where
     }
 }
 
+/// `UpdateWaitPolicy::completionTimeoutSeconds`: the package casts the
+/// setting with `(int)`, then takes at least one second; unset means 10.
+pub fn update_wait_completion_timeout_seconds<F>(lookup: F) -> i64
+where
+    F: Fn(&str) -> Option<String>,
+{
+    effective(
+        lookup,
+        "DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS",
+        Some("WORKFLOW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS"),
+    )
+    .map_or(10, |value| value.int().max(1))
+}
+
 /// What a refused setting must be for native to start.
 #[derive(Clone, Copy, Debug)]
 pub enum Rule {
@@ -422,7 +436,6 @@ const BOUNDARY: &str = "native has no service boundary policy";
 const V1: &str = "native does not run Workflow 1 workflows";
 const COMPATIBILITY: &str = "native does not route work by worker compatibility markers";
 const PINNING: &str = "native always pins runs to their recorded workflow definition";
-const UPDATE_WAIT: &str = "native cannot apply a changed update completion wait";
 const STRUCTURAL: &str = "native cannot apply a changed structural limit";
 const REPAIR: &str = "native cannot apply changed task repair timing";
 const MULTI_NODE: &str = "native does not report a multi-node declaration";
@@ -586,7 +599,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting { name: "DW_V2_TENANCY_ENVIRONMENT", legacy: Some("WORKFLOW_V2_TENANCY_ENVIRONMENT"), disposition: Ignored },
     Setting { name: "DW_V2_TENANCY_ORGANIZATION", legacy: Some("WORKFLOW_V2_TENANCY_ORGANIZATION"), disposition: Ignored },
     Setting { name: "DW_V2_TENANCY_PROJECT", legacy: Some("WORKFLOW_V2_TENANCY_PROJECT"), disposition: Ignored },
-    Setting { name: "DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS", legacy: Some("WORKFLOW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS"), disposition: Refused(Int(10), UPDATE_WAIT) },
+    Setting { name: "DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS", legacy: Some("WORKFLOW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS"), disposition: Honored },
     Setting { name: "DW_V2_UPDATE_WAIT_POLL_INTERVAL_MS", legacy: Some("WORKFLOW_V2_UPDATE_WAIT_POLL_INTERVAL_MS"), disposition: Ignored },
     Setting { name: "DW_V2_VALIDATE_CACHE_BACKEND", legacy: Some("WORKFLOW_V2_VALIDATE_CACHE_BACKEND"), disposition: Ignored },
     Setting { name: "DW_WAKE_SIGNAL_TTL_SECONDS", legacy: Some("WORKFLOW_SERVER_WAKE_SIGNAL_TTL_SECONDS"), disposition: Ignored },
@@ -780,6 +793,20 @@ mod tests {
         let cast = |raw: &str| PhpValue::Str(raw.into()).cast_bool();
         assert!(cast("off") && cast("no") && cast("false ") && cast("00"));
         assert!(!cast("") && !cast("0"));
+    }
+
+    #[test]
+    fn update_wait_is_read_like_the_package() {
+        let read = |values: &[(&str, &str)]| {
+            let environment = environment(values);
+            update_wait_completion_timeout_seconds(|key| environment.get(key).cloned())
+        };
+        assert_eq!(read(&[]), 10);
+        assert_eq!(read(&[("DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS", "25")]), 25);
+        assert_eq!(read(&[("WORKFLOW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS", " 3s")]), 3);
+        assert_eq!(read(&[("DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS", "0")]), 1);
+        assert_eq!(read(&[("DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS", "never")]), 1);
+        assert_eq!(read(&[("DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS", "null")]), 10);
     }
 
     #[test]
