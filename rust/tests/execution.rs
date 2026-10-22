@@ -136,6 +136,9 @@ mod activity_lease_renewal;
 #[path = "execution/system_metrics.rs"]
 mod system_metrics;
 
+#[path = "execution/prometheus_metrics.rs"]
+mod prometheus_metrics;
+
 #[path = "execution/activity_deadlines.rs"]
 mod activity_deadlines;
 

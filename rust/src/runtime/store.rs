@@ -2363,12 +2363,15 @@ where
                     Some(recorded_at),
                 )
                 .await?;
-                let activity_task = Self::create_task(
+                // PHP publishes only timer tasks a completion creates, so this
+                // activity task waits for a poller undispatched.
+                let activity_task = Self::create_task_dispatched(
                     &mut tx,
                     &run_id,
                     &queue,
                     "activity",
                     json!({"activity_execution_id": activity_id}),
+                    false,
                 )
                 .await?;
                 Self::create_activity_wait(
@@ -3155,6 +3158,19 @@ where
         kind: &str,
         payload: Value,
     ) -> Result<String> {
+        Self::create_task_dispatched(tx, run_id, queue, kind, payload, true).await
+    }
+
+    /// A new ready task. As PHP in poll mode, a task it dispatches is stamped
+    /// dispatched when created; one it leaves to pollers is not.
+    pub(super) async fn create_task_dispatched(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        queue: &str,
+        kind: &str,
+        payload: Value,
+        dispatched: bool,
+    ) -> Result<String> {
         tx.summary_changed(run_id);
         let task_id = id();
         // A task carries its run's priority and fairness tags, as in PHP.
@@ -3163,12 +3179,12 @@ where
             .fetch_one(&mut **tx)
             .await?;
         let namespace = DB::string(&run, "namespace")?;
-        // As PHP in poll mode, a task is dispatched to pollers when it is created.
         let created = now();
+        let dispatched_at = dispatched.then_some(created);
         let fairness_key = DB::optional_string(&run, "fairness_key")?;
         Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,payload,queue,available_at,namespace,created_at,updated_at,last_dispatched_at,last_dispatch_attempt_at,priority,fairness_key,fairness_weight) VALUES ($1,$2,$3,'ready',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
         .bind(&task_id).bind(run_id).bind(kind).bind(DB::document(&payload)).bind(queue).bind(DB::bind_time(created)).bind(&namespace)
-        .bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::bind_time(created))
+        .bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::optional_time(dispatched_at)).bind(DB::optional_time(dispatched_at))
         .bind(DB::number(&run, "priority")?).bind(fairness_key.as_deref()).bind(DB::number(&run, "fairness_weight")?)
         .execute(&mut **tx).await?;
         Ok(task_id)

@@ -204,6 +204,7 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/system/operator-metrics", get(operator_metrics))
         .route("/api/system/health", get(system_health))
         .route("/api/system/metrics", get(system_metrics).post(system_metrics))
+        .route("/api/system/prometheus-metrics", get(prometheus_metrics))
         .route("/api/system/operator-dashboard", get(operator_dashboard))
         .route("/api/system/operator-dashboard/bounded", get(bounded_operator_dashboard))
         .route(
@@ -649,6 +650,9 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     // The metrics describe the namespace's own state, read by GET or POST.
     if path == "/api/system/metrics" {
         return matches!(method, "GET" | "POST");
+    }
+    if path == "/api/system/prometheus-metrics" {
+        return method == "GET";
     }
     if let Some(path) = path.strip_prefix("/api/workflows/") {
         let parts: Vec<_> = path.split('/').collect();
@@ -1480,6 +1484,10 @@ async fn activity_timeout_status(
 
 async fn system_metrics(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
     Ok(Json(runtime.system_metrics().await?))
+}
+
+async fn prometheus_metrics(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    Ok(Json(runtime.prometheus_metrics().await?))
 }
 
 /// PHP answers 503 while a check reports an error.
