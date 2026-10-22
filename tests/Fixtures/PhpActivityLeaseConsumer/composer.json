@@ -1,0 +1,9 @@
+{
+  "name": "qualification/server-activity-lease",
+  "require": {
+    "durable-workflow/sdk": "3.2.0"
+  },
+  "config": {
+    "allow-plugins": false
+  }
+}

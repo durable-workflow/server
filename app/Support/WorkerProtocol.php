@@ -6,6 +6,8 @@ use App\Models\SearchAttributeDefinition;
 use App\Models\WorkerRegistration;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Workflow\V2\Contracts\ActivityLeaseRenewal;
+use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Support\WorkerHistoryPayloadContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
 
@@ -555,6 +557,7 @@ class WorkerProtocol
             ],
             'activity_retry_policy' => true,
             'activity_timeouts' => true,
+            'activity_lease_renewal' => app(ActivityTaskBridge::class) instanceof ActivityLeaseRenewal,
             'cooperative_cancellation' => CooperativeCancellationPolicy::serverSupported(),
             'nexus_cooperative_cancellation' => NexusCooperativeCancellationPolicy::serverSupported(),
             'nexus_cooperative_cancellation_binding_kinds' => NexusCooperativeCancellationPolicy::serverSupported() ? ['workflow_run'] : [],
