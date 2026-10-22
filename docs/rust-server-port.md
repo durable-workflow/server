@@ -171,9 +171,6 @@ contract fixture before its correction.
   deep. Native checks every body as PHP does before any route, but its
   handlers parse with serde_json's 128-level limit. A body nested 129 to 512
   levels deep passes the check and is then refused with a plain-text 400.
-- **Registration without a capability manifest.** At protocol 1.19,
-  published PHP 2.5.14 refuses a registration that has no
-  `capability_manifest` (422). Native accepts it.
 - **Python worker shutdown after a late synchronous query handler (not yet
   diagnosed).** In the SQLite query-authority cohort on #515's run
   39431491496, the published Python SDK 2.5.15 client in `late-handler-sync`

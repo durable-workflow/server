@@ -102,6 +102,7 @@ mod wait_timeouts;
 mod worker_contracts;
 mod worker_incarnations;
 mod worker_management;
+mod worker_admission;
 mod workflow_failures;
 mod workflow_task_guard;
 

@@ -1319,29 +1319,46 @@ async fn register(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
-    if body["capabilities"]
+    let protocol = request_protocol(&headers)?;
+    // Laravel trims every string and turns empty ones into null first.
+    let mut body = super::laravel_rules::normalize(&body);
+    super::worker_admission::admit(&body, Some(protocol.trim())).map_err(worker_refusal)?;
+    // PHP names an unnamed worker with a fresh ULID and stores the
+    // normalized capability manifest.
+    if body["worker_id"].is_null() {
+        body["worker_id"] = json!(ulid::Ulid::new().to_string());
+    }
+    let manifest = super::worker_admission::manifest(&body);
+    body["capability_manifest"] = manifest;
+    // Missing type lists are empty; capabilities keep their non-empty
+    // strings (`nonEmptyStringArray`).
+    for field in ["supported_workflow_types", "supported_activity_types"] {
+        if body[field].is_null() {
+            body[field] = json!([]);
+        }
+    }
+    let flags: Vec<Value> = body["capabilities"]
         .as_array()
-        .is_some_and(|flags| flags.iter().any(|flag| flag == "memo_upserts"))
-    {
-        memo_protocol(&headers)?;
+        .into_iter()
+        .flatten()
+        .filter(|flag| flag.as_str().is_some_and(|flag| !flag.is_empty()))
+        .cloned()
+        .collect();
+    body["capabilities"] = json!(flags);
+    let registered = runtime.register(body, Some(protocol)).await.map_err(worker_refusal)?;
+    Ok((StatusCode::CREATED, Json(worker_response(registered))))
+}
+
+/// `WorkerProtocol::json` names the protocol and server capabilities on
+/// every worker response, refusals included.
+fn worker_refusal(error: super::RuntimeError) -> super::RuntimeError {
+    match error {
+        super::RuntimeError::Protocol { status, response } => super::RuntimeError::Protocol {
+            status,
+            response: worker_response(response),
+        },
+        other => other,
     }
-    if body["capabilities"].as_array().is_some_and(|flags| {
-        flags
-            .iter()
-            .any(|flag| flag == super::search_attribute_upserts::CAPABILITY)
-    }) && !protocol_at_least(&headers, 16)?
-    {
-        return Err(super::RuntimeError::Protocol {
-            status: StatusCode::CONFLICT,
-            response: json!({"reason":"workflow_metadata_capability_protocol_mismatch",
-                "worker_capability":super::search_attribute_upserts::CAPABILITY,
-                "minimum_protocol_version":super::search_attribute_upserts::MINIMUM_PROTOCOL_VERSION,"recorded":false}),
-        });
-    }
-    Ok((
-        StatusCode::CREATED,
-        Json(worker_response(runtime.register(body, Some(request_protocol(&headers)?)).await?)),
-    ))
 }
 
 fn worker_response(mut body: Value) -> Value {

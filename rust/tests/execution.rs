@@ -5,7 +5,7 @@ use axum::{
 };
 use durable_workflow_server::{
     codec::{Value as Payload, ValueCodec},
-    runtime::{Runtime, router},
+    runtime::Runtime,
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -99,6 +99,8 @@ mod cooperative_waits;
 mod child_policies;
 #[path = "execution/definition_routing.rs"]
 mod definition_routing;
+#[path = "execution/worker_admission.rs"]
+mod worker_admission;
 /// `WorkflowDefinitionRouting::ENTRY_VALIDATION_CAPABILITY`.
 const ENTRY_VALIDATION: &str = "workflow_entry_arguments_validation";
 #[path = "execution/parent_close_policies.rs"]
@@ -3192,8 +3194,10 @@ async fn cooperative_root_request_requires_original_capable_claim_not_later_flee
         let registration = json!({"worker_id":"cooperative-owner","task_queue":"test","runtime":"php",
             "supported_workflow_types":["echo"],"supported_activity_types":[],
             "capabilities":if original_capable {json!(["cooperative_cancellation"])} else {json!([])}});
+        // Registration needs protocol 1.20 to advertise cooperative
+        // cancellation; the claim records the protocol of the poll.
         assert_eq!(
-            request(&app, "POST", "/api/worker/register", registration.clone())
+            request_protocol(&app, "POST", "/api/worker/register", registration.clone(), "1.20")
                 .await
                 .0,
             StatusCode::CREATED
@@ -3303,7 +3307,7 @@ async fn cooperative_requested_root_ignores_protocol_spoofing_and_requires_capab
     let mut capable = registration;
     capable["capabilities"] = json!(["cooperative_cancellation"]);
     assert_eq!(
-        request(&app, "POST", "/api/worker/register", capable)
+        request_protocol(&app, "POST", "/api/worker/register", capable, "1.20")
             .await
             .0,
         StatusCode::CREATED
@@ -5090,4 +5094,43 @@ async fn authentication_precedes_protocol_and_namespace_checks() {
     );
     runtime.close().await;
     database.remove().await;
+}
+
+/// The server router, behind an SDK's registration habit: from protocol
+/// 1.18 an SDK sends a `capability_manifest` that agrees with its flat
+/// capabilities, so one is added where a test registration omits it.
+/// Tests of the manifest rules use `durable_workflow_server::runtime::router`.
+fn router(runtime: Runtime) -> Router {
+    durable_workflow_server::runtime::router(runtime).layer(axum::middleware::from_fn(sdk_capability_manifest))
+}
+
+async fn sdk_capability_manifest(request: Request<Body>, next: axum::middleware::Next) -> axum::response::Response {
+    let floor = request
+        .headers()
+        .get("x-durable-workflow-protocol-version")
+        .and_then(|version| version.to_str().ok())
+        .and_then(|version| version.trim().strip_prefix("1."))
+        .and_then(|minor| minor.parse::<u32>().ok())
+        .is_some_and(|minor| minor >= 18);
+    if request.uri().path() != "/api/worker/register" || !floor {
+        return next.run(request).await;
+    }
+    let (parts, body) = request.into_parts();
+    let bytes = to_bytes(body, usize::MAX).await.unwrap();
+    let bytes = match serde_json::from_slice::<Value>(&bytes) {
+        Ok(Value::Object(mut fields)) if !fields.contains_key("capability_manifest") => {
+            let flags = fields.get("capabilities").cloned().unwrap_or(Value::Null);
+            let advertised = |capability: &str| flags.as_array().is_some_and(|flags| flags.iter().any(|flag| flag == capability));
+            let manifest: serde_json::Map<String, Value> = ["local_activities", "worker_sessions", "sticky_execution"]
+                .into_iter()
+                .map(|capability| {
+                    (capability.to_owned(), json!({"supported": advertised(capability), "minimum_protocol_version": "1.18"}))
+                })
+                .collect();
+            fields.insert("capability_manifest".into(), Value::Object(manifest));
+            Value::Object(fields).to_string().into_bytes()
+        }
+        _ => bytes.to_vec(),
+    };
+    next.run(Request::from_parts(parts, Body::from(bytes))).await
 }
