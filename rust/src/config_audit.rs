@@ -173,6 +173,43 @@ where
     }
 }
 
+/// `filter_var($value, FILTER_VALIDATE_INT)` within a range: surrounding
+/// whitespace and a sign are allowed, a leading zero is not.
+pub fn filter_int(value: &str, min: i64, max: i64) -> Option<i64> {
+    let value = value.trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n' | '\u{b}' | '\0'));
+    let (negative, digits) = match value.as_bytes().first() {
+        Some(b'-') => (true, &value[1..]),
+        Some(b'+') => (false, &value[1..]),
+        _ => (false, value),
+    };
+    if digits.is_empty()
+        || !digits.bytes().all(|byte| byte.is_ascii_digit())
+        || (digits.len() > 1 && digits.starts_with('0'))
+    {
+        return None;
+    }
+    let number = digits.parse::<i64>().ok()?;
+    let number = if negative { number.checked_neg()? } else { number };
+    (min..=max).contains(&number).then_some(number)
+}
+
+/// PHP refuses to boot unless this lease is valid.
+pub const ACTIVITY_TASK_TIMEOUT_MESSAGE: &str =
+    "DW_ACTIVITY_TASK_TIMEOUT must be an integer between 1 and 86400 seconds.";
+
+/// `ActivityTaskLeaseConfiguration::apply`: the activity task lease, 300
+/// seconds unless set to an integer from 1 to 86400.
+pub fn activity_task_lease_seconds<F>(lookup: F) -> Result<i64, &'static str>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    match effective(lookup, "DW_ACTIVITY_TASK_TIMEOUT", Some("ACTIVITY_TASK_TIMEOUT")) {
+        None => Ok(300),
+        Some(PhpValue::Str(value)) => filter_int(&value, 1, 86_400).ok_or(ACTIVITY_TASK_TIMEOUT_MESSAGE),
+        Some(_) => Err(ACTIVITY_TASK_TIMEOUT_MESSAGE),
+    }
+}
+
 /// What a refused setting must be for native to start.
 #[derive(Clone, Copy, Debug)]
 pub enum Rule {
@@ -327,6 +364,9 @@ pub fn audit(environment: &BTreeMap<String, String>) -> Report {
                 .push(format!("{}{source} must be {}: {reason}", setting.name, rule.expectation()));
         }
     }
+    if let Err(message) = activity_task_lease_seconds(lookup) {
+        report.refusals.push(message.into());
+    }
     let unknown: Vec<&str> = environment
         .keys()
         .map(String::as_str)
@@ -374,7 +414,6 @@ const DURABLE_LIMITS: &str = "native has no namespace durable-state limits";
 const PROTOCOL: &str = "native implements one worker protocol version";
 const HISTORY_PAGE: &str = "native cannot apply a changed history page size";
 const QUERY_PENDING: &str = "native cannot apply a changed pending query task cap";
-const ACTIVITY_TIMEOUT: &str = "native cannot apply a changed activity task timeout";
 const METRICS: &str = "native cannot apply a changed metrics series limit";
 const S3: &str = "native stores external payloads only on its local disk";
 const NEXUS: &str = "native cannot apply a changed Nexus operation limit";
@@ -408,7 +447,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting { name: "DW_ACTIVITY_TASK_MAX_ACTIVE_LEASES_PER_QUEUE", legacy: Some("WORKFLOW_SERVER_ACTIVITY_TASK_MAX_ACTIVE_LEASES_PER_QUEUE"), disposition: Refused(NoPositiveInt, TASK_ADMISSION) },
     Setting { name: "DW_ACTIVITY_TASK_MAX_DISPATCHES_PER_MINUTE", legacy: Some("WORKFLOW_SERVER_ACTIVITY_TASK_MAX_DISPATCHES_PER_MINUTE"), disposition: Refused(NoPositiveInt, TASK_ADMISSION) },
     Setting { name: "DW_ACTIVITY_TASK_MAX_DISPATCHES_PER_MINUTE_PER_NAMESPACE", legacy: Some("WORKFLOW_SERVER_ACTIVITY_TASK_MAX_DISPATCHES_PER_MINUTE_PER_NAMESPACE"), disposition: Refused(NoPositiveInt, TASK_ADMISSION) },
-    Setting { name: "DW_ACTIVITY_TASK_TIMEOUT", legacy: Some("ACTIVITY_TASK_TIMEOUT"), disposition: Refused(Int(300), ACTIVITY_TIMEOUT) },
+    Setting { name: "DW_ACTIVITY_TASK_TIMEOUT", legacy: Some("ACTIVITY_TASK_TIMEOUT"), disposition: Honored },
     Setting { name: "DW_ADMIN_SIGNATURE_KEY", legacy: Some("WORKFLOW_SERVER_ADMIN_SIGNATURE_KEY"), disposition: Ignored },
     Setting { name: "DW_ADMIN_TOKEN", legacy: Some("WORKFLOW_SERVER_ADMIN_TOKEN"), disposition: Honored },
     Setting { name: "DW_AUTH_BACKWARD_COMPATIBLE", legacy: Some("WORKFLOW_SERVER_AUTH_BACKWARD_COMPATIBLE"), disposition: Refused(FilterBool(true), AUTH) },
@@ -772,6 +811,8 @@ mod tests {
             &[("DW_DEFAULT_NAMESPACE", "null"), ("WORKFLOW_SERVER_DEFAULT_NAMESPACE", "default")],
             &[("DW_WORKER_PROTOCOL_VERSION", WORKER_PROTOCOL_VERSION)],
             &[("DW_ACTIVITY_TASK_TIMEOUT", "300")],
+            &[("DW_ACTIVITY_TASK_TIMEOUT", " 30 ")],
+            &[("ACTIVITY_TASK_TIMEOUT", "86400")],
             &[("DW_HISTORY_PAGE_SIZE_DEFAULT", "\"500\"")],
             // PHP's `?? true` keeps an unrecognized value on.
             &[("DW_AUTH_BACKWARD_COMPATIBLE", "maybe")],
@@ -799,8 +840,12 @@ mod tests {
             (&[("DW_DEFAULT_NAMESPACE", "billing"), ("WORKFLOW_SERVER_DEFAULT_NAMESPACE", "default")], "DW_DEFAULT_NAMESPACE must"),
             (&[("DW_WORKER_PROTOCOL_VERSION", "1.19")], "DW_WORKER_PROTOCOL_VERSION"),
             (&[("WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION", "1.2")], "DW_WORKER_PROTOCOL_VERSION"),
-            (&[("DW_ACTIVITY_TASK_TIMEOUT", "30")], "DW_ACTIVITY_TASK_TIMEOUT must be unset or `300`"),
-            (&[("ACTIVITY_TASK_TIMEOUT", "30")], "DW_ACTIVITY_TASK_TIMEOUT (read from ACTIVITY_TASK_TIMEOUT)"),
+            (&[("DW_ACTIVITY_TASK_TIMEOUT", "0")], ACTIVITY_TASK_TIMEOUT_MESSAGE),
+            (&[("DW_ACTIVITY_TASK_TIMEOUT", "86401")], ACTIVITY_TASK_TIMEOUT_MESSAGE),
+            (&[("DW_ACTIVITY_TASK_TIMEOUT", "030")], ACTIVITY_TASK_TIMEOUT_MESSAGE),
+            (&[("DW_ACTIVITY_TASK_TIMEOUT", "true")], ACTIVITY_TASK_TIMEOUT_MESSAGE),
+            (&[("DW_ACTIVITY_TASK_TIMEOUT", "")], ACTIVITY_TASK_TIMEOUT_MESSAGE),
+            (&[("ACTIVITY_TASK_TIMEOUT", "5m")], ACTIVITY_TASK_TIMEOUT_MESSAGE),
             (&[("DW_TRUST_FORWARDED_ATTRIBUTION_HEADERS", "(true)")], "DW_TRUST_FORWARDED_ATTRIBUTION_HEADERS"),
             (&[("DW_TRUST_FORWARDED_ATTRIBUTION_HEADERS", " On ")], "DW_TRUST_FORWARDED_ATTRIBUTION_HEADERS"),
             (&[("DW_AUTH_BACKWARD_COMPATIBLE", "")], AUTH),
