@@ -27,6 +27,7 @@ from version_identities import same_python_release
 RESULT_DIR = Path(sys.argv[1])
 RUN_ROOT = Path(sys.argv[2])
 REPO_ROOT = Path(sys.argv[3])
+PATCHED_PIP_BOOTSTRAP = Path(__file__).resolve().parent.parent / "ci" / "bootstrap-patched-pip.sh"
 
 
 def now() -> str:
@@ -150,8 +151,11 @@ python_venv = RUN_ROOT / "python-venv"
 try:
     create_code, create_output = run([sys.executable, "-m", "venv", str(python_venv)])
     python_bin = python_venv / "bin" / "python"
+    # Start from the patched, bundle-only pip (GHSA-6q48-6c7w-9gw2).
+    bootstrap_command = ["sh", str(PATCHED_PIP_BOOTSTRAP), str(python_bin)]
+    bootstrap_code, bootstrap_output = run(bootstrap_command) if create_code == 0 else (1, create_output)
     install_command = [str(python_bin), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", f"durable-workflow=={python_version}"]
-    install_code, install_output = run(install_command) if create_code == 0 else (1, create_output)
+    install_code, install_output = run(install_command) if bootstrap_code == 0 else (1, bootstrap_output)
     probe_command = [str(python_bin), "-c", "import importlib.metadata as m; print(m.version('durable-workflow'))"]
     probe_code, probe_output = run(probe_command) if install_code == 0 else (1, install_output)
     status = "pass" if probe_code == 0 and same_python_release(python_version, probe_output.strip()) else "fail"
@@ -161,6 +165,7 @@ try:
         f"https://pypi.org/project/durable-workflow/{python_version}/",
         [
             {"argv": [sys.executable, "-m", "venv", str(python_venv)], "exit_code": create_code, "output": create_output[-1000:]},
+            {"argv": bootstrap_command, "exit_code": bootstrap_code, "output": bootstrap_output[-1000:]},
             {"argv": install_command, "exit_code": install_code, "output": install_output[-3000:]},
             {"argv": probe_command, "exit_code": probe_code, "output": probe_output[-1000:]},
         ],

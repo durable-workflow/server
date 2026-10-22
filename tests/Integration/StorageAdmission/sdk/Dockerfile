@@ -21,8 +21,10 @@ USER root
 RUN install -d -o 1000 -g 1000 /sdk
 USER 1000:1000
 WORKDIR /sdk
+COPY --from=ci bootstrap-patched-pip.sh blocked_roots.py /sdk/ci/
 RUN composer require "durable-workflow/sdk:${PHP_SDK_VERSION}" --no-interaction --no-progress --prefer-dist \
     && python3 -m venv /sdk/venv \
+    && sh /sdk/ci/bootstrap-patched-pip.sh /sdk/venv/bin/python \
     && /sdk/venv/bin/pip install --no-cache-dir "durable-workflow==${PYTHON_SDK_VERSION}"
 COPY --from=rust-worker /build/target/release/storage-sdk-worker /sdk/rust-worker
 COPY --chown=1000:1000 worker.php worker.py /sdk/

@@ -51,6 +51,8 @@ class CadenceObservationInfrastructureError extends PublishedStackInfrastructure
 }
 
 const modulePath = fileURLToPath(import.meta.url);
+// Python venvs start from the patched, bundle-only pip (GHSA-6q48-6c7w-9gw2).
+const PATCHED_PIP_BOOTSTRAP = path.join(path.dirname(modulePath), '..', 'ci', 'bootstrap-patched-pip.sh');
 const repoRoot = process.env.DW_SCHEDULES_REPO_ROOT
   ?? path.resolve(path.dirname(modulePath), '../..');
 const resultDir = process.env.DW_SCHEDULES_RESULT_DIR
@@ -2053,7 +2055,7 @@ async function installSchedulesPythonLifecycleArtifact(shardRoot, artifactVersio
 
   await execLogged('python3', ['-m', 'venv', venv], path.join(resultDir, 'schedules-python-lifecycle-venv.log'));
   const pythonBin = path.join(venv, 'bin', 'python');
-  await execLogged(pythonBin, ['-m', 'pip', 'install', '--upgrade', 'pip'], path.join(resultDir, 'schedules-python-lifecycle-pip-upgrade.log'));
+  await execLogged('sh', [PATCHED_PIP_BOOTSTRAP, pythonBin], path.join(resultDir, 'schedules-python-lifecycle-pip-upgrade.log'));
   await execLogged(
     pythonBin,
     ['-m', 'pip', 'install', `durable-workflow==${pythonVersion}`],
@@ -6694,7 +6696,7 @@ async function installSchedulesPythonArtifact(shardRoot, artifactVersions, artif
 
   await execLogged('python3', ['-m', 'venv', venv], path.join(resultDir, 'schedules-cross-language-python-venv.log'));
   const pythonBin = path.join(venv, 'bin', 'python');
-  await execLogged(pythonBin, ['-m', 'pip', 'install', '--upgrade', 'pip'], path.join(resultDir, 'schedules-cross-language-python-pip-upgrade.log'));
+  await execLogged('sh', [PATCHED_PIP_BOOTSTRAP, pythonBin], path.join(resultDir, 'schedules-cross-language-python-pip-upgrade.log'));
   await execLogged(
     pythonBin,
     ['-m', 'pip', 'install', `durable-workflow==${pythonVersion}`],

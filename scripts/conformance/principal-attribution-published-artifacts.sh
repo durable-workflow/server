@@ -837,6 +837,12 @@ def smoke_python(root: Path, version: str, source: str) -> dict[str, Any]:
         return item("sdk-python", version, source, "runner_blocked", create_command, "python venv creation failed", output)
 
     python = venv_dir / "bin" / "python"
+    # Start from the patched, bundle-only pip (GHSA-6q48-6c7w-9gw2).
+    bootstrap_command = ["sh", os.environ["DW_PATCHED_PIP_BOOTSTRAP"], str(python)]
+    code, output = run(bootstrap_command, timeout=180)
+    if code != 0:
+        return item("sdk-python", version, source, "runner_blocked", bootstrap_command, "patched pip bootstrap failed", output)
+
     install_command = [
         str(python),
         "-m",
@@ -1017,7 +1023,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 PY
 
-if ! python3 "$run_root/artifact-smoke.py" "$run_root/pins.json" "$result_dir/artifact-install-evidence.json" "$run_root/artifacts" "$run_root/cli/bin/dw" > "$result_dir/artifact-smoke.log" 2>&1; then
+if ! DW_PATCHED_PIP_BOOTSTRAP="$repo_root/scripts/ci/bootstrap-patched-pip.sh" python3 "$run_root/artifact-smoke.py" "$run_root/pins.json" "$result_dir/artifact-install-evidence.json" "$run_root/artifacts" "$run_root/cli/bin/dw" > "$result_dir/artifact-smoke.log" 2>&1; then
   blocked_result "published artifact install smoke failed before producing evidence; see artifact-smoke.log" "$started_at"
   exit 1
 fi

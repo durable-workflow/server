@@ -1892,9 +1892,11 @@ def ensure_python_sdk(run_root: Path, log_file: Path) -> tuple[str, dict[str, An
         raise RuntimeError("could not create Python SDK virtual environment")
 
     python_bin = venv_dir / "bin" / "python"
-    pip = run_command([str(python_bin), "-m", "pip", "install", "--upgrade", "pip"], log_file=log_file, timeout=180)
+    # Start from the patched, bundle-only pip (GHSA-6q48-6c7w-9gw2).
+    bootstrap = Path(os.environ["REPO_ROOT"]) / "scripts" / "ci" / "bootstrap-patched-pip.sh"
+    pip = run_command(["sh", str(bootstrap), str(python_bin)], log_file=log_file, timeout=180)
     if pip.returncode != 0:
-        raise RuntimeError("could not upgrade pip in Python SDK virtual environment")
+        raise RuntimeError("could not install the patched pip in the Python SDK virtual environment")
 
     distribution_dir = venv_dir / "distributions"
     distribution_dir.mkdir(parents=True, exist_ok=True)

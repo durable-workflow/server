@@ -1404,6 +1404,11 @@ function pythonRuntimeArgs() {
   ];
 }
 
+// pip runs from the patched, bundle-only bootstrap (GHSA-6q48-6c7w-9gw2).
+function patchedPipArgs() {
+  return ['-v', `${path.join(REPO_ROOT, 'scripts', 'ci')}:/dw-ci:ro`];
+}
+
 function installPythonPackage() {
   if (!commandExists('docker')) throw new Error('docker is required to install the pinned public Python package');
   writePythonProject();
@@ -1415,8 +1420,9 @@ function installPythonPackage() {
   run('docker', [
     'run', '--rm',
     ...pythonRuntimeArgs(),
+    ...patchedPipArgs(),
     PYTHON_IMAGE,
-    'python', '-m', 'pip', 'download', '--disable-pip-version-check', '--no-deps',
+    'sh', '/dw-ci/patched-pip.sh', 'download', '--disable-pip-version-check', '--no-deps',
     '--dest', '/app/distributions',
     `durable-workflow==${SDK_PYTHON_VERSION}`,
   ], { timeout: 600_000 });
@@ -1429,8 +1435,9 @@ function installPythonPackage() {
   run('docker', [
     'run', '--rm',
     ...pythonRuntimeArgs(),
+    ...patchedPipArgs(),
     PYTHON_IMAGE,
-    'python', '-m', 'pip', 'install', '--disable-pip-version-check', '--no-cache-dir',
+    'sh', '/dw-ci/patched-pip.sh', 'install', '--disable-pip-version-check', '--no-cache-dir',
     '--target', '/app/site-packages',
     `/app/distributions/${distribution}`,
   ], { timeout: 600_000 });

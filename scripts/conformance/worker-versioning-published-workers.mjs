@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const SHARD_SCHEMA = 'durable-workflow.v2.worker-versioning-runtime.published-worker-execution-evidence';
 const REGISTRATION_SCENARIO = 'worker_registration_build_ids';
@@ -11,6 +12,10 @@ const CACHE_EVICTION_SCENARIO = 'replay_across_cache_eviction';
 const NO_COMPATIBLE_SCENARIO = 'no_compatible_worker_behavior';
 const CROSS_LANGUAGE_SCENARIO = 'cross_language_php_python_pinning';
 const ADVERSARIAL_SCENARIO = 'adversarial_no_version_bump';
+// Fixed TLS toolchains (GHSA-6q48-6c7w-9gw2): Composer pinned by digest, and
+// every venv starts from the patched, bundle-only pip.
+const COMPOSER_IMAGE = 'composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee';
+const PATCHED_PIP_BOOTSTRAP = fileURLToPath(new URL('../ci/bootstrap-patched-pip.sh', import.meta.url));
 
 const resultDir = process.env.DW_WV_RESULT_DIR ?? process.cwd();
 const runRoot = process.env.DW_WV_RUN_ROOT ?? resultDir;
@@ -1123,7 +1128,7 @@ async function installPythonWorker(shardRoot) {
 
   runRequired('python3', ['-m', 'venv', venv], { logPath: installLog });
   const pythonBin = path.join(venv, 'bin', 'python');
-  runRequired(pythonBin, ['-m', 'pip', 'install', '--upgrade', 'pip'], { logPath: installLog, append: true });
+  runRequired('sh', [PATCHED_PIP_BOOTSTRAP, pythonBin], { logPath: installLog, append: true });
   runRequired(pythonBin, ['-m', 'pip', 'install', `durable-workflow==${pythonVersion}`], {
     logPath: installLog,
     append: true,
@@ -1148,7 +1153,7 @@ function installPhpWorker(shardRoot) {
     `${phpRoot}:/app`,
     '-w',
     '/app',
-    'composer:2',
+    COMPOSER_IMAGE,
     'require',
     '--no-interaction',
     '--no-progress',
@@ -1186,7 +1191,7 @@ function runPhpWorker(php, input) {
     '/app/php',
     '--entrypoint',
     'php',
-    'composer:2',
+    COMPOSER_IMAGE,
     '/app/php/published_worker.php',
     containerInput,
     containerOutput,
