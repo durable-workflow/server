@@ -232,3 +232,24 @@ async fn query_tasks_and_answers_carry_the_requester_principal() {
     runtime.close().await;
     database.remove().await;
 }
+
+#[tokio::test]
+async fn cluster_info_publishes_php_s_principal_attribution_contract() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let (status, cluster) = call(&app, Some("test-token"), "GET", "/api/cluster/info", Value::Null, &[]).await;
+    assert_eq!(status, StatusCode::OK, "{cluster}");
+    let contract = &cluster["principal_attribution_contract"];
+    assert_eq!((contract["schema"].clone(), contract["version"].clone()),
+        (json!("durable-workflow.v2.principal-attribution.contract"), json!(2)));
+    assert_eq!(contract["principal_shape"]["anonymous_value"], json!({"type":"server","id":"anonymous"}));
+    // The forged values a gateway injects, as published PHP lists them.
+    let guards = &contract["spoofing_guards"];
+    assert_eq!(guards["request_body_field_values"], json!({"principal":"mallory","principal_id":"mallory",
+        "principal_type":"attacker","actor":"mallory","user":"mallory"}));
+    assert_eq!(guards["request_header_values"]["X-Workflow-Principal-Id"], "mallory");
+    assert_eq!(guards["request_headers"].as_array().unwrap().len(), 11);
+    runtime.close().await;
+    database.remove().await;
+}
