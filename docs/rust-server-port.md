@@ -191,6 +191,11 @@ contract fixture before its correction.
   this. The Sample App's timers scenario now needs it: its application
   upgrade phase requires one worker-sourced definition fingerprint in the
   history of a Python class upgrade.
+- **Named-namespace workflow commands.** Published PHP serves every workflow
+  route in any namespace. Native refuses updates, repair and cooperative
+  cancellation requests (`/update/{name}`, `/repair`,
+  `/request-cancellation`, instance- or run-scoped) in a named namespace with
+  `422 development_namespace_operation_unqualified`.
 - **Child cancellation policies.** Native accepts a child only with the
   `abandon` parent close and cancellation policies, and refuses others with
   `422 unsupported_child_options`. Published PHP also requests the child's
