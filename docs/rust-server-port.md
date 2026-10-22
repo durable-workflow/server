@@ -112,7 +112,9 @@ These published PHP routes on this tree have no native handler yet, by family.
   - Local activities (prepare, checkpoint, recover, heartbeat, control,
     outcome and cancellation acknowledgement).
   - Cancellation scopes.
-  - Activity lease renewal and cancellation acknowledgement.
+  - Activity cancellation acknowledgement. (Lease renewal, from Server 2.11,
+    is served: `POST /api/worker/activity-tasks/{task}/renew-lease`, with the
+    `activity_lease_renewal` capability and the `activity-lease-renewal` fixture.)
 - **Run operations.**
   - Archive (instance and run).
   - Redrive.

@@ -1589,7 +1589,7 @@ where
                 super::activity_deadlines::validate_policy(&policy)?;
                 let attempt_id = id();
                 let started_at = now();
-                Self::query("UPDATE activity_attempts SET status='expired',closed_at=$1 WHERE activity_execution_id=$2 AND status='running'")
+                Self::query("UPDATE activity_attempts SET status='expired',lease_expires_at=NULL,closed_at=$1 WHERE activity_execution_id=$2 AND status='running'")
                     .bind(DB::bind_time(started_at)).bind(&activity_id).execute(&mut *tx).await?;
                 Self::query("INSERT INTO activity_attempts(id,activity_execution_id,workflow_run_id,workflow_task_id,attempt_number,status,lease_owner,lease_expires_at,started_at) VALUES ($1,$2,$3,$4,$5,'running',$6,$7,$8)")
                     .bind(&attempt_id).bind(&activity_id).bind(&run_id).bind(&task_id).bind(attempt)
@@ -2808,12 +2808,12 @@ where
             "ActivityCompleted",
         )
         .await?;
-        Self::query("UPDATE activity_attempts SET status='completed',closed_at=$1 WHERE id=$2")
+        Self::query("UPDATE activity_attempts SET status='completed',lease_expires_at=NULL,closed_at=$1 WHERE id=$2")
             .bind(DB::bind_time(now()))
             .bind(attempt_id)
             .execute(&mut *tx)
             .await?;
-        Self::query("UPDATE workflow_tasks SET status='completed' WHERE id=$1")
+        Self::query("UPDATE workflow_tasks SET status='completed',lease_expires_at=NULL WHERE id=$1")
             .bind(task_id)
             .execute(&mut *tx)
             .await?;
@@ -3816,7 +3816,8 @@ pub(crate) fn capabilities() -> Value {
         "worker_deregistration_fencing":{"schema":"durable-workflow.v2.worker-deregistration.v1","supported":true,"receipt_retention_seconds":600,"endpoint":"/worker/registrations/{workerId}/deregister"},
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
         "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,
-        "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": true});
+        "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": true,
+        "activity_lease_renewal": true});
     value["supported_workflow_task_commands"]
         .as_array_mut()
         .expect("commands")
