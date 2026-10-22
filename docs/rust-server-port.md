@@ -182,12 +182,6 @@ contract fixture before its correction.
   then did not stop within the 5-second shutdown budget. Forty local
   repetitions of that case alone passed. Find what holds the query thread
   after the fence before changing either side.
-- **Workflow definition routing reports (Server 2.10.0).** Native routes a
-  pinned run's workflow task by its recorded definition, as PHP's
-  `WorkflowDefinitionRouting` does
-  ([checkpoint](rust-server-port-checkpoints/2026-10-22-definition-routing.md)).
-  Published PHP also reports that decision as `definition_routing` in
-  describe, repair, debug and task queues. Native does not report it yet.
 - **Start build-id pin.** Published PHP pins a new run to its start cohort's
   build id: a promoted build-id rollout, else the single build id among the
   live workers for the type, else among all the queue's live workers. Native

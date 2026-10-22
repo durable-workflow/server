@@ -91,6 +91,31 @@ where
         context: Value,
         codec: Arc<Semaphore>,
     ) -> Result<(StatusCode, Value)> {
+        let (status, mut response) = self.repair_run(workflow_id, requested_run_id, body, context, codec).await?;
+        // `ServerWorkflowControlPlane::withDefinitionRouting`: the route of the
+        // repaired run's next ready task.
+        let mut tx = self.begin_read().await?;
+        let run = match response["run_id"].as_str() {
+            Some(run_id) => Self::query("SELECT * FROM workflow_runs WHERE id=$1 AND namespace=$2")
+                .bind(run_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?,
+            None => Self::query("SELECT r.* FROM workflow_instances i JOIN workflow_runs r ON r.id=i.current_run_id WHERE i.id=$1 AND i.namespace=$2")
+                .bind(workflow_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?,
+        };
+        if let Some(run) = run {
+            response["definition_routing"] = self.definition_inspect(&mut tx, &run, None).await?;
+        }
+        tx.commit().await?;
+        Ok((status, response))
+    }
+
+    async fn repair_run(
+        &self,
+        workflow_id: &str,
+        requested_run_id: Option<&str>,
+        body: Value,
+        context: Value,
+        codec: Arc<Semaphore>,
+    ) -> Result<(StatusCode, Value)> {
         if !body.is_object()
             || body.get("request_id").is_some_and(|value| {
                 !value.is_null() && value.as_str().is_none_or(|id| id.chars().count() > 255)

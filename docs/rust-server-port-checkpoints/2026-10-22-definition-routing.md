@@ -37,8 +37,18 @@
     metrics, after the metrics it reported. A heartbeat without metrics
     keeps the stored ones. Worker listings therefore show the key, as PHP
     2.10.0's do; 2.5.14 had no such key.
-- **Remaining gap** (the port's gap list): the `definition_routing` reports in
-  describe, repair, debug and task queues.
+- **Reports** (`inspect` and `forQueue`).
+  - Describe, repair and debug report `definition_routing` for the run's
+    next due ready task:
+    - the context (`pinning_enabled`, `worker_pinned`,
+      `recorded_fingerprint`, type, queue and required build);
+    - PHP's status, the counts of eligible workers by definition, up to ten
+      example workers, `blocked` and `runnable_task`;
+    - PHP's resolution text.
+  - A blocked route adds debug's `workflow_definition_routing_blocked`
+    warning and `diagnostic_status: needs_attention`.
+  - Task queue describe samples up to ten runs with a due ready task. A
+    blocked sample sets `repair.needs_attention`.
 - **Tests** (`definition_routing.rs`).
   - A pinned run goes to the worker with its recorded definition. Workers
     with another definition, or without one, wait even when they validate
@@ -48,5 +58,8 @@
   - An unpinned run goes to any worker.
   - Registrations and heartbeats record the protocol version with the
     reported metrics.
-  - The worker listing test now expects that key.
-  - Full SQLite suite: 397 passed.
+  - Describe, debug, task queue and repair report a blocked route, then the
+    route an entry-validating replacement unblocks.
+  - The worker listing test now expects the protocol key.
+  - Full SQLite suite: 398 passed. Routing, worker, poll, child, cooperative,
+    debug, task queue, repair and describe tests: PostgreSQL 134, MySQL 134.

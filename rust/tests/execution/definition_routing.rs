@@ -78,3 +78,56 @@ async fn an_unpinned_run_goes_to_any_worker_and_workers_record_their_protocol() 
     assert_eq!(described["process_metrics"]["host"], "worker-host", "{described}");
     assert_eq!(described["process_metrics"]["_worker_protocol_version"], "1.19", "{described}");
 }
+
+// Describe, repair, debug and the task queue report the route of a pinned
+// run's next ready task as `definition_routing`. A blocked route is a debug
+// finding and makes the queue need attention.
+#[tokio::test]
+async fn reads_report_a_blocked_definition_route() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    worker(&app, "original", Some("sha256:original"), json!([])).await;
+    let started = start(&app, "reported").await;
+    deregister(&app, "original").await;
+    worker(&app, "unvalidated", Some("sha256:changed"), json!([])).await;
+
+    let (status, described) = request(&app, "GET", "/api/workflows/reported", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{described}");
+    let routing = &described["definition_routing"];
+    assert_eq!(routing["status"], "entry_validation_unavailable", "{routing}");
+    assert_eq!(routing["blocked"], true);
+    assert_eq!(routing["runnable_task"], true);
+    assert_eq!(routing["worker_pinned"], true);
+    assert_eq!(routing["pinning_enabled"], true);
+    assert_eq!(routing["recorded_fingerprint"], "sha256:original");
+    assert_eq!(routing["task_queue"], "test");
+    assert_eq!((routing["eligible_worker_count"].clone(), routing["changed_worker_count"].clone(),
+        routing["entry_validation_unavailable_count"].clone()), (json!(1), json!(1), json!(1)));
+    assert_eq!(routing["workers"], json!([{"worker_id": "unvalidated", "fingerprint": "sha256:changed"}]));
+    assert!(routing["resolution"].as_str().unwrap().starts_with("Upgrade the replacement worker SDK"));
+
+    let (status, debug) = request(&app, "GET", "/api/workflows/reported/debug", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{debug}");
+    assert_eq!(debug["definition_routing"], *routing);
+    assert_eq!(debug["diagnostic_status"], "needs_attention");
+    let finding = debug["findings"].as_array().unwrap().iter()
+        .find(|finding| finding["code"] == "workflow_definition_routing_blocked").unwrap_or_else(|| panic!("{debug}"));
+    assert_eq!(finding["routing_status"], "entry_validation_unavailable");
+
+    let (status, queue) = request(&app, "GET", "/api/task-queues/test", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{queue}");
+    assert_eq!(queue["definition_routing"]["blocked_sample_count"], 1, "{queue}");
+    assert_eq!(queue["definition_routing"]["runs"][0]["run_id"], started["run_id"]);
+    assert_eq!(queue["definition_routing"]["runs"][0]["workflow_id"], "reported");
+    assert_eq!(queue["repair"]["needs_attention"], true, "{queue}");
+
+    let (status, repaired) = request(&app, "POST", "/api/workflows/reported/repair", json!({})).await;
+    assert!(status.is_success(), "{status} {repaired}");
+    assert_eq!(repaired["definition_routing"]["status"], "entry_validation_unavailable", "{repaired}");
+
+    // An entry-validating replacement unblocks the route.
+    worker(&app, "validating", Some("sha256:changed"), json!([super::ENTRY_VALIDATION])).await;
+    let (_, described) = request(&app, "GET", "/api/workflows/reported", Value::Null).await;
+    assert_eq!(described["definition_routing"]["status"], "replay_required", "{described}");
+    assert_eq!(described["definition_routing"]["blocked"], false);
+}

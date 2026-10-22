@@ -15,7 +15,7 @@ use super::{
     backend::Backend,
     store::{Store, now},
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
 /// The worker capability that lets a changed definition replay a pinned run.
@@ -200,5 +200,110 @@ where
             }
         }
         Ok(true)
+    }
+
+    /// `inspect`: how the run's next ready workflow task would be routed,
+    /// with counts of the eligible workers by definition, for describe,
+    /// repair and debug.
+    pub(super) async fn definition_inspect(
+        &self,
+        tx: &mut Transaction<'_, DB>,
+        run: &DB::Row,
+        task_queue: Option<&str>,
+    ) -> Result<Value> {
+        let run_id = DB::string(run, "id")?;
+        let task = Self::query("SELECT queue,compatibility FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status='ready' AND (available_at IS NULL OR available_at<=$2) ORDER BY id")
+            .bind(&run_id)
+            .bind(DB::bind_time(now()))
+            .fetch_all(&mut **tx)
+            .await?
+            .into_iter()
+            .find(|task| task_queue.is_none_or(|queue| DB::optional_string(task, "queue").ok().flatten().as_deref() == Some(queue)));
+        let (queue, required) = match &task {
+            Some(task) => (
+                task_queue.map(str::to_owned).or(DB::optional_string(task, "queue")?),
+                trimmed(DB::optional_string(task, "compatibility")?.as_deref()),
+            ),
+            None => (task_queue.map(str::to_owned), None),
+        };
+        let context = Self::definition_context(tx, run, queue.as_deref(), required).await?;
+        let (mut matching, mut changed, mut missing, mut unsafe_replacement) = (0, 0, 0, 0);
+        let mut examples = Vec::new();
+        let peers = self.definition_peers(tx, run, &context).await?;
+        for (worker_id, fingerprint, capabilities) in &peers {
+            match fingerprint {
+                None => missing += 1,
+                Some(fingerprint) if Some(fingerprint) == context.recorded.as_ref() => matching += 1,
+                Some(_) => {
+                    changed += 1;
+                    if !has_capability(capabilities, ENTRY_VALIDATION_CAPABILITY) {
+                        unsafe_replacement += 1;
+                    }
+                }
+            }
+            if examples.len() < 10 {
+                examples.push(json!({"worker_id": worker_id, "fingerprint": fingerprint}));
+            }
+        }
+        let eligible = matching + changed + missing;
+        let status = match () {
+            _ if !context.worker_pinned => "not_worker_pinned",
+            _ if context.recorded.is_none() => "recorded_definition_missing",
+            _ if matching > 0 => "matching_definition_available",
+            _ if changed > unsafe_replacement => "replay_required",
+            _ if unsafe_replacement > 0 => "entry_validation_unavailable",
+            _ if missing > 0 => "worker_definition_missing",
+            _ => "no_eligible_worker",
+        };
+        let terminal = !matches!(DB::string(run, "status")?.as_str(), "pending" | "running" | "waiting");
+        let runnable = !terminal && task.is_some();
+        let blocked = runnable
+            && context.worker_pinned
+            && matches!(status, "recorded_definition_missing" | "worker_definition_missing" | "no_eligible_worker" | "entry_validation_unavailable");
+        let resolution = match () {
+            _ if blocked && status == "entry_validation_unavailable" => "Upgrade the replacement worker SDK to an implementation advertising workflow_entry_arguments_validation, or restore the recorded definition. The current replacement cannot safely refuse incompatible entry input.",
+            _ if blocked => "Register a fresh worker for the original namespace, task queue, workflow type, build and replay capabilities with its definition fingerprint. Do not rewrite the run history.",
+            _ if status == "replay_required" => "Current workers may replay the original history. Use versioned branches for command changes; incompatible replay still refuses.",
+            _ => "Recorded build, namespace, type and replay-capability guards remain in force.",
+        };
+        Ok(json!({
+            "pinning_enabled": true, "worker_pinned": context.worker_pinned,
+            "recorded_fingerprint": context.recorded, "workflow_type": context.workflow_type,
+            "task_queue": context.task_queue, "required_build_id": context.required_build_id,
+            "status": status, "blocked": blocked, "runnable_task": runnable,
+            "eligible_worker_count": eligible, "matching_worker_count": matching,
+            "changed_worker_count": changed, "missing_fingerprint_count": missing,
+            "entry_validation_unavailable_count": unsafe_replacement,
+            "workers": examples, "workers_truncated": eligible > examples.len(),
+            "resolution": resolution,
+        }))
+    }
+
+    /// `forQueue`: bounded examples of the queue's runs with a due ready
+    /// workflow task, never a repair or a payload read.
+    pub(super) async fn definition_for_queue(&self, tx: &mut Transaction<'_, DB>, task_queue: &str) -> Result<Value> {
+        let runs = Self::query("SELECT * FROM workflow_runs WHERE namespace=$1 AND queue=$2 AND id IN (SELECT workflow_run_id FROM workflow_tasks WHERE task_type='workflow' AND status='ready' AND queue=$3 AND (available_at IS NULL OR available_at<=$4)) ORDER BY id LIMIT 11")
+            .bind(self.namespace.as_ref())
+            .bind(task_queue)
+            .bind(task_queue)
+            .bind(DB::bind_time(now()))
+            .fetch_all(&mut **tx)
+            .await?;
+        let mut examples = Vec::new();
+        for run in runs.iter().take(10) {
+            if !matches!(DB::string(run, "status")?.as_str(), "pending" | "running" | "waiting") {
+                continue;
+            }
+            let mut example = json!({"workflow_id": DB::string(run, "workflow_instance_id")?, "run_id": DB::string(run, "id")?});
+            if let (Some(example), Value::Object(inspected)) =
+                (example.as_object_mut(), self.definition_inspect(tx, run, Some(task_queue)).await?)
+            {
+                example.extend(inspected);
+            }
+            examples.push(example);
+        }
+        let blocked = examples.iter().filter(|row| row["blocked"] == true).count();
+        Ok(json!({"sample_limit": 10, "has_more_ready_runs": runs.len() > 10,
+            "blocked_sample_count": blocked, "runs": examples}))
     }
 }
