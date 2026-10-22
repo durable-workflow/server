@@ -567,6 +567,8 @@ where
         // The authenticated request's context; a direct call records only
         // the request id and signal name.
         let context = context.unwrap_or_else(|| json!({"request":{"request_id":body["request_id"]},"signal_name":name}));
+        // PHP's signal_name column holds 255 bytes, one fewer than its
+        // validation allows; native refuses what it cannot store.
         if name.trim().is_empty() || name.len() > 255 {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -1254,31 +1256,40 @@ where
         )
     }
 
+    /// A poll with the default page sizes and PHP's default 30-second wait.
+    #[cfg(test)]
     pub(crate) async fn poll(
         &self,
         body: Value,
         kind: &'static str,
         protocol_version: &str,
     ) -> Result<Value> {
-        self.poll_with_pages(body, kind, protocol_version, Default::default())
+        self.poll_with_pages(body, kind, protocol_version, Default::default(), 30)
             .await
     }
 
     /// A workflow or activity poll, with the configured history page sizes.
+    /// A poll that names no `timeout_seconds` waits `default_wait` seconds,
+    /// as PHP's `LongPoller` waits DW_WORKER_POLL_TIMEOUT.
     pub(crate) async fn poll_with_pages(
         &self,
         body: Value,
         kind: &'static str,
         protocol_version: &str,
         pages: super::history_pages::HistoryPages,
+        default_wait: u64,
     ) -> Result<Value> {
         text(&body, "worker_id")?;
         text(&body, "task_queue")?;
-        let timeout = body
-            .get("timeout_seconds")
-            .map_or(Some(5), Value::as_u64)
-            .filter(|t| *t <= 60)
-            .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_poll_timeout"))?;
+        // Laravel's `nullable|integer|min:0|max:60` bounds a requested wait;
+        // the configured default is not capped.
+        let timeout = match body.get("timeout_seconds") {
+            None | Some(Value::Null) => default_wait,
+            Some(value) => super::laravel_validation::integer(value)
+                .filter(|t| (0..=60).contains(t))
+                .and_then(|t| u64::try_from(t).ok())
+                .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_poll_timeout"))?,
+        };
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
         let requested = super::history_pages::requested_size(&body)?;
         let encoding = if kind == "workflow" {

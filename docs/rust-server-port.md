@@ -122,8 +122,14 @@ contract fixture before its correction.
   non-default value of the other 67
   ([checkpoint](rust-server-port-checkpoints/2026-10-22-environment-contract.md)).
   Several of those are cheap to honor: repair timing and the multi-node
-  declaration. Native's defaults still differ from PHP's for two honored
-  settings: the worker poll timeout and operation name length.
+  declaration.
+- **Signal and update names PHP cannot store.** Native validates signal,
+  update and query names as PHP does (1 to 256 bytes, no control
+  characters). PHP's signal and update name columns hold 255 bytes, so PHP
+  stores a 256-byte name on SQLite and fails with a database error on MySQL
+  and PostgreSQL. Native refuses such a name, and a name of only spaces,
+  with `invalid_signal_name` or `invalid_update_name` on every database
+  ([checkpoint](rust-server-port-checkpoints/2026-10-22-poll-waits.md)).
 - **Key order inside plain JSON input.** For input that is not an envelope,
   PHP encodes nested objects as Avro maps in request order; native encodes
   them with sorted keys. The decoded values are equal, but the blobs differ.
