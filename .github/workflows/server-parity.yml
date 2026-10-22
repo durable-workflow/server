@@ -427,11 +427,14 @@ jobs:
             "$MYSQL_IMAGE" -h parity-mysql -uroot -pparity-disposable-password \
             -e 'CREATE DATABASE native_ref CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
+          # The physical layout stays the frozen published 2.5.14 one; behavior
+          # runs on the current reference after migrating that database forward.
+          layout=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
             -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=php_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
-            "$image" artisan server:bootstrap --force > parity-evidence/published-bootstrap.txt
+            "$layout" artisan server:bootstrap --force > parity-evidence/published-bootstrap.txt
           # Compiling the library tests peaks near 2.5 GB; a 2 GB limit OOM-killed rustc (exit 101).
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --cpus=2 --memory=4g --memory-swap=4g \
             -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
@@ -457,6 +460,11 @@ jobs:
             -e DB_HOST=parity-mysql -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD:/source:ro" -w /source "$image" \
             scripts/conformance/server-parity/mysql-schema.php compare php_ref native_ref > parity-evidence/catalog-comparison.json
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=php_ref \
+            -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
+            "$image" artisan server:bootstrap --force > parity-evidence/published-upgrade-bootstrap.txt
       - name: Compare three runtimes, recover killed native nodes and refuse published PHP takeover
         id: prepare_runtime_comparison
         run: |
@@ -929,11 +937,14 @@ jobs:
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e PGPASSWORD=parity-disposable-password --entrypoint createdb "$POSTGRES_IMAGE" -h parity-pg -U parity native_ref
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
+          # The physical layout stays the frozen published 2.5.14 one; behavior
+          # runs on the current reference after migrating that database forward.
+          layout=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
             -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=php_ref \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
-            "$image" artisan server:bootstrap --force > parity-evidence/published-bootstrap.txt
+            "$layout" artisan server:bootstrap --force > parity-evidence/published-bootstrap.txt
           # Compiling the library tests peaks near 2.5 GB; a 2 GB limit OOM-killed rustc (exit 101).
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --cpus=2 --memory=4g --memory-swap=4g \
             -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
@@ -959,6 +970,11 @@ jobs:
             -e DB_HOST=parity-pg -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD:/source:ro" -w /source "$image" \
             scripts/conformance/server-parity/postgres-schema.php compare php_ref native_ref > parity-evidence/catalog-comparison.json
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=php_ref \
+            -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
+            "$image" artisan server:bootstrap --force > parity-evidence/published-upgrade-bootstrap.txt
       - name: Compare three runtimes, recover killed native nodes and refuse published PHP takeover
         id: prepare_runtime_comparison
         env:
@@ -1476,7 +1492,7 @@ jobs:
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
           mkdir -p parity-state parity-evidence
           chmod 0777 parity-state parity-evidence
-          touch parity-state/php.sqlite parity-state/embedded.sqlite
+          touch parity-state/php.sqlite parity-state/embedded.sqlite parity-state/php-layout.sqlite
           chmod 0666 parity-state/*.sqlite
           docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
@@ -1503,6 +1519,12 @@ jobs:
               -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
               "$image" artisan server:bootstrap --force >> parity-evidence/bootstrap.txt
           done
+          # The physical layout native creates stays the frozen published 2.5.14 one.
+          layout=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
+          docker run --rm --user=1000:1000 --entrypoint php \
+            -v "$PWD/parity-state:/state" -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/php-layout.sqlite \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
+            "$layout" artisan server:bootstrap --force >> parity-evidence/bootstrap.txt
           # The API server and the CPU-limited maintenance loop share one published PHP
           # SQLite file. Let SQLite serialize their writers instead of refusing at 5 s.
           docker run -d --name "$RESOURCE_SCOPE-server" --network "$RESOURCE_SCOPE" --network-alias=parity-server \
@@ -1662,7 +1684,7 @@ jobs:
           # writable so SQLite can manage its shared-memory cache; use Rust's UID.
           docker run --rm --user="$(id -u):$(id -g)" --network=none --entrypoint php \
             -v "$PWD:/source:ro" -v "$PWD/parity-state:/state" -w /source "$image" \
-            scripts/conformance/server-parity/schema.php /state/php.sqlite /state/rust.sqlite > parity-evidence/schema-comparison.json
+            scripts/conformance/server-parity/schema.php /state/php-layout.sqlite /state/rust.sqlite > parity-evidence/schema-comparison.json
           docker logs "$RESOURCE_SCOPE-rust" > parity-evidence/rust-killed.log 2>&1
           docker run -d --name "$RESOURCE_SCOPE-recovered" --network "$RESOURCE_SCOPE" --network-alias=parity-recovered \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \

@@ -403,6 +403,11 @@ support is not evidence of multi-node safety.
     unchanged.
   - The frozen 2.5.14 tuple remains in `tests/Fixtures/ServerParityBaselines`
     for the takeover cohorts that pin it.
+  - It also remains the physical layout native creates, following the
+    conversion-recipe decision below. The SQLite, MySQL and PostgreSQL catalog
+    comparisons bootstrap with the 2.5.14 image. The MySQL and PostgreSQL
+    reference databases are then migrated forward to 2.11.1 before the
+    behavior comparison, the same upgrade PHP users run.
   - The consumer tuple (PHP SDK 2.2.6, Python 2.5.0, Rust 3.4.1, CLI 2.2.0,
     Waterline 2.3.1) is unchanged. The embedded target now runs Workflow 2.10.2
     from the 2.11.1 image.
