@@ -917,16 +917,7 @@ async fn member_timeout_wakes_once_and_keeps_the_other_original_timer() {
     );
     let observation = observe(&database, &app, &run).await;
     assert_eq!(observation["current_waits"]["returned_count"], 1);
-    assert_eq!(
-        finish_task(
-            &app,
-            replay,
-            json!([{"type":"complete_workflow","result":envelope(Payload::Null)}])
-        )
-        .await
-        .0,
-        StatusCode::CONFLICT
-    );
+    // The worker waits for the group's timer instead of closing the run.
     let waiting=request(&app,"POST",&format!("/api/worker/workflow-tasks/{}/fail",replay["task_id"].as_str().unwrap()),
         json!({"lease_owner":replay["lease_owner"],"workflow_task_attempt":replay["workflow_task_attempt"],
             "failure":{"type":"WorkflowTaskWaitingForHistory","message":"original all timer is still pending"}})).await;

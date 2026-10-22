@@ -1283,6 +1283,9 @@ where
     /// still open, a message stream, or a stored external payload reference,
     /// whose cleanup native does not perform yet.
     async fn retention_hold(&self, run_id: &str) -> Result<Option<&'static str>> {
+        if self.abandoned_activity_open(run_id).await? {
+            return Ok(Some("detached_activity_still_open"));
+        }
         for (sql, binds, reason) in retention::HOLDS {
             let mut query = Self::scalar(sql);
             for _ in 0..*binds {
@@ -1294,6 +1297,49 @@ where
         }
         Ok(None)
     }
+
+    /// `WorkflowRunRetentionCleanup::retentionHoldReason`: an activity
+    /// scheduled under the `abandon` cancellation policy whose history has no
+    /// terminal event for its last attempt (`ActivityAbandonment::hasTerminalHistory`).
+    /// Other activities left open when a run closed do not hold it.
+    async fn abandoned_activity_open(&self, run_id: &str) -> Result<bool> {
+        let rows = Self::query("SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityCompleted','ActivityFailed','ActivityCancelled','ActivityTimedOut') ORDER BY sequence")
+            .bind(run_id).fetch_all(&self.pool).await?;
+        let mut events = Vec::with_capacity(rows.len());
+        for row in &rows {
+            events.push((DB::number(row, "sequence")?, DB::string(row, "event_type")?, DB::document_row(row, "payload")?));
+        }
+        Ok(events.iter().any(|(sequence, kind, payload)| {
+            kind == "ActivityScheduled"
+                && payload["activity"]["cancellation_policy"] == "abandon"
+                && !abandoned_activity_closed(&events, *sequence, payload)
+        }))
+    }
+}
+
+/// `ActivityAbandonment::hasTerminalHistory` over a run's activity events.
+fn abandoned_activity_closed(events: &[(i64, String, Value)], scheduled_at: i64, scheduled: &Value) -> bool {
+    let Some(execution) = scheduled["activity_execution_id"].as_str() else {
+        return false;
+    };
+    let Some(sequence) = scheduled["sequence"].as_i64().filter(|sequence| *sequence >= 1) else {
+        return false;
+    };
+    if scheduled["activity"]["id"] != execution {
+        return false;
+    }
+    let started = events.iter().rev().find(|(_, kind, payload)| kind == "ActivityStarted" && payload["activity_execution_id"] == execution);
+    let after = started.map_or(scheduled_at, |(at, _, _)| *at);
+    let attempt = started.map_or(&Value::Null, |(_, _, payload)| &payload["activity_attempt_id"]);
+    events.iter().any(|(at, kind, payload)| {
+        matches!(kind.as_str(), "ActivityCompleted" | "ActivityFailed" | "ActivityCancelled" | "ActivityTimedOut")
+            && payload["activity_execution_id"] == execution
+            && payload["sequence"] == sequence
+            && (started.is_some() || matches!(kind.as_str(), "ActivityCancelled" | "ActivityTimedOut"))
+            && *at > after
+            && payload.get("activity_attempt_id").is_some()
+            && &payload["activity_attempt_id"] == attempt
+    })
 }
 
 struct UnhealthyTasks {
@@ -1471,6 +1517,28 @@ fn sticky_execution() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // `ActivityAbandonment::hasTerminalHistory`: the terminal event must follow
+    // the last start and name its attempt; a never-started activity closes
+    // only by cancellation or timeout.
+    #[test]
+    fn an_abandoned_activity_closes_with_its_last_attempt() {
+        let scheduled = json!({"activity_execution_id":"a","sequence":2,"activity":{"id":"a","cancellation_policy":"abandon"}});
+        let event = |at: i64, kind: &str, payload: Value| (at, kind.to_owned(), payload);
+        let started = event(4, "ActivityStarted", json!({"activity_execution_id":"a","activity_attempt_id":"t1"}));
+        let completed = |attempt: &str| event(5, "ActivityCompleted", json!({"activity_execution_id":"a","sequence":2,"activity_attempt_id":attempt}));
+        let open = [event(3, "ActivityScheduled", scheduled.clone()), started.clone()];
+        assert!(!abandoned_activity_closed(&open, 3, &scheduled));
+        let closed = [event(3, "ActivityScheduled", scheduled.clone()), started.clone(), completed("t1")];
+        assert!(abandoned_activity_closed(&closed, 3, &scheduled));
+        let other_attempt = [event(3, "ActivityScheduled", scheduled.clone()), started, completed("t0")];
+        assert!(!abandoned_activity_closed(&other_attempt, 3, &scheduled));
+        let unstarted = [event(3, "ActivityScheduled", scheduled.clone()), completed("t1")];
+        assert!(!abandoned_activity_closed(&unstarted, 3, &scheduled));
+        let timed_out = [event(3, "ActivityScheduled", scheduled.clone()),
+            event(5, "ActivityTimedOut", json!({"activity_execution_id":"a","sequence":2,"activity_attempt_id":null}))];
+        assert!(abandoned_activity_closed(&timed_out, 3, &scheduled));
+    }
 
     #[test]
     fn comparisons_bind_whole_seconds_and_ages_truncate() {
