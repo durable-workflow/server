@@ -39,7 +39,7 @@ COPY docker/trust/ /usr/local/lib/server-trust/
 RUN chmod 0755 /usr/local/lib/server-trust/verify-trust.sh \
     && ln -s /usr/local/lib/server-trust/verify-trust.sh /usr/local/bin/server-verify-trust \
     && server-verify-trust system \
-    && apt-get update && apt-get install -y \
+    && apt-get update && apt-get install -y --no-install-recommends \
     curl \
     libpq-dev \
     libstdc++6 \
