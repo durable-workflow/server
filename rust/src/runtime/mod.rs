@@ -65,6 +65,7 @@ mod memo_json;
 mod memo_limits;
 mod memos;
 pub mod mysql;
+mod namespace_cleanup;
 mod namespaces;
 mod operator_dashboard;
 mod operator_metrics;

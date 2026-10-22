@@ -432,6 +432,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $storageTest = isset($fixture['storage_test']) ? finishHttpStorageTest($client, $fixture, $workflowId, $url) : null;
     $activityLeaseRenewal = isset($fixture['activity_lease_renewal']) ? finishHttpActivityLeaseRenewal($client, $fixture, $workflowId, $url) : null;
     $serviceCatalog = isset($fixture['service_catalog']) ? finishHttpServiceCatalog($client, $fixture, $workflowId, $url) : null;
+    $namespaceDelete = isset($fixture['namespace_delete']) ? finishHttpNamespaceDelete($client, $fixture, $workflowId, $queue, $url) : null;
     $schedulePolicies = isset($fixture['schedule_policies']) ? finishHttpSchedulePolicies($client, $fixture, $workflowId, $url) : null;
     $scheduleCatalog = isset($fixture['schedule_catalog'])
         ? finishHttpSchedulePolicies($client, $fixture, $workflowId, $url, 'schedule_catalog')
@@ -533,6 +534,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'storage_test' => $storageTest,
         'activity_lease_renewal' => $activityLeaseRenewal,
         'service_catalog' => $serviceCatalog,
+        'namespace_delete' => $namespaceDelete,
         'schedule_policies' => $schedulePolicies,
         'schedule_catalog' => $scheduleCatalog,
         'signals_before_worker' => $signalsBeforeWorker,
@@ -838,6 +840,7 @@ try {
     require __DIR__.'/storage-test-probe.php';
     require __DIR__.'/activity-lease-renewal-probe.php';
     require __DIR__.'/service-catalog-probe.php';
+    require __DIR__.'/namespace-delete-probe.php';
     require __DIR__.'/schedule-policies-probe.php';
     require __DIR__.'/signals-before-worker-probe.php';
     require __DIR__.'/worker-deregistration-probe.php';
@@ -1001,6 +1004,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['service_catalog'])) {
         $observation['service_catalog'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_service_catalog'];
+    }
+    if ($mode === 'embedded' && isset($fixture['namespace_delete'])) {
+        $observation['namespace_delete'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_namespaces'];
     }
     if ($mode === 'embedded' && isset($fixture['schedule_policies'])) {
         $observation['schedule_policies'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_schedules'];

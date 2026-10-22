@@ -32,7 +32,7 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route(
             "/api/namespaces/{namespace}",
-            get(describe_namespace).put(update_namespace),
+            get(describe_namespace).put(update_namespace).delete(delete_namespace),
         )
         .route(
             "/api/namespaces/{namespace}/external-storage",
@@ -417,8 +417,8 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
     } else if path.starts_with("/api/workers/") && request.method() != Method::GET
         || path == "/api/namespaces" && request.method() == Method::POST
         || path == "/api/storage/test"
-        // Updating a namespace or its external storage needs an admin.
-        || path.starts_with("/api/namespaces/") && request.method() == Method::PUT
+        // Updating or deleting a namespace, or its external storage, needs an admin.
+        || path.starts_with("/api/namespaces/") && matches!(*request.method(), Method::PUT | Method::DELETE)
         // PHP's system routes are admin-only.
         || path.starts_with("/api/system/")
         || path == "/api/runtime-credentials"
@@ -730,6 +730,12 @@ async fn update_namespace(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     Ok(Json(runtime.update_namespace(&namespace, body).await?))
+}
+async fn delete_namespace(
+    Extension(runtime): Extension<Runtime>,
+    Path(namespace): Path<String>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.delete_namespace(&namespace).await?))
 }
 async fn create_namespace(
     Extension(runtime): Extension<Runtime>,
