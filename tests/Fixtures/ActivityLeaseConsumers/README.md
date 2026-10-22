@@ -13,8 +13,9 @@ the client; check real `activity_lease_renewal` discovery, not the image version
 Python checks that flag itself; confirm registration and discovery independently
 for Rust before admitting an original.
 
-The Python workflow takes two positional values. Rust's typed workflow takes
-one tuple request, so its client sends that tuple as one nested argument.
+The Python workflow takes two positional values. Rust's typed workflow and
+activity each take one tuple request. Both call sites send the tuple as one
+nested argument.
 
 Run `python_worker.py` or the compiled Rust worker, then `client.py python long`
 or `client.py rust long`. The callback blocks for 360 seconds under the normal

@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ActivityOptions::new().retry_policy(
                         ActivityRetryPolicy::new(2).backoff_intervals([Duration::ZERO]),
                     ),
-                    input,
+                    [input],
                 )
                 .await?;
             Ok(result)
