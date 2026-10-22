@@ -113,6 +113,12 @@ contract fixture before its correction.
   creates a run's missing task, and recovers an expired activity-task lease
   with its attempt. Native refuses both with
   `development_workflow_task_repair_unqualified`.
+- **Structural limits.** For external workers, published PHP enforces four
+  of the Workflow package's `DW_V2_LIMIT_*` limits: the memo size, the
+  command batch size as a bound on parallel group metadata, the pending
+  signal and update counts with their payload size at intake, and the
+  payload size of an activity's result. Native enforces only the memo size.
+  #612 tracks the rest.
 - **Malformed input envelopes.** Published PHP refuses a malformed `input`
   envelope on start, signal, update and query with `422 validation_failed`,
   using Laravel messages on `input.codec` or `input.blob`. The cases are a

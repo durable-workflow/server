@@ -381,7 +381,7 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
     } else {
         "x-durable-workflow-control-plane-version"
     };
-    let version = if worker { "1.20" } else { "2" };
+    let version = if worker { super::WORKER_PROTOCOL_VERSION } else { "2" };
     let requested = request
         .headers()
         .get(header)
@@ -669,9 +669,9 @@ async fn admission_error(
     mut body: Value,
 ) -> Response {
     let (header, version) = if worker {
-        body["protocol_version"] = json!("1.20");
+        body["protocol_version"] = json!(super::WORKER_PROTOCOL_VERSION);
         body["server_capabilities"] = capabilities();
-        ("x-durable-workflow-protocol-version", "1.20")
+        ("x-durable-workflow-protocol-version", super::WORKER_PROTOCOL_VERSION)
     } else {
         body = super::control_plane::admission_response(request, body).await;
         ("x-durable-workflow-control-plane-version", "2")
@@ -716,7 +716,7 @@ async fn cluster() -> Json<Value> {
         .expect("valid bundled carrier auth composition contract");
     Json(
         json!({"version": env!("CARGO_PKG_VERSION"), "implementation": "rust", "development": true,
-        "control_plane": {"version": "2", "request_contract": super::visibility::request_contract()}, "worker_protocol": {"version": "1.20", "server_capabilities": capabilities()},
+        "control_plane": {"version": "2", "request_contract": super::visibility::request_contract()}, "worker_protocol": {"version": super::WORKER_PROTOCOL_VERSION, "server_capabilities": capabilities()},
         "auth_composition_contract": auth_composition,
         "payload_codec": "avro", "qualified_for_php_takeover": false}),
     )
@@ -1135,7 +1135,7 @@ async fn register(
 }
 
 fn worker_response(mut body: Value) -> Value {
-    body["protocol_version"] = json!("1.20");
+    body["protocol_version"] = json!(super::WORKER_PROTOCOL_VERSION);
     body["server_capabilities"] = capabilities();
     body
 }
@@ -1481,7 +1481,7 @@ fn completion_refusal(
             reason: "task_not_found",
         } if status == StatusCode::NOT_FOUND => {
             let mut response = json!({"task_id":task_id,"error":message,"reason":"task_not_found",
-                "protocol_version":"1.20","server_capabilities":capabilities()});
+                "protocol_version":super::WORKER_PROTOCOL_VERSION,"server_capabilities":capabilities()});
             response[attempt_field] = attempt;
             super::RuntimeError::Protocol { status, response }
         }
