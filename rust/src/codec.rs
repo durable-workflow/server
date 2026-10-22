@@ -10,7 +10,31 @@ mod validation;
 use apache_avro::{
     GenericSingleObjectReader, GenericSingleObjectWriter, Schema, types::Value as Datum,
 };
-use base64::{Engine, engine::general_purpose::STANDARD};
+use base64::{
+    Engine, alphabet,
+    engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig, general_purpose::STANDARD},
+};
+
+/// PHP's strict `base64_decode`: padding is absent or canonical, and unused
+/// trailing bits may be set.
+const PHP_BASE64: GeneralPurpose = GeneralPurpose::new(
+    &alphabet::STANDARD,
+    GeneralPurposeConfig::new()
+        .with_decode_padding_mode(DecodePaddingMode::Indifferent)
+        .with_decode_allow_trailing_bits(true),
+);
+
+/// Decodes a blob as published PHP does: ASCII whitespace is skipped, and
+/// any padding must be exactly what the final quantum needs.
+fn php_base64(blob: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    let compact: String = blob.chars().filter(|c| !matches!(c, ' ' | '\t' | '\n' | '\r')).collect();
+    let unpadded = compact.trim_end_matches('=');
+    let padding = compact.len() - unpadded.len();
+    if padding > 0 && padding != (4 - unpadded.len() % 4) % 4 {
+        return Err(base64::DecodeError::InvalidPadding);
+    }
+    PHP_BASE64.decode(unpadded)
+}
 
 pub const VALUE_SCHEMA: &str = include_str!("../schema/durable_workflow.protocol.Value.v1.avsc");
 
@@ -60,6 +84,60 @@ pub enum CodecError {
     NonFiniteDouble,
 }
 
+/// The writer schema fingerprint of a Value single-object frame.
+const VALUE_FINGERPRINT: [u8; 8] = [0xe2, 0xa3, 0x3d, 0xff, 0x55, 0x80, 0x22, 0x37];
+
+/// Published PHP's `CodecDecodeException` message for a blob that
+/// [`ValueCodec::decode`] refused: what the decoder saw, then a remediation.
+pub fn ingress_diagnosis(blob: &str, error: &CodecError) -> String {
+    const SCHEMA: &str = "Provide a schema-conformant Avro Value datum.";
+    let (detail, remediation) = match php_base64(blob) {
+        Err(_) if looks_like_json(blob) => (
+            "invalid_payload_framing: payload bytes look like JSON, not base64-encoded Avro.".to_owned(),
+            "Encode the value with the fixed Avro Value codec; JSON is only the HTTP document transport.",
+        ),
+        Err(_) => (
+            "invalid_payload_framing: failed to base64-decode Avro payload bytes.".to_owned(),
+            "Avro payloads must be strict base64 containing a c301 single-object frame.",
+        ),
+        Ok(bytes) if bytes.len() < 10 || !bytes.starts_with(&[0xc3, 0x01]) => (
+            "invalid_payload_framing: expected Avro single-object magic c301.".to_owned(),
+            "Encode the value with the Durable Workflow 2.0 fixed Avro Value schema and single-object framing; JSON is only the HTTP document transport.",
+        ),
+        Ok(bytes) if bytes[2..10] != VALUE_FINGERPRINT => (
+            format!(
+                "unsupported_payload_schema: unknown CRC-64-AVRO fingerprint {}.",
+                bytes[2..10].iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+            ),
+            "Upgrade to a runtime that bundles this writer schema; never guess or fall back to JSON.",
+        ),
+        Ok(_) => match error {
+            CodecError::TrailingBytes => (
+                "invalid_payload_framing: trailing bytes after Avro Value datum.".to_owned(),
+                "Provide exactly one Avro Value datum in each single-object frame.",
+            ),
+            CodecError::Truncated => (
+                "invalid_payload_framing: truncated Avro Value datum.".to_owned(),
+                "Provide one complete Avro Value datum after the single-object fingerprint.",
+            ),
+            CodecError::InvalidValue => (
+                "invalid_payload_framing: datum is not a durable_workflow.protocol.Value record.".to_owned(),
+                SCHEMA,
+            ),
+            _ => (
+                "invalid_payload_framing: malformed Avro Value datum.".to_owned(),
+                "Provide one complete datum encoded with the writer schema selected by the single-object fingerprint.",
+            ),
+        },
+    };
+    format!("{detail} Remediation: {remediation}")
+}
+
+/// PHP's `looksLikeJson`: the first byte could start a JSON document.
+fn looks_like_json(blob: &str) -> bool {
+    blob.bytes().next().is_some_and(|first| b"{[\"-tfn".contains(&first) || first.is_ascii_digit())
+}
+
 pub struct ValueCodec {
     schema: Schema,
     reader: GenericSingleObjectReader,
@@ -87,7 +165,7 @@ impl ValueCodec {
     }
 
     pub fn decode(&self, blob: &str) -> Result<Value, CodecError> {
-        let bytes = STANDARD.decode(blob)?;
+        let bytes = php_base64(blob)?;
         let mut input = CompleteInput {
             remaining: bytes.as_slice(),
             truncated: false,
@@ -245,6 +323,39 @@ mod tests {
             codec.decode(&codec.encode(&values).unwrap()).unwrap(),
             values
         );
+    }
+
+    #[test]
+    fn base64_follows_php_strict_decoding() {
+        for accepted in ["QUJD", "QUI", "QUI=", "QQ", "QQ==", "QR==", "QU JD", "QUJD\nQUJD", ""] {
+            assert!(php_base64(accepted).is_ok(), "{accepted:?}");
+        }
+        for refused in ["QUJD=", "QUI==", "QQ=", "QQ===", "QUJD====", "Q", "QUJD\tQ", "QU-D", "QU_D", "Q=UJD"] {
+            assert!(php_base64(refused).is_err(), "{refused:?}");
+        }
+        let codec = ValueCodec::new().unwrap();
+        let padded = codec.encode(&Value::Long(7)).unwrap();
+        assert_eq!(codec.decode(padded.trim_end_matches('=')).unwrap(), Value::Long(7));
+    }
+
+    #[test]
+    fn ingress_diagnosis_names_what_php_saw() {
+        let codec = ValueCodec::new().unwrap();
+        let good = codec.encode(&Value::Array(vec![Value::Long(1)])).unwrap();
+        let diagnose = |blob: &str| ingress_diagnosis(blob, &codec.decode(blob).unwrap_err());
+        assert!(diagnose("not-avro").starts_with("invalid_payload_framing: payload bytes look like JSON, not base64-encoded Avro. Remediation: Encode"));
+        assert!(diagnose("@@@@").starts_with("invalid_payload_framing: failed to base64-decode Avro payload bytes."));
+        assert!(diagnose("QUJD").starts_with("invalid_payload_framing: expected Avro single-object magic c301."));
+        let mut bytes = STANDARD.decode(&good).unwrap();
+        bytes[2..10].fill(0);
+        assert!(diagnose(&STANDARD.encode(&bytes)).starts_with(
+            "unsupported_payload_schema: unknown CRC-64-AVRO fingerprint 0000000000000000. Remediation: Upgrade"
+        ));
+        let mut trailing = STANDARD.decode(&good).unwrap();
+        trailing.push(0);
+        assert!(diagnose(&STANDARD.encode(&trailing)).starts_with("invalid_payload_framing: trailing bytes after Avro Value datum."));
+        let truncated = STANDARD.decode(&good).unwrap();
+        assert!(diagnose(&STANDARD.encode(&truncated[..truncated.len() - 1])).starts_with("invalid_payload_framing: truncated Avro Value datum."));
     }
 
     #[test]

@@ -85,28 +85,9 @@ pub(super) fn normalized(value: Value) -> Value {
 
 /// `PayloadCodecContract::canonicalize`.
 fn payload_codec(value: &Value) -> Result<()> {
-    match value {
-        Value::Null => Ok(()),
-        Value::String(codec) if codec == "avro" => Ok(()),
-        other => {
-            let rendered = other.as_str().map_or_else(|| debug_type(other).to_owned(), str::to_owned);
-            Err(failure_messages(vec![("payload_codec".into(), vec![format!(
-                "unsupported_payload_codec: workflow payload codec \"{rendered}\" is not supported by Durable Workflow 2.0; use codec=\"avro\" with the fixed Avro Value schema and single-object framing. JSON remains the HTTP document transport, not a workflow payload codec."
-            )])])
-            .expect("one message"))
-        }
-    }
-}
-
-/// PHP's `get_debug_type`.
-fn debug_type(value: &Value) -> &'static str {
-    match value {
-        Value::Null => "null",
-        Value::Bool(_) => "bool",
-        Value::Number(number) if number.is_i64() || number.is_u64() => "int",
-        Value::Number(_) => "float",
-        Value::String(_) => "string",
-        Value::Array(_) | Value::Object(_) => "array",
+    match super::input_envelope::codec_refusal(value) {
+        None => Ok(()),
+        Some(message) => Err(failure_messages(vec![("payload_codec".into(), vec![message])]).expect("one message")),
     }
 }
 

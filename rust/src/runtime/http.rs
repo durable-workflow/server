@@ -986,7 +986,8 @@ async fn update_current(
 ) -> Result<(StatusCode, Json<Value>)> {
     let (status, result) = runtime
         .update_workflow(&workflow_id, None, &name, without_trace_carrier(body))
-        .await?;
+        .await
+        .map_err(|error| super::control_plane::Operation::Update(&name).refusal(error, &workflow_id, None))?;
     Ok((status, Json(result)))
 }
 
@@ -997,7 +998,10 @@ async fn update_run(
 ) -> Result<(StatusCode, Json<Value>)> {
     let (status, result) = runtime
         .update_workflow(&workflow_id, Some(&run_id), &name, without_trace_carrier(body))
-        .await?;
+        .await
+        .map_err(|error| {
+            super::control_plane::Operation::Update(&name).refusal(error, &workflow_id, Some(&run_id))
+        })?;
     Ok((status, Json(result)))
 }
 

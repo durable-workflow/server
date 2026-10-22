@@ -162,7 +162,13 @@ impl<'de> Deserialize<'de> for InputJson {
                 }
                 let mut keys: Vec<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
                 keys.sort_unstable();
-                Ok(InputJson(if super::start_request::envelope_keys(&keys) {
+                // PHP checks the codec of any input object, so one it would
+                // refuse stays an object for that check.
+                let refused_codec = entries.iter().any(|(key, value)| {
+                    key == "codec"
+                        && super::input_envelope::codec_refusal(&super::start_request::normalized(value.clone())).is_some()
+                });
+                Ok(InputJson(if refused_codec || super::start_request::envelope_keys(&keys) {
                     Value::Object(entries.into_iter().collect())
                 } else {
                     Value::Array(entries.into_iter().map(|(_, value)| value).collect())
