@@ -14,6 +14,7 @@ for (const pem of tls.rootCertificates) {
 }
 const [major, minor, patch] = process.versions.node.split('.').map(Number);
 const fixed = major === 22 && (minor > 23 || (minor === 23 && patch >= 4));
-const extra = process.env.NODE_EXTRA_CA_CERTS ?? null;
-console.log(JSON.stringify({ node: process.versions.node, roots: tls.rootCertificates.length, blocked, extra_ca_certs: extra }));
-process.exit(fixed && extra === null && Object.values(blocked).every((count) => count === 0) ? 0 : 1);
+// Extra roots would join the embedded ones; report only whether any are set.
+const extraRoots = process.env.NODE_EXTRA_CA_CERTS !== undefined;
+console.log(JSON.stringify({ node: process.versions.node, roots: tls.rootCertificates.length, blocked, extra_ca_certs_set: extraRoots }));
+process.exit(fixed && !extraRoots && Object.values(blocked).every((count) => count === 0) ? 0 : 1);
