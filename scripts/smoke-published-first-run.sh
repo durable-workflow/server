@@ -20,12 +20,8 @@ RECOVERED_SERVER_LOG="${ARTIFACT_DIR}/recovered-server.log"
 HEALTH_LOG="${ARTIFACT_DIR}/docker-health.log"
 
 cleanup() {
-    docker ps -aq --filter "label=dev.durable-workflow.container-logging=${SCOPE}-logs" \
-        | xargs -r docker rm -f >/dev/null 2>&1 || true
-    docker volume ls -q --filter "label=dev.durable-workflow.container-logging=${SCOPE}-logs" \
-        | xargs -r docker volume rm >/dev/null 2>&1 || true
-    docker rm -f "$CONTAINER" "$BOOTSTRAP_CONTAINER" >/dev/null 2>&1 || true
-    docker volume rm -f "$DATABASE_VOLUME" >/dev/null 2>&1 || true
+    # Workflow always-steps own deletion, including cancellation after partial setup.
+    docker stop "$CONTAINER" "$BOOTSTRAP_CONTAINER" >/dev/null 2>&1 || true
     rm -rf "$ARTIFACT_DIR"
 }
 
@@ -150,7 +146,8 @@ for expected in ("server-bootstrap", "authentication", "/api/ready"):
 assert "server-bootstrap" in docker_health_log, docker_health_log
 PY
 
-docker rm -f "$CONTAINER" >/dev/null
+docker stop "$CONTAINER" >/dev/null
+docker rename "$CONTAINER" "${SCOPE}-unbootstrapped"
 
 docker run --rm \
     --name "$BOOTSTRAP_CONTAINER" \

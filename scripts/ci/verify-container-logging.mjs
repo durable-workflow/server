@@ -40,6 +40,7 @@ function remove(name) {
 const common = [
   '--user', '1000:1000', '--cpus', '1', '--memory', '512m', '--memory-swap', '512m',
   '--label', `${label}=${scope}`,
+  '--label', `com.docker.compose.project=${scope}`,
   '--mount', `type=volume,source=${database},target=/app/database`,
   '--env', 'DB_CONNECTION=sqlite', '--env', 'DB_DATABASE=/app/database/database.sqlite',
   '--env', 'DB_SQLITE_JOURNAL_MODE=DELETE', '--env', 'CACHE_STORE=file',
@@ -131,7 +132,7 @@ async function main() {
   try {
     assert.notEqual(spawnSync('/usr/bin/docker', ['volume', 'inspect', database], {stdio: 'ignore'}).status, 0,
       `volume already exists: ${database}`);
-    docker(['volume', 'create', '--label', `${label}=${scope}`, database]);
+    docker(['volume', 'create', '--label', `${label}=${scope}`, '--label', `com.docker.compose.project=${scope}`, database]);
     assert.equal(docker(['volume', 'inspect', '--format', `{{index .Labels "${label}"}}`, database]), scope,
       'refuse use of a foreign volume');
     volumeCreated = true;
