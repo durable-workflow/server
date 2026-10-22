@@ -778,7 +778,7 @@ where
         .map(|row| DB::number(&row, "sequence"))
         .transpose()?
         .unwrap_or(0);
-        let wait = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('SignalWaitOpened','ConditionWaitOpened','VersionMarkerRecorded','MemoUpserted') ORDER BY sequence DESC LIMIT 1")
+        let wait = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('SignalWaitOpened','ConditionWaitOpened','VersionMarkerRecorded','MemoUpserted','SideEffectRecorded') ORDER BY sequence DESC LIMIT 1")
             .bind(run_id).fetch_optional(&mut **tx).await?;
         let wait_sequence = wait
             .map(|row| DB::document_row(&row, "payload"))
@@ -1900,6 +1900,10 @@ where
                 "record_version_marker" => {
                     version_marker_payload(command)?;
                 }
+                "record_side_effect" => {
+                    reject_fields(command, &["type", "result"])?;
+                    envelope(command, "result")?;
+                }
                 "upsert_search_attributes" => {
                     reject_fields(command, &["type", "attributes", "attribute_types"])?;
                     super::search_attribute_upserts::validate_shape(command, index)?;
@@ -2012,7 +2016,7 @@ where
                 !matches!(
                     command["type"].as_str(),
                     Some(
-                        "schedule_activity" | "start_timer" | "complete_workflow" | "fail_workflow"
+                        "schedule_activity" | "start_timer" | "record_side_effect" | "complete_workflow" | "fail_workflow"
                     )
                 )
             })
@@ -2070,6 +2074,12 @@ where
             } else if command["type"] == "start_child_workflow" {
                 sequence += 1;
                 Self::start_child(&mut tx, &run, task_id, command, sequence).await?;
+            } else if command["type"] == "record_side_effect" {
+                // `applyRecordSideEffect`: one authored sequence and its result.
+                sequence += 1;
+                let result = envelope(command, "result")?;
+                let payload = json!({"sequence": sequence, "result": wire(&result), "task": Self::task_snapshot(&task)?});
+                Self::append(&mut tx, &run_id, "SideEffectRecorded", payload, Some(task_id), None).await?;
             } else if command["type"] == "record_version_marker" {
                 sequence += 1;
                 let mut payload = version_marker_payload(command)?;
@@ -2956,7 +2966,7 @@ where
     /// Records an event linked to a command by id only, as PHP does when it
     /// passes a command id string rather than the command model: the event
     /// carries no command snapshot.
-    async fn append_by_command_id(
+    pub(super) async fn append_by_command_id(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
         event_type: &str,
@@ -3547,7 +3557,7 @@ pub(super) fn reject_fields(body: &Value, allowed: &[&str]) -> Result<()> {
 }
 
 pub(crate) fn capabilities() -> Value {
-    let mut value = json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "complete_workflow", "fail_workflow", "continue_as_new", "complete_update", "fail_update"],
+    let mut value = json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "record_side_effect", "complete_workflow", "fail_workflow", "continue_as_new", "complete_update", "fail_update"],
         "worker_deregistration_fencing":{"schema":"durable-workflow.v2.worker-deregistration.v1","supported":true,"receipt_retention_seconds":600,"endpoint":"/worker/registrations/{workerId}/deregister"},
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
         "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,

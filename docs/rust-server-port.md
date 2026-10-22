@@ -263,9 +263,10 @@ contract fixture before its correction.
 - **Cooperative cancellation boundaries.** Published PHP delivers a run's
   cancellation at an activity, local activity, timer, condition, signal,
   child, parallel or selection-handle boundary. Native delivers it at a
-  timer, a child and a parallel group whose members are all timers, and
-  refuses the other boundaries, including parallel groups with other member
-  kinds, with `422 cancellation_delivery_boundary_not_available`.
+  timer, a condition or signal wait, a child and a parallel group whose
+  members are all timers. It refuses the other boundaries, including
+  parallel groups with other member kinds, with
+  `422 cancellation_delivery_boundary_not_available`.
 - **Activity results after a deadline, before its timeout runs.** Published
   PHP records a completion that arrives after an activity deadline has
   passed when its separate timeout command has not yet closed the attempt.
