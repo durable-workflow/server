@@ -58,7 +58,7 @@ async fn complete(runtime: &Runtime, task: &Value, commands: Value) -> Result<Va
         .complete_workflow(
             task["task_id"].as_str().unwrap(),
             json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"],
-                "commands":commands}), None,
+                "commands":commands}), None, Some("1.20"),
         )
         .await
 }
