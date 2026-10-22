@@ -99,6 +99,8 @@ mod query_responses;
 mod history_export;
 #[path = "execution/input_envelopes.rs"]
 mod input_envelopes;
+#[path = "execution/workflow_repair.rs"]
+mod workflow_repair;
 #[path = "execution/history_retention.rs"]
 mod history_retention;
 #[path = "execution/repair_status.rs"]

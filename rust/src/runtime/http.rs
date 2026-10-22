@@ -843,17 +843,15 @@ async fn repair_current(
     Extension(runtime): Extension<Runtime>,
     Path(workflow_id): Path<String>,
     request: Request,
-) -> Result<Json<Value>> {
+) -> Result<(StatusCode, Json<Value>)> {
     let (body, context) = super::task_repair_http::request(request, &workflow_id).await?;
-    let response = runtime
-        .repair_range_blocked(&workflow_id, None, body, context)
+    let (status, response) = runtime
+        .repair_workflow(&workflow_id, None, body, context)
         .await
         .map_err(|error| {
             super::control_plane::Operation::Repair.refusal(error, &workflow_id, None)
         })?;
-    Ok(Json(
-        super::control_plane::Operation::Repair.response(response),
-    ))
+    Ok((status, Json(super::control_plane::Operation::Repair.response(response))))
 }
 
 /// Laravel's `$request->boolean('include_last_event_payload')`.
@@ -899,17 +897,15 @@ async fn repair_run(
     Extension(runtime): Extension<Runtime>,
     Path((workflow_id, run_id)): Path<(String, String)>,
     request: Request,
-) -> Result<Json<Value>> {
+) -> Result<(StatusCode, Json<Value>)> {
     let (body, context) = super::task_repair_http::request(request, &workflow_id).await?;
-    let response = runtime
-        .repair_range_blocked(&workflow_id, Some(&run_id), body, context)
+    let (status, response) = runtime
+        .repair_workflow(&workflow_id, Some(&run_id), body, context)
         .await
         .map_err(|error| {
             super::control_plane::Operation::Repair.refusal(error, &workflow_id, Some(&run_id))
         })?;
-    Ok(Json(
-        super::control_plane::Operation::Repair.response(response),
-    ))
+    Ok((status, Json(super::control_plane::Operation::Repair.response(response))))
 }
 
 async fn cancel_run(

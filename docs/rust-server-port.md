@@ -109,6 +109,17 @@ contract fixture before its correction.
 - **External payload references on signal, update and query.** Published
   PHP resolves `{codec, external_payload}` input on these routes; native
   supports it only on start.
+- **Repair of a run without a recoverable task.** Published PHP's repair
+  creates a run's missing task, and recovers an expired activity-task lease
+  with its attempt. Native refuses both with
+  `development_workflow_task_repair_unqualified`.
+- **Malformed input envelopes.** Published PHP refuses a malformed `input`
+  envelope on start, signal, update and query with `422 validation_failed`,
+  using Laravel messages on `input.codec` or `input.blob`. The cases are a
+  codec that is not `avro`, a missing codec, a blob that is empty or not a
+  string, and a blob Avro cannot decode. Native answers with its own reasons
+  instead: `unsupported_payload_codec`, `invalid_payload_envelope`, or an
+  `invalid_*_arguments` reason.
 - **Key order inside plain JSON input.** For input that is not an envelope,
   PHP encodes nested objects as Avro maps in request order; native encodes
   them with sorted keys. The decoded values are equal, but the blobs differ.
