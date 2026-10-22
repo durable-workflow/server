@@ -208,6 +208,37 @@ contract fixture before its correction.
   workflow command and refuses it with `unsupported_workflow_command`. The
   Sample App's search attribute scenario stops there, on its Rust worker's
   first upsert.
+- **Visibility query evaluation.** Published PHP filters a structured list
+  `query` in SQL. Native reads the queried attribute keys once, then
+  evaluates candidate runs in list order, 500 at a time, until it has the
+  requested page. A query that matches few runs in a large namespace reads
+  every run of that namespace.
+- **Visibility query text comparisons.** PHP compares keyword and text
+  values with the database collation, which is case-insensitive in the
+  published MySQL schema. Native compares them exactly on every backend.
+- **Visibility query key order.** When one command or query has several
+  errors, native reports them in sorted key order rather than request order.
+- **Inherited memos and search attributes on child runs.** Published PHP
+  copies the parent's memos and search attributes to a child run and to a
+  retried child (`inheritTypedVisibilityMetadata`). Native copies both only
+  on continue-as-new.
+- **Search attribute datetime forms.** `Carbon::parse` accepts relative and
+  free-form dates. Native accepts RFC 3339, and a date or date and time
+  without an offset read as UTC, and refuses other forms as PHP refuses an
+  unparsable one.
+- **Search attribute datetimes with an offset.** Published PHP stores a
+  typed datetime written with an offset, such as `2026-10-08T12:34:56+02:00`,
+  as that wall-clock time in UTC (`12:34:56Z`), which is a different
+  instant ([workflow#898](https://github.com/durable-workflow/workflow/issues/898)).
+  Native stores the instant written (`10:34:56Z`).
+- **Worker payload datums.** Published PHP refuses a worker command payload,
+  such as a `complete_workflow` result, that is not one complete Avro Value
+  (`422 validation_failed` on `commands.N.result.blob`). Native checks only
+  the envelope's transport shape and accepts it.
+- **Search attribute limits.** Over 100 attributes or 64 KB per run, PHP
+  raises an uncaught `InvalidArgumentException` while applying the command.
+  Native refuses the completion with `422 search_attribute_limit_exceeded`
+  and PHP's message, and records nothing.
 - **Terminating a child run.** Published Workflow resolves the parent with
   `ChildRunTerminated` and the `terminated` child call status. Native refuses
   this with `422 termination_propagation_not_available` until the parent-side
