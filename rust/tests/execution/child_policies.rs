@@ -59,12 +59,11 @@ async fn child_policies_are_validated_and_recorded_like_php() {
     assert_eq!(rows("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_close_policy='request_cancellation' AND cancellation_propagation").await, 1);
     assert_eq!(rows("SELECT COUNT(*) FROM workflow_links WHERE link_type='child_workflow' AND parent_close_policy='request_cancellation'").await, 1);
 
-    // The cancellation cascade is not native yet: a parent whose child would
-    // receive the parent's cancellation keeps the explicit refusal.
-    let (status, refused) = request(&app, "POST", "/api/workflows/policy-parent/request-cancellation",
-        json!({"reason":"not yet","cleanup_timeout_seconds":30})).await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
-    assert_eq!(refused["reason"], "cooperative_cancellation_propagation_not_available");
+    // A parent whose child propagates its cancellation admits the request
+    // (the cascade itself is in child_cascade.rs).
+    let (status, accepted) = request(&app, "POST", "/api/workflows/policy-parent/request-cancellation",
+        json!({"reason":"cascade","cleanup_timeout_seconds":30})).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
 }
 
 // `childCancellationPolicyGuard`: a request-cancellation parent-close policy

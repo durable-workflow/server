@@ -15,6 +15,7 @@ mod all_groups;
 mod backend;
 mod cancellation;
 mod child_summary;
+mod child_cancellation;
 mod children;
 mod command_context;
 mod command_requests;

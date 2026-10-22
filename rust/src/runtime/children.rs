@@ -163,35 +163,40 @@ where
         Ok(ChildParentResume::UpdateOnly)
     }
 
-    pub(super) async fn abandoned_child_link(
+    /// A child link whose call row agrees with it, and its recorded parent-close
+    /// and cancellation policies (PHP reads a missing cancellation policy as
+    /// `abandon`), or `None`.
+    pub(super) async fn child_link_policies(
         tx: &mut Transaction<'_, DB>,
         link: &DB::Row,
-    ) -> Result<bool> {
-        if DB::string(link, "link_type")? != "child_workflow"
-            || DB::optional_string(link, "parent_close_policy")?.as_deref() != Some("abandon")
-        {
-            return Ok(false);
+    ) -> Result<Option<(String, String)>> {
+        if DB::string(link, "link_type")? != "child_workflow" {
+            return Ok(None);
         }
+        let Some(parent_close) = DB::optional_string(link, "parent_close_policy")? else {
+            return Ok(None);
+        };
         let calls = Self::query("SELECT * FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND sequence=$2 LIMIT 2")
             .bind(DB::string(link,"parent_workflow_run_id")?).bind(DB::number(link,"sequence")?)
             .fetch_all(&mut **tx).await?;
         let Some(call) = calls.first().filter(|_| calls.len() == 1) else {
-            return Ok(false);
+            return Ok(None);
         };
         let metadata = DB::document_row(call, "metadata")?;
-        Ok(DB::string(call, "parent_workflow_instance_id")?
+        let cancellation = metadata["cancellation_policy"].as_str().unwrap_or("abandon").to_owned();
+        let consistent = DB::string(call, "parent_workflow_instance_id")?
             == DB::string(link, "parent_workflow_instance_id")?
             && DB::optional_string(call, "resolved_child_instance_id")?
                 == Some(DB::string(link, "child_workflow_instance_id")?)
             && DB::optional_string(call, "resolved_child_run_id")?
                 == Some(DB::string(link, "child_workflow_run_id")?)
-            && DB::optional_string(call, "parent_close_policy")?.as_deref() == Some("abandon")
+            && DB::optional_string(call, "parent_close_policy")?.as_deref() == Some(parent_close.as_str())
             && metadata["child_call_id"] == DB::string(link, "id")?
-            && metadata["cancellation_policy"] == "abandon"
             && matches!(
                 DB::string(call, "status")?.as_str(),
                 "started" | "completed" | "failed" | "cancelled"
-            ))
+            );
+        Ok(consistent.then_some((parent_close, cancellation)))
     }
 
     pub(super) async fn attach_workflow_contract(

@@ -44,7 +44,7 @@ pub(super) fn validate_request(body: &Value) -> Result<(Option<String>, i64)> {
     Ok((reason, budget))
 }
 
-fn timestamp(at: DateTime<Utc>) -> String {
+pub(super) fn timestamp(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(SecondsFormat::Micros, true)
 }
 
@@ -58,7 +58,7 @@ pub(super) fn supports(capabilities: &Value, protocol: &str) -> bool {
 
 // Convert only the bounded, server-authored command/context tree. Wire encoding
 // remains the official Avro codec and runs off the async executor threads.
-async fn encode_command(value: Value, semaphore: Arc<Semaphore>) -> Result<String> {
+pub(super) async fn encode_command(value: Value, semaphore: Arc<Semaphore>) -> Result<String> {
     let permit = semaphore.acquire_owned().await.map_err(|_| {
         refuse(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -161,6 +161,7 @@ where
         task_id: &str,
         body: Value,
         protocol: &str,
+        codec: Arc<Semaphore>,
     ) -> Result<Value> {
         if !supports(&json!(["cooperative_cancellation"]), protocol) {
             return Err(refuse(
@@ -310,13 +311,30 @@ where
             }
         } else if call_kind == "child" {
             if sequence < next {
-                Self::validate_child_cancellation_boundary(
+                let boundary = Self::validate_child_cancellation_boundary(
                     &mut tx,
                     &run_id,
                     sequence,
                     request_sequence,
                 )
                 .await?;
+                // `ChildCancellation::prepare`: a waiting policy holds the
+                // delivery and releases the claim until the child closes.
+                if boundary.policy != "abandon"
+                    && Self::prepare_child_cancellation(&mut tx, &task, request_id, &requested["cancellation"], sequence, &boundary, codec).await?
+                {
+                    let at = now();
+                    Self::query("UPDATE workflow_runs SET status='waiting',last_progress_at=$1 WHERE id=$2")
+                        .bind(DB::bind_time(at)).bind(&run_id).execute(&mut *tx).await?;
+                    Self::query("UPDATE workflow_tasks SET status='completed',lease_expires_at=NULL WHERE id=$1")
+                        .bind(task_id).execute(&mut *tx).await?;
+                    tx.summary_changed(&run_id);
+                    tx.commit().await?;
+                    self.wake.notify_waiters();
+                    return Ok(json!({"delivered":false,"task_id":task_id,"workflow_run_id":run_id,"request_id":null,
+                        "sequence":null,"call_kind":null,"sequence_span":null,"operation_sequence":null,
+                        "operation_sequence_span":null,"reason":"cancellation_waiting_for_child","claim_released":true}));
+                }
             }
         } else if matches!(call_kind, "condition" | "signal") {
             if sequence < next {
@@ -506,7 +524,7 @@ where
         run_id: &str,
         sequence: i64,
         request_sequence: i64,
-    ) -> Result<()> {
+    ) -> Result<super::child_cancellation::ChildBoundary> {
         let mismatch = || refuse(StatusCode::CONFLICT, "cancellation_delivery_shape_mismatch");
         let links = Self::query(
             "SELECT * FROM workflow_links WHERE parent_workflow_run_id=$1 AND sequence=$2 LIMIT 2",
@@ -519,9 +537,7 @@ where
             .first()
             .filter(|_| links.len() == 1)
             .ok_or_else(mismatch)?;
-        if !Self::abandoned_child_link(tx, link).await? {
-            return Err(mismatch());
-        }
+        let (parent_close, cancellation) = Self::child_link_policies(tx, link).await?.ok_or_else(mismatch)?;
         let call = Self::query("SELECT child_workflow_type,child_workflow_class FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND sequence=$2")
             .bind(run_id).bind(sequence).fetch_one(&mut **tx).await?;
         let events = Self::query("SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ChildWorkflowScheduled','ChildRunStarted','ChildRunCompleted','ChildRunFailed','ChildRunCancelled','ChildRunTerminated') ORDER BY sequence LIMIT 1001")
@@ -550,8 +566,8 @@ where
                         != DB::string(link, "child_workflow_run_id")?
                     || payload["child_workflow_type"] != DB::string(&call, "child_workflow_type")?
                     || payload["child_workflow_class"] != DB::string(&call, "child_workflow_class")?
-                    || payload["parent_close_policy"] != "abandon"
-                    || payload["cancellation_policy"] != "abandon"
+                    || payload["parent_close_policy"] != parent_close.as_str()
+                    || payload["cancellation_policy"] != cancellation.as_str()
                     || payload.get("child_workflow").is_some()
                 {
                     return Err(mismatch());
@@ -587,7 +603,11 @@ where
                 "cancellation_delivery_not_eligible",
             ));
         }
-        Ok(())
+        Ok(super::child_cancellation::ChildBoundary {
+            child_instance: DB::string(link, "child_workflow_instance_id")?,
+            child_run: DB::string(link, "child_workflow_run_id")?,
+            policy: cancellation,
+        })
     }
 
     async fn cancel_root_timer(
@@ -703,6 +723,7 @@ where
                 "delivery_history_event_id":delivery_id,"delivery_sequence":delivery_sequence,"finished_at":timestamp(at)}});
         Self::append_by_command_id(tx, &run_id, "WorkflowCancelled", terminal.clone(), task_id, &request_id).await?;
         Self::close_pending_updates(tx, &run_id, task).await?;
+        Self::enforce_parent_close_policies(tx, run, "cancelled").await?;
         Self::resolve_child(
             tx,
             run,
@@ -841,7 +862,7 @@ where
         for child in children {
             if DB::string(&child, "parent_workflow_run_id")?
                 == DB::string(&child, "child_workflow_run_id")?
-                || !Self::abandoned_child_link(&mut tx, &child).await?
+                || Self::child_link_policies(&mut tx, &child).await?.is_none()
             {
                 unsupported_child = true;
                 break;

@@ -200,21 +200,24 @@ contract fixture before its correction.
   cancellation requests (`/update/{name}`, `/repair`,
   `/request-cancellation`, instance- or run-scoped) in a named namespace with
   `422 development_namespace_operation_unqualified`.
-- **Child cancellation cascade.** Native accepts, validates and records a
-  child's parent-close and cancellation policies as PHP does. It does not
-  yet act on them:
-  - **Cascade.** Published PHP propagates a parent's cooperative
-    cancellation to a child whose policy is `try_cancel` or
-    `wait_cancellation_completed`, and waits for the child under the latter.
-    Native refuses cancellation of such a parent with
-    `422 cooperative_cancellation_propagation_not_available`. The Sample
-    App's children scenario needs this in its cancellation case.
+- **Child cancellation cascade, remaining parts.** Native propagates a
+  parent's cooperative cancellation to its child under `try_cancel` and
+  `wait_cancellation_completed`, as PHP does. The rest is open:
+  - **Cascade view.** Published PHP's run debug reports
+    `cancellation_cascade_supported: true` and the `cancellation_cascade`
+    view (`CancellationCascadeView`). Native reports `false` and `null`. The
+    Sample App's children scenario checks the view through the API, the CLI
+    and Waterline.
   - **Parent close.** Published PHP applies `request_cancel`, `terminate` and
     `request_cancellation` to a child that is still open when its parent
     completes, fails, is cancelled, is terminated or times out
-    (`ParentClosePolicyEnforcer`). Native refuses a parent's completion,
-    cancellation and termination while a child is open, but closes a timed-out
-    or failed parent without acting on its open children.
+    (`ParentClosePolicyEnforcer`). Native applies `request_cancellation`
+    when a cooperatively cancelled parent closes. It refuses a parent's
+    completion, cancellation and termination while a child is open, and
+    closes a timed-out or failed parent without acting on open children.
+  - **Root conflicts.** PHP records a rejected command when a child refuses
+    a request under another root. Native records only the refusal on the
+    parent's events.
 - **Signals that arrive before a completion (Server 2.10.0).** Published
   PHP drops a worker's `complete_workflow` or `continue_as_new` while a
   deliverable signal waits and no cancellation is pending. It applies the

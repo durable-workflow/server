@@ -927,7 +927,14 @@ impl Runtime {
     }
     delegate!(poll(body: Value, kind: &'static str, protocol_version: &str) -> Result<Value>);
     delegate!(heartbeat_task(task_id: &str, body: Value) -> Result<Value>);
-    delegate!(deliver_cancellation(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
+    pub(crate) async fn deliver_cancellation(&self, task_id: &str, body: Value, protocol: &str) -> Result<Value> {
+        let codec = self.transition_codec.clone();
+        match &*self.storage {
+            Storage::Sqlite(store) => store.deliver_cancellation(task_id, body, protocol, codec).await,
+            Storage::Postgres(store) => store.deliver_cancellation(task_id, body, protocol, codec).await,
+            Storage::MySql(store) => store.deliver_cancellation(task_id, body, protocol, codec).await,
+        }
+    }
     delegate!(task_history(task_id: &str, body: Value) -> Result<Value>);
     delegate!(fail_workflow_task(task_id: &str, body: Value) -> Result<Value>);
     pub(crate) async fn complete_workflow(

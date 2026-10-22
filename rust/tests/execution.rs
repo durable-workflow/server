@@ -91,6 +91,8 @@ mod signal_rejection;
 mod cooperative_waits;
 #[path = "execution/child_policies.rs"]
 mod child_policies;
+#[path = "execution/child_cascade.rs"]
+mod child_cascade;
 #[path = "execution/query_open_tasks.rs"]
 mod query_open_tasks;
 #[path = "execution/retry_message_tasks.rs"]
