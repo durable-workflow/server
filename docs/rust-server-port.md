@@ -301,11 +301,6 @@ contract fixture before its correction.
   unknown activity task with `task_id`, `activity_attempt_id`, `error` and
   `reason`. Native's worker-plane errors carry only Laravel's validation
   fields or `message` and `reason`.
-- **Terminating a child run.** Published Workflow resolves the parent with
-  `ChildRunTerminated` and the `terminated` child call status. Native refuses
-  this with `422 termination_propagation_not_available` until the parent-side
-  wait, child summary and failure projections for `ChildRunTerminated` have a
-  fixture.
 - **Authentication beyond role tokens and runtime credentials.** Native
   refuses principal tokens (`DW_PRINCIPAL_TOKENS`), custom providers and the
   signature driver at startup. It still requires `DW_AUTH_TOKEN` with the

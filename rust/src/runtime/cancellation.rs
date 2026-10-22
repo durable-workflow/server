@@ -239,17 +239,15 @@ where
             "pending" | "running" | "waiting"
         );
         if !closed {
-            // A terminated child resolves its parent with ChildRunTerminated,
-            // whose parent projections are not qualified yet. Only
-            // cancellation resolves a parent here.
-            let unsupported_links = Self::scalar(match command {
-                TerminalCommand::Cancel => "SELECT COUNT(*) FROM workflow_links WHERE child_workflow_run_id=$1 AND link_type!='child_workflow'",
-                TerminalCommand::Terminate => "SELECT COUNT(*) FROM workflow_links WHERE child_workflow_run_id=$1",
-            })
+            // A cancelled or terminated child resolves its parent with
+            // ChildRunCancelled or ChildRunTerminated, as in PHP.
+            let unsupported_links = Self::scalar(
+                "SELECT COUNT(*) FROM workflow_links WHERE child_workflow_run_id=$1 AND link_type!='child_workflow'",
+            )
             .bind(&run_id)
             .fetch_one(&mut *tx)
             .await?;
-            let pending_children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','failed')")
+            let pending_children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','terminated','failed')")
                 .bind(&run_id).fetch_one(&mut *tx).await?;
             let pending_queries =
                 self.query_entries(&mut tx)
@@ -377,9 +375,11 @@ where
         )
         .await?;
         Self::close_pending_updates(&mut tx, &run_id, None).await?;
-        if command == TerminalCommand::Cancel {
-            Self::resolve_child(&mut tx, &run, ChildResolution::Cancelled(&terminal), at).await?;
-        }
+        let resolution = match command {
+            TerminalCommand::Cancel => ChildResolution::Cancelled(&terminal),
+            TerminalCommand::Terminate => ChildResolution::Terminated(&terminal),
+        };
+        Self::resolve_child(&mut tx, &run, resolution, at).await?;
         tx.summary_changed(&run_id);
         tx.commit().await?;
         self.wake.notify_waiters();

@@ -2391,7 +2391,7 @@ where
                     // activities, timers and waits stay as they are, and an open
                     // abandoned child keeps running. Native cannot yet apply the
                     // other parent-close policies, so it still refuses those.
-                    let enforced = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','failed') AND parent_close_policy<>'abandon'")
+                    let enforced = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','terminated','failed') AND parent_close_policy<>'abandon'")
                     .bind(&run_id).fetch_one(&mut *tx).await?;
                     if enforced != 0 {
                         return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
