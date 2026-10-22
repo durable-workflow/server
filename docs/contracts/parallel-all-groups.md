@@ -21,7 +21,12 @@ normalization must not flatten away the worker's replay structure.
 Each activity/timer retains its own durable identity, original arguments, attempt,
 queue, deadlines and full group path throughout scheduling and resolution.
 An all-group emits no `SelectionResolved`: its worker evaluates the barrier from
-actual member outcomes. Each terminal member can resume that worker. Ready wakeups
+actual member outcomes. As in published PHP
+(`ParallelChildGroup::shouldWakeParentOn*Closure`, and Server's
+`ServiceModeParallelChildBarrierContractTest`), a member that closes
+successfully resumes the worker only once every member of every enclosing group
+has closed successfully. A member that fails or times out resumes it at once,
+and the group's later successful closures do not resume it again. Ready wakeups
 may coalesce, while a later completion must retain a wakeup when an earlier worker
 snapshot is leased. A waiting acknowledgment must not discard that later work.
 The workflow cannot complete while any durable member is still pending.
