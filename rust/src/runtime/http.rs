@@ -216,6 +216,8 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/system/activity-timeouts/pass", post(activity_timeout_pass))
         .route("/api/workers", get(list_workers))
         .route("/api/task-queues", get(list_task_queues))
+        .route("/api/service-catalog/{catalog}", get(service_catalog_list))
+        .route("/api/service-catalog/{catalog}/{id}", get(service_catalog_show))
         .route("/api/task-queues/{task_queue}", get(describe_task_queue))
         .route("/api/task-queues/{task_queue}/build-ids", get(task_queue_build_ids))
         .route(
@@ -568,6 +570,10 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
         return method == "POST";
     }
     if path.starts_with("/api/external-payloads/v1/") {
+        return method == "GET";
+    }
+    // The service catalog is namespace-scoped and, in native, always empty.
+    if path.starts_with("/api/service-catalog/") {
         return method == "GET";
     }
     // Schedules are namespace-scoped rows, as in PHP.
@@ -1858,6 +1864,29 @@ async fn fail_query(
 ) -> Result<Json<Value>> {
     runtime.finish_query(&task_id, body, true).await.map(Json)
 }
+/// `GET /api/service-catalog/{catalog}`: endpoints, services, operations or calls.
+async fn service_catalog_list(
+    Extension(runtime): Extension<Runtime>,
+    Path(catalog): Path<String>,
+    Query(query): Query<Vec<(String, String)>>,
+) -> Response {
+    match super::service_catalog::Catalog::from_path(&catalog) {
+        Some(catalog) => super::service_catalog::list(&query, catalog, runtime.namespace()).map(Json).into_response(),
+        None => unavailable().await,
+    }
+}
+
+/// `GET /api/service-catalog/{catalog}/{id}`.
+async fn service_catalog_show(
+    Path((catalog, _id)): Path<(String, String)>,
+    Query(query): Query<Vec<(String, String)>>,
+) -> Response {
+    match super::service_catalog::Catalog::from_path(&catalog) {
+        Some(catalog) => super::service_catalog::show(&query, catalog).map(Json).into_response(),
+        None => unavailable().await,
+    }
+}
+
 async fn unavailable() -> Response {
     refuse(
         StatusCode::NOT_IMPLEMENTED,

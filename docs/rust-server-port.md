@@ -120,7 +120,9 @@ These published PHP routes on this tree have no native handler yet, by family.
 - **Other families.**
   - Message streams.
   - Durable workflow stream items and close.
-  - Service endpoints and the service catalog.
+  - Service endpoints. (The service catalog reads from Server 2.11 are served:
+    native never holds catalog rows, so every list is PHP's empty page and every
+    identity its not-found answer; the `service-catalog` fixture checks 37 cases.)
   - Nexus operations.
   - Deployments.
   - Bridge adapters.

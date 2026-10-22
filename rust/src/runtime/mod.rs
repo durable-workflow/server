@@ -79,6 +79,7 @@ mod search_attribute_upserts;
 mod search_attributes;
 mod selection_summary;
 mod selections;
+mod service_catalog;
 mod sqlite;
 mod start_definition;
 mod start_request;

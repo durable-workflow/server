@@ -33,6 +33,8 @@ pub(crate) enum Rule {
     /// A size floor: a number, string length or item count, by type rule.
     Min(i64),
     Max(i64),
+    /// `between:min,max`: a size within both bounds, inclusive.
+    Between(i64, i64),
     In(&'static [&'static str]),
     /// `date`, for the ISO-8601 shapes `schedule_backfill::php_date` reads.
     Date,
@@ -209,6 +211,11 @@ fn message(rule: Rule, attribute: &str, rules: &[Rule], value: Option<&Value>) -
             "array" => format!("The {attribute} field must not have more than {limit} items."),
             _ => format!("The {attribute} field must not be greater than {limit} characters."),
         },
+        Rule::Between(min, max) => match kind {
+            "numeric" => format!("The {attribute} field must be between {min} and {max}."),
+            "array" => format!("The {attribute} field must have between {min} and {max} items."),
+            _ => format!("The {attribute} field must be between {min} and {max} characters."),
+        },
         Rule::NotBlank | Rule::Pattern(_) => format!("The {attribute} field format is invalid."),
         Rule::Date => format!("The {attribute} field must be a valid date."),
         Rule::Nullable | Rule::Sometimes => String::new(),
@@ -274,6 +281,9 @@ fn passes(rule: Rule, data: &Value, value: Option<&Value>, rules: &[Rule]) -> bo
         Rule::Max(limit) => value
             .and_then(|value| size(value, rules))
             .is_some_and(|size| size <= limit as f64),
+        Rule::Between(min, max) => value
+            .and_then(|value| size(value, rules))
+            .is_some_and(|size| size >= min as f64 && size <= max as f64),
     }
 }
 
