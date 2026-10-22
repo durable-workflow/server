@@ -12,13 +12,14 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
 
+use super::runtime_credentials::Principal;
 use super::{Result, Runtime, cancellation::TerminalCommand, refuse, store::capabilities};
 
 #[derive(Clone)]
 pub(super) struct AuthenticatedPrincipal {
     pub(super) role: &'static str,
-    pub(super) legacy_credential: bool,
     pub(super) legacy_full_access: bool,
+    pub(super) principal: super::runtime_credentials::Principal,
 }
 
 pub fn router(runtime: Runtime) -> Router {
@@ -50,6 +51,17 @@ pub fn router(runtime: Runtime) -> Router {
         .route(
             "/api/search-attributes",
             get(list_search_attributes).post(create_search_attribute),
+        )
+        .route("/api/runtime-credentials", get(list_runtime_credentials))
+        .route(
+            "/api/runtime-credentials/{credential_id}",
+            get(show_runtime_credential)
+                .put(upsert_runtime_credential)
+                .delete(revoke_runtime_credential),
+        )
+        .route(
+            "/api/runtime-credentials/{credential_id}/rotate",
+            post(rotate_runtime_credential),
         )
         .route(
             "/api/search-attributes/{name}",
@@ -306,7 +318,7 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         .and_then(|v| v.to_str().ok());
     let provided = authorization.and_then(|v| v.strip_prefix("Bearer "));
     let roles = ["worker", "operator", "admin"];
-    let authenticated = provided.and_then(|provided| {
+    let configured = provided.and_then(|provided| {
         // Match configured roles before the legacy credential, matching PHP's
         // collision precedence. Equal-length secret contents use constant-time
         // comparison; secrets never enter response or diagnostic values.
@@ -315,18 +327,42 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
                 .as_ref()
                 .is_some_and(|secret| bool::from(provided.as_bytes().ct_eq(secret.as_bytes())))
             {
-                return Some((role, false, false));
+                return Some((Principal::role(role, "token", false), false));
             }
         }
         bool::from(provided.as_bytes().ct_eq(runtime.token.as_bytes())).then(|| {
-            (
+            let mut principal = Principal::role(
                 "admin",
+                "token",
                 runtime.role_tokens.iter().all(Option::is_none),
-                true,
-            )
+            );
+            principal.subject = "legacy-token".into();
+            principal.claims = json!({"legacy_credential": true});
+            (principal, true)
         })
     });
-    let Some((role, legacy_full_access, legacy_credential)) = authenticated else {
+    // `ConfiguredAuthProvider::authenticate`: the none driver admits every
+    // request as the anonymous administrator; otherwise database runtime
+    // credentials follow the configured tokens.
+    let authenticated = if runtime.auth.anonymous {
+        let mut principal = Principal::role("admin", "none", true);
+        principal.subject = "anonymous".into();
+        Some((principal, false))
+    } else if configured.is_some() {
+        configured
+    } else if let (true, Some(provided)) = (runtime.auth.runtime_credentials, provided) {
+        match runtime.runtime_credential_principal(provided).await {
+            Ok(principal) => principal.map(|principal| (principal, false)),
+            Err(_) => {
+                return admission_error(request, worker, StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({"reason":"server_error",
+                        "message":"Database runtime credential authentication is enabled but unavailable."})).await;
+            }
+        }
+    } else {
+        None
+    };
+    let Some((principal, _legacy_credential)) = authenticated else {
         if payload {
             return admission_error(
                 request,
@@ -347,6 +383,12 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         )
         .await;
     };
+    let legacy_full_access = principal.legacy_full_access;
+    let role = match principal.primary_role() {
+        Some("worker") => "worker",
+        Some("operator") => "operator",
+        _ => "admin",
+    };
     let allowed_roles: &[&str] = if path == "/api/external-payloads/v1"
         && request.method() == Method::POST
         && request
@@ -365,15 +407,39 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         || path.starts_with("/api/namespaces/") && request.method() == Method::PUT
         // PHP's system routes are admin-only.
         || path.starts_with("/api/system/")
+        || path == "/api/runtime-credentials"
+        || path.starts_with("/api/runtime-credentials/")
     {
         &["admin"]
     } else {
         &["operator", "admin"]
     };
-    if !legacy_full_access && !allowed_roles.contains(&role) {
+    // `RouteAuthorizationResource`: the requested namespace, and the target
+    // of a namespace route.
+    let requested_namespace = match request.headers().get("x-namespace") {
+        Some(header) => header.to_str().unwrap_or("").to_lowercase(),
+        None => Query::<std::collections::HashMap<String, String>>::try_from_uri(request.uri())
+            .ok()
+            .and_then(|Query(fields)| fields.get("namespace").cloned())
+            .unwrap_or_else(|| "default".into())
+            .to_lowercase(),
+    };
+    let namespace_family = path == "/api/namespaces" || path.starts_with("/api/namespaces/");
+    // A namespace route names its target in the path, or else in `name`.
+    // PHP also reads `name` from a JSON body; only creating a namespace sends
+    // one, and that needs an admin, which native never binds to a tenant.
+    let target_namespace = match path.strip_prefix("/api/namespaces/").and_then(|rest| rest.split('/').next()) {
+        Some(segment) if !segment.is_empty() => Some(segment.trim().to_lowercase()),
+        _ if namespace_family => Query::<std::collections::HashMap<String, String>>::try_from_uri(request.uri())
+            .ok()
+            .and_then(|Query(fields)| fields.get("name").map(|name| name.trim().to_lowercase()))
+            .filter(|name| !name.is_empty()),
+        _ => None,
+    };
+    if !principal.allows(allowed_roles, &requested_namespace, target_namespace.as_deref(), namespace_family) {
         return admission_error(request, worker, StatusCode::FORBIDDEN, json!({
             "reason":"forbidden", "message":"Authenticated role is not allowed to access this endpoint.",
-            "role":role, "allowed_roles":allowed_roles,
+            "role":principal.primary_role(), "allowed_roles":allowed_roles,
         })).await;
     }
     let header = if worker {
@@ -477,8 +543,8 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
     }
     request.extensions_mut().insert(AuthenticatedPrincipal {
         role,
-        legacy_credential,
         legacy_full_access,
+        principal,
     });
     let mut response = next.run(request).await;
     response
@@ -488,6 +554,10 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
 }
 
 fn named_namespace_operation(method: &str, path: &str) -> bool {
+    // Runtime credentials are server-wide; the namespace only scopes a tenant.
+    if path == "/api/runtime-credentials" || path.starts_with("/api/runtime-credentials/") {
+        return true;
+    }
     if path == "/api/external-payloads/v1" {
         return method == "POST";
     }
@@ -641,6 +711,41 @@ async fn storage_test(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     Ok(Json(super::storage_test::storage_test(&runtime, body).await?))
+}
+
+async fn list_runtime_credentials(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    Ok(Json(runtime.list_runtime_credentials().await?))
+}
+
+async fn show_runtime_credential(
+    Extension(runtime): Extension<Runtime>,
+    Path(credential_id): Path<String>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.show_runtime_credential(&credential_id).await?))
+}
+
+async fn upsert_runtime_credential(
+    Extension(runtime): Extension<Runtime>,
+    Path(credential_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, body) = runtime.upsert_runtime_credential(&credential_id, body).await?;
+    Ok((status, Json(body)))
+}
+
+async fn rotate_runtime_credential(
+    Extension(runtime): Extension<Runtime>,
+    Path(credential_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.rotate_runtime_credential(&credential_id, body).await?))
+}
+
+async fn revoke_runtime_credential(
+    Extension(runtime): Extension<Runtime>,
+    Path(credential_id): Path<String>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.revoke_runtime_credential(&credential_id).await?))
 }
 
 async fn list_search_attributes(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {

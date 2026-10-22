@@ -77,7 +77,6 @@ CLI and Waterline use the first group.
   - Durable workflow stream appends and closes.
   - Service catalogs and endpoints.
   - Nexus operations.
-  - Runtime credentials.
   - Deployments.
   - Bridge adapters.
 ## Known gaps found in review
@@ -250,6 +249,12 @@ contract fixture before its correction.
   this with `422 termination_propagation_not_available` until the parent-side
   wait, child summary and failure projections for `ChildRunTerminated` have a
   fixture.
+- **Authentication beyond role tokens and runtime credentials.** Native
+  refuses principal tokens (`DW_PRINCIPAL_TOKENS`), custom providers and the
+  signature driver at startup. It still requires `DW_AUTH_TOKEN` with the
+  `none` driver or database runtime credentials, which published PHP does
+  not. Without a tenant-bound administrator, native does not read a namespace
+  route's target from a JSON body `name`.
 
 ## Contract and verification inventory
 

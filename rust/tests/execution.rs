@@ -59,6 +59,8 @@ mod named_signal_timeouts;
 mod signal_claims;
 #[path = "execution/parallel_cancellation.rs"]
 mod parallel_cancellation;
+#[path = "execution/runtime_credentials.rs"]
+mod runtime_credentials;
 #[path = "execution/selected_run_signals.rs"]
 mod selected_run_signals;
 
