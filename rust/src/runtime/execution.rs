@@ -341,6 +341,18 @@ impl Runtime {
     delegate!(repair_status() -> Result<Value>);
     delegate!(system_metrics() -> Result<Value>);
     delegate!(prometheus_metrics() -> Result<Value>);
+    delegate!(payload_cleanup_status(config: &super::operator_metrics::MetricsConfig) -> Result<Value>);
+    /// The namespace's payload cleanup pass, with its local storage when an
+    /// enabled local policy names it.
+    pub(crate) async fn payload_cleanup_pass(&self, limit: i64) -> Result<Value> {
+        let local = super::external_transport::local(self).await.ok();
+        let retention = self.external.abandoned_seconds;
+        match &*self.storage {
+            Storage::Sqlite(store) => store.payload_cleanup_pass(limit, retention, local.as_ref()).await,
+            Storage::Postgres(store) => store.payload_cleanup_pass(limit, retention, local.as_ref()).await,
+            Storage::MySql(store) => store.payload_cleanup_pass(limit, retention, local.as_ref()).await,
+        }
+    }
     delegate!(retention_status(limit: i64) -> Result<Value>);
     delegate!(retention_pass(limit: i64, run_ids: Vec<String>) -> Result<(Value, bool)>);
     delegate!(activity_timeout_status(limit: i64) -> Result<Value>);

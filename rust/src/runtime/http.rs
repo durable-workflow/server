@@ -205,6 +205,8 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/system/health", get(system_health))
         .route("/api/system/metrics", get(system_metrics).post(system_metrics))
         .route("/api/system/prometheus-metrics", get(prometheus_metrics))
+        .route("/api/system/external-payload-cleanup", get(payload_cleanup_status))
+        .route("/api/system/external-payload-cleanup/pass", post(payload_cleanup_pass))
         .route("/api/system/operator-dashboard", get(operator_dashboard))
         .route("/api/system/operator-dashboard/bounded", get(bounded_operator_dashboard))
         .route(
@@ -651,8 +653,12 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     if path == "/api/system/metrics" {
         return matches!(method, "GET" | "POST");
     }
-    if path == "/api/system/prometheus-metrics" {
+    if path == "/api/system/prometheus-metrics" || path == "/api/system/external-payload-cleanup" {
         return method == "GET";
+    }
+    // The pass reclaims only the namespace's own expired payloads.
+    if path == "/api/system/external-payload-cleanup/pass" {
+        return method == "POST";
     }
     if let Some(path) = path.strip_prefix("/api/workflows/") {
         let parts: Vec<_> = path.split('/').collect();
@@ -1488,6 +1494,18 @@ async fn system_metrics(Extension(runtime): Extension<Runtime>) -> Result<Json<V
 
 async fn prometheus_metrics(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
     Ok(Json(runtime.prometheus_metrics().await?))
+}
+
+async fn payload_cleanup_status(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    Ok(Json(runtime.payload_cleanup_status(&metrics_config(&runtime)).await?))
+}
+
+/// PHP answers 207 when the pass blocked any reference.
+async fn payload_cleanup_pass(Extension(runtime): Extension<Runtime>, body: axum::body::Bytes) -> Result<Response> {
+    let limit = super::payload_cleanup::pass_limit(&request_json(&body)?)?;
+    let report = runtime.payload_cleanup_pass(limit).await?;
+    let blocked = report["blocked"].as_i64().is_some_and(|blocked| blocked > 0);
+    Ok(pass_response((json!({"namespace": runtime.namespace(), "cleanup": report}), blocked)))
 }
 
 /// PHP answers 503 while a check reports an error.
