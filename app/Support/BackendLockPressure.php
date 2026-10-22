@@ -240,11 +240,11 @@ final class BackendLockPressure
     private static function hasConcurrencyErrorCode(array $errorInfo): bool
     {
         foreach ($errorInfo as $part) {
-            if (in_array($part, [5, 6, 1205, 1213, '40001', '40P01', '55P03'], true)) {
+            if (in_array($part, [5, 6, 1205, 1213, 3572, '40001', '40P01', '55P03'], true)) {
                 return true;
             }
 
-            if (is_string($part) && in_array((int) $part, [5, 6, 1205, 1213], true)) {
+            if (is_string($part) && in_array((int) $part, [5, 6, 1205, 1213, 3572], true)) {
                 return true;
             }
         }

@@ -296,9 +296,14 @@ jobs:
         if: always()
         env:
           DW_FIRST_RUN_SCOPE: release-first-run-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          LOGGING_TEST_PROJECT: release-first-run-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-logs
         run: |
+          docker ps -aq --filter "label=com.docker.compose.project=$LOGGING_TEST_PROJECT" | xargs -r docker rm -f >/dev/null 2>&1 || true
+          docker network ls -q --filter "label=com.docker.compose.project=$LOGGING_TEST_PROJECT" | xargs -r docker network rm >/dev/null 2>&1 || true
+          docker volume ls -q --filter "label=com.docker.compose.project=$LOGGING_TEST_PROJECT" | xargs -r docker volume rm -f >/dev/null 2>&1 || true
           docker rm -f \
             "${DW_FIRST_RUN_SCOPE}-server" \
+            "${DW_FIRST_RUN_SCOPE}-unbootstrapped" \
             "${DW_FIRST_RUN_SCOPE}-bootstrap" >/dev/null 2>&1 || true
           docker volume rm -f \
             "${DW_FIRST_RUN_SCOPE}-database" >/dev/null 2>&1 || true

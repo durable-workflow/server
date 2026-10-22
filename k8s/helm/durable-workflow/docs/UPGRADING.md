@@ -67,7 +67,27 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 0.3.0 / Server 2.11
+
+This chart advances the default Server minor version. Existing values retain
+their shape. Server adds the optional `activity_lease_renewal` capability and
+reads `DW_ACTIVITY_TASK_TIMEOUT` as the activity-task lease duration, in seconds
+from 1 to 86400, with the existing 300-second default.
+Review any existing override before upgrading: values previously ignored by
+the PHP Server now take effect.
+
+Lease maintenance requires a compatible worker that discovers the capability.
+It does not replace application heartbeats or extend an activity's authored
+timeout, execution deadline or workflow deadline. See
+[activity observation and lease maintenance](../../../../docs/worker-activity-observation.md)
+before changing worker shutdown or lease settings. Complete the ordinary
+database backup, bootstrap and worker rollout checks above.
+
 ### Chart 0.2.2 / Server 2.10
+
+This historical release crossed a Server minor version under a chart patch
+number, contrary to the policy above. Its published version stays immutable.
+Chart 0.3.0 resumes the stated minor-version policy for the next Server minor.
 
 This chart changes the default application image without removing or renaming
 chart values. Server bootstrap adds Core's nullable context columns to runs,
