@@ -23,10 +23,14 @@ async def main():
         info = await client.get_cluster_info()
         assert info['worker_protocol']['server_capabilities']['activity_lease_renewal'] is True
         started = time.monotonic()
+        arguments = [360 if mode == 'long' else 120, mode]
+        if language == 'rust':
+            # Rust's typed adapter accepts one request value, including tuples.
+            arguments = [arguments]
         handle = await client.start_workflow(
             workflow_type='qualification.runtime-lease-' + language,
             task_queue='lease-qualification-' + language,
-            workflow_id=os.environ['WORKFLOW_ID'], input=[360 if mode == 'long' else 120, mode],
+            workflow_id=os.environ['WORKFLOW_ID'], input=arguments,
             run_timeout_seconds=420, execution_timeout_seconds=420,
         )
         Path('/state/original.json').write_text(json.dumps({
