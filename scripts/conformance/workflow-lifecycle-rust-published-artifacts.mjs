@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { isOfficialCratesIoRegistrySource } from './crates-registry-source.mjs';
 import { isExactSemverRelease } from './version-identities.mjs';
 
 const RESULT_DIR = required('RESULT_DIR');
@@ -148,7 +149,7 @@ function provenance(lock, name, version = '') {
   const resolvedVersion = block.match(/version = "([^"]+)"/)?.[1] || '';
   const source = block.match(/source = "([^"]+)"/)?.[1] || '';
   const checksum = block.match(/checksum = "([0-9a-f]{64})"/)?.[1] || '';
-  if (!source.includes('crates.io') || !checksum) {
+  if (!isOfficialCratesIoRegistrySource(source) || !checksum) {
     throw new Error(`${name} did not resolve from crates.io with a registry checksum`);
   }
   return { package: name, resolved_version: resolvedVersion, registry_source: source, registry_checksum_sha256: checksum };
