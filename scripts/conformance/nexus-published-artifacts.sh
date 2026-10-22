@@ -2256,6 +2256,13 @@ async function startPythonSdkService(compose, versions) {
   const scriptPath = path.join(compose.runRoot, 'nexus-python-sdk-service.py');
   const containerName = `${compose.project}-python-sdk-service`;
   fs.writeFileSync(scriptPath, pythonPublishedServiceScript());
+  // The service venv takes the hash-pinned pip and trusts only its verified
+  // bundle before installing the SDK (GHSA-6q48-6c7w-9gw2).
+  const pipHelpers = path.join(compose.runRoot, 'dw-ci');
+  fs.mkdirSync(pipHelpers, {recursive: true});
+  for (const helper of ['bootstrap-patched-pip.sh', 'blocked_roots.py']) {
+    fs.copyFileSync(path.join(path.dirname(process.argv[5]), '..', 'ci', helper), path.join(pipHelpers, helper));
+  }
   dockerRunDetached([
     '--name', containerName,
     '--network', dockerComposeNetwork(compose.project),
@@ -2266,7 +2273,7 @@ async function startPythonSdkService(compose, versions) {
     'python:3.12-slim',
     'sh',
     '-lc',
-    `python -m venv /tmp/dw-python && . /tmp/dw-python/bin/activate && pip install --no-cache-dir durable-workflow==${JSON.stringify(versions['sdk-python']).slice(1, -1)} >/tmp/dw-python-pip.log 2>&1 && python /work/nexus-python-sdk-service.py`,
+    `python -m venv /tmp/dw-python && sh /work/dw-ci/bootstrap-patched-pip.sh /tmp/dw-python/bin/python >/tmp/dw-python-pip.log 2>&1 && . /tmp/dw-python/bin/activate && pip install --no-cache-dir durable-workflow==${JSON.stringify(versions['sdk-python']).slice(1, -1)} >/tmp/dw-python-pip.log 2>&1 && python /work/nexus-python-sdk-service.py`,
   ], path.join(resultDir, 'nexus-python-sdk-service-start.log'));
 
   const health = await waitForJson(`http://127.0.0.1:${port}/health`, 120000);

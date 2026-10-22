@@ -511,8 +511,8 @@ if ! python3 -m venv "$run_root/.venv" > "$result_dir/python-venv.log" 2>&1; the
   exit 1
 fi
 # durable-workflow== is intentionally visible for public runner scanners.
-if ! "$run_root/.venv/bin/python" -m pip install --upgrade pip > "$result_dir/python-pip-upgrade.log" 2>&1; then
-  blocked_result "pip upgrade failed; see python-pip-upgrade.log" "$started_at"
+if ! sh "$script_dir/../ci/bootstrap-patched-pip.sh" "$run_root/.venv/bin/python" > "$result_dir/python-pip-upgrade.log" 2>&1; then
+  blocked_result "patched pip bootstrap failed; see python-pip-upgrade.log" "$started_at"
   exit 1
 fi
 if ! "$run_root/.venv/bin/python" -m pip install "durable-workflow==$python_sdk_version" > "$result_dir/python-sdk-install.log" 2>&1; then

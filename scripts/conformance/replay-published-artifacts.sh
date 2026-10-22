@@ -1651,7 +1651,7 @@ fi
 # shellcheck disable=SC1091
 . "$run_root/python-venv/bin/activate"
 set +e
-python -m pip install --upgrade pip > "$result_dir/python-pip-upgrade.log" 2>&1
+sh "$script_dir/../ci/bootstrap-patched-pip.sh" "$run_root/python-venv/bin/python" > "$result_dir/python-pip-upgrade.log" 2>&1
 python_pip_status=$?
 mkdir -p "$run_root/python-distributions"
 python -m pip download --no-deps --dest "$run_root/python-distributions" \

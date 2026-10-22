@@ -3027,8 +3027,15 @@ run_python_sdk_shard() {
     write_python_sdk_shard_status runner_blocked "pip is required inside the disposable Python SDK shard environment; see python-sdk-pip-version.log." pip_unavailable true
     return 0
   fi
+  if ! sh "$script_dir/../ci/bootstrap-patched-pip.sh" "$venv_python" >> "$result_dir/python-sdk-pip-version.log" 2>&1; then
+    write_python_sdk_shard_status runner_blocked "The Python SDK shard could not install the patched pip; see python-sdk-pip-version.log." pip_unavailable true
+    return 0
+  fi
 
+  # --isolated skips the venv's pip.conf, so confine trust to pip's verified
+  # bundle here too.
   if ! PIP_CONFIG_FILE=/dev/null "$venv_python" -m pip --isolated install \
+    --use-deprecated=legacy-certs \
     --disable-pip-version-check \
     --no-input \
     --index-url https://pypi.org/simple \

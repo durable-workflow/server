@@ -231,6 +231,7 @@ prepare_focused_python_sdk() {
   local distribution
   mkdir -p "$distribution_dir"
   if python3 -m venv "$venv" >/dev/null 2>"$install_log" \
+    && sh "$script_dir/../ci/bootstrap-patched-pip.sh" "$venv/bin/python" >>"$install_log" 2>&1 \
     && "$venv/bin/python" -m pip download --disable-pip-version-check --no-deps \
       --dest "$distribution_dir" "durable-workflow==${DW_PYTHON_SDK_VERSION}" >>"$install_log" 2>&1 \
     && python3 "$script_dir/distribution_identities.py" record-unique \

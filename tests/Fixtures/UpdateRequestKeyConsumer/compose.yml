@@ -67,6 +67,7 @@ services:
     command:
       - |
         python -m venv /opt/venv
+        sh /dw-ci/bootstrap-patched-pip.sh /opt/venv/bin/python
         /opt/venv/bin/pip install --index-url https://pypi.org/simple --no-cache-dir --quiet durable-workflow==2.6.1
         exec sleep infinity
     tmpfs:
@@ -81,6 +82,7 @@ services:
       - ./consumer.py:/fixture/consumer.py:ro
       - ./definition.py:/fixture/definition.py:ro
       - ./intake_limits.py:/fixture/intake_limits.py:ro
+      - ../../../scripts/ci:/dw-ci:ro
     depends_on:
       api:
         condition: service_healthy

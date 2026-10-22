@@ -172,6 +172,23 @@ jobs:
             > workflow-package/.package-provenance
           rm -rf workflow-package/.git
 
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.13"
+
+      - name: Bootstrap patched pip trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10
+
+      # pip also trusts the runner's own store (truststore). Confine every
+      # later pip in this job to the bootstrapped pip's bundle once it is
+      # proven clean.
+      - name: Confine pip to its verified CA bundle
+        run: |
+          bundle="$(python -I -c 'from pip._vendor import certifi; print(certifi.where())')"
+          python scripts/ci/blocked_roots.py "$bundle"
+          { echo "PIP_CERT=$bundle"; echo "PIP_USE_DEPRECATED=legacy-certs"; } >> "$GITHUB_ENV"
+
       - name: Run perf harness result-gate tests
         run: |
           python3 -m py_compile scripts/perf/server_soak.py scripts/benchmark/capacity_suite.py scripts/benchmark/capacity_schema_publication.py scripts/benchmark/capacity_matrix.py tests/Unit/Support/server_soak_test.py tests/Unit/Support/capacity_benchmark_test.py benchmarks/capacity/v1/bindings/python/capacity_adapter.py benchmarks/capacity/v1/collectors/local-docker/local_docker_collector.py

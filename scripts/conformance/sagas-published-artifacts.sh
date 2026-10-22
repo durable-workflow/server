@@ -1102,7 +1102,7 @@ cp "$result_dir/server-image-digest.txt" "$run_root/server-image-digest.txt"
 python3 -m venv "$run_root/.venv"
 # shellcheck disable=SC1091
 . "$run_root/.venv/bin/activate"
-python -m pip install --upgrade pip
+sh "$script_dir/../ci/bootstrap-patched-pip.sh" "$run_root/.venv/bin/python"
 python -m pip install "durable-workflow==$python_version" httpx
 
 mkdir -p "$run_root/php-worker" "$run_root/cli/bin" "$run_root/waterline-app" "$run_root/logs"
