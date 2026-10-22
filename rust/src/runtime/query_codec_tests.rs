@@ -33,7 +33,7 @@ async fn original(timeout_seconds: i64) -> Original {
         lease_timeout_seconds: timeout_seconds,
         ..Default::default()
     });
-    runtime.register(json!({"worker_id":"codec-worker","task_queue":"test","runtime":"php",
+    runtime.register_unversioned(json!({"worker_id":"codec-worker","task_queue":"test","runtime":"php",
         "supported_workflow_types":["echo"],"supported_activity_types":[],"capabilities":["query_tasks"],
         "workflow_command_contracts":{"echo":{"queries":["state"],"query_contracts":[{"name":"state","parameters":[]}]}}})).await.unwrap();
     let started = runtime

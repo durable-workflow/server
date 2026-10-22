@@ -182,15 +182,12 @@ contract fixture before its correction.
   then did not stop within the 5-second shutdown budget. Forty local
   repetitions of that case alone passed. Find what holds the query thread
   after the fence before changing either side.
-- **Workflow definition routing (Server 2.10.0).** Native records the
-  definition fingerprint a start's worker cohort agrees on, as PHP does.
-  Published PHP 2.10.0 also routes a task for such a run by that
-  fingerprint. It prefers a live worker advertising the recorded definition.
-  Otherwise it offers the task only to a worker that advertises
-  `workflow_entry_arguments_validation`. It reports `definition_routing` in
-  describe, repair, debug and task queues, and stores each worker's protocol
-  version under `_worker_protocol_version` in its process metrics. Native
-  offers such a task to any worker and reports none of this.
+- **Workflow definition routing reports (Server 2.10.0).** Native routes a
+  pinned run's workflow task by its recorded definition, as PHP's
+  `WorkflowDefinitionRouting` does
+  ([checkpoint](rust-server-port-checkpoints/2026-10-22-definition-routing.md)).
+  Published PHP also reports that decision as `definition_routing` in
+  describe, repair, debug and task queues. Native does not report it yet.
 - **Start build-id pin.** Published PHP pins a new run to its start cohort's
   build id: a promoted build-id rollout, else the single build id among the
   live workers for the type, else among all the queue's live workers. Native

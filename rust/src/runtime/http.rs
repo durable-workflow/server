@@ -1340,7 +1340,7 @@ async fn register(
     }
     Ok((
         StatusCode::CREATED,
-        Json(worker_response(runtime.register(body).await?)),
+        Json(worker_response(runtime.register(body, Some(request_protocol(&headers)?)).await?)),
     ))
 }
 
@@ -1351,9 +1351,10 @@ fn worker_response(mut body: Value) -> Value {
 }
 async fn worker_heartbeat(
     Extension(runtime): Extension<Runtime>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    runtime.worker_heartbeat(body).await.map(Json)
+    runtime.worker_heartbeat(body, Some(request_protocol(&headers)?)).await.map(Json)
 }
 fn metrics_config(runtime: &Runtime) -> super::operator_metrics::MetricsConfig {
     super::operator_metrics::MetricsConfig {

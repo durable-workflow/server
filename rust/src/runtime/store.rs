@@ -1125,6 +1125,7 @@ where
         &self,
         body: Value,
         config: &super::QueryTaskConfig,
+        protocol: Option<&str>,
     ) -> Result<Value> {
         let worker_id = text(&body, "worker_id")?;
         let queue = text(&body, "task_queue")?;
@@ -1142,7 +1143,8 @@ where
             }
         }
         let runtime = text(&body, "runtime")?;
-        let registration = super::worker_management::Registration::parse(&body)?;
+        let mut registration = super::worker_management::Registration::parse(&body)?;
+        registration.record_protocol(protocol);
         let supplied_contracts = body
             .get("workflow_command_contracts")
             .map(|contracts| {
@@ -1478,6 +1480,17 @@ where
                                 <= now() - chrono::Duration::seconds(60)))
             {
                 continue;
+            }
+            // `matchesRecordedWorkflowDefinition`: a run pinned to its recorded
+            // definition goes to a worker that has it, while one is live.
+            if kind == "workflow" {
+                let required = DB::optional_string(&task, "compatibility")?
+                    .map(|build| build.trim().to_owned())
+                    .filter(|build| !build.is_empty());
+                let context = Self::definition_context(&mut tx, &run, Some(queue), required).await?;
+                if !self.definition_allows(&mut tx, &run, &worker, &context).await?.0 {
+                    continue;
+                }
             }
             if kind == "workflow"
                 && let Some(update_id) = task_payload["workflow_update_id"].as_str()

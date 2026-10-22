@@ -97,6 +97,10 @@ mod signal_rejection;
 mod cooperative_waits;
 #[path = "execution/child_policies.rs"]
 mod child_policies;
+#[path = "execution/definition_routing.rs"]
+mod definition_routing;
+/// `WorkflowDefinitionRouting::ENTRY_VALIDATION_CAPABILITY`.
+const ENTRY_VALIDATION: &str = "workflow_entry_arguments_validation";
 #[path = "execution/parent_close_policies.rs"]
 mod parent_close_policies;
 #[path = "execution/history_pages.rs"]

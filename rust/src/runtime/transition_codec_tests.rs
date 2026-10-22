@@ -21,7 +21,7 @@ async fn runtime(directory: &tempfile::TempDir) -> Runtime {
     .await
     .unwrap();
     runtime
-        .register(json!({"worker_id":"codec-worker","task_queue":"test","runtime":"php",
+        .register_unversioned(json!({"worker_id":"codec-worker","task_queue":"test","runtime":"php",
             "supported_workflow_types":["echo"],"supported_activity_types":[],
             "workflow_command_contracts":{"echo":{"signals":["payload"],"signal_contracts":[{"name":"payload",
                 "parameters":[{"name":"value","position":0,"type":"array","required":true,"variadic":false,
@@ -135,7 +135,7 @@ async fn fenced_deregistration_repair_does_not_wait_for_read_codec_capacity() {
     .await
     .unwrap();
     let registration = runtime
-        .register(json!({"worker_id":"codec-worker","task_queue":"test","runtime":"php",
+        .register_unversioned(json!({"worker_id":"codec-worker","task_queue":"test","runtime":"php",
             "supported_workflow_types":["echo"],"supported_activity_types":[]}))
         .await
         .unwrap();

@@ -21,6 +21,7 @@ mod children;
 mod command_context;
 mod command_requests;
 mod continuations;
+mod definition_routing;
 mod control_plane;
 mod cooperative;
 mod cross_kind_poll;
