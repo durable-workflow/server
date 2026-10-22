@@ -143,6 +143,8 @@ mod run_deadlines;
 mod operator_dashboard;
 #[path = "execution/waterline_reads.rs"]
 mod waterline_reads;
+#[path = "execution/task_queue_build_ids.rs"]
+mod task_queue_build_ids;
 #[path = "execution/start_timeouts.rs"]
 mod start_timeouts;
 

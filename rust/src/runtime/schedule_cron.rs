@@ -809,7 +809,7 @@ fn php_filter_int(value: &str) -> Option<i64> {
 }
 
 /// PHP 8's standard comparison of two strings, as `sort()` uses it.
-fn php_compare(left: &str, right: &str) -> Ordering {
+pub(crate) fn php_compare(left: &str, right: &str) -> Ordering {
     if php_is_numeric(left) && php_is_numeric(right) {
         let left: f64 = left.trim().parse().unwrap_or(0.0);
         let right: f64 = right.trim().parse().unwrap_or(0.0);

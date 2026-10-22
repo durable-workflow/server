@@ -909,6 +909,13 @@ impl Runtime {
             Storage::MySql(store) => store.describe_task_queue(queue, &self.queries).await,
         }
     }
+    pub(crate) async fn task_queue_build_ids(&self, queue: &str) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.task_queue_build_ids(queue, &self.queries).await,
+            Storage::Postgres(store) => store.task_queue_build_ids(queue, &self.queries).await,
+            Storage::MySql(store) => store.task_queue_build_ids(queue, &self.queries).await,
+        }
+    }
     pub(crate) async fn describe_worker(&self, worker_id: &str) -> Result<Value> {
         match &*self.storage {
             Storage::Sqlite(store) => store.describe_worker(worker_id, &self.queries).await,
