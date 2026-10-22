@@ -750,20 +750,25 @@ impl Runtime {
         if let Some(receipt) = receipt {
             return Ok(receipt);
         }
-        let result = super::envelope(&body, "result_envelope")?;
-        if result.len() > super::queries::RESULT_BYTES {
-            return Err(refuse(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "query_result_exceeds_budget",
-            ));
+        // A plain `result` without an envelope needs no decoding.
+        let plain_only = body.get("result").is_some_and(|value| !value.is_null())
+            && body.get("result_envelope").is_none_or(Value::is_null);
+        if !plain_only {
+            let result = super::envelope(&body, "result_envelope")?;
+            if result.len() > super::queries::RESULT_BYTES {
+                return Err(refuse(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "query_result_exceeds_budget",
+                ));
+            }
+            super::queries::decode(
+                self.signal_codec.clone(),
+                result,
+                false,
+                "invalid_query_result",
+            )
+            .await?;
         }
-        super::queries::decode(
-            self.signal_codec.clone(),
-            result,
-            false,
-            "invalid_query_result",
-        )
-        .await?;
         self.finish_query(task_id, body, false).await
     }
     pub(crate) async fn finish_query(

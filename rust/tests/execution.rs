@@ -77,6 +77,8 @@ mod worker_deregistration;
 
 #[path = "execution/worker_listing.rs"]
 mod worker_listing;
+#[path = "execution/query_worker_results.rs"]
+mod query_worker_results;
 #[path = "execution/query_open_tasks.rs"]
 mod query_open_tasks;
 #[path = "execution/retry_message_tasks.rs"]

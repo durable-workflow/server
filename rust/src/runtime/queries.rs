@@ -458,7 +458,7 @@ where
             match task["status"].as_str() {
                 Some("completed") => {
                     let mut answer = json!({"workflow_id":workflow_id,"run_id":run_id,"target_scope":"instance",
-                        "query_name":name,"result":null,"result_envelope":task["result_envelope"],"reason":null});
+                        "query_name":name,"result":task["result"],"result_envelope":task["result_envelope"],"reason":null});
                     if task["principal"].is_object() {
                         answer["principal"] = task["principal"].clone();
                     }
@@ -1153,6 +1153,7 @@ where
         let reason: Option<String>;
         let failure;
         let result;
+        let mut plain = None;
         if failed {
             let supplied = &body["failure"];
             if !supplied.is_object() || serde_json::to_vec(supplied)?.len() > 32 * 1024 {
@@ -1171,14 +1172,22 @@ where
             failure = Some(supplied.clone());
             result = None;
         } else {
-            let supplied = envelope(body, "result_envelope")?;
-            if supplied.len() > RESULT_BYTES {
+            // `completeQueryTask`: a worker may also send the plain `result`,
+            // which published PHP returns to the caller beside the envelope.
+            plain = body.get("result").filter(|value| !value.is_null()).cloned();
+            let supplied = if plain.is_none() || body.get("result_envelope").is_some_and(|value| !value.is_null()) {
+                Some(envelope(body, "result_envelope")?)
+            } else {
+                None
+            };
+            let plain_bytes = plain.as_ref().map(serde_json::to_vec).transpose()?.map_or(0, |bytes| bytes.len());
+            if supplied.as_ref().map_or(0, String::len) + plain_bytes > RESULT_BYTES {
                 return Err(refuse(
                     StatusCode::PAYLOAD_TOO_LARGE,
                     "query_result_exceeds_budget",
                 ));
             }
-            result = Some(wire(&supplied));
+            result = supplied.map(|supplied| wire(&supplied));
             failure = None;
             reason = None;
         }
@@ -1195,6 +1204,9 @@ where
         }
         if let Some(result) = result {
             task["result_envelope"] = result;
+        }
+        if let Some(plain) = plain {
+            task["result"] = plain;
         }
         task["terminal_receipt"] = json!({"lease_owner":owner,"attempt":attempt,
             "fingerprint":fingerprint,"decision":decision,"decided_at":authority::wire(decided_at)});
