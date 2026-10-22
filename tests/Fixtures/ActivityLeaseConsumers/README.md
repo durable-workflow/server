@@ -23,6 +23,14 @@ or `client.py rust long`. The callback blocks for 360 seconds under the normal
 one invocation/attempt, the exact int64/null/Unicode result, unchanged original
 deadlines and history prefixes, and zero application heartbeat events.
 
+Rust also accepts `client.py rust cooperative`: the same genuine 360-second
+callback yields to Tokio. Qualify it separately from the deliberately blocking
+`long` control. Both retain the original 420-second whole observer, including
+workflow start. `TASK_QUEUE` overrides the Rust Worker and client queue together;
+use separate queues/state directories to run the two controls concurrently.
+`WORKER_TOKEN` selects an explicit worker-role credential for Rust, with the
+historical synthetic token as the default. Neither option changes the SDK.
+
 For `loss`, use a separate named namespace and configured five-second lease.
 The original observer is 30 seconds and business deadlines remain 420. After the
 first actual invocation, kill only that callback-owner process while retaining
@@ -73,3 +81,12 @@ progress-heartbeat events, and stopped database hashes. A retry task retains its
 actual second-attempt counter; workflow tasks remain first-attempt. Include all
 unsuccessful originals and their reasons in the owning result record, even when
 a later corrected fixture has a separately passing cohort.
+
+For each new `loss` row, supply `owner_snapshots` as two explicit live snapshot
+filenames taken after the original owner process is confirmed absent and any
+bounded in-flight renewal is allowed to drain, before starting its replacement.
+The verifier requires the original task and attempt expiry to remain identical
+across those reads. The previous cohort's snapshot pair was not separately
+compared before deletion; this new requirement does not retroactively verify it.
+These additions are preparation until the normal published SDK and fresh
+originals are actually qualified.

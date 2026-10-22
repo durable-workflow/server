@@ -13,9 +13,11 @@ from durable_workflow import Client
 
 async def main():
     language, mode = sys.argv[1:]
-    assert language in ('python', 'rust') and mode in ('long', 'loss')
+    assert language in ('python', 'rust') and mode in ('long', 'cooperative', 'loss')
+    assert mode != 'cooperative' or language == 'rust'
     assert importlib.metadata.version('durable-workflow') == '2.8.0'
-    budget = 420 if mode == 'long' else 30
+    long_running = mode in ('long', 'cooperative')
+    budget = 420 if long_running else 30
     async with Client(
         os.environ['SERVER_URL'], token='synthetic',
         namespace=os.environ.get('NAMESPACE', 'default'),
@@ -23,24 +25,27 @@ async def main():
         info = await client.get_cluster_info()
         assert info['worker_protocol']['server_capabilities']['activity_lease_renewal'] is True
         started = time.monotonic()
-        arguments = [360 if mode == 'long' else 120, mode]
+        arguments = [360 if long_running else 120, mode]
         if language == 'rust':
             # Rust's typed adapter accepts one request value, including tuples.
             arguments = [arguments]
-        handle = await client.start_workflow(
-            workflow_type='qualification.runtime-lease-' + language,
-            task_queue='lease-qualification-' + language,
-            workflow_id=os.environ['WORKFLOW_ID'], input=arguments,
-            run_timeout_seconds=420, execution_timeout_seconds=420,
-        )
-        Path('/state/original.json').write_text(json.dumps({
-            'language': language, 'mode': mode, 'workflow_id': handle.workflow_id,
-            'run_id': handle.run_id, 'observer_seconds': budget,
-        }))
-        result = await handle.result(timeout=budget)
+        async def observe():
+            handle = await client.start_workflow(
+                workflow_type='qualification.runtime-lease-' + language,
+                task_queue=os.environ.get('TASK_QUEUE', 'lease-qualification-' + language),
+                workflow_id=os.environ['WORKFLOW_ID'], input=arguments,
+                run_timeout_seconds=420, execution_timeout_seconds=420,
+            )
+            Path('/state/original.json').write_text(json.dumps({
+                'language': language, 'mode': mode, 'workflow_id': handle.workflow_id,
+                'run_id': handle.run_id, 'observer_seconds': budget,
+            }))
+            return handle, await handle.result(timeout=budget)
+
+        handle, result = await asyncio.wait_for(observe(), timeout=budget)
         elapsed = time.monotonic() - started
         assert result == [9007199254740993, None, 'λ'], result
-        if mode == 'long':
+        if long_running:
             assert elapsed >= 360, elapsed
         else:
             assert elapsed < 30, elapsed
