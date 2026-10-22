@@ -142,6 +142,13 @@ impl Runtime {
         self.queries = Arc::new(config);
         self
     }
+    /// The configured history page sizes (DW_HISTORY_PAGE_SIZE_DEFAULT and _MAX).
+    pub(super) fn history_pages(&self) -> super::history_pages::HistoryPages {
+        super::history_pages::HistoryPages {
+            default: self.queries.history_page_size_default,
+            max: self.queries.history_page_size_max,
+        }
+    }
     /// Immutable configured-token cohort. Database transitions and scheduler
     /// stay shared; configuring credentials does not mutate process state.
     pub fn with_role_tokens(
@@ -932,6 +939,7 @@ impl Runtime {
         }
     }
     delegate!(poll(body: Value, kind: &'static str, protocol_version: &str) -> Result<Value>);
+    delegate!(poll_with_pages(body: Value, kind: &'static str, protocol_version: &str, pages: super::history_pages::HistoryPages) -> Result<Value>);
     delegate!(heartbeat_task(task_id: &str, body: Value) -> Result<Value>);
     pub(crate) async fn deliver_cancellation(&self, task_id: &str, body: Value, protocol: &str) -> Result<Value> {
         let codec = self.transition_codec.clone();
@@ -941,7 +949,7 @@ impl Runtime {
             Storage::MySql(store) => store.deliver_cancellation(task_id, body, protocol, codec).await,
         }
     }
-    delegate!(task_history(task_id: &str, body: Value) -> Result<Value>);
+    delegate!(task_history(task_id: &str, body: Value, pages: super::history_pages::HistoryPages) -> Result<Value>);
     delegate!(fail_workflow_task(task_id: &str, body: Value) -> Result<Value>);
     pub(crate) async fn complete_workflow(
         &self,

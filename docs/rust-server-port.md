@@ -118,13 +118,12 @@ contract fixture before its correction.
   payload size of an activity's result. Native enforces only the memo size.
   #612 tracks the rest.
 - **Environment settings.** Of PHP's 164 contract settings, native honors
-  38 and ignores 57 that change nothing it serves. It refuses to start on a
-  non-default value of the other 69
+  40 and ignores 57 that change nothing it serves. It refuses to start on a
+  non-default value of the other 67
   ([checkpoint](rust-server-port-checkpoints/2026-10-22-environment-contract.md)).
-  Several of those are cheap to honor: the history page sizes, repair
-  timing and the multi-node declaration. Native's defaults still differ from
-  PHP's for three honored settings: the worker poll timeout, history page
-  size and operation name length.
+  Several of those are cheap to honor: repair timing and the multi-node
+  declaration. Native's defaults still differ from PHP's for two honored
+  settings: the worker poll timeout and operation name length.
 - **Key order inside plain JSON input.** For input that is not an envelope,
   PHP encodes nested objects as Avro maps in request order; native encodes
   them with sorted keys. The decoded values are equal, but the blobs differ.

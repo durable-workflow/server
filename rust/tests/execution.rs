@@ -99,6 +99,8 @@ mod cooperative_waits;
 mod child_policies;
 #[path = "execution/parent_close_policies.rs"]
 mod parent_close_policies;
+#[path = "execution/history_pages.rs"]
+mod history_pages;
 #[path = "execution/child_cascade.rs"]
 mod child_cascade;
 #[path = "execution/completion_open_work.rs"]

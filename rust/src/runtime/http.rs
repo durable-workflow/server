@@ -1286,7 +1286,8 @@ async fn task_history(
     Path(task_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    runtime.task_history(&task_id, body).await.map(Json)
+    let pages = runtime.history_pages();
+    runtime.task_history(&task_id, body, pages).await.map(Json)
 }
 
 async fn register(
@@ -1498,8 +1499,9 @@ async fn poll_workflow(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
+    let pages = runtime.history_pages();
     runtime
-        .poll(body, "workflow", request_protocol(&headers)?)
+        .poll_with_pages(body, "workflow", request_protocol(&headers)?, pages)
         .await
         .map(Json)
 }

@@ -1194,6 +1194,18 @@ where
         kind: &'static str,
         protocol_version: &str,
     ) -> Result<Value> {
+        self.poll_with_pages(body, kind, protocol_version, Default::default())
+            .await
+    }
+
+    /// A workflow or activity poll, with the configured history page sizes.
+    pub(crate) async fn poll_with_pages(
+        &self,
+        body: Value,
+        kind: &'static str,
+        protocol_version: &str,
+        pages: super::history_pages::HistoryPages,
+    ) -> Result<Value> {
         text(&body, "worker_id")?;
         text(&body, "task_queue")?;
         let timeout = body
@@ -1202,15 +1214,13 @@ where
             .filter(|t| *t <= 60)
             .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_poll_timeout"))?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
-        if body
-            .get("history_page_size")
-            .is_some_and(|v| v.as_i64().is_none_or(|n| !(1..=1000).contains(&n)))
-        {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid_page_size",
-            ));
-        }
+        let requested = super::history_pages::requested_size(&body)?;
+        let encoding = if kind == "workflow" {
+            super::history_pages::requested(&body)?
+        } else {
+            None
+        };
+        let page = pages.poll(requested, encoding);
         let mut cross_kind = if timeout > 0 {
             self.poll_wake_snapshot(&body, kind).await?
         } else {
@@ -1226,8 +1236,11 @@ where
             // Register the notification before probing.
             let wake = self.wake.notified();
             if (std::mem::take(&mut first) || self.task_poll_ready(&body, kind).await?)
-                && let Some(task) = self.claim(&body, kind, protocol_version).await?
+                && let Some(mut task) = self.claim(&body, kind, protocol_version, page).await?
             {
+                // Compressed after the claim commits; a replayed receipt keeps
+                // the plain events and takes this request's encoding.
+                super::history_pages::compress(&mut task, encoding)?;
                 return Ok(
                     json!({"task": task, "poll_status": "leased", "server_capabilities": capabilities()}),
                 );
@@ -1292,6 +1305,7 @@ where
         body: &Value,
         kind: &str,
         protocol_version: &str,
+        page: Option<i64>,
     ) -> Result<Option<Value>> {
         let worker_id = text(body, "worker_id")?;
         let queue = text(body, "task_queue")?;
@@ -1591,9 +1605,10 @@ where
                         }
                     }
                 }
-                let page_size = body["history_page_size"].as_i64().unwrap_or(100);
-                let (events, next) =
-                    Self::history_page_connection(&mut tx, &run_id, 0, page_size).await?;
+                let (events, next) = match page {
+                    Some(size) => Self::history_page_connection(&mut tx, &run_id, 0, size).await?,
+                    None => (Self::whole_history(&mut tx, &run_id).await?, None),
+                };
                 let budget = Self::workflow_history_budget(
                     &mut tx,
                     &run_id,
@@ -1639,8 +1654,15 @@ where
         Ok(response)
     }
 
-    pub(crate) async fn task_history(&self, task_id: &str, body: Value) -> Result<Value> {
+    pub(crate) async fn task_history(
+        &self,
+        task_id: &str,
+        body: Value,
+        pages: super::history_pages::HistoryPages,
+    ) -> Result<Value> {
         let after = super::http::decode_cursor(body["next_history_page_token"].as_str());
+        let size = pages.continuation(super::history_pages::requested_size(&body)?);
+        let encoding = super::history_pages::requested(&body)?;
         let mut tx = self.begin_read().await?;
         let task = self.task_row(&mut tx, task_id).await?;
         if DB::string(&task, "task_type")? != "workflow" {
@@ -1648,7 +1670,7 @@ where
         }
         Self::workflow_task_guard(&mut tx, &task, &body).await?;
         let run_id = DB::string(&task, "workflow_run_id")?;
-        let (events, next) = Self::history_page_connection(&mut tx, &run_id, after, 100).await?;
+        let (events, next) = Self::history_page_connection(&mut tx, &run_id, after, size).await?;
         let run = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
             .bind(&run_id)
             .fetch_one(&mut *tx)
@@ -1658,6 +1680,7 @@ where
         let mut response = json!({"task_id":task_id,"workflow_task_attempt":body["workflow_task_attempt"],"history_events":events,"next_history_page_token":next});
         budget.write_task(&mut response);
         tx.commit().await?;
+        super::history_pages::compress(&mut response, encoding)?;
         Ok(response)
     }
 
@@ -3318,6 +3341,23 @@ where
             page_size,
         )
         .await
+    }
+
+    /// A poll's whole history, read in bounded pages: published PHP sends
+    /// every event unless the worker asks for pages.
+    async fn whole_history(connection: &mut DB::Connection, run_id: &str) -> Result<Vec<Value>> {
+        let mut events = Vec::new();
+        let mut after = 0;
+        loop {
+            let (page, next) = Self::history_page_connection(&mut *connection, run_id, after, 1000).await?;
+            if let Some(last) = page.last() {
+                after = last["sequence"].as_i64().unwrap_or(after);
+            }
+            events.extend(page);
+            if next.is_none() {
+                return Ok(events);
+            }
+        }
     }
 
     pub(super) async fn history_page_connection(
