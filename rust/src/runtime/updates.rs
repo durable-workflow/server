@@ -465,7 +465,8 @@ where
             "closed_at":DB::optional_instant(update,"closed_at")?,"reason":null,"rejection_reason":null,"validation_errors":[],
             "wait_for":wait_for,"wait_timed_out":timed_out,"wait_timeout_seconds":timeout
         });
-        Ok(super::control_plane::Operation::Update.response(response))
+        let name = response["update_name"].as_str().unwrap_or_default().to_owned();
+        Ok(super::control_plane::Operation::Update(&name).response(response))
     }
 
     pub(super) fn update_worker_supported(

@@ -224,6 +224,35 @@ async fn every_authored_deadline_fences_outcomes_and_resolves_once() {
             }
         }
         let history = resolution(&app, &started, "ActivityTimedOut").await;
+        if !activity.is_null() {
+            // Once the timeout closed the attempt, a late result gets PHP's
+            // stale attempt receipt, which the SDKs recognize and discard.
+            let path = |outcome: &str| {
+                format!("/api/worker/activity-tasks/{}/{outcome}", activity["task_id"].as_str().unwrap())
+            };
+            let late = request(&app, "POST", &path("complete"),
+                json!({"lease_owner":activity["lease_owner"],"activity_attempt_id":activity["activity_attempt_id"],
+                    "result":envelope(Payload::Long(-1))})).await;
+            assert_eq!(late.0, StatusCode::CONFLICT, "{field}: {}", late.1);
+            assert_eq!(
+                late.1,
+                json!({"task_id":activity["task_id"],"activity_attempt_id":activity["activity_attempt_id"],
+                    "outcome":"completed","recorded":false,"reason":"stale_attempt","next_task_id":null,
+                    "lease_owner":activity["lease_owner"],"activity_status":"failed","attempt_status":"failed",
+                    "task_status":"cancelled"}),
+                "{field}"
+            );
+            let late = request(&app, "POST", &path("fail"),
+                json!({"lease_owner":activity["lease_owner"],"activity_attempt_id":activity["activity_attempt_id"],
+                    "failure":{"type":"RuntimeException","message":"late","code":0}})).await;
+            assert_eq!(late.0, StatusCode::CONFLICT, "{field}: {}", late.1);
+            assert_eq!(
+                late.1,
+                json!({"task_id":activity["task_id"],"activity_attempt_id":activity["activity_attempt_id"],
+                    "outcome":"failed","recorded":false,"reason":"stale_attempt","next_task_id":null}),
+                "{field}"
+            );
+        }
         let timed = history
             .as_array()
             .unwrap()
@@ -423,12 +452,19 @@ async fn heartbeat_renews_only_progress_deadline_and_cannot_resurrect_elapsed_au
         "/api/worker/activity-tasks/{}/status",
         activity["task_id"].as_str().unwrap()
     );
-    assert_eq!(
-        request_protocol(&app, "POST", &status_path, base.clone(), "1.20")
-            .await
-            .1["can_continue"],
-        true
-    );
+    // Claims and status reads carry PHP's deadlines map in UTC microseconds.
+    let micros = |at: chrono::DateTime<chrono::FixedOffset>| {
+        json!(at.with_timezone(&chrono::Utc).to_rfc3339_opts(chrono::SecondsFormat::Micros, true))
+    };
+    let deadlines = &activity["deadlines"];
+    assert_eq!(deadlines["start_to_close"], micros(close), "{activity}");
+    assert_eq!(deadlines["heartbeat"], micros(at + chrono::Duration::seconds(10)));
+    let lifecycle = deadlines["schedule_to_close"].as_str().unwrap();
+    assert!(lifecycle.ends_with('Z') && lifecycle.len() == 27, "{lifecycle}");
+    assert!(deadlines.get("schedule_to_start").is_none(), "{deadlines}");
+    let status = request_protocol(&app, "POST", &status_path, base.clone(), "1.20").await;
+    assert_eq!(status.1["can_continue"], true, "{}", status.1);
+    assert_eq!(&status.1["deadlines"], deadlines);
     assert_eq!(
         running_deadlines(&database).await,
         initial,
@@ -534,10 +570,11 @@ async fn committed_activity_receipt_survives_elapsed_deadlines_and_conflicting_o
     );
     let mut conflicting = completion;
     conflicting["result"] = envelope(Payload::Long(-1));
-    assert_eq!(
-        request(&app, "POST", &path, conflicting).await.0,
-        StatusCode::CONFLICT
-    );
+    // A different result for the finished attempt is stale, as in PHP.
+    let refused = request(&app, "POST", &path, conflicting).await;
+    assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
+    assert_eq!(refused.1["reason"], "stale_attempt");
+    assert_eq!(refused.1["recorded"], false);
     assert_eq!(
         run_history(&app, &started["workflow_id"], &started["run_id"]).await,
         prefix

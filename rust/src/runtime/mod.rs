@@ -31,6 +31,7 @@ mod external_wait_summary;
 mod failure_commands;
 mod history_budget;
 mod history_export;
+mod input_envelope;
 mod history_presentation;
 mod http;
 mod laravel_validation;
@@ -46,6 +47,7 @@ pub mod postgres;
 mod previews;
 mod queries;
 mod query_authority;
+mod repair_candidates;
 mod retention;
 mod runtime_credentials;
 mod run_observation;
@@ -67,6 +69,7 @@ mod schedule_list;
 mod schedule_storage;
 mod schedules;
 mod schema;
+mod search_attribute_upserts;
 mod search_attributes;
 mod selection_summary;
 mod selections;
@@ -86,6 +89,7 @@ mod update_summary;
 mod updates;
 pub mod upgrade;
 mod visibility;
+mod visibility_query;
 mod wait_projection;
 mod wait_timeouts;
 mod worker_contracts;
@@ -97,6 +101,9 @@ mod workflow_task_guard;
 pub use execution::Runtime;
 pub use external_config::ExternalPayloadConfig;
 pub use http::router;
+
+/// The worker protocol version native implements and advertises.
+pub const WORKER_PROTOCOL_VERSION: &str = "1.20";
 pub use query_authority::QueryTaskConfig;
 
 use axum::{

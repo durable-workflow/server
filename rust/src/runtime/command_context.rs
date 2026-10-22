@@ -140,11 +140,20 @@ impl CommandRequest {
             headers.insert("x_correlation_id".into(), json!(value));
         }
         let headers = if headers.is_empty() { json!([]) } else { Value::Object(headers) };
+        // PHP hashes the headers in the order it lists them.
+        let fingerprint_headers = if headers.is_array() {
+            FingerprintHeaders::Empty([])
+        } else {
+            FingerprintHeaders::Present {
+                x_request_id: self.request_id.as_deref(),
+                x_correlation_id: self.correlation_id.as_deref(),
+            }
+        };
         let encoded = serde_json::to_vec(&Fingerprint {
             method: &self.method,
             path: &self.path,
             payload: &payload,
-            headers: &headers,
+            headers: fingerprint_headers,
         })
         .expect("JSON request fingerprint");
         let fingerprint = Sha256::digest(encoded)
@@ -182,12 +191,26 @@ impl CommandRequest {
     }
 }
 
+/// PHP's fingerprint document, in its key order.
 #[derive(Serialize)]
 struct Fingerprint<'a> {
     method: &'a str,
     path: &'a str,
     payload: &'a Value,
-    headers: &'a Value,
+    headers: FingerprintHeaders<'a>,
+}
+
+/// The recorded headers: PHP's empty array, or its keys in PHP's order.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum FingerprintHeaders<'a> {
+    Empty([&'a str; 0]),
+    Present {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        x_request_id: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        x_correlation_id: Option<&'a str>,
+    },
 }
 
 /// PHP encodes an empty array as `[]` whether it began as an object or not.
@@ -497,6 +520,25 @@ mod tests {
         assert_eq!(auth_status(&anonymous), "not_configured");
         assert_eq!(audit_context(&anonymous), json!({"subject":"anonymous","roles":["admin"],"legacy_full_access":true}));
         assert_eq!(server_principal(&principal("token", "  ", &["admin"], json!({}))), None);
+    }
+
+    #[test]
+    fn fingerprints_hash_php_s_document() {
+        let request = CommandRequest {
+            method: "POST".into(),
+            path: "/api/workflows".into(),
+            ip: None,
+            user_agent: None,
+            request_id: Some("req-d1".into()),
+            correlation_id: Some("corr-d1".into()),
+            namespace: "default".into(),
+            principal: principal("token", "legacy-token", &["admin"], json!({})),
+        };
+        // Published PHP 2.5.14 recorded this fingerprint for the same request.
+        let payload = json!({"workflow_id":"ctxd-1","workflow_type":"CtxProbe","task_queue":"ctx-q","input":[1],
+            "principal":"mallory","principal_id":"mallory","principal_type":"attacker","actor":"mallory","user":"mallory"});
+        assert_eq!(request.request_metadata(&payload, None)["fingerprint"],
+            "sha256:9f91ac2be4f1b6465385894ed899b4a52f3a15f92f0d6d1de2e2c1dd81f0340f");
     }
 
     #[test]

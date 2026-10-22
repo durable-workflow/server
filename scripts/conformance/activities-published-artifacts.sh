@@ -5952,7 +5952,7 @@ const DISTRIBUTION_COMPONENTS = {
   'sdk-python': { kind: 'pypi', package: 'durable-workflow', versionKey: 'sdk-python' },
 };
 
-const DISTRIBUTION_VERSION_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$/;
+const DISTRIBUTION_VERSION_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$/;
 const DISTRIBUTION_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 
 const DEFAULT_EXPECTED_BEHAVIOR = {

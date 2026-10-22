@@ -6,7 +6,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
-use super::{Result, RuntimeError, backend::Backend, refuse, store::Store};
+use std::collections::BTreeMap;
+
+use super::{Result, RuntimeError, backend::Backend, refuse, search_attribute_upserts::Typed, store::Store};
 
 #[derive(Default, Deserialize)]
 pub(super) struct VisibilityQuery {
@@ -21,9 +23,14 @@ pub(super) struct VisibilityFilter {
     workflow_type: Option<String>,
     status: Option<String>,
     pattern: Option<String>,
+    /// A structured query, which replaces the free-text `pattern`.
+    visibility: Option<super::visibility_query::Parsed>,
     limit: i64,
     offset: i64,
 }
+
+/// Candidate runs read per page while a structured query filters them.
+const QUERY_SCAN_PAGE: i64 = 500;
 
 impl VisibilityQuery {
     pub(super) fn validate(self) -> Result<VisibilityFilter> {
@@ -49,13 +56,14 @@ impl VisibilityQuery {
                 })?,
             None => 50,
         };
-        let term = self.query.as_deref().unwrap_or("").trim();
-        if term.len() > 4096 || term.contains(['=', '<', '>', '"', '\'']) {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "unsupported_visibility_query",
-            ));
-        }
+        // `WorkflowVisibilityQuery::apply`; a plain term keeps the free-text
+        // workflow ID and business key search.
+        let term = self.query.as_deref().unwrap_or("").trim_matches([' ', '\t', '\n', '\r', '\0', '\x0b']);
+        let visibility = if term.is_empty() {
+            None
+        } else {
+            super::visibility_query::parse(term).map_err(query_failure)?
+        };
         let offset = self
             .next_page_token
             .as_deref()
@@ -66,7 +74,8 @@ impl VisibilityQuery {
         Ok(VisibilityFilter {
             workflow_type: self.workflow_type,
             status: self.status,
-            pattern: (!term.is_empty()).then(|| format!("%{term}%")),
+            pattern: (!term.is_empty() && visibility.is_none()).then(|| format!("%{term}%")),
+            visibility,
             limit,
             offset,
         })
@@ -91,6 +100,14 @@ pub(super) fn request_contract() -> Value {
 
 fn response(body: Value) -> Value {
     super::control_plane::Operation::List.response(body)
+}
+
+fn query_failure(message: String) -> RuntimeError {
+    RuntimeError::Protocol {
+        status: StatusCode::UNPROCESSABLE_ENTITY,
+        response: response(json!({"reason":"validation_failed", "message":message,
+            "errors":{"query":[message]}, "validation_errors":{"query":[message]}})),
+    }
 }
 
 fn validation(field: &'static str, message: &'static str) -> RuntimeError {
@@ -130,10 +147,10 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
-    pub(super) async fn list_workflows(&self, filter: &VisibilityFilter) -> Result<Value> {
+    async fn visibility_page(&self, filter: &VisibilityFilter, limit: i64, offset: i64) -> Result<Vec<DB::Row>> {
         // PHP's index filters cancelled and terminated runs by their exact
         // status and the other values by status bucket.
-        let rows = Self::query(DB::VISIBILITY_PAGE)
+        Ok(Self::query(DB::VISIBILITY_PAGE)
             .bind(self.namespace.as_ref())
             .bind(self.namespace.as_ref())
             .bind(filter.workflow_type.as_deref())
@@ -144,24 +161,113 @@ where
             .bind(filter.pattern.as_deref())
             .bind(filter.pattern.as_deref())
             .bind(filter.pattern.as_deref())
-            .bind(filter.limit + 1)
-            .bind(filter.offset)
+            .bind(limit)
+            .bind(offset)
             .fetch_all(&self.pool)
-            .await?;
+            .await?)
+    }
+
+    /// The runs a structured query selects, in list order, until one past
+    /// the requested page.
+    async fn query_matches(
+        &self,
+        filter: &VisibilityFilter,
+        parsed: &super::visibility_query::Parsed,
+    ) -> Result<Vec<DB::Row>> {
+        let definitions = Self::query("SELECT name,type FROM search_attribute_definitions WHERE namespace=$1")
+            .bind(self.namespace.as_ref())
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(|row| Ok((DB::string(row, "name")?, DB::string(row, "type")?)))
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        let compiled = super::visibility_query::compile(parsed, &definitions, &self.namespace)
+            .map_err(query_failure)?;
+        let mut attributes: BTreeMap<String, BTreeMap<String, Typed>> = BTreeMap::new();
+        for key in compiled.keys() {
+            let rows = Self::query(DB::SEARCH_ATTRIBUTE_KEY_ROWS)
+                .bind(self.namespace.as_ref())
+                .bind(key.as_str())
+                .fetch_all(&self.pool)
+                .await?;
+            for row in rows {
+                if let Some(value) = Self::typed_value(&row)? {
+                    attributes
+                        .entry(DB::string(&row, "workflow_run_id")?)
+                        .or_default()
+                        .insert(DB::string(&row, "attribute_key")?, value);
+                }
+            }
+        }
+        let wanted = (filter.offset.saturating_add(filter.limit).saturating_add(1)) as usize;
+        let none = BTreeMap::new();
+        let mut matches = Vec::new();
+        let mut scanned = 0;
+        loop {
+            let rows = self.visibility_page(filter, QUERY_SCAN_PAGE, scanned).await?;
+            let exhausted = (rows.len() as i64) < QUERY_SCAN_PAGE;
+            scanned += rows.len() as i64;
+            for row in rows {
+                let status = DB::string(&row, "status")?;
+                let run_id = DB::string(&row, "id")?;
+                let fields = super::visibility_query::RunFields {
+                    workflow_type: DB::string(&row, "workflow_type")?,
+                    workflow_id: DB::string(&row, "workflow_instance_id")?,
+                    run_id: run_id.clone(),
+                    queue: DB::string(&row, "queue")?,
+                    compatibility: DB::optional_string(&row, "compatibility")?,
+                    started_at: DB::optional_instant(&row, "started_at")?,
+                    closed_at: DB::optional_instant(&row, "closed_at")?,
+                    status_bucket: status_bucket(&status)?.to_owned(),
+                    status,
+                };
+                if compiled.matches(&fields, attributes.get(&run_id).unwrap_or(&none)) {
+                    matches.push(row);
+                    if matches.len() >= wanted {
+                        return Ok(matches);
+                    }
+                }
+            }
+            if exhausted {
+                return Ok(matches);
+            }
+        }
+    }
+
+    pub(super) async fn list_workflows(&self, filter: &VisibilityFilter) -> Result<Value> {
+        let rows = match &filter.visibility {
+            Some(parsed) => self
+                .query_matches(filter, parsed)
+                .await?
+                .into_iter()
+                .skip(filter.offset.max(0) as usize)
+                .collect(),
+            None => self.visibility_page(filter, filter.limit + 1, filter.offset).await?,
+        };
         let more = rows.len() > filter.limit as usize;
         let mut workflows = Vec::new();
+        let mut connection = self.pool.acquire().await?;
         for row in rows.iter().take(filter.limit as usize) {
             if DB::optional_string(row, "compatibility")?.is_some() {
                 return Err(refuse(StatusCode::CONFLICT, "unqualified_build_visibility"));
             }
             let status = DB::string(row, "status")?;
             let bucket = status_bucket(&status)?;
-            workflows.push(json!({"workflow_id":DB::string(row,"workflow_instance_id")?, "run_id":DB::string(row,"id")?,
+            let run_id = DB::string(row, "id")?;
+            // `getTypedSearchAttributes`; PHP renders an empty set as `[]`.
+            let typed = Self::typed_rows(&mut connection, &run_id).await?;
+            let search_attributes = if typed.is_empty() {
+                json!([])
+            } else {
+                Value::Object(typed.into_iter().map(|(key, value)| (key, value.json())).collect())
+            };
+            workflows.push(json!({"workflow_id":DB::string(row,"workflow_instance_id")?, "run_id":run_id,
                 "workflow_type":DB::string(row,"workflow_type")?, "business_key":DB::optional_string(row,"business_key")?,
                 "status":status, "status_bucket":bucket, "task_queue":DB::string(row,"queue")?,
                 "is_terminal":bucket!="running", "compatibility":null, "compatibility_status":"compatible",
                 "compatibility_supported_in_fleet":true, "compatibility_fleet_reason":null,
-                "started_at":DB::instant(row,"started_at")?, "closed_at":DB::optional_instant(row,"closed_at")?, "search_attributes":[]}));
+                "started_at":DB::instant(row,"started_at")?, "closed_at":DB::optional_instant(row,"closed_at")?,
+                "search_attributes":search_attributes}));
         }
         let next =
             more.then(|| STANDARD.encode((filter.offset.saturating_add(filter.limit)).to_string()));

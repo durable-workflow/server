@@ -43,6 +43,12 @@
     authentication and request fields.
   - **Cooperative cancellation.** Its requester is the context's principal,
     as `WorkflowStub` derives it.
+  - **Unknown fields.** Cancel, terminate and cooperative cancellation
+    refused any body field besides their own with
+    `422 unsupported_request_field`. Published PHP validates only its rules'
+    fields and ignores the rest, as a probe of all three showed. Native now
+    does too, so a client's `request_id` and a gateway's identity fields no
+    longer refuse the command.
   - **Forwarded headers.** Native never records forwarded attribution
     headers. It refuses to start with
     `DW_TRUST_FORWARDED_ATTRIBUTION_HEADERS` on, rather than drop them.
@@ -55,4 +61,28 @@
     change in #619.
   - **Server address.** Without a peer address, as in in-process tests,
     native leaves out `ip`. PHP always has one.
-- **Verification.** See the pull request for the suites and the PHP probe.
+  - **Described command previews.** PHP's described commands also carry
+    `payload_preview_omitted` and, for a cancel or terminate, the decoded
+    `reason`. Native's never did; that is part of the description sweep.
+- **Verification.**
+  - **Integration tests**, on SQLite, PostgreSQL and MySQL:
+    - Runtime credentials with forged body fields and headers: start,
+      signal, worker completion, cancel and terminate. The history names the
+      operator and the worker, and its snapshots and the run description
+      carry PHP's fields. No forged value appears.
+    - The `none` driver: every event names the anonymous server principal.
+  - **Unit tests**, four: principal derivation, worker attribution, snapshot
+    fields, and a fingerprint equal to the one published PHP recorded for the
+    same request.
+  - **Suites.** The full SQLite suite passes. On PostgreSQL and MySQL, the
+    command context, cancellation, termination, cooperative, repair,
+    credential and schedule tests pass (89 each).
+  - **Differential against published PHP 2.5.14.** In the Waterline harness,
+    two workflows got a start, signal, cancel or terminate with forged
+    fields, request and correlation headers. The command snapshots of all
+    nine history events were identical to PHP's apart from ids, times and
+    route names, fingerprints included. The described commands were
+    identical apart from `payload_preview_omitted` and `reason`.
+  - **Found by the differential.** The first run showed every fingerprint
+    differing. PHP hashes `x_request_id` before `x_correlation_id`; native's
+    sorted map put them in the other order.

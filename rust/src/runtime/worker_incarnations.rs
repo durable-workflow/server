@@ -64,6 +64,23 @@ pub(super) async fn repair_payload(
     liveness_state: &'static str,
     wait_kind: Option<&'static str>,
 ) -> Result<String> {
+    repair_command_payload(
+        codec,
+        Some(liveness_state.to_owned()),
+        wait_kind.map(str::to_owned),
+        Some((task_id, "workflow".to_owned())),
+    )
+    .await
+}
+
+/// A repair command's payload: the run's liveness and wait kind, and the
+/// task the repair dispatched, each null when absent.
+pub(super) async fn repair_command_payload(
+    codec: Arc<Semaphore>,
+    liveness_state: Option<String>,
+    wait_kind: Option<String>,
+    task: Option<(String, String)>,
+) -> Result<String> {
     let permit = codec
         .acquire_owned()
         .await
@@ -72,22 +89,13 @@ pub(super) async fn repair_payload(
         let _permit = permit;
         let codec = crate::codec::ValueCodec::new()
             .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "repair_codec_unavailable"))?;
+        let text = |value: Option<String>| value.map_or(crate::codec::Value::Null, crate::codec::Value::String);
+        let (task_id, task_type) = task.unzip();
         let value = crate::codec::Value::Map(std::collections::BTreeMap::from([
-            (
-                "liveness_state".into(),
-                crate::codec::Value::String(liveness_state.into()),
-            ),
-            (
-                "wait_kind".into(),
-                wait_kind.map_or(crate::codec::Value::Null, |kind| {
-                    crate::codec::Value::String(kind.into())
-                }),
-            ),
-            ("task_id".into(), crate::codec::Value::String(task_id)),
-            (
-                "task_type".into(),
-                crate::codec::Value::String("workflow".into()),
-            ),
+            ("liveness_state".into(), text(liveness_state)),
+            ("wait_kind".into(), text(wait_kind)),
+            ("task_id".into(), text(task_id)),
+            ("task_type".into(), text(task_type)),
         ]));
         codec
             .encode(&value)

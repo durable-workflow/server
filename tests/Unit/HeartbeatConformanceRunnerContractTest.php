@@ -554,7 +554,7 @@ SH);
         $this->assertStringContainsString('export async function directRelayRequest(', $relay);
         $this->assertStringContainsString('function writeRelayPid(pidFile)', $relay);
         $this->assertStringContainsString('export function stopHeartbeatRelay(', $relay);
-        $this->assertStringContainsString('fetchImpl = globalThis.fetch', $relay);
+        $this->assertStringContainsString('requestImpl = directHttpRequest', $relay);
         $this->assertStringNotContainsString("spawn('docker'", $relay);
         $this->assertStringNotContainsString("'--header'", $relay);
         $this->assertStringContainsString(

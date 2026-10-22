@@ -5,7 +5,7 @@
 //! tenant).
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
@@ -282,19 +282,20 @@ where
             .fetch_optional(&mut *tx)
             .await?
         {
-            let same_claims = DB::optional_document_row(&row, "claims")?.unwrap_or_else(|| json!({}));
-            let same_claims = if same_claims.as_object().is_some_and(Map::is_empty) || same_claims == json!([]) {
-                json!({})
-            } else {
-                same_claims
+            // PHP stores empty claims as an empty array.
+            let stored_claims: Value = match DB::optional_document_row(&row, "claims")? {
+                Some(Value::Array(items)) if items.is_empty() => json!({}),
+                Some(claims) => claims,
+                None => json!({}),
             };
+            let stored_expiry: Option<DateTime<Utc>> = DB::optional_instant(&row, "expires_at")?;
             let matches = DB::optional_string(&row, "name")? == attributes.name
                 && DB::string(&row, "subject")? == attributes.subject
                 && DB::document_row(&row, "roles")? == json!(attributes.roles)
                 && DB::string(&row, "tenant")? == attributes.tenant
-                && same_claims == attributes.claims
+                && stored_claims == attributes.claims
                 && DB::string(&row, "token_hash")? == attributes.token_hash
-                && DB::optional_instant(&row, "expires_at")? == attributes.expires_at
+                && stored_expiry == attributes.expires_at
                 && DB::optional_instant(&row, "revoked_at")?.is_none();
             tx.commit().await?;
             if !matches {

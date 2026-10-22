@@ -12,6 +12,7 @@
 use super::{
     Result,
     backend::Backend,
+    repair_candidates::{self, ScopeRow},
     retention,
     store::{Store, now},
 };
@@ -1079,6 +1080,27 @@ where
         }))
     }
 
+    /// `GET /api/system/repair`: native's repair policy, and the candidates
+    /// published PHP's repair pass would select across every namespace.
+    pub(super) async fn repair_status(&self) -> Result<Value> {
+        let at = now();
+        let bound = whole_second(at);
+        let cutoff = whole_second(at - Duration::seconds(REDISPATCH_AFTER_SECONDS));
+        let mut tasks = Self::query(repair_candidates::TASK_SCOPES);
+        for time in [bound, bound, bound, cutoff, cutoff, cutoff, bound] {
+            tasks = tasks.bind(DB::bind_time(time));
+        }
+        let tasks = scope_rows::<DB>(tasks.fetch_all(&self.pool).await?)?;
+        let runs = scope_rows::<DB>(Self::query(repair_candidates::RUN_SCOPES).fetch_all(&self.pool).await?)?;
+        let oldest_run = match Self::query(repair_candidates::OLDEST_RUN).fetch_optional(&self.pool).await? {
+            Some(row) => DB::optional_instant(&row, "wait_started_at")?
+                .or(DB::optional_instant(&row, "started_at")?)
+                .or(DB::optional_instant(&row, "created_at")?),
+            None => None,
+        };
+        Ok(json!({"policy": repair_policy(), "candidates": repair_candidates::snapshot(&tasks, &runs, oldest_run, at)}))
+    }
+
     /// `HistoryRetentionEnforcer::retentionPolicy` for this namespace.
     async fn retention_policy(&self) -> Result<retention::Policy> {
         let row = Self::query("SELECT retention_mode,retention_days FROM workflow_namespaces WHERE name=$1")
@@ -1380,6 +1402,25 @@ fn backend_capabilities(now: DateTime<Utc>, connection: &str) -> Value {
 }
 
 /// Native claims ready tasks on each poll; it runs no repair loop.
+/// The grouped candidate rows of one repair candidate query.
+fn scope_rows<DB: Backend>(rows: Vec<DB::Row>) -> Result<Vec<ScopeRow>>
+where
+    usize: ColumnIndex<DB::Row>,
+    for<'r> i64: Decode<'r, DB>,
+{
+    rows.iter()
+        .map(|row| {
+            Ok(ScopeRow {
+                connection: DB::optional_string(row, "connection")?,
+                queue: DB::optional_string(row, "queue")?,
+                compatibility: DB::optional_string(row, "compatibility")?,
+                count: usize::try_from(DB::number(row, "candidate_count")?).unwrap_or(0),
+                oldest: DB::optional_instant(row, "oldest_candidate_at")?,
+            })
+        })
+        .collect()
+}
+
 fn repair_policy() -> Value {
     json!({
         "redispatch_after_seconds": REDISPATCH_AFTER_SECONDS,

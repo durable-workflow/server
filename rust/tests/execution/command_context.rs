@@ -99,7 +99,14 @@ async fn commands_and_history_record_the_authenticated_principal_not_forged_iden
     let task = &polled["task"];
     let (status, body) = call(&app, Some(WORKER_TOKEN), "POST",
         &format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap()),
-        completion(task, json!([{"type":"complete_workflow","result":envelope(Payload::Long(9))}])), &FORGED_HEADERS).await;
+        {
+            let mut body = completion(task, json!([{"type":"complete_workflow","result":envelope(Payload::Long(9))}]));
+            for field in ["principal", "principal_id", "actor", "user"] {
+                body[field] = json!("mallory");
+            }
+            body["principal_type"] = json!("attacker");
+            body
+        }, &FORGED_HEADERS).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
     let events = history(&app, Some("test-token"), "ctx-run", started["run_id"].as_str().unwrap()).await;

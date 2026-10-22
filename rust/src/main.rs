@@ -2,7 +2,8 @@ use std::{env, error::Error, net::SocketAddr, str::FromStr};
 
 use durable_workflow_server::database_tls::{self, Driver, Settings};
 use durable_workflow_server::runtime::{
-    Runtime, RuntimeError, mysql::MySqlStorage, postgres::PostgresStorage, router,
+    Runtime, RuntimeError, WORKER_PROTOCOL_VERSION, mysql::MySqlStorage, postgres::PostgresStorage,
+    router,
 };
 use sqlx::mysql::MySqlConnectOptions;
 use sqlx::postgres::PgConnectOptions;
@@ -12,6 +13,85 @@ use sqlx::postgres::PgConnectOptions;
 fn tls_settings(driver: Driver) -> Result<(Settings, Option<String>), Box<dyn Error>> {
     let (settings, url) = database_tls::resolve(driver, |key| env::var(key).ok())?;
     Ok((settings, url.map(|url| url.without_tls)))
+}
+
+/// Published PHP boots while its database is unavailable
+/// (`server:assert-php-database --allow-unavailable`), so an unchanged
+/// Compose file may start the server before the database accepts
+/// connections. Native waits for the database instead of exiting. Only a
+/// database that cannot be reached yet is awaited; a refused login or a
+/// configuration error still stops the process.
+async fn open_when_reachable<F, Fut>(open: F) -> Result<Option<Runtime>, RuntimeError>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<Runtime, RuntimeError>>,
+{
+    // One listener covers every attempt: the pool retries a refused
+    // connection inside each one, and a stop request must not wait for it.
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
+    let mut delay = std::time::Duration::from_millis(250);
+    let mut waiting = false;
+    loop {
+        let attempt = tokio::select! {
+            result = open() => result,
+            () = &mut shutdown => return Ok(None),
+        };
+        match attempt {
+            Err(error) if unreachable(&error) => {
+                if !waiting {
+                    eprintln!("database unavailable ({error}); waiting for it to accept connections");
+                    waiting = true;
+                }
+                tokio::select! {
+                    () = tokio::time::sleep(delay) => {}
+                    () = &mut shutdown => return Ok(None),
+                }
+                delay = (delay * 2).min(std::time::Duration::from_secs(5));
+            }
+            Err(error) => return Err(error),
+            Ok(runtime) => {
+                if waiting {
+                    eprintln!("database reachable");
+                }
+                return Ok(Some(runtime));
+            }
+        }
+    }
+}
+
+/// A database that is not accepting connections yet: the connection is
+/// refused or drops, its host does not resolve yet, the pool times out, or
+/// PostgreSQL is still starting (SQLSTATE 57P03).
+fn unreachable(error: &RuntimeError) -> bool {
+    fn retryable(error: &sqlx::Error) -> bool {
+        match error {
+            sqlx::Error::Io(_) | sqlx::Error::PoolTimedOut => true,
+            sqlx::Error::Database(error) => error.code().as_deref() == Some("57P03"),
+            _ => false,
+        }
+    }
+    match error {
+        RuntimeError::Database(error) => retryable(error),
+        RuntimeError::Migration(sqlx::migrate::MigrateError::Execute(error)) => retryable(error),
+        _ => false,
+    }
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("install SIGTERM handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! { () = ctrl_c => {}, _ = terminate => {} }
 }
 
 /// A connection that required TLS and failed is reported as PHP reports it.
@@ -81,22 +161,68 @@ fn auth_value(key: &str) -> Result<Option<String>, Box<dyn Error>> {
     }
 }
 
+/// `EnvAuditor::env`: the primary name when it is set, else PHP's legacy
+/// `WORKFLOW_SERVER_*` name.
+fn aliased<F>(lookup: F, primary: &str, legacy: &str) -> Result<Option<String>, Box<dyn Error>>
+where
+    F: Fn(&str) -> Result<Option<String>, Box<dyn Error>>,
+{
+    match lookup(primary)? {
+        Some(value) => Ok(Some(value)),
+        None => lookup(legacy),
+    }
+}
+
+fn auth_setting(primary: &str, legacy: &str) -> Result<Option<String>, Box<dyn Error>> {
+    aliased(auth_value, primary, legacy)
+}
+
+fn setting_value(key: &str) -> Result<Option<String>, Box<dyn Error>> {
+    match env::var(key) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err(format!("{key} must be valid UTF-8").into()),
+    }
+}
+
+/// A PHP setting whose value changes behavior that native does not offer.
+/// Native refuses to start rather than run with PHP's default silently.
+fn unhonored_php_setting<F>(lookup: F) -> Result<Option<String>, Box<dyn Error>>
+where
+    F: Fn(&str) -> Result<Option<String>, Box<dyn Error>>,
+{
+    // PHP lowercases the namespace it falls back to; native always falls
+    // back to `default`.
+    let namespace = aliased(&lookup, "DW_DEFAULT_NAMESPACE", "WORKFLOW_SERVER_DEFAULT_NAMESPACE")?;
+    if namespace.is_some_and(|value| value.to_ascii_lowercase() != "default") {
+        return Ok(Some(
+            "DW_DEFAULT_NAMESPACE must be unset or `default`: native serves `default` to requests that name no namespace"
+                .into(),
+        ));
+    }
+    // PHP advertises this value and gates protocol features on it.
+    let protocol = aliased(
+        &lookup,
+        "DW_WORKER_PROTOCOL_VERSION",
+        "WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION",
+    )?;
+    if protocol.is_some_and(|value| value != WORKER_PROTOCOL_VERSION) {
+        return Ok(Some(format!(
+            "DW_WORKER_PROTOCOL_VERSION must be unset or `{WORKER_PROTOCOL_VERSION}`: native implements only that worker protocol"
+        )));
+    }
+    Ok(None)
+}
+
 /// `server.auth.driver`: DW-primary, WORKFLOW-legacy, token by default.
 fn anonymous_driver() -> Result<bool, Box<dyn Error>> {
-    let driver = match auth_value("DW_AUTH_DRIVER")? {
-        Some(value) => Some(value),
-        None => auth_value("WORKFLOW_SERVER_AUTH_DRIVER")?,
-    };
-    Ok(driver.as_deref() == Some("none"))
+    Ok(auth_setting("DW_AUTH_DRIVER", "WORKFLOW_SERVER_AUTH_DRIVER")?.as_deref() == Some("none"))
 }
 
 /// `server.auth.runtime_credentials.enabled`: PHP's `FILTER_VALIDATE_BOOLEAN`
 /// with `FILTER_NULL_ON_FAILURE`, so an unrecognized value disables it.
 fn runtime_credentials_enabled() -> Result<bool, Box<dyn Error>> {
-    let value = match auth_value("DW_RUNTIME_CREDENTIALS_ENABLED")? {
-        Some(value) => Some(value),
-        None => auth_value("WORKFLOW_SERVER_RUNTIME_CREDENTIALS_ENABLED")?,
-    };
+    let value = auth_setting("DW_RUNTIME_CREDENTIALS_ENABLED", "WORKFLOW_SERVER_RUNTIME_CREDENTIALS_ENABLED")?;
     Ok(value.is_some_and(|value| {
         matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes")
     }))
@@ -117,9 +243,6 @@ fn validate_auth_configuration() -> Result<(), Box<dyn Error>> {
         "DW_PRINCIPAL_TOKENS",
         "WORKFLOW_SERVER_AUTH_PROVIDER",
         "WORKFLOW_SERVER_PRINCIPAL_TOKENS",
-        "WORKFLOW_SERVER_WORKER_TOKEN",
-        "WORKFLOW_SERVER_OPERATOR_TOKEN",
-        "WORKFLOW_SERVER_ADMIN_TOKEN",
     ] {
         if auth_value(key)?.is_some_and(|value| !value.is_empty()) {
             return Err("unsupported development authentication configuration".into());
@@ -427,10 +550,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     validate_auth_configuration()?;
-    let worker_token = auth_value("DW_WORKER_TOKEN")?;
-    let operator_token = auth_value("DW_OPERATOR_TOKEN")?;
-    let admin_token = auth_value("DW_ADMIN_TOKEN")?;
-    let token = auth_value("DW_AUTH_TOKEN")?.ok_or("DW_AUTH_TOKEN is required")?;
+    if let Some(refusal) = unhonored_php_setting(setting_value)? {
+        return Err(refusal.into());
+    }
+    // Published PHP reads each token under its `DW_*` name, or else its
+    // legacy `WORKFLOW_SERVER_*` name, so an unchanged deployment starts.
+    let worker_token = auth_setting("DW_WORKER_TOKEN", "WORKFLOW_SERVER_WORKER_TOKEN")?;
+    let operator_token = auth_setting("DW_OPERATOR_TOKEN", "WORKFLOW_SERVER_OPERATOR_TOKEN")?;
+    let admin_token = auth_setting("DW_ADMIN_TOKEN", "WORKFLOW_SERVER_ADMIN_TOKEN")?;
+    let token = auth_setting("DW_AUTH_TOKEN", "WORKFLOW_SERVER_AUTH_TOKEN")?
+        .ok_or("DW_AUTH_TOKEN (or WORKFLOW_SERVER_AUTH_TOKEN) is required")?;
     if token.trim().is_empty() {
         return Err("DW_AUTH_TOKEN must not be empty".into());
     }
@@ -447,17 +576,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         "pgsql" => {
             let (tls, _) = tls_settings(Driver::Postgres)?;
-            let runtime = Runtime::open_postgres(postgres_options()?, token)
-                .await
-                .map_err(|error| tls_connection_error(&tls, error))?;
+            let options = postgres_options()?;
+            let Some(runtime) =
+                open_when_reachable(|| Runtime::open_postgres(options.clone(), token.clone()))
+                    .await
+                    .map_err(|error| tls_connection_error(&tls, error))?
+            else {
+                return Ok(());
+            };
             database_tls::record(&tls);
             runtime
         }
         "mysql" | "mariadb" => {
             let (tls, _) = tls_settings(Driver::MySql)?;
-            let runtime = Runtime::open_mysql(mysql_options()?, token)
-                .await
-                .map_err(|error| tls_connection_error(&tls, error))?;
+            let options = mysql_options()?;
+            let Some(runtime) =
+                open_when_reachable(|| Runtime::open_mysql(options.clone(), token.clone()))
+                    .await
+                    .map_err(|error| tls_connection_error(&tls, error))?
+            else {
+                return Ok(());
+            };
             database_tls::record(&tls);
             runtime
         }
@@ -477,20 +616,82 @@ async fn main() -> Result<(), Box<dyn Error>> {
         listener,
         router(runtime.clone()).into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(async {
-        let ctrl_c = tokio::signal::ctrl_c();
-        #[cfg(unix)]
-        let terminate = async {
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("install SIGTERM handler")
-                .recv()
-                .await;
-        };
-        #[cfg(not(unix))]
-        let terminate = std::future::pending::<()>();
-        tokio::select! { _ = ctrl_c => {}, _ = terminate => {} }
-    })
+    .with_graceful_shutdown(shutdown_signal())
     .await?;
     runtime.close().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+
+    #[test]
+    fn only_an_unreachable_database_is_awaited() {
+        let refused = || std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
+        assert!(unreachable(&RuntimeError::Database(sqlx::Error::Io(refused()))));
+        assert!(unreachable(&RuntimeError::Database(sqlx::Error::PoolTimedOut)));
+        assert!(unreachable(&RuntimeError::Migration(
+            sqlx::migrate::MigrateError::Execute(sqlx::Error::Io(refused()))
+        )));
+        assert!(!unreachable(&RuntimeError::Database(sqlx::Error::Configuration(
+            "bad url".into()
+        ))));
+        assert!(!unreachable(&RuntimeError::Database(sqlx::Error::RowNotFound)));
+        assert!(!unreachable(&RuntimeError::Io(refused())));
+    }
+}
+
+#[cfg(test)]
+mod auth_env_tests {
+    use super::*;
+
+    fn lookup(values: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Result<Option<String>, Box<dyn Error>> {
+        move |key| Ok(values.iter().find(|(name, _)| *name == key).map(|(_, value)| (*value).to_owned()))
+    }
+
+    #[test]
+    fn primary_names_win_and_legacy_names_fill_in_like_php() {
+        let both = lookup(&[("DW_AUTH_TOKEN", "primary"), ("WORKFLOW_SERVER_AUTH_TOKEN", "legacy")]);
+        assert_eq!(aliased(both, "DW_AUTH_TOKEN", "WORKFLOW_SERVER_AUTH_TOKEN").unwrap().as_deref(), Some("primary"));
+        let legacy = lookup(&[("WORKFLOW_SERVER_AUTH_TOKEN", "legacy")]);
+        assert_eq!(aliased(legacy, "DW_AUTH_TOKEN", "WORKFLOW_SERVER_AUTH_TOKEN").unwrap().as_deref(), Some("legacy"));
+        // A set but empty primary still wins, as PHP's env() returns it.
+        let empty = lookup(&[("DW_AUTH_TOKEN", ""), ("WORKFLOW_SERVER_AUTH_TOKEN", "legacy")]);
+        assert_eq!(aliased(empty, "DW_AUTH_TOKEN", "WORKFLOW_SERVER_AUTH_TOKEN").unwrap().as_deref(), Some(""));
+        let neither = lookup(&[]);
+        assert_eq!(aliased(neither, "DW_AUTH_TOKEN", "WORKFLOW_SERVER_AUTH_TOKEN").unwrap(), None);
+    }
+
+    #[test]
+    fn php_settings_native_cannot_honor_refuse_start() {
+        let refused =
+            |values: &'static [(&'static str, &'static str)]| unhonored_php_setting(lookup(values)).unwrap();
+        let accepted: [&'static [(&str, &str)]; 7] = [
+            &[],
+            &[("DW_DEFAULT_NAMESPACE", "default")],
+            &[("DW_DEFAULT_NAMESPACE", "Default")],
+            &[("WORKFLOW_SERVER_DEFAULT_NAMESPACE", "default")],
+            &[("DW_WORKER_PROTOCOL_VERSION", "1.20")],
+            &[("WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION", "1.20")],
+            // Settings PHP reads but never applies stay accepted.
+            &[("DW_MAX_PENDING_ACTIVITIES", "10"), ("DW_ACTIVITY_TASK_TIMEOUT", "30")],
+        ];
+        for accepted in accepted {
+            assert_eq!(refused(accepted), None, "{accepted:?}");
+        }
+        let refusals: [(&'static [(&str, &str)], &str); 6] = [
+            (&[("DW_DEFAULT_NAMESPACE", "billing")], "DW_DEFAULT_NAMESPACE"),
+            (&[("DW_DEFAULT_NAMESPACE", "")], "DW_DEFAULT_NAMESPACE"),
+            (&[("WORKFLOW_SERVER_DEFAULT_NAMESPACE", "billing")], "DW_DEFAULT_NAMESPACE"),
+            // A set primary wins over a matching legacy value, as in PHP.
+            (&[("DW_DEFAULT_NAMESPACE", "billing"), ("WORKFLOW_SERVER_DEFAULT_NAMESPACE", "default")], "DW_DEFAULT_NAMESPACE"),
+            (&[("DW_WORKER_PROTOCOL_VERSION", "1.19")], "DW_WORKER_PROTOCOL_VERSION"),
+            (&[("WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION", "1.2")], "DW_WORKER_PROTOCOL_VERSION"),
+        ];
+        for (values, setting) in refusals {
+            let refusal = refused(values).unwrap_or_else(|| panic!("{values:?} was accepted"));
+            assert!(refusal.starts_with(setting), "{refusal}");
+        }
+    }
 }

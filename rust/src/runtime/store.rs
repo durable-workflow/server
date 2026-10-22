@@ -851,6 +851,7 @@ where
             name.clone(),
             DB::string(&signal, "arguments")?,
             "invalid_signal_arguments",
+            false,
         )
         .await?;
         let command_id = DB::string(&signal, "workflow_command_id")?;
@@ -1226,6 +1227,25 @@ where
                     continue;
                 }
             }
+            // `WorkflowMetadataCapabilityPolicy::canReplayRun`: typed upsert
+            // history needs a worker that advertises typed search attributes.
+            if kind == "workflow"
+                && !DB::optional_document_row(&worker, "capabilities")?.is_some_and(|flags| {
+                    flags.as_array().is_some_and(|flags| {
+                        flags.iter().any(|flag| flag == super::search_attribute_upserts::CAPABILITY)
+                    })
+                })
+            {
+                let typed_history = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SearchAttributesUpserted' ORDER BY sequence LIMIT 1001")
+                    .bind(&run_id).fetch_all(&mut *tx).await?;
+                let mut typed = false;
+                for event in &typed_history {
+                    typed |= DB::document_row(event, "payload")?.get("attribute_types").is_some();
+                }
+                if typed {
+                    continue;
+                }
+            }
             let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
                 .bind(&run_id)
                 .fetch_one(&mut *tx)
@@ -1371,6 +1391,11 @@ where
                 claim["arguments"] = wire(&DB::string(&activity, "arguments")?);
                 claim["retry_policy"] =
                     DB::optional_document_row(&activity, "retry_policy")?.unwrap_or(Value::Null);
+                // PHP omits the field when the activity has no deadline.
+                let deadlines = super::activity_deadlines::deadlines_view::<DB>(&activity)?;
+                if !deadlines.is_null() {
+                    claim["deadlines"] = deadlines;
+                }
             } else {
                 claim["workflow_task_attempt"] = json!(attempt);
                 claim["arguments"] = wire(&DB::string(&run, "arguments")?);
@@ -1401,6 +1426,33 @@ where
                 ] {
                     if let Some(value) = task_payload.get(field) {
                         claim[field] = value.clone();
+                    }
+                }
+                // `WorkflowTaskPoller::workflowTaskResumeContext`: a signal task
+                // names its signal and command and carries the signal's
+                // arguments, which the Rust SDK resumes the wait with.
+                for field in ["workflow_signal_id", "workflow_command_id"] {
+                    if let Some(value) = task_payload[field].as_str().map(str::trim).filter(|value| !value.is_empty()) {
+                        claim[field] = json!(value);
+                    }
+                }
+                if let Some(signal_id) = task_payload["workflow_signal_id"].as_str() {
+                    let signal = Self::query("SELECT arguments,workflow_command_id FROM workflow_signal_records WHERE id=$1 AND workflow_run_id=$2")
+                        .bind(signal_id)
+                        .bind(&run_id)
+                        .fetch_optional(&mut *tx)
+                        .await?;
+                    if let Some(signal) = signal {
+                        if let Some(arguments) =
+                            DB::optional_string(&signal, "arguments")?.filter(|arguments| !arguments.is_empty())
+                        {
+                            claim["signal_arguments"] = wire(&arguments);
+                        }
+                        // PHP's signal task payload names its command; older
+                        // native tasks take it from the signal record.
+                        if claim.get("workflow_command_id").is_none() {
+                            claim["workflow_command_id"] = json!(DB::string(&signal, "workflow_command_id")?);
+                        }
                     }
                 }
                 let page_size = body["history_page_size"].as_i64().unwrap_or(100);
@@ -1568,19 +1620,19 @@ where
         .bind(&run_id)
         .fetch_one(&mut *tx)
         .await?;
-        if signals != 0
-            || updates != 0
-            || payload["workflow_signal_id"].is_string()
-            || payload["workflow_update_id"].is_string()
-            || Self::cancellation_request(&run)?.is_some()
+        // Published PHP retries a failed task as it is, with any signal or
+        // update it carries; its waiting acknowledgement with pending
+        // messages still needs its own contract.
+        if waiting
+            && (signals != 0
+                || updates != 0
+                || payload["workflow_signal_id"].is_string()
+                || payload["workflow_update_id"].is_string()
+                || Self::cancellation_request(&run)?.is_some())
         {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,
-                if waiting {
-                    "development_workflow_task_waiting_messages_unqualified"
-                } else {
-                    "development_workflow_task_retry_messages_unqualified"
-                },
+                "development_workflow_task_waiting_messages_unqualified",
             ));
         }
         if !waiting {
@@ -1732,7 +1784,7 @@ where
                     if index + 1 == commands.len()
                         && commands[..index]
                             .iter()
-                            .all(|prior| prior["type"] == "upsert_memo") =>
+                            .all(|prior| matches!(prior["type"].as_str(), Some("upsert_memo" | "upsert_search_attributes"))) =>
                 {
                     super::continuations::validate(command)?;
                 }
@@ -1766,6 +1818,10 @@ where
                 }
                 "record_version_marker" => {
                     version_marker_payload(command)?;
+                }
+                "upsert_search_attributes" => {
+                    reject_fields(command, &["type", "attributes", "attribute_types"])?;
+                    super::search_attribute_upserts::validate_shape(command, index)?;
                 }
                 "upsert_memo" => {
                     reject_fields(command, &["type", "entries"])?;
@@ -1950,6 +2006,10 @@ where
             } else if command["type"] == "upsert_memo" {
                 sequence += 1;
                 self.upsert_memo(&mut tx, &run, &task, command, sequence)
+                    .await?;
+            } else if command["type"] == "upsert_search_attributes" {
+                sequence += 1;
+                self.upsert_search_attributes(&mut tx, &run, &task, command, index, sequence)
                     .await?;
             } else if command["type"] == "schedule_activity" {
                 sequence += 1;
@@ -2354,7 +2414,6 @@ where
                 json!({"task_id": task_id, "activity_attempt_id": attempt_id, "outcome": "completed", "recorded": false, "reason": "already_completed"}),
             );
         }
-        Self::fence(&task, &body)?;
         let attempt =
             Self::query("SELECT * FROM activity_attempts WHERE id=$1 AND workflow_task_id=$2")
                 .bind(attempt_id)
@@ -2362,6 +2421,9 @@ where
                 .fetch_optional(&mut *tx)
                 .await?
                 .ok_or_else(|| refuse(StatusCode::CONFLICT, "stale_attempt"))?;
+        // PHP judges the attempt before the task's lease: a late result from
+        // an attempt that is no longer current is stale even after another
+        // attempt finished the task.
         if DB::string(&attempt, "status")? != "running"
             || DB::number(&attempt, "attempt_number")? != DB::number(&task, "attempt_count")?
         {
@@ -2388,6 +2450,7 @@ where
                 response: receipt,
             });
         }
+        Self::fence(&task, &body)?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
         let activity_id = DB::string(&attempt, "activity_execution_id")?;
@@ -2623,6 +2686,12 @@ where
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "task_not_leased"))?;
         if receipt == *body {
             return Ok(true);
+        }
+        // Any other result for a closed activity task comes from an attempt
+        // that is no longer current; the caller reports it as stale, as PHP
+        // does, rather than as a conflicting duplicate.
+        if DB::string(task, "task_type")? == "activity" {
+            return Ok(false);
         }
         Err(refuse(StatusCode::CONFLICT, "conflicting_completion"))
     }
@@ -3011,11 +3080,14 @@ where
 
 /// A start's optional `nullable|integer|min:1` timeout. Absent or null means
 /// no timeout, as in published PHP.
+/// `request` arguments come from a control-plane `input`, which PHP refuses
+/// as validation of `input.blob`; stored arguments keep `invalid`.
 pub(super) async fn prepare_control_arguments(
     semaphore: Arc<Semaphore>,
     name: String,
     arguments: String,
     invalid: &'static str,
+    request: bool,
 ) -> Result<PreparedControlArguments> {
     let permit = semaphore
         .acquire_owned()
@@ -3027,14 +3099,24 @@ pub(super) async fn prepare_control_arguments(
         let _permit = permit;
         let codec = crate::codec::ValueCodec::new()
             .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid))?;
-        let crate::codec::Value::Array(values) = codec
-            .decode(&arguments)
-            .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid))?
-        else {
-            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid));
+        // PHP's `resolveToArray`: the blob decodes to a list, or to a
+        // non-empty map whose values are the arguments.
+        let (values, arguments) = match codec.decode(&arguments) {
+            Ok(crate::codec::Value::Array(values)) => (values, arguments),
+            Ok(crate::codec::Value::Map(entries)) if request && !entries.is_empty() => {
+                let values: Vec<_> = entries.into_values().collect();
+                let encoded = codec
+                    .encode(&crate::codec::Value::Array(values.clone()))
+                    .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid))?;
+                (values, encoded)
+            }
+            Ok(_) if request => return Err(super::input_envelope::not_a_list()),
+            Err(error) if request => return Err(super::input_envelope::undecodable(&arguments, &error)),
+            _ => return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid)),
         };
+        // `signalValueFromRecord`: no arguments apply as true, one as itself.
         let value = match values.as_slice() {
-            [] => crate::codec::Value::Null,
+            [] => crate::codec::Value::Boolean(true),
             [value] => value.clone(),
             _ => crate::codec::Value::Array(values.clone()),
         };
@@ -3322,6 +3404,16 @@ pub(crate) fn capabilities() -> Value {
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
         "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,
         "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": true});
+    value["supported_workflow_task_commands"]
+        .as_array_mut()
+        .expect("commands")
+        .push(json!("upsert_search_attributes"));
+    value["typed_search_attributes"] = json!({"supported":true,
+        "minimum_worker_protocol_version":super::search_attribute_upserts::MINIMUM_PROTOCOL_VERSION,
+        "worker_capability":super::search_attribute_upserts::CAPABILITY,
+        "canonical_types":["string","keyword","keyword_list","int","float","bool","datetime"],
+        "command_field":"attribute_types","history_event":"SearchAttributesUpserted",
+        "history_field":"attribute_types","legacy_history_rule":"absent_metadata_is_unknown_type_identity"});
     if super::memos::UPDATES_SUPPORTED {
         value["supported_workflow_task_commands"]
             .as_array_mut()

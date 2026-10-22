@@ -96,6 +96,26 @@ pub(super) fn expired_kind<DB: Backend>(
     Ok(None)
 }
 
+/// PHP's `deadlines` map on activity claims and status reads: each deadline
+/// the execution has, in UTC with microseconds, or null when it has none.
+pub(super) fn deadlines_view<DB: Backend>(activity: &DB::Row) -> Result<Value> {
+    let mut deadlines = serde_json::Map::new();
+    for (kind, field) in [
+        ("schedule_to_start", "schedule_deadline_at"),
+        ("start_to_close", "close_deadline_at"),
+        ("schedule_to_close", "schedule_to_close_deadline_at"),
+        ("heartbeat", "heartbeat_deadline_at"),
+    ] {
+        if let Some(at) = DB::optional_instant(activity, field)? {
+            deadlines.insert(
+                kind.into(),
+                json!(at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true)),
+            );
+        }
+    }
+    Ok(if deadlines.is_empty() { Value::Null } else { Value::Object(deadlines) })
+}
+
 /// PHP's message for an expired deadline.
 fn timeout_message<DB: Backend>(activity: &DB::Row, kind: &str) -> Result<String>
 where
