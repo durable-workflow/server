@@ -18,6 +18,7 @@ use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 pub(super) enum ChildResolution<'a> {
     Completed(&'a str),
     Cancelled(&'a Value),
+    Terminated(&'a Value),
     Failed(&'a Value),
 }
 
@@ -261,7 +262,7 @@ where
         // This first slice permits one outstanding authored child. A replayed
         // completion is handled by the enclosing immutable task receipt.
         for sql in [
-            "SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','failed')",
+            "SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','terminated','failed')",
             "SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status!='completed'",
             "SELECT COUNT(*) FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending'",
         ] {
@@ -410,6 +411,7 @@ where
         let (status, event_type) = match resolution {
             ChildResolution::Completed(_) => ("completed", "ChildRunCompleted"),
             ChildResolution::Cancelled(_) => ("cancelled", "ChildRunCancelled"),
+            ChildResolution::Terminated(_) => ("terminated", "ChildRunTerminated"),
             ChildResolution::Failed(_) => ("failed", "ChildRunFailed"),
         };
         Self::query("UPDATE workflow_child_calls SET status=$1,closed_reason=$2,closed_at=$3,updated_at=$4 WHERE id=$5")
@@ -444,7 +446,9 @@ where
                 payload["result"] = wire(output);
                 payload["payload_codec"] = json!("avro");
             }
-            ChildResolution::Cancelled(failure) | ChildResolution::Failed(failure) => {
+            ChildResolution::Cancelled(failure)
+            | ChildResolution::Terminated(failure)
+            | ChildResolution::Failed(failure) => {
                 for field in [
                     "failure_id",
                     "failure_category",

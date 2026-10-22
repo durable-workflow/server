@@ -776,12 +776,15 @@ async fn missing_or_changed_wait_projection_cannot_gain_summary_authority() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
+    // Runs started before any worker declared a contract: a signal the open
+    // wait cannot take gets no task there, so it stays pending without one.
+    // (A declared signal of a durable-contract run gets its own task.)
+    let runs = [start(&app, "timed-authority-false").await, start(&app, "timed-authority-true").await];
     let result=request(&app,"POST","/api/worker/register",json!({"worker_id":"signal-authority","task_queue":"test","runtime":"php",
         "supported_workflow_types":["echo"],"supported_activity_types":[],"workflow_command_contracts":{"echo":{"signals":["payload","unrelated"],
         "signal_contracts":[{"name":"unrelated","parameters":[]},{"name":"payload","parameters":[]}]}}})).await;
     assert_eq!(result.0, StatusCode::CREATED, "{}", result.1);
-    for missing in [false, true] {
-        let run = start(&app, &format!("timed-authority-{missing}")).await;
+    for (missing, run) in [false, true].into_iter().zip(runs) {
         let task = poll(&app, "signal-authority", "workflow").await;
         assert_eq!(
             finish_task(

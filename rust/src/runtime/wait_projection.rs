@@ -95,7 +95,11 @@ where
     ) -> Result<()> {
         if !matches!(
             event_type,
-            "ChildWorkflowScheduled" | "ChildRunCompleted" | "ChildRunCancelled" | "ChildRunFailed"
+            "ChildWorkflowScheduled"
+                | "ChildRunCompleted"
+                | "ChildRunCancelled"
+                | "ChildRunTerminated"
+                | "ChildRunFailed"
         ) {
             return Ok(());
         }
@@ -110,9 +114,12 @@ where
                 .bind(super::text(payload,"child_workflow_run_id")?).bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(run_id)
                 .execute(&mut **tx).await?;
         } else {
-            let cancelled = event_type == "ChildRunCancelled";
+            // `ChildRunHistory::waitSnapshotForSequence`: a cancelled or
+            // terminated child ends the wait as cancelled.
+            let cancelled = matches!(event_type, "ChildRunCancelled" | "ChildRunTerminated");
             let source_status = match event_type {
                 "ChildRunCancelled" => "cancelled",
+                "ChildRunTerminated" => "terminated",
                 "ChildRunFailed" => "failed",
                 _ => "completed",
             };

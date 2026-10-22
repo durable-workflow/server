@@ -19,6 +19,9 @@ use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
+/// How many levels of children one parent close may close through policies.
+const MAX_POLICY_DEPTH: u8 = 32;
+
 /// The child at a delivery's sequence, from its consistent link.
 pub(super) struct ChildBoundary {
     pub(super) child_instance: String,
@@ -147,28 +150,56 @@ where
             "child_cleanup_deadline_at": child["cleanup_deadline_at"]}))
     }
 
-    /// `ParentClosePolicyEnforcer::enforce` for a cooperatively cancelled
-    /// parent: each child still open under a `request_cancellation` policy
-    /// is asked to cancel under the parent's request, once, and the parent
-    /// records the outcome. Native does not yet apply `request_cancel` or
-    /// `terminate` here (the port's gap list).
-    pub(super) async fn enforce_parent_close_policies(tx: &mut Transaction<'_, DB>, parent: &DB::Row, closed_reason: &str) -> Result<()> {
+    /// `ParentClosePolicyEnforcer::enforce`: once a parent closes, each child
+    /// still open under a policy other than `abandon` is handled in link
+    /// order, and the parent records `ParentClosePolicyApplied` or
+    /// `ParentClosePolicyFailed`:
+    /// - `request_cancel` and `terminate` cancel or terminate the child as
+    ///   PHP's `attemptCancel` and `attemptTerminate` do, which applies the
+    ///   child's own policies in turn;
+    /// - `request_cancellation` asks the child to cancel under the parent's
+    ///   cooperative request, once. Without one, PHP first creates a new
+    ///   origin (`ParentCloseCancellation::ensureOrigin`), which native does
+    ///   not have yet: those children stay open (the port's gap list).
+    pub(super) async fn enforce_parent_close_policies(tx: &mut Transaction<'_, DB>, parent: &DB::Row, closed_reason: &str, depth: u8) -> Result<()> {
         let parent_run = DB::string(parent, "id")?;
-        let Some(context) = Self::current_cancellation_context(tx, &parent_run).await? else {
-            return Ok(());
-        };
-        let links = Self::query("SELECT * FROM workflow_links WHERE parent_workflow_run_id=$1 AND link_type='child_workflow' AND parent_close_policy='request_cancellation' ORDER BY sequence LIMIT 1001")
+        let context = Self::current_cancellation_context(tx, &parent_run).await?;
+        let links = Self::query("SELECT * FROM workflow_links WHERE parent_workflow_run_id=$1 AND link_type='child_workflow' AND parent_close_policy IN ('request_cancel','terminate','request_cancellation') ORDER BY sequence,id LIMIT 1001")
             .bind(&parent_run).fetch_all(&mut **tx).await?;
         for link in links {
+            let policy = DB::string(&link, "parent_close_policy")?;
             let boundary = ChildBoundary {
                 child_instance: DB::string(&link, "child_workflow_instance_id")?,
                 child_run: DB::string(&link, "child_workflow_run_id")?,
-                policy: "request_cancellation".into(),
+                policy: policy.clone(),
             };
-            let child = Self::query("SELECT status FROM workflow_runs WHERE id=$1").bind(&boundary.child_run).fetch_one(&mut **tx).await?;
+            let child = Self::query("SELECT * FROM workflow_runs WHERE id=$1").bind(&boundary.child_run).fetch_one(&mut **tx).await?;
             if !matches!(DB::string(&child, "status")?.as_str(), "pending" | "running" | "waiting") {
                 continue;
             }
+            let reason = format!("Parent workflow closed ({closed_reason}); parent-close policy: {policy}.");
+            if policy != "request_cancellation" {
+                let command = if policy == "terminate" {
+                    super::cancellation::TerminalCommand::Terminate
+                } else {
+                    super::cancellation::TerminalCommand::Cancel
+                };
+                let error = Box::pin(Self::close_child_for_policy(tx, &child, command, &reason, depth)).await?;
+                let mut payload = json!({"child_instance_id": boundary.child_instance, "child_run_id": boundary.child_run,
+                    "policy": policy, "reason": reason});
+                let kind = match error {
+                    None => "ParentClosePolicyApplied",
+                    Some(error) => {
+                        payload["error"] = json!(error);
+                        "ParentClosePolicyFailed"
+                    }
+                };
+                Self::append(tx, &parent_run, kind, payload, None, None).await?;
+                continue;
+            }
+            let Some(context) = &context else {
+                continue;
+            };
             let applied = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='ParentClosePolicyApplied'")
                 .bind(&parent_run).fetch_all(&mut **tx).await?;
             let mut already = false;
@@ -206,6 +237,86 @@ where
             Self::append(tx, &parent_run, kind, payload, None, None).await?;
         }
         Ok(())
+    }
+
+    /// `WorkflowStub::attemptCancel` and `attemptTerminate` as the enforcer
+    /// calls them: a PHP API command on the child instance's current run,
+    /// then the same close an HTTP cancel or terminate performs, which applies
+    /// the child's own policies in turn. Returns the error the enforcer
+    /// records instead when native cannot close that child yet, before
+    /// anything is written; the parent's close still stands.
+    pub(super) async fn close_child_for_policy(
+        tx: &mut Transaction<'_, DB>,
+        child: &DB::Row,
+        command: super::cancellation::TerminalCommand,
+        reason: &str,
+        depth: u8,
+    ) -> Result<Option<&'static str>> {
+        let instance = DB::string(child, "workflow_instance_id")?;
+        let Some(run) = Self::query("SELECT r.* FROM workflow_instances i JOIN workflow_runs r ON r.id=i.current_run_id WHERE i.id=$1")
+            .bind(&instance).fetch_optional(&mut **tx).await?
+        else {
+            return Ok(Some("instance_not_found"));
+        };
+        if !matches!(DB::string(&run, "status")?.as_str(), "pending" | "running" | "waiting") {
+            return Ok(None);
+        }
+        let run_id = DB::string(&run, "id")?;
+        let unavailable = command.propagation_unavailable();
+        // Each level is one recursive close in this transaction. PHP has no
+        // bound; native stops at a depth no ordinary workflow tree reaches.
+        if depth >= MAX_POLICY_DEPTH {
+            return Ok(Some(unavailable));
+        }
+        let unsupported_links = Self::scalar("SELECT COUNT(*) FROM workflow_links WHERE child_workflow_run_id=$1 AND link_type!='child_workflow'")
+            .bind(&run_id).fetch_one(&mut **tx).await?;
+        let cooperative_children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','terminated','failed') AND parent_close_policy='request_cancellation'")
+            .bind(&run_id).fetch_one(&mut **tx).await?;
+        if unsupported_links != 0 || cooperative_children != 0 {
+            return Ok(Some(unavailable));
+        }
+        let queries = Self::query(DB::QUERY_CACHE_PENDING_FOR_RUN)
+            .bind(&run_id)
+            .bind(now().timestamp())
+            .fetch_all(&mut **tx)
+            .await?;
+        let observed = super::query_authority::now();
+        for query in &queries {
+            let timing = json!({
+                "query_admitted_at": DB::optional_string(query, "query_admitted_at")?,
+                "query_deadline_at": DB::optional_string(query, "query_deadline_at")?,
+                "receipt_expires_at": DB::optional_string(query, "receipt_expires_at")?,
+            });
+            if super::query_authority::deadline(&timing).is_none_or(|deadline| observed < deadline) {
+                return Ok(Some(unavailable));
+            }
+        }
+        let activities = Self::scalar("SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status IN ('pending','running')")
+            .bind(&run_id).fetch_one(&mut **tx).await?;
+        let timers = Self::scalar("SELECT COUNT(*) FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending'")
+            .bind(&run_id).fetch_one(&mut **tx).await?;
+        if activities > 1000 || timers > 1000 {
+            return Ok(Some("cancellation_inventory_exceeds_budget"));
+        }
+        let (reason, blob) = super::cancellation::prepare_reason(&json!({"reason": reason}), Arc::new(Semaphore::new(1))).await?;
+        let command_id = id();
+        let command_sequence = DB::number(&run, "last_command_sequence")?
+            .checked_add(1)
+            .ok_or_else(|| refuse(StatusCode::CONFLICT, "command_sequence_exhausted"))?;
+        let at = now();
+        let context = json!({"caller": {"type": "php", "label": "PHP API"}, "auth": {"status": "not_applicable", "method": "none"}});
+        Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,target_scope,source,status,outcome,workflow_type,payload_codec,payload,command_sequence,accepted_at,applied_at,context) VALUES ($1,$2,$3,$4,$5,'instance','php','accepted',$6,$7,'avro',$8,$9,$10,$11,$12)")
+            .bind(&command_id).bind(&instance).bind(&run_id).bind(&run_id).bind(command.command_type()).bind(command.closed())
+            .bind(DB::string(&run, "workflow_type")?).bind(blob.as_deref()).bind(command_sequence)
+            .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(DB::document(&context))
+            .execute(&mut **tx).await?;
+        Self::query("UPDATE workflow_runs SET last_command_sequence=$1 WHERE id=$2")
+            .bind(command_sequence)
+            .bind(&run_id)
+            .execute(&mut **tx)
+            .await?;
+        Self::finish_close(tx, &run, command, &command_id, reason.as_deref(), at, depth + 1).await?;
+        Ok(None)
     }
 
     /// `WorkflowStub::attemptRequestCancellationFromParent`: the child takes

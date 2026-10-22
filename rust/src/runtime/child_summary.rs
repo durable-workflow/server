@@ -71,13 +71,14 @@ impl ChildSummaryHistory {
                 }
                 previous.started = true;
             }
-            "ChildRunCompleted" | "ChildRunCancelled" | "ChildRunFailed" if previous.started => {
-                let status = if event == "ChildRunCompleted" {
-                    "completed"
-                } else if event == "ChildRunCancelled" {
-                    "cancelled"
-                } else {
-                    "failed"
+            "ChildRunCompleted" | "ChildRunCancelled" | "ChildRunTerminated" | "ChildRunFailed"
+                if previous.started =>
+            {
+                let status = match event {
+                    "ChildRunCompleted" => "completed",
+                    "ChildRunCancelled" => "cancelled",
+                    "ChildRunTerminated" => "terminated",
+                    _ => "failed",
                 };
                 if payload["child_run_number"] != 1 || payload["child_status"] != status {
                     return false;

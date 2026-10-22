@@ -97,6 +97,12 @@ mod signal_rejection;
 mod cooperative_waits;
 #[path = "execution/child_policies.rs"]
 mod child_policies;
+#[path = "execution/parent_close_policies.rs"]
+mod parent_close_policies;
+#[path = "execution/history_pages.rs"]
+mod history_pages;
+#[path = "execution/declared_signals.rs"]
+mod declared_signals;
 #[path = "execution/child_cascade.rs"]
 mod child_cascade;
 #[path = "execution/completion_open_work.rs"]
@@ -149,6 +155,8 @@ mod run_deadlines;
 mod operator_dashboard;
 #[path = "execution/waterline_reads.rs"]
 mod waterline_reads;
+#[path = "execution/task_queue_build_ids.rs"]
+mod task_queue_build_ids;
 #[path = "execution/start_timeouts.rs"]
 mod start_timeouts;
 
@@ -1461,8 +1469,15 @@ async fn mismatched_child_call_rolls_back_child_terminal_history_and_parent_resu
 }
 
 #[tokio::test]
-async fn direct_child_cancellation_preserves_original_failure_and_one_parent_resumption() {
-    for pending_timer in [false, true] {
+async fn direct_child_cancellation_or_termination_preserves_original_failure_and_one_parent_resumption() {
+    // Workflow 2.9.0: a cancelled child resolves its parent with
+    // ChildRunCancelled, a terminated one with ChildRunTerminated.
+    for (pending_timer, terminate) in [(false, false), (true, false), (false, true), (true, true)] {
+        let (verb, requested, closed, resolved, label) = if terminate {
+            ("terminate", "TerminateRequested", "WorkflowTerminated", "ChildRunTerminated", "termination")
+        } else {
+            ("cancel", "CancelRequested", "WorkflowCancelled", "ChildRunCancelled", "cancellation")
+        };
         let database = TestDatabase::new().await;
         let runtime = database.open().await.unwrap();
         let app = router(runtime.clone());
@@ -1514,36 +1529,15 @@ async fn direct_child_cancellation_preserves_original_failure_and_one_parent_res
             None
         };
         let path = format!(
-            "/api/workflows/{}/runs/{}/cancel",
+            "/api/workflows/{}/runs/{}/{verb}",
             child_id.as_str().unwrap(),
             child_run.as_str().unwrap()
         );
-        // A terminated child would resolve its parent with ChildRunTerminated,
-        // which is not qualified yet. The refusal leaves both runs unchanged.
-        let before = run_history(&app, &child_id, &child_run).await;
-        let terminate = request(
-            &app,
-            "POST",
-            &path.replace("/cancel", "/terminate"),
-            json!({"reason":"direct child termination"}),
-        )
-        .await;
-        assert_eq!(
-            terminate.0,
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "{}",
-            terminate.1
-        );
-        assert_eq!(
-            terminate.1["reason"],
-            "termination_propagation_not_available"
-        );
-        assert_eq!(run_history(&app, &child_id, &child_run).await, before);
         let accepted = request(
             &app,
             "POST",
             &path,
-            json!({"reason":"direct child cancellation λ"}),
+            json!({"reason":format!("direct child {label} λ")}),
         )
         .await;
         assert_eq!(accepted.0, StatusCode::OK, "{}", accepted.1);
@@ -1556,33 +1550,43 @@ async fn direct_child_cancellation_preserves_original_failure_and_one_parent_res
                 .map(|event| event["event_type"].as_str().unwrap())
                 .collect::<Vec<_>>(),
             if pending_timer {
-                vec![
-                    "WorkflowStarted",
-                    "TimerScheduled",
-                    "CancelRequested",
-                    "TimerCancelled",
-                    "WorkflowCancelled",
-                ]
+                vec!["WorkflowStarted", "TimerScheduled", requested, "TimerCancelled", closed]
             } else {
-                vec!["WorkflowStarted", "CancelRequested", "WorkflowCancelled"]
+                vec!["WorkflowStarted", requested, closed]
             }
         );
         let terminal = child_history.as_array().unwrap().last().unwrap();
         let failure = terminal["payload"]["failure_id"].as_str().unwrap();
         assert_eq!(
             database
-                .cancellation_failure_count(child_run.as_str().unwrap(), failure)
+                .terminal_failure_count(
+                    child_run.as_str().unwrap(),
+                    failure,
+                    if terminate { "terminated" } else { "cancelled" },
+                )
                 .await,
             1
         );
         assert_eq!(
             database.cancellation_failure_message(failure).await,
-            "Workflow cancelled: direct child cancellation λ"
+            if terminate {
+                "Workflow terminated: direct child termination λ"
+            } else {
+                "Workflow cancelled: direct child cancellation λ"
+            }
         );
         let parent_after = run_history(&app, &parent["workflow_id"], &parent["run_id"]).await;
         assert_eq!(parent_after.as_array().unwrap().len(), 5);
         let resolution = &parent_after[4];
-        assert_eq!(resolution["event_type"], "ChildRunCancelled");
+        assert_eq!(resolution["event_type"], resolved);
+        assert_eq!(resolution["payload"]["child_status"], if terminate { "terminated" } else { "cancelled" });
+        assert_eq!(resolution["payload"]["failure_category"], if terminate { "terminated" } else { "cancelled" });
+        if terminate {
+            // `ChildRunHistory::waitSnapshotForSequence`: the wait ends as
+            // cancelled, from a terminated child; the call is terminated.
+            assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_waits WHERE kind='child' AND status='cancelled' AND source_status='terminated' AND summary LIKE '% terminated.'").await, 1);
+            assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_child_calls WHERE status='terminated' AND closed_reason='terminated'").await, 1);
+        }
         for field in [
             "child_call_id",
             "workflow_link_id",
@@ -1635,7 +1639,7 @@ async fn direct_child_cancellation_preserves_original_failure_and_one_parent_res
         let resumed = poll(&fresh_app, "parent-worker", "workflow").await;
         assert_eq!(resumed["run_id"], parent["run_id"]);
         assert_eq!(resumed["child_workflow_run_id"], child_run);
-        assert_eq!(resumed["workflow_event_type"], "ChildRunCancelled");
+        assert_eq!(resumed["workflow_event_type"], resolved);
         let complete = json!([{"type":"complete_workflow","result":envelope(Payload::Long(9007199254740993_i64))}]);
         assert_eq!(
             finish_task(&fresh_app, &resumed, complete.clone()).await.0,
@@ -1656,13 +1660,17 @@ async fn direct_child_cancellation_preserves_original_failure_and_one_parent_res
         );
         assert_eq!(
             database
-                .cancellation_failure_count(child_run.as_str().unwrap(), failure)
+                .terminal_failure_count(
+                    child_run.as_str().unwrap(),
+                    failure,
+                    if terminate { "terminated" } else { "cancelled" },
+                )
                 .await,
             1
         );
         assert_eq!(
             database.cancellation_failure_message(failure).await,
-            "Workflow cancelled: direct child cancellation λ"
+            format!("Workflow {closed_as}: direct child {label} λ", closed_as = if terminate { "terminated" } else { "cancelled" })
         );
         fresh.close().await;
         database.remove().await;

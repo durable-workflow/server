@@ -185,6 +185,7 @@ where
         )
         .await?;
         Self::close_pending_updates(tx, &run_id, Some(task)).await?;
+        Self::enforce_parent_close_policies(tx, run, "failed", 0).await?;
         Self::query("UPDATE workflow_tasks SET status='failed',lease_expires_at=NULL WHERE id=$1")
             .bind(&task_id)
             .execute(&mut **tx)

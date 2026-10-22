@@ -224,6 +224,20 @@ where
     .map_or(10, |value| value.int().max(1))
 }
 
+/// `server.worker_protocol.history_page_size_default` and `_max`: `(int)`
+/// casts of the settings, 500 and 1000 when unset. The Workflow package's
+/// bridge then keeps every page between 1 and 1000 events.
+pub fn history_page_sizes<F>(lookup: F) -> (i64, i64)
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let read = |name, legacy, default| effective(&lookup, name, Some(legacy)).map_or(default, |value: PhpValue| value.int());
+    (
+        read("DW_HISTORY_PAGE_SIZE_DEFAULT", "WORKFLOW_SERVER_HISTORY_PAGE_SIZE_DEFAULT", 500),
+        read("DW_HISTORY_PAGE_SIZE_MAX", "WORKFLOW_SERVER_HISTORY_PAGE_SIZE_MAX", 1000),
+    )
+}
+
 /// What a refused setting must be for native to start.
 #[derive(Clone, Copy, Debug)]
 pub enum Rule {
@@ -426,7 +440,6 @@ const TASK_ADMISSION: &str = "native has no task admission limits";
 const NAMESPACE_ADMISSION: &str = "native has no namespace request admission limits";
 const DURABLE_LIMITS: &str = "native has no namespace durable-state limits";
 const PROTOCOL: &str = "native implements one worker protocol version";
-const HISTORY_PAGE: &str = "native cannot apply a changed history page size";
 const QUERY_PENDING: &str = "native cannot apply a changed pending query task cap";
 const METRICS: &str = "native cannot apply a changed metrics series limit";
 const S3: &str = "native stores external payloads only on its local disk";
@@ -498,8 +511,8 @@ pub const SETTINGS: &[Setting] = &[
     Setting { name: "DW_EXTERNAL_PAYLOAD_S3_SESSION_TOKEN", legacy: Some("WORKFLOW_SERVER_EXTERNAL_PAYLOAD_S3_SESSION_TOKEN"), disposition: Ignored },
     Setting { name: "DW_EXTERNAL_PAYLOAD_S3_USE_PATH_STYLE_ENDPOINT", legacy: Some("WORKFLOW_SERVER_EXTERNAL_PAYLOAD_S3_USE_PATH_STYLE_ENDPOINT"), disposition: Ignored },
     Setting { name: "DW_EXTERNAL_PAYLOAD_UPLOAD_EXPIRY", legacy: Some("WORKFLOW_SERVER_EXTERNAL_PAYLOAD_UPLOAD_EXPIRY"), disposition: Honored },
-    Setting { name: "DW_HISTORY_PAGE_SIZE_DEFAULT", legacy: Some("WORKFLOW_SERVER_HISTORY_PAGE_SIZE_DEFAULT"), disposition: Refused(Int(500), HISTORY_PAGE) },
-    Setting { name: "DW_HISTORY_PAGE_SIZE_MAX", legacy: Some("WORKFLOW_SERVER_HISTORY_PAGE_SIZE_MAX"), disposition: Refused(Int(1000), HISTORY_PAGE) },
+    Setting { name: "DW_HISTORY_PAGE_SIZE_DEFAULT", legacy: Some("WORKFLOW_SERVER_HISTORY_PAGE_SIZE_DEFAULT"), disposition: Honored },
+    Setting { name: "DW_HISTORY_PAGE_SIZE_MAX", legacy: Some("WORKFLOW_SERVER_HISTORY_PAGE_SIZE_MAX"), disposition: Honored },
     Setting { name: "DW_HISTORY_RETENTION_DAYS", legacy: Some("WORKFLOW_HISTORY_RETENTION_DAYS"), disposition: Honored },
     Setting { name: "DW_MAX_HISTORY_EVENTS", legacy: Some("WORKFLOW_MAX_HISTORY_EVENTS"), disposition: Ignored },
     Setting { name: "DW_MAX_MEMO_BYTES", legacy: Some("WORKFLOW_MAX_MEMO_BYTES"), disposition: Honored },
@@ -810,6 +823,21 @@ mod tests {
     }
 
     #[test]
+    fn history_page_sizes_are_read_like_server_config() {
+        let read = |values: &[(&str, &str)]| {
+            let environment = environment(values);
+            history_page_sizes(|key| environment.get(key).cloned())
+        };
+        assert_eq!(read(&[]), (500, 1000));
+        assert_eq!(read(&[("DW_HISTORY_PAGE_SIZE_DEFAULT", "50"), ("DW_HISTORY_PAGE_SIZE_MAX", "200")]), (50, 200));
+        assert_eq!(read(&[("WORKFLOW_SERVER_HISTORY_PAGE_SIZE_DEFAULT", " 75 pages")]), (75, 1000));
+        assert_eq!(read(&[("DW_HISTORY_PAGE_SIZE_MAX", "\"5000\"")]), (500, 5000));
+        // `(int)` of a word or `false` is 0; the bridge then serves one event.
+        assert_eq!(read(&[("DW_HISTORY_PAGE_SIZE_DEFAULT", "many"), ("DW_HISTORY_PAGE_SIZE_MAX", "false")]), (0, 0));
+        assert_eq!(read(&[("DW_HISTORY_PAGE_SIZE_DEFAULT", "null")]), (500, 1000));
+    }
+
+    #[test]
     fn primary_names_win_and_legacy_names_fill_in_like_php() {
         let read = |values: &[(&str, &str)], name, legacy| {
             let environment = environment(values);
@@ -840,7 +868,7 @@ mod tests {
             &[("DW_ACTIVITY_TASK_TIMEOUT", "300")],
             &[("DW_ACTIVITY_TASK_TIMEOUT", " 30 ")],
             &[("ACTIVITY_TASK_TIMEOUT", "86400")],
-            &[("DW_HISTORY_PAGE_SIZE_DEFAULT", "\"500\"")],
+            &[("DW_METRICS_PROMETHEUS_ACTIVITY_SERIES_LIMIT", "\"100\"")],
             // PHP's `?? true` keeps an unrecognized value on.
             &[("DW_AUTH_BACKWARD_COMPATIBLE", "maybe")],
             &[("DW_TRUST_FORWARDED_ATTRIBUTION_HEADERS", "(false)")],

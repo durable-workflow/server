@@ -118,13 +118,12 @@ contract fixture before its correction.
   payload size of an activity's result. Native enforces only the memo size.
   #612 tracks the rest.
 - **Environment settings.** Of PHP's 164 contract settings, native honors
-  38 and ignores 57 that change nothing it serves. It refuses to start on a
-  non-default value of the other 69
+  40 and ignores 57 that change nothing it serves. It refuses to start on a
+  non-default value of the other 67
   ([checkpoint](rust-server-port-checkpoints/2026-10-22-environment-contract.md)).
-  Several of those are cheap to honor: the history page sizes, repair
-  timing and the multi-node declaration. Native's defaults still differ from
-  PHP's for three honored settings: the worker poll timeout, history page
-  size and operation name length.
+  Several of those are cheap to honor: repair timing and the multi-node
+  declaration. Native's defaults still differ from PHP's for two honored
+  settings: the worker poll timeout and operation name length.
 - **Key order inside plain JSON input.** For input that is not an envelope,
   PHP encodes nested objects as Avro maps in request order; native encodes
   them with sorted keys. The decoded values are equal, but the blobs differ.
@@ -144,13 +143,6 @@ contract fixture before its correction.
   Native gives each update its own task once the run has no open workflow
   task. The Rust SDK treats a task carrying `workflow_update_id` as an update
   task, so a merged first task would not replay the workflow.
-- **Declared signals without an open wait.** For a run whose workflow class
-  the server cannot load, which includes every external-worker run, PHP
-  delivers a received signal that the run's durable contract declares, even
-  without an open signal wait (`PendingMessageTask::signalCanAdvanceRun`).
-  Native delivers a signal only to an open signal or condition wait. It
-  refuses a waiting-for-history acknowledgement while a signal is pending,
-  because no task would deliver it afterwards.
 - **Timer firing under the CPU deadline profile on slower hosts.** In local
   MySQL 8.0 cells, where eight dense readers saturate the one-CPU database and
   the one-CPU native server, one of six runs fired the three-second timer
@@ -224,15 +216,21 @@ contract fixture before its correction.
     after a takeover a PHP-written scoped request reads as
     `request_context_invalid`, and a PHP-written stop receipt as
     `callback_state: unknown`.
-  - **Parent close.** Published PHP applies `request_cancel`, `terminate` and
-    `request_cancellation` to a child that is still open when its parent
-    completes, fails, is cancelled, is terminated or times out
-    (`ParentClosePolicyEnforcer`). Native applies `request_cancellation`
-    when a cooperatively cancelled parent closes. A parent completes over
-    open `abandon` children, as in PHP. Native refuses a parent's completion
-    while a child under another policy is open, refuses its cancellation and
-    termination while any child is open, and closes a timed-out or failed
-    parent without acting on open children.
+  - **Parent close, `request_cancellation` without a cooperative request.**
+    Published PHP applies every parent-close policy when a parent completes,
+    fails, is cancelled, is terminated or times out
+    (`ParentClosePolicyEnforcer`). Native does too, except that it applies
+    `request_cancellation` only when the parent closes under a cooperative
+    cancellation request. Otherwise PHP first creates a new cancellation
+    origin (`ParentCloseCancellation::ensureOrigin`), which native does not
+    have. Native therefore refuses a parent's completion, cancellation and
+    termination while such a child is open. It leaves that child open when
+    the parent fails or times out.
+  - **Children native cannot close yet.** When a policy would cancel or
+    terminate a child that itself has an open `request_cancellation` child,
+    a live query, or more than 1,000 open activities or timers, native
+    records `ParentClosePolicyFailed` with the refusal it would give an HTTP
+    cancel or terminate and leaves the child open. PHP closes it.
   - **Root conflicts.** PHP records a rejected command when a child refuses
     a request under another root. Native records only the refusal on the
     parent's events.
@@ -305,11 +303,6 @@ contract fixture before its correction.
   unknown activity task with `task_id`, `activity_attempt_id`, `error` and
   `reason`. Native's worker-plane errors carry only Laravel's validation
   fields or `message` and `reason`.
-- **Terminating a child run.** Published Workflow resolves the parent with
-  `ChildRunTerminated` and the `terminated` child call status. Native refuses
-  this with `422 termination_propagation_not_available` until the parent-side
-  wait, child summary and failure projections for `ChildRunTerminated` have a
-  fixture.
 - **Authentication beyond role tokens and runtime credentials.** Native
   refuses principal tokens (`DW_PRINCIPAL_TOKENS`), custom providers and the
   signature driver at startup. It still requires `DW_AUTH_TOKEN` with the
