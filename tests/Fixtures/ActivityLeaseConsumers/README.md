@@ -28,7 +28,7 @@ callback yields to Tokio. Qualify it separately from the deliberately blocking
 `long` control. Both retain the original 420-second whole observer, including
 workflow start. `TASK_QUEUE` overrides the Rust Worker and client queue together;
 use separate queues/state directories to run the two controls concurrently.
-`WORKER_TOKEN` selects an explicit worker-role credential for Rust, with the
+`WORKER_TOKEN` selects an explicit worker-role credential for Python and Rust, with the
 historical synthetic token as the default. Neither option changes the SDK.
 
 For `loss`, use a separate named namespace and configured five-second lease.

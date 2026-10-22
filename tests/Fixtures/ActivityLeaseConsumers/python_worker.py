@@ -53,6 +53,7 @@ async def main():
     (STATE / 'worker.pid').write_text(str(os.getpid()))
     async with ObservedClient(
         os.environ['SERVER_URL'], token='synthetic',
+        worker_token=os.environ.get('WORKER_TOKEN', 'synthetic'),
         namespace=os.environ.get('NAMESPACE', 'default'),
     ) as client:
         info = await client.get_cluster_info()
