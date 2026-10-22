@@ -31,7 +31,10 @@ async fn closing_a_run_rejects_its_unapplied_signals() {
         assert_eq!(payload["rejection_reason"], "run_closed_before_signal_applied");
         assert_eq!(payload["terminal_reason"], "terminated");
         assert!(payload["signal_id"].is_string() && payload["command_sequence"].is_i64(), "{payload}");
-        assert_eq!(payload["command"]["id"], *command, "{payload}");
+        // PHP records it with the command id, not the command: no snapshot.
+        // The API terminate has no task, so neither has the rejection.
+        assert!(payload.get("command").is_none() && payload.get("task").is_none(), "{payload}");
+        assert_eq!(event["principal"], Value::Null, "{event}");
     }
 
     // The export shows each signal rejected while its command stays accepted.
@@ -43,4 +46,29 @@ async fn closing_a_run_rejects_its_unapplied_signals() {
         assert_eq!(signal["rejection_reason"], "run_closed_before_signal_applied");
     }
     assert_eq!(export["signals"].as_array().unwrap().len(), 2, "{export}");
+}
+
+// A worker's completion records its task, and the rejection that follows
+// repeats that task snapshot, as PHP records both with the same task.
+#[tokio::test]
+async fn a_completion_s_rejections_repeat_its_task_snapshot() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register(&app, "worker", json!(["echo"]), json!([])).await;
+    let started = start(&app, "completed-signals").await;
+    let task = poll(&app, "worker", "workflow").await;
+    let (status, signal) = request(&app, "POST", "/api/workflows/completed-signals/signal/late", json!({"input": []})).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{signal}");
+    let complete = json!({"type": "complete_workflow", "result": envelope(Payload::Long(1))});
+    assert_eq!(finish_task(&app, &task, json!([complete])).await.0, StatusCode::OK);
+
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let events = history.as_array().unwrap();
+    let kinds: Vec<_> = events.iter().map(|event| event["event_type"].as_str().unwrap()).collect();
+    assert_eq!(&kinds[kinds.len() - 2..], ["WorkflowCompleted", "SignalRejected"], "{kinds:?}");
+    let (completed, rejected) = (&events[events.len() - 2], &events[events.len() - 1]);
+    assert!(completed["payload"]["task"].is_object(), "{completed}");
+    assert_eq!(rejected["payload"]["task"], completed["payload"]["task"]);
+    assert_eq!(rejected["payload"]["terminal_reason"], "completed");
+    assert!(rejected["payload"].get("command").is_none(), "{rejected}");
 }
