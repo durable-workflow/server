@@ -667,3 +667,36 @@ async fn namespace_updates_follow_published_retention_rules() {
     runtime.close().await;
     database.remove().await;
 }
+
+// Waterline's run detail lists the instance's runs and reads the debug view
+// and history export. In a named namespace they serve that namespace's run,
+// and another namespace gets 404 for the globally unique workflow id.
+#[tokio::test]
+async fn named_namespaces_serve_the_run_reads_waterline_uses() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    for name in ["alpha", "beta"] {
+        create(&app, name).await;
+    }
+    let started = start_scoped(&app, "alpha", "namespace-reads").await;
+    let run = started["run_id"].as_str().unwrap();
+    let reads = [
+        "/api/workflows/namespace-reads/runs".to_owned(),
+        "/api/workflows/namespace-reads/debug".to_owned(),
+        format!("/api/workflows/namespace-reads/runs/{run}/debug"),
+        format!("/api/workflows/namespace-reads/runs/{run}/history/export"),
+    ];
+    for uri in &reads {
+        let (status, body) = scoped(&app, "alpha", "GET", uri, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+        let (status, foreign) = scoped(&app, "beta", "GET", uri, Value::Null).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}: {foreign}");
+    }
+    let (_, runs) = scoped(&app, "alpha", "GET", &reads[0], Value::Null).await;
+    assert_eq!(runs["runs"][0]["run_id"], started["run_id"], "{runs}");
+    let (_, debug) = scoped(&app, "alpha", "GET", &reads[2], Value::Null).await;
+    assert_eq!(debug["run_id"], started["run_id"], "{debug}");
+    runtime.close().await;
+    database.remove().await;
+}

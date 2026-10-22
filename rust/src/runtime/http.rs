@@ -622,6 +622,14 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
         if matches!(parts.as_slice(), [_, "runs", _, "activities", _, "result"]) {
             return method == "GET";
         }
+        // Waterline's run detail: the run list, debug view and history export.
+        // Each reads the instance within the request's namespace first.
+        if matches!(
+            parts.as_slice(),
+            [_, "runs"] | [_, "debug"] | [_, "runs", _, "debug"] | [_, "runs", _, "history", "export"]
+        ) {
+            return method == "GET";
+        }
         if matches!(
             parts.as_slice(),
             [_, "runs", _, "streams"] | [_, "runs", _, "streams", _] | [_, "runs", _, "streams", _, "items"]
