@@ -5,15 +5,15 @@
   "sinks": [
     {
       "path": ".github/workflows/helm-chart-checks.yml",
-      "line": "python -m pip install --only-binary :all: PyYAML==6.0.2",
+      "line": "python -I -m pip install --only-binary :all: PyYAML==6.0.2",
       "count": 1,
-      "confinement": "Central bootstrap-patched-pip earlier in the job; this step's env sets PIP_USE_DEPRECATED=legacy-certs, so pip uses only the bundle the action checked."
+      "confinement": "Central bootstrap-patched-pip earlier in the job; this step's env sets PIP_USE_DEPRECATED=legacy-certs, so pip uses only the bundle the action checked. `-I` keeps a checked-out `pip` package from shadowing the installed client."
     },
     {
       "path": ".github/workflows/helm-chart-checks.yml",
-      "line": "uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10  # patched-pip",
+      "line": "uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust",
       "count": 2,
-      "confinement": "The central bootstrap action: installs the hash-pinned pip 26.2.2 and checks its bundle."
+      "confinement": "The central clean-trust action (Security-accepted .github #239): installs the hash-pinned pip 26.2.2, checks its bundle and exports it, with an empty SSL_CERT_DIR, as PIP_CERT and SSL_CERT_FILE to later steps."
     },
     {
       "path": ".github/workflows/helm-chart-checks.yml",
@@ -25,25 +25,25 @@
       "path": ".github/workflows/phpunit-feature.yml",
       "line": "run: python -m pip install PyYAML==6.0.2",
       "count": 1,
-      "confinement": "KNOWN EXCEPTION, owned by .github #239: the central policy fixes this preflight job's exact steps and forbids job env, so it is confined only when the pin moves to the accepted central action head."
+      "confinement": "The clean-trust action at the preflight's reviewed step exports the checked bundle as PIP_CERT and SSL_CERT_FILE with an empty SSL_CERT_DIR, so pip and its truststore see only that bundle."
     },
     {
       "path": ".github/workflows/phpunit-feature.yml",
-      "line": "uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10  # patched-pip",
+      "line": "uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust",
       "count": 1,
-      "confinement": "The central bootstrap action at the policy's reviewed step."
+      "confinement": "The central clean-trust action (Security-accepted .github #239): installs the hash-pinned pip 26.2.2, checks its bundle and exports it, with an empty SSL_CERT_DIR, as PIP_CERT and SSL_CERT_FILE to later steps. At the policy's reviewed preflight step."
     },
     {
       "path": ".github/workflows/server-perf.yml",
-      "line": "python3 -m pip install \\",
+      "line": "python3 -I -m pip install \\",
       "count": 1,
-      "confinement": "Central bootstrap earlier in the job, then PIP_CERT (checked bundle) and PIP_USE_DEPRECATED=legacy-certs are set for the job."
+      "confinement": "Central bootstrap earlier in the job, then PIP_CERT (checked bundle) and PIP_USE_DEPRECATED=legacy-certs are set for the job. `-I` keeps a checked-out `pip` package from shadowing the installed client."
     },
     {
       "path": ".github/workflows/server-perf.yml",
-      "line": "uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10  # patched-pip",
+      "line": "uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust",
       "count": 1,
-      "confinement": "The central bootstrap action."
+      "confinement": "The central clean-trust action (Security-accepted .github #239): installs the hash-pinned pip 26.2.2, checks its bundle and exports it, with an empty SSL_CERT_DIR, as PIP_CERT and SSL_CERT_FILE to later steps."
     },
     {
       "path": "benchmarks/capacity/v1/README.md",
@@ -61,7 +61,7 @@
       "path": "scripts/ci/bootstrap-patched-pip.sh",
       "line": "\"$python\" -I -m pip --isolated --disable-pip-version-check install --no-deps --upgrade --quiet --no-cache-dir \\",
       "count": 1,
-      "confinement": "The bootstrap itself: installs the hash-pinned pip wheel, so the download is verified by hash."
+      "confinement": "The bootstrap itself: installs the hash-pinned pip wheel, so the download is verified by hash. `-I` keeps a checked-out `pip` package from shadowing the installed client."
     },
     {
       "path": "scripts/ci/bootstrap-patched-pip.sh",

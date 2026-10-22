@@ -178,7 +178,7 @@ jobs:
           python-version: "3.13"
 
       - name: Bootstrap patched pip trust
-        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10  # patched-pip
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
 
       # pip also trusts the runner's own store (truststore). Confine every
       # later pip in this job to the bundle the bootstrap action checked.
@@ -206,7 +206,7 @@ jobs:
             php benchmarks/capacity/v1/bindings/php/capacity_adapter.php check
           rm -rf benchmarks/capacity/v1/bindings/php/vendor
 
-          python3 -m pip install \
+          python3 -I -m pip install \
             --requirement benchmarks/capacity/v1/bindings/python/requirements.lock \
             --target build/capacity-python-adapter
           PYTHONPATH=build/capacity-python-adapter \
