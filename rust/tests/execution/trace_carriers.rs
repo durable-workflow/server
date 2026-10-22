@@ -101,16 +101,20 @@ async fn caller_trace_context_is_ignored_where_php_admits_it_and_nowhere_else() 
         "input":envelope(Payload::Array(vec![Payload::Long(9007199254740993)]))})).await;
     assert_eq!(plain_retry.1["outcome"], "returned_existing_active");
 
-    // Terminate is not an operation that admits the carrier.
-    let refused = request(
+    // Terminate does not admit the carrier, but published PHP ignores it
+    // there like any field outside its rules.
+    let started = request(&app, "POST", "/api/workflows", json!({"workflow_id":"trace-terminated","workflow_type":"echo",
+        "task_queue":"test","input":envelope(Payload::Array(vec![Payload::Long(1)]))})).await;
+    assert_eq!(started.0, StatusCode::CREATED, "{}", started.1);
+    let terminated = request(
         &app,
         "POST",
-        "/api/workflows/trace-carried/terminate",
+        "/api/workflows/trace-terminated/terminate",
         traced(json!({"reason":"not admitted"})),
     )
     .await;
-    assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", refused.1);
-    assert_eq!(refused.1["reason"], "unsupported_request_field");
+    assert_eq!(terminated.0, StatusCode::OK, "{}", terminated.1);
+    assert_eq!(terminated.1["outcome"], "terminated");
     // Beside the carrier, other unknown signal fields are ignored, as PHP's
     // validated input leaves them.
     let mut unknown = number(1);

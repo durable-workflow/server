@@ -80,7 +80,18 @@ where
             return Ok(ChildParentResume::New);
         }
         if Self::cancellation_request(parent)?.is_none() {
-            return Err(refuse(StatusCode::CONFLICT, "child_parent_task_conflict"));
+            // An update task does not replay the root workflow, so the
+            // resolution gets its own resume task, as activity and timer
+            // resolutions do. Published PHP reuses the open task instead.
+            for task in &tasks {
+                if DB::document_row(task, "payload")?["workflow_update_id"]
+                    .as_str()
+                    .is_none()
+                {
+                    return Err(refuse(StatusCode::CONFLICT, "child_parent_task_conflict"));
+                }
+            }
+            return Ok(ChildParentResume::New);
         }
         if tasks.len() > 1000 {
             return Err(refuse(

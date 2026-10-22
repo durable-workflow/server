@@ -8,6 +8,7 @@ use super::{
     store::{PreparedControlArguments, Store, id, now, validate_arguments},
     text, wire,
 };
+use super::laravel_validation::{Rule, failure_messages, rule_errors};
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
@@ -22,7 +23,6 @@ enum UpdateLookup {
     AdmissionRun,
     StartContract,
     Inventory,
-    WaitLookup,
     HistoryAppend,
     TaskEnqueue,
     ReceiptRead,
@@ -35,7 +35,6 @@ impl UpdateLookup {
             Self::AdmissionRun => "admission_run",
             Self::StartContract => "start_contract",
             Self::Inventory => "inventory",
-            Self::WaitLookup => "wait_lookup",
             Self::HistoryAppend => "history_append",
             Self::TaskEnqueue => "task_enqueue",
             Self::ReceiptRead => "receipt_read",
@@ -111,7 +110,6 @@ mod tests {
             UpdateLookup::AdmissionRun,
             UpdateLookup::StartContract,
             UpdateLookup::Inventory,
-            UpdateLookup::WaitLookup,
             UpdateLookup::HistoryAppend,
             UpdateLookup::TaskEnqueue,
             UpdateLookup::ReceiptRead,
@@ -121,7 +119,6 @@ mod tests {
             "admission_run",
             "start_contract",
             "inventory",
-            "wait_lookup",
             "history_append",
             "task_enqueue",
             "receipt_read",
@@ -211,6 +208,7 @@ where
         name: &str,
         body: Value,
         prepared: PreparedControlArguments,
+        context: Option<Value>,
     ) -> Result<(StatusCode, Value)> {
         if name.trim().is_empty() || name.len() > 255 {
             return Err(refuse(
@@ -218,43 +216,20 @@ where
                 "invalid_update_name",
             ));
         }
-        let request_id = body
-            .get("request_id")
-            .filter(|value| !value.is_null())
-            .map(|_| text(&body, "request_id"))
-            .transpose()?;
-        if request_id.is_some_and(|request| request.len() > 255) {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid_request_id",
-            ));
+        // `WorkflowController::update`'s rules, on the trimmed request.
+        let request = super::start_request::normalized(body.clone());
+        let rules: &[(&str, &[Rule])] = &[
+            ("request_id", &[Rule::Nullable, Rule::String, Rule::Max(255)]),
+            ("wait_for", &[Rule::Nullable, Rule::String, Rule::In(&["accepted", "completed"])]),
+            ("wait_timeout_seconds", &[Rule::Nullable, Rule::Integer, Rule::Min(1)]),
+        ];
+        if let Some(error) = failure_messages(rule_errors(&request, rules, |_, _| None)) {
+            return Err(error);
         }
+        let request_id = request["request_id"].as_str();
         // PHP waits for acceptance unless the request asks for completion.
-        let wait_for = body
-            .get("wait_for")
-            .filter(|value| !value.is_null())
-            .map_or(Ok("accepted"), |_| text(&body, "wait_for"))?;
-        if !matches!(wait_for, "accepted" | "completed") {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid_update_wait_policy",
-            ));
-        }
-        let timeout = body
-            .get("wait_timeout_seconds")
-            .filter(|value| !value.is_null())
-            .map(|value| {
-                value
-                    .as_i64()
-                    .filter(|seconds| (0..=30).contains(seconds))
-                    .ok_or_else(|| {
-                        refuse(
-                            StatusCode::UNPROCESSABLE_ENTITY,
-                            "unsupported_update_wait_timeout",
-                        )
-                    })
-            })
-            .transpose()?;
+        let wait_for = request["wait_for"].as_str().unwrap_or("accepted");
+        let timeout = super::laravel_validation::integer(&request["wait_timeout_seconds"]);
         let mut tx = self
             .begin()
             .await
@@ -318,25 +293,14 @@ where
                 "unsupported_update_contract",
                 "invalid_update_arguments",
             )?;
+            // Published PHP admits an update whenever its run is active. It is
+            // queued behind an earlier signal that is not applied yet
+            // (`UpdateCommandGate::blockingSignal`).
+            let blocking = Self::blocking_signal(&mut tx, &run_id, None, None).await
+                .map_err(|error| at_update_lookup(error, UpdateLookup::Inventory))?;
             let open_tasks = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased')")
                 .bind(&run_id).fetch_one(&mut *tx).await
                 .map_err(|error| at_update_lookup(error.into(), UpdateLookup::Inventory))?;
-            let pending_signals = Self::scalar("SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received'")
-                .bind(&run_id).fetch_one(&mut *tx).await
-                .map_err(|error| at_update_lookup(error.into(), UpdateLookup::Inventory))?;
-            let pending_updates = Self::scalar("SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id=$1 AND status='accepted'")
-                .bind(&run_id).fetch_one(&mut *tx).await
-                .map_err(|error| at_update_lookup(error.into(), UpdateLookup::Inventory))?;
-            if open_tasks != 0
-                || pending_signals != 0
-                || pending_updates != 0
-                || Self::open_wait(&mut tx, &run_id)
-                    .await
-                    .map_err(|error| at_update_lookup(error, UpdateLookup::WaitLookup))?
-                    .is_none()
-            {
-                return Err(refuse(StatusCode::CONFLICT, "update_snapshot_busy"));
-            }
             let count =
                 Self::scalar("SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id=$1")
                     .bind(&run_id)
@@ -361,7 +325,7 @@ where
             Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,source,status,workflow_type,payload_codec,payload,command_sequence,message_sequence,accepted_at,context,request_id) VALUES ($1,$2,$3,$4,'update','control_plane','accepted',$5,'avro',$6,$7,$8,$9,$10,$11)")
                 .bind(&command_id).bind(workflow_id).bind(&run_id).bind(&run_id).bind(DB::string(&run, "workflow_type")?)
                 .bind(&prepared.command).bind(command_sequence).bind(message_sequence).bind(DB::bind_time(accepted_at))
-                .bind(DB::document(&json!({"request":{"request_id":request_id},"update_name":name}))).bind(request_id).execute(&mut *tx).await?;
+                .bind(DB::document(&context.clone().unwrap_or_else(|| json!({"request":{"request_id":request_id},"update_name":name})))).bind(request_id).execute(&mut *tx).await?;
             Self::query("INSERT INTO workflow_updates(id,workflow_command_id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,update_name,status,command_sequence,payload_codec,arguments,accepted_at) VALUES ($1,$2,$3,$4,$5,$6,'accepted',$7,'avro',$8,$9)")
                 .bind(&update_id).bind(&command_id).bind(workflow_id).bind(&run_id).bind(&run_id).bind(name).bind(command_sequence)
                 .bind(&prepared.arguments).bind(DB::bind_time(accepted_at)).execute(&mut *tx).await?;
@@ -375,18 +339,26 @@ where
                 .bind(workflow_id)
                 .execute(&mut *tx)
                 .await?;
+            let (queued_id, queued_sequence) = match &blocking {
+                Some(command) => (json!(DB::string(command, "id")?), json!(DB::number(command, "command_sequence")?)),
+                None => (Value::Null, Value::Null),
+            };
             Self::append(&mut tx, &run_id, "UpdateAccepted", json!({
                 "workflow_command_id":command_id,"update_id":update_id,"workflow_instance_id":workflow_id,
-                "workflow_run_id":run_id,"update_name":name,"arguments":wire(&prepared.arguments),"ordering_state":"ready",
-                "request_id":request_id,"command":{"id":command_id,"sequence":command_sequence,"message_sequence":message_sequence,
-                    "type":"update","target_scope":"instance","resolved_run_id":run_id,"status":"accepted","outcome":null}
+                "workflow_run_id":run_id,"update_name":name,"arguments":wire(&prepared.arguments),
+                "ordering_state":if blocking.is_some() {"queued"} else {"ready"},
+                "queued_behind_command_id":queued_id,"queued_behind_command_sequence":queued_sequence,
+                "queued_behind_command_type":if blocking.is_some() {json!("signal")} else {Value::Null},
+                "request_id":request_id
             }), None, Some(&command_id)).await
                 .map_err(|error| at_update_lookup(error, UpdateLookup::HistoryAppend))?;
-            let task_id = Self::create_task(&mut tx, &run_id, &DB::string(&run, "queue")?, "workflow",
-                json!({"resume_source_kind":"workflow_update","workflow_update_id":update_id,"workflow_command_id":command_id})).await
-                .map_err(|error| at_update_lookup(error, UpdateLookup::TaskEnqueue))?;
-            Self::query("UPDATE workflow_run_waits SET task_id=$1,task_type='workflow',task_status='ready',task_backed=TRUE WHERE workflow_run_id=$2 AND wait_id=$3 AND kind='update' AND status='open'")
-                .bind(task_id).bind(&run_id).bind(format!("update:{update_id}")).execute(&mut *tx).await?;
+            // A ready update is delivered now when the run has no open
+            // workflow task. Otherwise the open task's completion delivers
+            // the run's next message. PHP instead merges it into a ready task.
+            if blocking.is_none() && open_tasks == 0 {
+                Self::enqueue_next_message(&mut tx, &run_id, &DB::string(&run, "queue")?).await
+                    .map_err(|error| at_update_lookup(error, UpdateLookup::TaskEnqueue))?;
+            }
             update_id
         };
         // A completion wait owns neither the transaction nor a pool connection.
@@ -465,7 +437,8 @@ where
             "closed_at":DB::optional_instant(update,"closed_at")?,"reason":null,"rejection_reason":null,"validation_errors":[],
             "wait_for":wait_for,"wait_timed_out":timed_out,"wait_timeout_seconds":timeout
         });
-        Ok(super::control_plane::Operation::Update.response(response))
+        let name = response["update_name"].as_str().unwrap_or_default().to_owned();
+        Ok(super::control_plane::Operation::Update(&name).response(response))
     }
 
     pub(super) fn update_worker_supported(
@@ -488,6 +461,21 @@ where
             && contracts[workflow_type]["updates"]
                 .as_array()
                 .is_some_and(|names| names.iter().any(|value| value == name)))
+    }
+
+    /// The task that delivers an accepted update to a worker.
+    pub(super) async fn create_update_task(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        queue: &str,
+        update_id: &str,
+        command_id: &str,
+    ) -> Result<String> {
+        let task_id = Self::create_task(tx, run_id, queue, "workflow",
+            json!({"resume_source_kind":"workflow_update","workflow_update_id":update_id,"workflow_command_id":command_id})).await?;
+        Self::query("UPDATE workflow_run_waits SET task_id=$1,task_type='workflow',task_status='ready',task_backed=TRUE WHERE workflow_run_id=$2 AND wait_id=$3 AND kind='update' AND status='open'")
+            .bind(&task_id).bind(run_id).bind(format!("update:{update_id}")).execute(&mut **tx).await?;
+        Ok(task_id)
     }
 
     pub(super) async fn apply_update(
@@ -525,18 +513,34 @@ where
         let command_id = DB::string(&update, "workflow_command_id")?;
         let task_id = DB::string(task, "id")?;
         let message_sequence = DB::number(&update, "message_sequence")?;
-        let previous = DB::number(run, "message_cursor_position")?;
-        if previous.checked_add(1) != Some(message_sequence) {
-            return Err(refuse(
-                StatusCode::CONFLICT,
-                "update_message_order_mismatch",
-            ));
+        // `validateUpdateCommands`: an update applies only after every
+        // earlier signal, except the one this task itself carries.
+        let carried = DB::document_row(task, "payload")?["workflow_command_id"]
+            .as_str()
+            .map(str::to_owned);
+        if Self::blocking_signal(
+            tx,
+            &run_id,
+            DB::optional_number(&update, "command_sequence")?,
+            carried.as_deref(),
+        )
+        .await?
+        .is_some()
+        {
+            return Err(refuse(StatusCode::CONFLICT, "update_queued_behind_signal"));
         }
+        // Read the cursor here: a signal applied earlier in this completion
+        // may have moved it.
+        let previous = DB::number(
+            &Self::query("SELECT message_cursor_position FROM workflow_runs WHERE id=$1")
+                .bind(&run_id)
+                .fetch_one(&mut **tx)
+                .await?,
+            "message_cursor_position",
+        )?;
         let payload = json!({
             "workflow_command_id":command_id,"update_id":update_id,"workflow_instance_id":workflow_id,
-            "workflow_run_id":run_id,"update_name":name,"sequence":sequence,
-            "command":{"id":command_id,"sequence":DB::number(&update,"command_sequence")?,"message_sequence":message_sequence,
-                "type":"update","target_scope":"instance","resolved_run_id":run_id,"status":"accepted","outcome":null}
+            "workflow_run_id":run_id,"update_name":name,"sequence":sequence
         });
         if let Some(failure) = failure {
             let failure_id = id();
@@ -609,14 +613,38 @@ where
             .execute(&mut **tx)
             .await?;
         }
-        Self::query("UPDATE workflow_runs SET message_cursor_position=$1 WHERE id=$2")
-            .bind(message_sequence)
-            .bind(&run_id)
-            .execute(&mut **tx)
-            .await?;
-        Self::append(tx, &run_id, "MessageCursorAdvanced", json!({
-            "stream_key":format!("instance:{workflow_id}"),"previous_position":previous,"new_position":message_sequence
-        }), Some(&task_id), None).await?;
+        // `MessageStreamCursor::advanceCursor` only moves forward.
+        if message_sequence > previous {
+            Self::query("UPDATE workflow_runs SET message_cursor_position=$1 WHERE id=$2")
+                .bind(message_sequence)
+                .bind(&run_id)
+                .execute(&mut **tx)
+                .await?;
+            Self::append(tx, &run_id, "MessageCursorAdvanced", json!({
+                "stream_key":format!("instance:{workflow_id}"),"previous_position":previous,"new_position":message_sequence
+            }), Some(&task_id), None).await?;
+        }
         Ok(())
+    }
+
+    /// `UpdateCommandGate::blockingSignal`: the earliest accepted signal not
+    /// yet applied, optionally only one before `before` and other than
+    /// `ignored`.
+    pub(super) async fn blocking_signal(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        before: Option<i64>,
+        ignored: Option<&str>,
+    ) -> Result<Option<DB::Row>> {
+        let query = match (before, ignored) {
+            (None, None) => Self::query("SELECT id,command_sequence FROM workflow_commands WHERE workflow_run_id=$1 AND command_type='signal' AND status='accepted' AND applied_at IS NULL ORDER BY CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END,command_sequence,created_at,id LIMIT 1").bind(run_id),
+            (Some(before), None) => Self::query("SELECT id,command_sequence FROM workflow_commands WHERE workflow_run_id=$1 AND command_type='signal' AND status='accepted' AND applied_at IS NULL AND command_sequence<$2 ORDER BY CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END,command_sequence,created_at,id LIMIT 1")
+                .bind(run_id).bind(before),
+            (None, Some(ignored)) => Self::query("SELECT id,command_sequence FROM workflow_commands WHERE workflow_run_id=$1 AND command_type='signal' AND status='accepted' AND applied_at IS NULL AND id<>$2 ORDER BY CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END,command_sequence,created_at,id LIMIT 1")
+                .bind(run_id).bind(ignored.to_owned()),
+            (Some(before), Some(ignored)) => Self::query("SELECT id,command_sequence FROM workflow_commands WHERE workflow_run_id=$1 AND command_type='signal' AND status='accepted' AND applied_at IS NULL AND command_sequence<$2 AND id<>$3 ORDER BY CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END,command_sequence,created_at,id LIMIT 1")
+                .bind(run_id).bind(before).bind(ignored.to_owned()),
+        };
+        Ok(query.fetch_optional(&mut **tx).await?)
     }
 }

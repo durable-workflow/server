@@ -217,7 +217,7 @@ where
                     };
                     let reason = format!("Schedule overlap: {policy} policy applied.");
                     let _ = store
-                        .close_workflow(command, &workflow, None, Some(reason), Some(close_reason(&policy)))
+                        .close_workflow(command, &workflow, None, Some(reason), Some(close_reason(&policy)), None)
                         .await;
                     closed = true;
                 }
@@ -362,7 +362,7 @@ where
             Some(memo) => super::memos::initial(memo)?,
             None => Default::default(),
         };
-        let started = Self::start_in(tx, &start, &self.namespace, Some(&memo), None).await?;
+        let started = Self::start_in(tx, &start, &self.namespace, Some(&memo), None, None).await?;
         let workflow = started["workflow_id"].as_str().unwrap_or_default().to_owned();
         let run = started["run_id"].as_str().unwrap_or_default().to_owned();
         let fires = DB::number(row, "fires_count")?;

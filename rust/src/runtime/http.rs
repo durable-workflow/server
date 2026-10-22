@@ -12,13 +12,13 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
 
+use super::command_context::CommandRequest;
+use super::runtime_credentials::Principal;
 use super::{Result, Runtime, cancellation::TerminalCommand, refuse, store::capabilities};
 
 #[derive(Clone)]
 pub(super) struct AuthenticatedPrincipal {
-    pub(super) role: &'static str,
-    pub(super) legacy_credential: bool,
-    pub(super) legacy_full_access: bool,
+    pub(super) principal: super::runtime_credentials::Principal,
 }
 
 pub fn router(runtime: Runtime) -> Router {
@@ -50,6 +50,17 @@ pub fn router(runtime: Runtime) -> Router {
         .route(
             "/api/search-attributes",
             get(list_search_attributes).post(create_search_attribute),
+        )
+        .route("/api/runtime-credentials", get(list_runtime_credentials))
+        .route(
+            "/api/runtime-credentials/{credential_id}",
+            get(show_runtime_credential)
+                .put(upsert_runtime_credential)
+                .delete(revoke_runtime_credential),
+        )
+        .route(
+            "/api/runtime-credentials/{credential_id}/rotate",
+            post(rotate_runtime_credential),
         )
         .route(
             "/api/search-attributes/{name}",
@@ -198,6 +209,7 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/system/operator-dashboard/bounded/workflow-types",
             get(workflow_type_operator_dashboard),
         )
+        .route("/api/system/repair", get(repair_status))
         .route("/api/system/retention", get(retention_status))
         .route("/api/system/retention/pass", post(retention_pass))
         .route("/api/system/activity-timeouts", get(activity_timeout_status))
@@ -259,8 +271,10 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/worker/query-tasks/{task_id}/fail", post(fail_query))
         .fallback(unavailable)
         .layer(middleware::from_fn(empty_list_body))
-        .layer(DefaultBodyLimit::max(3 * 1024 * 1024))
+        // `payload_limits` reads and bounds every body first.
+        .layer(DefaultBodyLimit::disable())
         .layer(middleware::from_fn_with_state(runtime.clone(), guard))
+        .layer(middleware::from_fn(super::payload_limits::enforce))
         .with_state(runtime)
 }
 
@@ -305,7 +319,7 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         .and_then(|v| v.to_str().ok());
     let provided = authorization.and_then(|v| v.strip_prefix("Bearer "));
     let roles = ["worker", "operator", "admin"];
-    let authenticated = provided.and_then(|provided| {
+    let configured = provided.and_then(|provided| {
         // Match configured roles before the legacy credential, matching PHP's
         // collision precedence. Equal-length secret contents use constant-time
         // comparison; secrets never enter response or diagnostic values.
@@ -314,18 +328,42 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
                 .as_ref()
                 .is_some_and(|secret| bool::from(provided.as_bytes().ct_eq(secret.as_bytes())))
             {
-                return Some((role, false, false));
+                return Some((Principal::role(role, "token", false), false));
             }
         }
         bool::from(provided.as_bytes().ct_eq(runtime.token.as_bytes())).then(|| {
-            (
+            let mut principal = Principal::role(
                 "admin",
+                "token",
                 runtime.role_tokens.iter().all(Option::is_none),
-                true,
-            )
+            );
+            principal.subject = "legacy-token".into();
+            principal.claims = json!({"legacy_credential": true});
+            (principal, true)
         })
     });
-    let Some((role, legacy_full_access, legacy_credential)) = authenticated else {
+    // `ConfiguredAuthProvider::authenticate`: the none driver admits every
+    // request as the anonymous administrator; otherwise database runtime
+    // credentials follow the configured tokens.
+    let authenticated = if runtime.auth.anonymous {
+        let mut principal = Principal::role("admin", "none", true);
+        principal.subject = "anonymous".into();
+        Some((principal, false))
+    } else if configured.is_some() {
+        configured
+    } else if let (true, Some(provided)) = (runtime.auth.runtime_credentials, provided) {
+        match runtime.runtime_credential_principal(provided).await {
+            Ok(principal) => principal.map(|principal| (principal, false)),
+            Err(_) => {
+                return admission_error(request, worker, StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({"reason":"server_error",
+                        "message":"Database runtime credential authentication is enabled but unavailable."})).await;
+            }
+        }
+    } else {
+        None
+    };
+    let Some((principal, _legacy_credential)) = authenticated else {
         if payload {
             return admission_error(
                 request,
@@ -364,15 +402,39 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         || path.starts_with("/api/namespaces/") && request.method() == Method::PUT
         // PHP's system routes are admin-only.
         || path.starts_with("/api/system/")
+        || path == "/api/runtime-credentials"
+        || path.starts_with("/api/runtime-credentials/")
     {
         &["admin"]
     } else {
         &["operator", "admin"]
     };
-    if !legacy_full_access && !allowed_roles.contains(&role) {
+    // `RouteAuthorizationResource`: the requested namespace, and the target
+    // of a namespace route.
+    let requested_namespace = match request.headers().get("x-namespace") {
+        Some(header) => header.to_str().unwrap_or("").to_lowercase(),
+        None => Query::<std::collections::HashMap<String, String>>::try_from_uri(request.uri())
+            .ok()
+            .and_then(|Query(fields)| fields.get("namespace").cloned())
+            .unwrap_or_else(|| "default".into())
+            .to_lowercase(),
+    };
+    let namespace_family = path == "/api/namespaces" || path.starts_with("/api/namespaces/");
+    // A namespace route names its target in the path, or else in `name`.
+    // PHP also reads `name` from a JSON body; only creating a namespace sends
+    // one, and that needs an admin, which native never binds to a tenant.
+    let target_namespace = match path.strip_prefix("/api/namespaces/").and_then(|rest| rest.split('/').next()) {
+        Some(segment) if !segment.is_empty() => Some(segment.trim().to_lowercase()),
+        _ if namespace_family => Query::<std::collections::HashMap<String, String>>::try_from_uri(request.uri())
+            .ok()
+            .and_then(|Query(fields)| fields.get("name").map(|name| name.trim().to_lowercase()))
+            .filter(|name| !name.is_empty()),
+        _ => None,
+    };
+    if !principal.allows(allowed_roles, &requested_namespace, target_namespace.as_deref(), namespace_family) {
         return admission_error(request, worker, StatusCode::FORBIDDEN, json!({
             "reason":"forbidden", "message":"Authenticated role is not allowed to access this endpoint.",
-            "role":role, "allowed_roles":allowed_roles,
+            "role":principal.primary_role(), "allowed_roles":allowed_roles,
         })).await;
     }
     let header = if worker {
@@ -380,7 +442,7 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
     } else {
         "x-durable-workflow-control-plane-version"
     };
-    let version = if worker { "1.20" } else { "2" };
+    let version = if worker { super::WORKER_PROTOCOL_VERSION } else { "2" };
     let requested = request
         .headers()
         .get(header)
@@ -475,9 +537,7 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
             .insert(runtime.in_namespace(&namespace));
     }
     request.extensions_mut().insert(AuthenticatedPrincipal {
-        role,
-        legacy_credential,
-        legacy_full_access,
+        principal,
     });
     let mut response = next.run(request).await;
     response
@@ -487,6 +547,10 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
 }
 
 fn named_namespace_operation(method: &str, path: &str) -> bool {
+    // Runtime credentials are server-wide; the namespace only scopes a tenant.
+    if path == "/api/runtime-credentials" || path.starts_with("/api/runtime-credentials/") {
+        return true;
+    }
     if path == "/api/external-payloads/v1" {
         return method == "POST";
     }
@@ -540,6 +604,7 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
         // timeout scan spans namespaces in PHP too.
         || path == "/api/system/retention"
         || path == "/api/system/activity-timeouts"
+        || path == "/api/system/repair"
     {
         return method == "GET";
     }
@@ -641,6 +706,41 @@ async fn storage_test(
     Ok(Json(super::storage_test::storage_test(&runtime, body).await?))
 }
 
+async fn list_runtime_credentials(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    Ok(Json(runtime.list_runtime_credentials().await?))
+}
+
+async fn show_runtime_credential(
+    Extension(runtime): Extension<Runtime>,
+    Path(credential_id): Path<String>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.show_runtime_credential(&credential_id).await?))
+}
+
+async fn upsert_runtime_credential(
+    Extension(runtime): Extension<Runtime>,
+    Path(credential_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, body) = runtime.upsert_runtime_credential(&credential_id, body).await?;
+    Ok((status, Json(body)))
+}
+
+async fn rotate_runtime_credential(
+    Extension(runtime): Extension<Runtime>,
+    Path(credential_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.rotate_runtime_credential(&credential_id, body).await?))
+}
+
+async fn revoke_runtime_credential(
+    Extension(runtime): Extension<Runtime>,
+    Path(credential_id): Path<String>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.revoke_runtime_credential(&credential_id).await?))
+}
+
 async fn list_search_attributes(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
     Ok(Json(runtime.list_search_attributes().await?))
 }
@@ -660,16 +760,16 @@ async fn delete_search_attribute(
     Ok(Json(runtime.delete_search_attribute(&name).await?))
 }
 
-async fn admission_error(
+pub(super) async fn admission_error(
     request: Request,
     worker: bool,
     status: StatusCode,
     mut body: Value,
 ) -> Response {
     let (header, version) = if worker {
-        body["protocol_version"] = json!("1.20");
+        body["protocol_version"] = json!(super::WORKER_PROTOCOL_VERSION);
         body["server_capabilities"] = capabilities();
-        ("x-durable-workflow-protocol-version", "1.20")
+        ("x-durable-workflow-protocol-version", super::WORKER_PROTOCOL_VERSION)
     } else {
         body = super::control_plane::admission_response(request, body).await;
         ("x-durable-workflow-control-plane-version", "2")
@@ -712,10 +812,17 @@ async fn ready(Extension(runtime): Extension<Runtime>) -> Response {
 async fn cluster() -> Json<Value> {
     let auth_composition: Value = serde_json::from_str(include_str!("auth-composition.v1.json"))
         .expect("valid bundled carrier auth composition contract");
+    // Published PHP's `PrincipalAttributionContract::manifest()`, identical in
+    // Server 2.5.14, 2.10.0 and 2.11.0. Native records the authenticated
+    // principal as it describes.
+    let principal_attribution: Value =
+        serde_json::from_str(include_str!("principal-attribution-contract.v2.json"))
+            .expect("valid bundled principal attribution contract");
     Json(
         json!({"version": env!("CARGO_PKG_VERSION"), "implementation": "rust", "development": true,
-        "control_plane": {"version": "2", "request_contract": super::visibility::request_contract()}, "worker_protocol": {"version": "1.20", "server_capabilities": capabilities()},
+        "control_plane": {"version": "2", "request_contract": super::visibility::request_contract()}, "worker_protocol": {"version": super::WORKER_PROTOCOL_VERSION, "server_capabilities": capabilities()},
         "auth_composition_contract": auth_composition,
+        "principal_attribution_contract": principal_attribution,
         "payload_codec": "avro", "qualified_for_php_takeover": false}),
     )
 }
@@ -743,13 +850,51 @@ fn without_trace_carrier(mut body: Value) -> Value {
     body
 }
 
+/// The operation fields PHP records in a command context, without nulls;
+/// `[]` when there are none.
+fn metadata(fields: &[(&str, Option<Value>)]) -> Value {
+    let fields: serde_json::Map<String, Value> = fields
+        .iter()
+        .filter_map(|(name, value)| value.clone().filter(|value| !value.is_null()).map(|value| ((*name).to_owned(), value)))
+        .collect();
+    if fields.is_empty() { json!([]) } else { Value::Object(fields) }
+}
+
+fn present(body: &Value, field: &str) -> Option<Value> {
+    body.get(field).filter(|value| !value.is_null()).cloned()
+}
+
+fn signal_context(request: &CommandRequest, body: &Value, workflow_id: &str, name: &str) -> Value {
+    request.context(body, workflow_id, "signal", metadata(&[
+        ("request_id", present(body, "request_id")),
+        ("signal_name", Some(json!(name))),
+    ]))
+}
+
+fn update_context(request: &CommandRequest, body: &Value, workflow_id: &str, name: &str) -> Value {
+    request.context(body, workflow_id, "update", metadata(&[
+        ("request_id", present(body, "request_id")),
+        ("update_name", Some(json!(name))),
+        ("wait_for", Some(present(body, "wait_for").unwrap_or(json!("accepted")))),
+    ]))
+}
+
 async fn start(
     Extension(runtime): Extension<Runtime>,
+    command: CommandRequest,
     Json(body): Json<super::memo_json::StartBody>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    // PHP names the target `pending` until the start assigns an id.
+    let target = body.0["workflow_id"].as_str().filter(|id| !id.is_empty()).unwrap_or("pending");
+    let queue = body.0.get("task_queue").filter(|queue| !queue.is_null()).cloned().unwrap_or(json!("default"));
+    let context = command.context(&body.0, target, "start", metadata(&[
+        ("workflow_type", body.0.get("workflow_type").cloned()),
+        ("task_queue", Some(queue)),
+        ("duplicate_policy", body.0.get("duplicate_policy").cloned()),
+    ]));
     let body = without_trace_carrier(body.0);
     let workflow_id = body["workflow_id"].as_str().unwrap_or("").to_owned();
-    let result = runtime.start(body).await.map_err(|error| {
+    let result = runtime.start(body, Some(context)).await.map_err(|error| {
         super::control_plane::Operation::Start.refusal(error, &workflow_id, None)
     })?;
     // Clients such as the CLI require the control-plane contract on every
@@ -798,6 +943,7 @@ async fn list_runs(
 
 async fn close(
     runtime: Runtime,
+    request: CommandRequest,
     command: TerminalCommand,
     workflow_id: &str,
     run_id: Option<&str>,
@@ -807,8 +953,22 @@ async fn close(
         TerminalCommand::Cancel => super::control_plane::Operation::Cancel,
         TerminalCommand::Terminate => super::control_plane::Operation::Terminate,
     };
+    let name = match command {
+        TerminalCommand::Cancel => "cancel",
+        TerminalCommand::Terminate => "terminate",
+    };
+    let context = request.context(&body, workflow_id, name, metadata(&[
+        ("request_id", present(&body, "request_id")),
+        ("reason", present(&body, "reason")),
+    ]));
+    // Cancellation ignores a top-level trace carrier; termination keeps its
+    // existing request handling.
+    let body = match command {
+        TerminalCommand::Cancel => without_trace_carrier(body),
+        TerminalCommand::Terminate => body,
+    };
     let (status, response) = runtime
-        .close_workflow(command, workflow_id, run_id, body)
+        .close_workflow(command, workflow_id, run_id, body, Some(context))
         .await
         .map_err(|error| operation().refusal(error, workflow_id, run_id))?;
     Ok((status, Json(operation().response(response))))
@@ -816,19 +976,22 @@ async fn close(
 
 async fn cancel_current(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path(workflow_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
-    close(runtime, TerminalCommand::Cancel, &workflow_id, None, without_trace_carrier(body)).await
+    close(runtime, request, TerminalCommand::Cancel, &workflow_id, None, body).await
 }
 
 async fn terminate_current(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path(workflow_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
     close(
         runtime,
+        request,
         TerminalCommand::Terminate,
         &workflow_id,
         None,
@@ -841,17 +1004,15 @@ async fn repair_current(
     Extension(runtime): Extension<Runtime>,
     Path(workflow_id): Path<String>,
     request: Request,
-) -> Result<Json<Value>> {
+) -> Result<(StatusCode, Json<Value>)> {
     let (body, context) = super::task_repair_http::request(request, &workflow_id).await?;
-    let response = runtime
-        .repair_range_blocked(&workflow_id, None, body, context)
+    let (status, response) = runtime
+        .repair_workflow(&workflow_id, None, body, context)
         .await
         .map_err(|error| {
             super::control_plane::Operation::Repair.refusal(error, &workflow_id, None)
         })?;
-    Ok(Json(
-        super::control_plane::Operation::Repair.response(response),
-    ))
+    Ok((status, Json(super::control_plane::Operation::Repair.response(response))))
 }
 
 /// Laravel's `$request->boolean('include_last_event_payload')`.
@@ -897,41 +1058,43 @@ async fn repair_run(
     Extension(runtime): Extension<Runtime>,
     Path((workflow_id, run_id)): Path<(String, String)>,
     request: Request,
-) -> Result<Json<Value>> {
+) -> Result<(StatusCode, Json<Value>)> {
     let (body, context) = super::task_repair_http::request(request, &workflow_id).await?;
-    let response = runtime
-        .repair_range_blocked(&workflow_id, Some(&run_id), body, context)
+    let (status, response) = runtime
+        .repair_workflow(&workflow_id, Some(&run_id), body, context)
         .await
         .map_err(|error| {
             super::control_plane::Operation::Repair.refusal(error, &workflow_id, Some(&run_id))
         })?;
-    Ok(Json(
-        super::control_plane::Operation::Repair.response(response),
-    ))
+    Ok((status, Json(super::control_plane::Operation::Repair.response(response))))
 }
 
 async fn cancel_run(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path((workflow_id, run_id)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
     close(
         runtime,
+        request,
         TerminalCommand::Cancel,
         &workflow_id,
         Some(&run_id),
-        without_trace_carrier(body),
+        body,
     )
     .await
 }
 
 async fn terminate_run(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path((workflow_id, run_id)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
     close(
         runtime,
+        request,
         TerminalCommand::Terminate,
         &workflow_id,
         Some(&run_id),
@@ -942,33 +1105,39 @@ async fn terminate_run(
 
 async fn request_cancellation_current(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path(workflow_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    let context = request.context(&body, &workflow_id, "request_cancellation", json!([]));
     let (status, response) = runtime
-        .request_cancellation(&workflow_id, None, without_trace_carrier(body))
+        .request_cancellation(&workflow_id, None, without_trace_carrier(body), Some(context))
         .await?;
     Ok((status, Json(response)))
 }
 
 async fn request_cancellation_run(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path((workflow_id, run_id)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    let context = request.context(&body, &workflow_id, "request_cancellation", json!([]));
     let (status, response) = runtime
-        .request_cancellation(&workflow_id, Some(&run_id), without_trace_carrier(body))
+        .request_cancellation(&workflow_id, Some(&run_id), without_trace_carrier(body), Some(context))
         .await?;
     Ok((status, Json(response)))
 }
 
 async fn signal_current(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path((workflow_id, name)): Path<(String, String)>,
     Json(super::memo_json::StartBody(body)): Json<super::memo_json::StartBody>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    let context = signal_context(&request, &body, &workflow_id, &name);
     let response = runtime
-        .signal(&workflow_id, None, &name, without_trace_carrier(body))
+        .signal(&workflow_id, None, &name, without_trace_carrier(body), Some(context))
         .await
         .map_err(|error| {
             super::control_plane::Operation::Signal(&name).refusal(error, &workflow_id, None)
@@ -981,33 +1150,43 @@ async fn signal_current(
 
 async fn update_current(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path((workflow_id, name)): Path<(String, String)>,
     Json(super::memo_json::StartBody(body)): Json<super::memo_json::StartBody>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    let context = update_context(&request, &body, &workflow_id, &name);
     let (status, result) = runtime
-        .update_workflow(&workflow_id, None, &name, without_trace_carrier(body))
-        .await?;
+        .update_workflow(&workflow_id, None, &name, without_trace_carrier(body), Some(context))
+        .await
+        .map_err(|error| super::control_plane::Operation::Update(&name).refusal(error, &workflow_id, None))?;
     Ok((status, Json(result)))
 }
 
 async fn update_run(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path((workflow_id, run_id, name)): Path<(String, String, String)>,
     Json(super::memo_json::StartBody(body)): Json<super::memo_json::StartBody>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    let context = update_context(&request, &body, &workflow_id, &name);
     let (status, result) = runtime
-        .update_workflow(&workflow_id, Some(&run_id), &name, without_trace_carrier(body))
-        .await?;
+        .update_workflow(&workflow_id, Some(&run_id), &name, without_trace_carrier(body), Some(context))
+        .await
+        .map_err(|error| {
+            super::control_plane::Operation::Update(&name).refusal(error, &workflow_id, Some(&run_id))
+        })?;
     Ok((status, Json(result)))
 }
 
 async fn signal_run(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path((workflow_id, run_id, name)): Path<(String, String, String)>,
     Json(super::memo_json::StartBody(body)): Json<super::memo_json::StartBody>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    let context = signal_context(&request, &body, &workflow_id, &name);
     let response = runtime
-        .signal(&workflow_id, Some(&run_id), &name, without_trace_carrier(body))
+        .signal(&workflow_id, Some(&run_id), &name, without_trace_carrier(body), Some(context))
         .await
         .map_err(|error| {
             super::control_plane::Operation::Signal(&name).refusal(
@@ -1113,6 +1292,19 @@ async fn register(
     {
         memo_protocol(&headers)?;
     }
+    if body["capabilities"].as_array().is_some_and(|flags| {
+        flags
+            .iter()
+            .any(|flag| flag == super::search_attribute_upserts::CAPABILITY)
+    }) && !protocol_at_least(&headers, 16)?
+    {
+        return Err(super::RuntimeError::Protocol {
+            status: StatusCode::CONFLICT,
+            response: json!({"reason":"workflow_metadata_capability_protocol_mismatch",
+                "worker_capability":super::search_attribute_upserts::CAPABILITY,
+                "minimum_protocol_version":super::search_attribute_upserts::MINIMUM_PROTOCOL_VERSION,"recorded":false}),
+        });
+    }
     Ok((
         StatusCode::CREATED,
         Json(worker_response(runtime.register(body).await?)),
@@ -1120,7 +1312,7 @@ async fn register(
 }
 
 fn worker_response(mut body: Value) -> Value {
-    body["protocol_version"] = json!("1.20");
+    body["protocol_version"] = json!(super::WORKER_PROTOCOL_VERSION);
     body["server_capabilities"] = capabilities();
     body
 }
@@ -1167,6 +1359,10 @@ async fn workflow_type_operator_dashboard(
 }
 
 type QueryMap = Query<std::collections::HashMap<String, String>>;
+
+async fn repair_status(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    Ok(Json(runtime.repair_status().await?))
+}
 
 async fn retention_status(Extension(runtime): Extension<Runtime>, Query(query): QueryMap) -> Result<Json<Value>> {
     let limit = super::retention::status_limit(query.get("limit").map(String::as_str))?;
@@ -1336,6 +1532,7 @@ async fn deliver_cancellation(
 }
 async fn complete_workflow(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path(task_id): Path<String>,
     headers: HeaderMap,
     Json(body): Json<Value>,
@@ -1347,9 +1544,25 @@ async fn complete_workflow(
     }) {
         memo_protocol(&headers)?;
     }
+    // `guardTypedSearchAttributeCommandsAvailable`.
+    if body["commands"].as_array().is_some_and(|commands| {
+        commands.iter().any(|command| {
+            command["type"] == "upsert_search_attributes" && command.get("attribute_types").is_some()
+        })
+    }) && !protocol_at_least(&headers, 16)?
+    {
+        let minimum = super::search_attribute_upserts::MINIMUM_PROTOCOL_VERSION;
+        return Err(super::RuntimeError::Protocol {
+            status: StatusCode::CONFLICT,
+            response: json!({"task_id":task_id,"workflow_task_attempt":body["workflow_task_attempt"],
+                "outcome":"rejected","recorded":false,"reason":"typed_search_attributes_unavailable",
+                "requested_version":request_protocol(&headers)?,"minimum_protocol_version":minimum,
+                "remediation":format!("Complete typed search-attribute updates only through server nodes advertising worker protocol {minimum} or newer.")}),
+        });
+    }
     let attempt = body["workflow_task_attempt"].clone();
     runtime
-        .complete_workflow(&task_id, body)
+        .complete_workflow(&task_id, body, Some(request.principal().clone()))
         .await
         .map_err(|error| {
             completion_refusal(
@@ -1361,6 +1574,14 @@ async fn complete_workflow(
             )
         })
         .map(Json)
+}
+
+/// Whether the request's worker protocol is `1.<minor>` or newer.
+fn protocol_at_least(headers: &HeaderMap, minor: u32) -> Result<bool> {
+    Ok(request_protocol(headers)?
+        .strip_prefix("1.")
+        .and_then(|value| value.parse::<u32>().ok())
+        .is_some_and(|value| value >= minor))
 }
 
 fn memo_protocol(headers: &HeaderMap) -> Result<()> {
@@ -1438,7 +1659,7 @@ fn completion_refusal(
             reason: "task_not_found",
         } if status == StatusCode::NOT_FOUND => {
             let mut response = json!({"task_id":task_id,"error":message,"reason":"task_not_found",
-                "protocol_version":"1.20","server_capabilities":capabilities()});
+                "protocol_version":super::WORKER_PROTOCOL_VERSION,"server_capabilities":capabilities()});
             response[attempt_field] = attempt;
             super::RuntimeError::Protocol { status, response }
         }
@@ -1476,24 +1697,34 @@ async fn fail_activity(
 ) -> Result<Json<Value>> {
     runtime.fail_activity(&task_id, body).await.map(Json)
 }
+/// The query's command context, as PHP's controller builds it.
+fn query_context(request: &CommandRequest, body: &Value, workflow_id: &str, name: &str) -> Value {
+    let context = request.context(body, workflow_id, "query", metadata(&[("query_name", Some(json!(name)))]));
+    json!({"source":"control_plane","context":context})
+}
+
 async fn query_current(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path((workflow_id, name)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    let command = query_context(&request, &body, &workflow_id, &name);
     let (status, body) = runtime
-        .query_workflow(&workflow_id, None, &name, body)
+        .query_workflow(&workflow_id, None, &name, body, Some(command))
         .await
         .map_err(|error| super::control_plane::Operation::Query(&name).refusal(error, &workflow_id, None))?;
     Ok((status, Json(super::control_plane::Operation::Query(&name).response(body))))
 }
 async fn query_run(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path((workflow_id, run_id, name)): Path<(String, String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    let command = query_context(&request, &body, &workflow_id, &name);
     let (status, body) = runtime
-        .query_workflow(&workflow_id, Some(&run_id), &name, body)
+        .query_workflow(&workflow_id, Some(&run_id), &name, body, Some(command))
         .await
         .map_err(|error| {
             super::control_plane::Operation::Query(&name).refusal(error, &workflow_id, Some(&run_id))

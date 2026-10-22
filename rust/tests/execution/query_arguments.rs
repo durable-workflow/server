@@ -78,11 +78,12 @@ async fn omitted_query_input_uses_official_empty_arguments_without_mutating_the_
     assert_eq!(query_entries(&database).await, 0);
 
     for (path, input, status, reason) in [
+        // PHP refuses a codec other than Avro as validation of `input.codec`.
         (
             instance_query.clone(),
             json!({"input":{"codec":"json","blob":"[]"}}),
             StatusCode::UNPROCESSABLE_ENTITY,
-            "unsupported_payload_codec",
+            "validation_failed",
         ),
         // As in PHP, an object that is not exactly an envelope is plain
         // values, here one argument the query does not take.
@@ -102,7 +103,7 @@ async fn omitted_query_input_uses_official_empty_arguments_without_mutating_the_
             instance_query.clone(),
             json!({"input":{"codec":"avro","blob":""}}),
             StatusCode::UNPROCESSABLE_ENTITY,
-            "invalid_payload_envelope",
+            "validation_failed",
         ),
         (
             instance_query.clone(),

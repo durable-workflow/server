@@ -137,10 +137,6 @@ where
                 old.as_str(),
             ),
             (
-                "SELECT COUNT(*) FROM workflow_search_attributes WHERE workflow_run_id=$1",
-                old.as_str(),
-            ),
-            (
                 "SELECT COUNT(*) FROM workflow_durable_streams WHERE workflow_instance_id=$1",
                 workflow.as_str(),
             ),
@@ -276,6 +272,15 @@ where
                 .execute(&mut **tx)
                 .await?;
         }
+        // `SearchAttributeUpsertService::inheritFromParent` at sequence 1.
+        Self::query(DB::SEARCH_ATTRIBUTE_INHERIT)
+            .bind(&next)
+            .bind(&workflow)
+            .bind(DB::bind_time(started))
+            .bind(DB::bind_time(started))
+            .bind(&old)
+            .execute(&mut **tx)
+            .await?;
         Self::query("UPDATE workflow_instances SET current_run_id=$1,run_count=$2,updated_at=$3 WHERE id=$4")
             .bind(&next).bind(number).bind(DB::bind_time(started)).bind(&workflow).execute(&mut **tx).await?;
         Self::query("INSERT INTO workflow_links(id,link_type,sequence,parent_workflow_instance_id,parent_workflow_run_id,child_workflow_instance_id,child_workflow_run_id,is_primary_parent,parent_close_policy,created_at,updated_at) VALUES ($1,'continue_as_new',$2,$3,$4,$5,$6,TRUE,'abandon',$7,$8)")
