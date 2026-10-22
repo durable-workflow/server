@@ -51,3 +51,8 @@
   and the empty low buckets are checked against that bound.
 - **Evidence.** Native tests pass on SQLite, PostgreSQL and MySQL, and the
   native suite with `--all-targets` passes on SQLite (649 tests).
+  A local copy of the SQLite parity step passed all 53 fixtures on embedded
+  PHP and native, including `prometheus-metrics`. Published PHP passed
+  `prometheus-metrics` too; its only difference was `storage-test`, an
+  intermittent 503 from PHP's external payload registration on that loaded
+  host, which passed in the previous local run.
