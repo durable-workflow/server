@@ -248,3 +248,20 @@ fn messages(
     }
     found
 }
+
+/// `WorkflowController::validateOperationName`, which a signal, update or
+/// query request runs first: the name is one to 256 bytes
+/// (DW_MAX_OPERATION_NAME_LENGTH, which native runs only at its default)
+/// without ASCII control characters.
+pub(super) fn operation_name(name: &str, kind: &str) -> super::Result<()> {
+    let message = if name.is_empty() {
+        format!("The {kind} name must not be empty.")
+    } else if name.len() > 256 {
+        format!("The {kind} name exceeds the maximum length of 256 bytes.")
+    } else if name.bytes().any(|byte| byte < 0x20 || byte == 0x7f) {
+        format!("The {kind} name must not contain control characters.")
+    } else {
+        return Ok(());
+    };
+    Err(failure_messages(vec![(format!("{kind}_name"), vec![message])]).expect("one message"))
+}

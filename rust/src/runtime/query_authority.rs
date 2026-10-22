@@ -27,6 +27,9 @@ pub struct QueryTaskConfig {
     pub history_page_size_default: i64,
     pub history_page_size_max: i64,
     pub poll_timeout_seconds: i64,
+    /// How long a workflow or activity poll that names no `timeout_seconds`
+    /// waits, as PHP's `LongPoller`: `max(0, DW_WORKER_POLL_TIMEOUT)`.
+    pub worker_poll_timeout_seconds: i64,
 }
 
 impl Default for QueryTaskConfig {
@@ -43,6 +46,7 @@ impl Default for QueryTaskConfig {
             history_page_size_default: 500,
             history_page_size_max: 1000,
             poll_timeout_seconds: 5,
+            worker_poll_timeout_seconds: 30,
         }
     }
 }
@@ -118,6 +122,7 @@ impl QueryTaskConfig {
                 5,
             )?
             .max(1),
+            worker_poll_timeout_seconds: poll.max(0),
         })
     }
 

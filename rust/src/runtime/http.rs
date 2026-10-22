@@ -1539,8 +1539,9 @@ async fn poll_workflow(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     let pages = runtime.history_pages();
+    let wait = runtime.worker_poll_wait();
     runtime
-        .poll_with_pages(body, "workflow", request_protocol(&headers)?, pages)
+        .poll_with_pages(body, "workflow", request_protocol(&headers)?, pages, wait)
         .await
         .map(Json)
 }
@@ -1549,8 +1550,9 @@ async fn poll_activity(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
+    let wait = runtime.worker_poll_wait();
     runtime
-        .poll(body, "activity", request_protocol(&headers)?)
+        .poll_with_pages(body, "activity", request_protocol(&headers)?, Default::default(), wait)
         .await
         .map(Json)
 }
