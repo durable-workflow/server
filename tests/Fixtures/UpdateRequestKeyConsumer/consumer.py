@@ -56,7 +56,7 @@ async def original(namespace):
     evidence_path.parent.mkdir(exist_ok=True)
     async with (
         Client('http://api:8080', token=TOKEN, namespace=namespace) as client,
-        ObservedClient('http://api:8080', token=TOKEN, namespace=namespace) as worker_client,
+        ObservedClient('http://api:8080', token='update-key-worker', namespace=namespace) as worker_client,
         httpx.AsyncClient(base_url='http://api:8080', headers=headers, timeout=10) as http,
     ):
         running = None

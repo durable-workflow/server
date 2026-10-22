@@ -17,7 +17,7 @@ services:
       DW_AUTH_DRIVER: token
       DW_AUTH_TOKEN: update-key-consumer
       DW_ADMIN_TOKEN: update-key-consumer
-      DW_WORKER_TOKEN: update-key-consumer
+      DW_WORKER_TOKEN: update-key-worker
       DW_BOOTSTRAP_RETRIES: 1
     volumes: &server_volumes
       - ${KEY_PHASE_ROOT:?Set a disposable phase directory}/data:/data
