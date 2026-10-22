@@ -3848,6 +3848,9 @@ async fn cooperative_delivery_cleanup_and_original_deadline_survive_fresh_runtim
         assert_eq!(described.1["output_envelope"], Value::Null);
         let instant = |value: &Value| chrono::DateTime::parse_from_rfc3339(value.as_str().unwrap()).unwrap();
         assert_eq!(instant(&cleanup["finished_at"]), instant(&described.1["closed_at"]));
+        // PHP writes the cleanup's `finished_at` as the run's `closed_at`
+        // string (`CancellationCascadeView`), so the two are equal as text.
+        assert_eq!(cleanup["finished_at"], described.1["closed_at"]);
         if !cleanup_activity.is_null() {
             let observed = request_protocol(&app,"POST",
                 &format!("/api/worker/activity-tasks/{}/status",cleanup_activity["task_id"].as_str().unwrap()),

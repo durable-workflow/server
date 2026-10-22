@@ -558,7 +558,7 @@ where
             "workflow_instance_id":DB::string(run,"workflow_instance_id")?,"workflow_run_id":run_id,"failure_id":failure_id,
             "failure_category":"cancelled","closed_reason":"cancelled","exception_class":EXCEPTION,"message":message,"reason":reason,
             "cancellation_cleanup":{"request_id":request_id,"outcome":outcome,"cleanup_deadline_at":timestamp(deadline),
-                "delivery_history_event_id":delivery_id,"delivery_sequence":delivery_sequence,"finished_at":at}});
+                "delivery_history_event_id":delivery_id,"delivery_sequence":delivery_sequence,"finished_at":timestamp(at)}});
         Self::append(
             tx,
             &run_id,
