@@ -23,6 +23,9 @@ pub struct QueryTaskConfig {
     /// `UpdateWaitPolicy::completionTimeoutSeconds`
     /// (DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS).
     pub update_wait_completion_timeout_seconds: i64,
+    /// History page sizes (DW_HISTORY_PAGE_SIZE_DEFAULT and _MAX).
+    pub history_page_size_default: i64,
+    pub history_page_size_max: i64,
     pub poll_timeout_seconds: i64,
 }
 
@@ -37,6 +40,8 @@ impl Default for QueryTaskConfig {
             workflow_task_lease_seconds: 60,
             activity_task_lease_seconds: 300,
             update_wait_completion_timeout_seconds: 10,
+            history_page_size_default: 500,
+            history_page_size_max: 1000,
             poll_timeout_seconds: 5,
         }
     }
@@ -105,6 +110,8 @@ impl QueryTaskConfig {
             activity_task_lease_seconds: crate::config_audit::activity_task_lease_seconds(|key| env::var(key).ok())
                 .map_err(|_| refuse(StatusCode::BAD_REQUEST, "invalid_activity_task_timeout"))?,
             update_wait_completion_timeout_seconds: crate::config_audit::update_wait_completion_timeout_seconds(|key| env::var(key).ok()),
+            history_page_size_default: crate::config_audit::history_page_sizes(|key| env::var(key).ok()).0,
+            history_page_size_max: crate::config_audit::history_page_sizes(|key| env::var(key).ok()).1,
             poll_timeout_seconds: integer(
                 "DW_QUERY_TASK_POLL_TIMEOUT",
                 "WORKFLOW_SERVER_QUERY_TASK_POLL_TIMEOUT",
