@@ -516,6 +516,8 @@ async fn worker_reported_range_failure_requires_explicit_original_task_repair_ac
     assert_eq!(repaired["requested_run_id"], Value::Null);
     assert_eq!(repaired["resolved_run_id"], started["run_id"]);
     assert_eq!(rows(&database, "SELECT COUNT(*) FROM workflow_tasks WHERE status='ready' AND attempt_count=1 AND repair_count=1 AND lease_owner IS NULL AND lease_expires_at IS NULL AND last_error IS NULL").await, 1);
+    // PHP dispatches the repaired task, so it is not overdue right after.
+    assert_eq!(rows(&database, "SELECT COUNT(*) FROM workflow_tasks WHERE status='ready' AND repair_count=1 AND last_dispatched_at>=updated_at AND last_dispatch_attempt_at=last_dispatched_at").await, 1);
     assert_eq!(rows(&database, "SELECT COUNT(*) FROM workflow_commands WHERE command_type='repair' AND target_scope='instance' AND requested_workflow_run_id IS NULL").await, 1);
     let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
     assert_eq!(

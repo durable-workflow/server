@@ -259,7 +259,13 @@ where
             .fetch_one(&mut **tx)
             .await?;
         let recorded = Repair { liveness: Some("workflow_replay_blocked"), wait_kind, payload: &payload, task: Some(&repaired) };
-        Self::record_repair(tx, workflow_id, run, context, recorded).await
+        let response = Self::record_repair(tx, workflow_id, run, context, recorded).await?;
+        // `TaskDispatcher::markDispatched`: PHP dispatches a replay-blocked
+        // run's repaired task after the commit, as it does an overdue one.
+        let at = now();
+        Self::query("UPDATE workflow_tasks SET last_dispatch_attempt_at=$1,last_dispatched_at=$2,last_dispatch_error=NULL,repair_available_at=NULL WHERE id=$3 AND status='ready'")
+            .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(&task_id).execute(&mut **tx).await?;
+        Ok(response)
     }
 
     /// The accepted repair command, its `RepairRequested` event and PHP's
