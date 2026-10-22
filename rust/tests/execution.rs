@@ -79,6 +79,8 @@ mod worker_deregistration;
 mod worker_listing;
 #[path = "execution/activity_failure_fields.rs"]
 mod activity_failure_fields;
+#[path = "execution/start_definition.rs"]
+mod start_definition;
 #[path = "execution/query_open_tasks.rs"]
 mod query_open_tasks;
 #[path = "execution/retry_message_tasks.rs"]
