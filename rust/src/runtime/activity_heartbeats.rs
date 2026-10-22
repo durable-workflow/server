@@ -243,7 +243,7 @@ where
         super::activity_deadlines::fence::<DB>(&activity)?;
         let at = now();
         let expires = if Self::cancellation_request(&run)?.is_none() {
-            at + chrono::Duration::seconds(300)
+            at + chrono::Duration::seconds(self.activity_task_lease_seconds)
         } else {
             self.cancellation_lease_expiry(&run)?
         };

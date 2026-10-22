@@ -1,11 +1,13 @@
-//! Atomic first continuation slice. Related children, pending messages/updates,
-//! typed visibility and streams require separate transfer qualification.
+//! Atomic first continuation slice. Received signals and pending updates move
+//! to the continued run like PHP; related children, typed visibility and
+//! streams require separate transfer qualification.
 use super::transaction::Transaction;
 use super::{
     Result,
     backend::Backend,
     envelope, refuse,
     store::{Store, id, now, reject_fields},
+    wire,
 };
 use axum::http::StatusCode;
 use serde_json::{Value, json};
@@ -126,14 +128,6 @@ where
             ),
             (
                 "SELECT COUNT(*) FROM workflow_links WHERE child_workflow_run_id=$1 AND link_type='child_workflow'",
-                old.as_str(),
-            ),
-            (
-                "SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id=$1 AND status NOT IN ('completed','failed','rejected','cancelled')",
-                old.as_str(),
-            ),
-            (
-                "SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received'",
                 old.as_str(),
             ),
             (
@@ -286,14 +280,147 @@ where
         Self::query("INSERT INTO workflow_links(id,link_type,sequence,parent_workflow_instance_id,parent_workflow_run_id,child_workflow_instance_id,child_workflow_run_id,is_primary_parent,parent_close_policy,created_at,updated_at) VALUES ($1,'continue_as_new',$2,$3,$4,$5,$6,TRUE,'abandon',$7,$8)")
             .bind(&link).bind(sequence).bind(&workflow).bind(&old).bind(&workflow).bind(&next)
             .bind(DB::bind_time(started)).bind(DB::bind_time(started)).execute(&mut **tx).await?;
+        Self::append(tx,&next,"WorkflowStarted",json!({"workflow_class":class,"workflow_type":kind,
+            "workflow_instance_id":workflow,"workflow_run_id":next,"continued_from_run_id":old,"workflow_link_id":link}),None,None).await?;
+        Self::transfer_messages(tx, &old, &next, &workflow).await?;
         Self::query("UPDATE workflow_runs SET status='completed',closed_reason='continued',closed_at=$1,last_progress_at=$2 WHERE id=$3")
             .bind(DB::bind_time(started)).bind(DB::bind_time(started)).bind(&old).execute(&mut **tx).await?;
         let task_id = DB::string(task, "id")?;
         Self::append(tx,&old,"WorkflowContinuedAsNew",json!({"sequence":sequence,"continued_to_run_id":next,
             "continued_to_run_number":number,"workflow_link_id":link,"closed_reason":"continued","task":Self::task_snapshot(task)?}),Some(&task_id),None).await?;
-        Self::append(tx,&next,"WorkflowStarted",json!({"workflow_class":class,"workflow_type":kind,
-            "workflow_instance_id":workflow,"workflow_run_id":next,"continued_from_run_id":old,"workflow_link_id":link}),None,None).await?;
+        // `PendingUpdateCloser::closeForTerminalRun`: updates already applied
+        // but not completed stay with the predecessor and close there.
+        Self::close_pending_updates(tx, &old, Some(task)).await?;
         Self::create_task(tx, &next, &queue, "workflow", json!({})).await?;
         Ok(())
+    }
+
+    /// `ContinuedRunMessageHandoff::transferInstanceScoped`: received signals
+    /// with a declared handler and accepted updates not yet applied move to
+    /// the continued run in command order, and are recorded there again.
+    async fn transfer_messages(
+        tx: &mut Transaction<'_, DB>,
+        old: &str,
+        next: &str,
+        workflow: &str,
+    ) -> Result<()> {
+        let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
+            .bind(old).fetch_optional(&mut **tx).await?
+            .map(|row| DB::document_row(&row, "payload"))
+            .transpose()?;
+        let contract = super::run_observation::command_contract(started.as_ref());
+        let declared: Vec<&str> = contract["signals"]
+            .as_array()
+            .map(|names| names.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        let mut messages = Vec::new();
+        for row in Self::query("SELECT * FROM workflow_signal_records WHERE workflow_run_id=$1 AND target_scope='instance' AND status='received' AND closed_at IS NULL")
+            .bind(old).fetch_all(&mut **tx).await?
+        {
+            if declared.contains(&DB::string(&row, "signal_name")?.as_str()) {
+                messages.push((true, row));
+            }
+        }
+        for row in Self::query("SELECT * FROM workflow_updates WHERE workflow_run_id=$1 AND target_scope='instance' AND status='accepted' AND workflow_sequence IS NULL")
+            .bind(old).fetch_all(&mut **tx).await?
+        {
+            messages.push((false, row));
+        }
+        // Command sequence (unsequenced last), then creation time, then id.
+        let mut keyed = Vec::with_capacity(messages.len());
+        for (signal, row) in messages {
+            let key = (
+                DB::optional_number(&row, "command_sequence")?.unwrap_or(i64::MAX),
+                DB::optional_instant(&row, "created_at")?,
+                DB::string(&row, "id")?,
+            );
+            keyed.push((key, signal, row));
+        }
+        keyed.sort_by(|left, right| left.0.cmp(&right.0));
+        for (_, signal, row) in keyed {
+            if signal {
+                Self::transfer_signal(tx, &row, next, workflow).await?;
+            } else {
+                Self::transfer_update(tx, &row, next, workflow).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn transfer_signal(
+        tx: &mut Transaction<'_, DB>,
+        signal: &DB::Row,
+        next: &str,
+        workflow: &str,
+    ) -> Result<()> {
+        let Some(command_id) = DB::optional_string(signal, "workflow_command_id")? else {
+            return Ok(());
+        };
+        let Some(command) = Self::query("SELECT command_type,status,target_scope,workflow_run_id,workflow_instance_id FROM workflow_commands WHERE id=$1")
+            .bind(&command_id).fetch_optional(&mut **tx).await?
+        else {
+            return Ok(());
+        };
+        // Only the signal's own accepted instance command moves; anything
+        // else stays and is rejected when the predecessor closes.
+        if DB::string(&command, "command_type")? != "signal"
+            || DB::string(&command, "status")? != "accepted"
+            || DB::string(&command, "target_scope")? != "instance"
+            || DB::optional_string(&command, "workflow_run_id")? != DB::optional_string(signal, "workflow_run_id")?
+            || DB::optional_string(&command, "workflow_instance_id")? != DB::optional_string(signal, "workflow_instance_id")?
+        {
+            return Ok(());
+        }
+        let signal_id = DB::string(signal, "id")?;
+        let wait_id = format!("signal-command:{command_id}");
+        Self::query("UPDATE workflow_signal_records SET workflow_run_id=$1,resolved_workflow_run_id=$2,signal_wait_id=$3 WHERE id=$4")
+            .bind(next).bind(next).bind(&wait_id).bind(&signal_id).execute(&mut **tx).await?;
+        Self::query("UPDATE workflow_commands SET workflow_run_id=$1,resolved_workflow_run_id=$2 WHERE id=$3")
+            .bind(next).bind(next).bind(&command_id).execute(&mut **tx).await?;
+        let mut payload = json!({"workflow_command_id":command_id,"signal_id":signal_id,
+            "workflow_instance_id":workflow,"workflow_run_id":next,
+            "signal_name":DB::string(signal, "signal_name")?,"signal_wait_id":wait_id});
+        if let Some(arguments) = DB::optional_string(signal, "arguments")? {
+            payload["arguments"] = wire(&arguments);
+        }
+        if let Some(codec) = DB::optional_string(signal, "payload_codec")? {
+            payload["payload_codec"] = json!(codec);
+        }
+        Self::append(tx, next, "SignalReceived", payload, None, Some(&command_id)).await
+    }
+
+    async fn transfer_update(
+        tx: &mut Transaction<'_, DB>,
+        update: &DB::Row,
+        next: &str,
+        workflow: &str,
+    ) -> Result<()> {
+        let update_id = DB::string(update, "id")?;
+        Self::query("UPDATE workflow_updates SET workflow_run_id=$1,resolved_workflow_run_id=$2 WHERE id=$3")
+            .bind(next).bind(next).bind(&update_id).execute(&mut **tx).await?;
+        let command_id = DB::optional_string(update, "workflow_command_id")?;
+        let command = match &command_id {
+            Some(command_id) => Self::query("SELECT command_type,status FROM workflow_commands WHERE id=$1")
+                .bind(command_id).fetch_optional(&mut **tx).await?,
+            None => None,
+        };
+        let command_id = match command {
+            Some(command) => {
+                let id = command_id.expect("a found command has an id");
+                if DB::string(&command, "command_type")? == "update"
+                    && DB::string(&command, "status")? == "accepted"
+                {
+                    Self::query("UPDATE workflow_commands SET workflow_run_id=$1,resolved_workflow_run_id=$2 WHERE id=$3")
+                        .bind(next).bind(next).bind(&id).execute(&mut **tx).await?;
+                }
+                Some(id)
+            }
+            None => None,
+        };
+        let payload = json!({"workflow_command_id":command_id,"update_id":update_id,
+            "workflow_instance_id":workflow,"workflow_run_id":next,
+            "update_name":DB::string(update, "update_name")?,
+            "arguments":DB::optional_string(update, "arguments")?.as_deref().map(wire)});
+        Self::append(tx, next, "UpdateAccepted", payload, None, command_id.as_deref()).await
     }
 }

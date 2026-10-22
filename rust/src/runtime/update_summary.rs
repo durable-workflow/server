@@ -28,6 +28,10 @@ struct ExpectedUpdate {
 
 impl UpdateSummaryHistory {
     pub(super) fn apply(&mut self, kind: &str, payload: &Value) -> bool {
+        // A rejected update opens no wait and changes no summary.
+        if kind == "UpdateRejected" {
+            return nonempty(payload, "update_id").is_some();
+        }
         let (
             Some(id),
             Some(command),
@@ -52,7 +56,9 @@ impl UpdateSummaryHistory {
         if kind == "UpdateAccepted" {
             if self.updates.len() >= 64
                 || self.updates.contains_key(id)
-                || payload["ordering_state"] != "ready"
+                // A run continued from a predecessor takes its pending update
+                // without an ordering state, ready for delivery.
+                || payload.get("ordering_state").is_some_and(|state| state != "ready")
             {
                 return false;
             }

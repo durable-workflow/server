@@ -1,8 +1,9 @@
-use std::{env, error::Error, net::SocketAddr, str::FromStr};
+use std::{collections::BTreeMap, env, error::Error, net::SocketAddr, str::FromStr};
 
+use durable_workflow_server::config_audit::{self, PhpValue};
 use durable_workflow_server::database_tls::{self, Driver, Settings};
 use durable_workflow_server::runtime::{
-    Runtime, RuntimeError, WORKER_PROTOCOL_VERSION, mysql::MySqlStorage, postgres::PostgresStorage,
+    Runtime, RuntimeError, mysql::MySqlStorage, postgres::PostgresStorage,
     router,
 };
 use sqlx::mysql::MySqlConnectOptions;
@@ -161,57 +162,25 @@ fn auth_value(key: &str) -> Result<Option<String>, Box<dyn Error>> {
     }
 }
 
-/// `EnvAuditor::env`: the primary name when it is set, else PHP's legacy
-/// `WORKFLOW_SERVER_*` name.
-fn aliased<F>(lookup: F, primary: &str, legacy: &str) -> Result<Option<String>, Box<dyn Error>>
-where
-    F: Fn(&str) -> Result<Option<String>, Box<dyn Error>>,
-{
-    match lookup(primary)? {
-        Some(value) => Ok(Some(value)),
-        None => lookup(legacy),
-    }
-}
-
+/// `EnvAuditor::env`: the primary name unless Laravel's `env()` reads it as
+/// null, else PHP's legacy `WORKFLOW_SERVER_*` name, as PHP's `(string)`.
 fn auth_setting(primary: &str, legacy: &str) -> Result<Option<String>, Box<dyn Error>> {
-    aliased(auth_value, primary, legacy)
+    auth_value(primary)?;
+    auth_value(legacy)?;
+    Ok(
+        config_audit::effective(|key| env::var(key).ok(), primary, Some(legacy)).and_then(|value| match value {
+            PhpValue::Null => None,
+            value => Some(value.string().to_owned()),
+        }),
+    )
 }
 
-fn setting_value(key: &str) -> Result<Option<String>, Box<dyn Error>> {
-    match env::var(key) {
-        Ok(value) => Ok(Some(value)),
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(env::VarError::NotUnicode(_)) => Err(format!("{key} must be valid UTF-8").into()),
-    }
-}
-
-/// A PHP setting whose value changes behavior that native does not offer.
-/// Native refuses to start rather than run with PHP's default silently.
-fn unhonored_php_setting<F>(lookup: F) -> Result<Option<String>, Box<dyn Error>>
-where
-    F: Fn(&str) -> Result<Option<String>, Box<dyn Error>>,
-{
-    // PHP lowercases the namespace it falls back to; native always falls
-    // back to `default`.
-    let namespace = aliased(&lookup, "DW_DEFAULT_NAMESPACE", "WORKFLOW_SERVER_DEFAULT_NAMESPACE")?;
-    if namespace.is_some_and(|value| value.to_ascii_lowercase() != "default") {
-        return Ok(Some(
-            "DW_DEFAULT_NAMESPACE must be unset or `default`: native serves `default` to requests that name no namespace"
-                .into(),
-        ));
-    }
-    // PHP advertises this value and gates protocol features on it.
-    let protocol = aliased(
-        &lookup,
-        "DW_WORKER_PROTOCOL_VERSION",
-        "WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION",
-    )?;
-    if protocol.is_some_and(|value| value != WORKER_PROTOCOL_VERSION) {
-        return Ok(Some(format!(
-            "DW_WORKER_PROTOCOL_VERSION must be unset or `{WORKER_PROTOCOL_VERSION}`: native implements only that worker protocol"
-        )));
-    }
-    Ok(None)
+/// The process environment as PHP's `env:audit` sees it. Non-UTF-8 values
+/// are compared lossily; the settings native reads itself refuse them.
+fn environment_snapshot() -> BTreeMap<String, String> {
+    env::vars_os()
+        .filter_map(|(name, value)| Some((name.into_string().ok()?, value.to_string_lossy().into_owned())))
+        .collect()
 }
 
 /// `server.auth.driver`: DW-primary, WORKFLOW-legacy, token by default.
@@ -222,55 +191,23 @@ fn anonymous_driver() -> Result<bool, Box<dyn Error>> {
 /// `server.auth.runtime_credentials.enabled`: PHP's `FILTER_VALIDATE_BOOLEAN`
 /// with `FILTER_NULL_ON_FAILURE`, so an unrecognized value disables it.
 fn runtime_credentials_enabled() -> Result<bool, Box<dyn Error>> {
-    let value = auth_setting("DW_RUNTIME_CREDENTIALS_ENABLED", "WORKFLOW_SERVER_RUNTIME_CREDENTIALS_ENABLED")?;
-    Ok(value.is_some_and(|value| {
-        matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes")
-    }))
+    auth_value("DW_RUNTIME_CREDENTIALS_ENABLED")?;
+    auth_value("WORKFLOW_SERVER_RUNTIME_CREDENTIALS_ENABLED")?;
+    Ok(config_audit::effective(
+        |key| env::var(key).ok(),
+        "DW_RUNTIME_CREDENTIALS_ENABLED",
+        Some("WORKFLOW_SERVER_RUNTIME_CREDENTIALS_ENABLED"),
+    )
+    .and_then(|value| value.filter_bool())
+    .unwrap_or(false))
 }
 
+/// The contract audit refuses unqualified auth providers, principal tokens,
+/// forwarded attribution and disabled backward compatibility. Only the token
+/// and none drivers are qualified.
 fn validate_auth_configuration() -> Result<(), Box<dyn Error>> {
-    // Unqualified credentials must not silently leave a full-access legacy
-    // guard in place. These profiles require their own contract qualification.
-    for key in ["DW_AUTH_DRIVER", "WORKFLOW_SERVER_AUTH_DRIVER"] {
-        if let Some(value) = auth_value(key)? {
-            if value != "token" && value != "none" {
-                return Err("unsupported development authentication configuration".into());
-            }
-        }
-    }
-    for key in [
-        "DW_AUTH_PROVIDER",
-        "DW_PRINCIPAL_TOKENS",
-        "WORKFLOW_SERVER_AUTH_PROVIDER",
-        "WORKFLOW_SERVER_PRINCIPAL_TOKENS",
-    ] {
-        if auth_value(key)?.is_some_and(|value| !value.is_empty()) {
-            return Err("unsupported development authentication configuration".into());
-        }
-    }
-    // Native records only the authenticated principal. It cannot record a
-    // trusted gateway's forwarded caller and auth headers as PHP can when
-    // this is on, so it refuses to start rather than drop them silently.
-    for key in [
-        "DW_TRUST_FORWARDED_ATTRIBUTION_HEADERS",
-        "WORKFLOW_SERVER_TRUST_FORWARDED_ATTRIBUTION_HEADERS",
-    ] {
-        if auth_value(key)?.is_some_and(|value| {
-            matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes")
-        }) {
-            return Err(format!("{key} is not supported: native never trusts forwarded attribution headers").into());
-        }
-    }
-    for key in [
-        "DW_AUTH_BACKWARD_COMPATIBLE",
-        "WORKFLOW_SERVER_AUTH_BACKWARD_COMPATIBLE",
-    ] {
-        if auth_value(key)?.is_some_and(|value| {
-            !matches!(
-                value.to_ascii_lowercase().as_str(),
-                "1" | "true" | "on" | "yes"
-            )
-        }) {
+    if let Some(driver) = auth_setting("DW_AUTH_DRIVER", "WORKFLOW_SERVER_AUTH_DRIVER")? {
+        if driver != "token" && driver != "none" {
             return Err("unsupported development authentication configuration".into());
         }
     }
@@ -549,10 +486,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("{{\"backend\":\"{backend}\",\"schema_version\":2,\"status\":\"ready\"}}");
         return Ok(());
     }
-    validate_auth_configuration()?;
-    if let Some(refusal) = unhonored_php_setting(setting_value)? {
+    // PHP's `env:audit` warnings, plus the contract settings whose value
+    // native cannot honor.
+    let audit = config_audit::audit(&environment_snapshot());
+    for warning in &audit.warnings {
+        eprintln!("{warning}");
+    }
+    if let Some(refusal) = audit.refusal() {
         return Err(refusal.into());
     }
+    validate_auth_configuration()?;
     // Published PHP reads each token under its `DW_*` name, or else its
     // legacy `WORKFLOW_SERVER_*` name, so an unchanged deployment starts.
     let worker_token = auth_setting("DW_WORKER_TOKEN", "WORKFLOW_SERVER_WORKER_TOKEN")?;
@@ -642,56 +585,3 @@ mod startup_tests {
     }
 }
 
-#[cfg(test)]
-mod auth_env_tests {
-    use super::*;
-
-    fn lookup(values: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Result<Option<String>, Box<dyn Error>> {
-        move |key| Ok(values.iter().find(|(name, _)| *name == key).map(|(_, value)| (*value).to_owned()))
-    }
-
-    #[test]
-    fn primary_names_win_and_legacy_names_fill_in_like_php() {
-        let both = lookup(&[("DW_AUTH_TOKEN", "primary"), ("WORKFLOW_SERVER_AUTH_TOKEN", "legacy")]);
-        assert_eq!(aliased(both, "DW_AUTH_TOKEN", "WORKFLOW_SERVER_AUTH_TOKEN").unwrap().as_deref(), Some("primary"));
-        let legacy = lookup(&[("WORKFLOW_SERVER_AUTH_TOKEN", "legacy")]);
-        assert_eq!(aliased(legacy, "DW_AUTH_TOKEN", "WORKFLOW_SERVER_AUTH_TOKEN").unwrap().as_deref(), Some("legacy"));
-        // A set but empty primary still wins, as PHP's env() returns it.
-        let empty = lookup(&[("DW_AUTH_TOKEN", ""), ("WORKFLOW_SERVER_AUTH_TOKEN", "legacy")]);
-        assert_eq!(aliased(empty, "DW_AUTH_TOKEN", "WORKFLOW_SERVER_AUTH_TOKEN").unwrap().as_deref(), Some(""));
-        let neither = lookup(&[]);
-        assert_eq!(aliased(neither, "DW_AUTH_TOKEN", "WORKFLOW_SERVER_AUTH_TOKEN").unwrap(), None);
-    }
-
-    #[test]
-    fn php_settings_native_cannot_honor_refuse_start() {
-        let refused =
-            |values: &'static [(&'static str, &'static str)]| unhonored_php_setting(lookup(values)).unwrap();
-        let accepted: [&'static [(&str, &str)]; 7] = [
-            &[],
-            &[("DW_DEFAULT_NAMESPACE", "default")],
-            &[("DW_DEFAULT_NAMESPACE", "Default")],
-            &[("WORKFLOW_SERVER_DEFAULT_NAMESPACE", "default")],
-            &[("DW_WORKER_PROTOCOL_VERSION", "1.20")],
-            &[("WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION", "1.20")],
-            // Settings PHP reads but never applies stay accepted.
-            &[("DW_MAX_PENDING_ACTIVITIES", "10"), ("DW_ACTIVITY_TASK_TIMEOUT", "30")],
-        ];
-        for accepted in accepted {
-            assert_eq!(refused(accepted), None, "{accepted:?}");
-        }
-        let refusals: [(&'static [(&str, &str)], &str); 6] = [
-            (&[("DW_DEFAULT_NAMESPACE", "billing")], "DW_DEFAULT_NAMESPACE"),
-            (&[("DW_DEFAULT_NAMESPACE", "")], "DW_DEFAULT_NAMESPACE"),
-            (&[("WORKFLOW_SERVER_DEFAULT_NAMESPACE", "billing")], "DW_DEFAULT_NAMESPACE"),
-            // A set primary wins over a matching legacy value, as in PHP.
-            (&[("DW_DEFAULT_NAMESPACE", "billing"), ("WORKFLOW_SERVER_DEFAULT_NAMESPACE", "default")], "DW_DEFAULT_NAMESPACE"),
-            (&[("DW_WORKER_PROTOCOL_VERSION", "1.19")], "DW_WORKER_PROTOCOL_VERSION"),
-            (&[("WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION", "1.2")], "DW_WORKER_PROTOCOL_VERSION"),
-        ];
-        for (values, setting) in refusals {
-            let refusal = refused(values).unwrap_or_else(|| panic!("{values:?} was accepted"));
-            assert!(refusal.starts_with(setting), "{refusal}");
-        }
-    }
-}

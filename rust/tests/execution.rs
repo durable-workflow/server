@@ -81,6 +81,12 @@ mod worker_listing;
 mod activity_failure_fields;
 #[path = "execution/query_worker_results.rs"]
 mod query_worker_results;
+#[path = "execution/rejected_updates.rs"]
+mod rejected_updates;
+#[path = "execution/continue_messages.rs"]
+mod continue_messages;
+#[path = "execution/update_wait.rs"]
+mod update_wait;
 #[path = "execution/payload_limits.rs"]
 mod payload_limits;
 #[path = "execution/start_definition.rs"]
@@ -1773,9 +1779,10 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
         "request_id":"original-update","wait_for":"accepted"});
     open_update_wait(&a, "update-a").await;
     for (test_path, body, reason) in [
+        // Without the later request id: a rejection keeps its request's receipt.
         (
             path.replace("/update/set", "/update/unknown"),
-            input.clone(),
+            json!({"input":input["input"]}),
             "unknown_update",
         ),
         (
@@ -1837,7 +1844,14 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
     assert_eq!(polled.1["server_capabilities"], capabilities);
     let old = polled.1["task"].clone();
     assert_eq!(old["workflow_update_id"], admitted.1["update_id"]);
-    assert_eq!(old["history_events"].as_array().unwrap().len(), 4);
+    // The unknown update and the invalid arguments above were recorded as
+    // `UpdateRejected` events, as in PHP.
+    let events = old["history_events"].as_array().unwrap();
+    assert_eq!(events.len(), 6);
+    assert_eq!(
+        events.iter().filter(|event| event["event_type"] == "UpdateRejected").count(),
+        2
+    );
     let complete_path = format!(
         "/api/worker/workflow-tasks/{}/complete",
         old["task_id"].as_str().unwrap()
@@ -1977,6 +1991,8 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
             "StartAccepted",
             "WorkflowStarted",
             "SignalWaitOpened",
+            "UpdateRejected",
+            "UpdateRejected",
             "UpdateAccepted",
             "UpdateApplied",
             "UpdateCompleted",
@@ -1984,11 +2000,11 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
         ]
     );
     assert_eq!(
-        completed_history["events"][3]["payload"]["update_id"],
+        completed_history["events"][5]["payload"]["update_id"],
         admitted.1["update_id"]
     );
     assert_eq!(
-        completed_history["events"][5]["payload"]["result"],
+        completed_history["events"][7]["payload"]["result"],
         envelope(Payload::Long(9007199254740993))
     );
     assert_eq!(
