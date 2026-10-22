@@ -74,6 +74,10 @@ async def original(namespace):
                 task_queue=queue, workflow_id=identity, input=[],
                 run_timeout_seconds=60, execution_timeout_seconds=120,
             )
+            evidence_path.with_suffix('.original.json').write_text(json.dumps({
+                'workflow_id': identity, 'run_id': handle.run_id,
+                'namespace': namespace, 'mode': MODE,
+            }))
             response = await http.post('/api/workflows/' + identity + '/update/add', json={
                 'input': {'codec': 'avro', 'blob': serializer.encode([17])},
                 'request_id': 'legacy-caller-key', 'wait_for': 'completed',
@@ -85,7 +89,7 @@ async def original(namespace):
             assert receipt['result'] == EXPECTED, receipt
             await handle.signal('finish', [])
             assert await handle.result(timeout=8) == EXPECTED
-            history = await http.get('/api/workflows/' + identity + '/history')
+            history = await http.get('/api/workflows/' + identity + '/runs/' + handle.run_id + '/history')
             history.raise_for_status()
             evidence = {'workflow_id': identity, 'run_id': handle.run_id,
                         'namespace': namespace, 'mode': MODE, 'receipt': receipt,
@@ -113,7 +117,8 @@ async def retained(namespace):
         actual = response.json()
         for key in ('update_id', 'command_id', 'run_id', 'update_name', 'update_status', 'result'):
             assert actual[key] == original['receipt'][key], (key, actual, original['receipt'])
-        history = await http.get('/api/workflows/' + original['workflow_id'] + '/history')
+        history = await http.get('/api/workflows/' + original['workflow_id']
+                                 + '/runs/' + original['run_id'] + '/history')
         history.raise_for_status()
         assert history.json()['events'] == original['history']['events']
         path.with_suffix('.retained.json').write_text(json.dumps(actual, ensure_ascii=False, indent=2))
