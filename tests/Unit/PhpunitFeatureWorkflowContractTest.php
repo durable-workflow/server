@@ -161,6 +161,7 @@ class PhpunitFeatureWorkflowContractTest extends TestCase
             'timeout-minutes: 5',
             'node scripts/ci/sync-source-release.mjs --check',
             'python scripts/ci/test-regression-corpus-policy.py',
+            'python3 -m unittest tests/Unit/Support/patched_pip_test.py',
         ] as $needle) {
             $this->assertStringContainsString($needle, $this->workflow);
         }

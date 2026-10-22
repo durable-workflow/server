@@ -644,6 +644,16 @@ SH);
             );
             copy($repoRoot.'/docker-compose.published.yml', $serverCheckout.'/docker-compose.published.yml');
 
+            // The staged runner hands its venv to the patched-pip bootstrap;
+            // record that hand-off instead of downloading pip.
+            $pipBootstrapLog = $workspace.'/pip-bootstrap.log';
+            $runVenvPython = realpath($runRoot).'/python-venv/bin/python';
+            $this->mkdirp($workspace.'/scripts/ci');
+            $this->writeExecutable(
+                $workspace.'/scripts/ci/bootstrap-patched-pip.sh',
+                "#!/bin/sh\nprintf '%s\\n' \"\$1\" >> ".escapeshellarg($pipBootstrapLog)."\n",
+            );
+
             $realPython = trim((string) shell_exec('command -v python3 2>/dev/null'));
             if ($realPython === '') {
                 $this->markTestSkipped('python3 is required for the replay runner contract.');
@@ -1320,6 +1330,11 @@ SH);
                     'waterline' => 'pass',
                 ],
                 array_column($installArtifacts, 'status', 'artifact'),
+            );
+            $this->assertSame(
+                [$runVenvPython],
+                file($pipBootstrapLog, FILE_IGNORE_NEW_LINES),
+                'the Python SDK install must start from the patched pip in the run venv',
             );
             $sdkPhpInstall = array_values(array_filter(
                 $installArtifacts,

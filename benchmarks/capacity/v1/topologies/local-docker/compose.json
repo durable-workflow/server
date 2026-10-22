@@ -285,9 +285,10 @@
     "sdk-python-worker": {
       "image": "docker.io/library/python:3.12.4-slim-bookworm",
       "platform": "linux/amd64",
-      "command": ["sh", "-ec", "python3 -m pip install --disable-pip-version-check --no-cache-dir --no-deps -r requirements.lock; test \"$(python3 -c 'import importlib.metadata; print(importlib.metadata.version(\"durable-workflow\"))')\" = 2.0.1; touch /tmp/capacity-adapter-ready; exec tail -f /dev/null"],
+      "command": ["sh", "-ec", "/usr/local/bin/python3 -m venv /tmp/capacity-venv; sh /dw-ci/bootstrap-patched-pip.sh /tmp/capacity-venv/bin/python; python3 -m pip install --disable-pip-version-check --no-cache-dir --no-deps -r requirements.lock; test \"$(python3 -c 'import importlib.metadata; print(importlib.metadata.version(\"durable-workflow\"))')\" = 2.0.1; touch /tmp/capacity-adapter-ready; exec tail -f /dev/null"],
       "working_dir": "/capacity",
-      "volumes": ["${CAPACITY_REPOSITORY_ROOT}/benchmarks/capacity/v1/bindings/python:/capacity:ro"],
+      "environment": {"PATH": "/tmp/capacity-venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"},
+      "volumes": ["${CAPACITY_REPOSITORY_ROOT}/benchmarks/capacity/v1/bindings/python:/capacity:ro", "${CAPACITY_REPOSITORY_ROOT}/scripts/ci:/dw-ci:ro"],
       "networks": ["capacity"],
       "cpus": 1,
       "mem_limit": 1073741824,

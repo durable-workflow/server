@@ -1,6 +1,12 @@
 ARG SERVER_IMAGE
+FROM ${SERVER_IMAGE} AS server-trust
+
 FROM rust:1.86 AS rust-worker
 ARG RUST_SDK_VERSION
+# This image's CA store still holds a root withdrawn under GHSA-6q48-6c7w-9gw2.
+# cargo resolves the unlocked crates through the Server image's store instead.
+COPY --from=server-trust /etc/ssl/certs/ca-certificates.crt /etc/server-trust/ca-certificates.crt
+ENV CARGO_HTTP_CAINFO=/etc/server-trust/ca-certificates.crt
 WORKDIR /build
 RUN cargo init --bin --name storage-sdk-worker . \
     && cargo add "durable-workflow@=${RUST_SDK_VERSION}" serde_json sha2@0.10 \

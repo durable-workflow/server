@@ -67,16 +67,15 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Bootstrap patched pip trust
-        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10  # patched-pip
 
       # pip also trusts the runner's own store (truststore). Confine every
-      # later pip in this job to the bootstrapped pip's bundle once it is
-      # proven clean.
+      # later pip in this job to the bundle the bootstrap action checked.
       - name: Confine pip to its verified CA bundle
         run: |
           bundle="$(python -I -c 'from pip._vendor import certifi; print(certifi.where())')"
-          python scripts/ci/blocked_roots.py "$bundle"
-          { echo "PIP_CERT=$bundle"; echo "PIP_USE_DEPRECATED=legacy-certs"; } >> "$GITHUB_ENV"
+          echo "PIP_CERT=$bundle" >> "$GITHUB_ENV"
+          echo "PIP_USE_DEPRECATED=legacy-certs" >> "$GITHUB_ENV"
 
       - name: Check database CA mounts and bootstrap configuration
         run: |
@@ -154,16 +153,16 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Bootstrap patched pip trust
-        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@ff93e15dd3d3aa0b5ba8991fe5101a9e1be49c10  # patched-pip
 
       # pip also trusts the runner's own store (truststore). Confine every
       # later pip in this job, including ones that actions run in their own
-      # venvs, to the bootstrapped pip's bundle once it is proven clean.
+      # venvs, to the bundle the bootstrap action checked.
       - name: Confine pip to its verified CA bundle
         run: |
           bundle="$(python -I -c 'from pip._vendor import certifi; print(certifi.where())')"
-          python scripts/ci/blocked_roots.py "$bundle"
-          { echo "PIP_CERT=$bundle"; echo "PIP_USE_DEPRECATED=legacy-certs"; } >> "$GITHUB_ENV"
+          echo "PIP_CERT=$bundle" >> "$GITHUB_ENV"
+          echo "PIP_USE_DEPRECATED=legacy-certs" >> "$GITHUB_ENV"
 
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
