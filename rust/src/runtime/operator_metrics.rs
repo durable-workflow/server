@@ -25,7 +25,7 @@ use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 pub(super) const REDISPATCH_AFTER_SECONDS: i64 = 3;
 
 /// Laravel binds a bare timestamp as `Y-m-d H:i:s`.
-fn whole_second(at: DateTime<Utc>) -> DateTime<Utc> {
+pub(super) fn whole_second(at: DateTime<Utc>) -> DateTime<Utc> {
     at.with_nanosecond(0).unwrap_or(at)
 }
 

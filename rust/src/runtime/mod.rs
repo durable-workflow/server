@@ -73,6 +73,7 @@ mod payload_limits;
 mod poll_readiness;
 pub mod postgres;
 mod previews;
+mod prometheus_metrics;
 mod queries;
 mod query_authority;
 mod repair_candidates;
