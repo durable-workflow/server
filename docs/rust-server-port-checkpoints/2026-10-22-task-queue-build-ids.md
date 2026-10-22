@@ -67,8 +67,5 @@
     `GET /api/task-queues/{queue}`, and the refusals in a named namespace.
   - Unit tests cover PHP's array keys and sorting, fingerprint reading and
     the pending diagnostic.
-  - On SQLite, 379 integration tests pass, including the three new ones,
-    with one ignored and one failure:
-    `waiting_history::invalid_or_stale_waiting_reports_leave_original_attempt_usable`,
-    which fails the same way on the base commit without this change. All 212
-    library tests pass, with 32 ignored.
+  - After merging main (#659): the full SQLite suite passes (384), and the
+    task-queue tests pass on PostgreSQL and MySQL (5 each).
