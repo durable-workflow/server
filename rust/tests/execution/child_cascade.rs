@@ -26,6 +26,16 @@ fn events<'a>(history: &'a Value, kind: &str) -> Vec<&'a Value> {
     history.as_array().unwrap().iter().filter(|event| event["event_type"] == kind).collect()
 }
 
+// An event's id, from the history export (the history API omits it).
+async fn event_id(app: &Router, run: &Value, kind: &str) -> Value {
+    let (status, bundle) = request(app, "GET", &format!("/api/workflows/{}/runs/{}/history/export",
+        run["workflow_id"].as_str().unwrap(), run["run_id"].as_str().unwrap()), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{bundle}");
+    let found: Vec<_> = bundle["history_events"].as_array().unwrap().iter().filter(|event| event["type"] == kind).collect();
+    assert_eq!(found.len(), 1, "{kind}");
+    found[0]["id"].clone()
+}
+
 // Published PHP's `wait_cancellation_completed` cascade (Workflow 2.9.0
 // ChildCancellation): the parent's delivery at the child asks the child to
 // cancel under the root request and budget, and waits with its claim
@@ -108,6 +118,83 @@ async fn a_waiting_child_policy_cancels_the_child_before_the_parent_resumes() {
         (json!("cancelled"), json!("WorkflowCancelled")), "{resolution}");
     let cancelled = &events(&parent_history, "WorkflowCancelled")[0]["payload"];
     assert_eq!(cancelled["cancellation_cleanup"]["outcome"], "completed", "{cancelled}");
+
+    // Published PHP's CancellationCascadeView in run debug: either run shows
+    // the same root request, both runs and their relation.
+    let (status, parent_debug) = request(&app, "GET", &format!("/api/workflows/{}/runs/{}/debug",
+        parent["workflow_id"].as_str().unwrap(), parent["run_id"].as_str().unwrap()), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{parent_debug}");
+    let (status, child_debug) = request(&app, "GET", &format!("/api/workflows/{}/runs/{}/debug",
+        child["workflow_id"].as_str().unwrap(), child["run_id"].as_str().unwrap()), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{child_debug}");
+    assert_eq!((parent_debug["cancellation_cascade_supported"].clone(), child_debug["cancellation_cascade_supported"].clone()), (json!(true), json!(true)));
+    let mut view = parent_debug["cancellation_cascade"].clone();
+    let mut from_child = child_debug["cancellation_cascade"].clone();
+    assert_eq!((view["selected_run_id"].clone(), from_child["selected_run_id"].clone()), (parent["run_id"].clone(), child["run_id"].clone()));
+    view["selected_run_id"] = Value::Null;
+    from_child["selected_run_id"] = Value::Null;
+    assert_eq!(view, from_child);
+    assert_eq!(view["schema"], "durable-workflow.cancellation-cascade/v1");
+    assert_eq!((view["findings"].clone(), view["inspection_complete"].clone(), view["truncated"].clone()), (json!([]), json!(true), json!(false)), "{view}");
+    assert_eq!(view["limits"], json!({"runs":20,"edges":100,"history_events_per_run":128,"history_events_total":512,"request_text_bytes":8192,"scope_origin_addresses":100}));
+    let mut root_request = root_context.clone();
+    root_request.as_object_mut().unwrap().remove("lineage");
+    assert_eq!(view["root"], root_request, "{view}");
+    let edges = view["edges"].as_array().unwrap();
+    assert_eq!(edges.len(), 1, "{view}");
+    assert_eq!((edges[0]["parent_run_id"].clone(), edges[0]["child_run_id"].clone()), (parent["run_id"].clone(), child["run_id"].clone()));
+    assert_eq!((edges[0]["kind"].clone(), edges[0]["reference_source"].clone(), edges[0]["reference_state"].clone()),
+        (json!("child_workflow"), json!("child_call"), json!("resolved")));
+    let runs = view["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 2, "{view}");
+    let (parent_node, child_node) = (&runs[0], &runs[1]);
+    assert_eq!((parent_node["run_id"].clone(), child_node["run_id"].clone()), (parent["run_id"].clone(), child["run_id"].clone()));
+    for node in runs {
+        assert_eq!((node["lifecycle"].clone(), node["projected_status"].clone(), node["terminal_event_type"].clone()),
+            (json!("cancelled"), json!("cancelled"), json!("WorkflowCancelled")), "{node}");
+        assert_eq!(node["same_root_budget"], true, "{node}");
+        assert_eq!((node["activity_stops"].clone(), node["cleanup_recovery"].clone()), (json!([]), json!([])));
+    }
+    assert_eq!(parent_node["request"], root_request);
+    assert_eq!(parent_node["terminal_history_event_id"], event_id(&app, &parent, "WorkflowCancelled").await);
+    assert_eq!(parent_node["cleanup"], cancelled["cancellation_cleanup"], "{parent_node}");
+    assert_eq!(parent_node["delivery"]["history_event_id"], event_id(&app, &parent, "CooperativeCancellationDelivered").await);
+    assert_eq!((parent_node["delivery"]["sequence"].clone(), parent_node["delivery"]["call_kind"].clone()), (json!(1), json!("child")));
+    let propagation = parent_node["child_propagation"].as_array().unwrap();
+    let kinds: Vec<_> = propagation.iter().map(|entry| entry["event_type"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["ChildCancellationRequested", "ChildCancellationResolved"], "{parent_node}");
+    for entry in propagation {
+        assert_eq!((entry["child_run_id"].clone(), entry["policy"].clone()), (child["run_id"].clone(), json!("wait_cancellation_completed")));
+    }
+    assert_eq!(propagation[1]["child_terminal_history_event_id"], event_id(&app, &child, "WorkflowCancelled").await);
+    let mut child_request = context.clone();
+    child_request.as_object_mut().unwrap().remove("lineage");
+    assert_eq!(child_node["request"], child_request);
+    assert_eq!(child_node["child_propagation"], json!([]));
+    assert_eq!(child_node["cleanup"]["outcome"], "completed", "{child_node}");
+
+    // Saved run state that disagrees with the recorded request is a finding,
+    // and the view stays complete otherwise.
+    database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_runs SET cancellation_deadline_at=NULL WHERE id='{}'", child["run_id"].as_str().unwrap()))).await;
+    let (_, parent_debug) = request(&app, "GET", &format!("/api/workflows/{}/runs/{}/debug",
+        parent["workflow_id"].as_str().unwrap(), parent["run_id"].as_str().unwrap()), Value::Null).await;
+    let view = &parent_debug["cancellation_cascade"];
+    assert_eq!(view["inspection_complete"], false, "{view}");
+    assert_eq!(view["findings"], json!([{"code":"request_projection_mismatch","run_id":child["run_id"],
+        "message":"Saved run state disagrees with the original cancellation request or budget. The original request remains in history."}]));
+    assert_eq!(view["runs"].as_array().unwrap().len(), 2);
+}
+
+// A run that was never asked to cancel has no cascade view.
+#[tokio::test]
+async fn a_run_without_a_cancellation_request_has_no_cascade_view() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let started = start(&app, "cascade-none").await;
+    let (status, debug) = request(&app, "GET", &format!("/api/workflows/{}/runs/{}/debug",
+        started["workflow_id"].as_str().unwrap(), started["run_id"].as_str().unwrap()), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{debug}");
+    assert_eq!((debug["cancellation_cascade_supported"].clone(), debug["cancellation_cascade"].clone()), (json!(true), Value::Null));
 }
 
 // Under `try_cancel` the parent's delivery asks the child to cancel and goes

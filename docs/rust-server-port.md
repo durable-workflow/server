@@ -203,11 +203,12 @@ contract fixture before its correction.
 - **Child cancellation cascade, remaining parts.** Native propagates a
   parent's cooperative cancellation to its child under `try_cancel` and
   `wait_cancellation_completed`, as PHP does. The rest is open:
-  - **Cascade view.** Published PHP's run debug reports
-    `cancellation_cascade_supported: true` and the `cancellation_cascade`
-    view (`CancellationCascadeView`). Native reports `false` and `null`. The
-    Sample App's children scenario checks the view through the API, the CLI
-    and Waterline.
+  - **Cascade view evidence native never writes.** Run debug carries
+    PHP's `cancellation_cascade` view. Native writes no scoped
+    (`cancellation-context/v2`) contexts and no activity stop receipts, so
+    after a takeover a PHP-written scoped request reads as
+    `request_context_invalid`, and a PHP-written stop receipt as
+    `callback_state: unknown`.
   - **Parent close.** Published PHP applies `request_cancel`, `terminate` and
     `request_cancellation` to a child that is still open when its parent
     completes, fails, is cancelled, is terminated or times out
@@ -719,8 +720,6 @@ October 21, Waterline reads:
   - Native tasks carry no queue-driver dispatch metadata. For tasks native
     created, the recent added and dispatched counters are zero, and the debug
     view's dispatch-overdue and transport states differ.
-  - The cancellation cascade view is not ported. The debug view reports
-    `cancellation_cascade_supported: false` and a null cascade.
 - **Evidence.** Debug views of seven run states match PHP except for the
   differences above, history payload content and key order, and identifier
   case. Task queue views differ only in the bound and counters above. Sixteen

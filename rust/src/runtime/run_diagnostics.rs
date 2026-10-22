@@ -4,9 +4,8 @@
 //! activities' task queues, recent failures with their supporting events,
 //! the latest workflow-task failure, compatibility, and findings.
 //!
-//! Native reports `cancellation_cascade_supported: false` and no cascade:
-//! PHP's `CancellationCascadeView` is not ported yet. Native carries
-//! PHP's default server compatibility (no supported markers).
+//! `cancellation_cascade` is PHP's `CancellationCascadeView` for the run.
+//! Native carries PHP's default server compatibility (no supported markers).
 use super::{
     Result,
     backend::Backend,
@@ -654,15 +653,10 @@ where
         let rows = Self::query("SELECT id,source_kind,source_id,propagation_kind,failure_category,exception_class,message,CASE WHEN non_retryable THEN 1 ELSE 0 END AS non_retryable,CASE WHEN handled THEN 1 ELSE 0 END AS handled,created_at FROM workflow_failures WHERE workflow_run_id=$1 ORDER BY created_at DESC,id DESC LIMIT 11")
             .bind(&run_id).fetch_all(&self.pool).await?;
         let pruned = DB::optional_instant(run, "details_pruned_at")?.is_some();
-        let event_sql = match DB::NAME {
-            "PostgreSQL" => "SELECT sequence,event_type,recorded_at FROM workflow_history_events WHERE workflow_run_id=$1 AND (payload->>'failure_id')=$2 AND event_type IN ('ActivityFailed','ActivityTimedOut','ChildRunFailed','ChildRunCancelled','ChildRunTerminated','WorkflowFailed','WorkflowTimedOut','WorkflowCancelled','WorkflowTerminated','UpdateCompleted') ORDER BY sequence DESC LIMIT 1",
-            "MySQL" => "SELECT sequence,event_type,recorded_at FROM workflow_history_events WHERE workflow_run_id=$1 AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.failure_id'))=$2 AND event_type IN ('ActivityFailed','ActivityTimedOut','ChildRunFailed','ChildRunCancelled','ChildRunTerminated','WorkflowFailed','WorkflowTimedOut','WorkflowCancelled','WorkflowTerminated','UpdateCompleted') ORDER BY sequence DESC LIMIT 1",
-            _ => "SELECT sequence,event_type,recorded_at FROM workflow_history_events WHERE workflow_run_id=$1 AND json_extract(payload,'$.failure_id')=$2 AND event_type IN ('ActivityFailed','ActivityTimedOut','ChildRunFailed','ChildRunCancelled','ChildRunTerminated','WorkflowFailed','WorkflowTimedOut','WorkflowCancelled','WorkflowTerminated','UpdateCompleted') ORDER BY sequence DESC LIMIT 1",
-        };
         let mut failures = Vec::new();
         for row in rows.iter().take(FAILURE_LIMIT) {
             let failure_id = DB::string(row, "id")?;
-            let event = Self::query(event_sql).bind(&run_id).bind(failure_id.as_str()).fetch_optional(&self.pool).await?;
+            let event = Self::query(DB::OBSERVATION_FAILURE_EVENT).bind(&run_id).bind(failure_id.as_str()).fetch_optional(&self.pool).await?;
             let supporting = match event {
                 Some(event) => {
                     let sequence = DB::number(&event, "sequence")?;
@@ -817,6 +811,7 @@ where
             last_progress_at: DB::optional_instant(&run, "last_progress_at")?,
         };
         let latest_failure = self.latest_task_failure(&fields.run_id).await?;
+        let cascade = self.cancellation_cascade(&fields.run_id).await?;
         let mut payload = diagnostics_payload(Diagnostics {
             at,
             namespace: self.namespace.as_ref(),
@@ -839,6 +834,7 @@ where
         if !terminal {
             findings.extend(self.routing_findings(&run, &rows, at, &fleet, config).await?);
         }
+        payload["cancellation_cascade"] = cascade;
         payload["findings"] = json!(findings);
         Ok(payload)
     }
@@ -964,7 +960,7 @@ fn diagnostics_payload(view: Diagnostics<'_>) -> Value {
             "compatibility_supported_in_fleet":in_fleet,"compatibility_fleet_reason":fleet_reason},
             "task_queue_pollers":if pollers.is_array() { pollers } else { json!([]) },
             "namespace_worker_fleet":fleet_summary})),
-        "cancellation_cascade_supported":false,"cancellation_cascade":null})
+        "cancellation_cascade_supported":true,"cancellation_cascade":null})
 }
 
 /// One `pending_workflow_tasks` entry. Kept outside the generic store so
