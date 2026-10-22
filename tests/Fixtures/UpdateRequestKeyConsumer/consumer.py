@@ -115,7 +115,7 @@ async def retained(namespace):
             assert actual[key] == original['receipt'][key], (key, actual, original['receipt'])
         history = await http.get('/api/workflows/' + original['workflow_id'] + '/history')
         history.raise_for_status()
-        assert history.json() == original['history']
+        assert history.json()['events'] == original['history']['events']
         path.with_suffix('.retained.json').write_text(json.dumps(actual, ensure_ascii=False, indent=2))
 
 

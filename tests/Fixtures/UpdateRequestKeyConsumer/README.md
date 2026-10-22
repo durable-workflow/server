@@ -24,8 +24,9 @@ and 512 MiB each; dependency installation uses a private client tmpfs.
 3. Stop the API and queue explicitly with SIGTERM, require exit 0/no OOM, and
    remove those old-writer containers. The completed SDK worker must also have
    exited successfully. Retain only the stopped database and client.
-4. Audit with ordinary Python: bind the phase root read-only and run `audit.py
-   before` with a private `/audit` tmpfs. This copies the stopped DELETE-mode
+4. Audit with ordinary Python: bind the phase root read-only, mount only its
+   `evidence` subdirectory separately writable, and run `audit.py before` with
+   a private `/audit` tmpfs. This copies the stopped DELETE-mode
    database, opens the copy read-only, proves unchanged source bytes and records
    complete original receipt/history/task rows. WAL presence is a refusal.
 5. Change only `KEY_SERVER_IMAGE` to the corrected published digest. Recreate
