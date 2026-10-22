@@ -403,6 +403,7 @@ where
                     "recorded":false,"reason":"stale_attempt","next_task_id":null}),
             });
         }
+        Self::closed_run_outcome(&mut tx, &task, &body, "failed").await?;
         Self::fence(&task, &body)?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         Self::active_run(&mut tx, &run_id).await?;

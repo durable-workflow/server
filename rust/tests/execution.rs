@@ -93,6 +93,8 @@ mod cooperative_waits;
 mod child_policies;
 #[path = "execution/child_cascade.rs"]
 mod child_cascade;
+#[path = "execution/completion_open_work.rs"]
+mod completion_open_work;
 #[path = "execution/query_open_tasks.rs"]
 mod query_open_tasks;
 #[path = "execution/retry_message_tasks.rs"]

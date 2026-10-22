@@ -76,10 +76,8 @@ pub(super) const STREAM_COUNTS: [&str; 3] =
     ["message_streams_deleted", "message_stream_items_deleted", "message_stream_items_compacted"];
 
 /// Counts that hold a run's details, the run-id binds of each, and the
-/// skip reason. Native closes a run only after cancelling its open
-/// activities, so an open one is an activity PHP abandoned.
+/// skip reason. An abandoned activity's hold is read from history.
 pub(super) const HOLDS: &[(&str, usize, &str)] = &[
-    ("SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status IN ('pending','running')", 1, "detached_activity_still_open"),
     ("SELECT (SELECT COUNT(*) FROM workflow_durable_streams WHERE workflow_run_id=$1)+(SELECT COUNT(*) FROM workflow_messages WHERE workflow_run_id=$2)", 2, "message_stream_cleanup_unavailable"),
     (REFERENCES_SQL, 5, "external_payload_cleanup_unavailable"),
 ];
