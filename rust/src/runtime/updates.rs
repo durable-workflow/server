@@ -8,6 +8,7 @@ use super::{
     store::{PreparedControlArguments, Store, id, now, validate_arguments},
     text, wire,
 };
+use super::laravel_validation::{Rule, failure_messages, rule_errors};
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
@@ -219,43 +220,20 @@ where
                 "invalid_update_name",
             ));
         }
-        let request_id = body
-            .get("request_id")
-            .filter(|value| !value.is_null())
-            .map(|_| text(&body, "request_id"))
-            .transpose()?;
-        if request_id.is_some_and(|request| request.len() > 255) {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid_request_id",
-            ));
+        // `WorkflowController::update`'s rules, on the trimmed request.
+        let request = super::start_request::normalized(body.clone());
+        let rules: &[(&str, &[Rule])] = &[
+            ("request_id", &[Rule::Nullable, Rule::String, Rule::Max(255)]),
+            ("wait_for", &[Rule::Nullable, Rule::String, Rule::In(&["accepted", "completed"])]),
+            ("wait_timeout_seconds", &[Rule::Nullable, Rule::Integer, Rule::Min(1)]),
+        ];
+        if let Some(error) = failure_messages(rule_errors(&request, rules, |_, _| None)) {
+            return Err(error);
         }
+        let request_id = request["request_id"].as_str();
         // PHP waits for acceptance unless the request asks for completion.
-        let wait_for = body
-            .get("wait_for")
-            .filter(|value| !value.is_null())
-            .map_or(Ok("accepted"), |_| text(&body, "wait_for"))?;
-        if !matches!(wait_for, "accepted" | "completed") {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid_update_wait_policy",
-            ));
-        }
-        let timeout = body
-            .get("wait_timeout_seconds")
-            .filter(|value| !value.is_null())
-            .map(|value| {
-                value
-                    .as_i64()
-                    .filter(|seconds| (0..=30).contains(seconds))
-                    .ok_or_else(|| {
-                        refuse(
-                            StatusCode::UNPROCESSABLE_ENTITY,
-                            "unsupported_update_wait_timeout",
-                        )
-                    })
-            })
-            .transpose()?;
+        let wait_for = request["wait_for"].as_str().unwrap_or("accepted");
+        let timeout = super::laravel_validation::integer(&request["wait_timeout_seconds"]);
         let mut tx = self
             .begin()
             .await

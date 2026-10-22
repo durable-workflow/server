@@ -1778,8 +1778,8 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
         ),
         (
             path.clone(),
-            json!({"input":input["input"],"wait_timeout_seconds":31}),
-            "unsupported_update_wait_timeout",
+            json!({"input":input["input"],"wait_timeout_seconds":0}),
+            "validation_failed",
         ),
     ] {
         assert_eq!(
