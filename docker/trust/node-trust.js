@@ -2,8 +2,8 @@
 // embedded root store still trusts a root withdrawn under GHSA-6q48-6c7w-9gw2.
 // Node uses its embedded roots by default, independent of the OS store.
 'use strict';
-const tls = require('tls');
-const { X509Certificate } = require('crypto');
+const tls = require('node:tls');
+const { X509Certificate } = require('node:crypto');
 
 const blocked = { 'AAA Certificate Services': 0, 'emSign ECC Root CA - G3': 0 };
 for (const pem of tls.rootCertificates) {

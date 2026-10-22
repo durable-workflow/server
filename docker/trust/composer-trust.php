@@ -12,5 +12,5 @@ if (preg_match('/Composer version (\d+\.\d+\.\d+)/', $version, $match) !== 1
 }
 // The binary has no .phar extension; load it under its own alias.
 Phar::loadPhar(trim((string) shell_exec('command -v composer')), 'composer.phar');
-require 'phar://composer.phar/vendor/autoload.php';
+require_once 'phar://composer.phar/vendor/autoload.php';
 echo Composer\CaBundle\CaBundle::getSystemCaRootBundlePath(), PHP_EOL;

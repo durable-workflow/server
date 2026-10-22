@@ -31,14 +31,15 @@ COPY --from=phpredis-source /phpredis /usr/src/php/ext/redis
 
 # The image's trust checks; `server-verify-trust` reruns them on any image.
 COPY docker/trust/ /usr/local/lib/server-trust/
-RUN chmod 0755 /usr/local/lib/server-trust/verify-trust.sh \
-    && ln -s /usr/local/lib/server-trust/verify-trust.sh /usr/local/bin/server-verify-trust \
-    && server-verify-trust system
 
 # Published conformance runners execute from the exact Server image.
 # Keep their Node and Python runtimes available alongside the service. Node
-# comes from the pinned stage, not Debian's end-of-life package.
-RUN apt-get update && apt-get install -y \
+# comes from the pinned stage, not Debian's end-of-life package. The system
+# store is checked before the first download.
+RUN chmod 0755 /usr/local/lib/server-trust/verify-trust.sh \
+    && ln -s /usr/local/lib/server-trust/verify-trust.sh /usr/local/bin/server-verify-trust \
+    && server-verify-trust system \
+    && apt-get update && apt-get install -y \
     curl \
     libpq-dev \
     libstdc++6 \
