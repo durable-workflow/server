@@ -360,6 +360,25 @@ fn envelope(body: &Value, field: &str) -> Result<String> {
     Ok(blob.to_owned())
 }
 
+/// `normalizeRecordSideEffectCommand`: published SDKs send a side effect's
+/// encoded result as a string, with an optional `payload_codec`. An Avro
+/// envelope is accepted too, as PHP's payload resolver does.
+fn side_effect_result(command: &Value) -> Result<String> {
+    let codec = &command["payload_codec"];
+    if !codec.is_null() && codec != "avro" {
+        return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "unsupported_payload_codec"));
+    }
+    match &command["result"] {
+        Value::String(blob)
+            if !blob.is_empty() && blob.len() <= 2 * 1024 * 1024 && !blob.starts_with(external_resolution::STORED_PREFIX) =>
+        {
+            Ok(blob.clone())
+        }
+        Value::String(_) => Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_payload_envelope")),
+        _ => envelope(command, "result"),
+    }
+}
+
 fn wire(blob: &str) -> Value {
     if let Some(envelope) = external_resolution::stored_envelope(blob) {
         return envelope;
