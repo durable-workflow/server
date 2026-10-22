@@ -75,6 +75,7 @@ mod search_attributes;
 mod selection_summary;
 mod selections;
 mod sqlite;
+mod start_definition;
 mod start_request;
 mod storage_test;
 mod store;

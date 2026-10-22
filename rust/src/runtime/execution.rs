@@ -182,6 +182,7 @@ impl Runtime {
         store.search_attribute_limit = search_attribute_limit;
         store.history_budget = history_budget;
         store.workflow_task_lease_seconds = queries.workflow_task_lease_seconds;
+        store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
         Self::from_storage(Storage::Sqlite(store), token, external, queries).await
     }
 
@@ -197,6 +198,7 @@ impl Runtime {
         store.search_attribute_limit = search_attribute_limit;
         store.history_budget = history_budget;
         store.workflow_task_lease_seconds = queries.workflow_task_lease_seconds;
+        store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
         Self::from_storage(Storage::Postgres(store), token, external, queries).await
     }
 
@@ -212,6 +214,7 @@ impl Runtime {
         store.search_attribute_limit = search_attribute_limit;
         store.history_budget = history_budget;
         store.workflow_task_lease_seconds = queries.workflow_task_lease_seconds;
+        store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
         Self::from_storage(Storage::MySql(store), token, external, queries).await
     }
 
