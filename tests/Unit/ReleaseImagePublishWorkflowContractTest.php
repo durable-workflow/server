@@ -306,7 +306,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $dockerfile = $this->read('Dockerfile');
 
         foreach ([
-            'FROM composer:2 AS phpredis-source',
+            'FROM composer AS phpredis-source',
             'ARG PHPREDIS_VERSION=6.3.0',
             'ARG PHPREDIS_COMMIT=df4fab2de7fc327c54c94a13af2b9542e4fbd720',
             'git clone --depth 1 --branch "${PHPREDIS_VERSION}" https://github.com/phpredis/phpredis.git /phpredis',
@@ -386,12 +386,13 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $activitiesRunner = $this->read('scripts/conformance/activities-published-artifacts.sh');
 
         $this->assertMatchesRegularExpression('/^FROM php@sha256:[a-f0-9]{64} AS base$/m', $dockerfile);
-        $this->assertStringContainsString('nodejs', $dockerfile);
+        // Node comes from the pinned fixed stage, never Debian's package.
+        $this->assertStringNotContainsString('nodejs', $dockerfile);
         $this->assertStringContainsString('if ! require_command node; then', $activitiesRunner);
         $this->assertStringContainsString('required command not found: node', $activitiesRunner);
 
         $baseOffset = strpos($dockerfile, " AS base\n");
-        $nodeOffset = strpos($dockerfile, 'nodejs');
+        $nodeOffset = strpos($dockerfile, 'COPY --from=node /usr/local/bin/node /usr/local/bin/node');
         $productionOffset = strpos($dockerfile, 'FROM base AS production');
 
         $this->assertIsInt($baseOffset);
@@ -399,6 +400,71 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertIsInt($productionOffset);
         $this->assertLessThan($nodeOffset, $baseOffset);
         $this->assertLessThan($productionOffset, $nodeOffset);
+    }
+
+    public function test_dockerfile_checks_every_tls_trust_path_before_it_is_used(): void
+    {
+        // GHSA-6q48-6c7w-9gw2: fixed Composer and Node identities, each stage's
+        // store checked before its first download, and the final runtime
+        // stores checked before the production stage downloads.
+        $dockerfile = $this->read('Dockerfile');
+        $verifier = $this->read('docker/trust/verify-trust.sh');
+        $blocked = $this->read('docker/trust/count-blocked.php');
+        $node = $this->read('docker/trust/node-trust.js');
+        $composer = $this->read('docker/trust/composer-trust.php');
+
+        $this->assertStringContainsString('FROM composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee AS composer', $dockerfile);
+        $this->assertStringContainsString('FROM node:22.23.4-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS node', $dockerfile);
+        $this->assertDoesNotMatchRegularExpression('/composer:2(?:\s|$)/m', $dockerfile);
+        $this->assertDoesNotMatchRegularExpression('/^FROM (?!php@sha256:)[^@\s]+(?:\s|$)/m', preg_replace('/^FROM (composer|base) AS .+$/m', '', $dockerfile));
+
+        $composerVerify = strpos($dockerfile, 'RUN sh /usr/local/lib/server-trust/verify-trust.sh system');
+        $clone = strpos($dockerfile, 'git clone --depth 1');
+        $baseVerify = strpos($dockerfile, '&& server-verify-trust system');
+        $firstApt = strpos($dockerfile, 'apt-get update');
+        $nodeCopy = strpos($dockerfile, 'COPY --from=node /usr/local/bin/node /usr/local/bin/node');
+        $finalVerify = strpos($dockerfile, 'RUN server-verify-trust final');
+        $production = strpos($dockerfile, 'FROM base AS production');
+        foreach ([$composerVerify, $clone, $baseVerify, $firstApt, $nodeCopy, $finalVerify, $production] as $offset) {
+            $this->assertIsInt($offset);
+        }
+        $this->assertLessThan($clone, $composerVerify);
+        $this->assertLessThan($firstApt, $baseVerify);
+        $this->assertLessThan($finalVerify, $nodeCopy);
+        $this->assertLessThan($production, $finalVerify);
+
+        $this->assertStringContainsString("const BLOCKED = ['AAA Certificate Services', 'emSign ECC Root CA - G3'];", $blocked);
+        $this->assertStringContainsString("'emSign ECC Root CA - G3': 0", $node);
+        $this->assertStringContainsString('major === 22 && (minor > 23 || (minor === 23 && patch >= 4))', $node);
+        $this->assertStringContainsString("version_compare(\$match[1], '2.10.3', '<')", $composer);
+        // CI reruns the checks on the PR's base image and on every published
+        // architecture before the release smoke tests use the image.
+        $release = $this->read('.github/workflows/release.yml');
+        $phpunit = $this->read('.github/workflows/phpunit-feature.yml');
+        $this->assertStringContainsString(
+            'docker run --rm --network none --entrypoint server-verify-trust durable-workflow-server-phpunit-base',
+            $phpunit,
+        );
+        $exact = strpos($release, 'Verify exact image publication');
+        $trust = strpos($release, 'Verify published image trust stores');
+        $firstRun = strpos($release, 'Verify bare image first-run readiness');
+        foreach ([$exact, $trust, $firstRun] as $offset) {
+            $this->assertIsInt($offset);
+        }
+        $this->assertLessThan($trust, $exact);
+        $this->assertLessThan($firstRun, $trust);
+        $this->assertStringContainsString('--platform "$platform" --network none', $release);
+        $this->assertStringContainsString('--entrypoint server-verify-trust "$RELEASE_IMAGE"', $release);
+
+        foreach ([
+            'count /etc/ssl/certs/ca-certificates.crt',
+            'openssl_get_cert_locations()',
+            'if [ "$selected" != /etc/ssl/certs/ca-certificates.crt ]; then',
+            'if [ "$(command -v node)" != /usr/local/bin/node ] || [ -e /usr/bin/node ] || [ -e /usr/bin/nodejs ]; then',
+            'python3 -m venv "$venv"',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $verifier);
+        }
     }
 
     public function test_dockerfile_installs_python_for_focused_activity_sdk_cells(): void
@@ -1258,7 +1324,8 @@ SH;
 set -eu
 image="$4"
 case "$image" in
-    composer:2) prefix="1" ;;
+    composer:2.10.3@sha256:*) prefix="1" ;;
+    node:22.23.4-bookworm-slim@sha256:*) prefix="3" ;;
     php:8.3-apache|php@sha256:*) prefix="2" ;;
     *) exit 1 ;;
 esac
