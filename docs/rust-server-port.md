@@ -182,14 +182,22 @@ contract fixture before its correction.
   then did not stop within the 5-second shutdown budget. Forty local
   repetitions of that case alone passed. Find what holds the query thread
   after the fence before changing either side.
-- **Workflow definition evolution (PHP main after #525, not yet released).**
-  Current PHP routes a run whose recorded workflow definition is gone to a
+- **Workflow definition evolution (published in Server 2.10.0).** Published
+  PHP routes a run whose recorded workflow definition is gone to a
   replacement definition that passes strict replay. It then reports
   `definition_routing` on task queues and run diagnostics. It also records
   each worker's protocol version under `_worker_protocol_version` in its
-  stored process metrics. That entry shows up in the worker listing. Native
-  follows the frozen published reference, which has none of this. Port it
-  with its own fixture once it is published.
+  stored process metrics, which the worker listing shows. Native has none of
+  this. The Sample App's timers scenario now needs it: its application
+  upgrade phase requires one worker-sourced definition fingerprint in the
+  history of a Python class upgrade.
+- **Child cancellation policies.** Native accepts a child only with the
+  `abandon` parent close and cancellation policies, and refuses others with
+  `422 unsupported_child_options`. Published PHP also requests the child's
+  cancellation when its parent is cancelled (`request_cancellation`), and
+  waits for the child's cancellation before resolving the parent
+  (`wait_cancellation_completed`). The Sample App's children scenario uses
+  both in its cancellation case. Its PHP worker stops on the refusal.
 - **Trace context (Workflow #773 / workflow#788, not yet published).** A
   Workflow minor will add nullable `observability_context` columns on runs,
   commands and tasks, plus an entry in schedule metadata. Native-owned
