@@ -34,6 +34,8 @@ pub struct Runtime {
     storage: Arc<Storage>,
     pub(crate) token: Arc<str>,
     pub(crate) role_tokens: [Option<Arc<str>>; 3],
+    /// `DW_AUTH_DRIVER=none` and `DW_RUNTIME_CREDENTIALS_ENABLED`.
+    pub(crate) auth: AuthOptions,
     scheduler: Arc<TimerScheduler>,
     signal_codec: Arc<Semaphore>,
     // Codec work done while holding the transition lock takes this permit,
@@ -110,6 +112,15 @@ impl Drop for TimerScheduler {
     }
 }
 
+/// How requests authenticate beyond the configured tokens.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct AuthOptions {
+    /// `DW_AUTH_DRIVER=none`: every request is the anonymous administrator.
+    pub(crate) anonymous: bool,
+    /// Database runtime credentials authenticate bearer tokens.
+    pub(crate) runtime_credentials: bool,
+}
+
 macro_rules! delegate {
     ($name:ident($($arg:ident: $ty:ty),* $(,)?) -> $output:ty) => {
         pub(crate) async fn $name(&self, $($arg:$ty),*) -> $output {
@@ -141,6 +152,11 @@ impl Runtime {
     ) -> Self {
         self.role_tokens = [worker, operator, admin]
             .map(|token| token.filter(|value| !value.is_empty()).map(Arc::from));
+        self
+    }
+
+    pub fn with_auth_options(mut self, anonymous: bool, runtime_credentials: bool) -> Self {
+        self.auth = AuthOptions { anonymous, runtime_credentials };
         self
     }
 
@@ -209,6 +225,7 @@ impl Runtime {
             storage: Arc::new(storage),
             token: token.into(),
             role_tokens: [None, None, None],
+            auth: AuthOptions::default(),
             scheduler: Arc::new(TimerScheduler::new()),
             signal_codec: Arc::new(Semaphore::new(1)),
             transition_codec: Arc::new(Semaphore::new(1)),
@@ -278,6 +295,7 @@ impl Runtime {
             storage: Arc::new(storage),
             token: self.token.clone(),
             role_tokens: self.role_tokens.clone(),
+            auth: self.auth,
             scheduler: self.scheduler.clone(),
             signal_codec: self.signal_codec.clone(),
             transition_codec: self.transition_codec.clone(),
@@ -305,6 +323,12 @@ impl Runtime {
     delegate!(activity_timeout_pass(limit: i64, ids: Vec<String>) -> Result<(Value, bool)>);
     delegate!(create_namespace(body: Value) -> Result<Value>);
     delegate!(list_search_attributes() -> Result<Value>);
+    delegate!(runtime_credential_principal(token: &str) -> Result<Option<super::runtime_credentials::Principal>>);
+    delegate!(list_runtime_credentials() -> Result<Value>);
+    delegate!(show_runtime_credential(id: &str) -> Result<Value>);
+    delegate!(upsert_runtime_credential(id: &str, body: Value) -> Result<(axum::http::StatusCode, Value)>);
+    delegate!(rotate_runtime_credential(id: &str, body: Value) -> Result<Value>);
+    delegate!(revoke_runtime_credential(id: &str) -> Result<Value>);
     delegate!(
         storage_test_round_trip(
             local: &crate::external_payload::LocalStorage,

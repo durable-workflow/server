@@ -46,6 +46,7 @@ mod previews;
 mod queries;
 mod query_authority;
 mod retention;
+mod runtime_credentials;
 mod run_observation;
 mod run_observation_store;
 mod run_observation_waits;

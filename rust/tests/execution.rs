@@ -53,6 +53,8 @@ mod named_timers;
 #[path = "execution/named_signal_timeouts.rs"]
 mod named_signal_timeouts;
 
+#[path = "execution/runtime_credentials.rs"]
+mod runtime_credentials;
 #[path = "execution/selected_run_signals.rs"]
 mod selected_run_signals;
 

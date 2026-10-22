@@ -81,12 +81,33 @@ fn auth_value(key: &str) -> Result<Option<String>, Box<dyn Error>> {
     }
 }
 
+/// `server.auth.driver`: DW-primary, WORKFLOW-legacy, token by default.
+fn anonymous_driver() -> Result<bool, Box<dyn Error>> {
+    let driver = match auth_value("DW_AUTH_DRIVER")? {
+        Some(value) => Some(value),
+        None => auth_value("WORKFLOW_SERVER_AUTH_DRIVER")?,
+    };
+    Ok(driver.as_deref() == Some("none"))
+}
+
+/// `server.auth.runtime_credentials.enabled`: PHP's `FILTER_VALIDATE_BOOLEAN`
+/// with `FILTER_NULL_ON_FAILURE`, so an unrecognized value disables it.
+fn runtime_credentials_enabled() -> Result<bool, Box<dyn Error>> {
+    let value = match auth_value("DW_RUNTIME_CREDENTIALS_ENABLED")? {
+        Some(value) => Some(value),
+        None => auth_value("WORKFLOW_SERVER_RUNTIME_CREDENTIALS_ENABLED")?,
+    };
+    Ok(value.is_some_and(|value| {
+        matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes")
+    }))
+}
+
 fn validate_auth_configuration() -> Result<(), Box<dyn Error>> {
     // Unqualified credentials must not silently leave a full-access legacy
     // guard in place. These profiles require their own contract qualification.
     for key in ["DW_AUTH_DRIVER", "WORKFLOW_SERVER_AUTH_DRIVER"] {
         if let Some(value) = auth_value(key)? {
-            if value != "token" {
+            if value != "token" && value != "none" {
                 return Err("unsupported development authentication configuration".into());
             }
         }
@@ -101,19 +122,6 @@ fn validate_auth_configuration() -> Result<(), Box<dyn Error>> {
         "WORKFLOW_SERVER_ADMIN_TOKEN",
     ] {
         if auth_value(key)?.is_some_and(|value| !value.is_empty()) {
-            return Err("unsupported development authentication configuration".into());
-        }
-    }
-    for key in [
-        "DW_RUNTIME_CREDENTIALS_ENABLED",
-        "WORKFLOW_SERVER_RUNTIME_CREDENTIALS_ENABLED",
-    ] {
-        if auth_value(key)?.is_some_and(|value| {
-            !matches!(
-                value.to_ascii_lowercase().as_str(),
-                "" | "0" | "false" | "off" | "no"
-            )
-        }) {
             return Err("unsupported development authentication configuration".into());
         }
     }
@@ -444,7 +452,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             return Err("unsupported development database".into());
         }
     };
-    let runtime = runtime.with_role_tokens(worker_token, operator_token, admin_token);
+    let runtime = runtime
+        .with_role_tokens(worker_token, operator_token, admin_token)
+        .with_auth_options(anonymous_driver()?, runtime_credentials_enabled()?);
     let listener = tokio::net::TcpListener::bind(address).await?;
     eprintln!(
         "Rust development runtime listening on {}",
