@@ -37,3 +37,35 @@ any intentionally killed owner, remaining stale registrations and audit hashes.
 The Rust fixture's two executor threads let one callback block while asynchronous
 maintenance runs; this is functional acceptance, not a capacity comparison.
 Retire the phase's dependencies/compiler/DB/raw state at its declared boundary.
+
+## Read-only audit inputs
+
+`audit.php` reads the disposable SQLite database at `/data/database.sqlite`.
+Mount the database directory read-only. Use `--live` for a transactional prefix
+snapshot, then stop the API and take the final snapshot without that flag. The
+final audit requires an unchanged source hash. Every table is bounded to 1,000
+rows; this helper is for the disposable controls, never a production database.
+
+`verify.py` reads evidence under `/evidence`. Save final snapshots as
+`long-final.json` and `loss-final.json`, with each client's state in its own
+directory. Supply a `cohort.json` array identifying each original explicitly:
+
+```json
+[
+  {
+    "language": "python",
+    "folder": "python/long",
+    "mode": "long",
+    "run_id": "THE_ORIGINAL_RUN_ID",
+    "result_name": "result.log",
+    "prefix_name": "long-prefix.json"
+  }
+]
+```
+
+The verifier checks original deadlines, typed output, invocation/attempt/task
+bindings, retry policy and expiry reason, immutable history prefixes, absence of
+progress-heartbeat events, and stopped database hashes. A retry task retains its
+actual second-attempt counter; workflow tasks remain first-attempt. Include all
+unsuccessful originals and their reasons in the owning result record, even when
+a later corrected fixture has a separately passing cohort.
