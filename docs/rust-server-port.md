@@ -202,6 +202,14 @@ contract fixture before its correction.
   waits for the child's cancellation before resolving the parent
   (`wait_cancellation_completed`). The Sample App's children scenario uses
   both in its cancellation case. Its PHP worker stops on the refusal.
+- **Signals that arrive before a completion (Server 2.10.0).** Published
+  PHP drops a worker's `complete_workflow` or `continue_as_new` while a
+  deliverable signal waits and no cancellation is pending. It applies the
+  task's other commands and keeps the run open for a signal task. Its
+  continue-as-new also moves received signals with a declared handler, and
+  accepted updates, to the new run. Native closes the run, and refuses
+  continue-as-new while any signal is received. Native does reject a closed
+  run's unapplied signals as PHP does.
 - **Trace context (Workflow #773 / workflow#788, not yet published).** A
   Workflow minor will add nullable `observability_context` columns on runs,
   commands and tasks, plus an entry in schedule metadata. Native-owned

@@ -85,6 +85,8 @@ mod query_worker_results;
 mod payload_limits;
 #[path = "execution/start_definition.rs"]
 mod start_definition;
+#[path = "execution/signal_rejection.rs"]
+mod signal_rejection;
 #[path = "execution/query_open_tasks.rs"]
 mod query_open_tasks;
 #[path = "execution/retry_message_tasks.rs"]

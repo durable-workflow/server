@@ -427,10 +427,21 @@ async fn buffered_condition_input_keeps_zero_and_positive_timer_semantics_distin
                 finish(&app, namespace, &task, close(seconds > 0)).await.0,
                 StatusCode::OK
             );
+            // The zero timeout fired before the condition took the buffered
+            // signal. Closing the run rejects that unapplied signal, as
+            // Server 2.10.0's PendingSignalCloser does.
             assert_eq!(
                 task_retry::rows(
                     &database,
                     "SELECT COUNT(*) FROM workflow_signal_records WHERE status='received'"
+                )
+                .await,
+                0
+            );
+            assert_eq!(
+                task_retry::rows(
+                    &database,
+                    "SELECT COUNT(*) FROM workflow_signal_records WHERE status='rejected' AND rejection_reason='run_closed_before_signal_applied'"
                 )
                 .await,
                 if seconds == 0 { 1 } else { 0 }
