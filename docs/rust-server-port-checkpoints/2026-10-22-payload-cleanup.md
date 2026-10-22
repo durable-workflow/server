@@ -41,3 +41,10 @@
   SQLite, PostgreSQL and MySQL: shared, live and retained references, the
   limit and its backlog, an active backup hold, a disabled policy, and an
   allowance renewed while its activity runs and dropped after it completes.
+- **Evidence.** The new tests pass on SQLite, PostgreSQL and MySQL, and the
+  native suite with `--all-targets` passes on SQLite (652 tests). A local
+  copy of the SQLite parity step passed all 54 fixtures on embedded PHP and
+  native, including `payload-cleanup`. The published PHP fixture answers
+  were checked against a fresh 2.11.1 server. Its record differed only on
+  `namespace-delete`, a retryable 503 `backend_lock_pressure` that its probe
+  did not retry; that probe and the storage diagnostic now retry it.
