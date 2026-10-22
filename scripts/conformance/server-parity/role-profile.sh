@@ -43,7 +43,8 @@ database() {
   if test "$backend" = sqlite; then printf '/state/%s.sqlite' "$1"; else printf '%s' "$1"; fi
 }
 configuration_case=0
-for setting in DW_AUTH_DRIVER=none DW_AUTH_DRIVER= DW_PRINCIPAL_TOKENS=[] DW_AUTH_BACKWARD_COMPATIBLE=false DW_AUTH_BACKWARD_COMPATIBLE= DW_RUNTIME_CREDENTIALS_ENABLED=true; do
+# The none driver and runtime credentials are qualified; these settings are not.
+for setting in DW_AUTH_DRIVER=signature DW_AUTH_DRIVER= DW_PRINCIPAL_TOKENS=[] DW_AUTH_BACKWARD_COMPATIBLE=false DW_AUTH_BACKWARD_COMPATIBLE=; do
   configuration_case=$((configuration_case + 1))
   key="${setting%%=*}"
   if docker run --rm --user=1000:1000 --network=none --entrypoint /target/debug/durable-workflow-server \
