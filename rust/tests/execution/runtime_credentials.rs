@@ -110,3 +110,23 @@ async fn the_none_driver_admits_every_request() {
     runtime.close().await;
     database.remove().await;
 }
+
+#[tokio::test]
+async fn a_failed_credential_lookup_refuses_without_falling_back() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone().with_auth_options(false, true));
+    assert_eq!(admin(&app, "PUT", "/api/runtime-credentials/worker-a", credential(WORKER_TOKEN, json!(["worker"]), "default")).await.0, StatusCode::CREATED);
+    // The lookup's table is gone, so the database refuses every lookup.
+    database.execute("ALTER TABLE runtime_credentials RENAME TO runtime_credentials_moved").await;
+    let (status, _, body) = admission_http(&app, "GET", "/api/cluster/info", false, Some(WORKER_TOKEN), Some("2"), None, json!({})).await;
+    assert_eq!((status, body["reason"].clone()), (StatusCode::INTERNAL_SERVER_ERROR, json!("server_error")), "{body}");
+    assert!(!body.to_string().contains("runtime_credentials") && !body.to_string().contains(WORKER_TOKEN), "{body}");
+    // Configured tokens are matched first and still authenticate; a request
+    // without a token is still refused.
+    assert_eq!(admin(&app, "GET", "/api/cluster/info", Value::Null).await.0, StatusCode::OK);
+    let (status, _, _) = admission_http(&app, "GET", "/api/cluster/info", false, None, Some("2"), None, json!({})).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    runtime.close().await;
+    database.remove().await;
+}
