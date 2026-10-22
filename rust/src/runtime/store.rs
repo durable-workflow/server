@@ -1380,6 +1380,11 @@ where
                 claim["arguments"] = wire(&DB::string(&activity, "arguments")?);
                 claim["retry_policy"] =
                     DB::optional_document_row(&activity, "retry_policy")?.unwrap_or(Value::Null);
+                // PHP omits the field when the activity has no deadline.
+                let deadlines = super::activity_deadlines::deadlines_view::<DB>(&activity)?;
+                if !deadlines.is_null() {
+                    claim["deadlines"] = deadlines;
+                }
             } else {
                 claim["workflow_task_attempt"] = json!(attempt);
                 claim["arguments"] = wire(&DB::string(&run, "arguments")?);
@@ -2394,7 +2399,6 @@ where
                 json!({"task_id": task_id, "activity_attempt_id": attempt_id, "outcome": "completed", "recorded": false, "reason": "already_completed"}),
             );
         }
-        Self::fence(&task, &body)?;
         let attempt =
             Self::query("SELECT * FROM activity_attempts WHERE id=$1 AND workflow_task_id=$2")
                 .bind(attempt_id)
@@ -2402,6 +2406,9 @@ where
                 .fetch_optional(&mut *tx)
                 .await?
                 .ok_or_else(|| refuse(StatusCode::CONFLICT, "stale_attempt"))?;
+        // PHP judges the attempt before the task's lease: a late result from
+        // an attempt that is no longer current is stale even after another
+        // attempt finished the task.
         if DB::string(&attempt, "status")? != "running"
             || DB::number(&attempt, "attempt_number")? != DB::number(&task, "attempt_count")?
         {
@@ -2428,6 +2435,7 @@ where
                 response: receipt,
             });
         }
+        Self::fence(&task, &body)?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
         let activity_id = DB::string(&attempt, "activity_execution_id")?;
@@ -2663,6 +2671,12 @@ where
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "task_not_leased"))?;
         if receipt == *body {
             return Ok(true);
+        }
+        // Any other result for a closed activity task comes from an attempt
+        // that is no longer current; the caller reports it as stale, as PHP
+        // does, rather than as a conflicting duplicate.
+        if DB::string(task, "task_type")? == "activity" {
+            return Ok(false);
         }
         Err(refuse(StatusCode::CONFLICT, "conflicting_completion"))
     }

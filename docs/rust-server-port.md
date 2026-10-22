@@ -262,6 +262,14 @@ contract fixture before its correction.
   timer, a child and a parallel group whose members are all timers, and
   refuses the other boundaries, including parallel groups with other member
   kinds, with `422 cancellation_delivery_boundary_not_available`.
+- **Activity results after a deadline, before its timeout runs.** Published
+  PHP records a completion that arrives after an activity deadline has
+  passed when its separate timeout command has not yet closed the attempt.
+  Native refuses it with the deadline's timeout reason, because its own
+  timeout pass runs in every server process.
+- **A repeated identical activity result.** Published PHP answers a repeat
+  of the result that finished an activity task with `409 stale_attempt`.
+  Native returns its earlier idempotent receipt (`200`, `already_completed`).
 - **Terminating a child run.** Published Workflow resolves the parent with
   `ChildRunTerminated` and the `terminated` child call status. Native refuses
   this with `422 termination_propagation_not_available` until the parent-side
