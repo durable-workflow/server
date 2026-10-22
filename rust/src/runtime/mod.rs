@@ -65,6 +65,7 @@ mod schedule_backfill;
 mod schedule_execution;
 mod schedule_http;
 mod run_diagnostics;
+mod task_queue_build_ids;
 mod task_queues;
 mod query_route;
 mod run_describe;

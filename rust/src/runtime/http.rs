@@ -217,6 +217,19 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/workers", get(list_workers))
         .route("/api/task-queues", get(list_task_queues))
         .route("/api/task-queues/{task_queue}", get(describe_task_queue))
+        .route("/api/task-queues/{task_queue}/build-ids", get(task_queue_build_ids))
+        .route(
+            "/api/task-queues/{task_queue}/build-ids/promote",
+            post(build_id_rollout_unqualified),
+        )
+        .route(
+            "/api/task-queues/{task_queue}/build-ids/drain",
+            post(build_id_rollout_unqualified),
+        )
+        .route(
+            "/api/task-queues/{task_queue}/build-ids/resume",
+            post(build_id_rollout_unqualified),
+        )
         .route(
             "/api/workers/{worker_id}",
             get(describe_worker).delete(deregister),
@@ -593,6 +606,17 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
             .is_some_and(|queue| !queue.is_empty() && !queue.contains('/'))
     {
         return method == "GET";
+    }
+    // Build-id cohorts are a namespace-scoped read too. Rollout changes are
+    // refused alike in every namespace.
+    if let Some(rest) = path.strip_prefix("/api/task-queues/") {
+        match rest.split('/').collect::<Vec<_>>().as_slice() {
+            [queue, "build-ids"] if !queue.is_empty() => return method == "GET",
+            [queue, "build-ids", "promote" | "drain" | "resume"] if !queue.is_empty() => {
+                return method == "POST";
+            }
+            _ => {}
+        }
     }
     if path == "/api/workers"
         || path == "/api/system/operator-metrics"
@@ -1448,6 +1472,21 @@ async fn describe_task_queue(
     Path(task_queue): Path<String>,
 ) -> Result<Json<Value>> {
     runtime.describe_task_queue(&task_queue).await.map(Json)
+}
+/// `GET /api/task-queues/{name}/build-ids`.
+async fn task_queue_build_ids(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_queue): Path<String>,
+) -> Result<Json<Value>> {
+    runtime.task_queue_build_ids(&task_queue).await.map(Json)
+}
+/// `POST /api/task-queues/{name}/build-ids/{promote|drain|resume}`. Native
+/// keeps no build-id rollouts, so it refuses to promote, drain or resume one.
+async fn build_id_rollout_unqualified() -> Result<Json<Value>> {
+    Err(refuse(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "task_queue_build_id_rollout_unqualified",
+    ))
 }
 async fn describe_worker(
     Extension(runtime): Extension<Runtime>,
