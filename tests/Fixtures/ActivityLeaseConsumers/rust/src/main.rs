@@ -28,11 +28,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .heartbeat_interval(Duration::from_secs(1));
     worker.register_typed_activity(
         "qualification.blocking-rust",
-        |context, (seconds, mode): (u64, String)| async move {
+        |context, (seconds, mode): (i64, String)| async move {
             record(json!({"mode": mode, "attempt": context.attempt_number,
                 "task_id": context.task_id, "activity_attempt_id": context.activity_attempt_id,
                 "pid": std::process::id()}))?;
             if mode == "long" || context.attempt_number == 1 {
+                let seconds = u64::try_from(seconds).map_err(|_| {
+                    durable_workflow::Error::WorkerLoop("seconds must be non-negative".to_owned())
+                })?;
                 std::thread::sleep(Duration::from_secs(seconds));
             }
             Ok(vec![json!(9007199254740993_i64), Value::Null, json!("λ")])
@@ -40,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     worker.register_typed_workflow(
         "qualification.runtime-lease-rust",
-        |context, input: (u64, String)| async move {
+        |context, input: (i64, String)| async move {
             let result: Vec<Value> = context
                 .activity_typed_with_options(
                     "qualification.blocking-rust",
