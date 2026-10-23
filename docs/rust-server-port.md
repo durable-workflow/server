@@ -148,7 +148,10 @@ any other unknown path or method answers PHP's own 404 or 405
 - **Run operations.**
   - Imports from embedded v2 and Waterline v1.
 - **Other families.**
-  - Message streams.
+  - Message streams are served
+    ([checkpoint](rust-server-port-checkpoints/2026-10-23-message-streams.md)),
+    except external payload references as input, stream retention cleanup
+    and takeover of PHP data with streams.
   - Durable workflow stream items and close.
   - Service endpoints. (The service catalog reads from Server 2.11 are served:
     native never holds catalog rows, so every list is PHP's empty page and every
@@ -265,9 +268,12 @@ contract fixture before its correction.
   Add a fixture for each before changing them.
 - **Retention of runs with external payloads or message streams.**
   Published PHP deletes a pruned run's external payload objects and releases
-  its message stream items. Native does not clean either up yet. It skips
-  such a run with `external_payload_cleanup_unavailable` or
-  `message_stream_cleanup_unavailable` and keeps its details.
+  its message stream items. It also compacts its instance's consumed inbound
+  stream items, and removes the instance's streams with its last run. Native
+  does not clean any of these up yet. It skips such a run, including any run
+  whose instance has inbound streams, with
+  `external_payload_cleanup_unavailable` or
+  `message_stream_cleanup_unavailable`, and keeps its details.
 - **Deeply nested JSON bodies.** Published PHP decodes JSON up to 512 levels
   deep. Native checks every body as PHP does before any route, but its
   handlers parse with serde_json's 128-level limit. A body nested 129 to 512
