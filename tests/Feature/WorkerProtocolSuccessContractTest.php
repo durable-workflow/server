@@ -8,6 +8,7 @@ use App\Support\LongPoller;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\ServiceModeTimerDispatcher;
 use App\Support\WorkerProtocol;
+use App\Support\WorkflowMetadataCapabilityPolicy;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
@@ -737,11 +738,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $updateId = (string) $update->json('update_id');
         $commandId = (string) $update->json('command_id');
 
-        $this->registerWorker(
-            workerId: 'worker-update-context-contract',
-            taskQueue: 'contract-queue',
-            supportedWorkflowTypes: ['tests.interactive-command-workflow'],
-        );
+        $this->registerInteractiveUpdateWorker('worker-update-context-contract');
 
         $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
             'worker_id' => 'worker-update-context-contract',
@@ -783,7 +780,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
             'task_queue' => $taskQueue,
             'runtime' => 'php',
             'supported_workflow_types' => [$workflowType],
-            'capabilities' => ['workflow_tasks'],
+            'capabilities' => ['workflow_tasks', 'workflow_updates'],
             'workflow_command_contracts' => [
                 $workflowType => [
                     'queries' => [],
@@ -1003,7 +1000,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
             'task_queue' => $taskQueue,
             'runtime' => 'php',
             'supported_workflow_types' => [$workflowType],
-            'capabilities' => ['workflow_tasks'],
+            'capabilities' => ['workflow_tasks', 'workflow_updates'],
             'workflow_command_contracts' => [
                 $workflowType => [
                     'queries' => [],
@@ -1258,7 +1255,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
             'task_queue' => $taskQueue,
             'runtime' => 'php',
             'supported_workflow_types' => [$workflowType],
-            'capabilities' => ['workflow_tasks'],
+            'capabilities' => ['workflow_tasks', 'workflow_updates'],
             'workflow_command_contracts' => [$workflowType => [
                 'queries' => [], 'query_contracts' => [],
                 'signals' => ['finish'], 'signal_contracts' => [[
@@ -1572,11 +1569,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
             'source' => 'worker-complete',
         ]);
 
-        $this->registerWorker(
-            workerId: 'worker-update-complete-contract',
-            taskQueue: 'contract-queue',
-            supportedWorkflowTypes: ['tests.interactive-command-workflow'],
-        );
+        $this->registerInteractiveUpdateWorker('worker-update-complete-contract');
 
         $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
             'worker_id' => 'worker-update-complete-contract',
@@ -1675,11 +1668,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
 
         $updateId = (string) $update->json('update_id');
 
-        $this->registerWorker(
-            workerId: 'worker-update-fail-contract',
-            taskQueue: 'contract-queue',
-            supportedWorkflowTypes: ['tests.interactive-command-workflow'],
-        );
+        $this->registerInteractiveUpdateWorker('worker-update-fail-contract');
 
         $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
             'worker_id' => 'worker-update-fail-contract',
@@ -4515,6 +4504,26 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('lease_owner', $leaseOwner)
             ->assertJsonPath('lease_expires_at', null);
         $this->assertNotNull($response->json('run_closed_at'));
+    }
+
+    private function registerInteractiveUpdateWorker(string $workerId): void
+    {
+        $this->registerWorker(
+            workerId: $workerId,
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.interactive-command-workflow'],
+            capabilities: [
+                WorkflowMetadataCapabilityPolicy::MEMO_UPSERTS,
+                WorkflowMetadataCapabilityPolicy::TYPED_SEARCH_ATTRIBUTES,
+                'workflow_updates',
+            ],
+        );
+        WorkerRegistration::query()->where('namespace', 'default')
+            ->where('worker_id', $workerId)->sole()->update([
+                'workflow_command_contracts' => [
+                    'tests.interactive-command-workflow' => ['updates' => ['approve']],
+                ],
+            ]);
     }
 
     /**
