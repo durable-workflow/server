@@ -78,6 +78,7 @@ mod prometheus_metrics;
 mod queries;
 mod query_authority;
 mod repair_candidates;
+mod repair_pass;
 mod retention;
 mod runtime_credentials;
 mod run_observation;

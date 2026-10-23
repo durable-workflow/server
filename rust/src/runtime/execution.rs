@@ -339,6 +339,7 @@ impl Runtime {
     delegate!(system_health(config: &super::operator_metrics::MetricsConfig) -> Result<(bool, Value)>);
     delegate!(operator_dashboard(config: &super::operator_metrics::MetricsConfig, bounded: bool) -> Result<Value>);
     delegate!(repair_status() -> Result<Value>);
+    delegate!(repair_pass(request: &super::repair_pass::PassRequest) -> Result<Value>);
     delegate!(system_metrics() -> Result<Value>);
     delegate!(prometheus_metrics() -> Result<Value>);
     delegate!(payload_cleanup_status(config: &super::operator_metrics::MetricsConfig) -> Result<Value>);
