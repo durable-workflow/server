@@ -62,3 +62,62 @@ async fn a_worker_reads_the_sequence_that_consumed_a_signal() {
     }
     assert!(completed["payload"]["task"].get("last_claim_error").is_none(), "unset fields stay out: {completed}");
 }
+
+// `WorkflowHistoryEvent::record` with the task model: each event PHP records
+// while handling a task carries that task's snapshot, and a fired timer
+// carries its timer task, leased to itself.
+#[tokio::test]
+async fn events_recorded_with_a_task_carry_its_snapshot() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let started = start(&app, "snapshot-events").await;
+    register(&app, "snapshotter", json!(["echo", "child"]), json!([])).await;
+    let events = || run_history(&app, &started["workflow_id"], &started["run_id"]);
+    let snapshot_of = |history: &Value, kind: &str| -> Value {
+        history.as_array().unwrap().iter().rev().find(|event| event["event_type"] == kind)
+            .map(|event| event["payload"]["task"].clone()).unwrap_or(Value::Null)
+    };
+
+    let task = poll(&app, "snapshotter", "workflow").await;
+    assert_eq!(finish_task(&app, &task, json!([{"type":"start_timer","delay_seconds":1}])).await.0, StatusCode::OK);
+    let scheduled = snapshot_of(&events().await, "TimerScheduled");
+    assert_eq!((scheduled["id"].clone(), scheduled["type"].clone()), (task["task_id"].clone(), json!("workflow")), "{scheduled}");
+    for field in ["queue", "connection", "available_at", "leased_at", "repair_count"] {
+        assert!(scheduled.get(field).is_some(), "{field}: {scheduled}");
+    }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+    let fired = loop {
+        let fired = snapshot_of(&events().await, "TimerFired");
+        if !fired.is_null() {
+            break fired;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "the timer never fired");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    assert_eq!((fired["type"].clone(), fired["status"].clone(), fired["attempt_count"].clone()),
+        (json!("timer"), json!("leased"), json!(1)), "{fired}");
+    assert_eq!(fired["lease_owner"], fired["id"], "{fired}");
+    assert!(fired["lease_expires_at"].is_string() && fired["leased_at"].is_string(), "{fired}");
+
+    let task = poll(&app, "snapshotter", "workflow").await;
+    assert_eq!(finish_task(&app, &task, json!([
+        {"type":"start_child_workflow","workflow_type":"child","arguments":envelope(Payload::Array(vec![]))},
+        {"type":"open_signal_wait","signal_name":"go"}])).await.0, StatusCode::OK);
+    let history = events().await;
+    for kind in ["ChildWorkflowScheduled", "ChildRunStarted", "SignalWaitOpened"] {
+        assert_eq!(snapshot_of(&history, kind)["id"], task["task_id"], "{kind}: {history}");
+    }
+    let (status, body) = request(&app, "POST", "/api/workflows/snapshot-events/signal/go", json!([])).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let mut task = poll(&app, "snapshotter", "workflow").await;
+    // The child's first task may come first on the shared queue.
+    if task["workflow_type"] == "child" {
+        assert_eq!(finish_task(&app, &task, json!([{"type":"complete_workflow","result":envelope(Payload::Null)}])).await.0, StatusCode::OK);
+        task = poll(&app, "snapshotter", "workflow").await;
+    }
+    assert_eq!(finish_task(&app, &task, json!([{"type":"open_condition_wait","condition_key":"k",
+        "condition_definition_fingerprint":format!("sha256:{}", "c".repeat(64))}])).await.0, StatusCode::OK);
+    let history = events().await;
+    assert_eq!(snapshot_of(&history, "SignalApplied")["id"], task["task_id"], "{history}");
+    assert_eq!(snapshot_of(&history, "ConditionWaitOpened")["id"], task["task_id"], "{history}");
+}

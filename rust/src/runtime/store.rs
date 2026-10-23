@@ -15,6 +15,37 @@ pub(super) struct PreparedControlArguments {
     pub(super) value: String,
     pub(super) command: String,
 }
+/// The events PHP's Workflow package records with the task model in hand,
+/// which therefore carry the task's snapshot.
+const TASK_SNAPSHOT_EVENTS: &[&str] = &[
+    "ActivityCompleted",
+    "ActivityFailed",
+    "ActivityHeartbeatRecorded",
+    "ActivityRetryScheduled",
+    "ActivityScheduled",
+    "ActivityStarted",
+    "ActivityTimedOut",
+    "ChildRunStarted",
+    "ChildWorkflowScheduled",
+    "ConditionWaitOpened",
+    "ConditionWaitSatisfied",
+    "ConditionWaitTimedOut",
+    "FailureHandled",
+    "MemoUpserted",
+    "MessageCursorAdvanced",
+    "SearchAttributesUpserted",
+    "SelectionOperationCancelled",
+    "SideEffectRecorded",
+    "SignalApplied",
+    "SignalWaitOpened",
+    "TimerFired",
+    "TimerScheduled",
+    "VersionMarkerRecorded",
+    "WorkflowCompleted",
+    "WorkflowContinuedAsNew",
+    "WorkflowFailed",
+    "WorkflowTimedOut",
+];
 /// The runtime-owned message-stream delivery signal (`WorkflowStub::MESSAGE_STREAM_RUNTIME_SIGNAL`).
 const MESSAGE_STREAM_SIGNAL: &str = "__durable_workflow_message_stream";
 pub(super) const TASK_CANDIDATES_SQL: &str = "SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ORDER BY t.priority,t.available_at,t.id LIMIT 100";
@@ -1709,7 +1740,8 @@ where
                 payload["task"] = json!({"id":task_id,"type":"activity","status":"leased",
                     "repair_count":DB::number(&task,"repair_count")?,
                     "available_at":DB::optional_instant(&task,"available_at")?,"leased_at":leased_at,
-                    "lease_owner":worker_id,"lease_expires_at":expires,"attempt_count":attempt,"queue":queue});
+                    "lease_owner":worker_id,"lease_expires_at":expires,"attempt_count":attempt,"queue":queue,
+                    "connection":DB::PHP_CONNECTION});
                 Self::append_at(
                     &mut tx,
                     &run_id,
@@ -2490,8 +2522,7 @@ where
                 Self::query("INSERT INTO workflow_run_timers(id,workflow_run_id,sequence,status,delay_seconds,fire_at) VALUES ($1,$2,$3,'pending',$4,$5)")
                     .bind(&timer_id).bind(&run_id).bind(sequence).bind(delay).bind(DB::bind_time(fire_at)).execute(&mut *tx).await?;
                 let mut timer_payload = json!({"timer_id":timer_id,"sequence":sequence,"delay_seconds":delay,"fire_at":fire_at,
-                    "task":{"id":task_id,"type":"workflow","status":"leased","lease_owner":DB::optional_string(&task,"lease_owner")?,
-                        "lease_expires_at":DB::optional_instant(&task,"lease_expires_at")?,"attempt_count":DB::number(&task,"attempt_count")?}});
+                    "task":Self::task_snapshot(&task)?});
                 super::selections::merge(&mut timer_payload, &metadata);
                 Self::append_at(
                     &mut tx,
@@ -2889,7 +2920,8 @@ where
         payload["task"] = json!({"id":task_id,"type":"activity","status":"leased",
             "repair_count":DB::number(&task,"repair_count")?,
             "available_at":DB::optional_instant(&task,"available_at")?,"leased_at":DB::optional_instant(&task,"leased_at")?,
-            "lease_owner":DB::optional_string(&task,"lease_owner")?,"attempt_count":DB::number(&task,"attempt_count")?});
+            "lease_owner":DB::optional_string(&task,"lease_owner")?,"lease_expires_at":DB::optional_instant(&task,"lease_expires_at")?,
+            "attempt_count":DB::number(&task,"attempt_count")?,"queue":DB::string(&task,"queue")?,"connection":DB::PHP_CONNECTION});
         Self::append(
             &mut tx,
             &run_id,
@@ -3015,6 +3047,15 @@ where
                 json!({"timer_id":timer_id})
             };
             super::selections::merge(&mut payload, &metadata);
+            // `RunTimerTask`: the timer task is leased to itself while its
+            // timer fires, so `TimerFired` carries the leased task.
+            Self::query("UPDATE workflow_tasks SET status='leased',leased_at=$1,lease_owner=$2,lease_expires_at=$3,attempt_count=attempt_count+1 WHERE id=$4")
+                .bind(DB::bind_time(fired_at))
+                .bind(&task_id)
+                .bind(DB::bind_time(fired_at + chrono::Duration::seconds(self.workflow_task_lease_seconds)))
+                .bind(&task_id)
+                .execute(&mut *tx)
+                .await?;
             Self::append(
                 &mut tx,
                 &run_id,
@@ -3038,7 +3079,7 @@ where
                 .bind(&timer_id)
                 .execute(&mut *tx)
                 .await?;
-            Self::query("UPDATE workflow_tasks SET status='completed' WHERE id=$1")
+            Self::query("UPDATE workflow_tasks SET status='completed',lease_expires_at=NULL WHERE id=$1")
                 .bind(&task_id)
                 .execute(&mut *tx)
                 .await?;
@@ -3367,9 +3408,20 @@ where
             .execute(&mut **tx)
             .await?;
         let recorded_at = recorded_at.unwrap_or_else(now);
-        // `WorkflowHistoryEvent::record`: an event recorded with a command
-        // carries that command's snapshot.
         let mut payload = payload;
+        // `WorkflowHistoryEvent::record`: an event PHP records with its task
+        // model carries that task's snapshot.
+        if let Some(task_id) = task_id
+            && TASK_SNAPSHOT_EVENTS.contains(&event_type)
+            && payload.as_object().is_some_and(|fields| !fields.contains_key("task"))
+            && let Some(task) = Self::query("SELECT * FROM workflow_tasks WHERE id=$1")
+                .bind(task_id)
+                .fetch_optional(&mut **tx)
+                .await?
+        {
+            payload["task"] = Self::task_snapshot(&task)?;
+        }
+        // An event recorded with a command carries that command's snapshot.
         if let Some(command_id) = command_id.filter(|_| command_snapshot)
             && payload.as_object().is_some_and(|fields| !fields.contains_key("command"))
             && let Some(snapshot) = Self::command_snapshot(tx, command_id).await?
