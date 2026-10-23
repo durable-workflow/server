@@ -341,7 +341,15 @@ class RunComposerTest(unittest.TestCase):
     def test_the_caller_cannot_replace_the_ca_pair_or_the_entrypoint(self) -> None:
         for options in (["-e", "COMPOSER_CAFILE=/etc/ssl/certs/ca-certificates.crt"], ["-eCOMPOSER_CAFILE=/x"],
                         ["--env", "COMPOSER_CAPATH=/etc/ssl/certs"], ["--entrypoint=sh"], ["--entrypoint", "sh"],
-                        ["--env-file", "composer.env"]):
+                        ["--env-file", "composer.env"], ["-v", "/tmp/root.pem:/checked-ca/ca.pem:ro"],
+                        ["--volume=/tmp/trust:/checked-ca:ro"],
+                        ["--mount", "type=bind,src=/tmp/empty,dst=/checked-ca/no-ca-directory"],
+                        ["--mount=type=bind,src=/tmp/empty,dst=/checked-ca/no-ca-directory"],
+                        ["--tmpfs", "/checked-ca"], ["--tmpfs=/checked-ca"],
+                        ["--device", "/dev/null:/checked-ca/ca.pem"],
+                        ["--device=/dev/null:/checked-ca/ca.pem"],
+                        ["--volumes-from", "untrusted-container"],
+                        ["--volumes-from=untrusted-container"]):
             with self.subTest(options):
                 result, docker_called = self.wrapper("--rm", *options, "--", "install")
 
@@ -354,6 +362,12 @@ class RunComposerTest(unittest.TestCase):
 
         self.assertEqual(2, result.returncode)
         self.assertFalse(docker_called)
+
+    def test_unrelated_docker_options_reach_the_pinned_image_builder(self) -> None:
+        result, docker_called = self.wrapper("--rm", "-v", "/tmp:/app", "--", "install")
+
+        self.assertNotEqual(2, result.returncode, result.stderr)
+        self.assertTrue(docker_called)
 
     def test_the_ca_pair_and_entrypoint_follow_the_callers_options(self) -> None:
         text = WRAPPER_SCRIPT.read_text()

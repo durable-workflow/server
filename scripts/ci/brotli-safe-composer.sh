@@ -20,7 +20,9 @@ floor='brotli-libs>=1.2.1-r0'
 # Refuses IMAGE unless its installed brotli-libs meets the floor and every
 # Brotli decoder its PHP links belongs to that package.
 check() {
-    docker run --rm --network none --user 0 --entrypoint sh "$1" -c '
+    local checked_image
+    checked_image=$1
+    docker run --rm --network none --user 0 --entrypoint sh "$checked_image" -c '
         set -eu
         apk info -e "$1" > /dev/null || { echo "Composer image lacks $1" >&2; exit 1; }
         for library in $(ldd "$(command -v php)" | awk "/libbrotlidec/ {print \$3}"); do

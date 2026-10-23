@@ -17,9 +17,13 @@ here=$(dirname "$0")
 options=()
 while (($#)) && [[ $1 != -- ]]; do
     case "$1" in
-        *COMPOSER_CAFILE* | *COMPOSER_CAPATH* | --entrypoint* | --env-file*)
+        *COMPOSER_CAFILE* | *COMPOSER_CAPATH* | --entrypoint* | --env-file* | --volumes-from*)
             echo "run-composer.sh sets the CA pair and the entrypoint itself; refusing $1" >&2
             exit 2 ;;
+        */checked-ca*)
+            echo "run-composer.sh reserves /checked-ca for its checked CA pair; refusing $1" >&2
+            exit 2 ;;
+        *) ;;
     esac
     options+=("$1")
     shift
