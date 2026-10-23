@@ -1798,10 +1798,11 @@ where
                         }
                     }
                 }
-                let (events, next) = match page {
+                let (mut events, next) = match page {
                     Some(size) => Self::history_page_connection(&mut tx, &run_id, 0, size).await?,
                     None => (Self::whole_history(&mut tx, &run_id).await?, None),
                 };
+                Self::with_signal_sequences(&mut tx, &run_id, &mut events).await?;
                 let budget = Self::workflow_history_budget(
                     &mut tx,
                     &run_id,
@@ -1865,7 +1866,8 @@ where
         }
         Self::workflow_task_guard(&mut tx, &task, &body).await?;
         let run_id = DB::string(&task, "workflow_run_id")?;
-        let (events, next) = Self::history_page_connection(&mut tx, &run_id, after, size).await?;
+        let (mut events, next) = Self::history_page_connection(&mut tx, &run_id, after, size).await?;
+        Self::with_signal_sequences(&mut tx, &run_id, &mut events).await?;
         let run = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
             .bind(&run_id)
             .fetch_one(&mut *tx)
@@ -3565,6 +3567,33 @@ where
 
     /// A poll's whole history, read in bounded pages: published PHP sends
     /// every event unless the worker asks for pages.
+    /// `WorkflowTaskPoller::historyEventsWithSignalArgumentEnvelopes`: the
+    /// history a worker reads shows a consumed signal's workflow sequence on
+    /// its `SignalReceived`, from the signal's record. The run's own history
+    /// route shows the events as recorded.
+    async fn with_signal_sequences(connection: &mut DB::Connection, run_id: &str, events: &mut [Value]) -> Result<()> {
+        if !events.iter().any(|event| event["event_type"] == "SignalReceived") {
+            return Ok(());
+        }
+        let rows = Self::query("SELECT id,workflow_sequence FROM workflow_signal_records WHERE workflow_run_id=$1 AND workflow_sequence IS NOT NULL")
+            .bind(run_id)
+            .fetch_all(&mut *connection)
+            .await?;
+        let mut sequences = std::collections::HashMap::new();
+        for row in rows {
+            sequences.insert(DB::string(&row, "id")?, DB::number(&row, "workflow_sequence")?);
+        }
+        for event in events.iter_mut().filter(|event| event["event_type"] == "SignalReceived") {
+            let sequence = event["payload"]["signal_id"].as_str().and_then(|id| sequences.get(id)).copied();
+            if let (Some(sequence), Some(payload)) = (sequence, event["payload"].as_object_mut()) {
+                if payload.get("workflow_sequence").is_none_or(Value::is_null) {
+                    payload.insert("workflow_sequence".into(), json!(sequence));
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn whole_history(connection: &mut DB::Connection, run_id: &str) -> Result<Vec<Value>> {
         let mut events = Vec::new();
         let mut after = 0;

@@ -339,18 +339,24 @@ where
             "status":DB::string(task,"status")?,"attempt_count":DB::number(task,"attempt_count")?,
             "repair_count":DB::number(task,"repair_count")?,"queue":DB::string(task,"queue")?,
             "connection":DB::PHP_CONNECTION});
+        // `WorkflowHistoryEvent::taskSnapshot` keeps every field that is set.
         for field in [
             "available_at",
             "leased_at",
             "lease_expires_at",
+            "last_dispatch_attempt_at",
+            "last_dispatched_at",
+            "last_claim_failed_at",
             "repair_available_at",
         ] {
             if let Some(value) = DB::optional_instant(task, field)? {
                 snapshot[field] = json!(value);
             }
         }
-        if let Some(owner) = DB::optional_string(task, "lease_owner")? {
-            snapshot["lease_owner"] = json!(owner);
+        for field in ["lease_owner", "compatibility", "last_dispatch_error", "last_claim_error"] {
+            if let Some(value) = DB::optional_string(task, field)? {
+                snapshot[field] = json!(value);
+            }
         }
         Ok(snapshot)
     }
