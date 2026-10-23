@@ -2,6 +2,10 @@
 
 namespace App\Support;
 
+use Illuminate\Support\Env;
+use InvalidArgumentException;
+use JsonException;
+
 /**
  * Scans the process environment against the DW_* contract from
  * config/dw-contract.php and produces a structured report.
@@ -138,5 +142,39 @@ class EnvAuditor
         }
 
         return $legacy === null ? $default : env($legacy, $default);
+    }
+
+    /**
+     * Resolve a policy object without converting malformed JSON into defaults.
+     * Read the raw repository value so Laravel's special null/false/empty env
+     * conversions cannot hide an explicitly supplied invalid JSON value.
+     *
+     * @return array<array-key, mixed>
+     */
+    public static function jsonObject(string $name, ?string $legacy): array
+    {
+        $repository = Env::getRepository();
+        $raw = $repository->get($name);
+        if ($raw === null && $legacy !== null) {
+            $raw = $repository->get($legacy);
+            if ($raw !== null) {
+                $name = $legacy;
+            }
+        }
+        if ($raw === null) {
+            return [];
+        }
+
+        try {
+            $value = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            throw new InvalidArgumentException($name.' must contain a valid JSON object.');
+        }
+
+        if (! is_array($value) || ! str_starts_with(ltrim($raw), '{')) {
+            throw new InvalidArgumentException($name.' must contain a valid JSON object.');
+        }
+
+        return $value;
     }
 }

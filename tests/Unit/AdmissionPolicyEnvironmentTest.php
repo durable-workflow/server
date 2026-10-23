@@ -27,8 +27,16 @@ class AdmissionPolicyEnvironmentTest extends TestCase
     public static function invalidPolicyValues(): iterable
     {
         foreach (self::policyVariables() as $policy => [$name]) {
-            foreach (['unfinished' => '{"private-policy":', 'null' => 'null', 'array' => '[]',
-                'string' => '"private-policy"', 'number' => '0', 'boolean' => 'false', 'blank' => ''] as $kind => $value) {
+            $invalid = [
+                'unfinished' => '{"private-policy":',
+                'null' => 'null',
+                'array' => '[]',
+                'string' => '"private-policy"',
+                'number' => '0',
+                'boolean' => 'false',
+                'blank' => '',
+            ];
+            foreach ($invalid as $kind => $value) {
                 yield $policy.' / '.$kind => [$name, $value];
             }
         }

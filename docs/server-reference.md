@@ -1741,6 +1741,16 @@ fine; renames require a major bump with the old name alias-honored for
 one major. Set `DW_ENV_AUDIT_STRICT=1` to fail container boot when the
 audit finds drift.
 
+Admission policy values must be JSON objects. The queue admission, namespace
+request, namespace durable-state and external-payload namespace maps reject
+malformed JSON, arrays, scalars and explicit `null` during configuration loading
+and `config:cache`, regardless of `DW_ENV_AUDIT_STRICT`. An omitted setting or
+`{}` retains its empty-map default. A supplied `DW_*` value takes precedence
+over its legacy alias even when it is invalid; an invalid primary does not
+silently select the legacy policy. The error names the selected variable
+without printing its value. Correct that variable, rebuild cached configuration
+and restart every role that uses it.
+
 #### Environment variable reference
 
 The full table below is generated from `config/dw-contract.php` and lists
