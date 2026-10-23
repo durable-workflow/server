@@ -230,6 +230,7 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/service-catalog/{catalog}/{id}", get(service_catalog_show))
         .route("/api/task-queues/{task_queue}", get(describe_task_queue))
         .route("/api/task-queues/{task_queue}/build-ids", get(task_queue_build_ids))
+        .route("/api/task-queues/{task_queue}/priority-fairness", get(priority_fairness))
         .route("/api/task-queues/{task_queue}/build-ids/promote", post(build_id_promote))
         .route("/api/task-queues/{task_queue}/build-ids/drain", post(build_id_drain))
         .route("/api/task-queues/{task_queue}/build-ids/resume", post(build_id_resume))
@@ -634,7 +635,7 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     // refused alike in every namespace.
     if let Some(rest) = path.strip_prefix("/api/task-queues/") {
         match rest.split('/').collect::<Vec<_>>().as_slice() {
-            [queue, "build-ids"] if !queue.is_empty() => return method == "GET",
+            [queue, "build-ids" | "priority-fairness"] if !queue.is_empty() => return method == "GET",
             [queue, "build-ids", "promote" | "drain" | "resume"] if !queue.is_empty() => {
                 return method == "POST";
             }
@@ -1706,6 +1707,13 @@ async fn build_id_action(
 ) -> Result<(StatusCode, Json<Value>)> {
     let (status, body) = runtime.build_id_action(&task_queue, body, action).await?;
     Ok((status, Json(body)))
+}
+/// `GET /api/task-queues/{name}/priority-fairness`.
+async fn priority_fairness(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_queue): Path<String>,
+) -> Result<Json<Value>> {
+    runtime.priority_fairness(&task_queue).await.map(Json)
 }
 /// `GET /api/deployments`.
 async fn list_deployments(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {

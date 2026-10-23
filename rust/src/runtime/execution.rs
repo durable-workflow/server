@@ -1073,6 +1073,13 @@ impl Runtime {
             Storage::MySql(store) => store.build_id_action(queue, &body, action).await,
         }
     }
+    pub(crate) async fn priority_fairness(&self, queue: &str) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.priority_fairness(queue).await,
+            Storage::Postgres(store) => store.priority_fairness(queue).await,
+            Storage::MySql(store) => store.priority_fairness(queue).await,
+        }
+    }
     pub(crate) async fn deployments(&self) -> Result<Value> {
         match &*self.storage {
             Storage::Sqlite(store) => store.deployments().await,

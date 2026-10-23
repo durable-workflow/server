@@ -100,10 +100,9 @@ Updated October 22, 2026.
 
 These published PHP routes on this tree have no native handler yet, by family.
 
-- **Used by the CLI or Waterline.**
-  - Task queue priority and fairness.
-
-  Served from this family since: standalone activities (start, list and
+- **Used by the CLI or Waterline.** None remain. Served from this family
+  since: task queue priority and fairness
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-priority-fairness.md)); standalone activities (start, list and
   describe), compared live with published 2.11.1
   ([checkpoint](rust-server-port-checkpoints/2026-10-23-standalone-activities.md));
   run archive, instance and run-targeted

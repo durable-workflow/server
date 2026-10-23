@@ -66,6 +66,7 @@ mod memo_limits;
 mod standalone_activities;
 mod archive;
 mod deployments;
+mod priority_fairness;
 mod redrive;
 mod memos;
 pub mod mysql;
