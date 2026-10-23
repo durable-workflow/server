@@ -72,9 +72,12 @@ for role in "${roles[@]}"; do
       package_checks=(-e DW_PARITY_EMBEDDED_RUNTIME_HASHES="$DW_PARITY_EMBEDDED_RUNTIME_HASHES")
     fi
   fi
+  # Composer in these frozen images trusts only a checked CA file (GHSA-6q48-6c7w-9gw2).
+  sh scripts/ci/checked-ca.sh parity-composer-trust
   docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --entrypoint sh \
     -v "$PWD:/source:ro" -v "$PWD/$state/$role:/runtime" "${engine[@]}" "${package_checks[@]}" \
     -w /runtime -e COMPOSER_HOME=/tmp/composer -e DW_PARITY_EMBEDDED_PROFILE="/source/$inputs" \
+    -v "$PWD/parity-composer-trust:/composer-trust:ro" -e COMPOSER_CAFILE=/composer-trust/ca.pem -e COMPOSER_CAPATH=/composer-trust/no-ca-directory \
     -e DW_PARITY_EMBEDDED_LOCK_SHA256="$lock" "$image" \
     /source/scripts/conformance/server-parity/corrected-marker-embedded-install.sh \
     > "$evidence/embedded-$role-install.txt" 2>&1

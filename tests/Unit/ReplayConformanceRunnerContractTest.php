@@ -245,8 +245,8 @@ class ReplayConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('container_user="$(id -u):$(id -g)"', $source);
         $this->assertStringContainsString('COMPOSER_HOME=/tmp/composer', $source);
         $this->assertStringContainsString('COMPOSER_CACHE_DIR=/tmp/composer-cache', $source);
-        $this->assertStringContainsString('docker run --rm "${composer_env_args[@]}" -v "$waterline_app:/app" -w /app composer:2', $source);
-        $this->assertStringNotContainsString('docker run --rm -v "$waterline_app:/app" -w /app composer:2', $source);
+        $this->assertStringContainsString('docker run --rm "${composer_env_args[@]}" -v "$waterline_app:/app" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee', $source);
+        $this->assertStringNotContainsString('docker run --rm -v "$waterline_app:/app" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee', $source);
         $this->assertStringContainsString('"durable-workflow/waterline:${waterline_version}@beta"', $source);
         $this->assertStringContainsString('"durable-workflow/workflow:${workflow_php_version}@beta"', $source);
         $this->assertStringContainsString('"durable-workflow/sdk:${php_sdk_version}@beta"', $source);
@@ -644,6 +644,16 @@ SH);
             );
             copy($repoRoot.'/docker-compose.published.yml', $serverCheckout.'/docker-compose.published.yml');
 
+            // The staged runner hands its venv to the patched-pip bootstrap;
+            // record that hand-off instead of downloading pip.
+            $pipBootstrapLog = $workspace.'/pip-bootstrap.log';
+            $runVenvPython = realpath($runRoot).'/python-venv/bin/python';
+            $this->mkdirp($workspace.'/scripts/ci');
+            $this->writeExecutable(
+                $workspace.'/scripts/ci/bootstrap-patched-pip.sh',
+                "#!/bin/sh\nprintf '%s\\n' \"\$1\" >> ".escapeshellarg($pipBootstrapLog)."\n",
+            );
+
             $realPython = trim((string) shell_exec('command -v python3 2>/dev/null'));
             if ($realPython === '') {
                 $this->markTestSkipped('python3 is required for the replay runner contract.');
@@ -780,6 +790,14 @@ ACT
 #!/usr/bin/env bash
 set -euo pipefail
 real_python=$real_python
+# The runner must isolate pip from its working directory.
+if [[ "\${1:-}" == "-m" && "\${2:-}" == "pip" ]]; then
+  printf '%s\n' 'pip run without -I' >&2
+  exit 97
+fi
+if [[ "\${1:-}" == "-I" ]]; then
+  shift
+fi
 if [[ "\${1:-}" == "-m" && "\${2:-}" == "pip" ]]; then
   if [[ "\${3:-}" == "download" ]]; then
     destination=""
@@ -1320,6 +1338,11 @@ SH);
                     'waterline' => 'pass',
                 ],
                 array_column($installArtifacts, 'status', 'artifact'),
+            );
+            $this->assertSame(
+                [$runVenvPython],
+                file($pipBootstrapLog, FILE_IGNORE_NEW_LINES),
+                'the Python SDK install must start from the patched pip in the run venv',
             );
             $sdkPhpInstall = array_values(array_filter(
                 $installArtifacts,

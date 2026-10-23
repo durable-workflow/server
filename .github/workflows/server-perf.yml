@@ -172,6 +172,22 @@ jobs:
             > workflow-package/.package-provenance
           rm -rf workflow-package/.git
 
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.13"
+
+      - name: Bootstrap patched pip trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+
+      # pip also trusts the runner's own store (truststore). Confine every
+      # later pip in this job to the bundle the bootstrap action checked.
+      - name: Confine pip to its verified CA bundle
+        run: |
+          bundle="$(python -I -c 'from pip._vendor import certifi; print(certifi.where())')"
+          echo "PIP_CERT=$bundle" >> "$GITHUB_ENV"
+          echo "PIP_USE_DEPRECATED=legacy-certs" >> "$GITHUB_ENV"
+
       - name: Run perf harness result-gate tests
         run: |
           python3 -m py_compile scripts/perf/server_soak.py scripts/benchmark/capacity_suite.py scripts/benchmark/capacity_schema_publication.py scripts/benchmark/capacity_matrix.py tests/Unit/Support/server_soak_test.py tests/Unit/Support/capacity_benchmark_test.py benchmarks/capacity/v1/bindings/python/capacity_adapter.py benchmarks/capacity/v1/collectors/local-docker/local_docker_collector.py
@@ -181,15 +197,16 @@ jobs:
       - name: Compile exact first-party capacity adapters
         run: |
           php -l benchmarks/capacity/v1/bindings/php/capacity_adapter.php
-          composer install \
-            --working-dir=benchmarks/capacity/v1/bindings/php \
-            --no-dev --no-interaction --no-progress --prefer-dist
+          # The pinned Composer image's checked CA store, not the runner's.
+          docker run --rm --user "$(id -u):$(id -g)" -e COMPOSER_HOME=/tmp/composer \
+            -v "$PWD:/app" -w /app/benchmarks/capacity/v1/bindings/php composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \
+            install --no-dev --no-interaction --no-progress --prefer-dist --ignore-platform-reqs
           DURABLE_WORKFLOW_RUNTIME_URL=http://127.0.0.1 \
           DURABLE_WORKFLOW_TASK_QUEUE=capacity-check \
             php benchmarks/capacity/v1/bindings/php/capacity_adapter.php check
           rm -rf benchmarks/capacity/v1/bindings/php/vendor
 
-          python3 -m pip install \
+          python3 -I -m pip install --require-hashes --only-binary :all: --no-deps \
             --requirement benchmarks/capacity/v1/bindings/python/requirements.lock \
             --target build/capacity-python-adapter
           PYTHONPATH=build/capacity-python-adapter \
@@ -215,7 +232,7 @@ jobs:
         run: |
           # Stream sources into the test container so containerized runners avoid host bind-path assumptions.
           tar --exclude=.git --exclude=vendor --exclude=build -cf - . \
-            | docker run --rm -i -w /app composer:2 \
+            | docker run --rm -i -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \
                 sh -lc 'tar -xf - -C /app && cp -a /app/workflow-package /workflow && php scripts/ci/prepare-release-workflow-composer-metadata.php && composer update durable-workflow/workflow --with-dependencies --minimal-changes --no-install --no-scripts --no-autoloader --no-interaction --no-progress --prefer-dist && composer install --no-interaction --no-progress --prefer-dist && vendor/bin/phpunit tests/Unit/BoundedGrowthPolicyTest.php tests/Unit/ServerPerfHarnessContractTest.php --colors=never'
 
       - name: Clean up capacity contract Docker resources

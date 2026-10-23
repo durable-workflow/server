@@ -1171,42 +1171,56 @@ def _adapter_definition_types(workload: dict[str, Any], kind: str) -> set[str]:
 def _validate_adapter_dependency(
     binding: str, adapter_root: Path, expected_version: str
 ) -> None:
-    if binding == "php":
-        manifest = load_json(adapter_root / "composer.json")
-        require = _object(manifest.get("require"), "php adapter composer.require")
-        if require.get("durable-workflow/sdk") != expected_version:
-            raise ContractError(
-                "PHP adapter must require the suite's exact SDK artifact"
-            )
-        lock = load_json(adapter_root / "composer.lock")
-        locked_packages = {
-            str(package.get("name")): str(package.get("version"))
-            for package in _list(
-                lock.get("packages"), "php adapter composer.lock.packages"
-            )
-            if isinstance(package, dict)
-        }
-        if locked_packages.get("durable-workflow/sdk") != expected_version:
-            raise ContractError("PHP adapter lock must retain the exact SDK artifact")
-        return
-    if binding == "python":
-        requirement = (adapter_root / "requirements.txt").read_text().strip()
-        if requirement != f"durable-workflow=={expected_version}":
-            raise ContractError(
-                "Python adapter must require the suite's exact SDK artifact"
-            )
-        locked_requirements = (
-            (adapter_root / "requirements.lock").read_text().splitlines()
-        )
-        if f"durable-workflow=={expected_version}" not in locked_requirements or any(
-            "==" not in requirement
-            for requirement in locked_requirements
-            if requirement
-        ):
-            raise ContractError(
-                "Python adapter lock must pin its complete dependency graph"
-            )
-        return
+    validators = {
+        "php": _validate_php_adapter_dependency,
+        "python": _validate_python_adapter_dependency,
+    }
+    validators.get(binding, _validate_rust_adapter_dependency)(
+        adapter_root, expected_version
+    )
+
+
+def _validate_php_adapter_dependency(adapter_root: Path, expected_version: str) -> None:
+    manifest = load_json(adapter_root / "composer.json")
+    require = _object(manifest.get("require"), "php adapter composer.require")
+    if require.get("durable-workflow/sdk") != expected_version:
+        raise ContractError("PHP adapter must require the suite's exact SDK artifact")
+    lock = load_json(adapter_root / "composer.lock")
+    locked_packages = {
+        str(package.get("name")): str(package.get("version"))
+        for package in _list(lock.get("packages"), "php adapter composer.lock.packages")
+        if isinstance(package, dict)
+    }
+    if locked_packages.get("durable-workflow/sdk") != expected_version:
+        raise ContractError("PHP adapter lock must retain the exact SDK artifact")
+
+
+def _validate_python_adapter_dependency(
+    adapter_root: Path, expected_version: str
+) -> None:
+    requirement = (adapter_root / "requirements.txt").read_text().strip()
+    if requirement != f"durable-workflow=={expected_version}":
+        raise ContractError("Python adapter must require the suite's exact SDK artifact")
+    # Each line pins one package and lists the hashes pip must match.
+    locked_lines = [
+        line.split()
+        for line in (adapter_root / "requirements.lock").read_text().splitlines()
+        if line.strip()
+    ]
+    locked_requirements = [words[0] for words in locked_lines]
+    if f"durable-workflow=={expected_version}" not in locked_requirements or any(
+        "==" not in requirement for requirement in locked_requirements
+    ):
+        raise ContractError("Python adapter lock must pin its complete dependency graph")
+    if not all(_hashes_every_file(words[1:]) for words in locked_lines):
+        raise ContractError("Python adapter lock must hash every pinned package")
+
+
+def _hashes_every_file(options: list[str]) -> bool:
+    return bool(options) and all(word.startswith("--hash=sha256:") for word in options)
+
+
+def _validate_rust_adapter_dependency(adapter_root: Path, expected_version: str) -> None:
     try:
         manifest = tomllib.loads((adapter_root / "Cargo.toml").read_text())
     except (OSError, tomllib.TOMLDecodeError) as exc:

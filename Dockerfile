@@ -11,6 +11,11 @@ ARG PHPREDIS_COMMIT=df4fab2de7fc327c54c94a13af2b9542e4fbd720
 COPY docker/trust/ /usr/local/lib/server-trust/
 RUN sh /usr/local/lib/server-trust/verify-trust.sh system
 
+# git clones through libcurl, whose Brotli decoder must carry the
+# CVE-2026-111497 fix: Alpine's signed brotli-libs 1.2.1-r0 or later.
+RUN apk add --no-cache --upgrade "brotli-libs>=1.2.1-r0" \
+    && apk info -e "brotli-libs>=1.2.1-r0"
+
 RUN git clone --depth 1 --branch "${PHPREDIS_VERSION}" https://github.com/phpredis/phpredis.git /phpredis \
     && cd /phpredis \
     && RESOLVED_COMMIT="$(git rev-parse HEAD)" \
@@ -18,6 +23,15 @@ RUN git clone --depth 1 --branch "${PHPREDIS_VERSION}" https://github.com/phpred
          echo "ERROR: Resolved phpredis commit ${RESOLVED_COMMIT} does not match pinned PHPREDIS_COMMIT=${PHPREDIS_COMMIT}" >&2; \
          exit 1; \
        fi
+
+# Debian 13 has no fixed libbrotli1 for CVE-2026-111497 yet: rebuild Debian's
+# own source with upstream's fix, for each release architecture (see
+# docker/brotli/build.sh). The runtime stage installs only that package.
+FROM php@sha256:d89e8b3d2033c3179dcd9999d913670eb12a07410a95e60205c64e7d0fac7aef AS brotli
+COPY docker/trust/ /usr/local/lib/server-trust/
+RUN sh /usr/local/lib/server-trust/verify-trust.sh system
+COPY docker/brotli/ /usr/src/server-brotli/
+RUN sh /usr/src/server-brotli/build.sh
 
 # The fixed official Apache runtime is pinned for both release architectures.
 FROM php@sha256:d89e8b3d2033c3179dcd9999d913670eb12a07410a95e60205c64e7d0fac7aef AS base
@@ -31,6 +45,9 @@ COPY --from=phpredis-source /phpredis /usr/src/php/ext/redis
 
 # The image's trust checks; `server-verify-trust` reruns them on any image.
 COPY docker/trust/ /usr/local/lib/server-trust/
+# The fixed Brotli decoder and its check, `server-verify-brotli`.
+COPY docker/brotli/ /usr/local/lib/server-brotli/
+COPY --from=brotli /out/ /usr/src/server-brotli-deb/
 
 # Published conformance runners execute from the exact Server image.
 # Keep their Node and Python runtimes available alongside the service. Node
@@ -47,6 +64,9 @@ RUN chmod 0755 /usr/local/lib/server-trust/verify-trust.sh \
     python3 \
     python3-venv \
     unzip \
+    && dpkg -i /usr/src/server-brotli-deb/libbrotli1_*.deb \
+    && rm -rf /usr/src/server-brotli-deb \
+    && ln -s /usr/local/lib/server-brotli/verify-brotli.sh /usr/local/bin/server-verify-brotli \
     && docker-php-ext-install opcache redis pdo pdo_mysql pdo_pgsql pcntl zip bcmath \
     && groupmod --gid 1000 www-data \
     && usermod --uid 1000 --gid 1000 www-data \
@@ -55,8 +75,10 @@ RUN chmod 0755 /usr/local/lib/server-trust/verify-trust.sh \
 COPY --from=composer /usr/bin/composer /usr/bin/composer
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 
-# Every store the image's runtimes use, before the production stage downloads.
-RUN server-verify-trust final
+# Every store the image's runtimes use, and every Brotli decoder they load,
+# before the production stage downloads.
+RUN server-verify-trust final \
+    && server-verify-brotli
 
 # Source qualification exercises the actual startup path from this base too.
 COPY --chmod=0755 docker/ensure-sqlite-database.sh /usr/local/bin/server-ensure-sqlite
@@ -101,7 +123,8 @@ RUN apt-get update \
     && rm -rf /workflow/.git \
     && apt-get purge -y git \
     && apt-get autoremove -y --purge \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && server-verify-brotli
 
 RUN php scripts/ci/prepare-release-workflow-composer-metadata.php \
     && composer update durable-workflow/workflow --no-dev --no-scripts --no-autoloader --prefer-dist --no-interaction --no-progress \

@@ -89,6 +89,7 @@ if [[ "${DW_WV_MIXED_COHORTS:-0}" == 1 ]]; then
   rm -r "$result_dir/target" "$result_dir/cargo" "$result_dir/run"
   cp "$repo_root"/scripts/conformance/worker-versioning-mixed-* "$context/"
   cp "$repo_root/scripts/conformance/worker-versioning-mixed.Dockerfile" "$context/Dockerfile"
+  cp "$repo_root/scripts/ci/bootstrap-patched-pip.sh" "$repo_root/scripts/ci/blocked_roots.py" "$context/"
   docker build --tag "$resource-mixed:qualification" \
     --build-arg PHP_SDK_VERSION="$DW_PHP_SDK_VERSION" \
     --build-arg PYTHON_SDK_VERSION="$DW_PYTHON_SDK_VERSION" "$context" \
