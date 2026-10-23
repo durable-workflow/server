@@ -1250,6 +1250,7 @@ where
             return Err(refuse(StatusCode::NOT_FOUND, "worker_not_found"));
         }
         self.retire_incarnation(&mut tx, worker_id).await?;
+        Self::revoke_worker_activity_leases(&mut tx, self.namespace.as_ref(), worker_id).await?;
         // Revocation expires the existing fence; later polling creates a new
         // attempt before work can be accepted from another worker.
         let recovered = DB::affected(Self::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE lease_owner=$2 AND namespace=$3 AND status='leased' AND task_type='workflow'")

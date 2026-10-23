@@ -145,6 +145,15 @@ where
     Ok(format!("Activity {label} heartbeat deadline expired at {expired_at} (last heartbeat: {last})."))
 }
 
+/// Why an activity attempt lost its task lease.
+#[derive(Clone, Copy)]
+pub(super) enum LeaseLoss<'a> {
+    /// The lease expired.
+    Expired,
+    /// The worker that holds it deregistered (`revokeWorkerLease`).
+    Revoked { namespace: &'a str, owner: &'a str },
+}
+
 /// What enforcing one execution's deadline did.
 pub(super) enum Enforcement {
     Enforced { retried: bool },
@@ -274,9 +283,27 @@ where
     /// a terminal `ActivityFailed`. An expired business deadline is left to
     /// the deadline sweep, which owns that outcome.
     pub(super) async fn enforce_lease_expiry(&self, task_id: &str) -> Result<Enforcement> {
-        use Enforcement::Skipped;
         let mut tx = self.begin().await?;
-        let task = Self::query("SELECT * FROM workflow_tasks WHERE id=$1").bind(task_id).fetch_optional(&mut *tx).await?;
+        let outcome = Self::settle_lost_lease(&mut tx, task_id, LeaseLoss::Expired).await?;
+        if let Enforcement::Enforced { .. } = outcome {
+            tx.commit().await?;
+            self.wake.notify_waiters();
+        }
+        Ok(outcome)
+    }
+
+    /// `ActivityTimeoutEnforcer::enforceExpiredAttempt` for one leased
+    /// activity task, inside the caller's transaction. It writes nothing when
+    /// it skips. A revocation proceeds even past an expired deadline, which
+    /// then settles as that timeout; a lease the deregistered worker no longer
+    /// holds is left alone.
+    pub(super) async fn settle_lost_lease(
+        tx: &mut Transaction<'_, DB>,
+        task_id: &str,
+        loss: LeaseLoss<'_>,
+    ) -> Result<Enforcement> {
+        use Enforcement::Skipped;
+        let task = Self::query("SELECT * FROM workflow_tasks WHERE id=$1").bind(task_id).fetch_optional(&mut **tx).await?;
         let execution_id = match &task {
             Some(task) => DB::optional_document_row(task, "payload")?
                 .and_then(|payload| payload["activity_execution_id"].as_str().map(str::to_owned)),
@@ -287,7 +314,7 @@ where
         };
         let Some(activity) = Self::query("SELECT * FROM activity_executions WHERE id=$1")
             .bind(&execution_id)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut **tx)
             .await?
         else {
             return Ok(Skipped("execution_not_found"));
@@ -296,13 +323,14 @@ where
             return Ok(Skipped("execution_already_terminal"));
         }
         let at = now();
-        if expired_kind::<DB>(&activity, at)?.is_some() {
+        let deadline = expired_kind::<DB>(&activity, at)?;
+        if deadline.is_some() && matches!(loss, LeaseLoss::Expired) {
             return Ok(Skipped("activity_deadline_expired"));
         }
-        if let Some(reason) = Self::attempt_state_reason(&mut tx, &activity).await? {
+        if let Some(reason) = Self::attempt_state_reason(tx, &activity).await? {
             return Ok(Skipped(reason));
         }
-        let run = match Self::active_run(&mut tx, &DB::string(&activity, "workflow_run_id")?).await {
+        let run = match Self::active_run(tx, &DB::string(&activity, "workflow_run_id")?).await {
             Ok(run) => run,
             Err(super::RuntimeError::Refused {
                 reason: "run_closed" | "cancellation_deadline_expired",
@@ -311,11 +339,11 @@ where
             Err(error) => return Err(error),
         };
         // `originalLeaseMatches`: the task still carries the current
-        // attempt's lease, and that lease has expired.
+        // attempt's lease.
         let attempt = match DB::optional_string(&activity, "current_attempt_id")? {
             Some(attempt_id) => Self::query("SELECT * FROM activity_attempts WHERE id=$1")
                 .bind(attempt_id)
-                .fetch_optional(&mut *tx)
+                .fetch_optional(&mut **tx)
                 .await?,
             None => None,
         };
@@ -331,15 +359,60 @@ where
             }
             None => false,
         };
-        let Some(expires) = expires.filter(|expires| original && at >= *expires) else {
-            return Ok(Skipped("original_lease_not_expired"));
+        // `leaseLossMetadata`: an expiry needs the lease to have expired; a
+        // revocation needs the departing owner, in its namespace, with the
+        // attempt still running.
+        let authorized = match loss {
+            LeaseLoss::Expired => expires.is_some_and(|expires| at >= expires),
+            LeaseLoss::Revoked { namespace, owner: departing } => {
+                DB::optional_string(&run, "namespace")?.as_deref() == Some(namespace)
+                    && DB::optional_string(&task, "namespace")?.as_deref() == Some(namespace)
+                    && owner.as_deref() == Some(departing)
+                    && match &attempt {
+                        Some(attempt) => DB::string(attempt, "status")? == "running",
+                        None => false,
+                    }
+            }
         };
-        let lease = json!({"failure_reason": "lease_expired",
-            "lease_expires_at": expires.to_rfc3339_opts(chrono::SecondsFormat::Micros, true), "lease_owner": owner});
-        let retried = Self::time_out_activity(&mut tx, &run, &activity, "lease", Some(&lease)).await?;
-        tx.commit().await?;
-        self.wake.notify_waiters();
+        let Some(expires) = expires.filter(|_| original && authorized) else {
+            return Ok(Skipped(match loss {
+                LeaseLoss::Expired => "original_lease_not_expired",
+                LeaseLoss::Revoked { .. } => "lease_owner_mismatch",
+            }));
+        };
+        let micros = |at: DateTime<Utc>| at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+        let revoked = matches!(loss, LeaseLoss::Revoked { .. }) && at < expires;
+        let mut lease = json!({"failure_reason": if revoked { "worker_deregistered" } else { "lease_expired" },
+            "lease_expires_at": micros(expires), "lease_owner": owner});
+        if revoked {
+            lease["lease_revoked_at"] = json!(micros(at));
+        }
+        // An expired deadline settles as that timeout, without lease metadata.
+        let retried = match deadline {
+            Some(kind) => Self::time_out_activity(tx, &run, &activity, kind, None).await?,
+            None => Self::time_out_activity(tx, &run, &activity, "lease", Some(&lease)).await?,
+        };
         Ok(Enforcement::Enforced { retried })
+    }
+
+    /// `ActivityTaskLeaseRecovery::recoverForStoppedWorker`: a deregistered
+    /// worker's activity leases are settled at once, through each activity's
+    /// retry policy, inside the deregistration's transaction.
+    pub(super) async fn revoke_worker_activity_leases(
+        tx: &mut Transaction<'_, DB>,
+        namespace: &str,
+        worker_id: &str,
+    ) -> Result<()> {
+        let tasks = Self::query("SELECT id FROM workflow_tasks WHERE namespace=$1 AND task_type='activity' AND status='leased' AND lease_owner=$2 ORDER BY id")
+            .bind(namespace)
+            .bind(worker_id)
+            .fetch_all(&mut **tx)
+            .await?;
+        for task in tasks {
+            let task_id = DB::string(&task, "id")?;
+            Self::settle_lost_lease(tx, &task_id, LeaseLoss::Revoked { namespace, owner: worker_id }).await?;
+        }
+        Ok(())
     }
 
     /// `currentAttemptStateReason`: a running execution's current attempt

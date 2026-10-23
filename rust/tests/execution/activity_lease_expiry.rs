@@ -127,3 +127,70 @@ async fn an_expired_activity_lease_without_retries_fails_the_activity_like_php()
         assert_eq!(finish_task(&app, &resumed, json!([complete])).await.0, StatusCode::OK);
     }
 }
+
+fn event<'a>(events: &'a [Value], kind: &str) -> &'a Value {
+    events.iter().find(|event| event["event_type"] == kind).unwrap_or_else(|| panic!("no {kind}: {events:?}"))
+}
+
+// Published PHP settles a deregistered worker's activity leases in the same
+// request: the attempt closes as expired, and the activity's retry policy
+// records a retry with the worker's departure as its reason.
+#[tokio::test]
+async fn deregistration_revokes_the_workers_activity_leases_like_php() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register(&app, "worker", json!(["echo"]), json!(["act"])).await;
+    let (started, task) = claimed(&app, "revoke-retry", json!({"max_attempts":2,"backoff_seconds":[0]})).await;
+    let (status, body) = request(&app, "DELETE", "/api/worker/registrations/worker", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!((body["outcome"].clone(), body["recovered_workflow_task_count"].clone()), (json!("deregistered"), json!(0)));
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let events = history.as_array().unwrap();
+    let retry = &event(events, "ActivityRetryScheduled")["payload"];
+    assert_eq!(
+        (retry["retry_reason"].clone(), retry["failure_reason"].clone(), retry["lease_owner"].clone()),
+        (json!("worker_deregistered"), json!("worker_deregistered"), json!("worker")),
+        "{retry}"
+    );
+    assert!(retry["lease_revoked_at"].is_string() && retry["lease_expires_at"].is_string(), "{retry}");
+    assert!(retry["lease_revoked_at"].as_str() < retry["lease_expires_at"].as_str(), "{retry}");
+    assert!(retry.get("timeout_kind").is_none(), "{retry}");
+    let task_id = task["task_id"].as_str().unwrap();
+    assert_eq!(
+        count(&database, format!("SELECT COUNT(*) FROM workflow_tasks WHERE id='{task_id}' AND status='cancelled' AND last_error='worker_deregistered'")).await,
+        1
+    );
+    assert_eq!(
+        count(&database, format!("SELECT COUNT(*) FROM activity_attempts WHERE workflow_task_id='{task_id}' AND status='expired'")).await,
+        1
+    );
+    // A new registration claims the retry as attempt two.
+    register(&app, "worker", json!(["echo"]), json!(["act"])).await;
+    let second = poll(&app, "worker", "activity").await;
+    assert_eq!(second["attempt_number"], 2, "{second}");
+}
+
+// The fenced deregistration revokes them too. Without a retry policy the
+// departure fails the activity.
+#[tokio::test]
+async fn fenced_deregistration_fails_an_activity_without_retries_like_php() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let (status, registered) = request(&app, "POST", "/api/worker/register", json!({"worker_id":"worker","task_queue":"test",
+        "runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":["act"]})).await;
+    assert_eq!(status, StatusCode::CREATED, "{registered}");
+    let (started, _) = claimed(&app, "revoke-once", Value::Null).await;
+    let (status, body) = request(&app, "POST", "/api/worker/registrations/worker/deregister",
+        json!({"registration_token": registered["registration_token"]})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let events = history.as_array().unwrap();
+    let failed = &event(events, "ActivityFailed")["payload"];
+    assert_eq!(
+        (failed["failure_reason"].clone(), failed["exception_class"].clone(), failed["non_retryable"].clone()),
+        (json!("worker_deregistered"), json!("Workflow\\V2\\Exceptions\\ActivityLeaseExpiredException"), json!(false)),
+        "{failed}"
+    );
+    assert!(failed["lease_revoked_at"].is_string(), "{failed}");
+    assert!(!events.iter().any(|event| event["event_type"] == "ActivityRetryScheduled"));
+}
