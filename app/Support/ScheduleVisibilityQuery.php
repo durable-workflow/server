@@ -111,6 +111,18 @@ class ScheduleVisibilityQuery
                 continue;
             }
 
+            if ($predicate['type'] === 'double' && $builder->getConnection()->getDriverName() === 'sqlite') {
+                // JSON extraction has no numeric column affinity in SQLite,
+                // while PDO binds floats as strings. Retain the exact number
+                // and cast the bound value without coercing stored JSON text.
+                $column = $builder->getQuery()->getGrammar()->wrap($path);
+                $builder->whereRaw($column.' = CAST(? AS NUMERIC)', [
+                    json_encode($predicate['literal'], JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR),
+                ]);
+
+                continue;
+            }
+
             $builder->where($path, '=', $predicate['literal']);
         }
     }

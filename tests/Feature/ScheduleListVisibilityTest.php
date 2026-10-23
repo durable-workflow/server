@@ -242,6 +242,8 @@ class ScheduleListVisibilityTest extends TestCase
         $this->schedule('minimum', attributes: ['Priority' => PHP_INT_MIN, 'Amount' => -0.5]);
         $this->schedule('maximum', attributes: ['Priority' => PHP_INT_MAX, 'Amount' => 0.5]);
         $this->schedule('zero', attributes: ['Priority' => 0]);
+        $this->schedule('fraction', attributes: ['Amount' => 0.12345678901234566]);
+        $this->schedule('exact-integer', attributes: ['Amount' => PHP_INT_MAX]);
 
         $this->assertSame(['minimum'], $this->listIds(['query' => 'Priority = '.PHP_INT_MIN]));
         $this->assertSame(['maximum'], $this->listIds(['query' => 'Priority = '.PHP_INT_MAX]));
@@ -249,6 +251,8 @@ class ScheduleListVisibilityTest extends TestCase
         $this->assertSame(['zero'], $this->listIds(['query' => 'Priority = -0']));
         $this->assertSame(['minimum'], $this->listIds(['query' => 'Amount = -0.5']));
         $this->assertSame(['maximum'], $this->listIds(['query' => 'Amount = 0.5']));
+        $this->assertSame(['fraction'], $this->listIds(['query' => 'Amount = 0.12345678901234566']));
+        $this->assertSame(['exact-integer'], $this->listIds(['query' => 'Amount = '.PHP_INT_MAX]));
         $this->getJson('/api/schedules?'.http_build_query([
             'query' => 'Amount = '.str_repeat('9', 308).'.0',
         ]), $this->headers())->assertOk();
