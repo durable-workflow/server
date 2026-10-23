@@ -72,10 +72,10 @@ class ControlPlaneProtocol
         return self::json($payload, $status);
     }
 
-    public static function json(array $payload, int $status = 200): JsonResponse
+    public static function json(array $payload, int $status = 200, int $options = 0): JsonResponse
     {
         return response()
-            ->json($payload, $status)
+            ->json($payload, $status, [], $options)
             ->header(self::HEADER, self::VERSION);
     }
 
