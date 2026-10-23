@@ -2340,12 +2340,21 @@ final class WorkflowTaskPoller
             ->first();
 
         $run = WorkflowRun::query()->where('namespace', $namespace)->find($runId);
-        $task = WorkflowTask::query()->where('namespace', $namespace)
-            ->where('workflow_run_id', $runId)->find($taskId);
+        if (! $worker instanceof WorkerRegistration || ! $run instanceof WorkflowRun
+            || ! WorkflowReplayEligibility::allows($worker, $run, $protocolVersion)) {
+            return false;
+        }
 
-        return $worker instanceof WorkerRegistration && $run instanceof WorkflowRun
-            && $task instanceof WorkflowTask
-            && WorkflowReplayEligibility::allows($worker, $run, $protocolVersion)
+        $task = WorkflowTask::query()->find($taskId);
+
+        // Custom bridges may own ordinary tasks outside the package table.
+        // Preserve their existing claim/history path. Update deliveries use
+        // canonical package tasks and must pass the scoped check below.
+        if (! $task instanceof WorkflowTask) {
+            return ! $this->bridge instanceof DefaultWorkflowTaskBridge;
+        }
+
+        return $task->namespace === $namespace && $task->workflow_run_id === $runId
             && WorkflowUpdateDeliveryEligibility::allows($worker, $run, $task);
     }
 
