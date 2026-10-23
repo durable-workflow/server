@@ -568,6 +568,7 @@ where
         mut prepared: PreparedControlArguments,
         transition_codec: Arc<Semaphore>,
         context: Option<Value>,
+        limits: super::memo_limits::StructuralLimits,
     ) -> Result<Value> {
         // The authenticated request's context; a direct call records only
         // the request id and signal name.
@@ -637,17 +638,17 @@ where
             .as_array()
             .is_some_and(|contracts| contracts.iter().any(|contract| contract["name"] == name));
         let mut validation_errors = json!([]);
-        let rejection = if !active {
+        let mut rejection = if !active {
             Some((
                 StatusCode::CONFLICT,
                 "run_not_active",
-                "rejected_not_active",
+                Some("rejected_not_active"),
             ))
         } else if !declared && durable {
             Some((
                 StatusCode::NOT_FOUND,
                 "unknown_signal",
-                "rejected_unknown_signal",
+                Some("rejected_unknown_signal"),
             ))
         } else if !has_parameters {
             None
@@ -662,12 +663,29 @@ where
                     Some((
                         StatusCode::UNPROCESSABLE_ENTITY,
                         "invalid_signal_arguments",
-                        "rejected_invalid_arguments",
+                        Some("rejected_invalid_arguments"),
                     ))
                 }
                 Err(error) => return Err(error),
             }
         };
+        // `guardPendingSignals`, then `rejectOversizedSignal`: an admissible
+        // signal over a structural ceiling is refused durably, without an
+        // outcome or history.
+        let mut exceeded = None;
+        if rejection.is_none() {
+            if limits.pending_signals.is_some() {
+                let pending = Self::scalar("SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received'")
+                    .bind(&current_run).fetch_one(&mut *tx).await?;
+                exceeded = super::memo_limits::Exceeded::pending_signals(limits.pending_signals, pending);
+            }
+            if exceeded.is_none() {
+                exceeded = super::memo_limits::Exceeded::payload(limits.payload_bytes, &prepared.arguments);
+            }
+            if exceeded.is_some() {
+                rejection = Some((StatusCode::CONFLICT, "structural_limit_exceeded", None));
+            }
+        }
         let command_id = id();
         let signal_id = id();
         let command_sequence = DB::number(&run, "last_command_sequence")?
@@ -694,12 +712,25 @@ where
                     "declared_signals":names,"signal_admission":"handler_not_declared","reason":reason,
                     "message":format!("Workflow signal [{name}] is unknown for workflow type [{workflow_type}]: the durable command contract does not declare that handler. Command contract source [durable_history], declared signals [{labels}].")});
             }
+            // An oversized signal keeps no arguments: its command carries the
+            // limit instead, and its signal row the limit's message.
+            let (mut row_arguments, mut row_errors) = (prepared.arguments.clone(), validation_errors.clone());
+            let mut command_values = prepared.values.clone();
+            let mut command_errors = validation_errors.clone();
+            let mut command_diagnostics = diagnostics.clone();
+            if let Some(exceeded) = exceeded.as_ref().filter(|exceeded| exceeded.kind == "payload_size") {
+                command_values = vec![];
+                command_errors = json!({"arguments":[exceeded.message]});
+                command_diagnostics = exceeded.fields();
+                row_arguments = super::queries::empty_arguments(transition_codec.clone()).await?;
+                row_errors = command_errors.clone();
+            }
             prepared.command = prepare_rejected_command(
                 transition_codec,
                 name.to_owned(),
-                prepared.values.clone(),
-                validation_errors.clone(),
-                diagnostics.clone(),
+                command_values,
+                command_errors,
+                command_diagnostics,
                 "signal_codec_unavailable",
             )
             .await?;
@@ -710,7 +741,7 @@ where
                 .bind(DB::document(&context)).execute(&mut *tx).await?;
             Self::query("INSERT INTO workflow_signal_records(id,workflow_command_id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,signal_name,status,outcome,command_sequence,payload_codec,arguments,validation_errors,rejection_reason,rejected_at,closed_at) VALUES ($1,$2,$3,$4,$5,$6,'rejected',$7,$8,'avro',$9,$10,$11,$12,$13)")
                 .bind(&signal_id).bind(&command_id).bind(workflow_id).bind(&current_run).bind(&current_run).bind(name)
-                .bind(outcome).bind(command_sequence).bind(&prepared.arguments).bind(DB::document(&validation_errors)).bind(reason)
+                .bind(outcome).bind(command_sequence).bind(&row_arguments).bind(DB::document(&row_errors)).bind(reason)
                 .bind(DB::bind_time(rejected_at)).bind(DB::bind_time(rejected_at)).execute(&mut *tx).await?;
             Self::query("UPDATE workflow_runs SET last_command_sequence=$1 WHERE id=$2")
                 .bind(command_sequence)
@@ -3599,7 +3630,7 @@ pub(super) async fn prepare_rejected_command(
         // Only small server-authored diagnostics cross this conversion.
         // Original customer arguments remain official decoded Values, so a
         // JSON projection cannot round an int64 or turn bytes into strings.
-        // A number has no exact diagnostic form, so it is refused.
+        // Only an int64, such as a structural limit, is an exact number.
         fn diagnostic(value: Value) -> Option<Payload> {
             Some(match value {
                 Value::Null => Payload::Null,
@@ -3614,7 +3645,7 @@ pub(super) async fn prepare_rejected_command(
                         .map(|(key, value)| Some((key, diagnostic(value)?)))
                         .collect::<Option<_>>()?,
                 ),
-                Value::Number(_) => return None,
+                Value::Number(number) => Payload::Long(number.as_i64()?),
             })
         }
         let unavailable = || refuse(StatusCode::SERVICE_UNAVAILABLE, unavailable);

@@ -232,7 +232,7 @@ where
             "schedules": self.schedule_metrics(now).await?,
             "workers": self.worker_metrics().await?,
             "backend": backend_capabilities(now, DB::PHP_CONNECTION),
-            "structural_limits": structural_limits(DB::PHP_CONNECTION),
+            "structural_limits": structural_limits(DB::PHP_CONNECTION, &config.structural, self.memo_size_limit),
             "update_wait": {"completion_timeout_seconds": 10, "poll_interval_milliseconds": 50},
             "repair_policy": repair_policy(),
             "matching_role": matching_role(config),
@@ -1358,6 +1358,8 @@ pub(crate) struct MetricsConfig {
     pub(crate) workflow_task_lease_seconds: i64,
     pub(crate) activity_task_lease_seconds: i64,
     pub(crate) abandoned_upload_expiry_seconds: i64,
+    /// The honored signal, update and payload ceilings.
+    pub(crate) structural: super::StructuralLimits,
 }
 
 fn empty_repair_snapshot() -> Value {
@@ -1381,16 +1383,19 @@ fn empty_repair_snapshot() -> Value {
     })
 }
 
-fn structural_limits(connection: &str) -> Value {
+/// `StructuralLimits::snapshot`: honored ceilings as configured, where a
+/// disabled one reads 0 (`intConfig`'s `max(0, value)`).
+fn structural_limits(connection: &str, limits: &super::StructuralLimits, memo: Option<usize>) -> Value {
+    let shown = |limit: Option<usize>| limit.unwrap_or(0);
     let configured = json!({
         "pending_activity_count": 2000,
         "pending_child_count": 1000,
         "pending_timer_count": 2000,
-        "pending_signal_count": 5000,
-        "pending_update_count": 500,
+        "pending_signal_count": shown(limits.pending_signals),
+        "pending_update_count": shown(limits.pending_updates),
         "command_batch_size": 1000,
-        "payload_size_bytes": 2_097_152,
-        "memo_size_bytes": 262_144,
+        "payload_size_bytes": shown(limits.payload_bytes),
+        "memo_size_bytes": shown(memo),
         "search_attribute_size_bytes": 40960,
         "history_transaction_size": 5000,
         "warning_threshold_percent": 80,
@@ -1410,7 +1415,8 @@ fn structural_limits(connection: &str) -> Value {
 
 /// What this runtime needs from its backends, in PHP's capability shape.
 fn backend_capabilities(now: DateTime<Utc>, connection: &str) -> Value {
-    let limits = structural_limits(connection);
+    // Only the backend's issues are reported here, which no ceiling changes.
+    let limits = structural_limits(connection, &super::StructuralLimits::default(), None);
     let issues = limits["issues"].clone();
     let severity = if issues.as_array().is_some_and(|issues| !issues.is_empty()) {
         "info"

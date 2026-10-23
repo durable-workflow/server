@@ -180,11 +180,13 @@ contract fixture before its correction.
   of the Workflow package's `DW_V2_LIMIT_*` limits: the memo size, the
   command batch size as a bound on parallel group metadata, the pending
   signal and update counts with their payload size at intake, and the
-  payload size of an activity's result. Native enforces only the memo size.
-  #612 tracks the rest.
-- **Environment settings.** Of PHP's 164 contract settings, native honors
-  40 and ignores 57 that change nothing it serves. It refuses to start on a
-  non-default value of the other 67
+  payload size of an activity's result. Native enforces all but the command
+  batch size, and still caps parallel groups at 100 members and a run at 64
+  updates over its lifetime. #612 tracks the rest
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-structural-limits.md)).
+- **Environment settings.** Of PHP's 166 contract settings, native honors
+  43 and ignores 57 that change nothing it serves. It refuses to start on a
+  non-default value of the other 66
   ([checkpoint](rust-server-port-checkpoints/2026-10-22-environment-contract.md)).
   Several of those are cheap to honor: repair timing and the multi-node
   declaration.

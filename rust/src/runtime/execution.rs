@@ -44,6 +44,8 @@ pub struct Runtime {
     transition_codec: Arc<Semaphore>,
     pub(super) external: Arc<super::ExternalPayloadConfig>,
     pub(super) queries: Arc<super::QueryTaskConfig>,
+    /// The package's signal, update and payload ceilings (DW_V2_LIMIT_*).
+    pub(super) structural: super::StructuralLimits,
 }
 
 struct TimerScheduler {
@@ -142,6 +144,10 @@ impl Runtime {
         self.queries = Arc::new(config);
         self
     }
+    pub fn with_structural_limits(mut self, limits: super::StructuralLimits) -> Self {
+        self.structural = limits;
+        self
+    }
     /// The configured history page sizes (DW_HISTORY_PAGE_SIZE_DEFAULT and _MAX).
     pub(super) fn history_pages(&self) -> super::history_pages::HistoryPages {
         super::history_pages::HistoryPages {
@@ -187,6 +193,7 @@ impl Runtime {
         let external = super::ExternalPayloadConfig::from_env()?;
         let queries = super::QueryTaskConfig::from_env()?;
         let limit = super::memo_limits::configured_limit()?;
+        let structural = super::StructuralLimits::from_env()?;
         let history_budget = super::history_budget::Config::from_env()?;
         let search_attribute_limit = super::search_attributes::configured_limit()?;
         let mut store = Store::new(sqlite::open(database).await?);
@@ -197,7 +204,7 @@ impl Runtime {
         store.activity_task_lease_seconds = queries.activity_task_lease_seconds;
         store.update_wait_seconds = queries.update_wait_completion_timeout_seconds;
         store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
-        Self::from_storage(Storage::Sqlite(store), token, external, queries).await
+        Self::from_storage(Storage::Sqlite(store), token, external, queries, structural).await
     }
 
     pub async fn open_postgres(options: PgConnectOptions, token: String) -> Result<Self> {
@@ -205,6 +212,7 @@ impl Runtime {
         let external = super::ExternalPayloadConfig::from_env()?;
         let queries = super::QueryTaskConfig::from_env()?;
         let limit = super::memo_limits::configured_limit()?;
+        let structural = super::StructuralLimits::from_env()?;
         let history_budget = super::history_budget::Config::from_env()?;
         let search_attribute_limit = super::search_attributes::configured_limit()?;
         let mut store = Store::new(PostgresStorage::open(options).await?.into_pool());
@@ -215,7 +223,7 @@ impl Runtime {
         store.activity_task_lease_seconds = queries.activity_task_lease_seconds;
         store.update_wait_seconds = queries.update_wait_completion_timeout_seconds;
         store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
-        Self::from_storage(Storage::Postgres(store), token, external, queries).await
+        Self::from_storage(Storage::Postgres(store), token, external, queries, structural).await
     }
 
     pub async fn open_mysql(options: MySqlConnectOptions, token: String) -> Result<Self> {
@@ -223,6 +231,7 @@ impl Runtime {
         let external = super::ExternalPayloadConfig::from_env()?;
         let queries = super::QueryTaskConfig::from_env()?;
         let limit = super::memo_limits::configured_limit()?;
+        let structural = super::StructuralLimits::from_env()?;
         let history_budget = super::history_budget::Config::from_env()?;
         let search_attribute_limit = super::search_attributes::configured_limit()?;
         let mut store = Store::new(MySqlStorage::open(options).await?.into_pool());
@@ -233,7 +242,7 @@ impl Runtime {
         store.activity_task_lease_seconds = queries.activity_task_lease_seconds;
         store.update_wait_seconds = queries.update_wait_completion_timeout_seconds;
         store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
-        Self::from_storage(Storage::MySql(store), token, external, queries).await
+        Self::from_storage(Storage::MySql(store), token, external, queries, structural).await
     }
 
     async fn from_storage(
@@ -241,6 +250,7 @@ impl Runtime {
         token: String,
         external: super::ExternalPayloadConfig,
         queries: super::QueryTaskConfig,
+        structural: super::StructuralLimits,
     ) -> Result<Self> {
         let runtime = Self {
             storage: Arc::new(storage),
@@ -252,6 +262,7 @@ impl Runtime {
             transition_codec: Arc::new(Semaphore::new(1)),
             external: Arc::new(external),
             queries: Arc::new(queries),
+            structural,
         };
         runtime.verify_ready().await?;
         if let Err(error) = runtime.initialize_namespace_registry().await {
@@ -322,6 +333,7 @@ impl Runtime {
             transition_codec: self.transition_codec.clone(),
             external: self.external.clone(),
             queries: self.queries.clone(),
+            structural: self.structural,
         }
     }
     pub(super) fn namespace(&self) -> &str {
@@ -556,6 +568,7 @@ impl Runtime {
                         prepared,
                         self.transition_codec.clone(),
                         context,
+                        self.structural,
                     )
                     .await
             }
@@ -569,6 +582,7 @@ impl Runtime {
                         prepared,
                         self.transition_codec.clone(),
                         context,
+                        self.structural,
                     )
                     .await
             }
@@ -582,6 +596,7 @@ impl Runtime {
                         prepared,
                         self.transition_codec.clone(),
                         context,
+                        self.structural,
                     )
                     .await
             }
@@ -653,13 +668,9 @@ impl Runtime {
         super::input_envelope::transport(&body)?;
         super::laravel_validation::operation_name(name, "update")?;
         super::command_requests::update(&body)?;
+        // PHP bounds update arguments by its structural payload ceiling,
+        // which rejects them durably, not by a request budget.
         let arguments = self.command_arguments(&body).await?;
-        if arguments.len() > super::queries::ARGUMENT_BYTES {
-            return Err(refuse(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "update_arguments_exceed_budget",
-            ));
-        }
         let prepared = super::store::prepare_control_arguments(
             self.signal_codec.clone(),
             name.to_owned(),
@@ -671,17 +682,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone())
+                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone(), self.structural)
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone())
+                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone(), self.structural)
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone())
+                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone(), self.structural)
                     .await
             }
         }
@@ -1138,6 +1149,21 @@ impl Runtime {
     }
     pub(crate) async fn complete_activity(&self, task_id: &str, body: Value) -> Result<Value> {
         let external = self.prepare_external(&body["result"]).await?;
+        // `ActivityOutcomeRecorder` measures the result it would store.
+        let stored = match &external {
+            Some(prepared) => prepared.stored(),
+            None => super::envelope(&body, "result")?,
+        };
+        if let Some(exceeded) = super::memo_limits::Exceeded::payload(self.structural.payload_bytes, &stored) {
+            let (failure, blob) =
+                super::activity_failures::structural_failure(&exceeded, self.signal_codec.clone()).await?;
+            let limit = Some(exceeded);
+            return match &*self.storage {
+                Storage::Sqlite(store) => store.fail_activity(task_id, body, failure, blob, limit).await,
+                Storage::Postgres(store) => store.fail_activity(task_id, body, failure, blob, limit).await,
+                Storage::MySql(store) => store.fail_activity(task_id, body, failure, blob, limit).await,
+            };
+        }
         match &*self.storage {
             Storage::Sqlite(store) => store.complete_activity(task_id, body, external).await,
             Storage::Postgres(store) => store.complete_activity(task_id, body, external).await,
@@ -1151,9 +1177,9 @@ impl Runtime {
         let (failure, blob) =
             super::activity_failures::prepare_failure(&body, self.signal_codec.clone()).await?;
         match &*self.storage {
-            Storage::Sqlite(store) => store.fail_activity(task_id, body, failure, blob).await,
-            Storage::Postgres(store) => store.fail_activity(task_id, body, failure, blob).await,
-            Storage::MySql(store) => store.fail_activity(task_id, body, failure, blob).await,
+            Storage::Sqlite(store) => store.fail_activity(task_id, body, failure, blob, None).await,
+            Storage::Postgres(store) => store.fail_activity(task_id, body, failure, blob, None).await,
+            Storage::MySql(store) => store.fail_activity(task_id, body, failure, blob, None).await,
         }
     }
 }

@@ -136,6 +136,7 @@ mod workflow_task_guard;
 
 pub use execution::Runtime;
 pub use external_config::ExternalPayloadConfig;
+pub use memo_limits::StructuralLimits;
 pub use http::router;
 
 /// The worker protocol version native implements and advertises.

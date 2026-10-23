@@ -28,8 +28,10 @@ struct UpdateRejection<'a, R> {
     request_id: Option<&'a str>,
     context: Option<Value>,
     reason: &'static str,
-    outcome: &'static str,
+    outcome: Option<&'static str>,
     validation_errors: Value,
+    /// A structural ceiling keeps no arguments and records its limit.
+    exceeded: Option<super::memo_limits::Exceeded>,
 }
 
 /// `DefaultWorkflowControlPlane::updateStatus` for a rejected update.
@@ -303,6 +305,7 @@ where
         prepared: PreparedControlArguments,
         context: Option<Value>,
         codec: Arc<Semaphore>,
+        limits: super::memo_limits::StructuralLimits,
     ) -> Result<(StatusCode, Value)> {
         // PHP's update_name column holds 255 bytes, one fewer than its
         // validation allows; native refuses what it cannot store.
@@ -381,13 +384,13 @@ where
             let contract = DB::document_row(&started, "payload")?;
             // `WorkflowStub::submitUpdate`'s order: a closed run, an unknown
             // update, then invalid arguments. Each records a rejection.
-            let rejection = if !active {
-                Some(("run_not_active", "rejected_not_active", json!([])))
+            let mut rejection = if !active {
+                Some(("run_not_active", Some("rejected_not_active"), json!([])))
             } else if !contract["declared_updates"]
                 .as_array()
                 .is_some_and(|names| names.iter().any(|value| value == name))
             {
-                Some(("unknown_update", "rejected_unknown_update", json!([])))
+                Some(("unknown_update", Some("rejected_unknown_update"), json!([])))
             } else if contract["declared_update_validators"]
                 .as_array()
                 .is_some_and(|names| names.iter().any(|value| value == name))
@@ -411,16 +414,34 @@ where
                         ..
                     }) => Some((
                         "invalid_update_arguments",
-                        "rejected_invalid_arguments",
+                        Some("rejected_invalid_arguments"),
                         update_argument_errors(&contract, name, &prepared.values),
                     )),
                     Err(error) => return Err(error),
                 }
             };
+            // `guardPendingUpdates`, then `guardPayloadSize` on the
+            // serialized arguments: an admissible update over a structural
+            // ceiling is rejected durably with the limit's message.
+            let mut exceeded = None;
+            if rejection.is_none() {
+                if limits.pending_updates.is_some() {
+                    let pending = Self::scalar("SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id=$1 AND status='accepted'")
+                        .bind(&run_id).fetch_one(&mut *tx).await
+                        .map_err(|error| at_update_lookup(error.into(), UpdateLookup::Inventory))?;
+                    exceeded = super::memo_limits::Exceeded::pending_updates(limits.pending_updates, pending);
+                }
+                if exceeded.is_none() {
+                    exceeded = super::memo_limits::Exceeded::payload(limits.payload_bytes, &prepared.arguments);
+                }
+                if let Some(exceeded) = &exceeded {
+                    rejection = Some(("structural_limit_exceeded", None, json!({"arguments":[exceeded.message]})));
+                }
+            }
             if let Some((reason, outcome, validation_errors)) = rejection {
                 let update_id = Self::reject_update(
                     &mut tx,
-                    codec,
+                    codec.clone(),
                     UpdateRejection {
                         workflow_id,
                         instance: &instance,
@@ -432,6 +453,7 @@ where
                         reason,
                         outcome,
                         validation_errors,
+                        exceeded,
                     },
                 )
                 .await?;
@@ -442,15 +464,16 @@ where
                     .await
                     .map_err(|error| at_update_lookup(error.into(), UpdateLookup::ReceiptRead))?;
                 return Ok((
-                    rejection_status(outcome),
+                    rejection_status(outcome.unwrap_or_default()),
                     // A rejected completion wait reports the timeout it
                     // would have used, as `attemptUpdateWithArguments` does.
-                    Self::update_result(
+                    self.rejected_result(
+                        codec,
                         &update,
                         wait_for,
-                        false,
                         (wait_for == "completed").then_some(timeout.unwrap_or(self.update_wait_seconds)),
-                    )?,
+                    )
+                    .await?,
                 ));
             }
             // Published PHP admits an update whenever its run is active. It is
@@ -545,7 +568,7 @@ where
                 let outcome = DB::optional_string(&update, "outcome")?;
                 return Ok((
                     rejection_status(outcome.as_deref().unwrap_or_default()),
-                    Self::update_result(&update, wait_for, false, reported)?,
+                    self.rejected_result(codec.clone(), &update, wait_for, reported).await?,
                 ));
             }
             let timed_out = wait_for == "completed"
@@ -586,14 +609,23 @@ where
             reason,
             outcome,
             validation_errors,
+            exceeded,
         } = rejection;
         let run_id = DB::string(run, "id")?;
+        let (values, diagnostics, arguments) = match &exceeded {
+            Some(exceeded) => (
+                vec![],
+                exceeded.fields(),
+                super::queries::empty_arguments(codec.clone()).await?,
+            ),
+            None => (prepared.values.clone(), json!({}), prepared.arguments.clone()),
+        };
         let payload = super::store::prepare_rejected_command(
             codec,
             name.to_owned(),
-            prepared.values.clone(),
+            values,
             validation_errors.clone(),
-            json!({}),
+            diagnostics,
             "update_codec_unavailable",
         )
         .await?;
@@ -613,7 +645,7 @@ where
             .bind(DB::document(&context)).bind(request_id).execute(&mut **tx).await?;
         Self::query("INSERT INTO workflow_updates(id,workflow_command_id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,update_name,status,outcome,command_sequence,payload_codec,arguments,validation_errors,rejection_reason,rejected_at,closed_at) VALUES ($1,$2,$3,$4,$5,$6,'rejected',$7,$8,'avro',$9,$10,$11,$12,$13)")
             .bind(&update_id).bind(&command_id).bind(workflow_id).bind(&run_id).bind(&run_id).bind(name).bind(outcome)
-            .bind(command_sequence).bind(&prepared.arguments).bind(DB::document(&validation_errors)).bind(reason)
+            .bind(command_sequence).bind(&arguments).bind(DB::document(&validation_errors)).bind(reason)
             .bind(DB::bind_time(rejected_at)).bind(DB::bind_time(rejected_at)).execute(&mut **tx).await?;
         Self::query("UPDATE workflow_runs SET last_command_sequence=$1 WHERE id=$2")
             .bind(command_sequence)
@@ -628,7 +660,7 @@ where
         // PHP drops null and empty fields from this event.
         let mut event = json!({"workflow_command_id":command_id,"update_id":update_id,
             "workflow_instance_id":workflow_id,"workflow_run_id":run_id,"update_name":name,
-            "arguments":wire(&prepared.arguments)});
+            "arguments":wire(&arguments)});
         if validation_errors.as_object().is_some_and(|errors| !errors.is_empty()) {
             event["validation_errors"] = validation_errors;
         }
@@ -636,6 +668,49 @@ where
             .await
             .map_err(|error| at_update_lookup(error, UpdateLookup::HistoryAppend))?;
         Ok(update_id)
+    }
+
+    /// A rejected update's answer. A structural rejection also reports its
+    /// command's limit fields, as PHP's update result does.
+    async fn rejected_result(
+        &self,
+        codec: Arc<Semaphore>,
+        update: &DB::Row,
+        wait_for: &str,
+        timeout: Option<i64>,
+    ) -> Result<Value> {
+        let mut result = Self::update_result(update, wait_for, false, timeout)?;
+        if DB::optional_string(update, "rejection_reason")?.as_deref() != Some("structural_limit_exceeded") {
+            return Ok(result);
+        }
+        let command = Self::query("SELECT payload FROM workflow_commands WHERE id=$1")
+            .bind(DB::string(update, "workflow_command_id")?)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|error| at_update_lookup(error.into(), UpdateLookup::ReceiptRead))?;
+        let payload = DB::string(&command, "payload")?;
+        let unavailable = || refuse(StatusCode::SERVICE_UNAVAILABLE, "update_codec_unavailable");
+        let permit = codec.acquire_owned().await.map_err(|_| unavailable())?;
+        let fields = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            use crate::codec::Value as Payload;
+            let Ok(Payload::Map(command)) = crate::codec::ValueCodec::new().and_then(|codec| codec.decode(&payload)) else {
+                return Err(unavailable());
+            };
+            let mut fields = serde_json::Map::new();
+            for key in ["structural_limit_kind", "structural_limit_value", "structural_limit_configured"] {
+                match command.get(key) {
+                    Some(Payload::String(value)) => fields.insert(key.into(), json!(value)),
+                    Some(Payload::Long(value)) => fields.insert(key.into(), json!(value)),
+                    _ => None,
+                };
+            }
+            Ok(fields)
+        })
+        .await
+        .map_err(|_| unavailable())??;
+        result.as_object_mut().expect("update result").extend(fields);
+        Ok(result)
     }
 
     fn update_result(

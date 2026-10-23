@@ -1415,6 +1415,7 @@ fn metrics_config(runtime: &Runtime) -> super::operator_metrics::MetricsConfig {
         workflow_task_lease_seconds: runtime.queries.workflow_task_lease_seconds,
         activity_task_lease_seconds: runtime.queries.activity_task_lease_seconds,
         abandoned_upload_expiry_seconds: runtime.external.abandoned_seconds.max(1),
+        structural: runtime.structural,
     }
 }
 

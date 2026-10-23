@@ -162,6 +162,8 @@ mod repair_status;
 mod repair_pass;
 #[path = "execution/activity_lease_expiry.rs"]
 mod activity_lease_expiry;
+#[path = "execution/structural_limits.rs"]
+mod structural_limits;
 #[path = "execution/activity_timeout_pass.rs"]
 mod activity_timeout_pass;
 #[path = "execution/start_request.rs"]
