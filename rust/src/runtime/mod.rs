@@ -65,6 +65,7 @@ mod memo_json;
 mod memo_limits;
 mod standalone_activities;
 mod archive;
+mod command_payloads;
 mod deployments;
 mod priority_fairness;
 mod redrive;

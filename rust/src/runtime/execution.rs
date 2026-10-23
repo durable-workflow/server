@@ -453,6 +453,35 @@ impl Runtime {
         }
     }
 
+    /// `resolveWorkflowTaskCommandPayloadReferences`: each command payload
+    /// must decode as one Avro value, checked in command and field order.
+    async fn check_command_payloads(&self, body: &Value) -> Result<()> {
+        use super::command_payloads::{Check, UNDECODABLE, invalid};
+        let checks = super::command_payloads::checks(body);
+        if checks.is_empty() {
+            return Ok(());
+        }
+        // Completion work uses the transition codec, never read capacity.
+        // The permit is released before the completion takes its own.
+        let permit = self.transition_codec.clone().acquire_owned().await
+            .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let codec = crate::codec::ValueCodec::new()
+                .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?;
+            for check in checks {
+                match check {
+                    Check::Decode { field, blob } if codec.decode(&blob).is_err() => return Err(invalid(&field, UNDECODABLE)),
+                    Check::Decode { .. } => {}
+                    Check::Refuse(error) => return Err(error),
+                }
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?
+    }
+
     /// Refuses an envelope blob the codec cannot decode, with PHP's message.
     async fn decodable(&self, blob: &Value) -> Result<()> {
         let Some(blob) = blob.as_str().map(str::to_owned) else {
@@ -1152,6 +1181,7 @@ impl Runtime {
         worker: Option<super::runtime_credentials::Principal>,
         protocol: Option<&str>,
     ) -> Result<Value> {
+        self.check_command_payloads(&body).await?;
         let external = self.prepare_command_payloads(&body).await?;
         if let Some(commands) = body["commands"].as_array() {
             for command in commands

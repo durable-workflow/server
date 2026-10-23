@@ -176,6 +176,8 @@ mod build_pins;
 mod deployments;
 #[path = "execution/priority_fairness.rs"]
 mod priority_fairness;
+#[path = "execution/command_payloads.rs"]
+mod command_payloads;
 #[path = "execution/activity_timeout_pass.rs"]
 mod activity_timeout_pass;
 #[path = "execution/start_request.rs"]
@@ -1918,12 +1920,13 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
         request(&a, "POST", &complete_path, wrong_update).await.1["reason"],
         "update_task_mismatch"
     );
+    // Published PHP refuses an undecodable result before it applies the
+    // update, naming the field.
     let mut malformed = original.clone();
     malformed["commands"][0]["result"]["blob"] = json!("not-avro");
-    assert_eq!(
-        request(&a, "POST", &complete_path, malformed).await.1["reason"],
-        "invalid_update_result"
-    );
+    let refused = request(&a, "POST", &complete_path, malformed).await.1;
+    assert_eq!(refused["reason"], "validation_failed", "{refused}");
+    assert!(refused["errors"]["commands.0.result.blob"].is_array(), "{refused}");
     assert_eq!(
         request(
             &a,
