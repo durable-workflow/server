@@ -898,11 +898,17 @@ async fn cluster() -> Json<Value> {
     let principal_attribution: Value =
         serde_json::from_str(include_str!("principal-attribution-contract.v2.json"))
             .expect("valid bundled principal attribution contract");
+    // Server 2.11.1's service catalog read contract. Native serves its eight
+    // reads; the SDK requires this advertisement before calling them.
+    let service_catalog: Value =
+        serde_json::from_str(include_str!("service-catalog-read-contract.v1.json"))
+            .expect("valid bundled service catalog read contract");
     Json(
         json!({"version": env!("CARGO_PKG_VERSION"), "implementation": "rust", "development": true,
         "control_plane": {"version": "2", "request_contract": super::visibility::request_contract()}, "worker_protocol": {"version": super::WORKER_PROTOCOL_VERSION, "server_capabilities": capabilities()},
         "auth_composition_contract": auth_composition,
         "principal_attribution_contract": principal_attribution,
+        "service_catalog_read_contract": service_catalog,
         "payload_codec": "avro", "qualified_for_php_takeover": false}),
     )
 }

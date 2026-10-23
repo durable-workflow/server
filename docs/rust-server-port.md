@@ -106,6 +106,10 @@ These published PHP routes on this tree have no native handler yet, by family.
   Served from this family since: standalone activities (start, list and
   describe), compared live with published 2.11.1
   ([checkpoint](rust-server-port-checkpoints/2026-10-23-standalone-activities.md));
+  the service catalog read contract in cluster info, which Waterline 2.12.3's
+  Services pages require; with it, every Waterline route answered native as it
+  answered PHP
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-waterline-service-mode.md));
   namespace delete, with the
   `namespace-delete` fixture. The JSON
   `GET|POST /api/system/metrics` is served with the `system-metrics`

@@ -250,6 +250,12 @@ async fn cluster_info_publishes_php_s_principal_attribution_contract() {
         "principal_type":"attacker","actor":"mallory","user":"mallory"}));
     assert_eq!(guards["request_header_values"]["X-Workflow-Principal-Id"], "mallory");
     assert_eq!(guards["request_headers"].as_array().unwrap().len(), 11);
+    // The PHP SDK reads the service catalog only when this is advertised.
+    let catalog = &cluster["service_catalog_read_contract"];
+    assert_eq!((catalog["schema"].clone(), catalog["version"].clone()),
+        (json!("durable-workflow.v2.service-catalog-read.contract"), json!(1)));
+    assert_eq!(catalog["wire_surface"]["calls"], "/api/service-catalog/calls");
+    assert_eq!((catalog["pagination"]["default_per_page"].clone(), catalog["pagination"]["max_per_page"].clone()), (json!(50), json!(100)));
     runtime.close().await;
     database.remove().await;
 }
