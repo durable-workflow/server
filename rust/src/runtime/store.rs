@@ -2674,6 +2674,12 @@ where
         Self::resume_undelivered_cancellation(&mut tx, &run_id, &DB::string(&run, "queue")?)
             .await?;
         Self::enqueue_next_message(&mut tx, &run_id, &DB::string(&run, "queue")?).await?;
+        // PHP's executor leaves every run a completed task did not close
+        // waiting, even when the task recorded only markers or side effects.
+        Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1 AND status IN ('pending','running')")
+            .bind(&run_id)
+            .execute(&mut *tx)
+            .await?;
         let current = Self::query("SELECT status FROM workflow_runs WHERE id=$1")
             .bind(&run_id)
             .fetch_one(&mut *tx)

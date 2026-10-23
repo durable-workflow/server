@@ -107,3 +107,23 @@ async fn bare_payload_strings_and_plain_continue_as_new_arguments_like_php() {
     runtime.close().await;
     database.remove().await;
 }
+
+// PHP's executor leaves a run that a completed task did not close waiting,
+// even when the task recorded only a version marker.
+#[tokio::test]
+async fn a_task_that_records_only_markers_leaves_the_run_waiting_like_php() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "worker", json!(["echo"]), json!([])).await;
+    start(&app, "marker-only").await;
+    let task = poll(&app, "worker", "workflow").await;
+    let (status, body) = finish_task(&app, &task,
+        json!([{"type":"record_version_marker","change_id":"only","version":1,"min_supported":1,"max_supported":1}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["run_status"], "waiting", "{body}");
+    let (_, described) = request(&app, "GET", "/api/workflows/marker-only", Value::Null).await;
+    assert_eq!(described["status"], "waiting", "{described}");
+    runtime.close().await;
+    database.remove().await;
+}

@@ -73,6 +73,9 @@ Native now runs the same stages with PHP's messages.
 - **Plain continue-as-new arguments.** An array or object without a codec is
   no arguments to PHP, so the next run keeps the current input. A number is
   refused with PHP's message.
+- **An open run is waiting after its task.** PHP's executor leaves every run
+  that a completed task did not close `waiting`, even when the task recorded
+  only version markers. Native left such a run `pending`.
 
 ## Old expectations PHP contradicted
 
