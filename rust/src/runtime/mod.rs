@@ -63,19 +63,30 @@ mod http;
 mod laravel_validation;
 mod memo_json;
 mod memo_limits;
+mod standalone_activities;
+mod archive;
+mod command_payloads;
+mod completion_rules;
+mod deployments;
+mod priority_fairness;
+mod route_fallback;
+mod redrive;
 mod memos;
 pub mod mysql;
 mod namespace_cleanup;
 mod namespaces;
 mod operator_dashboard;
 mod operator_metrics;
+mod payload_cleanup;
 mod payload_limits;
 mod poll_readiness;
 pub mod postgres;
 mod previews;
+mod prometheus_metrics;
 mod queries;
 mod query_authority;
 mod repair_candidates;
+mod repair_pass;
 mod retention;
 mod runtime_credentials;
 mod run_observation;
@@ -108,6 +119,7 @@ mod start_definition;
 mod start_request;
 mod storage_test;
 mod store;
+mod system_metrics;
 mod system_health;
 mod task_failures;
 mod task_repair;
@@ -132,6 +144,7 @@ mod workflow_task_guard;
 
 pub use execution::Runtime;
 pub use external_config::ExternalPayloadConfig;
+pub use memo_limits::StructuralLimits;
 pub use http::router;
 
 /// The worker protocol version native implements and advertises.
@@ -220,7 +233,13 @@ impl IntoResponse for RuntimeError {
             eprintln!("{diagnostic}");
         }
         let (status, reason) = match self {
+            Self::Protocol { status, response } if response["schema"] == external_transport::TYPED_SCHEMA => {
+                return external_transport::typed_response(status, response);
+            }
             Self::Protocol { status, response } => return (status, Json(response)).into_response(),
+            Self::Refused { status, reason } if external_transport::TYPED_REASONS.contains(&reason) => {
+                return external_transport::typed_refusal(status, reason);
+            }
             Self::Refused { status, reason } => (status, reason),
             _ => {
                 // Database errors can contain stored payloads. Keep responses

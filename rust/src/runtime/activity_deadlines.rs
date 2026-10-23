@@ -7,6 +7,9 @@ use serde_json::{Value, json};
 use super::transaction::Transaction;
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
+/// The failure PHP records when an attempt loses its task lease.
+const LEASE_EXCEPTION: &str = "Workflow\\V2\\Exceptions\\ActivityLeaseExpiredException";
+
 pub(super) const TIMEOUT_FIELDS: [&str; 4] = [
     "start_to_close_timeout",
     "schedule_to_start_timeout",
@@ -121,6 +124,10 @@ fn timeout_message<DB: Backend>(activity: &DB::Row, kind: &str) -> Result<String
 where
     usize: ColumnIndex<DB::Row>,
 {
+    if kind == "lease" {
+        let label = DB::string(activity, "activity_type")?;
+        return Ok(format!("Activity {label} lost its original task lease before the attempt settled."));
+    }
     let deadline_field = match kind {
         "schedule_to_close" => "schedule_to_close_deadline_at",
         "schedule_to_start" => "schedule_deadline_at",
@@ -136,6 +143,15 @@ where
     let last = DB::optional_instant(activity, "last_heartbeat_at")?
         .map_or("never".into(), |at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, false));
     Ok(format!("Activity {label} heartbeat deadline expired at {expired_at} (last heartbeat: {last})."))
+}
+
+/// Why an activity attempt lost its task lease.
+#[derive(Clone, Copy)]
+pub(super) enum LeaseLoss<'a> {
+    /// The lease expired.
+    Expired,
+    /// The worker that holds it deregistered (`revokeWorkerLease`).
+    Revoked { namespace: &'a str, owner: &'a str },
 }
 
 /// What enforcing one execution's deadline did.
@@ -243,10 +259,160 @@ where
             }) => return Ok(Skipped("run_already_terminal")),
             Err(error) => return Err(error),
         };
-        let retried = Self::time_out_activity(&mut tx, &run, &activity, kind).await?;
+        let retried = Self::time_out_activity(&mut tx, &run, &activity, kind, None).await?;
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(Enforcement::Enforced { retried })
+    }
+
+    /// Published PHP's maintenance runs the repair pass every second, and the
+    /// pass settles each expired activity lease. Native's scheduler settles
+    /// them on its own ticks instead.
+    pub(super) async fn expire_activity_leases(&self) -> Result<()> {
+        const DUE: &str = "SELECT id FROM workflow_tasks WHERE status='leased' AND task_type='activity' AND lease_expires_at IS NOT NULL AND lease_expires_at<=$1 ORDER BY lease_expires_at,id LIMIT 50";
+        let candidates = Self::query(DUE).bind(DB::bind_time(now())).fetch_all(&self.pool).await?;
+        for candidate in candidates {
+            self.enforce_lease_expiry(&DB::string(&candidate, "id")?).await?;
+        }
+        Ok(())
+    }
+
+    /// `ActivityTimeoutEnforcer::enforceLeaseExpiry`: an activity attempt
+    /// whose task lease expired before it reported an outcome closes as
+    /// expired, and the activity's retry policy decides between a retry and
+    /// a terminal `ActivityFailed`. An expired business deadline is left to
+    /// the deadline sweep, which owns that outcome.
+    pub(super) async fn enforce_lease_expiry(&self, task_id: &str) -> Result<Enforcement> {
+        let mut tx = self.begin().await?;
+        let outcome = Self::settle_lost_lease(&mut tx, task_id, LeaseLoss::Expired).await?;
+        if let Enforcement::Enforced { .. } = outcome {
+            tx.commit().await?;
+            self.wake.notify_waiters();
+        }
+        Ok(outcome)
+    }
+
+    /// `ActivityTimeoutEnforcer::enforceExpiredAttempt` for one leased
+    /// activity task, inside the caller's transaction. It writes nothing when
+    /// it skips. A revocation proceeds even past an expired deadline, which
+    /// then settles as that timeout; a lease the deregistered worker no longer
+    /// holds is left alone.
+    pub(super) async fn settle_lost_lease(
+        tx: &mut Transaction<'_, DB>,
+        task_id: &str,
+        loss: LeaseLoss<'_>,
+    ) -> Result<Enforcement> {
+        use Enforcement::Skipped;
+        let task = Self::query("SELECT * FROM workflow_tasks WHERE id=$1").bind(task_id).fetch_optional(&mut **tx).await?;
+        let execution_id = match &task {
+            Some(task) => DB::optional_document_row(task, "payload")?
+                .and_then(|payload| payload["activity_execution_id"].as_str().map(str::to_owned)),
+            None => None,
+        };
+        let (Some(task), Some(execution_id)) = (task, execution_id) else {
+            return Ok(Skipped("activity_execution_missing"));
+        };
+        let Some(activity) = Self::query("SELECT * FROM activity_executions WHERE id=$1")
+            .bind(&execution_id)
+            .fetch_optional(&mut **tx)
+            .await?
+        else {
+            return Ok(Skipped("execution_not_found"));
+        };
+        if !matches!(DB::string(&activity, "status")?.as_str(), "pending" | "running") {
+            return Ok(Skipped("execution_already_terminal"));
+        }
+        let at = now();
+        let deadline = expired_kind::<DB>(&activity, at)?;
+        if deadline.is_some() && matches!(loss, LeaseLoss::Expired) {
+            return Ok(Skipped("activity_deadline_expired"));
+        }
+        if let Some(reason) = Self::attempt_state_reason(tx, &activity).await? {
+            return Ok(Skipped(reason));
+        }
+        let run = match Self::active_run(tx, &DB::string(&activity, "workflow_run_id")?).await {
+            Ok(run) => run,
+            Err(super::RuntimeError::Refused {
+                reason: "run_closed" | "cancellation_deadline_expired",
+                ..
+            }) => return Ok(Skipped("run_already_terminal")),
+            Err(error) => return Err(error),
+        };
+        // `originalLeaseMatches`: the task still carries the current
+        // attempt's lease.
+        let attempt = match DB::optional_string(&activity, "current_attempt_id")? {
+            Some(attempt_id) => Self::query("SELECT * FROM activity_attempts WHERE id=$1")
+                .bind(attempt_id)
+                .fetch_optional(&mut **tx)
+                .await?,
+            None => None,
+        };
+        let expires = DB::optional_instant(&task, "lease_expires_at")?;
+        let owner = DB::optional_string(&task, "lease_owner")?;
+        let original = match &attempt {
+            Some(attempt) => {
+                DB::optional_string(attempt, "workflow_task_id")?.as_deref() == Some(task_id)
+                    && DB::string(&task, "status")? == "leased"
+                    && DB::string(&task, "task_type")? == "activity"
+                    && DB::number(&task, "attempt_count")? == DB::number(attempt, "attempt_number")?
+                    && owner == DB::optional_string(attempt, "lease_owner")?
+            }
+            None => false,
+        };
+        // `leaseLossMetadata`: an expiry needs the lease to have expired; a
+        // revocation needs the departing owner, in its namespace, with the
+        // attempt still running.
+        let authorized = match loss {
+            LeaseLoss::Expired => expires.is_some_and(|expires| at >= expires),
+            LeaseLoss::Revoked { namespace, owner: departing } => {
+                DB::optional_string(&run, "namespace")?.as_deref() == Some(namespace)
+                    && DB::optional_string(&task, "namespace")?.as_deref() == Some(namespace)
+                    && owner.as_deref() == Some(departing)
+                    && match &attempt {
+                        Some(attempt) => DB::string(attempt, "status")? == "running",
+                        None => false,
+                    }
+            }
+        };
+        let Some(expires) = expires.filter(|_| original && authorized) else {
+            return Ok(Skipped(match loss {
+                LeaseLoss::Expired => "original_lease_not_expired",
+                LeaseLoss::Revoked { .. } => "lease_owner_mismatch",
+            }));
+        };
+        let micros = |at: DateTime<Utc>| at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+        let revoked = matches!(loss, LeaseLoss::Revoked { .. }) && at < expires;
+        let mut lease = json!({"failure_reason": if revoked { "worker_deregistered" } else { "lease_expired" },
+            "lease_expires_at": micros(expires), "lease_owner": owner});
+        if revoked {
+            lease["lease_revoked_at"] = json!(micros(at));
+        }
+        // An expired deadline settles as that timeout, without lease metadata.
+        let retried = match deadline {
+            Some(kind) => Self::time_out_activity(tx, &run, &activity, kind, None).await?,
+            None => Self::time_out_activity(tx, &run, &activity, "lease", Some(&lease)).await?,
+        };
+        Ok(Enforcement::Enforced { retried })
+    }
+
+    /// `ActivityTaskLeaseRecovery::recoverForStoppedWorker`: a deregistered
+    /// worker's activity leases are settled at once, through each activity's
+    /// retry policy, inside the deregistration's transaction.
+    pub(super) async fn revoke_worker_activity_leases(
+        tx: &mut Transaction<'_, DB>,
+        namespace: &str,
+        worker_id: &str,
+    ) -> Result<()> {
+        let tasks = Self::query("SELECT id FROM workflow_tasks WHERE namespace=$1 AND task_type='activity' AND status='leased' AND lease_owner=$2 ORDER BY id")
+            .bind(namespace)
+            .bind(worker_id)
+            .fetch_all(&mut **tx)
+            .await?;
+        for task in tasks {
+            let task_id = DB::string(&task, "id")?;
+            Self::settle_lost_lease(tx, &task_id, LeaseLoss::Revoked { namespace, owner: worker_id }).await?;
+        }
+        Ok(())
     }
 
     /// `currentAttemptStateReason`: a running execution's current attempt
@@ -281,12 +447,15 @@ where
     }
 
     /// Fails the expired attempt, then schedules a retry or records the
-    /// timeout. Returns whether it retried.
+    /// timeout. A lost lease (`lease` carries its metadata) closes the
+    /// attempt as expired and settles as PHP's `ActivityLeaseExpiredException`
+    /// instead. Returns whether it retried.
     async fn time_out_activity(
         tx: &mut Transaction<'_, DB>,
         run: &DB::Row,
         activity: &DB::Row,
         kind: &'static str,
+        lease: Option<&Value>,
     ) -> Result<bool> {
         let activity_id = &DB::string(activity, "id")?;
         let run_id = DB::string(activity, "workflow_run_id")?;
@@ -295,7 +464,13 @@ where
         let count = DB::number(activity, "attempt_count")?.max(1);
         let max = policy["max_attempts"].as_i64().unwrap_or(1);
         let current = DB::optional_string(activity, "current_attempt_id")?;
-        let retried = count < max && kind != "schedule_to_close";
+        // `isNonRetryableFailure` for the lease exception: its class is the
+        // only class or type it reports.
+        let non_retryable = lease.is_some()
+            && policy["non_retryable_error_types"]
+                .as_array()
+                .is_some_and(|types| types.contains(&json!(LEASE_EXCEPTION)));
+        let retried = count < max && kind != "schedule_to_close" && !non_retryable;
         let task = Self::query(DB::ACTIVITY_OPEN_TASK_SQL)
             .bind(&run_id)
             .bind(activity_id)
@@ -307,14 +482,30 @@ where
             .transpose()?;
         let at = now();
         if let Some(attempt_id) = current.as_deref() {
-            Self::query("UPDATE activity_attempts SET status='failed',lease_expires_at=NULL,closed_at=$1 WHERE id=$2 AND status='running'")
-                .bind(DB::bind_time(at)).bind(attempt_id).execute(&mut **tx).await?;
+            let status = if lease.is_some() { "expired" } else { "failed" };
+            Self::query("UPDATE activity_attempts SET status=$1,lease_expires_at=NULL,closed_at=COALESCE(closed_at,$2) WHERE id=$3 AND status='running'")
+                .bind(status).bind(DB::bind_time(at)).bind(attempt_id).execute(&mut **tx).await?;
         }
         if let Some(task_id) = task_id.as_deref() {
-            Self::query("UPDATE workflow_tasks SET status='cancelled',lease_expires_at=NULL,last_error=NULL WHERE id=$1")
-                .bind(task_id).execute(&mut **tx).await?;
+            // A lost lease keeps its reason on the closed task, as PHP does.
+            let error = lease.and_then(|lease| lease["failure_reason"].as_str());
+            Self::query("UPDATE workflow_tasks SET status='cancelled',lease_expires_at=NULL,last_error=$1 WHERE id=$2")
+                .bind(error).bind(task_id).execute(&mut **tx).await?;
         }
         let message = timeout_message::<DB>(activity, kind)?;
+        // A lease loss names itself by its metadata and retry reason, not a
+        // timeout kind.
+        let lease_fields = |payload: &mut Value, retry_reason: bool| {
+            if let (Some(fields), Some(Value::Object(lease))) = (payload.as_object_mut(), lease) {
+                fields.remove("timeout_kind");
+                for (key, value) in lease {
+                    fields.insert(key.clone(), value.clone());
+                }
+                if retry_reason {
+                    fields.insert("retry_reason".into(), lease["failure_reason"].clone());
+                }
+            }
+        };
         if retried {
             let backoff = policy["backoff_seconds"]
                 .as_array()
@@ -328,7 +519,9 @@ where
                 })?;
             Self::query("UPDATE activity_executions SET status='pending',last_heartbeat_at=NULL,close_deadline_at=NULL,heartbeat_deadline_at=NULL,schedule_deadline_at=$1 WHERE id=$2")
                 .bind(DB::optional_time(deadline(&policy,"schedule_to_start_timeout",available)?)).bind(activity_id).execute(&mut **tx).await?;
-            let retry = Self::create_task(tx,&run_id,&DB::string(&activity,"queue")?,"activity",json!({"activity_execution_id":activity_id,"retry_of_task_id":task_id,"retry_after_attempt_id":current,"retry_after_attempt":count,"retry_backoff_seconds":backoff,"max_attempts":max,"retry_policy":policy,"timeout_kind":kind})).await?;
+            let mut retry_payload = json!({"activity_execution_id":activity_id,"retry_of_task_id":task_id,"retry_after_attempt_id":current,"retry_after_attempt":count,"retry_backoff_seconds":backoff,"max_attempts":max,"retry_policy":policy,"timeout_kind":kind});
+            lease_fields(&mut retry_payload, true);
+            let retry = Self::create_task(tx,&run_id,&DB::string(&activity,"queue")?,"activity",retry_payload).await?;
             Self::query(
                 "UPDATE workflow_tasks SET available_at=$1,attempt_count=$2 WHERE id=$3",
             )
@@ -343,6 +536,7 @@ where
                 .await?;
             let mut payload = Self::activity_payload(&updated)?;
             for (key,value) in json!({"activity_attempt_id":current,"retry_task_id":retry,"retry_of_task_id":task_id,"retry_available_at":available,"retry_backoff_seconds":backoff,"retry_after_attempt_id":current,"retry_after_attempt":count,"max_attempts":max,"retry_policy":policy,"timeout_kind":kind,"message":message}).as_object().unwrap() { if !value.is_null() {payload[key]=value.clone();} }
+            lease_fields(&mut payload, true);
             Self::append(
                 tx,
                 &run_id,
@@ -354,7 +548,13 @@ where
             .await?;
         } else {
             let failure_id = id();
-            const CLASS: &str = "Workflow\\V2\\Exceptions\\ActivityTimeoutException";
+            // A lost lease is an internal activity failure; a deadline is a
+            // timeout.
+            let (class, category, propagation, event) = if lease.is_some() {
+                (LEASE_EXCEPTION, "internal", "activity", "ActivityFailed")
+            } else {
+                ("Workflow\\V2\\Exceptions\\ActivityTimeoutException", "timeout", "timeout", "ActivityTimedOut")
+            };
             Self::query(
                 "UPDATE activity_executions SET status='failed',closed_at=$1 WHERE id=$2",
             )
@@ -362,29 +562,35 @@ where
             .bind(activity_id)
             .execute(&mut **tx)
             .await?;
-            Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,exception_class,message,non_retryable,handled,file,line,created_at,updated_at) VALUES ($1,$2,'activity_execution',$3,'timeout','timeout',$4,$5,FALSE,FALSE,'',0,$6,$7)")
-                .bind(&failure_id).bind(&run_id).bind(activity_id).bind(CLASS).bind(&message).bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut **tx).await?;
+            Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,exception_class,message,non_retryable,handled,file,line,created_at,updated_at) VALUES ($1,$2,'activity_execution',$3,$4,$5,$6,$7,CASE WHEN $8='true' THEN TRUE ELSE FALSE END,FALSE,'',0,$9,$10)")
+                .bind(&failure_id).bind(&run_id).bind(activity_id).bind(propagation).bind(category).bind(class).bind(&message)
+                .bind(if non_retryable { "true" } else { "false" }).bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut **tx).await?;
             let updated = Self::query("SELECT * FROM activity_executions WHERE id=$1")
                 .bind(activity_id)
                 .fetch_one(&mut **tx)
                 .await?;
             let mut payload = Self::activity_payload(&updated)?;
-            for (key,value) in json!({"activity_attempt_id":current,"attempt_number":count,"failure_id":failure_id,"failure_category":"timeout","timeout_kind":kind,"message":message,"exception_class":CLASS}).as_object().unwrap() {payload[key]=value.clone();}
-            for field in [
-                "schedule_deadline_at",
-                "close_deadline_at",
-                "schedule_to_close_deadline_at",
-                "heartbeat_deadline_at",
-            ] {
-                payload[field] = json!(
-                    DB::optional_instant(&activity, field)?
-                        .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, false))
-                );
+            for (key,value) in json!({"activity_attempt_id":current,"attempt_number":count,"failure_id":failure_id,"failure_category":category,"timeout_kind":kind,"message":message,"exception_class":class}).as_object().unwrap() {payload[key]=value.clone();}
+            if lease.is_some() {
+                lease_fields(&mut payload, false);
+                payload["non_retryable"] = json!(non_retryable);
+            } else {
+                for field in [
+                    "schedule_deadline_at",
+                    "close_deadline_at",
+                    "schedule_to_close_deadline_at",
+                    "heartbeat_deadline_at",
+                ] {
+                    payload[field] = json!(
+                        DB::optional_instant(&activity, field)?
+                            .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, false))
+                    );
+                }
             }
             Self::append(
                 tx,
                 &run_id,
-                "ActivityTimedOut",
+                event,
                 payload,
                 task_id.as_deref(),
                 None,
@@ -400,18 +606,26 @@ where
                 &metadata,
                 "activity",
                 activity_id,
-                "ActivityTimedOut",
+                event,
             )
             .await?;
-            Self::selection_resume(
-                tx,
-                &run_id,
-                &DB::string(&run, "queue")?,
-                json!({"activity_execution_id":activity_id}),
-                &metadata,
-                false,
-            )
-            .await?;
+            // A standalone activity's host run fails with it: as failed for a
+            // lost lease, otherwise as timed out.
+            let host = super::standalone_activities::HostClose::Failed {
+                payload: super::standalone_activities::timed_out_payload(&failure_id, activity_id, category, non_retryable, class, &message),
+                closed_reason: if lease.is_some() { "failed" } else { "timed_out" },
+            };
+            if !Self::close_standalone_host(tx, &run_id, host).await? {
+                Self::selection_resume(
+                    tx,
+                    &run_id,
+                    &DB::string(&run, "queue")?,
+                    json!({"activity_execution_id":activity_id}),
+                    &metadata,
+                    false,
+                )
+                .await?;
+            }
         }
         Ok(retried)
     }

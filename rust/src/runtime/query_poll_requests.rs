@@ -2,7 +2,10 @@
 //! (`QueryTaskPollRequestStore`). A retry of a poll request gets the answer the
 //! original got, a duplicate still in flight waits for that answer, and a newer
 //! request from the same worker ends an older one that is still waiting.
-use super::*;
+use super::{
+    Backend, ColumnIndex, Decode, Duration, Encode, Executor, IntoArguments, QueryTaskConfig, Result, Store,
+    Transaction, Type, Value, authority, json, key, now, poll_result, text,
+};
 use sha2::{Digest, Sha256};
 
 // Distinct from the query task prefix, so query scans never see these rows.

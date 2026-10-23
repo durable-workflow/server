@@ -1,4 +1,5 @@
-//! The package's DW-primary, WORKFLOW-legacy structural memo limit.
+//! The package's DW-primary, WORKFLOW-legacy structural limits: the memo
+//! ceiling and `StructuralLimits`' signal, update and payload ceilings.
 use super::{Result, refuse};
 use axum::http::StatusCode;
 use regex_lite::Regex;
@@ -14,9 +15,16 @@ pub(super) fn typed_null(value: &str) -> bool {
     matches!(value.to_ascii_lowercase().as_str(), "null" | "(null)")
 }
 
+#[cfg(test)]
 fn limit(primary: Option<&str>, legacy: Option<&str>) -> Option<usize> {
+    limit_or(primary, legacy, DEFAULT_BYTES)
+}
+
+/// A limit at or below zero disables its check, as `intConfig` and the
+/// guards' `$limit <= 0` do.
+fn limit_or(primary: Option<&str>, legacy: Option<&str>, default: usize) -> Option<usize> {
     let Some(value) = primary.filter(|value| !typed_null(value)).or(legacy) else {
-        return Some(DEFAULT_BYTES);
+        return Some(default);
     };
     let bytes = cast_integer(value);
     (bytes > 0).then_some(bytes.max(0) as usize)
@@ -54,21 +62,100 @@ pub(super) fn cast_numeric_string(value: &str) -> i64 {
 }
 
 pub(super) fn configured_limit() -> Result<Option<usize>> {
-    let read = |key| match env::var(key) {
+    configured("MEMO_SIZE_BYTES", DEFAULT_BYTES, "invalid_memo_limit_configuration")
+}
+
+fn configured(suffix: &str, default: usize, invalid: &'static str) -> Result<Option<usize>> {
+    let read = |key: String| match env::var(key) {
         Ok(value) => Ok(Some(value)),
         Err(env::VarError::NotPresent) => Ok(None),
-        Err(env::VarError::NotUnicode(_)) => Err(refuse(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "invalid_memo_limit_configuration",
-        )),
+        Err(env::VarError::NotUnicode(_)) => Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid)),
     };
-    let primary = read("DW_V2_LIMIT_MEMO_SIZE_BYTES")?;
+    let primary = read(format!("DW_V2_LIMIT_{suffix}"))?;
     let legacy = if primary.as_deref().is_none_or(typed_null) {
-        read("WORKFLOW_V2_LIMIT_MEMO_SIZE_BYTES")?
+        read(format!("WORKFLOW_V2_LIMIT_{suffix}"))?
     } else {
         None
     };
-    Ok(limit(primary.as_deref(), legacy.as_deref()))
+    Ok(limit_or(primary.as_deref(), legacy.as_deref(), default))
+}
+
+/// `StructuralLimits`' per-run signal and update ceilings and its
+/// single-payload byte ceiling. `None` is a disabled check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StructuralLimits {
+    /// Received signals a run may hold (DW_V2_LIMIT_PENDING_SIGNALS).
+    pub pending_signals: Option<usize>,
+    /// Accepted updates a run may hold (DW_V2_LIMIT_PENDING_UPDATES).
+    pub pending_updates: Option<usize>,
+    /// Bytes of one serialized payload blob (DW_V2_LIMIT_PAYLOAD_SIZE_BYTES).
+    pub payload_bytes: Option<usize>,
+}
+
+impl Default for StructuralLimits {
+    fn default() -> Self {
+        Self {
+            pending_signals: Some(5000),
+            pending_updates: Some(500),
+            payload_bytes: Some(2_097_152),
+        }
+    }
+}
+
+impl StructuralLimits {
+    pub fn from_env() -> Result<Self> {
+        let defaults = Self::default();
+        let invalid = "invalid_structural_limit_configuration";
+        Ok(Self {
+            pending_signals: configured("PENDING_SIGNALS", defaults.pending_signals.unwrap(), invalid)?,
+            pending_updates: configured("PENDING_UPDATES", defaults.pending_updates.unwrap(), invalid)?,
+            payload_bytes: configured("PAYLOAD_SIZE_BYTES", defaults.payload_bytes.unwrap(), invalid)?,
+        })
+    }
+}
+
+/// One exceeded ceiling, as `StructuralLimitExceededException` reports it.
+#[derive(Clone, Debug)]
+pub(super) struct Exceeded {
+    pub(super) kind: &'static str,
+    pub(super) value: i64,
+    pub(super) configured: i64,
+    pub(super) message: String,
+}
+
+impl Exceeded {
+    fn new(kind: &'static str, value: usize, configured: usize, message: String) -> Self {
+        let int = |value: usize| i64::try_from(value).unwrap_or(i64::MAX);
+        Self { kind, value: int(value), configured: int(configured), message }
+    }
+
+    /// `guardPendingSignals`: received signals at or above the ceiling.
+    pub(super) fn pending_signals(limit: Option<usize>, count: i64) -> Option<Self> {
+        let (limit, count) = (limit?, usize::try_from(count).unwrap_or(0));
+        (count >= limit).then(|| Self::new("pending_signal_count", count, limit,
+            format!("Structural limit exceeded: {count} pending signals (limit {limit}).")))
+    }
+
+    /// `guardPendingUpdates`: accepted updates at or above the ceiling.
+    pub(super) fn pending_updates(limit: Option<usize>, count: i64) -> Option<Self> {
+        let (limit, count) = (limit?, usize::try_from(count).unwrap_or(0));
+        (count >= limit).then(|| Self::new("pending_update_count", count, limit,
+            format!("Structural limit exceeded: {count} pending updates (limit {limit}).")))
+    }
+
+    /// `guardPayloadSize`: a serialized blob longer than the ceiling.
+    pub(super) fn payload(limit: Option<usize>, blob: &str) -> Option<Self> {
+        let (limit, bytes) = (limit?, blob.len());
+        (bytes > limit).then(|| Self::new("payload_size", bytes, limit,
+            format!("Structural limit exceeded: payload size {bytes} bytes (limit {limit} bytes).")))
+    }
+
+    /// The command payload's diagnostic fields
+    /// (`structuralLimitExceededCommandPayloadAttributes`).
+    pub(super) fn fields(&self) -> serde_json::Value {
+        serde_json::json!({"structural_limit_kind":self.kind,"structural_limit_value":self.value,
+            "structural_limit_configured":self.configured})
+    }
 }
 
 #[cfg(test)]
@@ -105,5 +192,22 @@ mod tests {
         assert_eq!(limit(Some("(null)"), None), Some(DEFAULT_BYTES));
         assert_eq!(limit(Some("25"), Some("9")), Some(25));
         assert_eq!(limit(None, Some("null")), None);
+    }
+
+    #[test]
+    fn structural_ceilings_use_php_defaults_and_disable_at_zero() {
+        assert_eq!(limit_or(None, None, 5000), Some(5000));
+        assert_eq!(limit_or(Some("2"), None, 5000), Some(2));
+        assert_eq!(limit_or(Some("0"), None, 500), None);
+        assert_eq!(limit_or(Some("-3"), Some("9"), 500), None);
+        assert_eq!(limit_or(Some("null"), Some("9"), 500), Some(9));
+        let signals = Exceeded::pending_signals(Some(2), 2).unwrap();
+        assert_eq!((signals.kind, signals.value, signals.configured), ("pending_signal_count", 2, 2));
+        assert_eq!(signals.message, "Structural limit exceeded: 2 pending signals (limit 2).");
+        assert!(Exceeded::pending_signals(Some(2), 1).is_none());
+        assert!(Exceeded::pending_updates(None, 900).is_none());
+        let payload = Exceeded::payload(Some(300), &"x".repeat(556)).unwrap();
+        assert_eq!(payload.message, "Structural limit exceeded: payload size 556 bytes (limit 300 bytes).");
+        assert!(Exceeded::payload(Some(300), &"x".repeat(300)).is_none());
     }
 }

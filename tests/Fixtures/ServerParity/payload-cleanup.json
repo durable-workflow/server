@@ -1,0 +1,391 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "payload-cleanup",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "payload cleanup λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "payload cleanup λ"},
+    "count": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null}
+  }},
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "payload_cleanup": {
+    "requests": [
+      [
+        "status fresh",
+        "GET",
+        "external-payload-cleanup",
+        null
+      ],
+      [
+        "pass",
+        "POST",
+        "external-payload-cleanup/pass",
+        []
+      ],
+      [
+        "status after pass",
+        "GET",
+        "external-payload-cleanup",
+        null
+      ],
+      [
+        "pass limit 5",
+        "POST",
+        "external-payload-cleanup/pass",
+        {
+          "limit": 5
+        }
+      ],
+      [
+        "pass limit 0",
+        "POST",
+        "external-payload-cleanup/pass",
+        {
+          "limit": 0
+        }
+      ],
+      [
+        "pass limit 1001",
+        "POST",
+        "external-payload-cleanup/pass",
+        {
+          "limit": 1001
+        }
+      ],
+      [
+        "pass limit text",
+        "POST",
+        "external-payload-cleanup/pass",
+        {
+          "limit": "x"
+        }
+      ],
+      [
+        "pass limit fraction",
+        "POST",
+        "external-payload-cleanup/pass",
+        {
+          "limit": 2.5
+        }
+      ],
+      [
+        "pass limit null",
+        "POST",
+        "external-payload-cleanup/pass",
+        {
+          "limit": null
+        }
+      ],
+      [
+        "pass limit numeric text",
+        "POST",
+        "external-payload-cleanup/pass",
+        {
+          "limit": "7"
+        }
+      ],
+      [
+        "pass without body",
+        "POST",
+        "external-payload-cleanup/pass",
+        null
+      ],
+      [
+        "status final",
+        "GET",
+        "external-payload-cleanup",
+        null
+      ]
+    ],
+    "expected": {
+      "status fresh": [
+        200,
+        {
+          "namespace": "@own",
+          "cleanup": {
+            "schema": "durable-workflow.v2.runtime-external-payload-cleanup-metrics.v1",
+            "backlog": {
+              "expired_unclaimed": 0,
+              "failed_registration_objects": 0
+            },
+            "bounds": {
+              "abandoned_upload_expiry_seconds": 3600,
+              "default_batch_size": 100,
+              "maximum_batch_size": 1000
+            },
+            "totals": {
+              "passes": 0,
+              "deleted_references": 0,
+              "deleted_backing_objects": 0,
+              "shared_objects_preserved": 0,
+              "blocked_outcomes": 0,
+              "storage_driver_failures": 0
+            },
+            "last_pass": {
+              "status": null,
+              "processed": 0,
+              "deleted_references": 0,
+              "deleted_backing_objects": 0,
+              "shared_objects_preserved": 0,
+              "blocked_outcomes": 0,
+              "storage_driver_failures": 0,
+              "completed_at": null,
+              "last_storage_failure_at": null
+            },
+            "identity_policy": {
+              "provider_credentials_exposed": false,
+              "provider_locations_exposed": false,
+              "reusable_reference_identities_exposed": false
+            }
+          }
+        }
+      ],
+      "pass": [
+        200,
+        {
+          "namespace": "@own",
+          "cleanup": {
+            "processed": 0,
+            "deleted_references": 0,
+            "deleted_backing_objects": 0,
+            "shared_objects_preserved": 0,
+            "skipped": 0,
+            "blocked": 0,
+            "storage_driver_failures": 0,
+            "backlog": 0,
+            "scan_limit": 100,
+            "scan_pressure": false
+          }
+        }
+      ],
+      "status after pass": [
+        200,
+        {
+          "namespace": "@own",
+          "cleanup": {
+            "schema": "durable-workflow.v2.runtime-external-payload-cleanup-metrics.v1",
+            "backlog": {
+              "expired_unclaimed": 0,
+              "failed_registration_objects": 0
+            },
+            "bounds": {
+              "abandoned_upload_expiry_seconds": 3600,
+              "default_batch_size": 100,
+              "maximum_batch_size": 1000
+            },
+            "totals": {
+              "passes": 1,
+              "deleted_references": 0,
+              "deleted_backing_objects": 0,
+              "shared_objects_preserved": 0,
+              "blocked_outcomes": 0,
+              "storage_driver_failures": 0
+            },
+            "last_pass": {
+              "status": "completed",
+              "processed": 0,
+              "deleted_references": 0,
+              "deleted_backing_objects": 0,
+              "shared_objects_preserved": 0,
+              "blocked_outcomes": 0,
+              "storage_driver_failures": 0,
+              "completed_at": "@second",
+              "last_storage_failure_at": null
+            },
+            "identity_policy": {
+              "provider_credentials_exposed": false,
+              "provider_locations_exposed": false,
+              "reusable_reference_identities_exposed": false
+            }
+          }
+        }
+      ],
+      "pass limit 5": [
+        200,
+        {
+          "namespace": "@own",
+          "cleanup": {
+            "processed": 0,
+            "deleted_references": 0,
+            "deleted_backing_objects": 0,
+            "shared_objects_preserved": 0,
+            "skipped": 0,
+            "blocked": 0,
+            "storage_driver_failures": 0,
+            "backlog": 0,
+            "scan_limit": 5,
+            "scan_pressure": false
+          }
+        }
+      ],
+      "pass limit 0": [
+        422,
+        {
+          "message": "The limit field must be at least 1.",
+          "reason": "validation_failed",
+          "errors": {
+            "limit": [
+              "The limit field must be at least 1."
+            ]
+          },
+          "validation_errors": {
+            "limit": [
+              "The limit field must be at least 1."
+            ]
+          }
+        }
+      ],
+      "pass limit 1001": [
+        422,
+        {
+          "message": "The limit field must not be greater than 1000.",
+          "reason": "validation_failed",
+          "errors": {
+            "limit": [
+              "The limit field must not be greater than 1000."
+            ]
+          },
+          "validation_errors": {
+            "limit": [
+              "The limit field must not be greater than 1000."
+            ]
+          }
+        }
+      ],
+      "pass limit text": [
+        422,
+        {
+          "message": "The limit field must be an integer.",
+          "reason": "validation_failed",
+          "errors": {
+            "limit": [
+              "The limit field must be an integer."
+            ]
+          },
+          "validation_errors": {
+            "limit": [
+              "The limit field must be an integer."
+            ]
+          }
+        }
+      ],
+      "pass limit fraction": [
+        422,
+        {
+          "message": "The limit field must be an integer.",
+          "reason": "validation_failed",
+          "errors": {
+            "limit": [
+              "The limit field must be an integer."
+            ]
+          },
+          "validation_errors": {
+            "limit": [
+              "The limit field must be an integer."
+            ]
+          }
+        }
+      ],
+      "pass limit null": [
+        200,
+        {
+          "namespace": "@own",
+          "cleanup": {
+            "processed": 0,
+            "deleted_references": 0,
+            "deleted_backing_objects": 0,
+            "shared_objects_preserved": 0,
+            "skipped": 0,
+            "blocked": 0,
+            "storage_driver_failures": 0,
+            "backlog": 0,
+            "scan_limit": 100,
+            "scan_pressure": false
+          }
+        }
+      ],
+      "pass limit numeric text": [
+        200,
+        {
+          "namespace": "@own",
+          "cleanup": {
+            "processed": 0,
+            "deleted_references": 0,
+            "deleted_backing_objects": 0,
+            "shared_objects_preserved": 0,
+            "skipped": 0,
+            "blocked": 0,
+            "storage_driver_failures": 0,
+            "backlog": 0,
+            "scan_limit": 7,
+            "scan_pressure": false
+          }
+        }
+      ],
+      "pass without body": [
+        200,
+        {
+          "namespace": "@own",
+          "cleanup": {
+            "processed": 0,
+            "deleted_references": 0,
+            "deleted_backing_objects": 0,
+            "shared_objects_preserved": 0,
+            "skipped": 0,
+            "blocked": 0,
+            "storage_driver_failures": 0,
+            "backlog": 0,
+            "scan_limit": 100,
+            "scan_pressure": false
+          }
+        }
+      ],
+      "status final": [
+        200,
+        {
+          "namespace": "@own",
+          "cleanup": {
+            "schema": "durable-workflow.v2.runtime-external-payload-cleanup-metrics.v1",
+            "backlog": {
+              "expired_unclaimed": 0,
+              "failed_registration_objects": 0
+            },
+            "bounds": {
+              "abandoned_upload_expiry_seconds": 3600,
+              "default_batch_size": 100,
+              "maximum_batch_size": 1000
+            },
+            "totals": {
+              "passes": 5,
+              "deleted_references": 0,
+              "deleted_backing_objects": 0,
+              "shared_objects_preserved": 0,
+              "blocked_outcomes": 0,
+              "storage_driver_failures": 0
+            },
+            "last_pass": {
+              "status": "completed",
+              "processed": 0,
+              "deleted_references": 0,
+              "deleted_backing_objects": 0,
+              "shared_objects_preserved": 0,
+              "blocked_outcomes": 0,
+              "storage_driver_failures": 0,
+              "completed_at": "@second",
+              "last_storage_failure_at": null
+            },
+            "identity_policy": {
+              "provider_credentials_exposed": false,
+              "provider_locations_exposed": false,
+              "reusable_reference_identities_exposed": false
+            }
+          }
+        }
+      ]
+    }
+  },
+  "contract": "GET /api/system/external-payload-cleanup and POST /api/system/external-payload-cleanup/pass (published Server 2.11) report and run the namespace's external payload cleanup. A fresh namespace has no expired unclaimed payloads and no recorded pass. Each valid pass reports what it processed, deleted, preserved, skipped and blocked, with its scan limit (default 100, at most 1000), and records a completed pass in the namespace's totals with its whole-second completion time. A limit that is not an integer from 1 to 1000 answers Laravel's 422 without recording a pass; a null or numeric-text limit is accepted. Embedded applications have no HTTP system routes."
+}

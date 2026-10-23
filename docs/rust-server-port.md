@@ -99,13 +99,43 @@ Updated October 22, 2026.
 ## API surface still missing
 
 These published PHP routes on this tree have no native handler yet, by family.
+A request for one of them answers `501 rust_capability_not_implemented`;
+any other unknown path or method answers PHP's own 404 or 405
+([checkpoint](rust-server-port-checkpoints/2026-10-23-route-fallback.md)).
 
-- **Used by the CLI or Waterline.**
-  - Namespace delete.
-  - Standalone activities: list, describe and start.
-  - `system` metrics (JSON and Prometheus), the repair pass, and external
-    payload cleanup and its pass.
-  - Task queue priority and fairness.
+- **Used by the CLI or Waterline.** None remain. Served from this family
+  since: task queue priority and fairness
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-priority-fairness.md)); standalone activities (start, list and
+  describe), compared live with published 2.11.1
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-standalone-activities.md));
+  run archive, instance and run-targeted
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-cli-sweep-and-archive.md));
+  run redrive of a failed run at its failed activity
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-redrive.md));
+  build pins at start and in polls, where unpinned activities follow
+  [Workflow #908](https://github.com/durable-workflow/workflow/issues/908)
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-build-pins.md));
+  build-id rollouts and deployments: promote, drain, resume and rollback,
+  draining polls and starts
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-deployments.md));
+  the service catalog read contract in cluster info, which Waterline 2.12.3's
+  Services pages require; with it, every Waterline route answered native as it
+  answered PHP
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-waterline-service-mode.md));
+  namespace delete, with the
+  `namespace-delete` fixture. The JSON
+  `GET|POST /api/system/metrics` is served with the `system-metrics`
+  fixture: namespace failure, durable-state and payload counts are exact;
+  native enforces no admission, durable-state or payload quota, so limits
+  are null and rejections zero, as on an unconfigured PHP server.
+  Projection drift is server-wide, and native's only drift source is a run
+  without its summary. The Prometheus summary
+  `GET /api/system/prometheus-metrics` is served with the
+  `prometheus-metrics` fixture, with PHP's default limit of 100 series per
+  family. External payload cleanup and its pass are served with the
+  `payload-cleanup` fixture. The task repair pass is served with the
+  `repair-pass` fixture; a recovery native does not perform yet is
+  reported as its candidate's failure, with 207.
 - **Worker protocol features.**
   - Worker sessions.
   - Update validation tasks.
@@ -116,8 +146,6 @@ These published PHP routes on this tree have no native handler yet, by family.
     is served: `POST /api/worker/activity-tasks/{task}/renew-lease`, with the
     `activity_lease_renewal` capability and the `activity-lease-renewal` fixture.)
 - **Run operations.**
-  - Archive (instance and run).
-  - Redrive.
   - Imports from embedded v2 and Waterline v1.
 - **Other families.**
   - Message streams.
@@ -126,7 +154,6 @@ These published PHP routes on this tree have no native handler yet, by family.
     native never holds catalog rows, so every list is PHP's empty page and every
     identity its not-found answer; the `service-catalog` fixture checks 37 cases.)
   - Nexus operations.
-  - Deployments.
   - Bridge adapters.
 
 ## Known gaps found in review
@@ -154,22 +181,41 @@ contract fixture before its correction.
   arguments at admission and refuses an undecodable blob with
   `invalid_query_arguments`. Published PHP first looks for a query worker,
   and answers `409 query_worker_unavailable` when there is none.
-- **External payload references on signal, update and query.** Published
-  PHP resolves `{codec, external_payload}` input on these routes; native
-  supports it only on start.
+- **When an external payload reference is claimed.** Published PHP retains
+  a referenced object once it fetches the bytes, before the command is
+  recorded, so a refused command still retains it. Native claims it in the
+  command's transaction, so the upload of a refused command expires
+  unclaimed. Signal, update and query input otherwise resolve references as
+  PHP does
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-external-command-input.md)).
+- **Which worker receives an accepted update.** Published PHP gives the
+  workflow task that carries an update to any worker of the type. During a
+  rolling deploy that adds the handler, an older worker can take the update
+  and fail it (`UnknownUpdate`).
+  Native offers that task only to a worker that advertises
+  `workflow_updates` and declares the update for the run's type. The PHP,
+  Python and Rust SDKs do both exactly when they register the handler. This
+  is a contract decision, recorded in
+  [Server #690](https://github.com/durable-workflow/server/issues/690)
+  (`tests/execution/update_routing.rs`).
 - **Repair of a run without a recoverable task.** Published PHP's repair
-  creates a run's missing task, and recovers an expired activity-task lease
-  with its attempt. Native refuses both with
-  `development_workflow_task_repair_unqualified`.
+  command creates a run's missing task, and settles an expired activity-task
+  lease through the activity's retry policy. Native's repair command refuses
+  both with `development_workflow_task_repair_unqualified`. Native's
+  scheduler and the repair pass settle expired activity leases as PHP's
+  repair loop does, so such a lease rarely remains for the command
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-activity-lease-expiry.md)).
 - **Structural limits.** For external workers, published PHP enforces four
   of the Workflow package's `DW_V2_LIMIT_*` limits: the memo size, the
   command batch size as a bound on parallel group metadata, the pending
   signal and update counts with their payload size at intake, and the
-  payload size of an activity's result. Native enforces only the memo size.
-  #612 tracks the rest.
-- **Environment settings.** Of PHP's 164 contract settings, native honors
-  40 and ignores 57 that change nothing it serves. It refuses to start on a
-  non-default value of the other 67
+  payload size of an activity's result. Native enforces all but the command
+  batch size, and still caps parallel groups at 100 members and a run at 64
+  updates over its lifetime. #612 tracks the rest
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-structural-limits.md)).
+- **Environment settings.** Of PHP's 166 contract settings, native honors
+  43 and ignores 57 that change nothing it serves. It refuses to start on a
+  non-default value of the other 66
   ([checkpoint](rust-server-port-checkpoints/2026-10-22-environment-contract.md)).
   Several of those are cheap to honor: repair timing and the multi-node
   declaration.
@@ -186,11 +232,10 @@ contract fixture before its correction.
 - **Child completion while the parent has an open workflow task.** Published
   Workflow records the child resolution and reuses the parent's existing ready
   or leased workflow task (`WorkflowExecutor::dispatchParentResumeTasks`).
-  Native gives the resolution its own resume task when the parent's open
-  tasks only deliver updates, as activity and timer resolutions do. With any
-  other open task it refuses the child's completion with
-  `409 child_parent_task_conflict`, unless the parent has a cooperative
-  cancellation request. Signals still create no resume while the parent
+  Without a cooperative cancellation request, native gives the resolution
+  its own resume task, as activity and timer resolutions do
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-command-batches.md)).
+  Signals still create no resume while the parent
   waits on a child, because only signal and condition waits count as open
   waits.
 - **Update delivery into a ready task.** Published PHP admits an update
@@ -239,18 +284,11 @@ contract fixture before its correction.
   build id: a promoted build-id rollout, else the single build id among the
   live workers for the type, else among all the queue's live workers. Native
   starts every run unpinned, and has no build-id rollouts.
-- **Named-namespace workflow commands.** Published PHP serves every workflow
-  route in any namespace. Native refuses updates, repair and cooperative
-  cancellation requests (`/update/{name}`, `/repair`,
-  `/request-cancellation`, instance- or run-scoped) in a named namespace with
-  `422 development_namespace_operation_unqualified`.
-- **Named-namespace worker commands.** In a named namespace, native
-  accepts only `complete_workflow`, `fail_workflow`, `schedule_activity`,
-  `start_timer`, `start_child_workflow` and a single wait in a workflow task.
-  It refuses any other command, such as side effects, version markers,
-  memo and search attribute upserts, updates and continue-as-new, with
-  `422 development_namespace_command_unqualified`. Published PHP accepts
-  them in any namespace.
+- **Named-namespace routes native does not serve.** Native now serves every
+  workflow command and operation it implements in any namespace, as PHP
+  does ([checkpoint](rust-server-port-checkpoints/2026-10-23-named-namespace-commands.md)).
+  A route native does not implement answers `501` in the default namespace,
+  but `422 development_namespace_operation_unqualified` in a named one.
 - **Child cancellation cascade, remaining parts.** Native propagates a
   parent's cooperative cancellation to its child under `try_cancel` and
   `wait_cancellation_completed`, as PHP does. The rest is open:
@@ -278,10 +316,18 @@ contract fixture before its correction.
   - **Root conflicts.** PHP records a rejected command when a child refuses
     a request under another root. Native records only the refusal on the
     parent's events.
-- **Several open operations at once.** Published PHP lets a run hold any
-  number of open activities, timers, children and waits. Native refuses
+- **Several open waits at once.** Published PHP lets a run hold any number
+  of open activities, timers, children and waits. Native now starts children
+  alongside other open work, but still refuses
   `409 pending_durable_operations` when a task opens a wait while another
-  wait is open, or starts a child while other work is outstanding.
+  wait is open.
+- **Continue-as-new transfers.** Native continues a run over open
+  activities, timers, children and waits, and from a child run, as PHP does
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-command-batches.md)).
+  It still refuses continue-as-new while the instance has durable or inbound
+  streams, the run has service calls, or a query is live
+  (`continue_as_new_transfer_unqualified`); PHP continues it. A new workflow
+  type or queue on the command now applies, as in PHP.
 - **Trace context (Workflow #773 / workflow#788, not yet published).** A
   Workflow minor will add nullable `observability_context` columns on runs,
   commands and tasks, plus an entry in schedule metadata. Native-owned
@@ -319,10 +365,16 @@ contract fixture before its correction.
   as that wall-clock time in UTC (`12:34:56Z`), which is a different
   instant ([workflow#898](https://github.com/durable-workflow/workflow/issues/898)).
   Native stores the instant written (`10:34:56Z`).
-- **Worker payload datums.** Published PHP refuses a worker command payload,
-  such as a `complete_workflow` result, that is not one complete Avro Value
-  (`422 validation_failed` on `commands.N.result.blob`). Native checks only
-  the envelope's transport shape and accepts it.
+- **Workflow task command fields.** Native checks a completion with PHP's
+  transport rules, then its payload and normalizer rules
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-completion-rules.md)).
+  Two differences remain:
+  - A field for a feature native cannot run, such as `worker_session`, is
+    refused with `unsupported_request_field`. Fields PHP ignores are dropped
+    as PHP drops them.
+  - A timer delay, retry backoff or wait timeout too large for a timestamp
+    is refused on native. PHP accepts it, and wraps a timer's fire time into
+    the past, so the timer fires at once.
 - **Search attribute limits.** Over 100 attributes or 64 KB per run, PHP
   raises an uncaught `InvalidArgumentException` while applying the command.
   Native refuses the completion with `422 search_attribute_limit_exceeded`
@@ -4199,6 +4251,11 @@ MariaDB qualification exposed decimal promotion of a nullable integer through
 Admission requires a quiescent wait and bounds each run
 to 64 updates, with 64 KiB argument blobs, 256 KiB results and at most 30 seconds
 per completion wait. Waiting releases the transaction and database connection.
+(Since October 23 native enforces PHP's structural limits instead of the
+64-update and 64 KiB bounds, which PHP does not have; see the
+[structural limits](rust-server-port-checkpoints/2026-10-23-structural-limits.md)
+and [update lifetime cap](rust-server-port-checkpoints/2026-10-23-update-lifetime-cap.md)
+checkpoints.)
 Queued/busy control routing, validators, failure tasks and full update semantics
 remain open.
 The qualified tenth child-workflow fixture calls two children in sequence, each executing

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -1205,6 +1206,93 @@ class ResultGateTest(unittest.TestCase):
             runner.request = original_request
             runner.TOPOLOGY_START_FAILURE_READINESS_TIMEOUT = original_failure_timeout
             runner.TOPOLOGY_DIAGNOSTICS = original_diagnostics
+
+
+class CleanupResultTest(unittest.TestCase):
+    """main() writes the phase outcome even when Compose cleanup fails."""
+
+    def run_main(self, *, database_fails: bool, cleanup, keep_stack: bool = False):
+        writes: list[dict] = []
+        cleanup_calls: list[tuple] = []
+
+        def phase(name, function):
+            if database_fails and name == "database_interruption":
+                raise AssertionError("database phase failed")
+            runner.RESULT["phase_outcomes"][name] = {"status": "pass"}
+
+        def compose(*args, **kwargs):
+            cleanup_calls.append(args)
+            return cleanup(args, kwargs)
+
+        saved = {key: runner.RESULT.get(key) for key in ("phase_outcomes", "phase_evidence", "outcome", "cleanup")}
+        runner.RESULT["phase_outcomes"] = {}
+        runner.RESULT["phase_evidence"] = {}
+        runner.RESULT.pop("cleanup", None)
+        try:
+            with mock.patch.object(runner, "run_phase", side_effect=phase), \
+                    mock.patch.object(runner, "require_passing_result"), \
+                    mock.patch.object(runner, "compose", side_effect=compose), \
+                    mock.patch.object(runner, "write_result", side_effect=lambda: writes.append(json.loads(json.dumps(runner.RESULT)))), \
+                    mock.patch.object(runner, "KEEP_STACK", keep_stack), \
+                    mock.patch("builtins.print"):
+                status = runner.main()
+            return status, writes, cleanup_calls
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    runner.RESULT.pop(key, None)
+                else:
+                    runner.RESULT[key] = value
+
+    @staticmethod
+    def timeout(args, kwargs):
+        raise subprocess.TimeoutExpired(["docker", "compose", *args], kwargs["timeout"])
+
+    @staticmethod
+    def nonzero(args, kwargs):
+        return subprocess.CompletedProcess(["docker", "compose", *args], 1, "", "network still in use")
+
+    @staticmethod
+    def clean(args, kwargs):
+        return subprocess.CompletedProcess(["docker", "compose", *args], 0, "", "")
+
+    def test_cleanup_timeout_after_passing_phases_keeps_the_pass(self) -> None:
+        status, writes, calls = self.run_main(database_fails=False, cleanup=self.timeout)
+        self.assertEqual(0, status)
+        self.assertEqual(1, len(writes))
+        self.assertEqual("pass", writes[0]["outcome"])
+        self.assertEqual("fail", writes[0]["cleanup"]["status"])
+        self.assertEqual("TimeoutExpired", writes[0]["cleanup"]["error_type"])
+        self.assertEqual([("down", "-v", "--remove-orphans")], calls)
+
+    def test_cleanup_timeout_after_a_phase_failure_keeps_that_failure(self) -> None:
+        status, writes, _ = self.run_main(database_fails=True, cleanup=self.timeout)
+        self.assertEqual(1, status)
+        self.assertEqual(1, len(writes))
+        self.assertEqual("fail", writes[0]["outcome"])
+        failure = writes[0]["phase_outcomes"]["database_interruption"]
+        self.assertEqual("database phase failed", failure["reason"])
+        self.assertEqual("TimeoutExpired", writes[0]["cleanup"]["error_type"])
+
+    def test_nonzero_cleanup_is_recorded_without_changing_the_outcome(self) -> None:
+        for database_fails, expected in ((False, 0), (True, 1)):
+            with self.subTest(database_fails=database_fails):
+                status, writes, _ = self.run_main(database_fails=database_fails, cleanup=self.nonzero)
+                self.assertEqual(expected, status)
+                self.assertEqual(1, len(writes))
+                self.assertEqual({"status": "fail", "exit_code": 1, "stderr_tail": "network still in use"}, writes[0]["cleanup"])
+
+    def test_successful_cleanup_is_recorded(self) -> None:
+        status, writes, _ = self.run_main(database_fails=False, cleanup=self.clean)
+        self.assertEqual(0, status)
+        self.assertEqual({"status": "pass"}, writes[0]["cleanup"])
+
+    def test_kept_stack_is_not_cleaned(self) -> None:
+        status, writes, calls = self.run_main(database_fails=True, cleanup=self.timeout, keep_stack=True)
+        self.assertEqual(1, status)
+        self.assertEqual([], calls)
+        self.assertEqual(1, len(writes))
+        self.assertNotIn("cleanup", writes[0])
 
 
 if __name__ == "__main__":

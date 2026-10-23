@@ -264,6 +264,10 @@ where
         fields.insert("business_key".into(), json!(DB::optional_string(run, "business_key")?));
         fields.insert("resume_step_sequence".into(), json!(started["resume_step_sequence"].as_i64()));
         fields.insert("recovery_kind".into(), json!(started["recovery_kind"].as_str()));
+        // A redriven run continues its failed source, as its start records.
+        if started["recovery_kind"] == "redrive" && started["continued_from_run_id"].is_string() {
+            fields.insert("continued_from_run_id".into(), started["continued_from_run_id"].clone());
+        }
         fields.insert("compatibility".into(), json!(compatibility));
         fields.insert("compatibility_status".into(), json!(if supported { "compatible" } else { "no_compatible_worker" }));
         fields.insert("compatibility_supported_in_fleet".into(), json!(supported));

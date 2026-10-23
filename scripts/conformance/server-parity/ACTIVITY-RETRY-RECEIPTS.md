@@ -78,3 +78,24 @@ IDs and active activities. It cannot repair the retained parent task or touch
 neighboring marker workflows. Resource limits and individual budgets remain
 unchanged. Other-database, final-head and default integration remain pending.
 These controls do not establish release or migration readiness.
+
+## Contract decision: the deadline runs from the attempt start
+
+**October 23, 2026.** The retry must not precede the first attempt's start plus
+its start-to-close timeout. The contract reads that start from the
+`ActivityStarted` snapshot (`payload.activity.started_at`), not from the
+event's own timestamp.
+
+Published PHP 2.11.1 takes one clock reading for the attempt's `started_at` and
+close deadline. `WorkflowHistoryEvent::record` then takes a later one for the
+event. Its timeout enforcer is correct against its own deadline, but it can run
+in the few milliseconds between those readings. Measured against the event time,
+that retry looks early. This happened once on Server main's SQLite job
+([run 39961767541](https://github.com/durable-workflow/server/actions/runs/39961767541)).
+That job records the PHP target first and stops at its first failure, so the
+failing target was PHP. Native stamps both from the same millisecond.
+
+The contract still refuses a retry before the attempt's deadline. It also
+requires the event to be stamped at or after the attempt start, and less than
+one second after it. The failure message names the transport and how early the
+retry was.

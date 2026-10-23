@@ -192,12 +192,14 @@ where
                 } => refuse(StatusCode::CONFLICT, "stale_attempt"),
                 other => other,
             })?;
-        if ordinary && observed["can_continue"] == false && observed["cancel_requested"] == false {
-            // Published PHP returns a structured refusal for ordinary expired
-            // or closed authority. This read never records progress or renews
-            // a lease; a concurrently closed attempt remains fenced.
+        // Published PHP answers with this structured refusal for ordinary
+        // expired authority, and for any closed run, whose activity is told
+        // it was cancelled. This read never records progress or renews a
+        // lease; a concurrently closed attempt remains fenced.
+        let closed = !observed["run_closed_reason"].is_null();
+        if observed["can_continue"] == false && (closed || ordinary && observed["cancel_requested"] == false) {
             let response = json!({"task_id":task_id,"activity_attempt_id":attempt_id,"lease_owner":body["lease_owner"],
-                "cancel_requested":false,"can_continue":false,"reason":observed["reason"],
+                "cancel_requested":observed["cancel_requested"],"can_continue":false,"reason":observed["reason"],
                 "run_closed_reason":observed["run_closed_reason"],"run_closed_at":observed["run_closed_at"],
                 "heartbeat_recorded":false,"lease_expires_at":observed["lease_expires_at"],
                 "last_heartbeat_at":observed["last_heartbeat_at"],"worker_session":observed["worker_session"],
@@ -298,7 +300,9 @@ where
         tx.commit().await?;
         Ok(
             json!({"task_id":task_id,"activity_attempt_id":attempt_id,"lease_owner":body["lease_owner"],
-            "heartbeat_recorded":true,"last_heartbeat_at":at,"lease_expires_at":expires,"cancel_requested":false,"can_continue":true}),
+            "cancel_requested":false,"can_continue":true,"reason":null,"run_closed_reason":null,"run_closed_at":null,
+            "heartbeat_recorded":true,"lease_expires_at":expires,"last_heartbeat_at":at,"worker_session":null,
+            "protocol_version":protocol,"server_capabilities":super::store::capabilities()}),
         )
     }
 }

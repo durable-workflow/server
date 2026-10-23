@@ -1,0 +1,32 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "system-metrics",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "system metrics λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "system metrics λ"},
+    "count": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null}
+  }},
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "system_metrics": {
+    "workflow_types": ["parity.v1.metrics_a", "parity.v1.metrics_b"],
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "failures": {
+      "max_consecutive_failures": 1, "failed_task_count": 1, "workflow_type_count": 1, "workflow_type_limit": 20,
+      "workflow_types_truncated": false, "suppressed_workflow_type_count": 0, "suppressed_failed_task_count": 0,
+      "label_cardinality_policy": {"namespace": "request_scope_not_label", "workflow_type": {"cardinality_class": "bounded_series", "limit": 20, "selection": "top_by_max_consecutive_failures_then_name"}},
+      "by_workflow_type": [{"workflow_type": "parity.v1.metrics_a", "max_consecutive_failures": 1, "failed_task_count": 1}]
+    },
+    "usage": {
+      "workflow_instances": 2, "workflow_runs": 2, "open_workflow_runs": 2, "schedules": 1, "schedule_history_events": 1,
+      "worker_registrations": 1, "workflow_history_events": 4, "workflow_tasks": 3, "pending_workflow_tasks": 2,
+      "workflow_timers": 0, "pending_workflow_timers": 0, "workflow_run_waits": 0, "open_workflow_run_waits": 0,
+      "workflow_commands": 2, "workflow_streams": 0, "workflow_stream_items": 0
+    },
+    "projection_tables": ["run_summaries", "run_waits", "run_timeline_entries", "run_timer_entries", "run_lineage_entries"]
+  },
+  "contract": "GET and POST /api/system/metrics (published Server 2.11) report the namespace's workflow task failures, the server's projection drift, and the namespace's request admission, durable-state and external payload usage, each with its bounded label policy. In a fresh namespace that holds two started runs of two workflow types, one failed workflow task of the first type and one schedule, the failure series names that type with one consecutive failure, and the sixteen durable-state counts are exact. No admission, durable-state or payload limit is configured, so limits and remaining values are null and rejection counters zero, and no external payload is stored. Projection drift is server-wide and counts stale or orphaned rows that other work on the server leaves, so it is checked for its fixed table inventory, non-negative counts and consistent totals, not exact values. Embedded applications have no HTTP metrics."
+}

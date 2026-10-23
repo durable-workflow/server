@@ -161,13 +161,14 @@ async fn renewal_cannot_revive_an_expired_or_closed_run() {
         &body["run_closed_reason"], &body["attempt_status"], &body["lease_renewed"]],
         [&json!(false), &json!(true), &json!("run_terminated"), &json!("terminated"), &json!("terminated"),
             &json!("cancelled"), &json!(false)]);
-    // Last: an expired lease is redelivered as a new attempt.
+    // Last: an expired lease cannot be renewed. The scheduler may already
+    // have settled it, as PHP's repair loop does, closing the attempt.
     let (_, _, activity) = claim(&app, "lease-expired").await;
     database.execute("UPDATE workflow_tasks SET lease_expires_at='2020-01-02 03:04:05.123456' WHERE task_type='activity'").await;
     let (code, expired) = renew(&app, &activity, own(&activity)).await;
     assert_eq!(code, StatusCode::CONFLICT, "{expired}");
-    assert_eq!([&expired["reason"], &expired["lease_renewed"], &expired["can_continue"]],
-        [&json!("lease_expired"), &json!(false), &json!(false)]);
+    assert!(matches!(expired["reason"].as_str(), Some("lease_expired" | "attempt_closed")), "{expired}");
+    assert_eq!([&expired["lease_renewed"], &expired["can_continue"]], [&json!(false), &json!(false)]);
     let status = request_protocol(&app, "POST", &path(&activity, "status"), own(&activity), "1.20").await;
     assert_eq!(status.1["can_continue"], false, "an expired lease stays expired: {}", status.1);
 }
