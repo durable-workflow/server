@@ -192,8 +192,11 @@ function patchPublishedSdkPhase(array $fixture, array $options): array
     if (isset($fixture['patch_deployment']['legacy_marker_history'])) {
         $proxyArguments[] = '--forwarding-state';
     }
+    // The published worker deregisters at shutdown without retrying; let the
+    // observer retry the SQLite reference's documented retryable refusal.
     $proxy = proc_open($proxyArguments,
-        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $proxyPipes);
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $proxyPipes, null,
+        [...getenv(), 'DW_PARITY_PROXY_RETRY_LOCK_PRESSURE' => '1']);
     if (! is_resource($proxy)) {
         unlink($journal);
         throw new RuntimeException('Could not start the SDK HTTP observer.');
