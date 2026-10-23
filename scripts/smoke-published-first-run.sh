@@ -77,6 +77,13 @@ if [ "${DW_FIRST_RUN_SKIP_PULL:-0}" != "1" ]; then
     docker pull "$IMAGE"
 fi
 
+# Reuse the existing scoped bootstrap name, including workflow cancellation cleanup.
+docker run --rm --interactive \
+    --name "$BOOTSTRAP_CONTAINER" \
+    --network none --user 0 \
+    --entrypoint python3 "$IMAGE" - \
+    < "$(dirname "$0")/ci/check-sqlite-bootstrap-processes.py"
+
 docker volume create "$DATABASE_VOLUME" >/dev/null
 
 docker run --detach \
