@@ -587,7 +587,9 @@ October 21, operator metrics and health:
   - PHP's maintenance loop redispatches an overdue ready task, after which
     PHP reports it repaired, not overdue. Native runs no repair loop, so the
     task stays overdue until a worker claims it. The fixture accepts either
-    PHP state.
+    PHP state. Since October 23 it also accepts PHP's reads that straddle
+    the redispatch, provided they never go backwards; see
+    [the redispatch-states checkpoint](rust-server-port-checkpoints/2026-10-23-operator-metrics-redispatch-states.md).
   - The operator dashboards, capacity evidence, and the repair, retention,
     activity-timeout and payload-cleanup pass endpoints remain.
 

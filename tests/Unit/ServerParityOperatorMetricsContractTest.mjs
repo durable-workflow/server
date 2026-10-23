@@ -189,6 +189,47 @@ test('rejects native metrics showing a repair native never runs', () => {
   setChecks(midRepair(observation, 'rust'), {durable_resume_paths: 'warning'});
   assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /counts/);
 });
+// The task saved as redispatched before its run is projected again
+// (TaskDispatcher::markDispatched): no longer overdue, and the run still needs
+// repair. Seen on #673 run 39995620421, mysql-8.0.
+const dispatched = (observation, runtime = 'php') => {
+  const stage = midRepair(observation, runtime);
+  Object.assign(stage.sections.tasks.counts, {dispatch_overdue: 0, unhealthy: 0});
+  Object.assign(stage.sections.tasks.timestamps, {oldest_dispatch_overdue_since: false, oldest_unhealthy_at: false});
+  stage.sections.backlog.counts.unhealthy_tasks = 0;
+  setChecks(stage, {task_transport: 'ok', routing_health: 'ok', durable_resume_paths: 'warning'});
+  return stage;
+};
+test('published PHP read after the redispatch and before the run is projected again passes', () => {
+  const observation = model();
+  dispatched(observation);
+  assert.deepStrictEqual(checkOperatorMetrics(fixture, observation, 'TEST'), projection);
+});
+test('rejects native showing a redispatch with a run still needing repair', () => {
+  const observation = model();
+  dispatched(observation, 'rust');
+  assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /counts/);
+});
+// The tasks section read while overdue, the backlog after the redispatch.
+// Seen on #673 run 39995620421, postgres-17.
+test('published PHP metrics whose backlog was read after the redispatch pass', () => {
+  const observation = model();
+  const stage = observation.operator_metrics.stages.waiting_after_redispatch;
+  stage.sections.backlog.counts.unhealthy_tasks = 0;
+  setChecks(stage, {task_transport: 'ok', routing_health: 'ok'});
+  assert.deepStrictEqual(checkOperatorMetrics(fixture, observation, 'TEST'), projection);
+});
+test('rejects PHP health still overdue after the backlog showed the redispatch', () => {
+  const observation = model();
+  observation.operator_metrics.stages.waiting_after_redispatch.sections.backlog.counts.unhealthy_tasks = 0;
+  assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /warnings/);
+});
+test('rejects a PHP backlog overdue again after the tasks showed the redispatch', () => {
+  const observation = model();
+  const stage = dispatched(observation);
+  stage.sections.backlog.counts.unhealthy_tasks = 1;
+  assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /counts/);
+});
 test('rejects a run needing repair without a repaired task', () => {
   const observation = model();
   const stage = midRepair(observation);

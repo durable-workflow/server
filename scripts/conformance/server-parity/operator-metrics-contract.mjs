@@ -70,18 +70,33 @@ const EXPECTED = {
     backlog: {tasks_added_last_minute: 4}, history: {events: 8, max_event_count: 8},
     command_contracts: {backfill_needed_runs: 1, backfill_unavailable_runs: 1, closed_backfill_needed_runs: 1}},
 };
-// PHP's maintenance loop redispatches an overdue ready task (TaskRepair), so
-// past the redispatch window published PHP may already show the task repaired
-// instead of overdue. Native runs no repair loop and keeps reporting it overdue.
-const REPAIRED = {...EXPECTED.waiting_after_redispatch, tasks: {open: 1, ready: 1, ready_due_or_delayed: 1},
-  backlog: {runnable_or_delayed_tasks: 1, tasks_added_last_minute: 1}};
-const REPAIRED_WARNINGS = ['command_contract_snapshots'];
-// PHP's TaskWatchdog repairs the task and projects the run before
-// TaskDispatcher redispatches it and projects the run again. Until then the
-// task is still overdue and the run reads as needing repair.
-const REPAIRING = {...EXPECTED.waiting_after_redispatch, runs: {...waitingRun, repair_needed: 1},
-  backlog: {...EXPECTED.waiting_after_redispatch.backlog, repair_needed_runs: 1}};
-const REPAIRING_WARNINGS = ['command_contract_snapshots', 'task_transport', 'routing_health', 'durable_resume_paths'];
+// Past the redispatch window, published PHP's maintenance loop moves the
+// overdue ready task through four states:
+//   0 overdue;
+//   1 repairing: TaskWatchdog::recoverExistingTask sets the repair count and
+//     projects the run as needing repair, in one transaction;
+//   2 dispatched: TaskDispatcher::markDispatched saves the task as dispatched,
+//     and its run is not yet projected again;
+//   3 redispatched: the run is projected again.
+// The task is overdue in states 0 and 1, carries a repair count from state 1,
+// and its run reads as needing repair in states 1 and 2. A stage makes many
+// reads: the operator metrics document reads runs, then tasks, then the
+// backlog counts, and the health request comes after it. Each read sees the
+// state at its own moment, so the states it sees never go backwards in that
+// order. Native runs no repair loop: it keeps the task overdue, or shows it
+// redispatched once repaired.
+const PHP_REPAIR_STATES = [0, 1, 2, 3];
+const overdueAt = state => state <= 1;
+const runNeedsRepairAt = state => state === 1 || state === 2;
+const runsAt = state => (runNeedsRepairAt(state) ? {...waitingRun, repair_needed: 1} : waitingRun);
+const tasksAt = state => ({open: 1, ready: 1, ready_due_or_delayed: 1,
+  ...(overdueAt(state) ? {dispatch_overdue: 1, unhealthy: 1} : {}), ...(state >= 1 ? {max_repair_count: 1} : {})});
+const backlogAt = (unhealthy, repairNeeded) => ({runnable_or_delayed_tasks: 1, tasks_added_last_minute: 1,
+  ...(overdueAt(unhealthy) ? {unhealthy_tasks: 1} : {}), ...(runNeedsRepairAt(repairNeeded) ? {repair_needed_runs: 1} : {})});
+const warningsAt = (task, run) => ['command_contract_snapshots',
+  ...(overdueAt(task) ? ['task_transport', 'routing_health'] : []), ...(runNeedsRepairAt(run) ? ['durable_resume_paths'] : [])];
+const REDISPATCHED = {...EXPECTED.waiting_after_redispatch, runs: runsAt(3),
+  tasks: {open: 1, ready: 1, ready_due_or_delayed: 1}, backlog: backlogAt(3, 3)};
 // Checks other than ok at each stage (the uncompared check aside).
 const WARNINGS = {
   empty: [],
@@ -93,15 +108,50 @@ const WARNINGS = {
   completed: [],
 };
 
-// Past the redispatch window published PHP is in one of these states, in
-// order: overdue, repairing, or redispatched. Metrics and health are separate
-// requests, so its health may be at the state its metrics show or a later one.
-// Native runs no repair loop and is held to the state its metrics show.
-const REPAIR_STATES = [
-  {counts: EXPECTED.waiting_after_redispatch, warnings: WARNINGS.waiting_after_redispatch},
-  {counts: REPAIRING, warnings: REPAIRING_WARNINGS},
-  {counts: REPAIRED, warnings: REPAIRED_WARNINGS},
-];
+const nonzero = values => Object.fromEntries(Object.entries(values).filter(([, value]) => value !== 0));
+
+// Published PHP past the redispatch window: the expected counts and the
+// warnings its health may report. The metrics reads (runs, then tasks, then
+// each backlog count) take the earliest states that never go backwards and
+// match. The health request sees that last state or a later one. With no
+// match, the overdue state is expected so the difference is reported.
+export function phpRedispatchExpectation(counts) {
+  const base = EXPECTED.waiting_after_redispatch;
+  let best = null;
+  for (const runs of PHP_REPAIR_STATES) {
+    for (const tasks of PHP_REPAIR_STATES.filter(state => state >= runs)) {
+      if (!isDeepStrictEqual(nonzero(counts.runs), runsAt(runs)) || !isDeepStrictEqual(nonzero(counts.tasks), tasksAt(tasks))) continue;
+      const later = PHP_REPAIR_STATES.filter(state => state >= tasks);
+      for (const unhealthy of later) {
+        for (const repairNeeded of later) {
+          if (!isDeepStrictEqual(nonzero(counts.backlog), backlogAt(unhealthy, repairNeeded))) continue;
+          const last = Math.max(unhealthy, repairNeeded);
+          if (best === null || last < best.last) best = {runs, tasks, unhealthy, repairNeeded, last};
+        }
+      }
+    }
+  }
+  if (best === null) {
+    return {counts: {...base, tasks: tasksAt(0)}, warnings: [WARNINGS.waiting_after_redispatch]};
+  }
+  // HealthCheck reads one snapshot after the metrics request, again runs,
+  // then tasks, then backlog. Task checks warn on an overdue task in tasks or
+  // backlog; durable resume paths warns on a run needing repair in runs or
+  // backlog.
+  const warnings = [];
+  for (const runs of PHP_REPAIR_STATES.filter(state => state >= best.last)) {
+    for (const tasks of PHP_REPAIR_STATES.filter(state => state >= runs)) {
+      for (const backlog of PHP_REPAIR_STATES.filter(state => state >= tasks)) {
+        const task = overdueAt(tasks) || overdueAt(backlog) ? 0 : 3;
+        const run = runNeedsRepairAt(runs) || runNeedsRepairAt(backlog) ? 1 : 3;
+        const list = warningsAt(task, run);
+        if (!warnings.some(seen => isDeepStrictEqual(seen, list))) warnings.push(list);
+      }
+    }
+  }
+  return {counts: {...base, runs: runsAt(best.runs), tasks: tasksAt(best.tasks),
+    backlog: backlogAt(best.unhealthy, best.repairNeeded)}, warnings};
+}
 
 function normalized(sections) {
   const counts = {};
@@ -152,18 +202,15 @@ function checkStage(name, stage, namespace, family) {
   }
   const counts = normalized(raw);
   const redispatch = name === 'waiting_after_redispatch';
-  const php = redispatch && stage.runtime === 'php';
-  const repaired = redispatch && counts.tasks.max_repair_count > 0;
-  if (repaired) delete counts.tasks.max_repair_count;
-  const states = redispatch ? REPAIR_STATES : [{counts: EXPECTED[name], warnings: WARNINGS[name]}];
-  // A repair count means PHP repaired the task: mid-repair (PHP only) or redispatched.
-  const possible = !repaired ? [0] : php ? [1, 2] : [2];
-  const nonzero = values => Object.fromEntries(Object.entries(values).filter(([, value]) => value !== 0));
-  const matches = index => Object.entries(counts)
-    .every(([section, values]) => isDeepStrictEqual(nonzero(values), states[index].counts[section] ?? {}));
-  const state = possible.find(matches) ?? possible[possible.length - 1];
+  let expected = {counts: EXPECTED[name], warnings: [WARNINGS[name]]};
+  if (redispatch && stage.runtime === 'php') {
+    expected = phpRedispatchExpectation(counts);
+  } else if (redispatch && counts.tasks.max_repair_count > 0) {
+    delete counts.tasks.max_repair_count;
+    expected = {counts: REDISPATCHED, warnings: [warningsAt(3, 3)]};
+  }
   for (const [section, values] of Object.entries(counts)) {
-    assert.deepStrictEqual(nonzero(values), states[state].counts[section] ?? {}, `${label} ${section} counts`);
+    assert.deepStrictEqual(nonzero(values), expected.counts[section] ?? {}, `${label} ${section} counts`);
   }
   assert.equal(stage.active_workers, ['empty', 'waiting', 'waiting_after_redispatch'].includes(name) ? 0 : 1,
     `${label} active workers`);
@@ -172,8 +219,7 @@ function checkStage(name, stage, namespace, family) {
   const statuses = stage.checks.filter(check => check.name !== UNCOMPARED_CHECK);
   assert.ok(statuses.every(check => ['ok', 'warning'].includes(check.status)), `${label} no check errors`);
   const warnings = statuses.filter(check => check.status !== 'ok').map(check => check.name);
-  const allowed = (php ? states.slice(state) : [states[state]]).map(candidate => candidate.warnings);
-  const settled = allowed.find(list => isDeepStrictEqual(list, warnings)) ?? states[state].warnings;
+  const settled = expected.warnings.find(list => isDeepStrictEqual(list, warnings)) ?? expected.warnings[0];
   assert.deepStrictEqual(warnings, settled, `${label} warnings`);
   const warning = settled.length > 0 || stage.checks.some(check => check.status === 'warning');
   assert.deepStrictEqual([stage.health_status, stage.health.status, stage.health.healthy], [200, warning ? 'warning' : 'ok', true],
