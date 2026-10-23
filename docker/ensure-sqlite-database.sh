@@ -57,11 +57,9 @@ mkdir -p "$directory" || fail "Cannot create parent for '$path' as $identity; al
 [ -w "$directory" ] && [ -x "$directory" ] || \
     fail "Parent for '$path' must be writable and searchable by $identity; align the database mount with the HTTP runtime identity."
 
-if [ ! -e "$path" ] && [ ! -L "$path" ]; then
-    # Noclobber protects a database created concurrently by another role.
-    if ! (set -C; : > "$path") 2>/dev/null; then
-        [ -f "$path" ] || fail "Cannot create '$path' as $identity; check the database mount permissions."
-    fi
+# Noclobber protects a database created concurrently by another role.
+if [ ! -e "$path" ] && [ ! -L "$path" ] && ! (set -C; : > "$path") 2>/dev/null; then
+    [ -f "$path" ] || fail "Cannot create '$path' as $identity; check the database mount permissions."
 fi
 
 [ -f "$path" ] && [ -w "$path" ] || \
