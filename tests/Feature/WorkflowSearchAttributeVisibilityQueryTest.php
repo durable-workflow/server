@@ -6,6 +6,7 @@ use App\Models\SearchAttributeDefinition;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\AwaitApprovalWorkflow;
 use Tests\TestCase;
@@ -207,6 +208,58 @@ class WorkflowSearchAttributeVisibilityQueryTest extends TestCase
                 'errors.query.0',
                 'Search attribute [unknown_attr] is not defined in namespace [default].',
             );
+    }
+
+    #[DataProvider('datetimeInstants')]
+    public function test_datetime_visibility_preserves_offset_instants_and_microseconds(string $literal): void
+    {
+        foreach (['default', 'other'] as $namespace) {
+            SearchAttributeDefinition::query()->create([
+                'namespace' => $namespace,
+                'name' => 'occurred_at',
+                'type' => 'datetime',
+            ]);
+        }
+
+        $this->startWorkflow('default', 'wf-date-match', [
+            'occurred_at' => '2026-10-08T10:34:56.123456Z',
+        ]);
+        $this->startWorkflow('default', 'wf-date-neighbor', [
+            'occurred_at' => '2026-10-08T10:34:56.123457Z',
+        ]);
+        $this->startWorkflow('other', 'wf-date-other', [
+            'occurred_at' => '2026-10-08T10:34:56.123456Z',
+        ]);
+
+        $this->assertSame(['wf-date-match'], $this->workflowIdsForQuery('occurred_at = "'.$literal.'"'));
+        $this->assertSame(['wf-date-neighbor'], $this->workflowIdsForQuery('occurred_at != "'.$literal.'"'));
+        $this->assertSame(['wf-date-match'], $this->workflowIdsForQuery('occurred_at IN ("'.$literal.'")'));
+        $this->assertSame(['wf-date-neighbor'], $this->workflowIdsForQuery('NOT occurred_at IN ("'.$literal.'")'));
+        $this->assertSame(['wf-date-match'], $this->workflowIdsForQuery(
+            'occurred_at >= "'.$literal.'" AND occurred_at < "2026-10-08T10:34:56.123457Z"',
+        ));
+        $this->assertSame(['wf-date-other'], $this->workflowIdsForQuery('occurred_at = "'.$literal.'"', 'other'));
+
+        DB::table('workflow_run_summaries')->where('workflow_instance_id', 'wf-date-match')->update([
+            'started_at' => '2026-10-08 10:34:56.123456',
+        ]);
+        DB::table('workflow_run_summaries')->where('workflow_instance_id', 'wf-date-neighbor')->update([
+            'started_at' => '2026-10-08 10:34:56.123457',
+        ]);
+        $this->assertSame(['wf-date-match'], $this->workflowIdsForQuery('StartTime = "'.$literal.'"'));
+        $this->assertSame(['wf-date-match'], $this->workflowIdsForQuery('StartTime IN ("'.$literal.'")'));
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function datetimeInstants(): iterable
+    {
+        yield 'positive offset' => ['2026-10-08T12:34:56.123456+02:00'];
+        yield 'negative offset' => ['2026-10-08T06:34:56.123456-04:00'];
+        yield 'next local day' => ['2026-10-09T00:34:56.123456+14:00'];
+        yield 'previous local day' => ['2026-10-07T22:34:56.123456-12:00'];
+        yield 'utc' => ['2026-10-08T10:34:56.123456Z'];
     }
 
     /**
