@@ -2350,12 +2350,10 @@ final class WorkflowTaskPoller
         // Custom bridges may own ordinary tasks outside the package table.
         // Preserve their existing claim/history path. Update deliveries use
         // canonical package tasks and must pass the scoped check below.
-        if (! $task instanceof WorkflowTask) {
-            return ! $this->bridge instanceof DefaultWorkflowTaskBridge;
-        }
-
-        return $task->namespace === $namespace && $task->workflow_run_id === $runId
-            && WorkflowUpdateDeliveryEligibility::allows($worker, $run, $task);
+        return ! $task instanceof WorkflowTask
+            ? ! $this->bridge instanceof DefaultWorkflowTaskBridge
+            : $task->namespace === $namespace && $task->workflow_run_id === $runId
+                && WorkflowUpdateDeliveryEligibility::allows($worker, $run, $task);
     }
 
     private function matchesRecordedWorkflowDefinition(
