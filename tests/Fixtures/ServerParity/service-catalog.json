@@ -1,0 +1,1076 @@
+{
+ "schema": "durable-workflow.server-parity-fixture/v1",
+ "id": "service-catalog",
+ "review_state": "reviewed",
+ "workflow_type": "parity.v1.echo",
+ "input": {
+  "message": "service catalog λ",
+  "count": 9007199254740993,
+  "optional": null
+ },
+ "typed_value": {
+  "type": "map",
+  "value": {
+   "message": {
+    "type": "string",
+    "value": "service catalog λ"
+   },
+   "count": {
+    "type": "int64",
+    "value": "9007199254740993"
+   },
+   "optional": {
+    "type": "null",
+    "value": null
+   }
+  }
+ },
+ "activity": false,
+ "expected_events": [
+  "StartAccepted",
+  "WorkflowStarted",
+  "WorkflowCompleted"
+ ],
+ "service_catalog": {
+  "requests": [
+   {
+    "label": "endpoints list",
+    "path": "service-catalog/endpoints",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "services list",
+    "path": "service-catalog/services",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "operations list",
+    "path": "service-catalog/operations",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "calls list",
+    "path": "service-catalog/calls",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "endpoints show",
+    "path": "service-catalog/endpoints/missing-id",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "services show",
+    "path": "service-catalog/services/missing-id",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "operations show",
+    "path": "service-catalog/operations/missing-id",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "calls show",
+    "path": "service-catalog/calls/missing-id",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "endpoints page2 per2",
+    "path": "service-catalog/endpoints?page=2&per_page=2",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "endpoints per0",
+    "path": "service-catalog/endpoints?per_page=0",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "endpoints per_max+1",
+    "path": "service-catalog/endpoints?per_page=1000",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "endpoints page0",
+    "path": "service-catalog/endpoints?page=0",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "endpoints pagex",
+    "path": "service-catalog/endpoints?page=x",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "endpoints unknown",
+    "path": "service-catalog/endpoints?bogus=1&other=2",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "endpoints namespace",
+    "path": "service-catalog/endpoints?namespace=default",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "endpoints endpoint_id",
+    "path": "service-catalog/endpoints?endpoint_id=x",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "services endpoint_id",
+    "path": "service-catalog/services?endpoint_id=e1",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "services endpoint_id empty",
+    "path": "service-catalog/services?endpoint_id=",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "operations ids",
+    "path": "service-catalog/operations?endpoint_id=e&service_id=s",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "calls filters",
+    "path": "service-catalog/calls?scope=owned&status=completed&outcome=completed&status_bucket=completed&outcome_bucket=completed",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "calls bad enums",
+    "path": "service-catalog/calls?scope=x&status=y&outcome=z&status_bucket=q&outcome_bucket=w",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "calls bucket mismatch",
+    "path": "service-catalog/calls?bucket=open&status_bucket=failed",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "calls bucket",
+    "path": "service-catalog/calls?bucket=open",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "show with page",
+    "path": "service-catalog/endpoints/x?page=2",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "show with namespace",
+    "path": "service-catalog/calls/x?namespace=default",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "no cpv header",
+    "path": "service-catalog/endpoints",
+    "namespace": "default",
+    "version": false
+   },
+   {
+    "label": "list per_page max",
+    "path": "service-catalog/calls?per_page=100&page=3",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "header default, query second",
+    "path": "service-catalog/endpoints?namespace=@own",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "header second, query default",
+    "path": "service-catalog/endpoints?namespace=default",
+    "namespace": "@own",
+    "version": true
+   },
+   {
+    "label": "no header, query second",
+    "path": "service-catalog/endpoints?namespace=@own",
+    "namespace": null,
+    "version": true
+   },
+   {
+    "label": "no header, no query",
+    "path": "service-catalog/endpoints",
+    "namespace": null,
+    "version": true
+   },
+   {
+    "label": "header missing",
+    "path": "service-catalog/endpoints",
+    "namespace": "missing",
+    "version": true
+   },
+   {
+    "label": "header upper",
+    "path": "service-catalog/calls",
+    "namespace": "@OWN",
+    "version": true
+   },
+   {
+    "label": "namespace too long",
+    "path": "service-catalog/calls/x?namespace=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "per_page decimal",
+    "path": "service-catalog/endpoints?per_page=2.5",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "page negative",
+    "path": "service-catalog/endpoints?page=-1",
+    "namespace": "default",
+    "version": true
+   },
+   {
+    "label": "operation show",
+    "path": "service-catalog/operations/op-1",
+    "namespace": "@own",
+    "version": true
+   }
+  ],
+  "expected": {
+   "endpoints list": [
+    200,
+    {
+     "data": [],
+     "current_page": 1,
+     "per_page": 50,
+     "total": 0,
+     "last_page": 1,
+     "namespace": "default"
+    }
+   ],
+   "services list": [
+    200,
+    {
+     "data": [],
+     "current_page": 1,
+     "per_page": 50,
+     "total": 0,
+     "last_page": 1,
+     "namespace": "default"
+    }
+   ],
+   "operations list": [
+    200,
+    {
+     "data": [],
+     "current_page": 1,
+     "per_page": 50,
+     "total": 0,
+     "last_page": 1,
+     "namespace": "default"
+    }
+   ],
+   "calls list": [
+    200,
+    {
+     "data": [],
+     "current_page": 1,
+     "per_page": 50,
+     "total": 0,
+     "last_page": 1,
+     "namespace": "default",
+     "scope": "relevant",
+     "bucket": null,
+     "status_bucket": null,
+     "outcome": null,
+     "outcome_bucket": null,
+     "statuses": [
+      "pending",
+      "accepted",
+      "started",
+      "completed",
+      "failed",
+      "cancelled"
+     ],
+     "outcomes": [
+      "accepted",
+      "completed",
+      "cancelled",
+      "timed_out",
+      "rejected_not_found",
+      "rejected_forbidden",
+      "rejected_throttled",
+      "rejected_concurrency_limited",
+      "rejected_circuit_open",
+      "degraded",
+      "handler_failed"
+     ],
+     "status_buckets": {
+      "open": [
+       "pending",
+       "accepted",
+       "started"
+      ],
+      "completed": [
+       "completed"
+      ],
+      "failed": [
+       "failed"
+      ],
+      "cancelled": [
+       "cancelled"
+      ]
+     },
+     "outcome_buckets": {
+      "open": [
+       "accepted"
+      ],
+      "completed": [
+       "completed",
+       "degraded"
+      ],
+      "failed": [
+       "timed_out",
+       "handler_failed"
+      ],
+      "cancelled": [
+       "cancelled"
+      ],
+      "policy": [
+       "rejected_not_found",
+       "rejected_forbidden",
+       "rejected_throttled",
+       "rejected_concurrency_limited",
+       "rejected_circuit_open"
+      ]
+     }
+    }
+   ],
+   "endpoints show": [
+    404,
+    {
+     "message": "Catalog object not found.",
+     "reason": "catalog_object_not_found"
+    }
+   ],
+   "services show": [
+    404,
+    {
+     "message": "Catalog object not found.",
+     "reason": "catalog_object_not_found"
+    }
+   ],
+   "operations show": [
+    404,
+    {
+     "message": "Catalog object not found.",
+     "reason": "catalog_object_not_found"
+    }
+   ],
+   "calls show": [
+    404,
+    {
+     "message": "Catalog object not found.",
+     "reason": "catalog_object_not_found"
+    }
+   ],
+   "endpoints page2 per2": [
+    200,
+    {
+     "data": [],
+     "current_page": 2,
+     "per_page": 2,
+     "total": 0,
+     "last_page": 1,
+     "namespace": "default"
+    }
+   ],
+   "endpoints per0": [
+    422,
+    {
+     "message": "The per page field must be between 1 and 100.",
+     "reason": "validation_failed",
+     "errors": {
+      "per_page": [
+       "The per page field must be between 1 and 100."
+      ]
+     },
+     "validation_errors": {
+      "per_page": [
+       "The per page field must be between 1 and 100."
+      ]
+     }
+    }
+   ],
+   "endpoints per_max+1": [
+    422,
+    {
+     "message": "The per page field must be between 1 and 100.",
+     "reason": "validation_failed",
+     "errors": {
+      "per_page": [
+       "The per page field must be between 1 and 100."
+      ]
+     },
+     "validation_errors": {
+      "per_page": [
+       "The per page field must be between 1 and 100."
+      ]
+     }
+    }
+   ],
+   "endpoints page0": [
+    422,
+    {
+     "message": "The page field must be at least 1.",
+     "reason": "validation_failed",
+     "errors": {
+      "page": [
+       "The page field must be at least 1."
+      ]
+     },
+     "validation_errors": {
+      "page": [
+       "The page field must be at least 1."
+      ]
+     }
+    }
+   ],
+   "endpoints pagex": [
+    422,
+    {
+     "message": "The page field must be an integer.",
+     "reason": "validation_failed",
+     "errors": {
+      "page": [
+       "The page field must be an integer."
+      ]
+     },
+     "validation_errors": {
+      "page": [
+       "The page field must be an integer."
+      ]
+     }
+    }
+   ],
+   "endpoints unknown": [
+    422,
+    {
+     "message": "Unsupported catalog filter. (and 1 more error)",
+     "reason": "validation_failed",
+     "errors": {
+      "bogus": [
+       "Unsupported catalog filter."
+      ],
+      "other": [
+       "Unsupported catalog filter."
+      ]
+     },
+     "validation_errors": {
+      "bogus": [
+       "Unsupported catalog filter."
+      ],
+      "other": [
+       "Unsupported catalog filter."
+      ]
+     }
+    }
+   ],
+   "endpoints namespace": [
+    200,
+    {
+     "data": [],
+     "current_page": 1,
+     "per_page": 50,
+     "total": 0,
+     "last_page": 1,
+     "namespace": "default"
+    }
+   ],
+   "endpoints endpoint_id": [
+    422,
+    {
+     "message": "Unsupported catalog filter.",
+     "reason": "validation_failed",
+     "errors": {
+      "endpoint_id": [
+       "Unsupported catalog filter."
+      ]
+     },
+     "validation_errors": {
+      "endpoint_id": [
+       "Unsupported catalog filter."
+      ]
+     }
+    }
+   ],
+   "services endpoint_id": [
+    200,
+    {
+     "data": [],
+     "current_page": 1,
+     "per_page": 50,
+     "total": 0,
+     "last_page": 1,
+     "namespace": "default"
+    }
+   ],
+   "services endpoint_id empty": [
+    422,
+    {
+     "message": "The endpoint id field is required.",
+     "reason": "validation_failed",
+     "errors": {
+      "endpoint_id": [
+       "The endpoint id field is required."
+      ]
+     },
+     "validation_errors": {
+      "endpoint_id": [
+       "The endpoint id field is required."
+      ]
+     }
+    }
+   ],
+   "operations ids": [
+    200,
+    {
+     "data": [],
+     "current_page": 1,
+     "per_page": 50,
+     "total": 0,
+     "last_page": 1,
+     "namespace": "default"
+    }
+   ],
+   "calls filters": [
+    200,
+    {
+     "data": [],
+     "current_page": 1,
+     "per_page": 50,
+     "total": 0,
+     "last_page": 1,
+     "namespace": "default",
+     "scope": "owned",
+     "bucket": "completed",
+     "status_bucket": "completed",
+     "outcome": "completed",
+     "outcome_bucket": "completed",
+     "statuses": [
+      "pending",
+      "accepted",
+      "started",
+      "completed",
+      "failed",
+      "cancelled"
+     ],
+     "outcomes": [
+      "accepted",
+      "completed",
+      "cancelled",
+      "timed_out",
+      "rejected_not_found",
+      "rejected_forbidden",
+      "rejected_throttled",
+      "rejected_concurrency_limited",
+      "rejected_circuit_open",
+      "degraded",
+      "handler_failed"
+     ],
+     "status_buckets": {
+      "open": [
+       "pending",
+       "accepted",
+       "started"
+      ],
+      "completed": [
+       "completed"
+      ],
+      "failed": [
+       "failed"
+      ],
+      "cancelled": [
+       "cancelled"
+      ]
+     },
+     "outcome_buckets": {
+      "open": [
+       "accepted"
+      ],
+      "completed": [
+       "completed",
+       "degraded"
+      ],
+      "failed": [
+       "timed_out",
+       "handler_failed"
+      ],
+      "cancelled": [
+       "cancelled"
+      ],
+      "policy": [
+       "rejected_not_found",
+       "rejected_forbidden",
+       "rejected_throttled",
+       "rejected_concurrency_limited",
+       "rejected_circuit_open"
+      ]
+     }
+    }
+   ],
+   "calls bad enums": [
+    422,
+    {
+     "message": "The selected scope is invalid. (and 4 more errors)",
+     "reason": "validation_failed",
+     "errors": {
+      "scope": [
+       "The selected scope is invalid."
+      ],
+      "status": [
+       "The selected status is invalid."
+      ],
+      "status_bucket": [
+       "The selected status bucket is invalid."
+      ],
+      "outcome": [
+       "The selected outcome is invalid."
+      ],
+      "outcome_bucket": [
+       "The selected outcome bucket is invalid."
+      ]
+     },
+     "validation_errors": {
+      "scope": [
+       "The selected scope is invalid."
+      ],
+      "status": [
+       "The selected status is invalid."
+      ],
+      "status_bucket": [
+       "The selected status bucket is invalid."
+      ],
+      "outcome": [
+       "The selected outcome is invalid."
+      ],
+      "outcome_bucket": [
+       "The selected outcome bucket is invalid."
+      ]
+     }
+    }
+   ],
+   "calls bucket mismatch": [
+    422,
+    {
+     "message": "Must match status_bucket when both are supplied.",
+     "reason": "validation_failed",
+     "errors": {
+      "bucket": [
+       "Must match status_bucket when both are supplied."
+      ]
+     },
+     "validation_errors": {
+      "bucket": [
+       "Must match status_bucket when both are supplied."
+      ]
+     }
+    }
+   ],
+   "calls bucket": [
+    200,
+    {
+     "data": [],
+     "current_page": 1,
+     "per_page": 50,
+     "total": 0,
+     "last_page": 1,
+     "namespace": "default",
+     "scope": "relevant",
+     "bucket": "open",
+     "status_bucket": "open",
+     "outcome": null,
+     "outcome_bucket": null,
+     "statuses": [
+      "pending",
+      "accepted",
+      "started",
+      "completed",
+      "failed",
+      "cancelled"
+     ],
+     "outcomes": [
+      "accepted",
+      "completed",
+      "cancelled",
+      "timed_out",
+      "rejected_not_found",
+      "rejected_forbidden",
+      "rejected_throttled",
+      "rejected_concurrency_limited",
+      "rejected_circuit_open",
+      "degraded",
+      "handler_failed"
+     ],
+     "status_buckets": {
+      "open": [
+       "pending",
+       "accepted",
+       "started"
+      ],
+      "completed": [
+       "completed"
+      ],
+      "failed": [
+       "failed"
+      ],
+      "cancelled": [
+       "cancelled"
+      ]
+     },
+     "outcome_buckets": {
+      "open": [
+       "accepted"
+      ],
+      "completed": [
+       "completed",
+       "degraded"
+      ],
+      "failed": [
+       "timed_out",
+       "handler_failed"
+      ],
+      "cancelled": [
+       "cancelled"
+      ],
+      "policy": [
+       "rejected_not_found",
+       "rejected_forbidden",
+       "rejected_throttled",
+       "rejected_concurrency_limited",
+       "rejected_circuit_open"
+      ]
+     }
+    }
+   ],
+   "show with page": [
+    422,
+    {
+     "message": "Unsupported catalog filter.",
+     "reason": "validation_failed",
+     "errors": {
+      "page": [
+       "Unsupported catalog filter."
+      ]
+     },
+     "validation_errors": {
+      "page": [
+       "Unsupported catalog filter."
+      ]
+     }
+    }
+   ],
+   "show with namespace": [
+    404,
+    {
+     "message": "Catalog object not found.",
+     "reason": "catalog_object_not_found"
+    }
+   ],
+   "no cpv header": [
+    400,
+    {
+     "message": "Missing control-plane version header.",
+     "reason": "missing_control_plane_version",
+     "supported_version": "2",
+     "requested_version": null,
+     "remediation": "Send the X-Durable-Workflow-Control-Plane-Version: 2 header on control-plane requests."
+    }
+   ],
+   "list per_page max": [
+    200,
+    {
+     "data": [],
+     "current_page": 3,
+     "per_page": 100,
+     "total": 0,
+     "last_page": 1,
+     "namespace": "default",
+     "scope": "relevant",
+     "bucket": null,
+     "status_bucket": null,
+     "outcome": null,
+     "outcome_bucket": null,
+     "statuses": [
+      "pending",
+      "accepted",
+      "started",
+      "completed",
+      "failed",
+      "cancelled"
+     ],
+     "outcomes": [
+      "accepted",
+      "completed",
+      "cancelled",
+      "timed_out",
+      "rejected_not_found",
+      "rejected_forbidden",
+      "rejected_throttled",
+      "rejected_concurrency_limited",
+      "rejected_circuit_open",
+      "degraded",
+      "handler_failed"
+     ],
+     "status_buckets": {
+      "open": [
+       "pending",
+       "accepted",
+       "started"
+      ],
+      "completed": [
+       "completed"
+      ],
+      "failed": [
+       "failed"
+      ],
+      "cancelled": [
+       "cancelled"
+      ]
+     },
+     "outcome_buckets": {
+      "open": [
+       "accepted"
+      ],
+      "completed": [
+       "completed",
+       "degraded"
+      ],
+      "failed": [
+       "timed_out",
+       "handler_failed"
+      ],
+      "cancelled": [
+       "cancelled"
+      ],
+      "policy": [
+       "rejected_not_found",
+       "rejected_forbidden",
+       "rejected_throttled",
+       "rejected_concurrency_limited",
+       "rejected_circuit_open"
+      ]
+     }
+    }
+   ],
+   "header default, query second": [
+    200,
+    {
+     "data": [],
+     "current_page": 1,
+     "per_page": 50,
+     "total": 0,
+     "last_page": 1,
+     "namespace": "default"
+    }
+   ],
+   "header second, query default": [
+    200,
+    {
+     "data": [],
+     "current_page": 1,
+     "per_page": 50,
+     "total": 0,
+     "last_page": 1,
+     "namespace": "@own"
+    }
+   ],
+   "no header, query second": [
+    200,
+    {
+     "data": [],
+     "current_page": 1,
+     "per_page": 50,
+     "total": 0,
+     "last_page": 1,
+     "namespace": "@own"
+    }
+   ],
+   "no header, no query": [
+    200,
+    {
+     "data": [],
+     "current_page": 1,
+     "per_page": 50,
+     "total": 0,
+     "last_page": 1,
+     "namespace": "default"
+    }
+   ],
+   "header missing": [
+    404,
+    {
+     "message": "Namespace 'missing' does not exist.",
+     "reason": "namespace_not_found",
+     "namespace": "missing",
+     "remediation": "Register the namespace via POST /api/namespaces, or send an X-Namespace header naming an existing namespace."
+    }
+   ],
+   "header upper": [
+    200,
+    {
+     "data": [],
+     "current_page": 1,
+     "per_page": 50,
+     "total": 0,
+     "last_page": 1,
+     "namespace": "@own",
+     "scope": "relevant",
+     "bucket": null,
+     "status_bucket": null,
+     "outcome": null,
+     "outcome_bucket": null,
+     "statuses": [
+      "pending",
+      "accepted",
+      "started",
+      "completed",
+      "failed",
+      "cancelled"
+     ],
+     "outcomes": [
+      "accepted",
+      "completed",
+      "cancelled",
+      "timed_out",
+      "rejected_not_found",
+      "rejected_forbidden",
+      "rejected_throttled",
+      "rejected_concurrency_limited",
+      "rejected_circuit_open",
+      "degraded",
+      "handler_failed"
+     ],
+     "status_buckets": {
+      "open": [
+       "pending",
+       "accepted",
+       "started"
+      ],
+      "completed": [
+       "completed"
+      ],
+      "failed": [
+       "failed"
+      ],
+      "cancelled": [
+       "cancelled"
+      ]
+     },
+     "outcome_buckets": {
+      "open": [
+       "accepted"
+      ],
+      "completed": [
+       "completed",
+       "degraded"
+      ],
+      "failed": [
+       "timed_out",
+       "handler_failed"
+      ],
+      "cancelled": [
+       "cancelled"
+      ],
+      "policy": [
+       "rejected_not_found",
+       "rejected_forbidden",
+       "rejected_throttled",
+       "rejected_concurrency_limited",
+       "rejected_circuit_open"
+      ]
+     }
+    }
+   ],
+   "namespace too long": [
+    422,
+    {
+     "message": "The namespace field must not be greater than 191 characters.",
+     "reason": "validation_failed",
+     "errors": {
+      "namespace": [
+       "The namespace field must not be greater than 191 characters."
+      ]
+     },
+     "validation_errors": {
+      "namespace": [
+       "The namespace field must not be greater than 191 characters."
+      ]
+     }
+    }
+   ],
+   "per_page decimal": [
+    422,
+    {
+     "message": "The per page field must be an integer.",
+     "reason": "validation_failed",
+     "errors": {
+      "per_page": [
+       "The per page field must be an integer."
+      ]
+     },
+     "validation_errors": {
+      "per_page": [
+       "The per page field must be an integer."
+      ]
+     }
+    }
+   ],
+   "page negative": [
+    422,
+    {
+     "message": "The page field must be at least 1.",
+     "reason": "validation_failed",
+     "errors": {
+      "page": [
+       "The page field must be at least 1."
+      ]
+     },
+     "validation_errors": {
+      "page": [
+       "The page field must be at least 1."
+      ]
+     }
+    }
+   ],
+   "operation show": [
+    404,
+    {
+     "message": "Catalog object not found.",
+     "reason": "catalog_object_not_found"
+    }
+   ]
+  }
+ },
+ "contract": "GET /api/service-catalog/{endpoints|services|operations|calls}[/{id}] (published Server 2.11) reads a namespace's service catalog. This fixture's namespace holds no catalog objects: every list is a 200 page with empty data, the requested page and page size (default 1 and 50), total 0, last page 1 and the resolved namespace; calls also report their scope (default relevant), buckets, outcome and the status and outcome vocabularies. Every identity is a 404 catalog_object_not_found. Filters are validated like Laravel: an unsupported filter, a non-integer or out-of-range page or page size, an empty identity, an unknown scope, status, outcome or bucket, and a bucket that disagrees with status_bucket are 422 validation_failed. The namespace comes from X-Namespace, else the namespace query, else default, case-folded; an unknown namespace is 404 namespace_not_found and a missing control-plane version 400. @own is the fixture's own namespace. Embedded applications have no HTTP catalog."
+}

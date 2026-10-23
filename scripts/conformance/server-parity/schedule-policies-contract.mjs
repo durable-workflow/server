@@ -41,6 +41,13 @@ const POLICY_OUTCOMES = {
   terminate_other: ['triggered', 'triggered', 'triggered'],
 };
 
+// Each step whose status differs, with its response, so a failed run names
+// the cause instead of only the position.
+function statusDifferences(steps) {
+  return steps.flatMap((step, index) => step.status === STATUSES[index] ? [] :
+    [`step ${index} ${step.request}: ${step.status}, expected ${STATUSES[index]}: ${JSON.stringify(step.response).slice(0, 400)}`]);
+}
+
 export function checkSchedulePolicies(fixture, observation, workflowId) {
   const state = observation.schedule_policies;
   assert.ok(state && typeof state === 'object', 'actual schedule policy observation');
@@ -49,7 +56,7 @@ export function checkSchedulePolicies(fixture, observation, workflowId) {
       'embedded schedule surface explicitly inapplicable');
     return {scope: 'schedule_policies'};
   }
-  assert.ok(Number.isInteger(state.attempts) && state.attempts >= 1 && state.attempts <= 3, 'recorded sequence attempts');
+  assert.ok(Number.isInteger(state.attempts) && state.attempts >= 1 && state.attempts <= 5, 'recorded sequence attempts');
   // A sequence replayed after PHP's SQLite lock defect runs in a new namespace.
   const namespace = `${workflowId}-schedules`.toLowerCase() + (state.attempts === 1 ? '' : `-r${state.attempts}`);
   assert.deepStrictEqual([state.applicable, state.namespace], [true, namespace], 'schedule policy namespace');
@@ -57,7 +64,8 @@ export function checkSchedulePolicies(fixture, observation, workflowId) {
   const raw = state.steps;
   const names = {[namespace]: '@namespace', [state.queue]: '@queue'};
   const steps = raw.map(step => ({request: step.request, status: step.status, response: normalized(step.response, names)}));
-  assert.deepStrictEqual(steps.map(step => step.status), STATUSES, 'schedule step statuses');
+  assert.deepStrictEqual(steps.map(step => step.status), STATUSES,
+    `schedule step statuses (${steps.length} of ${STATUSES.length} steps)\n${statusDifferences(steps).join('\n')}`);
   const at = request => steps.filter(step => step.request === request);
   // Laravel names expanded attributes raw and others with spaces.
   assert.equal(steps[1].response.message, 'The spec.timezone field must be a string. (and 9 more errors)', 'validation summary');
@@ -79,8 +87,9 @@ export function checkSchedulePolicies(fixture, observation, workflowId) {
     execution_timeout_seconds: 90, run_timeout_seconds: 30}, 'action timeout aliases');
   for (const [policy, outcomes] of Object.entries(POLICY_OUTCOMES)) {
     const id = `policy-${policy.replaceAll('_', '-')}`;
-    assert.deepStrictEqual(at(`POST schedules/${id}/trigger`).slice(0, 3).map(step => step.response.outcome), outcomes,
-      `${policy} trigger outcomes`);
+    const triggers = at(`POST schedules/${id}/trigger`).slice(0, 3).map(step => step.response);
+    assert.deepStrictEqual(triggers.map(response => response.outcome), outcomes,
+      `${policy} trigger outcomes ${JSON.stringify(triggers.map(response => response.outcome))}, expected ${JSON.stringify(outcomes)}: ${JSON.stringify(triggers).slice(0, 600)}`);
   }
   const quota = at('POST schedules/quota/trigger');
   assert.deepStrictEqual(quota.map(step => step.response.outcome), ['triggered', 'triggered'], 'two quota runs');

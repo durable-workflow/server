@@ -34,6 +34,9 @@ on:
       - tests/Unit/ServerParityWorkerListingContractTest.mjs
       - tests/Unit/ServerParityWorkerReplacementContractTest.mjs
       - tests/Unit/ServerParityOperatorMetricsContractTest.mjs
+      - tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs
+      - tests/Unit/ServerParityServiceCatalogContractTest.mjs
+      - tests/Unit/ServerParityNamespaceDeleteContractTest.mjs
       - tests/Unit/ServerParityWaitingHistoryContractTest.mjs
       - tests/Unit/ServerParityTaskRetryContractTest.mjs
       - tests/Unit/ServerParityPublishedPatchContractTest.mjs
@@ -81,6 +84,9 @@ on:
       - tests/Unit/ServerParityWorkerListingContractTest.mjs
       - tests/Unit/ServerParityWorkerReplacementContractTest.mjs
       - tests/Unit/ServerParityOperatorMetricsContractTest.mjs
+      - tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs
+      - tests/Unit/ServerParityServiceCatalogContractTest.mjs
+      - tests/Unit/ServerParityNamespaceDeleteContractTest.mjs
       - tests/Unit/ServerParityWaitingHistoryContractTest.mjs
       - tests/Unit/ServerParityTaskRetryContractTest.mjs
       - tests/Unit/ServerParityPublishedPatchContractTest.mjs
@@ -276,8 +282,10 @@ jobs:
   mysql-execution:
     needs: published-sdk-adapters
     runs-on: ubuntu-latest
-    # Corrected marker/range/clock coverage expands the job; scenario budgets stay fixed.
-    timeout-minutes: 75
+    # Corrected marker/range/clock coverage expands the job, and the fixture step
+    # runs every later profile before failing; scenario budgets stay fixed.
+    # MySQL runs take 75 to 85 minutes; PostgreSQL's jobs take about 60.
+    timeout-minutes: 105
     strategy:
       fail-fast: false
       matrix:
@@ -333,7 +341,7 @@ jobs:
       - name: Create TLS fixture certificates
         run: |
           set -euo pipefail
-          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
           mkdir -p mysql-tls parity-evidence
           chmod 0777 parity-evidence
           docker run --rm --user="$(id -u):$(id -g)" --network=none \
@@ -397,12 +405,15 @@ jobs:
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --entrypoint mysql \
             "$MYSQL_IMAGE" -h parity-mysql -uroot -pparity-disposable-password \
             -e 'CREATE DATABASE native_ref CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
-          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
+          # The physical layout stays the frozen published 2.5.14 one; behavior
+          # runs on the current reference after migrating that database forward.
+          layout=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
             -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=php_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
-            "$image" artisan server:bootstrap --force > parity-evidence/published-bootstrap.txt
+            "$layout" artisan server:bootstrap --force > parity-evidence/published-bootstrap.txt
           # Compiling the library tests peaks near 2.5 GB; a 2 GB limit OOM-killed rustc (exit 101).
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --cpus=2 --memory=4g --memory-swap=4g \
             -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
@@ -428,6 +439,11 @@ jobs:
             -e DB_HOST=parity-mysql -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD:/source:ro" -w /source "$image" \
             scripts/conformance/server-parity/mysql-schema.php compare php_ref native_ref > parity-evidence/catalog-comparison.json
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=php_ref \
+            -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
+            "$image" artisan server:bootstrap --force > parity-evidence/published-upgrade-bootstrap.txt
       - name: Compare three runtimes, recover killed native nodes and refuse published PHP takeover
         id: prepare_runtime_comparison
         run: |
@@ -437,7 +453,7 @@ jobs:
             bash scripts/conformance/server-parity/container-log-tails.sh
           }
           trap container_log_tails ERR
-          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
           docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
@@ -525,6 +541,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
+          native_record_status=0
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR -e MYSQL_IMAGE "$image" scripts/conformance/server-parity.mjs record \
@@ -535,7 +552,8 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json || native_record_status=$?
+          compare_status=0
           docker run --rm --user=1000:1000 --entrypoint node --network=none \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
             scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json \
@@ -545,7 +563,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json > parity-evidence/comparison.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json > parity-evidence/comparison.json || compare_status=$?
           bash scripts/conformance/server-parity/published-sdk-patch-profile.sh mysql http://parity-php:8080 http://parity-native-a:8080
           bash scripts/conformance/server-parity/repeated-patch-profile.sh mysql http://parity-php:8080 http://parity-native-a:8080
           bash scripts/conformance/server-parity/legacy-marker-profile.sh mysql http://parity-php:8080 http://parity-native-a:8080
@@ -657,6 +675,10 @@ jobs:
             catalog php_ref > parity-evidence/catalog-after.json
           cmp parity-evidence/php-before.json parity-evidence/php-after.json
           cmp parity-evidence/catalog-before.json parity-evidence/catalog-after.json
+          # A native fixture difference fails the step only after every later
+          # check has run, so one difference cannot hide the rest.
+          test "$native_record_status" -eq 0
+          test "$compare_status" -eq 0
       - name: Compare separate configured role-token cohort
         run: bash scripts/conformance/server-parity/role-profile.sh mysql
       - name: Back up, take over and resume a separate published PHP upgrade source
@@ -790,7 +812,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p parity-evidence parity-summary
-          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
           docker run --rm --user="$(id -u):$(id -g)" --network=none --cpus=1 --memory=256m --memory-swap=256m \
             --entrypoint node -e PARITY_JOB_OUTCOME -e GITHUB_SHA \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence:ro" -v "$PWD/parity-summary:/summary" \
@@ -806,8 +828,10 @@ jobs:
   postgres-storage:
     needs: published-sdk-adapters
     runs-on: ubuntu-latest
-    # Corrected marker/range/clock coverage expands the job; scenario budgets stay fixed.
-    timeout-minutes: 75
+    # Corrected marker/range/clock coverage expands the job, and the fixture step
+    # runs every later profile before failing; scenario budgets stay fixed.
+    # MySQL runs take 75 to 85 minutes; PostgreSQL's jobs take about 60.
+    timeout-minutes: 105
     strategy:
       fail-fast: false
       matrix:
@@ -893,12 +917,15 @@ jobs:
             "$POSTGRES_IMAGE" --version > parity-evidence/postgres-version.txt
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e PGPASSWORD=parity-disposable-password --entrypoint createdb "$POSTGRES_IMAGE" -h parity-pg -U parity native_ref
-          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
+          # The physical layout stays the frozen published 2.5.14 one; behavior
+          # runs on the current reference after migrating that database forward.
+          layout=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
             -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=php_ref \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
-            "$image" artisan server:bootstrap --force > parity-evidence/published-bootstrap.txt
+            "$layout" artisan server:bootstrap --force > parity-evidence/published-bootstrap.txt
           # Compiling the library tests peaks near 2.5 GB; a 2 GB limit OOM-killed rustc (exit 101).
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --cpus=2 --memory=4g --memory-swap=4g \
             -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
@@ -924,6 +951,11 @@ jobs:
             -e DB_HOST=parity-pg -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD:/source:ro" -w /source "$image" \
             scripts/conformance/server-parity/postgres-schema.php compare php_ref native_ref > parity-evidence/catalog-comparison.json
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=php_ref \
+            -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
+            "$image" artisan server:bootstrap --force > parity-evidence/published-upgrade-bootstrap.txt
       - name: Compare three runtimes, recover killed native nodes and refuse published PHP takeover
         id: prepare_runtime_comparison
         env:
@@ -935,7 +967,7 @@ jobs:
             bash scripts/conformance/server-parity/container-log-tails.sh
           }
           trap container_log_tails ERR
-          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
           docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
@@ -1022,6 +1054,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
+          native_record_status=0
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR "$image" scripts/conformance/server-parity.mjs record \
@@ -1032,7 +1065,8 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json || native_record_status=$?
+          compare_status=0
           docker run --rm --user=1000:1000 --entrypoint node --network=none \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
             scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json \
@@ -1042,7 +1076,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json > parity-evidence/comparison.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json > parity-evidence/comparison.json || compare_status=$?
           bash scripts/conformance/server-parity/published-sdk-patch-profile.sh pgsql http://parity-php:8080 http://parity-native-a:8080
           bash scripts/conformance/server-parity/repeated-patch-profile.sh pgsql http://parity-php:8080 http://parity-native-a:8080
           bash scripts/conformance/server-parity/legacy-marker-profile.sh pgsql http://parity-php:8080 http://parity-native-a:8080
@@ -1154,6 +1188,10 @@ jobs:
             catalog php_ref > parity-evidence/catalog-after.json
           cmp parity-evidence/php-before.json parity-evidence/php-after.json
           cmp parity-evidence/catalog-before.json parity-evidence/catalog-after.json
+          # A native fixture difference fails the step only after every later
+          # check has run, so one difference cannot hide the rest.
+          test "$native_record_status" -eq 0
+          test "$compare_status" -eq 0
       - name: Compare separate configured role-token cohort
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
@@ -1331,7 +1369,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p parity-evidence parity-summary
-          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
           docker run --rm --user="$(id -u):$(id -g)" --network=none --cpus=1 --memory=256m --memory-swap=256m \
             --entrypoint node -e PARITY_JOB_OUTCOME -e GITHUB_SHA \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence:ro" -v "$PWD/parity-summary:/summary" \
@@ -1347,8 +1385,10 @@ jobs:
   execution-and-codec:
     needs: published-sdk-adapters
     runs-on: ubuntu-latest
-    # Corrected marker/range/clock coverage expands the job; scenario budgets stay fixed.
-    timeout-minutes: 75
+    # Corrected marker/range/clock coverage expands the job, and the fixture step
+    # runs every later profile before failing; scenario budgets stay fixed.
+    # MySQL runs take 75 to 85 minutes; PostgreSQL's jobs take about 60.
+    timeout-minutes: 105
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Fetch this run's published SDK adapters
@@ -1409,7 +1449,7 @@ jobs:
             -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
             mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 -c \
             'cargo test --locked --offline --all-targets > /evidence/rust-tests.txt && cargo build --locked --offline && cargo run --locked --offline --example codec-fixtures -- ../tests/Fixtures/ServerParity/Codec/v1.json > /evidence/rust-codec.json'
-          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
           docker run --rm --user="$(id -u):$(id -g)" --network=none --entrypoint php \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
             scripts/conformance/server-parity/codec.php tests/Fixtures/ServerParity/Codec/v1.json \
@@ -1432,16 +1472,16 @@ jobs:
             bash scripts/conformance/server-parity/container-log-tails.sh
           }
           trap container_log_tails ERR
-          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
           mkdir -p parity-state parity-evidence
           chmod 0777 parity-state parity-evidence
-          touch parity-state/php.sqlite parity-state/embedded.sqlite
+          touch parity-state/php.sqlite parity-state/embedded.sqlite parity-state/php-layout.sqlite
           chmod 0666 parity-state/*.sqlite
           docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
-            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs > parity-evidence/comparator-tests.txt
+            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs tests/Unit/ServerParityServiceCatalogContractTest.mjs tests/Unit/ServerParityNamespaceDeleteContractTest.mjs > parity-evidence/comparator-tests.txt
           docker run --rm --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
             --network=none --entrypoint node -v "$PWD:/source:ro" -w /source \
             "$image" --test tests/Unit/ServerParityCodecDeadlineLoadTest.mjs > parity-evidence/codec-load-tests.txt
@@ -1462,6 +1502,12 @@ jobs:
               -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
               "$image" artisan server:bootstrap --force >> parity-evidence/bootstrap.txt
           done
+          # The physical layout native creates stays the frozen published 2.5.14 one.
+          layout=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
+          docker run --rm --user=1000:1000 --entrypoint php \
+            -v "$PWD/parity-state:/state" -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/php-layout.sqlite \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
+            "$layout" artisan server:bootstrap --force >> parity-evidence/bootstrap.txt
           # The API server and the CPU-limited maintenance loop share one published PHP
           # SQLite file. Let SQLite serialize their writers instead of refusing at 5 s.
           docker run -d --name "$RESOURCE_SCOPE-server" --network "$RESOURCE_SCOPE" --network-alias=parity-server \
@@ -1513,6 +1559,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
+          native_record_status=0
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR "$image" scripts/conformance/server-parity.mjs record \
@@ -1523,7 +1570,8 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json || native_record_status=$?
+          compare_status=0
           docker run --rm --user=1000:1000 --entrypoint node \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
             scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json \
@@ -1533,7 +1581,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json > parity-evidence/comparison.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json > parity-evidence/comparison.json || compare_status=$?
           bash scripts/conformance/server-parity/published-sdk-patch-profile.sh sqlite http://parity-server:8080 http://parity-rust:8080
           bash scripts/conformance/server-parity/repeated-patch-profile.sh sqlite http://parity-server:8080 http://parity-rust:8080
           bash scripts/conformance/server-parity/legacy-marker-profile.sh sqlite http://parity-server:8080 http://parity-rust:8080
@@ -1619,7 +1667,7 @@ jobs:
           # writable so SQLite can manage its shared-memory cache; use Rust's UID.
           docker run --rm --user="$(id -u):$(id -g)" --network=none --entrypoint php \
             -v "$PWD:/source:ro" -v "$PWD/parity-state:/state" -w /source "$image" \
-            scripts/conformance/server-parity/schema.php /state/php.sqlite /state/rust.sqlite > parity-evidence/schema-comparison.json
+            scripts/conformance/server-parity/schema.php /state/php-layout.sqlite /state/rust.sqlite > parity-evidence/schema-comparison.json
           docker logs "$RESOURCE_SCOPE-rust" > parity-evidence/rust-killed.log 2>&1
           docker run -d --name "$RESOURCE_SCOPE-recovered" --network "$RESOURCE_SCOPE" --network-alias=parity-recovered \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
@@ -1644,6 +1692,10 @@ jobs:
               php scripts/conformance/server-parity/cooperative-restart.php finish http://parity-recovered:8080 /evidence/cooperative-restart-receipt.json > /evidence/cooperative-restart-finish.json
               php scripts/conformance/server-parity/restart.php finish http://parity-recovered:8080 /evidence/restart-receipt.json > /evidence/restart-finish.json
             '
+          # A native fixture difference fails the step only after every later
+          # check has run, so one difference cannot hide the rest.
+          test "$native_record_status" -eq 0
+          test "$compare_status" -eq 0
       - name: Compare separate configured role-token cohort
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
@@ -1767,7 +1819,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p parity-evidence parity-summary
-          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
           docker run --rm --user="$(id -u):$(id -g)" --network=none --cpus=1 --memory=256m --memory-swap=256m \
             --entrypoint node -e PARITY_JOB_OUTCOME -e GITHUB_SHA \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence:ro" -v "$PWD/parity-summary:/summary" \

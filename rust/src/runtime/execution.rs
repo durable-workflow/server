@@ -149,6 +149,11 @@ impl Runtime {
             max: self.queries.history_page_size_max,
         }
     }
+    /// The wait of a workflow or activity poll that names none
+    /// (DW_WORKER_POLL_TIMEOUT).
+    pub(super) fn worker_poll_wait(&self) -> u64 {
+        u64::try_from(self.queries.worker_poll_timeout_seconds).unwrap_or(0)
+    }
     /// Immutable configured-token cohort. Database transitions and scheduler
     /// stay shared; configuring credentials does not mutate process state.
     pub fn with_role_tokens(
@@ -359,6 +364,7 @@ impl Runtime {
     delegate!(delete_search_attribute(name: &str) -> Result<Value>);
     delegate!(set_external_policy(name: &str, body: Value) -> Result<Value>);
     delegate!(update_namespace(name: &str, body: Value) -> Result<Value>);
+    delegate!(delete_namespace(name: &str) -> Result<Value>);
     delegate!(
         upload_external_local(
             local: crate::external_payload::LocalStorage,
@@ -513,6 +519,7 @@ impl Runtime {
     ) -> Result<Value> {
         let body = super::start_request::normalized(body);
         super::input_envelope::transport(&body)?;
+        super::laravel_validation::operation_name(name, "signal")?;
         super::command_requests::signal(&body)?;
         let arguments = self.command_arguments(&body).await?;
         let prepared = super::store::prepare_control_arguments(
@@ -629,6 +636,7 @@ impl Runtime {
     ) -> Result<(StatusCode, Value)> {
         let body = super::start_request::normalized(body);
         super::input_envelope::transport(&body)?;
+        super::laravel_validation::operation_name(name, "update")?;
         super::command_requests::update(&body)?;
         let arguments = self.command_arguments(&body).await?;
         if arguments.len() > super::queries::ARGUMENT_BYTES {
@@ -684,9 +692,7 @@ impl Runtime {
             }
             error
         };
-        if name.len() > 256 {
-            return Err(invalid("query_name", "The query name exceeds the maximum length of 256 bytes."));
-        }
+        super::laravel_validation::operation_name(name, "query")?;
         self.query_target(workflow_id, run_id).await?;
         let input = super::laravel_validation::normalized(body.get("input")).filter(|value| !value.is_null());
         if input.as_ref().is_some_and(|value| !value.is_object() && !value.is_array()) {
@@ -883,18 +889,22 @@ impl Runtime {
             page_size: i64,
         ) -> Result<Value>
     );
-    pub(crate) async fn register(&self, body: Value) -> Result<Value> {
+    #[cfg(test)]
+    pub(crate) async fn register_unversioned(&self, body: Value) -> Result<Value> {
+        self.register(body, None).await
+    }
+    pub(crate) async fn register(&self, body: Value, protocol: Option<&str>) -> Result<Value> {
         match &*self.storage {
-            Storage::Sqlite(store) => store.register(body, &self.queries).await,
-            Storage::Postgres(store) => store.register(body, &self.queries).await,
-            Storage::MySql(store) => store.register(body, &self.queries).await,
+            Storage::Sqlite(store) => store.register(body, &self.queries, protocol).await,
+            Storage::Postgres(store) => store.register(body, &self.queries, protocol).await,
+            Storage::MySql(store) => store.register(body, &self.queries, protocol).await,
         }
     }
-    pub(crate) async fn worker_heartbeat(&self, body: Value) -> Result<Value> {
+    pub(crate) async fn worker_heartbeat(&self, body: Value, protocol: Option<&str>) -> Result<Value> {
         match &*self.storage {
-            Storage::Sqlite(store) => store.worker_heartbeat(body, &self.queries).await,
-            Storage::Postgres(store) => store.worker_heartbeat(body, &self.queries).await,
-            Storage::MySql(store) => store.worker_heartbeat(body, &self.queries).await,
+            Storage::Sqlite(store) => store.worker_heartbeat(body, &self.queries, protocol).await,
+            Storage::Postgres(store) => store.worker_heartbeat(body, &self.queries, protocol).await,
+            Storage::MySql(store) => store.worker_heartbeat(body, &self.queries, protocol).await,
         }
     }
     pub(crate) async fn list_workers(
@@ -945,8 +955,9 @@ impl Runtime {
             Storage::MySql(store) => store.deregister_fenced(worker_id, body, codec).await,
         }
     }
+    #[cfg(test)]
     delegate!(poll(body: Value, kind: &'static str, protocol_version: &str) -> Result<Value>);
-    delegate!(poll_with_pages(body: Value, kind: &'static str, protocol_version: &str, pages: super::history_pages::HistoryPages) -> Result<Value>);
+    delegate!(poll_with_pages(body: Value, kind: &'static str, protocol_version: &str, pages: super::history_pages::HistoryPages, default_wait: u64) -> Result<Value>);
     delegate!(heartbeat_task(task_id: &str, body: Value) -> Result<Value>);
     pub(crate) async fn deliver_cancellation(&self, task_id: &str, body: Value, protocol: &str) -> Result<Value> {
         let codec = self.transition_codec.clone();
@@ -1120,6 +1131,7 @@ impl Runtime {
     }
     delegate!(heartbeat_activity(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     delegate!(activity_status(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
+    delegate!(renew_activity_lease(task_id: &str, body: Value) -> Result<Value>);
     pub(crate) async fn fail_activity(&self, task_id: &str, body: Value) -> Result<Value> {
         let (failure, blob) =
             super::activity_failures::prepare_failure(&body, self.signal_codec.clone()).await?;

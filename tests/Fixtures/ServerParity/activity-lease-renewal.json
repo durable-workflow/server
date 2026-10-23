@@ -1,0 +1,37 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "activity-lease-renewal",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "lease renewal λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "lease renewal λ"},
+    "count": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null}
+  }},
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "activity_lease_renewal": {
+    "workflow_type": "parity.v1.lease",
+    "activity_type": "parity.v1.lease_activity",
+    "heartbeat_timeout": 60,
+    "lease_seconds": 300,
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "result_blob": "wwHioz3/VYAiNwoIZG9uZQ==",
+    "validation": {
+      "missing_fields": {
+        "message": "The activity attempt id field is required. (and 1 more error)",
+        "reason": "validation_failed",
+        "errors": {"activity_attempt_id": ["The activity attempt id field is required."], "lease_owner": ["The lease owner field is required."]},
+        "validation_errors": {"activity_attempt_id": ["The activity attempt id field is required."], "lease_owner": ["The lease owner field is required."]}
+      },
+      "non_string_fields": {
+        "message": "The activity attempt id field must be a string. (and 1 more error)",
+        "reason": "validation_failed",
+        "errors": {"activity_attempt_id": ["The activity attempt id field must be a string."], "lease_owner": ["The lease owner field must be a string."]},
+        "validation_errors": {"activity_attempt_id": ["The activity attempt id field must be a string."], "lease_owner": ["The lease owner field must be a string."]}
+      }
+    }
+  },
+  "contract": "POST /api/worker/activity-tasks/{task}/renew-lease (published Server 2.11, advertised as server_capabilities.activity_lease_renewal) keeps a live attempt's lease for its owner. It answers 200 with the attempt's status: can_continue true, no heartbeat recorded, the run, task, execution and attempt identities, the stored heartbeat and its deadline unchanged, lease_renewed true, server_time, task_id and worker_session null. The lease then runs the configured 300 seconds from the renewal, never less than before, and the run's history is unchanged. A 1.19 request and an unruled body field are accepted. Ownership is checked in PHP's order with its bodies: an unknown task or attempt is 404, another task or another owner 409. Missing or non-string fields fail Laravel's validation. A heartbeat's progress is reported and its own deadline kept. A completed, cancelled or terminated attempt is refused with its status and lease_renewed false, with no lease. Embedded applications have no worker protocol."
+}

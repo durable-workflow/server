@@ -749,3 +749,66 @@ async fn a_named_namespace_child_runs_and_resolves_in_its_parents_namespace() {
     let (_, described) = scoped(&app, "alpha", "GET", "/api/workflows/named-parent", Value::Null).await;
     assert_eq!(described["status"], "completed", "{described}");
 }
+
+// `DELETE /api/namespaces/{namespace}` follows PHP's NamespaceController::destroy:
+// the namespace's rows go in one transaction, the non-zero counts are reported,
+// other namespaces keep theirs, and a missing namespace answers 404.
+#[tokio::test]
+async fn namespace_delete_removes_only_what_the_namespace_owns() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    create(&app, "doomed").await;
+    let (status, body) = scoped(&app, "doomed", "POST", "/api/search-attributes",
+        json!({"name":"CustomerTier","type":"keyword"})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    start_scoped(&app, "doomed", "namespace-delete-run").await;
+    start_scoped(&app, "default", "namespace-delete-peer").await;
+    let (status, body) = scoped(&app, "default", "DELETE", "/api/namespaces/DOOMED", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // What published PHP 2.5.14 reports for one started run and one search
+    // attribute definition.
+    assert_eq!(body, json!({"name":"doomed","status":"deleted","deleted":{
+        "workflow_commands":1,"workflow_history_events":2,"workflow_tasks":1,
+        "search_attribute_definitions":1,"workflow_run_summaries":1,"workflow_runs":1,"workflow_instances":1}}));
+    for (method, uri) in [("GET", "/api/namespaces/doomed"), ("DELETE", "/api/namespaces/doomed")] {
+        let (status, body) = scoped(&app, "default", method, uri, Value::Null).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {uri}: {body}");
+        assert_eq!(body, json!({"message":"Namespace [doomed] not found.","reason":"namespace_not_found","namespace":"doomed"}));
+    }
+    let (status, body) = scoped(&app, "default", "GET", "/api/workflows/namespace-delete-peer", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "another namespace keeps its run: {body}");
+    // The deleted run's workflow id is free again.
+    let restarted = start_scoped(&app, "default", "namespace-delete-run").await;
+    assert_eq!(restarted["outcome"], "started_new", "{restarted}");
+    runtime.close().await;
+    database.remove().await;
+}
+
+// Native does not delete external payload objects yet, so a namespace that
+// still references one refuses, as PHP does when its storage is unavailable,
+// and nothing is deleted.
+#[tokio::test]
+async fn namespace_delete_refuses_while_external_payloads_remain() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    create(&app, "held").await;
+    start_scoped(&app, "held", "namespace-delete-held").await;
+    database
+        .execute("UPDATE workflow_runs SET output='{\"reference\":\"dw-external-payload:v1:held\"}' WHERE namespace='held'")
+        .await;
+    let (status, body) = scoped(&app, "default", "DELETE", "/api/namespaces/held", Value::Null).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["reason"], "external_payload_storage_driver_unavailable");
+    assert_eq!(body["namespace"], "held");
+    let (status, body) = scoped(&app, "default", "GET", "/api/namespaces/held", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "the refused namespace remains: {body}");
+    // The planted reference makes describe resolve an external payload, so
+    // the listing shows the run is still there.
+    let (status, body) = scoped(&app, "held", "GET", "/api/workflows", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.to_string().contains("namespace-delete-held"), "its run remains: {body}");
+    runtime.close().await;
+    database.remove().await;
+}

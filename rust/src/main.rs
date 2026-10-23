@@ -206,6 +206,10 @@ fn runtime_credentials_enabled() -> Result<bool, Box<dyn Error>> {
 /// forwarded attribution and disabled backward compatibility. Only the token
 /// and none drivers are qualified.
 fn validate_auth_configuration() -> Result<(), Box<dyn Error>> {
+    // The contract audit compares this flag lossily; refuse a value that is
+    // not text before it could be read as PHP's default.
+    auth_value("DW_AUTH_BACKWARD_COMPATIBLE")?;
+    auth_value("WORKFLOW_SERVER_AUTH_BACKWARD_COMPATIBLE")?;
     if let Some(driver) = auth_setting("DW_AUTH_DRIVER", "WORKFLOW_SERVER_AUTH_DRIVER")? {
         if driver != "token" && driver != "none" {
             return Err("unsupported development authentication configuration".into());
@@ -496,6 +500,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Err(refusal.into());
     }
     validate_auth_configuration()?;
+    // Every authentication setting is read before storage is selected, so an
+    // unreadable value is refused as authentication configuration.
+    let (anonymous, runtime_credentials) = (anonymous_driver()?, runtime_credentials_enabled()?);
     // Published PHP reads each token under its `DW_*` name, or else its
     // legacy `WORKFLOW_SERVER_*` name, so an unchanged deployment starts.
     let worker_token = auth_setting("DW_WORKER_TOKEN", "WORKFLOW_SERVER_WORKER_TOKEN")?;
@@ -549,7 +556,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     let runtime = runtime
         .with_role_tokens(worker_token, operator_token, admin_token)
-        .with_auth_options(anonymous_driver()?, runtime_credentials_enabled()?);
+        .with_auth_options(anonymous, runtime_credentials);
     let listener = tokio::net::TcpListener::bind(address).await?;
     eprintln!(
         "Rust development runtime listening on {}",

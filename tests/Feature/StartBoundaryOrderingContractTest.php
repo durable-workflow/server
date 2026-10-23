@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Models\WorkerRegistration;
+use App\Support\WorkflowMetadataCapabilityPolicy;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\InteractiveCommandWorkflow;
@@ -88,7 +90,18 @@ class StartBoundaryOrderingContractTest extends TestCase
             workerId: 'worker-start-boundary-'.$runId,
             taskQueue: 'start-boundary',
             supportedWorkflowTypes: ['tests.interactive-command-workflow'],
+            capabilities: [
+                WorkflowMetadataCapabilityPolicy::MEMO_UPSERTS,
+                WorkflowMetadataCapabilityPolicy::TYPED_SEARCH_ATTRIBUTES,
+                'workflow_updates',
+            ],
         );
+        WorkerRegistration::query()->where('namespace', 'default')
+            ->where('worker_id', 'worker-start-boundary-'.$runId)->sole()->update([
+                'workflow_command_contracts' => [
+                    'tests.interactive-command-workflow' => ['updates' => ['approve']],
+                ],
+            ]);
 
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [

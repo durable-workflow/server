@@ -12,6 +12,9 @@ import {checkWorkerDeregistration} from './worker-deregistration-contract.mjs';
 import {checkLateWorkflowCompletion} from './late-workflow-completion-contract.mjs';
 import {checkSearchAttributes} from './search-attribute-contract.mjs';
 import {checkStorageTest} from './storage-test-contract.mjs';
+import {checkActivityLeaseRenewal} from './activity-lease-renewal-contract.mjs';
+import {checkServiceCatalog} from './service-catalog-contract.mjs';
+import {checkNamespaceDelete} from './namespace-delete-contract.mjs';
 import {checkSchedulePolicies} from './schedule-policies-contract.mjs';
 import {checkScheduleCatalog} from './schedule-catalog-contract.mjs';
 import {checkSignalsBeforeWorker} from './signals-before-worker-contract.mjs';
@@ -141,6 +144,9 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const lateWorkflowCompletion = fixture.late_workflow_completion ? checkLateWorkflowCompletion(fixture, observation, workflowId) : null;
   const searchAttributes = fixture.search_attributes ? checkSearchAttributes(fixture, observation, workflowId) : null;
   const storageTest = fixture.storage_test ? checkStorageTest(fixture, observation, workflowId) : null;
+  const activityLeaseRenewal = fixture.activity_lease_renewal ? checkActivityLeaseRenewal(fixture, observation, workflowId) : null;
+  const serviceCatalog = fixture.service_catalog ? checkServiceCatalog(fixture, observation, workflowId) : null;
+  const namespaceDelete = fixture.namespace_delete ? checkNamespaceDelete(fixture, observation, workflowId) : null;
   const schedulePolicies = fixture.schedule_policies ? checkSchedulePolicies(fixture, observation, workflowId) : null;
   const scheduleCatalog = fixture.schedule_catalog ? checkScheduleCatalog(fixture, observation, workflowId) : null;
   const signalsBeforeWorker = fixture.signals_before_worker ? checkSignalsBeforeWorker(fixture, observation, workflowId) : null;
@@ -687,6 +693,9 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(lateWorkflowCompletion ? {late_workflow_completion: lateWorkflowCompletion} : {}),
     ...(searchAttributes ? {search_attributes: searchAttributes} : {}),
     ...(storageTest ? {storage_test: storageTest} : {}),
+    ...(activityLeaseRenewal ? {activity_lease_renewal: activityLeaseRenewal} : {}),
+    ...(serviceCatalog ? {service_catalog: serviceCatalog} : {}),
+    ...(namespaceDelete ? {namespace_delete: namespaceDelete} : {}),
     ...(schedulePolicies ? {schedule_policies: schedulePolicies} : {}),
     ...(scheduleCatalog ? {schedule_catalog: scheduleCatalog} : {}),
     ...(signalsBeforeWorker ? {signals_before_worker: signalsBeforeWorker} : {}),

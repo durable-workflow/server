@@ -24,13 +24,13 @@ const firstWorker = {worker_id: first, namespace: 'default', task_queue: queues[
   max_concurrent_workflow_tasks: capacity.workflow, max_concurrent_activity_tasks: capacity.activity,
   max_concurrent_worker_sessions: capacity.sessions, task_slots: {...definition.stored_task_slots,
     workflow_capacity: capacity.workflow, activity_capacity: capacity.activity, session_capacity: capacity.sessions},
-  process_metrics: {process_uptime_seconds: 0, process_id: 17}, heartbeat_interval_seconds: null, status: 'active',
+  process_metrics: {process_uptime_seconds: 0, process_id: 17, _worker_protocol_version: '1.19'}, heartbeat_interval_seconds: null, status: 'active',
   last_heartbeat_at: at, registered_at: at};
 const secondWorker = {...firstWorker, worker_id: second, task_queue: queues[1], build_id: null,
   workflow_definition_fingerprints: [], supported_activity_types: [], max_concurrent_workflow_tasks: 1,
   max_concurrent_activity_tasks: 1, max_concurrent_worker_sessions: 10,
   task_slots: {workflow_available: null, activity_available: null, session_available: null,
-    workflow_capacity: 1, activity_capacity: 1, session_capacity: 10}, process_metrics: null};
+    workflow_capacity: 1, activity_capacity: 1, session_capacity: 10}, process_metrics: {_worker_protocol_version: '1.19'}};
 const listing = workers => ({stale_after_seconds: definition.stale_after_seconds, workers});
 const described = {...firstWorker, updated_at: at, stale_after_seconds: definition.stale_after_seconds};
 const refusal = (reason, error, remediation) => ({status: 409, response: {error, reason,
@@ -48,7 +48,7 @@ const observation = () => structuredClone({mode: 'http', worker_listing: {applic
     'Advertise the matching definition fingerprint or restart with a new worker_id.'),
   after_refusals: described,
   after_reregistration: {...described, task_slots: {...described.task_slots, workflow_available: null,
-    activity_available: null, session_available: null}, process_metrics: null}}});
+    activity_available: null, session_available: null}, process_metrics: {_worker_protocol_version: '1.19'}}}});
 
 test('worker listing accepts the published facts in any equal-heartbeat order', () => {
   assert.deepStrictEqual(checkWorkerListing(fixture, observation(), id),

@@ -425,7 +425,17 @@ where
 
     /// `GET /api/task-queues/{name}`.
     pub(crate) async fn describe_task_queue(&self, queue: &str, config: &QueryTaskConfig) -> Result<Value> {
-        self.queue_view(queue, config, true).await
+        let mut payload = self.queue_view(queue, config, true).await?;
+        // `TaskQueueController::show`: sampled definition routes of the
+        // queue's ready runs; a blocked one needs attention.
+        let mut tx = self.begin_read().await?;
+        let routing = self.definition_for_queue(&mut tx, queue).await?;
+        tx.commit().await?;
+        if routing["blocked_sample_count"].as_u64().unwrap_or(0) > 0 {
+            payload["repair"]["needs_attention"] = json!(true);
+        }
+        payload["definition_routing"] = routing;
+        Ok(payload)
     }
 }
 

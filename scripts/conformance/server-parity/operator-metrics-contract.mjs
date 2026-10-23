@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {isDeepStrictEqual} from 'node:util';
 
 // Reviewed operator metrics and health of one namespace, as published PHP
 // 2.5.14 reports them through a run's stages. Counts must match exactly, with
@@ -75,6 +76,12 @@ const EXPECTED = {
 const REPAIRED = {...EXPECTED.waiting_after_redispatch, tasks: {open: 1, ready: 1, ready_due_or_delayed: 1},
   backlog: {runnable_or_delayed_tasks: 1, tasks_added_last_minute: 1}};
 const REPAIRED_WARNINGS = ['command_contract_snapshots'];
+// PHP's TaskWatchdog repairs the task and projects the run before
+// TaskDispatcher redispatches it and projects the run again. Until then the
+// task is still overdue and the run reads as needing repair.
+const REPAIRING = {...EXPECTED.waiting_after_redispatch, runs: {...waitingRun, repair_needed: 1},
+  backlog: {...EXPECTED.waiting_after_redispatch.backlog, repair_needed_runs: 1}};
+const REPAIRING_WARNINGS = ['command_contract_snapshots', 'task_transport', 'routing_health', 'durable_resume_paths'];
 // Checks other than ok at each stage (the uncompared check aside).
 const WARNINGS = {
   empty: [],
@@ -85,6 +92,16 @@ const WARNINGS = {
   activity_retrying: ['command_contract_snapshots'],
   completed: [],
 };
+
+// Past the redispatch window published PHP is in one of these states, in
+// order: overdue, repairing, or redispatched. Metrics and health are separate
+// requests, so its health may be at the state its metrics show or a later one.
+// Native runs no repair loop and is held to the state its metrics show.
+const REPAIR_STATES = [
+  {counts: EXPECTED.waiting_after_redispatch, warnings: WARNINGS.waiting_after_redispatch},
+  {counts: REPAIRING, warnings: REPAIRING_WARNINGS},
+  {counts: REPAIRED, warnings: REPAIRED_WARNINGS},
+];
 
 function normalized(sections) {
   const counts = {};
@@ -134,14 +151,19 @@ function checkStage(name, stage, namespace, family) {
     assert.deepStrictEqual([raw.tasks.counts.ready_due, raw.starts.counts.ready_tasks], [1, 1], `${label} due task`);
   }
   const counts = normalized(raw);
-  const repaired = name === 'waiting_after_redispatch' && counts.tasks.max_repair_count > 0;
+  const redispatch = name === 'waiting_after_redispatch';
+  const php = redispatch && stage.runtime === 'php';
+  const repaired = redispatch && counts.tasks.max_repair_count > 0;
   if (repaired) delete counts.tasks.max_repair_count;
-  const expectedCounts = repaired ? REPAIRED : EXPECTED[name];
-  const expectedWarnings = repaired ? REPAIRED_WARNINGS : WARNINGS[name];
+  const states = redispatch ? REPAIR_STATES : [{counts: EXPECTED[name], warnings: WARNINGS[name]}];
+  // A repair count means PHP repaired the task: mid-repair (PHP only) or redispatched.
+  const possible = !repaired ? [0] : php ? [1, 2] : [2];
+  const nonzero = values => Object.fromEntries(Object.entries(values).filter(([, value]) => value !== 0));
+  const matches = index => Object.entries(counts)
+    .every(([section, values]) => isDeepStrictEqual(nonzero(values), states[index].counts[section] ?? {}));
+  const state = possible.find(matches) ?? possible[possible.length - 1];
   for (const [section, values] of Object.entries(counts)) {
-    const expected = expectedCounts[section] ?? {};
-    const nonzero = Object.fromEntries(Object.entries(values).filter(([, value]) => value !== 0));
-    assert.deepStrictEqual(nonzero, expected, `${label} ${section} counts`);
+    assert.deepStrictEqual(nonzero(values), states[state].counts[section] ?? {}, `${label} ${section} counts`);
   }
   assert.equal(stage.active_workers, ['empty', 'waiting', 'waiting_after_redispatch'].includes(name) ? 0 : 1,
     `${label} active workers`);
@@ -149,9 +171,11 @@ function checkStage(name, stage, namespace, family) {
   assert.deepStrictEqual(stage.checks.map(check => [check.name, check.category]), CHECKS, `${label} check names`);
   const statuses = stage.checks.filter(check => check.name !== UNCOMPARED_CHECK);
   assert.ok(statuses.every(check => ['ok', 'warning'].includes(check.status)), `${label} no check errors`);
-  assert.deepStrictEqual(statuses.filter(check => check.status !== 'ok').map(check => check.name), expectedWarnings,
-    `${label} warnings`);
-  const warning = expectedWarnings.length > 0 || stage.checks.some(check => check.status === 'warning');
+  const warnings = statuses.filter(check => check.status !== 'ok').map(check => check.name);
+  const allowed = (php ? states.slice(state) : [states[state]]).map(candidate => candidate.warnings);
+  const settled = allowed.find(list => isDeepStrictEqual(list, warnings)) ?? states[state].warnings;
+  assert.deepStrictEqual(warnings, settled, `${label} warnings`);
+  const warning = settled.length > 0 || stage.checks.some(check => check.status === 'warning');
   assert.deepStrictEqual([stage.health_status, stage.health.status, stage.health.healthy], [200, warning ? 'warning' : 'ok', true],
     `${label} health`);
   assert.deepStrictEqual(stage.retention, ['bounded', 30], `${label} namespace retention`);

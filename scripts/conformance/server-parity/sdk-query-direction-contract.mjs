@@ -42,11 +42,16 @@ function unchangedDurableSnapshot(before, after, message) {
   const hasAvailability = snapshot => Object.hasOwn(snapshot.execution?.actions ?? {}, 'can_query');
   assert.equal(hasAvailability(after), hasAvailability(before), 'computed query availability field stays present');
   const durable = snapshot => {
-    if (!hasAvailability(snapshot)) return snapshot;
-    assert.equal(typeof snapshot.execution.actions.can_query, 'boolean', 'actual computed query availability');
-    const actions = {...snapshot.execution.actions};
+    // definition_routing (Server 2.10.0 and native) reports how the next ready
+    // workflow task would route now, so worker presence changes it without
+    // touching the run or its history.
+    const {definition_routing: _routing, ...execution} = snapshot.execution ?? {};
+    const stable = snapshot.execution ? {...snapshot, execution} : snapshot;
+    if (!hasAvailability(stable)) return stable;
+    assert.equal(typeof stable.execution.actions.can_query, 'boolean', 'actual computed query availability');
+    const actions = {...stable.execution.actions};
     delete actions.can_query; // Only live worker availability; complete raw value stays recorded.
-    return {...snapshot, execution: {...snapshot.execution, actions}};
+    return {...stable, execution: {...stable.execution, actions}};
   };
   unchanged(durable(before), durable(after), message);
 }

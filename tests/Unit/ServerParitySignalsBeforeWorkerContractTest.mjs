@@ -10,7 +10,7 @@ const workflow = 'test-signals-before-worker-before-worker';
 const namespace = 'test-signals-before-worker-unregistered';
 const queue = 'test-signals-before-worker-unserved';
 const EVENTS = ['StartAccepted', 'WorkflowStarted', 'SignalReceived', 'SignalReceived', 'SignalReceived', 'SignalReceived',
-  'TerminateRequested', 'WorkflowTerminated'];
+  'TerminateRequested', 'WorkflowTerminated', 'SignalRejected', 'SignalRejected', 'SignalRejected', 'SignalRejected'];
 function model() {
   // Requests are recorded as the fixture's templates; responses carry the run's names.
   const steps = expected.map(step => ({...step, response: JSON.parse(JSON.stringify(step.response)

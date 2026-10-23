@@ -1,0 +1,29 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "namespace-delete",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "namespace delete λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "namespace delete λ"},
+    "count": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null}
+  }},
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "namespace_delete": {
+    "description": "delete me λ",
+    "search_attribute": {"name": "CustomerTier", "type": "keyword"},
+    "deleted": {
+      "workflow_commands": 1,
+      "workflow_history_events": 2,
+      "workflow_tasks": 1,
+      "search_attribute_definitions": 1,
+      "workflow_run_summaries": 1,
+      "workflow_runs": 1,
+      "workflow_instances": 1
+    },
+    "asynchronous_projections": ["workflow_run_timeline_entries", "workflow_run_timer_entries", "workflow_run_lineage_entries"]
+  },
+  "contract": "DELETE /api/namespaces/{namespace} (published SDK deleteNamespace) removes a namespace and every row it owns in one transaction. Here the namespace holds one search attribute definition and one started, unclaimed run, and the response is 200 {name, status: deleted, deleted} with each table's non-zero count: one command, two history events, one task, one definition, one run summary, one run and one instance. PHP fills its timeline, timer and lineage projections asynchronously, so those counts may be absent or positive. Afterwards the namespace reads and deletes as 404 namespace_not_found with the message Namespace [name] not found. A run in another namespace is untouched, and the deleted run's workflow ID starts a new run. Embedded applications have no HTTP namespaces."
+}

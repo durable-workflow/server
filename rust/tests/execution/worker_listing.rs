@@ -82,7 +82,7 @@ async fn workers_are_listed_with_their_registration_and_heartbeat_facts() {
     );
     assert_eq!(
         worker["process_metrics"],
-        json!({"process_uptime_seconds": 0, "process_id": 17})
+        json!({"process_uptime_seconds": 0, "process_id": 17, "_worker_protocol_version": "1.19"})
     );
     assert_eq!(worker["status"], "active");
     assert_eq!(worker["heartbeat_interval_seconds"], Value::Null);
@@ -94,7 +94,9 @@ async fn workers_are_listed_with_their_registration_and_heartbeat_facts() {
         json!({"workflow_available": null, "activity_available": null,
         "session_available": null, "workflow_capacity": 100, "activity_capacity": 100, "session_capacity": 10})
     );
-    assert_eq!(defaults["process_metrics"], Value::Null);
+    // Server 2.10.0 records each registration's protocol version with the
+    // process metrics (`WorkflowReplayEligibility::PROTOCOL_METRIC`).
+    assert_eq!(defaults["process_metrics"], json!({"_worker_protocol_version": "1.19"}));
     assert_eq!(ours(&app, "?task_queue=queue-a").await.len(), 1);
     assert_eq!(
         ours(&app, "?task_queue=0").await.len(),
@@ -162,7 +164,7 @@ async fn workers_are_listed_with_their_registration_and_heartbeat_facts() {
         json!({"listing": fingerprint})
     );
     assert_eq!(after["task_slots"]["workflow_available"], Value::Null);
-    assert_eq!(after["process_metrics"], Value::Null);
+    assert_eq!(after["process_metrics"], json!({"_worker_protocol_version": "1.19"}));
     assert_eq!(after["registered_at"], described["registered_at"]);
 
     // A heartbeat changes only what it reports.

@@ -400,9 +400,12 @@ class PrometheusMetricsSummary
 
     private function selectLatencyBuckets($query, string $durationExpr, string $durationAvailableSql): void
     {
+        // SQLite duration expressions have no affinity, while PDO binds floats as text.
+        $bound = $query->getConnection()->getDriverName() === 'sqlite' ? 'CAST(? AS REAL)' : '?';
+
         foreach (self::LATENCY_BUCKETS_SECONDS as $index => $bucket) {
             $query->selectRaw(
-                "SUM(CASE WHEN {$durationAvailableSql} AND {$durationExpr} <= ? THEN 1 ELSE 0 END) as bucket_{$index}",
+                "SUM(CASE WHEN {$durationAvailableSql} AND {$durationExpr} <= {$bound} THEN 1 ELSE 0 END) as bucket_{$index}",
                 [$bucket],
             );
         }

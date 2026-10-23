@@ -553,11 +553,15 @@ where
     pub(super) async fn poll_query(&self, body: Value, config: &QueryTaskConfig) -> Result<Value> {
         let owner = text(&body, "worker_id")?;
         text(&body, "task_queue")?;
-        let timeout = body
-            .get("timeout_seconds")
-            .map_or(Some(5), Value::as_u64)
-            .filter(|v| *v <= 60)
-            .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_poll_timeout"))?;
+        // `queryPollTimeoutSeconds`: the requested wait, or the worker poll
+        // wait (DW_WORKER_POLL_TIMEOUT), capped by DW_QUERY_TASK_POLL_TIMEOUT.
+        let timeout = match body.get("timeout_seconds") {
+            None | Some(Value::Null) => u64::try_from(config.worker_poll_timeout_seconds).unwrap_or(0),
+            Some(value) => super::laravel_validation::integer(value)
+                .filter(|v| (0..=60).contains(v))
+                .and_then(|v| u64::try_from(v).ok())
+                .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_poll_timeout"))?,
+        };
         let timeout = timeout.min(config.poll_timeout_seconds.max(1) as u64);
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
         // One request belongs to the registration observed before its wait.
@@ -788,7 +792,8 @@ where
             return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
         }
         let types = DB::document_row(&worker, "supported_workflow_types")?;
-        let capabilities = DB::document_row(&worker, "capabilities")?;
+        // A registration without capabilities has none (`stringArray`).
+        let capabilities = DB::optional_document_row(&worker, "capabilities")?.unwrap_or_default();
         if !capabilities
             .as_array()
             .is_some_and(|values| values.iter().any(|v| v == "query_tasks"))
