@@ -437,6 +437,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $payloadCleanup = isset($fixture['payload_cleanup']) ? finishHttpPayloadCleanup($client, $fixture, $workflowId, $url) : null;
     $repairPass = isset($fixture['repair_pass']) ? finishHttpRepairPass($client, $fixture, $workflowId, $url) : null;
     $namespaceDelete = isset($fixture['namespace_delete']) ? finishHttpNamespaceDelete($client, $fixture, $workflowId, $queue, $url) : null;
+    $updateValidation = isset($fixture['update_validation']) ? finishHttpUpdateValidation($client, $fixture, $workflowId, $url) : null;
     $schedulePolicies = isset($fixture['schedule_policies']) ? finishHttpSchedulePolicies($client, $fixture, $workflowId, $url) : null;
     $scheduleCatalog = isset($fixture['schedule_catalog'])
         ? finishHttpSchedulePolicies($client, $fixture, $workflowId, $url, 'schedule_catalog')
@@ -543,6 +544,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'payload_cleanup' => $payloadCleanup,
         'repair_pass' => $repairPass,
         'namespace_delete' => $namespaceDelete,
+        'update_validation' => $updateValidation,
         'schedule_policies' => $schedulePolicies,
         'schedule_catalog' => $scheduleCatalog,
         'signals_before_worker' => $signalsBeforeWorker,
@@ -853,6 +855,7 @@ try {
     require __DIR__.'/payload-cleanup-probe.php';
     require __DIR__.'/repair-pass-probe.php';
     require __DIR__.'/namespace-delete-probe.php';
+    require __DIR__.'/update-validation-probe.php';
     require __DIR__.'/schedule-policies-probe.php';
     require __DIR__.'/signals-before-worker-probe.php';
     require __DIR__.'/worker-deregistration-probe.php';
@@ -1031,6 +1034,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['namespace_delete'])) {
         $observation['namespace_delete'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_namespaces'];
+    }
+    if ($mode === 'embedded' && isset($fixture['update_validation'])) {
+        $observation['update_validation'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_update_validation'];
     }
     if ($mode === 'embedded' && isset($fixture['schedule_policies'])) {
         $observation['schedule_policies'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_schedules'];

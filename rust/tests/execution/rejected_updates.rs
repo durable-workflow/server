@@ -80,7 +80,8 @@ async fn refused_updates_are_recorded_like_php() {
     // delivered to the waiting run.
     let (status, admitted) = update(&app, "rejected-update", "set", input(vec![Payload::Long(5)])).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{admitted}");
-    assert_eq!(admitted["accepted"], true, "{admitted}");
+    // PHP's result mapper sends `accepted` only when it is false.
+    assert!(admitted.get("accepted").is_none(), "{admitted}");
     assert!(admitted["command_sequence"].as_i64().unwrap() > unknown["command_sequence"].as_i64().unwrap());
     let task = poll(&app, "update-a", "workflow").await;
     assert!(task["task_id"].is_string(), "{task}");
