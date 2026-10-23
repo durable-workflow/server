@@ -160,6 +160,8 @@ mod history_retention;
 mod repair_status;
 #[path = "execution/repair_pass.rs"]
 mod repair_pass;
+#[path = "execution/activity_lease_expiry.rs"]
+mod activity_lease_expiry;
 #[path = "execution/activity_timeout_pass.rs"]
 mod activity_timeout_pass;
 #[path = "execution/start_request.rs"]

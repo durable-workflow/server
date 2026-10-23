@@ -203,7 +203,7 @@ WITH utc_tasks AS (
 )
 SELECT t.*,r.workflow_type FROM ordered_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id
 WHERE r.status IN ('pending','running','waiting')
-    AND (t.status='ready' OR (t.status='leased' AND t._dw_lease_order<=rtrim(rtrim($4,'0'),'.')))
+    AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t._dw_lease_order<=rtrim(rtrim($4,'0'),'.')))
     AND (t.available_at IS NULL OR t._dw_available_order<=rtrim(rtrim($5,'0'),'.'))
 ORDER BY t.priority,t._dw_available_order,t.id LIMIT 100
 "#;

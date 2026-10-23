@@ -11,11 +11,13 @@
 //! PHP's poll-mode selection: up to 25 candidates of each kind, one from each
 //! connection, queue and compatibility scope in turn, oldest first.
 //!
-//! Recoveries native does not perform yet are reported as failures of their
-//! candidate, so the pass answers 207 rather than claiming a repair: an
-//! expired lease on a running activity (PHP consumes its retry policy), and a
-//! missing task for a run waiting on an activity, a timer, an update, a signal
-//! or a child.
+//! An expired lease on a running activity is settled by its retry policy,
+//! as `ActivityTimeoutEnforcer::enforceLeaseExpiry` settles it.
+//!
+//! A recovery native does not perform yet is reported as its candidate's
+//! failure, so the pass answers 207 rather than claiming a repair: a missing
+//! task for a run waiting on an activity, a timer, an update, a signal or a
+//! child.
 use super::Result;
 use super::laravel_validation::{Rule, failure_messages, rule_errors};
 use super::operator_metrics::{REDISPATCH_AFTER_SECONDS, scope_rows, whole_second};
@@ -309,6 +311,8 @@ enum Recovered {
     Nothing,
     /// Native cannot perform this recovery yet; nothing was changed.
     Unported(String),
+    /// A running activity lost its lease: its retry policy settles it.
+    ExpireLease,
 }
 
 store_methods! {
@@ -432,7 +436,7 @@ store_methods! {
                     bump(&mut report, "dispatched_tasks");
                     continue;
                 }
-                Ok(Recovered::Nothing) => continue,
+                Ok(Recovered::Nothing | Recovered::ExpireLease) => continue,
                 Ok(Recovered::Unported(message)) => message,
                 Err(error) => error.to_string(),
             };
@@ -446,7 +450,7 @@ store_methods! {
                     bump(&mut report, "dispatched_tasks");
                     continue;
                 }
-                Ok(Recovered::Nothing) => continue,
+                Ok(Recovered::Nothing | Recovered::ExpireLease) => continue,
                 Ok(Recovered::Unported(message)) => message,
                 Err(error) => error.to_string(),
             };
@@ -525,8 +529,13 @@ store_methods! {
             return Ok(Recovered::Nothing);
         }
         let recovered = Self::recover_task_row(&mut tx, &run, &task, at).await?;
-        if let Recovered::Unported(_) = recovered {
-            return Ok(recovered);
+        match recovered {
+            Recovered::Unported(_) => return Ok(recovered),
+            Recovered::ExpireLease => {
+                drop(tx);
+                return self.settle_lease(task_id).await;
+            }
+            _ => {}
         }
         Self::project_run_summary(&mut tx, &run_id).await?;
         if let Recovered::Task = recovered {
@@ -583,21 +592,24 @@ store_methods! {
             // Timeout enforcement owns the abandoned activity's outcome.
             return Ok(Recovered::Nothing);
         }
-        let repair_count = DB::number(task, "repair_count")?
-            .checked_add(1)
-            .filter(|count| *count <= DB::REPAIR_COUNTER_MAX)
-            .ok_or_else(|| super::refuse(axum::http::StatusCode::CONFLICT, "repair_count_exhausted"))?;
+        let repair_count = || {
+            DB::number(task, "repair_count")?
+                .checked_add(1)
+                .filter(|count| *count <= DB::REPAIR_COUNTER_MAX)
+                .ok_or_else(|| super::refuse(axum::http::StatusCode::CONFLICT, "repair_count_exhausted"))
+        };
         match DB::string(task, "status")?.as_str() {
             "ready" => {
                 Self::query("UPDATE workflow_tasks SET repair_count=$1,repair_available_at=NULL,last_error=NULL,updated_at=$2 WHERE id=$3")
-                    .bind(repair_count).bind(DB::bind_time(at)).bind(&task_id).execute(&mut **tx).await?;
+                    .bind(repair_count()?).bind(DB::bind_time(at)).bind(&task_id).execute(&mut **tx).await?;
             }
             "leased" => {
+                // Loss of a running activity's lease consumes its retry
+                // policy; it never redispatches the same attempt.
                 if execution_status.as_deref() == Some("running") {
-                    return Ok(Recovered::Unported(
-                        "Native does not yet recover an expired activity lease; the activity's retry policy is unchanged.".into(),
-                    ));
+                    return Ok(Recovered::ExpireLease);
                 }
+                let repair_count = repair_count()?;
                 // `closeExpiredActivityAttempt`.
                 if let Some(execution) = &execution {
                     Self::close_current_attempt(tx, execution, "expired", at).await?;
@@ -607,6 +619,7 @@ store_methods! {
             }
             "failed" if super::task_repair::replay_blocked::<DB>(task)? => {
                 // `recoverFailedReplayTask`.
+                let repair_count = repair_count()?;
                 let mut payload = DB::document_row(task, "payload")?;
                 if let Some(fields) = payload.as_object_mut() {
                     fields.retain(|key, _| !key.starts_with("replay_blocked"));
@@ -618,6 +631,16 @@ store_methods! {
         }
         tx.summary_changed(&DB::string(run, "id")?);
         Ok(Recovered::Task)
+    }
+
+    /// `ActivityTimeoutEnforcer::enforceLeaseExpiry` for a repair candidate:
+    /// a settled lease opens the retry or the workflow task that sees the
+    /// failure. A lease the enforcer leaves alone needs no repair.
+    async fn settle_lease(&self, task_id: &str) -> Result<Recovered> {
+        Ok(match self.enforce_lease_expiry(task_id).await? {
+            super::activity_deadlines::Enforcement::Enforced { .. } => Recovered::Task,
+            super::activity_deadlines::Enforcement::Skipped(_) => Recovered::Nothing,
+        })
     }
 
     /// `closeActivityAttempt` for an execution's current running attempt.
@@ -697,8 +720,13 @@ store_methods! {
                 (Recovered::Task, task_id)
             }
         };
-        if let Recovered::Unported(_) = recovered {
-            return Ok(recovered);
+        match recovered {
+            Recovered::Unported(_) => return Ok(recovered),
+            Recovered::ExpireLease => {
+                drop(tx);
+                return self.settle_lease(&task_id).await;
+            }
+            _ => {}
         }
         Self::project_run_summary(&mut tx, run_id).await?;
         if let Recovered::Task = recovered {

@@ -95,11 +95,12 @@ async fn repair_pass_recovers_tasks_and_runs_like_php() {
     assert_eq!(quiet["selected_total_candidates"], 0, "{quiet}");
 }
 
-// A run past its deadline gets the task that closes it. A recovery native
-// does not perform yet is reported as the candidate's failure, with 207,
-// and kept on the task as its last error.
+// A run past its deadline gets the task that closes it. An expired lease on
+// a running activity is settled by its retry policy, by the scheduler or the
+// pass, whichever runs first. A candidate whose recovery fails is reported
+// with 207 and keeps the failure as its last error.
 #[tokio::test]
-async fn repair_pass_creates_deadline_tasks_and_reports_unported_recoveries() {
+async fn repair_pass_creates_deadline_tasks_settles_leases_and_reports_failures() {
     let database = TestDatabase::new().await;
     let app = router(database.open().await.unwrap());
     register(&app, "worker", json!(["echo"]), json!(["act"])).await;
@@ -109,7 +110,7 @@ async fn repair_pass_creates_deadline_tasks_and_reports_unported_recoveries() {
     execute(&database, format!("UPDATE workflow_tasks SET status='completed' WHERE workflow_run_id='{deadline}'")).await;
     execute(&database, format!("UPDATE workflow_runs SET execution_deadline_at={LONG_AGO} WHERE id='{deadline}'")).await;
 
-    // A running activity whose lease expired: PHP consumes its retry policy.
+    // A running activity whose lease expired.
     let started = start(&app, "activity").await;
     let task = poll(&app, "worker", "workflow").await;
     let command = json!({"type":"schedule_activity","activity_type":"act","arguments":envelope(Payload::Array(vec![]))});
@@ -119,24 +120,47 @@ async fn repair_pass_creates_deadline_tasks_and_reports_unported_recoveries() {
     let run = started["run_id"].as_str().unwrap();
     execute(&database, format!("UPDATE workflow_tasks SET lease_expires_at={LONG_AGO} WHERE workflow_run_id='{run}' AND task_type='activity'")).await;
 
+    // An overdue ready task whose repair counter cannot count another repair.
+    let exhausted = started_on(&app, "exhausted", "repair-e").await;
+    let exhausted = exhausted["run_id"].as_str().unwrap();
+    let most = match &database {
+        TestDatabase::Sqlite(_) => i64::MAX,
+        TestDatabase::Postgres { .. } => i64::from(i32::MAX),
+        TestDatabase::MySql { .. } => i64::from(u32::MAX),
+    };
+    execute(&database, format!("UPDATE workflow_tasks SET created_at={LONG_AGO},available_at={LONG_AGO},last_dispatched_at={LONG_AGO},repair_count={most} WHERE workflow_run_id='{exhausted}'")).await;
+
     let (status, report) = request(&app, "POST", PASS, json!({})).await;
     assert_eq!(status, StatusCode::MULTI_STATUS, "{report}");
     assert_eq!(
-        counts(&report, &["deadline_expired_candidates", "deadline_expired_tasks_created", "selected_existing_task_candidates", "repaired_existing_tasks", "dispatched_tasks"]),
-        [json!(1), json!(1), json!(1), json!(0), json!(1)],
+        counts(&report, &["deadline_expired_candidates", "deadline_expired_tasks_created"]),
+        [json!(1), json!(1)],
         "{report}"
     );
     let failures = report["existing_task_failures"].as_array().unwrap();
     assert_eq!(failures.len(), 1, "{report}");
-    assert_eq!(failures[0]["candidate_id"], activity["task_id"]);
-    assert!(failures[0]["message"].as_str().unwrap().starts_with("Native does not yet recover an expired activity lease"), "{report}");
-    let task_id = activity["task_id"].as_str().unwrap();
+    assert_eq!(failures[0]["message"], "repair_count_exhausted", "{report}");
     assert_eq!(
-        count(&database, format!("SELECT COUNT(*) FROM workflow_tasks WHERE id='{task_id}' AND status='leased' AND repair_count=0 AND last_error LIKE 'Native does not yet%'")).await,
+        count(&database, format!("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id='{exhausted}' AND status='ready' AND last_error='repair_count_exhausted'")).await,
         1
     );
     assert_eq!(
         count(&database, format!("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id='{deadline}' AND task_type='workflow' AND status='ready' AND repair_count=1")).await,
+        1
+    );
+    // The lost lease failed the activity once, as its policy allows no retry.
+    let settled = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let failed = count(&database, format!("SELECT COUNT(*) FROM workflow_history_events WHERE workflow_run_id='{run}' AND event_type='ActivityFailed'")).await;
+        if failed == 1 {
+            break;
+        }
+        assert!(failed == 0 && tokio::time::Instant::now() < settled, "{failed} lease failures");
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    let task_id = activity["task_id"].as_str().unwrap();
+    assert_eq!(
+        count(&database, format!("SELECT COUNT(*) FROM workflow_tasks WHERE id='{task_id}' AND status='cancelled' AND last_error='lease_expired'")).await,
         1
     );
 

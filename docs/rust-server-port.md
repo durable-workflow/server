@@ -170,9 +170,12 @@ contract fixture before its correction.
   PHP resolves `{codec, external_payload}` input on these routes; native
   supports it only on start.
 - **Repair of a run without a recoverable task.** Published PHP's repair
-  creates a run's missing task, and recovers an expired activity-task lease
-  with its attempt. Native refuses both with
-  `development_workflow_task_repair_unqualified`.
+  command creates a run's missing task, and settles an expired activity-task
+  lease through the activity's retry policy. Native's repair command refuses
+  both with `development_workflow_task_repair_unqualified`. Native's
+  scheduler and the repair pass settle expired activity leases as PHP's
+  repair loop does, so such a lease rarely remains for the command
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-activity-lease-expiry.md)).
 - **Structural limits.** For external workers, published PHP enforces four
   of the Workflow package's `DW_V2_LIMIT_*` limits: the memo size, the
   command batch size as a bound on parallel group metadata, the pending

@@ -643,12 +643,21 @@ async fn external_activity_result_retains_only_after_live_authority_and_survives
                 StatusCode::CONFLICT
             );
             assert_eq!(unclaimed(&database).await, 1);
-            assert_eq!(
-                json_request(&app, "GET", &history_path, "operator-token", Value::Null)
-                    .await
-                    .1,
-                before
-            );
+            // The refused completion publishes nothing. The only later event
+            // is the scheduler settling the expired lease, as PHP's repair
+            // loop does.
+            let after = json_request(&app, "GET", &history_path, "operator-token", Value::Null)
+                .await
+                .1;
+            let (before, after) = (before["events"].as_array().unwrap(), after["events"].as_array().unwrap());
+            assert_eq!(after[..before.len()], before[..], "{after:?}");
+            for event in &after[before.len()..] {
+                assert_eq!(
+                    (event["event_type"].as_str(), event["payload"]["failure_reason"].as_str()),
+                    (Some("ActivityFailed"), Some("lease_expired")),
+                    "{event}"
+                );
+            }
             runtime.close().await;
         } else {
             // Fail after retention and activity-row changes, at history publication.
