@@ -41,8 +41,8 @@ pub(super) fn canonical_type(kind: &str) -> Option<&'static str> {
 /// `server.limits.max_search_attribute_key_length` (bytes, default 128) and
 /// `max_search_attribute_value_bytes` (default 2048), read like PHP's config.
 pub(super) struct Limits {
-    key_length: i64,
-    value_bytes: i64,
+    pub(super) key_length: i64,
+    pub(super) value_bytes: i64,
 }
 
 impl Limits {

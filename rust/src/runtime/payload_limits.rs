@@ -13,7 +13,7 @@ use axum::{
 use serde_json::{Value, json};
 
 /// `server.limits.max_payload_bytes`.
-fn max_payload_bytes() -> usize {
+pub(super) fn max_payload_bytes() -> usize {
     ["DW_MAX_PAYLOAD_BYTES", "WORKFLOW_MAX_PAYLOAD_BYTES"]
         .iter()
         .find_map(|key| std::env::var(key).ok())

@@ -168,6 +168,22 @@ contract fixture before its correction.
   PHP fills them from `workflow_run_waits` and
   `workflow_run_timeline_entries`. No SDK replayer or bundle verifier reads
   either section.
+- **Cluster info, remaining fields.** Native now answers runtime external
+  payload discovery as PHP does: the namespace storage policy, the transport
+  manifest and the request limits
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-runtime-payload-discovery.md)).
+  Still absent: `capabilities`, `structural_limits`,
+  `supported_sdk_versions`, `client_compatibility`, `discovery`,
+  `topology` and the conformance manifests. No SDK changes behavior on them.
+  Waterline's activity-result view waits on
+  `capabilities.workflow_activity_result_inspection`, which stays held until
+  that read is qualified. `version` is `0.0.0`.
+- **Takeover of a payload storage policy native cannot serve.** A PHP
+  namespace whose external payload policy names `s3`, `gcs`, `azure` or
+  `custom` keeps it after a takeover. Native reports it as
+  `driver_unavailable` and refuses its uploads with 503, where PHP may have
+  served them. Takeover should refuse such a namespace, as it refuses
+  schedules native cannot run.
 - **Search attributes on start.** Published PHP validates `search_attributes`
   against the namespace registry and stores them as typed rows. Native
   answers a start that names any with

@@ -435,6 +435,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $systemMetrics = isset($fixture['system_metrics']) ? finishHttpSystemMetrics($client, $fixture, $workflowId, $url) : null;
     $prometheusMetrics = isset($fixture['prometheus_metrics']) ? finishHttpPrometheusMetrics($client, $fixture, $workflowId, $url) : null;
     $payloadCleanup = isset($fixture['payload_cleanup']) ? finishHttpPayloadCleanup($client, $fixture, $workflowId, $url) : null;
+    $clusterInfo = isset($fixture['cluster_info']) ? finishHttpClusterInfo($client, $fixture, $workflowId, $url) : null;
     $repairPass = isset($fixture['repair_pass']) ? finishHttpRepairPass($client, $fixture, $workflowId, $url) : null;
     $namespaceDelete = isset($fixture['namespace_delete']) ? finishHttpNamespaceDelete($client, $fixture, $workflowId, $queue, $url) : null;
     $schedulePolicies = isset($fixture['schedule_policies']) ? finishHttpSchedulePolicies($client, $fixture, $workflowId, $url) : null;
@@ -541,6 +542,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'system_metrics' => $systemMetrics,
         'prometheus_metrics' => $prometheusMetrics,
         'payload_cleanup' => $payloadCleanup,
+        'cluster_info' => $clusterInfo,
         'repair_pass' => $repairPass,
         'namespace_delete' => $namespaceDelete,
         'schedule_policies' => $schedulePolicies,
@@ -851,6 +853,7 @@ try {
     require __DIR__.'/system-metrics-probe.php';
     require __DIR__.'/prometheus-metrics-probe.php';
     require __DIR__.'/payload-cleanup-probe.php';
+    require __DIR__.'/cluster-info-probe.php';
     require __DIR__.'/repair-pass-probe.php';
     require __DIR__.'/namespace-delete-probe.php';
     require __DIR__.'/schedule-policies-probe.php';
@@ -1022,6 +1025,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['prometheus_metrics'])) {
         $observation['prometheus_metrics'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_metrics'];
+    }
+    if ($mode === 'embedded' && isset($fixture['cluster_info'])) {
+        $observation['cluster_info'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_cluster_info'];
     }
     if ($mode === 'embedded' && isset($fixture['payload_cleanup'])) {
         $observation['payload_cleanup'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_system_routes'];

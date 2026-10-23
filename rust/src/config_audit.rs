@@ -519,8 +519,8 @@ pub const SETTINGS: &[Setting] = &[
     Setting { name: "DW_MAX_NEXUS_OPERATIONS_PER_CALLER", legacy: Some("WORKFLOW_MAX_NEXUS_OPERATIONS_PER_CALLER"), disposition: Refused(Int(200), NEXUS) },
     Setting { name: "DW_MAX_OPERATION_NAME_LENGTH", legacy: Some("WORKFLOW_MAX_OPERATION_NAME_LENGTH"), disposition: Refused(Int(256), NEXUS) },
     Setting { name: "DW_MAX_PAYLOAD_BYTES", legacy: Some("WORKFLOW_MAX_PAYLOAD_BYTES"), disposition: Honored },
-    Setting { name: "DW_MAX_PENDING_ACTIVITIES", legacy: Some("WORKFLOW_MAX_PENDING_ACTIVITIES"), disposition: Ignored },
-    Setting { name: "DW_MAX_PENDING_CHILDREN", legacy: Some("WORKFLOW_MAX_PENDING_CHILDREN"), disposition: Ignored },
+    Setting { name: "DW_MAX_PENDING_ACTIVITIES", legacy: Some("WORKFLOW_MAX_PENDING_ACTIVITIES"), disposition: Honored },
+    Setting { name: "DW_MAX_PENDING_CHILDREN", legacy: Some("WORKFLOW_MAX_PENDING_CHILDREN"), disposition: Honored },
     Setting { name: "DW_MAX_SEARCH_ATTRIBUTES", legacy: Some("WORKFLOW_MAX_SEARCH_ATTRIBUTES"), disposition: Honored },
     Setting { name: "DW_MAX_SEARCH_ATTRIBUTE_KEY_LENGTH", legacy: Some("WORKFLOW_MAX_SEARCH_ATTRIBUTE_KEY_LENGTH"), disposition: Honored },
     Setting { name: "DW_MAX_SEARCH_ATTRIBUTE_VALUE_BYTES", legacy: Some("WORKFLOW_MAX_SEARCH_ATTRIBUTE_VALUE_BYTES"), disposition: Honored },
@@ -554,7 +554,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting { name: "DW_QUERY_TASK_TTL_SECONDS", legacy: Some("WORKFLOW_SERVER_QUERY_TASK_TTL_SECONDS"), disposition: Honored },
     Setting { name: "DW_RUNTIME_CREDENTIALS_ENABLED", legacy: Some("WORKFLOW_SERVER_RUNTIME_CREDENTIALS_ENABLED"), disposition: Honored },
     Setting { name: "DW_SERIALIZER", legacy: Some("WORKFLOW_SERIALIZER"), disposition: Refused(Exact(&["", "avro"]), SERIALIZER) },
-    Setting { name: "DW_SERVER_ID", legacy: Some("WORKFLOW_SERVER_ID"), disposition: Ignored },
+    Setting { name: "DW_SERVER_ID", legacy: Some("WORKFLOW_SERVER_ID"), disposition: Honored },
     Setting { name: "DW_SERVER_KEY", legacy: None, disposition: Honored },
     Setting { name: "DW_SERVER_PROCESS_CLASS", legacy: Some("WORKFLOW_SERVER_PROCESS_CLASS"), disposition: Refused(NotIn(&["scheduler_node", "worker_node"]), TOPOLOGY) },
     Setting { name: "DW_SERVER_TOPOLOGY_SHAPE", legacy: Some("WORKFLOW_SERVER_TOPOLOGY_SHAPE"), disposition: Refused(NotIn(&["embedded", "split_control_execution"]), TOPOLOGY) },
@@ -881,7 +881,7 @@ mod tests {
             &[("DW_V2_PIN_TO_RECORDED_FINGERPRINT", "no")],
             &[("DW_SERIALIZER", "")],
             &[("DW_STORAGE_CONNECTION", "pgsql"), ("DB_CONNECTION", "pgsql")],
-            // Ignored settings take any value.
+            // Ignored and reported settings take any value.
             &[("DW_MAX_PENDING_ACTIVITIES", "10"), ("DW_COMPRESSION_ENABLED", "false")],
         ];
         for values in accepted {

@@ -98,6 +98,7 @@ for target in php native; do
     consumer "arguments-$count-reader" external-arguments-worker "external-arguments-$count" reader "/evidence/$target/arguments-$count-author.json"
   done
   consumer completion-upload activity-completion-upload-probe external-completion-upload
+  consumer discovery external-discovery-client external-discovery
 done
 docker run --rm --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m --network=none --entrypoint php \
   -v "$PWD:/source:ro" -v "$PWD/$evidence:/evidence:ro" -w /source "$image" \

@@ -78,6 +78,7 @@ mod namespaces;
 mod operator_dashboard;
 mod operator_metrics;
 mod payload_cleanup;
+mod payload_discovery;
 mod payload_limits;
 mod poll_readiness;
 pub mod postgres;

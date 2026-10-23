@@ -202,16 +202,21 @@ pub(crate) fn php_json_len(value: &Value) -> usize {
     }
 }
 
+/// `server.limits.max_memo_bytes`.
+pub(super) fn max_memo_bytes() -> i64 {
+    std::env::var("DW_MAX_MEMO_BYTES")
+        .or_else(|_| std::env::var("WORKFLOW_MAX_MEMO_BYTES"))
+        .ok()
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .unwrap_or(256 * 1024)
+}
+
 /// `ScheduleController::validateMemoSize`.
 fn memo_size(memo: &Value) -> Result<()> {
     if !(memo.is_object() || memo.is_array()) {
         return Ok(());
     }
-    let limit = std::env::var("DW_MAX_MEMO_BYTES")
-        .or_else(|_| std::env::var("WORKFLOW_MAX_MEMO_BYTES"))
-        .ok()
-        .and_then(|value| value.trim().parse::<i64>().ok())
-        .unwrap_or(256 * 1024);
+    let limit = max_memo_bytes();
     if php_json_len(memo) as i64 > limit {
         return Err(RuntimeError::Protocol {
             status: StatusCode::UNPROCESSABLE_ENTITY,
