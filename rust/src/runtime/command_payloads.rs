@@ -47,6 +47,13 @@ pub(super) fn checks(body: &Value) -> Vec<Check> {
         return checks;
     };
     for (index, command) in commands.iter().enumerate() {
+        // `PayloadCodecContract::canonicalize` on any command's codec.
+        if let Some(codec) = command.get("payload_codec")
+            && let Some(message) = codec_refusal(codec)
+        {
+            checks.push(Check::Refuse(invalid(&format!("commands.{index}.payload_codec"), &message)));
+            return checks;
+        }
         let Some(kind) = command["type"].as_str() else {
             continue;
         };

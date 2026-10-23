@@ -365,15 +365,15 @@ contract fixture before its correction.
   as that wall-clock time in UTC (`12:34:56Z`), which is a different
   instant ([workflow#898](https://github.com/durable-workflow/workflow/issues/898)).
   Native stores the instant written (`10:34:56Z`).
-- **Worker payload strings.** Native refuses every command payload that is
-  not a valid one, as PHP does
-  ([checkpoint](rust-server-port-checkpoints/2026-10-23-command-payloads.md)).
-  Two shapes still differ:
-  - PHP accepts a bare string `complete_workflow` result and plain
-    continue-as-new arguments; native refuses both with
-    `unsupported_payload_codec`.
-  - A non-integer timer delay is a Laravel field error on PHP and
-    `invalid_timer_delay` on native.
+- **Workflow task command fields.** Native checks a completion with PHP's
+  transport rules, then its payload and normalizer rules
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-completion-rules.md)).
+  Two differences remain:
+  - PHP ignores unknown and null command fields. Native's per-command field
+    lists refuse them with `unsupported_request_field`.
+  - A timer delay, retry backoff or wait timeout too large for a timestamp
+    is refused on native. PHP accepts it, and wraps a timer's fire time into
+    the past, so the timer fires at once.
 - **Search attribute limits.** Over 100 attributes or 64 KB per run, PHP
   raises an uncaught `InvalidArgumentException` while applying the command.
   Native refuses the completion with `422 search_attribute_limit_exceeded`

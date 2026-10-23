@@ -449,7 +449,9 @@ async fn continuation_commits_one_successor_and_preserves_original_receipts_afte
         &task,
         json!([{"type":"continue_as_new","arguments":envelope(Payload::Array(vec![Payload::Long(7)])),"workflow_type":null,"queue":"test"}]),
     );
-    body["sticky_cache"] = json!({"worker_id":"continuation-worker","ttl_seconds":300});
+    // PHP requires every sticky cache field once one is sent.
+    body["sticky_cache"] = json!({"worker_id":"continuation-worker","workflow_id":"continuation-original",
+        "run_id":task["run_id"],"build_id":"build-1","ttl_seconds":300});
     let committed = request(&app, "POST", &path, body.clone()).await;
     assert_eq!(committed.0, StatusCode::OK, "{}", committed.1);
     assert_eq!(committed.1["recorded"], true);

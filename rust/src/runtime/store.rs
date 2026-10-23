@@ -2113,6 +2113,9 @@ where
         // Validate the entire batch before mutation. Unknown commands and
         // options cannot be silently accepted as unsupported durable effects.
         for (index, command) in commands.iter().enumerate() {
+            // The command normalizer's field scopes and value rules, with
+            // PHP's messages, before native's own refusals.
+            super::completion_rules::normalizer_checks(index, command)?;
             let command_type = text(command, "type")?;
             if self.namespace.as_ref() != "default"
                 && !matches!(
@@ -3919,11 +3922,16 @@ fn version_marker_payload(command: &Value) -> Result<Value> {
     let version = integer("version")?;
     let min = integer("min_supported")?;
     let max = integer("max_supported")?;
-    if change_id.is_empty() || min > max || version < min || version > max {
+    if change_id.is_empty() {
         return Err(refuse(
             StatusCode::UNPROCESSABLE_ENTITY,
             "invalid_version_marker",
         ));
+    }
+    // PHP's bridge refuses a version outside its supported range with 409
+    // `invalid_commands`, recording nothing.
+    if min > max || version < min || version > max {
+        return Err(refuse(StatusCode::CONFLICT, "invalid_commands"));
     }
     Ok(json!({"change_id":change_id,"version":version,"min_supported":min,"max_supported":max}))
 }

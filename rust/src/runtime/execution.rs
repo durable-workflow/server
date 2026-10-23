@@ -1214,6 +1214,7 @@ impl Runtime {
     ) -> Result<Value> {
         self.check_command_payloads(&body).await?;
         let external = self.prepare_command_payloads(&body).await?;
+        let body = super::completion_rules::canonical_payloads(body)?;
         if let Some(commands) = body["commands"].as_array() {
             for command in commands
                 .iter()

@@ -314,7 +314,8 @@ async fn timeout_retry_preserves_full_snapshot_and_global_deadline_across_restar
     let mut scheduled = command("start_to_close_timeout", 2);
     scheduled["schedule_to_close_timeout"] = json!(30);
     scheduled["schedule_to_start_timeout"] = json!(10);
-    scheduled["heartbeat_timeout"] = json!(5);
+    // PHP refuses a heartbeat timeout longer than start_to_close.
+    scheduled["heartbeat_timeout"] = json!(1);
     assert_eq!(
         finish_task(&app, &workflow, json!([scheduled])).await.0,
         StatusCode::OK

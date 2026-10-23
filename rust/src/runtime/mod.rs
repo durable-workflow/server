@@ -66,6 +66,7 @@ mod memo_limits;
 mod standalone_activities;
 mod archive;
 mod command_payloads;
+mod completion_rules;
 mod deployments;
 mod priority_fairness;
 mod route_fallback;

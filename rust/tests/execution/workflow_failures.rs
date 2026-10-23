@@ -67,7 +67,8 @@ async fn workflow_failure_is_terminal_atomic_and_retains_one_receipt_after_cold_
     assert_eq!(payload["exception_class"], "DomainException");
     assert_eq!(payload["exception_type"], "domain-v1");
     assert_eq!(payload["non_retryable"], true);
-    assert_eq!(payload["exception"]["message"], " inner failure λ ");
+    // Laravel's TrimStrings trims every string in the request.
+    assert_eq!(payload["exception"]["message"], "inner failure λ");
     assert_eq!(payload["exception"]["code"], 9007199254740993_i64);
     assert_eq!(
         payload["exception"]["properties"],

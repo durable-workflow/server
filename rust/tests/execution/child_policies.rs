@@ -33,16 +33,18 @@ async fn child_policies_are_validated_and_recorded_like_php() {
     let app = router(database.open().await.unwrap());
     let run = start(&app, "policy-parent").await;
     let task = cooperative_parent(&app).await;
-    for (field, value, message) in [
-        ("cancellation_policy", json!("never"), "The selected commands.0.cancellation_policy is invalid."),
-        ("cancellation_policy", json!(1), "The commands.0.cancellation_policy field must be a string."),
+    for (field, value, messages) in [
+        ("cancellation_policy", json!("never"), json!(["The selected commands.0.cancellation_policy is invalid."])),
+        // Laravel reports both rules an integer fails.
+        ("cancellation_policy", json!(1), json!(["The commands.0.cancellation_policy field must be a string.",
+            "The selected commands.0.cancellation_policy is invalid."])),
         ("parent_close_policy", json!("orphan"),
-            "The parent_close_policy must be one of: abandon, request_cancel, request_cancellation, terminate."),
+            json!(["The parent_close_policy must be one of: abandon, request_cancel, request_cancellation, terminate."])),
     ] {
         let (status, refused) = finish_cooperative(&app, &task, json!([with(json!({field: value}))])).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
         assert_eq!(refused["reason"], "validation_failed", "{refused}");
-        assert_eq!(refused["errors"][format!("commands.0.{field}")], json!([message]), "{refused}");
+        assert_eq!(refused["errors"][format!("commands.0.{field}")], messages, "{refused}");
     }
 
     // Laravel trims the request, so padded values are accepted.

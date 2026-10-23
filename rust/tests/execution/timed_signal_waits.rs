@@ -422,13 +422,14 @@ async fn invalid_timeouts_refuse_the_whole_batch_and_preserve_the_lease() {
     let run = start(&app, "invalid-signal-timeout").await;
     let task = poll(&app, "invalid-signal-timeout", "workflow").await;
     let prefix = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
-    for timeout in [
-        json!(-1),
-        json!(1.5),
-        json!(true),
-        json!("1"),
-        json!([]),
-        json!(i64::MAX),
+    // PHP's rule and normalizer refusals, then native's own for a timeout too
+    // large for a timestamp, which PHP accepts. "1" is an integer to PHP.
+    for (timeout, reason) in [
+        (json!(-1), "validation_failed"),
+        (json!(1.5), "validation_failed"),
+        (json!(true), "validation_failed"),
+        (json!([]), "validation_failed"),
+        (json!(i64::MAX), "invalid_signal_timeout"),
     ] {
         let response=finish_task(&app,&task,json!([{"type":"record_version_marker","change_id":"atomic-timeout","version":1,"min_supported":1,"max_supported":1},{"type":"open_signal_wait","signal_name":"payload","timeout_seconds":timeout}])).await;
         assert_eq!(
@@ -437,7 +438,7 @@ async fn invalid_timeouts_refuse_the_whole_batch_and_preserve_the_lease() {
             "{}",
             response.1
         );
-        assert_eq!(response.1["reason"], "invalid_signal_timeout");
+        assert_eq!(response.1["reason"], reason, "{}", response.1);
         assert_eq!(
             run_history(&app, &run["workflow_id"], &run["run_id"]).await,
             prefix

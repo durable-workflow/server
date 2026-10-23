@@ -58,7 +58,8 @@ async fn markers_survive_restart_and_advance_later_authored_turns_once() {
     let started = start(&app, "version-markers").await;
     let task = poll(&app, "marker-worker", "workflow").await;
     let mut before = marker(" \tfirst λ\n");
-    before["payload_codec"] = json!("newer-ignored-codec");
+    // PHP refuses an unknown codec on any command, a marker included.
+    before["payload_codec"] = json!("avro");
     before["future_metadata"] = json!({"ignored":true});
     let commands = json!([before, activity_command(), marker("after-activity")]);
     assert_eq!(
@@ -193,30 +194,26 @@ async fn invalid_marker_batches_preserve_original_lease_and_full_history() {
     let started = start(&app, "invalid-version-markers").await;
     let task = poll(&app, "marker-worker", "workflow").await;
     let prefix = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
-    for (field, value) in [
-        ("change_id", json!(" \t\n")),
-        ("change_id", json!(1)),
-        ("version", json!(1.0)),
-        ("version", json!("1")),
-        ("version", Value::Null),
-        ("version", json!(2)),
-        ("version", json!(-2)),
-        ("min_supported", json!(2)),
-        ("max_supported", json!(-2)),
-        ("min_supported", json!("-1")),
-        ("max_supported", Value::Null),
-        ("retry_policy", json!({"max_attempts":2})),
-        ("delay_seconds", json!(1)),
+    // Published PHP 2.11.1's answers: a malformed marker or option is a 422,
+    // and a version outside its range is the bridge's 409. Digit strings such
+    // as "1" and "-1" are integers to PHP.
+    for (field, value, status) in [
+        ("change_id", json!(" \t\n"), StatusCode::UNPROCESSABLE_ENTITY),
+        ("change_id", json!(1), StatusCode::UNPROCESSABLE_ENTITY),
+        ("version", json!(1.0), StatusCode::UNPROCESSABLE_ENTITY),
+        ("version", Value::Null, StatusCode::UNPROCESSABLE_ENTITY),
+        ("version", json!(2), StatusCode::CONFLICT),
+        ("version", json!(-2), StatusCode::CONFLICT),
+        ("min_supported", json!(2), StatusCode::CONFLICT),
+        ("max_supported", json!(-2), StatusCode::CONFLICT),
+        ("max_supported", Value::Null, StatusCode::UNPROCESSABLE_ENTITY),
+        ("retry_policy", json!({"max_attempts":2}), StatusCode::UNPROCESSABLE_ENTITY),
+        ("delay_seconds", json!(1), StatusCode::UNPROCESSABLE_ENTITY),
     ] {
         let mut bad = marker("invalid");
         bad[field] = value;
         let result = finish_task(&app, &task, json!([marker("must-not-commit"), bad])).await;
-        assert_eq!(
-            result.0,
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "{field}: {}",
-            result.1
-        );
+        assert_eq!(result.0, status, "{field}: {}", result.1);
         assert_eq!(
             run_history(&app, &started["workflow_id"], &started["run_id"]).await,
             prefix,

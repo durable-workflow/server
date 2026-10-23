@@ -1884,6 +1884,8 @@ async fn complete_workflow(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
+    // PHP's transport rules come before every guard, ownership included.
+    let body = super::completion_rules::checked(body).map_err(worker_refusal)?;
     if body["commands"].as_array().is_some_and(|commands| {
         commands
             .iter()
@@ -1996,6 +1998,14 @@ fn completion_refusal(
     message: &str,
 ) -> super::RuntimeError {
     match error {
+        // The bridge's refusal of a batch it cannot apply, in PHP's
+        // completion shape.
+        super::RuntimeError::Refused { status, reason: "invalid_commands" } if status == StatusCode::CONFLICT => {
+            let mut response = json!({"task_id":task_id,"outcome":"completed","recorded":false,"run_id":null,
+                "run_status":null,"created_task_ids":[],"reason":"invalid_commands"});
+            response[attempt_field] = attempt;
+            super::RuntimeError::Protocol { status, response: worker_response(response) }
+        }
         super::RuntimeError::Refused { status, reason } if status == StatusCode::CONFLICT => {
             let mut response = json!({"reason":reason,"message":reason,"task_id":task_id});
             response[attempt_field] = attempt;

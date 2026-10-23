@@ -176,6 +176,8 @@ mod build_pins;
 mod deployments;
 #[path = "execution/priority_fairness.rs"]
 mod priority_fairness;
+#[path = "execution/completion_rules.rs"]
+mod completion_rules;
 #[path = "execution/update_routing.rs"]
 mod update_routing;
 #[path = "execution/command_payloads.rs"]
@@ -4461,9 +4463,11 @@ async fn reported_activity_failure_commits_one_persistent_retry_and_fences_old_o
     let workflow = poll(&app_a, "worker", "workflow").await;
     let arguments = envelope(Payload::Array(vec![Payload::Long(9007199254740993)]));
     let policy = json!({"max_attempts":2,"backoff_seconds":[1],"non_retryable_error_types":[]});
+    // A digit string such as "2" is an integer to PHP. A backoff too large
+    // for a timestamp is native's own refusal; PHP accepts it. PHP ignores an
+    // unknown retry policy key that native still refuses.
     for invalid in [
         json!({"max_attempts":0}),
-        json!({"max_attempts":"2"}),
         json!({"max_attempts":1.5}),
         json!({"max_attempts":2,"backoff_seconds":[-1]}),
         json!({"max_attempts":2,"backoff_seconds":[i64::MAX]}),
@@ -4679,11 +4683,13 @@ async fn terminal_activity_failures_resume_once_and_preserve_original_failure() 
             false,
             true,
         ),
+        // Laravel's TrimStrings removes the padding before PHP reads the
+        // policy, so the padded type still matches.
         (
             json!({"max_attempts":2,"backoff_seconds":[0],"non_retryable_error_types":["\u{2003}RuntimeException\u{2003}"]}),
-            2,
+            1,
             false,
-            false,
+            true,
         ),
         (
             json!({"max_attempts":3,"backoff_seconds":[1],"non_retryable_error_types":[]}),
@@ -4931,12 +4937,18 @@ async fn activity_commit_wakes_replay_and_stale_activity_attempt_is_refused() {
         StatusCode::UNPROCESSABLE_ENTITY
     );
     assert!(poll(&app, "worker", "activity").await.is_null());
-    for delay in [
-        json!(-1),
-        json!(1.5),
-        json!("1"),
-        Value::Null,
-        json!(i64::MAX),
+    // Published PHP 2.11.1's answers: its transport rules, then its command
+    // normalizer. A delay too large for a timestamp is native's own refusal;
+    // PHP wraps it into the past and fires the timer at once.
+    let normalizer = "Start timer commands require a non-negative integer delay_seconds.";
+    for (delay, reason, message) in [
+        (json!(-1), "validation_failed", Some("The commands.1.delay_seconds field must be at least 0.")),
+        (json!(1.5), "validation_failed", Some("The commands.1.delay_seconds field must be an integer.")),
+        (json!("05"), "validation_failed", Some("The commands.1.delay_seconds field must be an integer.")),
+        (Value::Null, "validation_failed", Some(normalizer)),
+        (json!(true), "validation_failed", Some(normalizer)),
+        (json!("+5"), "validation_failed", Some(normalizer)),
+        (json!(i64::MAX), "invalid_timer_delay", None),
     ] {
         let outcome = request(
             &app,
@@ -4949,7 +4961,10 @@ async fn activity_commit_wakes_replay_and_stale_activity_attempt_is_refused() {
         )
         .await;
         assert_eq!(outcome.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", outcome.1);
-        assert_eq!(outcome.1["reason"], "invalid_timer_delay");
+        assert_eq!(outcome.1["reason"], reason, "{}", outcome.1);
+        if let Some(message) = message {
+            assert_eq!(outcome.1["errors"]["commands.1.delay_seconds"], json!([message]), "{}", outcome.1);
+        }
         assert!(poll(&app, "worker", "activity").await.is_null());
     }
     assert_eq!(
