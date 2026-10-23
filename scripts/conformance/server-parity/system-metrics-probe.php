@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use DurableWorkflow\Client;
 use GuzzleHttp\Client as SystemMetricsHttp;
+use GuzzleHttp\HandlerStack;
 
 // The namespace metrics of a fresh namespace after a known sequence over raw
 // HTTP: a worker, two started runs of two workflow types, one failed workflow
@@ -16,8 +17,12 @@ function finishHttpSystemMetrics(Client $admin, array $fixture, string $workflow
     $worker = $namespace.'-worker';
     $admin->createNamespace($namespace, 'system metrics λ', 30);
     $token = getenv('DW_PARITY_TOKEN') ?: null;
+    // The SQLite reference shares its database with a one-second maintenance
+    // loop; retry its retryable lock-pressure refusals, as the other probes do.
+    $stack = HandlerStack::create();
+    $stack->push(LockPressurePollRetries::middleware(), 'lock_pressure_poll_retry');
     $http = new SystemMetricsHttp(['base_uri' => rtrim($url, '/').'/api/', 'http_errors' => false,
-        'connect_timeout' => 1, 'timeout' => 30]);
+        'connect_timeout' => 1, 'timeout' => 30, 'handler' => $stack]);
     $raw = static function (string $method, string $path, ?array $body = null, bool $worker = false) use ($http, $token, $namespace): array {
         $response = $http->request($method, $path, ['headers' => array_filter([
             'Authorization' => $token === null ? null : 'Bearer '.$token,
@@ -40,7 +45,8 @@ function finishHttpSystemMetrics(Client $admin, array $fixture, string $workflow
         $state['started'][] = $raw('POST', 'workflows', ['workflow_id' => $namespace.'-'.$index,
             'workflow_type' => $type, 'task_queue' => $queue, 'input' => $input])['status'];
     }
-    $task = $raw('POST', 'worker/workflow-tasks/poll', ['worker_id' => $worker, 'task_queue' => $queue, 'timeout_seconds' => 0], true)['response']['task'] ?? [];
+    // A short long-poll waits out a claim the maintenance loop contends.
+    $task = $raw('POST', 'worker/workflow-tasks/poll', ['worker_id' => $worker, 'task_queue' => $queue, 'timeout_seconds' => 5], true)['response']['task'] ?? [];
     $state['claimed_type'] = $task['workflow_type'] ?? null;
     $state['failed'] = $raw('POST', 'worker/workflow-tasks/'.($task['task_id'] ?? 'none').'/fail', [
         'lease_owner' => $task['lease_owner'] ?? null, 'workflow_task_attempt' => $task['workflow_task_attempt'] ?? null,
