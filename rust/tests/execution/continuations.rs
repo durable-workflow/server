@@ -76,27 +76,8 @@ async fn continuation_inherits_committed_upserts_before_successor_commands() {
         initial,
         "rejected continuation rolls back its preceding memo mutation"
     );
-    let wrong_order = completion(
-        &task,
-        json!([
-            {"type":"continue_as_new"}, body["commands"][0]
-        ]),
-    );
-    assert_eq!(
-        request(&app, "POST", &path, wrong_order).await.0,
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-    assert_eq!(
-        request(
-            &app,
-            "GET",
-            "/api/workflows/continuation-authored-memos",
-            Value::Null
-        )
-        .await
-        .1,
-        initial
-    );
+    // Published PHP applies the memo before the continuation wherever the
+    // continuation sits in the batch (`command_batches`).
     let committed = request(&app, "POST", &path, body.clone()).await;
     assert_eq!(committed.0, StatusCode::OK, "{}", committed.1);
     let parent_path = format!("/api/workflows/continuation-authored-memos/runs/{old}");
@@ -290,17 +271,18 @@ async fn malformed_or_unsupported_continuation_refuses_without_a_successor() {
         original["run_id"].as_str().unwrap()
     );
     let before = request(&app, "GET", &history_path, Value::Null).await.1;
-    for commands in [
-        json!([{"type":"continue_as_new","arguments":envelope(Payload::Long(7))}]),
-        json!([{"type":"continue_as_new","workflow_type":"different"}]),
-        json!([{"type":"continue_as_new","queue":"different"}]),
-        json!([{"type":"continue_as_new"},{"type":"complete_workflow","result":envelope(Payload::Null)}]),
+    // Two terminal commands are the bridge's 409 `invalid_commands`, as PHP's.
+    for (commands, expected) in [
+        (json!([{"type":"continue_as_new","arguments":envelope(Payload::Long(7))}]), StatusCode::UNPROCESSABLE_ENTITY),
+        (json!([{"type":"continue_as_new","workflow_type":"different"}]), StatusCode::UNPROCESSABLE_ENTITY),
+        (json!([{"type":"continue_as_new","queue":"different"}]), StatusCode::UNPROCESSABLE_ENTITY),
+        (json!([{"type":"continue_as_new"},{"type":"complete_workflow","result":envelope(Payload::Null)}]), StatusCode::CONFLICT),
     ] {
         assert_eq!(
             request(&app, "POST", &path, completion(&task, commands))
                 .await
                 .0,
-            StatusCode::UNPROCESSABLE_ENTITY
+            expected
         );
         assert_eq!(
             request(&app, "GET", &history_path, Value::Null).await.1,

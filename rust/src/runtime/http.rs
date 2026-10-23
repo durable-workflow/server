@@ -1888,7 +1888,7 @@ async fn complete_workflow(
                 "Workflow task not found.",
             )
         })
-        .map(Json)
+        .map(|body| Json(worker_response(body)))
 }
 
 /// Whether the request's worker protocol is `1.<minor>` or newer.

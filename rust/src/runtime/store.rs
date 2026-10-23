@@ -2264,9 +2264,12 @@ where
                 .bind(&run_id)
                 .fetch_one(&mut *tx)
                 .await?;
+            let created = DB::optional_document_row(&task, "receipt")?
+                .and_then(|receipt| receipt.get(COMPLETION_RECEIPT).map(|receipt| receipt["created_task_ids"].clone()))
+                .unwrap_or_else(|| json!([]));
             return Ok(
                 json!({"task_id": task_id, "run_id": run_id, "run_status": DB::string(&current,"status")?, "workflow_task_attempt": body["workflow_task_attempt"],
-                "outcome": "completed", "recorded": false, "reason": "already_completed"}),
+                "outcome": "completed", "recorded": false, "reason": "already_completed", "created_task_ids": created}),
             );
         }
         Self::workflow_task_guard(&mut tx, &task, &body).await?;
@@ -2347,6 +2350,8 @@ where
         }
         Self::validate_update_commands(&mut tx, &run_id, &task, commands).await?;
         let mut sequence = Self::authored_sequence(&mut tx, &run_id).await?;
+        // The tasks this batch's commands create, in order, as PHP reports them.
+        let mut created = Vec::new();
         Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec).await?;
         // Published parseCommands applies every other command first, whatever
         // the terminal command's position in the batch.
@@ -2370,12 +2375,11 @@ where
                 {
                     Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1").bind(&run_id).execute(&mut *tx).await?;
                 } else {
-                    self.continue_run(&mut tx, &run, &task, command, sequence)
-                        .await?;
+                    created.push(self.continue_run(&mut tx, &run, &task, command, sequence).await?);
                 }
             } else if command["type"] == "start_child_workflow" {
                 sequence += 1;
-                Self::start_child(&mut tx, &run, task_id, command, sequence).await?;
+                created.push(Self::start_child(&mut tx, &run, task_id, command, sequence).await?);
             } else if command["type"] == "record_side_effect" {
                 // `applyRecordSideEffect`: one authored sequence and its result.
                 sequence += 1;
@@ -2471,6 +2475,7 @@ where
                     false,
                 )
                 .await?;
+                created.push(activity_task.clone());
                 Self::create_activity_wait(
                     &mut tx,
                     &run_id,
@@ -2517,6 +2522,7 @@ where
                     timer_task_payload,
                 )
                 .await?;
+                created.push(timer_task.clone());
                 Self::query("UPDATE workflow_tasks SET available_at=$1 WHERE id=$2")
                     .bind(DB::bind_time(fire_at))
                     .bind(&timer_task)
@@ -2659,7 +2665,7 @@ where
             .bind(task_id)
             .execute(&mut *tx)
             .await?;
-        Self::record_completion(&mut tx, task_id, &body).await?;
+        Self::record_completion(&mut tx, task_id, &json!({COMPLETION_RECEIPT: {"request": body, "created_task_ids": created}})).await?;
         Self::resume_undelivered_cancellation(&mut tx, &run_id, &DB::string(&run, "queue")?)
             .await?;
         Self::enqueue_next_message(&mut tx, &run_id, &DB::string(&run, "queue")?).await?;
@@ -2681,7 +2687,7 @@ where
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(
-            json!({"task_id": task_id, "run_id": run_id, "run_status": run_status, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed", "recorded": true, "reason": null}),
+            json!({"task_id": task_id, "run_id": run_id, "run_status": run_status, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed", "recorded": true, "reason": null, "created_task_ids": created}),
         )
     }
 
@@ -3098,6 +3104,10 @@ where
         // receipt. A later completion must refuse it, not decode SQL NULL.
         let receipt = DB::optional_document_row(task, "receipt")?
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "task_not_leased"))?;
+        let receipt = match receipt.get(COMPLETION_RECEIPT) {
+            Some(stored) => stored["request"].clone(),
+            None => receipt,
+        };
         if receipt == *body {
             return Ok(true);
         }
@@ -3862,6 +3872,11 @@ pub(super) fn validate_arguments(
     }
     Ok(())
 }
+
+/// A workflow task completion's stored receipt: its request and the tasks it
+/// created, so a repeat answers as the original did. Older receipts, and
+/// activity receipts, are the bare request.
+const COMPLETION_RECEIPT: &str = "workflow_task_completion";
 
 /// PHP's `TERMINAL_TYPES`: the commands that close the run.
 fn is_terminal(command: &Value) -> bool {

@@ -56,6 +56,16 @@ Workflow 2.11's `DefaultWorkflowTaskBridge`:
   the closed predecessor. A continued child stays its parent's child, as
   above.
 
+## Completion responses
+
+PHP's successful completion response lists `created_task_ids`: the tasks the
+batch's own commands created, in the order applied. That is each activity's
+task, each timer's task, each child's first workflow task, then the continued
+run's first task. A resume task that a child's completion creates for its
+parent is not listed. The response also carries `protocol_version` and
+`server_capabilities`, as every PHP worker response does. Native's response
+had none of these three fields, and now has all of them.
+
 ## Differences that remain
 
 - **Resume tasks.** PHP folds a child's result into the parent's ready or
@@ -74,5 +84,11 @@ Workflow 2.11's `DefaultWorkflowTaskBridge`:
 PostgreSQL and MySQL: terminal order, two terminal commands, mixed children,
 continue-as-new over open work, a continued child's parent records, and an
 update completed alongside other commands after its update task left it open.
-`updates_preserve_original_receipts_and_fence_recovered_tasks_across_pools`
-now expects PHP's `invalid_commands` for another update in an update task.
+It also checks `created_task_ids` and `protocol_version` on the responses.
+Two older tests asserted refusals that PHP does not give:
+
+- `updates_preserve_original_receipts_and_fence_recovered_tasks_across_pools`
+  now expects PHP's `invalid_commands` for another update in an update task.
+  It no longer refuses an update task completed with `complete_workflow`.
+- `continuation_inherits_committed_upserts_before_successor_commands` no
+  longer refuses a continuation placed before the memo upsert.

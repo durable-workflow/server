@@ -61,6 +61,9 @@ async fn a_terminal_command_applies_after_the_rest_of_its_batch_like_php() {
         {"type":"start_timer","delay_seconds":3600}])).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["run_status"], "completed", "{body}");
+    // PHP reports the tasks the batch's commands created, and its protocol.
+    assert_eq!(body["created_task_ids"].as_array().map(Vec::len), Some(1), "{body}");
+    assert_eq!(body["protocol_version"], "1.20", "{body}");
     let order = kinds(&run_history(&app, &started["workflow_id"], &started["run_id"]).await);
     let timer = order.iter().position(|kind| kind == "TimerScheduled").expect("the timer is recorded");
     assert!(order.iter().position(|kind| kind == "WorkflowCompleted").expect("the run completes") > timer, "{order:?}");
@@ -99,6 +102,7 @@ async fn children_start_alongside_other_open_work_like_php() {
     let (status, body) = finish_task(&app, &task, json!([child(), child(), {"type":"start_timer","delay_seconds":3600}, activity()])).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["run_status"], "waiting", "{body}");
+    assert_eq!(body["created_task_ids"].as_array().map(Vec::len), Some(4), "{body}");
     let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
     let children: Vec<String> = all(&history, "ChildRunStarted").iter()
         .map(|event| event["payload"]["child_workflow_instance_id"].as_str().unwrap().to_owned()).collect();
@@ -134,6 +138,9 @@ async fn continue_as_new_leaves_open_work_with_the_predecessor_like_php() {
         {"type":"start_timer","delay_seconds":60}])).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["run_status"], "completed", "{body}");
+    // The activity's and timer's tasks, then the continued run's first task.
+    let created = body["created_task_ids"].as_array().unwrap();
+    assert_eq!(created.len(), 3, "{body}");
     let order = kinds(&run_history(&app, &started["workflow_id"], &started["run_id"]).await);
     assert_eq!(order.last().map(String::as_str), Some("WorkflowContinuedAsNew"), "{order:?}");
     assert_eq!(order.iter().filter(|kind| *kind == "ActivityScheduled").count(), 3, "{order:?}");
@@ -143,6 +150,7 @@ async fn continue_as_new_leaves_open_work_with_the_predecessor_like_php() {
     assert_eq!(described["status"], "pending", "{described}");
     let next = task_for(&app, "worker", "continue-open").await;
     assert_eq!(next["run_id"], described["run_id"], "{next}");
+    assert_eq!(next["task_id"], created[2], "{next}");
 }
 
 // A child that continues as new stays its parent's child: the parent records

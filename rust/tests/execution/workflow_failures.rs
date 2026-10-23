@@ -303,17 +303,18 @@ async fn workflow_failure_rejects_malformed_batches_and_stale_attempts_without_m
     let run = start(&app, "workflow-failure-invalid").await;
     let task = poll(&app, "failure-worker", "workflow").await;
     let original = history(&app, &run).await;
-    for commands in [
-        json!([{"type":"fail_workflow","message":" \t\u{000b}"}]),
-        json!([{"type":"fail_workflow","message":"failure","non_retryable":"true"}]),
-        json!([{"type":"start_timer","delay_seconds":5},{"type":"fail_workflow","message":"failure","failed_step_sequence":1}]),
-        json!([{"type":"fail_workflow","message":"one"},{"type":"fail_workflow","message":"two"}]),
-        json!([{"type":"fail_workflow","message":"one"},{"type":"complete_workflow","result":envelope(Payload::Null)}]),
-        json!([{"type":"fail_workflow","message":"one"},{"type":"unknown"}]),
+    // Two terminal commands are the bridge's 409 `invalid_commands`, as PHP's.
+    for (commands, expected) in [
+        (json!([{"type":"fail_workflow","message":" \t\u{000b}"}]), StatusCode::UNPROCESSABLE_ENTITY),
+        (json!([{"type":"fail_workflow","message":"failure","non_retryable":"true"}]), StatusCode::UNPROCESSABLE_ENTITY),
+        (json!([{"type":"start_timer","delay_seconds":5},{"type":"fail_workflow","message":"failure","failed_step_sequence":1}]), StatusCode::UNPROCESSABLE_ENTITY),
+        (json!([{"type":"fail_workflow","message":"one"},{"type":"fail_workflow","message":"two"}]), StatusCode::CONFLICT),
+        (json!([{"type":"fail_workflow","message":"one"},{"type":"complete_workflow","result":envelope(Payload::Null)}]), StatusCode::CONFLICT),
+        (json!([{"type":"fail_workflow","message":"one"},{"type":"unknown"}]), StatusCode::UNPROCESSABLE_ENTITY),
     ] {
         assert_eq!(
             finish_task(&app, &task, commands).await.0,
-            StatusCode::UNPROCESSABLE_ENTITY
+            expected
         );
         assert_eq!(history(&app, &run).await, original);
         assert_eq!(

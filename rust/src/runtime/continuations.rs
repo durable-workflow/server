@@ -87,7 +87,7 @@ where
         task: &DB::Row,
         command: &Value,
         sequence: i64,
-    ) -> Result<()> {
+    ) -> Result<String> {
         let old = DB::string(run, "id")?;
         let workflow = DB::string(run, "workflow_instance_id")?;
         for field in ["workflow_type", "queue"] {
@@ -276,8 +276,7 @@ where
         // `PendingUpdateCloser::closeForTerminalRun`: updates already applied
         // but not completed stay with the predecessor and close there.
         Self::close_pending_updates(tx, &old, Some(task)).await?;
-        Self::create_task(tx, &next, &queue, "workflow", json!({})).await?;
-        Ok(())
+        Self::create_task(tx, &next, &queue, "workflow", json!({})).await
     }
 
     /// `applyContinueAsNew` for a child run: the continued run stays its
@@ -351,6 +350,8 @@ where
             if call_id.is_none() {
                 payload.as_object_mut().expect("an object").remove("child_call_id");
             }
+            // PHP projects the parent again (`projectRun`).
+            tx.summary_changed(&parent_run);
             Self::append(tx, &parent_run, "ChildRunStarted", payload, None, None).await?;
         }
         Ok(reference)

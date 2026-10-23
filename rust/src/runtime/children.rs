@@ -254,7 +254,7 @@ where
         task_id: &str,
         command: &Value,
         sequence: i64,
-    ) -> Result<()> {
+    ) -> Result<String> {
         let parent_run = DB::string(parent, "id")?;
         let parent_instance = DB::string(parent, "workflow_instance_id")?;
         // Published PHP starts a child whatever else the parent has open:
@@ -320,12 +320,12 @@ where
         let mut child_started = json!({"workflow_class":workflow_type,"workflow_type":workflow_type,"workflow_instance_id":child_instance,"workflow_run_id":child_run,"parent_workflow_instance_id":parent_instance,"parent_workflow_run_id":parent_run,"parent_sequence":sequence,"workflow_link_id":call,"child_call_id":call,"retry_policy":null,"timeout_policy":null,"execution_timeout_seconds":null,"run_timeout_seconds":null,"execution_deadline_at":null,"run_deadline_at":null});
         Self::attach_workflow_contract(tx, &queue, workflow_type, None, &mut child_started).await?;
         Self::append(tx, &child_run, "WorkflowStarted", child_started, None, None).await?;
-        Self::create_task(tx, &child_run, &queue, "workflow", json!({})).await?;
+        let child_task = Self::create_task(tx, &child_run, &queue, "workflow", json!({})).await?;
         Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1")
             .bind(&parent_run)
             .execute(&mut **tx)
             .await?;
-        Ok(())
+        Ok(child_task)
     }
 
     pub(super) async fn complete_child(
