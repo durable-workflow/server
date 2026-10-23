@@ -6,6 +6,7 @@ use App\Models\SearchAttributeDefinition;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
 use Illuminate\Validation\ValidationException;
+use Workflow\V2\Support\UtcScheduleTimestamp;
 
 class WorkflowVisibilityQuery
 {
@@ -744,15 +745,15 @@ class WorkflowVisibilityQuery
         throw $this->invalidValue($field, 'a boolean literal');
     }
 
-    private function coerceDatetime(mixed $literal, string $field): Carbon
+    private function coerceDatetime(mixed $literal, string $field): string
     {
         if ($literal instanceof \DateTimeInterface) {
-            return Carbon::instance($literal);
+            return UtcScheduleTimestamp::databaseValue($literal);
         }
 
         if (is_string($literal) || is_int($literal) || is_float($literal)) {
             try {
-                return Carbon::parse($literal);
+                return UtcScheduleTimestamp::databaseValue(Carbon::parse($literal));
             } catch (\Throwable) {
                 throw $this->invalidValue($field, 'a datetime literal');
             }
