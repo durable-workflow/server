@@ -2087,6 +2087,28 @@ def scheduler_restart_phase() -> dict[str, Any]:
     return {"schedule_id": schedule_id, "scheduler_instances": 1, "fires_while_stopped": 0, "fires_after_restart": len(fired), "recovery_ms": recovery_ms, "workflow_id": event["workflow_instance_id"], "run_id": event["workflow_run_id"]}
 
 
+def cleanup_project() -> dict[str, Any]:
+    """Remove the Compose project; report a failure instead of raising it.
+
+    It runs before the result is written, so a raised timeout would lose the
+    phase outcome. The cleanup outcome is kept as its own diagnostic.
+    """
+    try:
+        completed = compose("down", "-v", "--remove-orphans", check=False, timeout=180)
+    except Exception as error:  # including subprocess.TimeoutExpired
+        cleanup = {"status": "fail", "error_type": type(error).__name__, "reason": str(error)}
+    else:
+        if completed.returncode == 0:
+            return {"status": "pass"}
+        cleanup = {
+            "status": "fail",
+            "exit_code": completed.returncode,
+            "stderr_tail": completed.stderr[-2000:],
+        }
+    print(f"Single-region failover cleanup failed: {cleanup}", file=sys.stderr)
+    return cleanup
+
+
 def write_result() -> None:
     RESULT_DIR.mkdir(parents=True, exist_ok=True)
     RESULT_PATH.write_text(json.dumps(RESULT, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -2135,7 +2157,7 @@ def main() -> int:
         return 1
     finally:
         if stack_started and not KEEP_STACK:
-            compose("down", "-v", "--remove-orphans", check=False, timeout=180)
+            RESULT["cleanup"] = cleanup_project()
         RESULT["finished_at"] = now()
         write_result()
         print(f"Single-region failover outcome: {RESULT['outcome']}")
