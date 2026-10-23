@@ -139,12 +139,6 @@ where
         {
             return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"));
         }
-        if self.namespace.as_ref() != "default" {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "development_workflow_task_repair_namespace_unqualified",
-            ));
-        }
         let mut tx = self.begin().await?;
         let instance = Self::query("SELECT * FROM workflow_instances WHERE id=$1 AND namespace=$2")
             .bind(workflow_id)

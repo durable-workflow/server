@@ -337,8 +337,8 @@ where
         if let Some(prepared) = external {
             self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri).await?;
         }
-        let instance = Self::query("SELECT current_run_id,last_message_sequence FROM workflow_instances WHERE id=$1 AND namespace='default'")
-            .bind(workflow_id).fetch_optional(&mut *tx).await?
+        let instance = Self::query("SELECT current_run_id,last_message_sequence FROM workflow_instances WHERE id=$1 AND namespace=$2")
+            .bind(workflow_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
         let run_id = DB::string(&instance, "current_run_id")?;
         if selected_run.is_some_and(|selected| selected != run_id) {

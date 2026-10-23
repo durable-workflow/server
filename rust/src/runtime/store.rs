@@ -2117,19 +2117,6 @@ where
             // PHP's messages, before native's own refusals.
             super::completion_rules::normalizer_checks(index, command)?;
             let command_type = text(command, "type")?;
-            if self.namespace.as_ref() != "default"
-                && !matches!(
-                    command_type,
-                    "complete_workflow" | "fail_workflow" | "schedule_activity" | "start_timer" | "start_child_workflow"
-                )
-                && !(commands.len() == 1
-                    && matches!(command_type, "open_condition_wait" | "open_signal_wait"))
-            {
-                return Err(refuse(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "development_namespace_command_unqualified",
-                ));
-            }
             match command_type {
                 "fail_workflow" => {
                     super::workflow_failures::validate(command)?;

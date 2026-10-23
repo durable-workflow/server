@@ -730,7 +730,10 @@ fn workflow_route(rest: &str) -> Option<Allowed> {
         | [_, "runs", _, "streams"]
         | [_, "runs", _, "streams", _]
         | [_, "runs", _, "streams", _, "items"] => Some(READ),
-        [_, "signal" | "query", _] | [_, "runs", _, "signal" | "query", _] => Some(WRITE),
+        [_, "signal" | "query" | "update", _]
+        | [_, "runs", _, "signal" | "query" | "update", _]
+        | [_, "repair" | "request-cancellation"]
+        | [_, "runs", _, "repair" | "request-cancellation" | "redrive"] => Some(WRITE),
         [_]
         | [_, "cancel" | "terminate" | "archive"]
         | [_, "runs", _]

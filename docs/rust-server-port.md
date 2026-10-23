@@ -284,18 +284,11 @@ contract fixture before its correction.
   build id: a promoted build-id rollout, else the single build id among the
   live workers for the type, else among all the queue's live workers. Native
   starts every run unpinned, and has no build-id rollouts.
-- **Named-namespace workflow commands.** Published PHP serves every workflow
-  route in any namespace. Native refuses updates, repair and cooperative
-  cancellation requests (`/update/{name}`, `/repair`,
-  `/request-cancellation`, instance- or run-scoped) in a named namespace with
-  `422 development_namespace_operation_unqualified`.
-- **Named-namespace worker commands.** In a named namespace, native
-  accepts only `complete_workflow`, `fail_workflow`, `schedule_activity`,
-  `start_timer`, `start_child_workflow` and a single wait in a workflow task.
-  It refuses any other command, such as side effects, version markers,
-  memo and search attribute upserts, updates and continue-as-new, with
-  `422 development_namespace_command_unqualified`. Published PHP accepts
-  them in any namespace.
+- **Named-namespace routes native does not serve.** Native now serves every
+  workflow command and operation it implements in any namespace, as PHP
+  does ([checkpoint](rust-server-port-checkpoints/2026-10-23-named-namespace-commands.md)).
+  A route native does not implement answers `501` in the default namespace,
+  but `422 development_namespace_operation_unqualified` in a named one.
 - **Child cancellation cascade, remaining parts.** Native propagates a
   parent's cooperative cancellation to its child under `try_cancel` and
   `wait_cancellation_completed`, as PHP does. The rest is open:
