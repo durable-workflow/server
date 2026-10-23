@@ -319,8 +319,14 @@ async fn empty_list_body(request: Request, next: Next) -> Response {
     let Ok(bytes) = axum::body::to_bytes(body, 16).await else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    let body = if bytes.trim_ascii() == b"[]" {
+    // PHP reads an empty body, like `[]`, as empty input.
+    let empty = bytes.trim_ascii().is_empty()
+        && matches!(parts.method, axum::http::Method::POST | axum::http::Method::PUT | axum::http::Method::PATCH);
+    let body = if bytes.trim_ascii() == b"[]" || empty {
         parts.headers.insert(header::CONTENT_LENGTH, HeaderValue::from_static("2"));
+        if empty && !parts.headers.contains_key(header::CONTENT_TYPE) {
+            parts.headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        }
         Body::from("{}")
     } else {
         Body::from(bytes)

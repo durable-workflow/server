@@ -305,13 +305,16 @@ fn words(list: &str) -> Value {
 }
 
 pub(super) async fn admission_response(request: Request, mut body: Value) -> Value {
-    let segments: Vec<_> = request
-        .uri()
-        .path()
-        .trim_start_matches('/')
-        .split('/')
-        .collect();
+    let path = request.uri().path().to_owned();
+    let segments: Vec<_> = path.trim_start_matches('/').split('/').collect();
     let operation = match (request.method().as_str(), segments.as_slice()) {
+        ("POST", ["api", "workflows"]) => Operation::Start,
+        ("POST", ["api", "workflows", _, "signal", name])
+        | ("POST", ["api", "workflows", _, "runs", _, "signal", name]) => Operation::Signal(name),
+        ("POST", ["api", "workflows", _, "update", name])
+        | ("POST", ["api", "workflows", _, "runs", _, "update", name]) => Operation::Update(name),
+        ("POST", ["api", "workflows", _, "query", name])
+        | ("POST", ["api", "workflows", _, "runs", _, "query", name]) => Operation::Query(name),
         ("GET", ["api", "workflows"]) => Operation::List,
         ("GET", ["api", "workflows", _]) => Operation::Describe,
         ("GET", ["api", "workflows", _, "runs"]) => Operation::ListRuns,
