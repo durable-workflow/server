@@ -104,6 +104,47 @@ class WorkflowUpdateWorkerRoutingTest extends TestCase
             ->assertJsonPath('task.run_id', $start->json('run_id'));
     }
 
+    #[DataProvider('namespaces')]
+    public function test_literal_zero_update_name_is_routable(string $namespace): void
+    {
+        $this->createNamespace($namespace);
+        $this->register('new-worker', $namespace, ['workflow_updates'], ['0']);
+        $runId = $this->startWaiting($namespace);
+        $accepted = $this->postJson('/api/workflows/rolling-update/update/0', [
+            'input' => [true], 'request_id' => 'zero-update', 'wait_for' => 'accepted',
+        ], $this->apiHeaders($namespace))->assertAccepted();
+
+        $this->poll('new-worker', $namespace)->assertOk()
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.workflow_update_id', $accepted->json('update_id'));
+    }
+
+    public function test_update_link_cannot_borrow_authority_from_another_run(): void
+    {
+        $this->createNamespace('default');
+        $this->register('new-worker', 'default', ['workflow_updates'], ['approve']);
+        $firstRun = $this->startWaiting('default');
+        $secondRun = $this->startWaiting('default', 'another-update');
+        $first = $this->postJson('/api/workflows/rolling-update/update/approve', [
+            'input' => [true], 'request_id' => 'first-update', 'wait_for' => 'accepted',
+        ], $this->apiHeaders())->assertAccepted();
+        $second = $this->postJson('/api/workflows/another-update/update/approve', [
+            'input' => [true], 'request_id' => 'second-update', 'wait_for' => 'accepted',
+        ], $this->apiHeaders())->assertAccepted();
+        $invalid = WorkflowTask::query()->where('workflow_run_id', $firstRun)
+            ->where('task_type', 'workflow')->where('status', 'ready')->sole();
+        $invalid->update(['payload' => [
+            ...$invalid->payload, 'workflow_update_id' => $second->json('update_id'),
+        ]]);
+        $before = $invalid->fresh()->getRawOriginal();
+
+        $this->poll('new-worker', 'default')->assertOk()
+            ->assertJsonPath('task.run_id', $secondRun)
+            ->assertJsonPath('task.workflow_update_id', $second->json('update_id'));
+        $this->assertSame($before, $invalid->fresh()->getRawOriginal());
+        $this->assertSame('accepted', WorkflowUpdate::query()->findOrFail($first->json('update_id'))->status->value);
+    }
+
     private function register(
         string $workerId,
         string $namespace,
@@ -137,10 +178,10 @@ class WorkflowUpdateWorkerRoutingTest extends TestCase
         ], $this->workerHeaders($namespace));
     }
 
-    private function startWaiting(string $namespace): string
+    private function startWaiting(string $namespace, string $workflowId = 'rolling-update'): string
     {
         $start = $this->postJson('/api/workflows', [
-            'workflow_id' => 'rolling-update', 'workflow_type' => self::TYPE, 'task_queue' => self::QUEUE,
+            'workflow_id' => $workflowId, 'workflow_type' => self::TYPE, 'task_queue' => self::QUEUE,
         ], $this->apiHeaders($namespace))->assertCreated();
         $task = $this->poll('new-worker', $namespace)->assertOk()->json('task');
         $this->assertIsArray($task);

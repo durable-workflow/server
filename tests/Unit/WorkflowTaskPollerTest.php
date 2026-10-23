@@ -9,6 +9,7 @@ use App\Support\PollRequestLeaseBinding;
 use App\Support\ServerPollingCache;
 use App\Support\TaskQueueAdmission;
 use App\Support\WorkerPollClaimGate;
+use App\Support\WorkflowDefinitionRouting;
 use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowTaskKindSelector;
 use App\Support\WorkflowTaskLeaseRecovery;
@@ -48,6 +49,7 @@ class WorkflowTaskPollerTest extends TestCase
             app(PollRequestLeaseBinding::class),
             app(WorkflowUpdateValidationTaskBroker::class),
             app(WorkflowTaskKindSelector::class),
+            app(WorkflowDefinitionRouting::class),
         );
 
         $result = $this->invokeClaimReadyTask(

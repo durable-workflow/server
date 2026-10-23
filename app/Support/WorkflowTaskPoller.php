@@ -1027,11 +1027,12 @@ final class WorkflowTaskPoller
 
             if (
                 $runId === null
-                || ! $this->workerCanReplayRun(
+                || ! $this->workerCanExecuteTask(
                     $namespace,
                     $leaseOwner,
                     $runId,
                     $this->nonEmptyString($workerPollFence['protocol_version'] ?? null),
+                    $this->nonEmptyString($readyTask['task_id'] ?? null),
                 )
             ) {
                 continue;
@@ -1079,11 +1080,12 @@ final class WorkflowTaskPoller
                     return ['claimed' => false, 'reason' => 'run_not_found'];
                 }
 
-                if (! $this->workerCanReplayRun(
+                if (! $this->workerCanExecuteTask(
                     $namespace,
                     $leaseOwner,
                     $runId,
                     $this->nonEmptyString($workerPollFence['protocol_version'] ?? null),
+                    $taskId,
                 )) {
                     return ['claimed' => false, 'reason' => 'workflow_metadata_capability_not_advertised'];
                 }
@@ -1271,7 +1273,10 @@ final class WorkflowTaskPoller
 
             if (
                 $runId !== null
-                && $this->workerCanReplayRun($namespace, $leaseOwner, $runId, $protocolVersion)
+                && $this->workerCanExecuteTask(
+                    $namespace, $leaseOwner, $runId, $protocolVersion,
+                    $this->nonEmptyString($readyTask['task_id'] ?? null),
+                )
             ) {
                 return true;
             }
@@ -1383,11 +1388,12 @@ final class WorkflowTaskPoller
             if (
                 ! $run instanceof WorkflowRun
                 || ! $this->matchesWorkflowType($supportedWorkflowTypes, $run->workflow_type)
-                || ! $this->workerCanReplayRun(
+                || ! $this->workerCanExecuteTask(
                     $namespace,
                     $leaseOwner,
                     (string) $run->id,
                     $protocolVersion,
+                    (string) $task->id,
                 )
             ) {
                 continue;
@@ -1847,7 +1853,7 @@ final class WorkflowTaskPoller
 
         if (
             $runId === null
-            || ! $this->workerCanReplayRun($namespace, $leaseOwner, $runId, $protocolVersion)
+            || ! $this->workerCanExecuteTask($namespace, $leaseOwner, $runId, $protocolVersion, (string) $workflowTask->id)
         ) {
             return false;
         }
@@ -2317,21 +2323,30 @@ final class WorkflowTaskPoller
             : null;
     }
 
-    private function workerCanReplayRun(
+    private function workerCanExecuteTask(
         string $namespace,
         string $workerId,
         string $runId,
         ?string $protocolVersion,
+        ?string $taskId,
     ): bool {
+        if ($taskId === null) {
+            return false;
+        }
+
         $worker = WorkerRegistration::query()
             ->where('namespace', $namespace)
             ->where('worker_id', $workerId)
             ->first();
 
         $run = WorkflowRun::query()->where('namespace', $namespace)->find($runId);
+        $task = WorkflowTask::query()->where('namespace', $namespace)
+            ->where('workflow_run_id', $runId)->find($taskId);
 
         return $worker instanceof WorkerRegistration && $run instanceof WorkflowRun
-            && WorkflowReplayEligibility::allows($worker, $run, $protocolVersion);
+            && $task instanceof WorkflowTask
+            && WorkflowReplayEligibility::allows($worker, $run, $protocolVersion)
+            && WorkflowUpdateDeliveryEligibility::allows($worker, $run, $task);
     }
 
     private function matchesRecordedWorkflowDefinition(
