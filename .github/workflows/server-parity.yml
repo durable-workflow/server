@@ -311,8 +311,10 @@ jobs:
   mysql-execution:
     needs: published-sdk-adapters
     runs-on: ubuntu-latest
-    # Corrected marker/range/clock coverage expands the job; scenario budgets stay fixed.
-    timeout-minutes: 75
+    # Corrected marker/range/clock coverage expands the job, and the fixture step
+    # runs every later profile before failing; scenario budgets stay fixed.
+    # MySQL runs take 75 to 85 minutes; PostgreSQL's jobs take about 60.
+    timeout-minutes: 105
     strategy:
       fail-fast: false
       matrix:
@@ -855,8 +857,10 @@ jobs:
   postgres-storage:
     needs: published-sdk-adapters
     runs-on: ubuntu-latest
-    # Corrected marker/range/clock coverage expands the job; scenario budgets stay fixed.
-    timeout-minutes: 75
+    # Corrected marker/range/clock coverage expands the job, and the fixture step
+    # runs every later profile before failing; scenario budgets stay fixed.
+    # MySQL runs take 75 to 85 minutes; PostgreSQL's jobs take about 60.
+    timeout-minutes: 105
     strategy:
       fail-fast: false
       matrix:
@@ -1410,8 +1414,10 @@ jobs:
   execution-and-codec:
     needs: published-sdk-adapters
     runs-on: ubuntu-latest
-    # Corrected marker/range/clock coverage expands the job; scenario budgets stay fixed.
-    timeout-minutes: 75
+    # Corrected marker/range/clock coverage expands the job, and the fixture step
+    # runs every later profile before failing; scenario budgets stay fixed.
+    # MySQL runs take 75 to 85 minutes; PostgreSQL's jobs take about 60.
+    timeout-minutes: 105
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Fetch this run's published SDK adapters
