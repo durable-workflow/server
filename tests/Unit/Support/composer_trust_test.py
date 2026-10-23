@@ -34,20 +34,32 @@ import sink_guards  # noqa: E402
 ROOT = Path(__file__).resolve().parents[3]
 CI = ROOT / "scripts" / "ci"
 PINNED_COMPOSER = "composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee"
-SEPARATOR = r"""[\s'",]+"""
+# A backslash-newline continues a shell command, so it separates arguments too.
+SEPARATOR = r"""(?:[\s'",]|\\\n)+"""
 # Composer image references, pinned or not, and Composer network commands.
 COMPOSER_IMAGE = re.compile(r"""(?<![\w./-])(?:[\w.-]+/)*composer(?:(?::[\w.-]+)?@sha256:[0-9a-f]{64}|:[\w.-]*\w)""")
 COMPOSER_SINK = re.compile(
     COMPOSER_IMAGE.pattern
     + rf"""|\bcomposer(?:\.phar)?(?:{SEPARATOR}--?[\w-]+(?:=[^\s'",]+)?)*{SEPARATOR}"""
     r"""(?:install|update|upgrade|require|remove|reinstall|search|self-update|selfupdate|diagnose|show|info|create-project|outdated|global|bump|audit|why|depends|archive|init)\b"""
+    # A container whose entrypoint is Composer runs it, wherever the
+    # subcommand sits in the continued command.
+    + r"""|--entrypoint(?:=|\s+)['"]?(?:[^\s'"]*/)?composer(?:\.phar)?(?![\w.-])"""
+    # The confined runner, which every Composer request outside an image
+    # build should go through.
+    + r"""|\b(?:bash|sh)\s+(?:[^\s'"]*/)?run-composer\.sh\b"""
 )
+WRAPPER = re.compile(r"""^(?:bash|sh)\s+(?:"\$here"/|scripts/ci/)run-composer\.sh$""")
 SCANNED = (".github/workflows", "scripts", "tests/Fixtures", "tests/Integration", "benchmarks", "docker")
 MANIFEST = ROOT / "tests" / "Unit" / "Support" / "composer-sinks.json"
 SELF_CHECKS = {
     # A Composer image reference is confined by being the pinned digest.
     "pinned-reference": lambda occurrence: re.sub(r"^(?:docker\.io/)?(?:library/)?", "", occurrence.text) == PINNED_COMPOSER,
     "evidence-record": sink_guards.evidence_record(ROOT),
+    # scripts/ci/run-composer.sh confines the request (pinned image after the
+    # fixed Brotli decoder, checked CA pair it sets after the caller's options).
+    "composer-wrapper": lambda occurrence: WRAPPER.match(occurrence.text) is not None
+    and not occurrence.path.endswith(".md"),
 }
 # How a reviewed sink is confined, checked against the source (sink_guards).
 GUARDS = {
@@ -64,6 +76,9 @@ GUARDS = {
     "server-base-build": sink_guards.GuardType(re.compile(r"docker build --target base "), -1),
     # docker_run_for_project, which always adds the checked CA pair.
     "trusted-builder": sink_guards.GuardType(re.compile(r"docker_run_for_project\("), -1),
+    # The image comes from brotli-safe-composer.sh: the pinned image after
+    # Alpine's fixed Brotli decoder (CVE-2026-111497), checked on every use.
+    "brotli-floor": sink_guards.GuardType(re.compile(r"brotli-safe-composer\.sh"), -1),
 }
 
 
@@ -162,6 +177,15 @@ class ComposerInventoryTest(unittest.TestCase):
             "scripts/conformance/runner.sh": "# runs in the pinned image\ncomposer require durable-workflow/sdk\n",
             "scripts/conformance/self-update.sh": "composer self-update --2\n",
             ".github/workflows/audit.yml": "jobs:\n  audit:\n    steps:\n      - run: composer audit --locked\n",
+            # The split form that escaped the inventory in server-parity.yml.
+            ".github/workflows/split.yml": "jobs:\n  parity:\n    steps:\n      - run: |\n"
+            "          docker run --rm --user=\"$(id -u):$(id -g)\" --entrypoint composer \\\n"
+            "            -e COMPOSER_HOME=/tmp/composer -v \"$PWD:/source\" -w /source \"$image\" \\\n"
+            "            install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress\n",
+            "scripts/conformance/entrypoint-path.sh": "docker run --entrypoint=/usr/bin/composer \"$image\" update\n",
+            "scripts/conformance/entrypoint-phar.sh": "docker run --entrypoint 'composer.phar' \"$image\"\n",
+            "scripts/conformance/continued.sh": "composer \\\n  --no-interaction \\\n  install\n",
+            "scripts/conformance/other-runner.sh": "sh tools/run-composer.sh -- install\n",
         }
         for relative, text in cases.items():
             (work / relative).parent.mkdir(parents=True, exist_ok=True)
@@ -293,3 +317,85 @@ class RealComposerTrustTest(unittest.TestCase):
 
         self.assertEqual([], paths, "Composer reached the server through the withdrawn root")
         self.assertNotEqual(0, result.returncode)
+
+
+WRAPPER_SCRIPT = CI / "run-composer.sh"
+FLOOR_SCRIPT = CI / "brotli-safe-composer.sh"
+
+
+class RunComposerTest(unittest.TestCase):
+    """run-composer.sh: the pinned image after the Brotli floor, with a CA pair the caller cannot replace."""
+
+    def wrapper(self, *arguments: str) -> tuple[subprocess.CompletedProcess[str], bool]:
+        """Runs the wrapper with a docker stub that records whether it was called."""
+        work = Path(tempfile.mkdtemp(prefix="dw-run-composer-"))
+        self.addCleanup(shutil.rmtree, work, ignore_errors=True)
+        marker = work / "docker-called"
+        stub = work / "docker"
+        stub.write_text(f"#!/bin/sh\ntouch '{marker}'\nexit 99\n")
+        stub.chmod(0o755)
+        result = subprocess.run(["bash", str(WRAPPER_SCRIPT), *arguments], capture_output=True, text=True,
+                                env={**os.environ, "PATH": f"{work}:{os.environ['PATH']}"}, timeout=60)
+        return result, marker.exists()
+
+    def test_the_caller_cannot_replace_the_ca_pair_or_the_entrypoint(self) -> None:
+        for options in (["-e", "COMPOSER_CAFILE=/etc/ssl/certs/ca-certificates.crt"], ["-eCOMPOSER_CAFILE=/x"],
+                        ["--env", "COMPOSER_CAPATH=/etc/ssl/certs"], ["--entrypoint=sh"], ["--entrypoint", "sh"],
+                        ["--env-file", "composer.env"]):
+            with self.subTest(options):
+                result, docker_called = self.wrapper("--rm", *options, "--", "install")
+
+                self.assertEqual(2, result.returncode, result.stderr)
+                self.assertIn("refusing", result.stderr)
+                self.assertFalse(docker_called, "the wrapper reached docker before refusing")
+
+    def test_composer_arguments_need_the_separator(self) -> None:
+        result, docker_called = self.wrapper("--rm", "-v", "/tmp:/app", "install")
+
+        self.assertEqual(2, result.returncode)
+        self.assertFalse(docker_called)
+
+    def test_the_ca_pair_and_entrypoint_follow_the_callers_options(self) -> None:
+        text = WRAPPER_SCRIPT.read_text()
+        command = text[text.index("docker run --user"):]
+        self.assertLess(command.index('"${options[@]}"'), command.index("COMPOSER_CAFILE=/checked-ca/ca.pem"))
+        self.assertLess(command.index("COMPOSER_CAPATH=/checked-ca/no-ca-directory"), command.index("--entrypoint composer"))
+        self.assertRegex(command, r'--entrypoint composer "\$image" "\$@"')
+        self.assertRegex(text, r'image=\$\(sh "\$here/brotli-safe-composer\.sh"\)')
+        self.assertRegex(text, r'sh "\$here/checked-ca\.sh" "\$ca"')
+
+    def test_the_floor_refuses_the_pinned_image_and_accepts_its_own(self) -> None:
+        docker_or_skip(self)
+        refused = subprocess.run(["sh", str(FLOOR_SCRIPT), "--check", PINNED_COMPOSER],
+                                 capture_output=True, text=True, timeout=300)
+
+        self.assertNotEqual(0, refused.returncode, "the pinned image ships brotli-libs 1.2.0-r1")
+        self.assertIn("lacks brotli-libs>=1.2.1-r0", refused.stderr)
+
+        built = subprocess.run(["sh", str(FLOOR_SCRIPT)], capture_output=True, text=True, timeout=600)
+        self.assertEqual(0, built.returncode, built.stderr)
+        checked = subprocess.run(["sh", str(FLOOR_SCRIPT), "--check", built.stdout.strip()],
+                                 capture_output=True, text=True, timeout=300)
+        self.assertEqual(0, checked.returncode, checked.stderr)
+
+    def test_composer_runs_as_the_caller_with_the_checked_pair(self) -> None:
+        docker_or_skip(self)
+        work = Path(tempfile.mkdtemp(prefix="dw-run-composer-app-"))
+        self.addCleanup(shutil.rmtree, work, ignore_errors=True)
+        work.chmod(0o755)
+        (work / "pkg").mkdir()
+        (work / "pkg" / "composer.json").write_text(json.dumps({"name": "dw/probe", "version": "1.0.0"}))
+        (work / "composer.json").write_text(json.dumps({
+            "repositories": [{"type": "path", "url": "pkg", "options": {"symlink": False}}],
+            "require": {"dw/probe": "1.0.0"},
+        }))
+        run = lambda *arguments: subprocess.run(  # noqa: E731
+            ["bash", str(WRAPPER_SCRIPT), "--rm", "--network", "none", "-v", f"{work}:/app", "-w", "/app", "--",
+             *arguments], capture_output=True, text=True, timeout=600)
+
+        installed = run("install", "--no-interaction")
+
+        self.assertEqual(0, installed.returncode, installed.stdout + installed.stderr)
+        self.assertEqual(os.getuid(), (work / "vendor" / "dw" / "probe" / "composer.json").stat().st_uid)
+        self.assertEqual("/checked-ca/ca.pem", run("config", "cafile").stdout.strip())
+        self.assertEqual("/checked-ca/no-ca-directory", run("config", "capath").stdout.strip())

@@ -454,8 +454,8 @@ jobs:
           }
           trap container_log_tails ERR
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          # Composer runs confined in the pinned image, never in the published image under test.
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run -d --name "$RESOURCE_SCOPE-php" --network "$RESOURCE_SCOPE" --network-alias=parity-php \
             --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --tmpfs /state \
@@ -968,8 +968,8 @@ jobs:
           }
           trap container_log_tails ERR
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          # Composer runs confined in the pinned image, never in the published image under test.
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run -d --name "$RESOURCE_SCOPE-php" --network "$RESOURCE_SCOPE" --network-alias=parity-php \
             --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --tmpfs /state \
@@ -1477,8 +1477,8 @@ jobs:
           chmod 0777 parity-state parity-evidence
           touch parity-state/php.sqlite parity-state/embedded.sqlite parity-state/php-layout.sqlite
           chmod 0666 parity-state/*.sqlite
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          # Composer runs confined in the pinned image, never in the published image under test.
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
             "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs tests/Unit/ServerParityServiceCatalogContractTest.mjs tests/Unit/ServerParityNamespaceDeleteContractTest.mjs > parity-evidence/comparator-tests.txt

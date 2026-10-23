@@ -75,6 +75,23 @@
       ]
     },
     {
+      "path": ".github/workflows/server-parity.yml",
+      "line": "bash scripts/ci/run-composer.sh --rm -v \"$PWD:/source\" -w /source -- \\",
+      "count": 3,
+      "confinement": "scripts/ci/run-composer.sh runs Composer in the pinned image after Alpine's fixed Brotli decoder (brotli-safe-composer.sh), never in the image under test. It sets COMPOSER_CAFILE to the checked store and COMPOSER_CAPATH to an empty directory after the caller's options, which may not name either or an entrypoint.",
+      "guards": [
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        }
+      ]
+    },
+    {
       "path": ".github/workflows/server-perf.yml",
       "line": "-v \"$PWD:/app\" -w /app/benchmarks/capacity/v1/bindings/php composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
       "count": 1,
@@ -197,6 +214,28 @@
       ]
     },
     {
+      "path": "benchmarks/server-port/v1/README.md",
+      "line": "bash scripts/ci/run-composer.sh --rm -v \"$PWD:/source\" -w /source -- \\",
+      "count": 1,
+      "confinement": "Documentation of the run-composer.sh recipe.",
+      "guards": [
+        {
+          "type": "documentation"
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/brotli-safe-composer.sh",
+      "line": "base=composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee",
+      "count": 1,
+      "confinement": "The pinned digest the Brotli-floor image is built from.",
+      "guards": [
+        {
+          "type": "pinned-reference"
+        }
+      ]
+    },
+    {
       "path": "scripts/ci/checked-ca.sh",
       "line": "image=composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee",
       "count": 1,
@@ -219,6 +258,19 @@
           "type": "trust-guard",
           "line": "compose run --rm --no-deps php sh -c 'sh scripts/ci/composer-trust-guard.sh && composer install --no-dev --no-scripts --no-interaction --no-progress --prefer-dist'",
           "distance": 0
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/run-composer.sh",
+      "line": "-v \"$ca:/checked-ca:ro\" --entrypoint composer \"$image\" \"$@\" || status=$?",
+      "count": 1,
+      "confinement": "The image comes from brotli-safe-composer.sh, which refuses it unless brotli-libs is at least 1.2.1-r0 and owns every Brotli decoder PHP links. The same command sets COMPOSER_CAFILE to the checked store and COMPOSER_CAPATH to an empty directory after the caller's options, which may not name either or an entrypoint.",
+      "guards": [
+        {
+          "type": "brotli-floor",
+          "line": "image=$(sh \"$here/brotli-safe-composer.sh\")",
+          "distance": 9
         }
       ]
     },
@@ -754,6 +806,20 @@
       ]
     },
     {
+      "path": "scripts/conformance/server-parity/corrected-marker-adapters.sh",
+      "line": "bash scripts/ci/run-composer.sh --rm --cpus=1 --memory=512m --memory-swap=512m \\",
+      "count": 2,
+      "confinement": "scripts/ci/run-composer.sh runs Composer in the pinned image after Alpine's fixed Brotli decoder (brotli-safe-composer.sh), never in the image under test. It sets COMPOSER_CAFILE to the checked store and COMPOSER_CAPATH to an empty directory after the caller's options, which may not name either or an entrypoint.",
+      "guards": [
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        }
+      ]
+    },
+    {
       "path": "scripts/conformance/server-parity/corrected-marker-embedded-install.sh",
       "line": "composer install --no-dev --no-scripts --no-cache --no-interaction --no-progress --prefer-dist --optimize-autoloader",
       "count": 1,
@@ -780,6 +846,28 @@
       ]
     },
     {
+      "path": "scripts/conformance/server-parity/query-authority-cohort.sh",
+      "line": "bash scripts/ci/run-composer.sh --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \\",
+      "count": 1,
+      "confinement": "scripts/ci/run-composer.sh runs Composer in the pinned image after Alpine's fixed Brotli decoder (brotli-safe-composer.sh), never in the image under test. It sets COMPOSER_CAFILE to the checked store and COMPOSER_CAPATH to an empty directory after the caller's options, which may not name either or an entrypoint.",
+      "guards": [
+        {
+          "type": "composer-wrapper"
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/server-parity/range-repair-profile.sh",
+      "line": "bash scripts/ci/run-composer.sh --name \"$resource-sdk\" \"${limits[@]}\" -v \"$state/sdk:/sdk\" -w /sdk -- \\",
+      "count": 1,
+      "confinement": "scripts/ci/run-composer.sh runs Composer in the pinned image after Alpine's fixed Brotli decoder (brotli-safe-composer.sh), never in the image under test. It sets COMPOSER_CAFILE to the checked store and COMPOSER_CAPATH to an empty directory after the caller's options, which may not name either or an entrypoint.",
+      "guards": [
+        {
+          "type": "composer-wrapper"
+        }
+      ]
+    },
+    {
       "path": "scripts/conformance/server-parity/repeated-patch-install.sh",
       "line": "composer install --no-dev --no-scripts --no-cache --no-interaction --no-progress --prefer-dist --optimize-autoloader",
       "count": 1,
@@ -802,6 +890,31 @@
           "type": "trust-guard",
           "line": "sh \"$(dirname \"$0\")/../../ci/composer-trust-guard.sh\" >&2",
           "distance": 4
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/server-parity/sdk-direction-profile.sh",
+      "line": "bash scripts/ci/run-composer.sh --name \"$resource-sdk\" \"${limits[@]}\" -v \"$state/sdk:/sdk\" -w /sdk -- \\",
+      "count": 1,
+      "confinement": "scripts/ci/run-composer.sh runs Composer in the pinned image after Alpine's fixed Brotli decoder (brotli-safe-composer.sh), never in the image under test. It sets COMPOSER_CAFILE to the checked store and COMPOSER_CAPATH to an empty directory after the caller's options, which may not name either or an entrypoint.",
+      "guards": [
+        {
+          "type": "composer-wrapper"
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/server-parity/worker-fencing-profile.sh",
+      "line": "bash scripts/ci/run-composer.sh --rm --user=1000:1000 -e COMPOSER_HOME=/tmp/parity-composer \\",
+      "count": 2,
+      "confinement": "scripts/ci/run-composer.sh runs Composer in the pinned image after Alpine's fixed Brotli decoder (brotli-safe-composer.sh), never in the image under test. It sets COMPOSER_CAFILE to the checked store and COMPOSER_CAPATH to an empty directory after the caller's options, which may not name either or an entrypoint.",
+      "guards": [
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
         }
       ]
     },

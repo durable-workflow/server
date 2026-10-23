@@ -10,8 +10,8 @@ cargo=${DW_PARITY_CORRECTED_CARGO:-$output/cargo}
 target=${DW_PARITY_CORRECTED_TARGET:-$output/target}
 mkdir -p "$output"/{php,php-range,python250,python-current,bin} "$cargo" "$target"
 cp "$adapter/php/composer.json" "$adapter/php/composer.lock" "$output/php/"
-docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=512m --memory-swap=512m --entrypoint composer \
-  -e COMPOSER_HOME=/tmp/composer -v "$PWD/$output/php:/consumer" -w /consumer "$image" \
+bash scripts/ci/run-composer.sh --rm --cpus=1 --memory=512m --memory-swap=512m \
+  -v "$PWD/$output/php:/consumer" -w /consumer -- \
   install --no-dev --no-scripts --no-cache --no-interaction --no-progress --prefer-dist \
   > "$output/php-install.txt" 2>&1
 docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
@@ -24,8 +24,8 @@ docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=128m --memory-swap=
   -v "$PWD:/source:ro" -w /source "$image" \
   "$adapter/check-admission-receipt.py" > "$output/admission-receipt-controls.txt" 2>&1
 cp tests/Fixtures/ServerParityProfiles/version-range-repair/sdk/{composer.json,composer.lock} "$output/php-range/"
-docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=512m --memory-swap=512m --entrypoint composer \
-  -e COMPOSER_HOME=/tmp/composer -v "$PWD/$output/php-range:/consumer" -w /consumer "$image" \
+bash scripts/ci/run-composer.sh --rm --cpus=1 --memory=512m --memory-swap=512m \
+  -v "$PWD/$output/php-range:/consumer" -w /consumer -- \
   install --no-dev --no-scripts --no-cache --no-interaction --no-progress --prefer-dist \
   > "$output/php-range-install.txt" 2>&1
 docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=512m --memory-swap=512m \
