@@ -591,6 +591,8 @@ class SystemPrometheusMetricsTest extends TestCase
     private function activity(string $runId, string $activityType, string $queue, string $status, int $durationMs): void
     {
         $startedAt = now()->subSeconds(10);
+        // Query-builder DateTime bindings would discard the fixture's fractional second.
+        $closedAt = $startedAt->copy()->addMilliseconds($durationMs)->format('Y-m-d H:i:s.u');
 
         DB::table('activity_executions')->insert([
             'id' => (string) Str::ulid(),
@@ -601,9 +603,9 @@ class SystemPrometheusMetricsTest extends TestCase
             'status' => $status,
             'queue' => $queue,
             'started_at' => $startedAt,
-            'closed_at' => $startedAt->copy()->addMilliseconds($durationMs),
+            'closed_at' => $closedAt,
             'created_at' => $startedAt,
-            'updated_at' => $startedAt->copy()->addMilliseconds($durationMs),
+            'updated_at' => $closedAt,
         ]);
     }
 
