@@ -101,6 +101,10 @@ BASE_URL="http://127.0.0.1:${SERVER_PORT}"
 
 wait_for_liveness "$BASE_URL"
 
+# Completed idle HTTP clients must not reserve every PHP request process.
+docker exec --interactive "$CONTAINER" python3 - \
+    < "$(dirname "$0")/ci/check-apache-idle-connections.py"
+
 READY_STATUS="$(curl --silent --show-error --max-time 5 \
     --output "$READY_JSON" --write-out '%{http_code}' "${BASE_URL}/api/ready")"
 if [ "$READY_STATUS" != "503" ]; then
