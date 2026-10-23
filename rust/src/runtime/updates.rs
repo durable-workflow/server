@@ -16,8 +16,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
 
-const MAX_UPDATES_PER_RUN: i64 = 64;
-
 /// What `rejectUpdateCommand` records for one refused update.
 struct UpdateRejection<'a, R> {
     workflow_id: &'a str,
@@ -484,18 +482,6 @@ where
             let open_tasks = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased')")
                 .bind(&run_id).fetch_one(&mut *tx).await
                 .map_err(|error| at_update_lookup(error.into(), UpdateLookup::Inventory))?;
-            let count =
-                Self::scalar("SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id=$1")
-                    .bind(&run_id)
-                    .fetch_one(&mut *tx)
-                    .await
-                    .map_err(|error| at_update_lookup(error.into(), UpdateLookup::Inventory))?;
-            if count >= MAX_UPDATES_PER_RUN {
-                return Err(refuse(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "update_inventory_exceeds_budget",
-                ));
-            }
             let command_id = id();
             let update_id = id();
             let command_sequence = DB::number(&run, "last_command_sequence")?

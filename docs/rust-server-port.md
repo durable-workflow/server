@@ -4224,6 +4224,11 @@ MariaDB qualification exposed decimal promotion of a nullable integer through
 Admission requires a quiescent wait and bounds each run
 to 64 updates, with 64 KiB argument blobs, 256 KiB results and at most 30 seconds
 per completion wait. Waiting releases the transaction and database connection.
+(Since October 23 native enforces PHP's structural limits instead of the
+64-update and 64 KiB bounds, which PHP does not have; see the
+[structural limits](rust-server-port-checkpoints/2026-10-23-structural-limits.md)
+and [update lifetime cap](rust-server-port-checkpoints/2026-10-23-update-lifetime-cap.md)
+checkpoints.)
 Queued/busy control routing, validators, failure tasks and full update semantics
 remain open.
 The qualified tenth child-workflow fixture calls two children in sequence, each executing

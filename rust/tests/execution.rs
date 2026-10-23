@@ -2346,7 +2346,7 @@ async fn failed_updates_preserve_terminal_identity_and_parent_continuation_after
 }
 
 #[tokio::test]
-async fn updates_bound_durable_inventory_and_preserve_accepted_work_after_wait_timeout() {
+async fn updates_have_no_lifetime_cap_and_preserve_accepted_work_after_wait_timeout() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
@@ -2391,15 +2391,6 @@ async fn updates_bound_durable_inventory_and_preserve_accepted_work_after_wait_t
             .count(),
         64
     );
-    let over_budget = request(&app, "POST", path, json!({
-        "input":envelope(Payload::Array(vec![Payload::Long(65)])),"wait_for":"accepted","request_id":"over-budget"
-    })).await;
-    assert_eq!(over_budget.0, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(over_budget.1["reason"], "update_inventory_exceeds_budget");
-    assert_eq!(
-        request(&app, "GET", &history_path, Value::Null).await.1,
-        before
-    );
     let duplicate = request(&app, "POST", path, json!({
         "input":envelope(Payload::Array(vec![Payload::Long(999)])),"request_id":"bounded:0","wait_for":"completed"
     })).await;
@@ -2409,6 +2400,13 @@ async fn updates_bound_durable_inventory_and_preserve_accepted_work_after_wait_t
         request(&app, "GET", &history_path, Value::Null).await.1,
         before
     );
+    // Published PHP bounds only pending updates (DW_V2_LIMIT_PENDING_UPDATES),
+    // not how many a run receives over its life.
+    let more = request(&app, "POST", path, json!({
+        "input":envelope(Payload::Array(vec![Payload::Long(65)])),"wait_for":"accepted","request_id":"beyond-64"
+    })).await;
+    assert_eq!(more.0, StatusCode::ACCEPTED, "{}", more.1);
+    assert_eq!(more.1["update_status"], "accepted", "{}", more.1);
     runtime.close().await;
     database.remove().await;
 }
