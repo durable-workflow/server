@@ -51,9 +51,13 @@ REQUIRED = {
 
 SKIPPED_DIRECTORIES = {".git", "node_modules", "target"}
 
+# A prerelease identifier is numeric without a leading zero, or alphanumeric
+# with at least one non-digit. Build metadata identifiers may have leading
+# zeroes.
+PRERELEASE_IDENTIFIER = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
 SEMVER = re.compile(
     r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
-    r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+    r"(?:-(" + PRERELEASE_IDENTIFIER + r"(?:\." + PRERELEASE_IDENTIFIER + r")*))?"
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
 )
 
@@ -167,10 +171,19 @@ class CargoLockTrustTest(unittest.TestCase):
         self.assertEqual([], stale_packages(lock("0.104.0-rc.1", "1.1.0-beta")))
 
     def test_unreadable_versions_and_locks_fail_closed(self) -> None:
-        for resolved in ["0.103", "v0.103.16", "0.103.16.1", "0.103.016", "", "latest"]:
+        # Leading zeroes in a numeric prerelease identifier are not SemVer,
+        # even on a release above the floor.
+        for resolved in ["0.103", "v0.103.16", "0.103.16.1", "0.103.016", "", "latest", "0.103.17-01",
+                         "0.104.0-rc.01", "0.103.17-", "0.103.17-alpha..1"]:
             with self.subTest(resolved=resolved):
                 self.assertEqual([f"rustls-webpki {resolved}"],
                                  stale_packages(f'[[package]]\nname = "rustls-webpki"\nversion = "{resolved}"\n'))
+        self.assertEqual(["webpki-roots 1.0.11-01"],
+                         stale_packages('[[package]]\nname = "webpki-roots"\nversion = "1.0.11-01"\n'))
+        # Valid prerelease and build identifiers above the floor still pass.
+        for resolved in ["0.103.17-0", "0.103.17-0a.1", "0.103.17-alpha-1", "0.103.17-rc.10", "0.103.17+001.build"]:
+            with self.subTest(resolved=resolved):
+                self.assertEqual([], stale_packages(f'[[package]]\nname = "rustls-webpki"\nversion = "{resolved}"\n'))
         self.assertEqual(["rustls-webpki None"], stale_packages('[[package]]\nname = "rustls-webpki"\n'))
         self.assertEqual(["webpki-roots 1"], stale_packages('[[package]]\nname = "webpki-roots"\nversion = 1\n'))
         with self.assertRaises(tomllib.TOMLDecodeError):
