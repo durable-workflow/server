@@ -116,6 +116,7 @@ if ($phase === 'prepare') {
     $client->completeWorkflowTask($task['task_id'], $task['lease_owner'], $task['workflow_task_attempt'], [[
         'type' => 'schedule_activity', 'activity_type' => 'restart.activity',
         'arguments' => $client->payloadCodec()->envelope([$value]), 'queue' => 'restart-v1',
+        'retry_policy' => $restartContract['activity_retry_policy'],
     ]]);
     $activity = $client->pollActivityTask('restart-old', 'restart-v1', 0);
     assertRestart(is_array($activity) && $activity['attempt_number'] === 1, 'Prepare did not lease attempt one.');
@@ -456,7 +457,7 @@ $clock = function () use ($client, $receipt, $deadline, &$worker): float {
 };
 $worker = new Worker($client, 'restart-v1', workerId: 'restart-new', clock: $clock);
 $worker->registerWorkflow('restart.workflow', fn (WorkflowContext $context, array $input): mixed =>
-    $context->activity('restart.activity', [$input]));
+    $context->activity('restart.activity', [$input], ['retry_policy' => $restartContract['activity_retry_policy']]));
 $worker->registerWorkflow('restart.timer', function (WorkflowContext $context, array $input): array {
     $context->sleep(10);
 
@@ -481,12 +482,18 @@ $execution = $client->describeWorkflow($receipt['workflow_id'], $receipt['run_id
 assertRestart($execution->status === 'completed' && $execution->output === $value, 'Recovered durable outcome differs.');
 $history = $client->workflowHistory($receipt['workflow_id'], $receipt['run_id'])['events'];
 $types = array_column($history, 'event_type');
+// The expired original lease consumes attempt one, as published PHP's repair
+// loop settles it; the declared retry budget gives the recovered worker two.
 assertRestart($types === ['StartAccepted', 'WorkflowStarted', 'ActivityScheduled', 'ActivityStarted',
-    'ActivityStarted', 'ActivityCompleted', 'WorkflowCompleted'], 'Recovered event inventory differs.');
+    'ActivityRetryScheduled', 'ActivityStarted', 'ActivityCompleted', 'WorkflowCompleted'], 'Recovered event inventory differs.');
 assertRestart(array_column($history, 'sequence') === range(1, count($history)), 'History is not contiguous.');
 assertRestart($history[0]['payload']['workflow_run_id'] === $receipt['run_id'], 'Original start/run identity was lost.');
 assertRestart($history[3]['payload']['activity_attempt_id'] === $old['activity_attempt_id'], 'Original attempt history was lost.');
-assertRestart($history[4]['payload']['activity_attempt_id'] !== $old['activity_attempt_id'], 'A stale attempt identity was reused.');
+assertRestart($history[4]['payload']['activity_attempt_id'] === $old['activity_attempt_id']
+    && $history[4]['payload']['retry_reason'] === 'lease_expired' && $history[4]['payload']['failure_reason'] === 'lease_expired'
+    && $history[4]['payload']['lease_owner'] === $old['lease_owner'] && ! array_key_exists('timeout_kind', $history[4]['payload']),
+    'The expired original lease was not settled by its retry policy.');
+assertRestart($history[5]['payload']['activity_attempt_id'] !== $old['activity_attempt_id'], 'A stale attempt identity was reused.');
 $timer = $receipt['timer'];
 $timerExecution = $client->describeWorkflow($timer['workflow_id'], $timer['run_id']);
 assertRestart($timerExecution->status === 'completed' && $timerExecution->output === $value, 'Timer did not recover its original durable outcome.');

@@ -42,9 +42,20 @@ function finishHttpStorageTest(Client $admin, array $fixture, string $workflowId
     foreach ($definition['invalid'] as $body) {
         $state['invalid'][] = $raw('POST', 'storage/test', $body === [] ? (object) [] : $body);
     }
-    $state['passed'] = $raw('POST', 'storage/test', $sizes);
+    // The published SQLite reference can refuse a round trip with a retryable
+    // 503 while its maintenance loop holds the file; a later attempt succeeds.
+    $roundTrip = static function () use ($raw, $sizes): array {
+        for ($attempt = 1; ; $attempt++) {
+            $recorded = $raw('POST', 'storage/test', $sizes);
+            if ($attempt === 10 || $recorded['status'] !== 503 || ($recorded['response']['retryable'] ?? null) !== true) {
+                return $recorded;
+            }
+            usleep(500_000);
+        }
+    };
+    $state['passed'] = $roundTrip();
     // A repeated diagnostic writes and removes the same content-addressed objects.
-    $state['repeated'] = $raw('POST', 'storage/test', $sizes);
+    $state['repeated'] = $roundTrip();
 
     return $state;
 }

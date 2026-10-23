@@ -18,7 +18,7 @@ use tokio::sync::Semaphore;
 
 /// `TaskRepairPolicy::readyTaskNeedsRedispatch` or `leaseExpired` for one
 /// task row, as of `at`.
-fn needs_recovery<DB: Backend>(task: &DB::Row, at: DateTime<Utc>) -> Result<bool>
+pub(super) fn needs_recovery<DB: Backend>(task: &DB::Row, at: DateTime<Utc>) -> Result<bool>
 where
     usize: ColumnIndex<DB::Row>,
     for<'r> i64: Decode<'r, DB>,
@@ -50,13 +50,29 @@ where
             None => claim_failed_at.is_some_and(|failed| failed <= cutoff),
         });
     }
+    // `dispatchOverdue`: a task made available after its last dispatch is
+    // overdue from its availability.
     let available = DB::optional_instant(task, "available_at")?;
-    let reference = dispatched.or(DB::optional_instant(task, "created_at")?);
+    let reference = dispatched
+        .or(DB::optional_instant(task, "created_at")?)
+        .map(|reference| available.filter(|available| *available > reference).unwrap_or(reference));
     Ok(available.is_none_or(|available| available <= at) && reference.is_some_and(|reference| reference <= cutoff))
 }
 
+/// `TaskRepair::replayBlocked`: a failed workflow task whose payload marks
+/// its replay blocked.
+pub(super) fn replay_blocked<DB: Backend>(task: &DB::Row) -> Result<bool>
+where
+    usize: ColumnIndex<DB::Row>,
+    for<'r> i64: Decode<'r, DB>,
+{
+    Ok(DB::string(task, "task_type")? == "workflow"
+        && DB::string(task, "status")? == "failed"
+        && DB::optional_document_row(task, "payload")?.is_some_and(|payload| payload["replay_blocked"] == true))
+}
+
 /// `recoverableTask`'s order: earliest available, then created, then id.
-fn recovery_order<DB: Backend>(task: &DB::Row) -> Result<(i64, i64, String)>
+pub(super) fn recovery_order<DB: Backend>(task: &DB::Row) -> Result<(i64, i64, String)>
 where
     usize: ColumnIndex<DB::Row>,
     for<'r> i64: Decode<'r, DB>,
@@ -122,12 +138,6 @@ where
             })
         {
             return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"));
-        }
-        if self.namespace.as_ref() != "default" {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "development_workflow_task_repair_namespace_unqualified",
-            ));
         }
         let mut tx = self.begin().await?;
         let instance = Self::query("SELECT * FROM workflow_instances WHERE id=$1 AND namespace=$2")

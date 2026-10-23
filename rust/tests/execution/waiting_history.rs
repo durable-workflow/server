@@ -63,8 +63,14 @@ async fn waiting_reports_preserve_original_activity_and_history_across_restart()
         assert_eq!(prefix.as_array().unwrap().len(), 5);
         assert_eq!(prefix[4]["event_type"], "TimerFired");
         let body = waiting(&replay, failure);
-        let (status, acknowledgement) = report(&app, &replay, body.clone()).await;
+        let (status, mut acknowledgement) = report(&app, &replay, body.clone()).await;
         assert_eq!(status, StatusCode::OK, "{acknowledgement}");
+        // Every worker response carries PHP's worker envelope.
+        assert_eq!(acknowledgement["protocol_version"], "1.20", "{acknowledgement}");
+        assert!(acknowledgement["server_capabilities"].is_object(), "{acknowledgement}");
+        for field in ["protocol_version", "server_capabilities"] {
+            acknowledgement.as_object_mut().unwrap().remove(field);
+        }
         assert_eq!(
             acknowledgement,
             json!({"task_id":replay["task_id"],"workflow_task_attempt":replay["workflow_task_attempt"],

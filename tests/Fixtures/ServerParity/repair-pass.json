@@ -1,0 +1,417 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "repair-pass",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "repair pass λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "repair pass λ"},
+    "count": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null}
+  }},
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "repair_pass": {
+    "requests": [
+      [
+        "filtered pass",
+        {
+          "run_ids": [
+            "@own-missing"
+          ],
+          "queue": "@own-queue"
+        }
+      ],
+      [
+        "trimmed filters",
+        {
+          "run_ids": [
+            " @own-missing ",
+            "@own-other"
+          ],
+          "instance_id": " @own-instance ",
+          "connection": " @own-connection ",
+          "queue": " @own-queue "
+        }
+      ],
+      [
+        "empty instance",
+        {
+          "run_ids": [
+            "@own-missing"
+          ],
+          "queue": "@own-queue",
+          "instance_id": "",
+          "connection": ""
+        }
+      ],
+      [
+        "run ids not a list",
+        {
+          "run_ids": "x",
+          "queue": "@own-queue"
+        }
+      ],
+      [
+        "empty run id",
+        {
+          "run_ids": [
+            ""
+          ],
+          "queue": "@own-queue"
+        }
+      ],
+      [
+        "too many run ids",
+        {
+          "run_ids": [
+            "@own-r0",
+            "@own-r1",
+            "@own-r2",
+            "@own-r3",
+            "@own-r4",
+            "@own-r5",
+            "@own-r6",
+            "@own-r7",
+            "@own-r8",
+            "@own-r9",
+            "@own-r10",
+            "@own-r11",
+            "@own-r12",
+            "@own-r13",
+            "@own-r14",
+            "@own-r15",
+            "@own-r16",
+            "@own-r17",
+            "@own-r18",
+            "@own-r19",
+            "@own-r20",
+            "@own-r21",
+            "@own-r22",
+            "@own-r23",
+            "@own-r24",
+            "@own-r25",
+            "@own-r26",
+            "@own-r27",
+            "@own-r28",
+            "@own-r29",
+            "@own-r30",
+            "@own-r31",
+            "@own-r32",
+            "@own-r33",
+            "@own-r34",
+            "@own-r35",
+            "@own-r36",
+            "@own-r37",
+            "@own-r38",
+            "@own-r39",
+            "@own-r40",
+            "@own-r41",
+            "@own-r42",
+            "@own-r43",
+            "@own-r44",
+            "@own-r45",
+            "@own-r46",
+            "@own-r47",
+            "@own-r48",
+            "@own-r49",
+            "@own-r50",
+            "@own-r51",
+            "@own-r52",
+            "@own-r53",
+            "@own-r54",
+            "@own-r55",
+            "@own-r56",
+            "@own-r57",
+            "@own-r58",
+            "@own-r59",
+            "@own-r60",
+            "@own-r61",
+            "@own-r62",
+            "@own-r63",
+            "@own-r64",
+            "@own-r65",
+            "@own-r66",
+            "@own-r67",
+            "@own-r68",
+            "@own-r69",
+            "@own-r70",
+            "@own-r71",
+            "@own-r72",
+            "@own-r73",
+            "@own-r74",
+            "@own-r75",
+            "@own-r76",
+            "@own-r77",
+            "@own-r78",
+            "@own-r79",
+            "@own-r80",
+            "@own-r81",
+            "@own-r82",
+            "@own-r83",
+            "@own-r84",
+            "@own-r85",
+            "@own-r86",
+            "@own-r87",
+            "@own-r88",
+            "@own-r89",
+            "@own-r90",
+            "@own-r91",
+            "@own-r92",
+            "@own-r93",
+            "@own-r94",
+            "@own-r95",
+            "@own-r96",
+            "@own-r97",
+            "@own-r98",
+            "@own-r99",
+            "@own-r100"
+          ],
+          "queue": "@own-queue"
+        }
+      ],
+      [
+        "throttle not boolean",
+        {
+          "run_ids": [
+            "@own-missing"
+          ],
+          "queue": "@own-queue",
+          "respect_throttle": "yes"
+        }
+      ],
+      [
+        "queue too long",
+        {
+          "run_ids": [
+            "@own-missing"
+          ],
+          "queue": "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+        }
+      ],
+      [
+        "connection too long",
+        {
+          "run_ids": [
+            "@own-missing"
+          ],
+          "queue": "@own-queue",
+          "connection": "ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      ]
+    ],
+    "expected": {
+      "filtered pass": [
+        200,
+        {
+          "connection": null,
+          "queue": "@own-queue",
+          "run_ids": [
+            "@own-missing"
+          ],
+          "instance_id": null,
+          "respect_throttle": false,
+          "selected_command_contract_candidates": 0,
+          "backfilled_command_contracts": 0,
+          "command_contract_backfill_unavailable": 0,
+          "command_contract_failures": [],
+          "existing_task_failures": [],
+          "missing_run_failures": [],
+          "throttled": false,
+          "selected_existing_task_candidates": 0,
+          "selected_missing_task_candidates": 0,
+          "selected_total_candidates": 0,
+          "repaired_existing_tasks": 0,
+          "repaired_missing_tasks": 0,
+          "dispatched_tasks": 0,
+          "deadline_expired_candidates": 0,
+          "deadline_expired_tasks_created": 0,
+          "cancellation_deadlines_enforced": 0,
+          "deadline_expired_failures": [],
+          "activity_timeout_candidates": 0,
+          "activity_timeouts_enforced": 0,
+          "activity_timeout_failures": [],
+          "service_call_timeout_candidates": 0,
+          "service_call_timeouts_enforced": 0,
+          "service_call_timeout_failures": []
+        }
+      ],
+      "trimmed filters": [
+        200,
+        {
+          "connection": "@own-connection",
+          "queue": "@own-queue",
+          "run_ids": [
+            "@own-missing",
+            "@own-other"
+          ],
+          "instance_id": "@own-instance",
+          "respect_throttle": false,
+          "selected_command_contract_candidates": 0,
+          "backfilled_command_contracts": 0,
+          "command_contract_backfill_unavailable": 0,
+          "command_contract_failures": [],
+          "existing_task_failures": [],
+          "missing_run_failures": [],
+          "throttled": false,
+          "selected_existing_task_candidates": 0,
+          "selected_missing_task_candidates": 0,
+          "selected_total_candidates": 0,
+          "repaired_existing_tasks": 0,
+          "repaired_missing_tasks": 0,
+          "dispatched_tasks": 0,
+          "deadline_expired_candidates": 0,
+          "deadline_expired_tasks_created": 0,
+          "cancellation_deadlines_enforced": 0,
+          "deadline_expired_failures": [],
+          "activity_timeout_candidates": 0,
+          "activity_timeouts_enforced": 0,
+          "activity_timeout_failures": [],
+          "service_call_timeout_candidates": 0,
+          "service_call_timeouts_enforced": 0,
+          "service_call_timeout_failures": []
+        }
+      ],
+      "empty instance": [
+        200,
+        {
+          "connection": null,
+          "queue": "@own-queue",
+          "run_ids": [
+            "@own-missing"
+          ],
+          "instance_id": null,
+          "respect_throttle": false,
+          "selected_command_contract_candidates": 0,
+          "backfilled_command_contracts": 0,
+          "command_contract_backfill_unavailable": 0,
+          "command_contract_failures": [],
+          "existing_task_failures": [],
+          "missing_run_failures": [],
+          "throttled": false,
+          "selected_existing_task_candidates": 0,
+          "selected_missing_task_candidates": 0,
+          "selected_total_candidates": 0,
+          "repaired_existing_tasks": 0,
+          "repaired_missing_tasks": 0,
+          "dispatched_tasks": 0,
+          "deadline_expired_candidates": 0,
+          "deadline_expired_tasks_created": 0,
+          "cancellation_deadlines_enforced": 0,
+          "deadline_expired_failures": [],
+          "activity_timeout_candidates": 0,
+          "activity_timeouts_enforced": 0,
+          "activity_timeout_failures": [],
+          "service_call_timeout_candidates": 0,
+          "service_call_timeouts_enforced": 0,
+          "service_call_timeout_failures": []
+        }
+      ],
+      "run ids not a list": [
+        422,
+        {
+          "message": "The run ids field must be an array.",
+          "reason": "validation_failed",
+          "errors": {
+            "run_ids": [
+              "The run ids field must be an array."
+            ]
+          },
+          "validation_errors": {
+            "run_ids": [
+              "The run ids field must be an array."
+            ]
+          }
+        }
+      ],
+      "empty run id": [
+        422,
+        {
+          "message": "The run_ids.0 field must be a string. (and 1 more error)",
+          "reason": "validation_failed",
+          "errors": {
+            "run_ids.0": [
+              "The run_ids.0 field must be a string.",
+              "The run_ids.0 field must be at least 1 characters."
+            ]
+          },
+          "validation_errors": {
+            "run_ids.0": [
+              "The run_ids.0 field must be a string.",
+              "The run_ids.0 field must be at least 1 characters."
+            ]
+          }
+        }
+      ],
+      "too many run ids": [
+        422,
+        {
+          "message": "The run ids field must not have more than 100 items.",
+          "reason": "validation_failed",
+          "errors": {
+            "run_ids": [
+              "The run ids field must not have more than 100 items."
+            ]
+          },
+          "validation_errors": {
+            "run_ids": [
+              "The run ids field must not have more than 100 items."
+            ]
+          }
+        }
+      ],
+      "throttle not boolean": [
+        422,
+        {
+          "message": "The respect throttle field must be true or false.",
+          "reason": "validation_failed",
+          "errors": {
+            "respect_throttle": [
+              "The respect throttle field must be true or false."
+            ]
+          },
+          "validation_errors": {
+            "respect_throttle": [
+              "The respect throttle field must be true or false."
+            ]
+          }
+        }
+      ],
+      "queue too long": [
+        422,
+        {
+          "message": "The queue field must not be greater than 128 characters.",
+          "reason": "validation_failed",
+          "errors": {
+            "queue": [
+              "The queue field must not be greater than 128 characters."
+            ]
+          },
+          "validation_errors": {
+            "queue": [
+              "The queue field must not be greater than 128 characters."
+            ]
+          }
+        }
+      ],
+      "connection too long": [
+        422,
+        {
+          "message": "The connection field must not be greater than 128 characters.",
+          "reason": "validation_failed",
+          "errors": {
+            "connection": [
+              "The connection field must not be greater than 128 characters."
+            ]
+          },
+          "validation_errors": {
+            "connection": [
+              "The connection field must not be greater than 128 characters."
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "contract": "POST /api/system/repair/pass (published Server 2.11) runs one task repair pass: it recovers ready tasks that need redispatch and expired leases, creates missing workflow tasks, enforces expired run, activity and service-call deadlines, and reports each count with its failures, answering 207 when any failed. The pass is server-wide, so the fixture scopes every pass to run ids and a task queue that do not exist; each then reports zero candidates and echoes its trimmed filters, with empty strings read as null. Run ids are at most 100 non-empty strings; respect_throttle is a boolean; connection and queue are at most 128 characters. Invalid requests answer Laravel's 422. Embedded applications have no HTTP system routes."
+}

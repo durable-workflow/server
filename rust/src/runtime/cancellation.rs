@@ -20,16 +20,7 @@ use tokio::sync::Semaphore;
 // Pin its reviewed character set rather than a changing Unicode whitespace
 // predicate. Internal characters and the embedded API's reasons stay intact.
 pub(super) fn normalize_http_reason(reason: &str) -> &str {
-    reason.trim_matches(|ch| {
-        matches!(ch,
-            '\0' | '\t'..='\r' | ' ' | '\u{85}' | '\u{a0}' | '\u{ad}' |
-            '\u{34f}' | '\u{61c}' | '\u{115f}' | '\u{1160}' | '\u{1680}' |
-            '\u{17b4}' | '\u{17b5}' | '\u{180e}' | '\u{2000}'..='\u{200f}' |
-            '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' |
-            '\u{2060}'..='\u{2065}' | '\u{206a}'..='\u{206f}' | '\u{2800}' |
-            '\u{3000}' | '\u{3164}' | '\u{feff}' | '\u{ffa0}' | '\u{1d159}' |
-            '\u{1d173}'..='\u{1d17a}' | '\u{e0020}')
-    })
+    super::laravel_validation::laravel_trim(reason)
 }
 
 /// The two immediate terminal commands. Published PHP runs both through one

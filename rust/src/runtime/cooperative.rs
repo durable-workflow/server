@@ -801,16 +801,17 @@ where
     ) -> Result<(StatusCode, Value)> {
         let mut tx = self.begin().await?;
         let instance = Self::query(
-            "SELECT current_run_id FROM workflow_instances WHERE id=$1 AND namespace='default'",
+            "SELECT current_run_id FROM workflow_instances WHERE id=$1 AND namespace=$2",
         )
         .bind(workflow_id)
+        .bind(self.namespace.as_ref())
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
         let current = DB::string(&instance, "current_run_id")?;
         let run_id = selected_run.unwrap_or(&current);
-        let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1 AND workflow_instance_id=$2 AND namespace='default'")
-            .bind(run_id).bind(workflow_id).fetch_optional(&mut *tx).await?
+        let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1 AND workflow_instance_id=$2 AND namespace=$3")
+            .bind(run_id).bind(workflow_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND,"run_not_found"))?;
         if run_id != current {
             return Err(refuse(StatusCode::CONFLICT, "selected_run_not_current"));

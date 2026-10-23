@@ -51,52 +51,8 @@ async fn continuation_inherits_committed_upserts_before_successor_commands() {
             {"type":"continue_as_new"}
         ]),
     );
-    let initial = request(
-        &app,
-        "GET",
-        "/api/workflows/continuation-authored-memos",
-        Value::Null,
-    )
-    .await
-    .1;
-    let mut refused_routing = body.clone();
-    refused_routing["commands"][1]["queue"] = json!("different");
-    let refused = request(&app, "POST", &path, refused_routing).await;
-    assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(refused.1["reason"], "continue_as_new_routing_unqualified");
-    assert_eq!(
-        request(
-            &app,
-            "GET",
-            "/api/workflows/continuation-authored-memos",
-            Value::Null
-        )
-        .await
-        .1,
-        initial,
-        "rejected continuation rolls back its preceding memo mutation"
-    );
-    let wrong_order = completion(
-        &task,
-        json!([
-            {"type":"continue_as_new"}, body["commands"][0]
-        ]),
-    );
-    assert_eq!(
-        request(&app, "POST", &path, wrong_order).await.0,
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-    assert_eq!(
-        request(
-            &app,
-            "GET",
-            "/api/workflows/continuation-authored-memos",
-            Value::Null
-        )
-        .await
-        .1,
-        initial
-    );
+    // Published PHP applies the memo before the continuation wherever the
+    // continuation sits in the batch (`command_batches`).
     let committed = request(&app, "POST", &path, body.clone()).await;
     assert_eq!(committed.0, StatusCode::OK, "{}", committed.1);
     let parent_path = format!("/api/workflows/continuation-authored-memos/runs/{old}");
@@ -290,17 +246,16 @@ async fn malformed_or_unsupported_continuation_refuses_without_a_successor() {
         original["run_id"].as_str().unwrap()
     );
     let before = request(&app, "GET", &history_path, Value::Null).await.1;
-    for commands in [
-        json!([{"type":"continue_as_new","arguments":envelope(Payload::Long(7))}]),
-        json!([{"type":"continue_as_new","workflow_type":"different"}]),
-        json!([{"type":"continue_as_new","queue":"different"}]),
-        json!([{"type":"continue_as_new"},{"type":"complete_workflow","result":envelope(Payload::Null)}]),
+    // Two terminal commands are the bridge's 409 `invalid_commands`, as PHP's.
+    for (commands, expected) in [
+        (json!([{"type":"continue_as_new","arguments":envelope(Payload::Long(7))}]), StatusCode::UNPROCESSABLE_ENTITY),
+        (json!([{"type":"continue_as_new"},{"type":"complete_workflow","result":envelope(Payload::Null)}]), StatusCode::CONFLICT),
     ] {
         assert_eq!(
             request(&app, "POST", &path, completion(&task, commands))
                 .await
                 .0,
-            StatusCode::UNPROCESSABLE_ENTITY
+            expected
         );
         assert_eq!(
             request(&app, "GET", &history_path, Value::Null).await.1,
@@ -449,7 +404,9 @@ async fn continuation_commits_one_successor_and_preserves_original_receipts_afte
         &task,
         json!([{"type":"continue_as_new","arguments":envelope(Payload::Array(vec![Payload::Long(7)])),"workflow_type":null,"queue":"test"}]),
     );
-    body["sticky_cache"] = json!({"worker_id":"continuation-worker","ttl_seconds":300});
+    // PHP requires every sticky cache field once one is sent.
+    body["sticky_cache"] = json!({"worker_id":"continuation-worker","workflow_id":"continuation-original",
+        "run_id":task["run_id"],"build_id":"build-1","ttl_seconds":300});
     let committed = request(&app, "POST", &path, body.clone()).await;
     assert_eq!(committed.0, StatusCode::OK, "{}", committed.1);
     assert_eq!(committed.1["recorded"], true);

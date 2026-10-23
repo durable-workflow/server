@@ -29,19 +29,8 @@ fn string(value: &Value) -> Option<&str> {
 }
 
 pub(super) fn validate_batch(commands: &[Value]) -> Result<()> {
-    if commands
-        .iter()
-        .filter(|command| {
-            matches!(
-                command["type"].as_str(),
-                Some("complete_workflow" | "fail_workflow" | "continue_as_new")
-            )
-        })
-        .count()
-        > 1
-    {
-        return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_commands"));
-    }
+    // A second terminal command is the bridge's 409, after the ownership
+    // checks (`Store::complete_workflow`).
     // PHP parseCommands removes terminal commands before group validation.
     let members: std::borrow::Cow<'_, [Value]> = if commands
         .iter()

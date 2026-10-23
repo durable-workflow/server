@@ -1,0 +1,34 @@
+{
+  "schema": "durable-workflow.v2.service-catalog-read.contract",
+  "version": 1,
+  "control_plane_version": "2",
+  "roles": [
+    "operator",
+    "admin"
+  ],
+  "namespace": "resolved_authenticated_observer",
+  "wire_surface": {
+    "endpoints": "/api/service-catalog/endpoints",
+    "endpoint": "/api/service-catalog/endpoints/{id}",
+    "services": "/api/service-catalog/services",
+    "service": "/api/service-catalog/services/{id}",
+    "operations": "/api/service-catalog/operations",
+    "operation": "/api/service-catalog/operations/{id}",
+    "calls": "/api/service-catalog/calls",
+    "call": "/api/service-catalog/calls/{id}"
+  },
+  "pagination": {
+    "default_per_page": 50,
+    "max_per_page": 100,
+    "related_limit": 100,
+    "stable_ties": "id_ascending"
+  },
+  "call_scopes": [
+    "relevant",
+    "owned",
+    "caller",
+    "target"
+  ],
+  "foreign_payloads": "redacted",
+  "unknown_or_foreign_detail": "catalog_object_not_found"
+}

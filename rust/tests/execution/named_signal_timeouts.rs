@@ -286,10 +286,13 @@ async fn named_invalid_signal_timeouts_leave_original_attempt_usable() {
     let run = namespaces::start_scoped(&app, namespace, "named-invalid-timeout").await;
     let task = signals::claim(&app, namespace).await;
     let before = signals::read(&app, namespace, &run, "history").await;
-    for timeout in [json!(-1), json!(1.5), json!("1"), json!(i64::MAX)] {
+    // PHP's rule refusals, then native's own for a timeout too large for a
+    // timestamp, which PHP accepts. "1" is an integer to PHP.
+    for (timeout, reason) in [(json!(-1), "validation_failed"), (json!(1.5), "validation_failed"),
+        (json!(i64::MAX), "invalid_signal_timeout")] {
         let refused = signals::finish(&app, namespace, &task, wait(timeout)).await;
         assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(refused.1["reason"], "invalid_signal_timeout");
+        assert_eq!(refused.1["reason"], reason, "{}", refused.1);
         assert_eq!(
             signals::read(&app, namespace, &run, "history").await,
             before

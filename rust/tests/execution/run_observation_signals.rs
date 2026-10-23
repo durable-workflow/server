@@ -313,11 +313,10 @@ async fn run_observation_signals_named_namespace_retains_batched_admission_gate(
         ]),
     )
     .await;
-    assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(
-        refused.1["reason"],
-        "development_namespace_command_unqualified"
-    );
+    // A named namespace accepts every command, but native still opens one
+    // wait at a time.
+    assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
+    assert_eq!(refused.1["reason"], "pending_durable_operations", "{}", refused.1);
     assert_eq!(
         read(&app, "signal-observation", &run, "history").await,
         before

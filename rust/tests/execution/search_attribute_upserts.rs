@@ -209,3 +209,23 @@ async fn workflow_lists_filter_and_show_typed_attributes_like_php() {
     runtime.close().await;
     database.remove().await;
 }
+
+// Published PHP fills in an upsert's registered types before its second
+// capability check, so a worker without `typed_search_attributes` cannot
+// upsert search attributes even when it sends no `attribute_types`.
+#[tokio::test]
+async fn an_upsert_needs_the_typed_capability_like_php() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register(&app, "plain-worker", json!(["echo"]), json!([])).await;
+    define(&app, "region", "keyword").await;
+    let started = start(&app, "untyped-upsert").await;
+    let before = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let task = poll(&app, "plain-worker", "workflow").await;
+    let (status, body) = finish_task(&app, &task,
+        json!([{"type":"upsert_search_attributes","attributes":{"region":"eu"}}])).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["reason"], "workflow_metadata_capability_not_advertised", "{body}");
+    assert_eq!(body["capability"], "typed_search_attributes", "{body}");
+    assert_eq!(run_history(&app, &started["workflow_id"], &started["run_id"]).await, before);
+}

@@ -197,7 +197,8 @@ async fn named_timer_invalid_batch_is_atomic_and_zero_delay_keeps_its_identity()
     )
     .await;
     assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(refused.1["reason"], "invalid_timer_delay");
+    assert_eq!(refused.1["errors"]["commands.1.delay_seconds"],
+        json!(["The commands.1.delay_seconds field must be at least 0."]), "{}", refused.1);
     assert_eq!(
         scoped(&app, "alpha", "GET", &path, Value::Null).await,
         before

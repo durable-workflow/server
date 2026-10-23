@@ -25,7 +25,7 @@ use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 pub(super) const REDISPATCH_AFTER_SECONDS: i64 = 3;
 
 /// Laravel binds a bare timestamp as `Y-m-d H:i:s`.
-fn whole_second(at: DateTime<Utc>) -> DateTime<Utc> {
+pub(super) fn whole_second(at: DateTime<Utc>) -> DateTime<Utc> {
     at.with_nanosecond(0).unwrap_or(at)
 }
 
@@ -232,7 +232,7 @@ where
             "schedules": self.schedule_metrics(now).await?,
             "workers": self.worker_metrics().await?,
             "backend": backend_capabilities(now, DB::PHP_CONNECTION),
-            "structural_limits": structural_limits(DB::PHP_CONNECTION),
+            "structural_limits": structural_limits(DB::PHP_CONNECTION, &config.structural, self.memo_size_limit),
             "update_wait": {"completion_timeout_seconds": 10, "poll_interval_milliseconds": 50},
             "repair_policy": repair_policy(),
             "matching_role": matching_role(config),
@@ -1027,7 +1027,7 @@ where
 
     /// PHP's `RuntimeExternalPayloadCleanupMetrics`: the expired registrations
     /// and the namespace's recorded cleanup passes.
-    async fn external_payload_cleanup_metrics(&self, config: &MetricsConfig) -> Result<Value> {
+    pub(super) async fn external_payload_cleanup_metrics(&self, config: &MetricsConfig) -> Result<Value> {
         let bound = whole_second(now());
         let stats =
             Self::query("SELECT * FROM runtime_external_payload_cleanup_stats WHERE namespace=$1")
@@ -1084,14 +1084,9 @@ where
     /// published PHP's repair pass would select across every namespace.
     pub(super) async fn repair_status(&self) -> Result<Value> {
         let at = now();
-        let bound = whole_second(at);
-        let cutoff = whole_second(at - Duration::seconds(REDISPATCH_AFTER_SECONDS));
-        let mut tasks = Self::query(repair_candidates::TASK_SCOPES);
-        for time in [bound, bound, bound, cutoff, cutoff, cutoff, bound] {
-            tasks = tasks.bind(DB::bind_time(time));
-        }
-        let tasks = scope_rows::<DB>(tasks.fetch_all(&self.pool).await?)?;
-        let runs = scope_rows::<DB>(Self::query(repair_candidates::RUN_SCOPES).fetch_all(&self.pool).await?)?;
+        let unfiltered = super::repair_pass::PassRequest::default();
+        let tasks = self.repairable_task_scopes(&unfiltered, at).await?;
+        let runs = self.missing_task_scopes(&unfiltered).await?;
         let oldest_run = match Self::query(repair_candidates::OLDEST_RUN).fetch_optional(&self.pool).await? {
             Some(row) => DB::optional_instant(&row, "wait_started_at")?
                 .or(DB::optional_instant(&row, "started_at")?)
@@ -1363,6 +1358,8 @@ pub(crate) struct MetricsConfig {
     pub(crate) workflow_task_lease_seconds: i64,
     pub(crate) activity_task_lease_seconds: i64,
     pub(crate) abandoned_upload_expiry_seconds: i64,
+    /// The honored signal, update and payload ceilings.
+    pub(crate) structural: super::StructuralLimits,
 }
 
 fn empty_repair_snapshot() -> Value {
@@ -1386,16 +1383,19 @@ fn empty_repair_snapshot() -> Value {
     })
 }
 
-fn structural_limits(connection: &str) -> Value {
+/// `StructuralLimits::snapshot`: honored ceilings as configured, where a
+/// disabled one reads 0 (`intConfig`'s `max(0, value)`).
+fn structural_limits(connection: &str, limits: &super::StructuralLimits, memo: Option<usize>) -> Value {
+    let shown = |limit: Option<usize>| limit.unwrap_or(0);
     let configured = json!({
         "pending_activity_count": 2000,
         "pending_child_count": 1000,
         "pending_timer_count": 2000,
-        "pending_signal_count": 5000,
-        "pending_update_count": 500,
+        "pending_signal_count": shown(limits.pending_signals),
+        "pending_update_count": shown(limits.pending_updates),
         "command_batch_size": 1000,
-        "payload_size_bytes": 2_097_152,
-        "memo_size_bytes": 262_144,
+        "payload_size_bytes": shown(limits.payload_bytes),
+        "memo_size_bytes": shown(memo),
         "search_attribute_size_bytes": 40960,
         "history_transaction_size": 5000,
         "warning_threshold_percent": 80,
@@ -1415,7 +1415,8 @@ fn structural_limits(connection: &str) -> Value {
 
 /// What this runtime needs from its backends, in PHP's capability shape.
 fn backend_capabilities(now: DateTime<Utc>, connection: &str) -> Value {
-    let limits = structural_limits(connection);
+    // Only the backend's issues are reported here, which no ceiling changes.
+    let limits = structural_limits(connection, &super::StructuralLimits::default(), None);
     let issues = limits["issues"].clone();
     let severity = if issues.as_array().is_some_and(|issues| !issues.is_empty()) {
         "info"
@@ -1450,7 +1451,7 @@ fn backend_capabilities(now: DateTime<Utc>, connection: &str) -> Value {
 
 /// Native claims ready tasks on each poll; it runs no repair loop.
 /// The grouped candidate rows of one repair candidate query.
-fn scope_rows<DB: Backend>(rows: Vec<DB::Row>) -> Result<Vec<ScopeRow>>
+pub(super) fn scope_rows<DB: Backend>(rows: Vec<DB::Row>) -> Result<Vec<ScopeRow>>
 where
     usize: ColumnIndex<DB::Row>,
     for<'r> i64: Decode<'r, DB>,

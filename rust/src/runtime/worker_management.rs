@@ -466,7 +466,7 @@ where
         let metrics = process_metrics(&body)?;
         let interval = bounded(&body, "heartbeat_interval_seconds", 1, 3600)?;
         let mut tx = self.begin().await?;
-        let Some(worker) = Self::query("SELECT max_concurrent_workflow_tasks,max_concurrent_activity_tasks,max_concurrent_worker_sessions,process_metrics FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2")
+        let Some(worker) = Self::query("SELECT task_queue,build_id,status,max_concurrent_workflow_tasks,max_concurrent_activity_tasks,max_concurrent_worker_sessions,process_metrics FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2")
             .bind(worker_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?
         else {
             return Err(RuntimeError::Protocol {
@@ -480,8 +480,15 @@ where
             DB::number(&worker, "max_concurrent_activity_tasks")?,
             DB::number(&worker, "max_concurrent_worker_sessions")?,
         ];
-        Self::query("UPDATE workflow_worker_registrations SET last_heartbeat_at=$1,updated_at=$2 WHERE worker_id=$3 AND namespace=$4")
-            .bind(DB::bind_time(now())).bind(DB::bind_time(now())).bind(worker_id).bind(self.namespace.as_ref())
+        // A heartbeat keeps a draining build's worker draining, and a fenced
+        // registration fenced.
+        let status = match DB::optional_string(&worker, "status")?.as_deref() {
+            Some("superseded") => "superseded",
+            _ => Self::registration_status(&mut tx, self.namespace.as_ref(), &DB::string(&worker, "task_queue")?,
+                DB::optional_string(&worker, "build_id")?.as_deref()).await?,
+        };
+        Self::query("UPDATE workflow_worker_registrations SET last_heartbeat_at=$1,updated_at=$2,status=$3 WHERE worker_id=$4 AND namespace=$5")
+            .bind(DB::bind_time(now())).bind(DB::bind_time(now())).bind(status).bind(worker_id).bind(self.namespace.as_ref())
             .execute(&mut *tx).await?;
         // Only the slots, metrics and cadence the heartbeat reports change.
         let reported = task_slots(&body, capacity)?;

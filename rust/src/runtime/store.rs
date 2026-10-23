@@ -17,12 +17,19 @@ pub(super) struct PreparedControlArguments {
 }
 /// The runtime-owned message-stream delivery signal (`WorkflowStub::MESSAGE_STREAM_RUNTIME_SIGNAL`).
 const MESSAGE_STREAM_SIGNAL: &str = "__durable_workflow_message_stream";
-pub(super) const TASK_CANDIDATES_SQL: &str = "SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) ORDER BY t.priority,t.available_at,t.id LIMIT 100";
+pub(super) const TASK_CANDIDATES_SQL: &str = "SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ORDER BY t.priority,t.available_at,t.id LIMIT 100";
 /// `nextEligibleSignal`: a run's received signals in PHP's order: command
 /// sequence (unsequenced last), receipt time, then id.
 const RECEIVED_SIGNALS: &str = "SELECT id,signal_name,signal_wait_id,command_sequence FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received' AND closed_at IS NULL ORDER BY CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END,command_sequence,received_at,id LIMIT 100";
 pub(super) const POLL_RECEIPT_CLEANUP_SQL: &str = "DELETE FROM dw_poll_receipts WHERE expires_at<=$1 AND task_id IN (SELECT id FROM workflow_tasks WHERE status!='leased' OR lease_expires_at<=$2)";
 pub(super) const WORKER_REGISTRATION_SQL: &str = "INSERT INTO workflow_worker_registrations(namespace,worker_id,task_queue,runtime,sdk_version,build_id,supported_workflow_types,supported_activity_types,capabilities,capability_manifest,last_heartbeat_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(worker_id,namespace) DO UPDATE SET task_queue=excluded.task_queue,runtime=excluded.runtime,sdk_version=excluded.sdk_version,build_id=excluded.build_id,supported_workflow_types=excluded.supported_workflow_types,supported_activity_types=excluded.supported_activity_types,capabilities=excluded.capabilities,capability_manifest=excluded.capability_manifest,last_heartbeat_at=excluded.last_heartbeat_at,updated_at=excluded.updated_at";
+/// A registration's build id as the pollers compare it: trimmed, and none
+/// when blank. A task pinned to a build goes only to that build's workers.
+pub(super) fn worker_build<DB: Backend>(row: &DB::Row) -> Result<Option<String>> {
+    Ok(DB::optional_string(row, "build_id")?
+        .map(|build| build.trim().to_owned())
+        .filter(|build| !build.is_empty()))
+}
 pub(super) struct Store<DB: Backend> {
     pub(super) pool: Pool<DB>,
     pub(super) wake: Arc<Notify>,
@@ -39,6 +46,9 @@ pub(super) struct Store<DB: Backend> {
     pub(super) search_attribute_limit: i64,
     /// When a silent registration stops counting (`server.workers.stale_after_seconds`).
     pub(super) worker_stale_after_seconds: i64,
+    /// When this server last ran a task repair pass, shared by its namespaces
+    /// as PHP shares its loop throttle key.
+    pub(super) repair_pass_at: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
 /// The `closed_reason` a terminal history event gives its run, or `None` for
 /// an event that does not close the run.
@@ -118,6 +128,7 @@ where
             update_wait_seconds: 10,
             search_attribute_limit: 100,
             worker_stale_after_seconds: 30,
+            repair_pass_at: Arc::default(),
         }
     }
     pub(super) fn in_namespace(&self, namespace: &str) -> Self {
@@ -133,6 +144,7 @@ where
             update_wait_seconds: self.update_wait_seconds,
             search_attribute_limit: self.search_attribute_limit,
             worker_stale_after_seconds: self.worker_stale_after_seconds,
+            repair_pass_at: self.repair_pass_at.clone(),
         }
     }
     pub(super) async fn database_live(&self) -> bool {
@@ -199,6 +211,26 @@ where
             self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
                 .await?;
         }
+        // `TaskQueueRoutingGate`: a queue whose live workers all drain takes
+        // no new start. A workflow id reserved in another namespace is
+        // refused for that first.
+        let request = super::start_request::validate(&body)?;
+        let reserved = match &request.workflow_id {
+            Some(workflow_id) => Self::query("SELECT namespace FROM workflow_instances WHERE id=$1")
+                .bind(workflow_id.as_str()).fetch_optional(&mut *tx).await?
+                .map(|instance| DB::optional_string(&instance, "namespace")).transpose()?.flatten()
+                .is_some_and(|reserved| reserved != self.namespace.as_ref()),
+            None => false,
+        };
+        if !reserved && let Some(block) = Self::routing_block(&mut tx, &self.namespace, &request.task_queue, self.worker_stale_after_seconds).await? {
+            let mut response = json!({"workflow_id":request.workflow_id,"command_status":"rejected","command_source":"control_plane",
+                "outcome":"rejected_task_queue_draining","reason":"task_queue_draining","rejection_reason":"task_queue_draining",
+                "message":format!("Task queue [{}] is draining and cannot accept new workflow starts until an active worker cohort is available.", request.task_queue),
+                "workflow_type":request.workflow_type,"task_queue":request.task_queue});
+            response.as_object_mut().expect("object").extend(block);
+            response.as_object_mut().expect("object").retain(|_, value| !value.is_null());
+            return Err(super::RuntimeError::Protocol { status: StatusCode::CONFLICT, response });
+        }
         let started = Self::start_in(
             &mut tx,
             &body,
@@ -256,6 +288,14 @@ where
         let run_id = id();
         let command_id = id();
         let started_at = now();
+        // `WorkflowStartVersionPin::resolveForStart`: the run is pinned to its
+        // cohort's build, and records the definition that cohort agrees on.
+        let workers = Self::start_workers(tx, namespace, queue, stale_after).await?;
+        let cohort = match Self::promoted_cohort(tx, namespace, queue).await? {
+            Some(cohort) => Some(cohort),
+            None => super::start_definition::resolve(&workers, workflow_type),
+        };
+        let pin = cohort.as_ref().and_then(|cohort| cohort.pin().map(str::to_owned));
         // DefaultWorkflowControlPlane::start: each deadline follows its own
         // timeout, and a run without timeouts has no deadline.
         let execution_deadline = execution_timeout.map(|seconds| started_at + chrono::Duration::seconds(seconds));
@@ -271,12 +311,12 @@ where
             .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(namespace)
             .bind(DB::optional_document(&authored_memo)).bind(request.business_key.as_deref()).execute(&mut **tx).await?;
         // PHP records the start as the run's first progress.
-        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at,namespace,last_progress_at,business_key,priority,fairness_key,fairness_weight) VALUES ($1,$2,$3,$4,1,'pending','avro',$5,$6,NULLIF($7,0),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)")
+        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at,namespace,last_progress_at,business_key,priority,fairness_key,fairness_weight,compatibility) VALUES ($1,$2,$3,$4,1,'pending','avro',$5,$6,NULLIF($7,0),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)")
             .bind(&run_id).bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(&arguments)
             .bind(queue).bind(run_timeout.unwrap_or(0)).bind(DB::optional_time(execution_deadline)).bind(DB::optional_time(run_deadline))
             .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(namespace)
             .bind(DB::bind_time(started_at)).bind(request.business_key.as_deref()).bind(request.priority)
-            .bind(request.fairness_key.as_deref()).bind(request.fairness_weight).execute(&mut **tx).await?;
+            .bind(request.fairness_key.as_deref()).bind(request.fairness_weight).bind(pin.as_deref()).execute(&mut **tx).await?;
         if let Some(memo) = memo {
             for (key, value) in memo {
                 Self::query(DB::MEMO_INITIAL_INSERT)
@@ -321,16 +361,20 @@ where
         started["run_timeout_seconds"] = json!(run_timeout);
         started["execution_deadline_at"] = json!(execution_deadline);
         started["run_deadline_at"] = json!(run_deadline);
-        if let Some(fingerprint) = Self::start_definition_fingerprint(tx, namespace, queue, workflow_type, stale_after).await? {
+        if let Some(fingerprint) = cohort.as_ref().and_then(|cohort| super::start_definition::fingerprint_for(&workers, workflow_type, cohort)) {
             started["workflow_definition_fingerprint"] = json!(fingerprint);
             started["workflow_definition_fingerprint_source"] = json!("worker");
         }
+        started["compatibility"] = json!(pin);
         // PHP filters null fields out of the started payload, then adds the
         // declared contract.
         if let Some(fields) = started.as_object_mut() {
             fields.retain(|_, value| !value.is_null());
         }
-        Self::attach_workflow_contract(tx, queue, workflow_type, &mut started).await?;
+        // PHP enriches the start with a contract only from its cohort.
+        if let Some(cohort) = &cohort {
+            Self::attach_workflow_contract(tx, queue, workflow_type, Some(cohort), &mut started).await?;
+        }
         Self::append(
             tx,
             &run_id,
@@ -352,13 +396,12 @@ where
     /// `WorkflowStartVersionPin::definitionFingerprintForCohort` over the
     /// queue's active registrations: unexpired or never heartbeated, and
     /// not draining or deregistered.
-    async fn start_definition_fingerprint(
+    pub(super) async fn start_workers(
         tx: &mut Transaction<'_, DB>,
         namespace: &str,
         queue: &str,
-        workflow_type: &str,
         stale_after: i64,
-    ) -> Result<Option<String>> {
+    ) -> Result<Vec<super::start_definition::CohortWorker>> {
         let cutoff = now() - chrono::Duration::seconds(stale_after.max(1));
         let rows = Self::query("SELECT build_id,supported_workflow_types,workflow_definition_fingerprints,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND task_queue=$2 AND (last_heartbeat_at IS NULL OR last_heartbeat_at>=$3) AND (status IS NULL OR status='active')")
             .bind(namespace).bind(queue).bind(DB::bind_time(cutoff)).fetch_all(&mut **tx).await?;
@@ -371,7 +414,7 @@ where
                 heartbeated: DB::optional_instant(row, "last_heartbeat_at")?.is_some(),
             });
         }
-        Ok(super::start_definition::fingerprint(&workers, workflow_type))
+        Ok(workers)
     }
 
     /// `DefaultWorkflowControlPlane::start` for an instance that already has
@@ -501,7 +544,8 @@ where
             commands.push(public);
         }
         let current = DB::optional_string(&row,"current_run_id")?.as_deref() == Some(DB::string(&row,"id")?.as_str());
-        let input_envelope = wire(&DB::string(&row,"arguments")?);
+        // A standalone activity's host run may have no input.
+        let input_envelope = DB::optional_string(&row,"arguments")?.map(|arguments| wire(&arguments)).unwrap_or(Value::Null);
         let output_envelope = output.as_deref().map(wire);
         let mut described =
             json!({"workflow_id": workflow_id, "run_id": DB::string(&row,"id")?, "workflow_type": DB::string(&row,"workflow_type")?,
@@ -563,6 +607,8 @@ where
         mut prepared: PreparedControlArguments,
         transition_codec: Arc<Semaphore>,
         context: Option<Value>,
+        limits: super::memo_limits::StructuralLimits,
+        external: Option<&super::external_resolution::PreparedExternal>,
     ) -> Result<Value> {
         // The authenticated request's context; a direct call records only
         // the request id and signal name.
@@ -584,6 +630,11 @@ where
             ));
         }
         let mut tx = self.begin().await?;
+        // The referenced object now belongs to the signal; a refusal rolls
+        // the claim back with everything else.
+        if let Some(prepared) = external {
+            self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri).await?;
+        }
         let instance = Self::query("SELECT current_run_id,last_message_sequence FROM workflow_instances WHERE id=$1 AND namespace=$2")
             .bind(workflow_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?.ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
         let current_run = DB::string(&instance, "current_run_id")?;
@@ -632,17 +683,17 @@ where
             .as_array()
             .is_some_and(|contracts| contracts.iter().any(|contract| contract["name"] == name));
         let mut validation_errors = json!([]);
-        let rejection = if !active {
+        let mut rejection = if !active {
             Some((
                 StatusCode::CONFLICT,
                 "run_not_active",
-                "rejected_not_active",
+                Some("rejected_not_active"),
             ))
         } else if !declared && durable {
             Some((
                 StatusCode::NOT_FOUND,
                 "unknown_signal",
-                "rejected_unknown_signal",
+                Some("rejected_unknown_signal"),
             ))
         } else if !has_parameters {
             None
@@ -657,12 +708,29 @@ where
                     Some((
                         StatusCode::UNPROCESSABLE_ENTITY,
                         "invalid_signal_arguments",
-                        "rejected_invalid_arguments",
+                        Some("rejected_invalid_arguments"),
                     ))
                 }
                 Err(error) => return Err(error),
             }
         };
+        // `guardPendingSignals`, then `rejectOversizedSignal`: an admissible
+        // signal over a structural ceiling is refused durably, without an
+        // outcome or history.
+        let mut exceeded = None;
+        if rejection.is_none() {
+            if limits.pending_signals.is_some() {
+                let pending = Self::scalar("SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received'")
+                    .bind(&current_run).fetch_one(&mut *tx).await?;
+                exceeded = super::memo_limits::Exceeded::pending_signals(limits.pending_signals, pending);
+            }
+            if exceeded.is_none() {
+                exceeded = super::memo_limits::Exceeded::payload(limits.payload_bytes, &prepared.arguments);
+            }
+            if exceeded.is_some() {
+                rejection = Some((StatusCode::CONFLICT, "structural_limit_exceeded", None));
+            }
+        }
         let command_id = id();
         let signal_id = id();
         let command_sequence = DB::number(&run, "last_command_sequence")?
@@ -689,12 +757,25 @@ where
                     "declared_signals":names,"signal_admission":"handler_not_declared","reason":reason,
                     "message":format!("Workflow signal [{name}] is unknown for workflow type [{workflow_type}]: the durable command contract does not declare that handler. Command contract source [durable_history], declared signals [{labels}].")});
             }
+            // An oversized signal keeps no arguments: its command carries the
+            // limit instead, and its signal row the limit's message.
+            let (mut row_arguments, mut row_errors) = (prepared.arguments.clone(), validation_errors.clone());
+            let mut command_values = prepared.values.clone();
+            let mut command_errors = validation_errors.clone();
+            let mut command_diagnostics = diagnostics.clone();
+            if let Some(exceeded) = exceeded.as_ref().filter(|exceeded| exceeded.kind == "payload_size") {
+                command_values = vec![];
+                command_errors = json!({"arguments":[exceeded.message]});
+                command_diagnostics = exceeded.fields();
+                row_arguments = super::queries::empty_arguments(transition_codec.clone()).await?;
+                row_errors = command_errors.clone();
+            }
             prepared.command = prepare_rejected_command(
                 transition_codec,
                 name.to_owned(),
-                prepared.values.clone(),
-                validation_errors.clone(),
-                diagnostics.clone(),
+                command_values,
+                command_errors,
+                command_diagnostics,
                 "signal_codec_unavailable",
             )
             .await?;
@@ -705,7 +786,7 @@ where
                 .bind(DB::document(&context)).execute(&mut *tx).await?;
             Self::query("INSERT INTO workflow_signal_records(id,workflow_command_id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,signal_name,status,outcome,command_sequence,payload_codec,arguments,validation_errors,rejection_reason,rejected_at,closed_at) VALUES ($1,$2,$3,$4,$5,$6,'rejected',$7,$8,'avro',$9,$10,$11,$12,$13)")
                 .bind(&signal_id).bind(&command_id).bind(workflow_id).bind(&current_run).bind(&current_run).bind(name)
-                .bind(outcome).bind(command_sequence).bind(&prepared.arguments).bind(DB::document(&validation_errors)).bind(reason)
+                .bind(outcome).bind(command_sequence).bind(&row_arguments).bind(DB::document(&row_errors)).bind(reason)
                 .bind(DB::bind_time(rejected_at)).bind(DB::bind_time(rejected_at)).execute(&mut *tx).await?;
             Self::query("UPDATE workflow_runs SET last_command_sequence=$1 WHERE id=$2")
                 .bind(command_sequence)
@@ -802,14 +883,28 @@ where
         let children = Self::query("SELECT sequence FROM workflow_child_calls WHERE parent_workflow_run_id=$1 ORDER BY sequence DESC LIMIT 1")
             .bind(run_id).fetch_optional(&mut **tx).await?.map(|row| DB::number(&row,"sequence")).transpose()?.unwrap_or(0);
         let run =
-            Self::query("SELECT cancellation_delivery_sequence FROM workflow_runs WHERE id=$1")
+            Self::query("SELECT cancellation_delivery_sequence,run_number FROM workflow_runs WHERE id=$1")
                 .bind(run_id)
                 .fetch_one(&mut **tx)
                 .await?;
+        // A redriven run replays the activities before its resume step from
+        // reused completions, which have no execution rows.
+        let mut reused = 0;
+        if DB::number(&run, "run_number")? > 1 {
+            let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
+                .bind(run_id).fetch_optional(&mut **tx).await?;
+            if let Some(started) = started {
+                let payload = DB::document_row(&started, "payload")?;
+                if payload["recovery_kind"] == "redrive" {
+                    reused = payload["resume_step_sequence"].as_i64().unwrap_or(1) - 1;
+                }
+            }
+        }
         Ok(activities
             .max(timers)
             .max(wait_sequence)
             .max(children)
+            .max(reused)
             .max(DB::optional_number(&run, "cancellation_delivery_sequence")?.unwrap_or(0)))
     }
 
@@ -1212,8 +1307,9 @@ where
             .bind(DB::bind_time(now()))
             .execute(&mut *tx)
             .await?;
-        Self::query("UPDATE workflow_worker_registrations SET status='active',workflow_command_contracts=$1 WHERE worker_id=$2 AND namespace=$3")
-            .bind(DB::document(&contracts)).bind(worker_id).bind(self.namespace.as_ref()).execute(&mut *tx).await?;
+        let status = Self::registration_status(&mut tx, self.namespace.as_ref(), queue, body["build_id"].as_str()).await?;
+        Self::query("UPDATE workflow_worker_registrations SET status=$1,workflow_command_contracts=$2 WHERE worker_id=$3 AND namespace=$4")
+            .bind(status).bind(DB::document(&contracts)).bind(worker_id).bind(self.namespace.as_ref()).execute(&mut *tx).await?;
         Self::record_registration(
             &mut tx,
             self.namespace.as_ref(),
@@ -1228,7 +1324,7 @@ where
         Ok(
             json!({"worker_id": worker_id, "registration_token":token, "registered": true, "namespace": self.namespace.as_ref(), "task_queue": queue,
             "runtime": body["runtime"], "build_id": body["build_id"], "heartbeat_interval_seconds": config.worker_heartbeat_interval_seconds,
-            "status": "active", "capabilities": body["capabilities"], "capability_manifest": body["capability_manifest"]}),
+            "status": status, "capabilities": body["capabilities"], "capability_manifest": body["capability_manifest"]}),
         )
     }
 
@@ -1245,6 +1341,7 @@ where
             return Err(refuse(StatusCode::NOT_FOUND, "worker_not_found"));
         }
         self.retire_incarnation(&mut tx, worker_id).await?;
+        Self::revoke_worker_activity_leases(&mut tx, self.namespace.as_ref(), worker_id).await?;
         // Revocation expires the existing fence; later polling creates a new
         // attempt before work can be accepted from another worker.
         let recovered = DB::affected(Self::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE lease_owner=$2 AND namespace=$3 AND status='leased' AND task_type='workflow'")
@@ -1279,8 +1376,7 @@ where
         pages: super::history_pages::HistoryPages,
         default_wait: u64,
     ) -> Result<Value> {
-        text(&body, "worker_id")?;
-        text(&body, "task_queue")?;
+        self.refuse_draining_worker(text(&body, "worker_id")?, text(&body, "task_queue")?).await?;
         // Laravel's `nullable|integer|min:0|max:60` bounds a requested wait;
         // the configured default is not capped.
         let timeout = match body.get("timeout_seconds") {
@@ -1346,16 +1442,16 @@ where
         let queue = text(body, "task_queue")?;
         // The claim refuses a removed or moved registration.
         let registration = Self::query(
-            "SELECT task_queue FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2",
+            "SELECT task_queue,build_id FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2",
         )
         .bind(worker_id)
         .bind(self.namespace.as_ref())
         .fetch_optional(&self.pool)
         .await?;
-        match registration {
-            Some(row) if DB::string(&row, "task_queue")? == queue => {}
+        let build = match registration {
+            Some(row) if DB::string(&row, "task_queue")? == queue => worker_build::<DB>(&row)?,
             _ => return Ok(true),
-        }
+        };
         // A concurrent poll with the same request ID may have claimed already;
         // the claim replays its receipt.
         if let Some(request_id) = body.get("poll_request_id").and_then(Value::as_str)
@@ -1372,6 +1468,7 @@ where
             .bind(kind)
             .bind(DB::bind_time(at))
             .bind(DB::bind_time(at))
+            .bind(build.as_deref())
             .fetch_optional(&self.pool)
             .await?
             .is_some())
@@ -1425,12 +1522,14 @@ where
                 "supported_activity_types"
             },
         )?;
+        let build = worker_build::<DB>(&worker)?;
         let candidates = Self::query(DB::TASK_CANDIDATES_SQL)
             .bind(self.namespace.as_ref())
             .bind(queue)
             .bind(kind)
             .bind(DB::bind_time(now()))
             .bind(DB::bind_time(now()))
+            .bind(build.as_deref())
             .fetch_all(&mut *tx)
             .await?;
         for task in candidates {
@@ -1626,7 +1725,10 @@ where
                 claim["attempt_number"] = json!(attempt);
                 claim["activity_type"] = json!(type_name);
                 claim["idempotency_key"] = json!(activity_id);
-                claim["arguments"] = wire(&DB::string(&activity, "arguments")?);
+                // A standalone activity started without input has none.
+                if let Some(arguments) = DB::optional_string(&activity, "arguments")? {
+                    claim["arguments"] = wire(&arguments);
+                }
                 claim["retry_policy"] =
                     DB::optional_document_row(&activity, "retry_policy")?.unwrap_or(Value::Null);
                 // PHP omits the field when the activity has no deadline.
@@ -1641,6 +1743,9 @@ where
                     claim["workflow_update_id"] = json!(update_id);
                 }
                 claim["sticky_replay_mode"] = json!("cold_replay");
+                claim["compatibility"] = json!(DB::optional_string(&task, "compatibility")?
+                    .filter(|build| !build.trim().is_empty())
+                    .or(DB::optional_string(&run, "compatibility")?.filter(|build| !build.trim().is_empty())));
                 if let Some(cancellation) = cancellation {
                     claim["cancellation_request"] = cancellation;
                 }
@@ -1734,8 +1839,10 @@ where
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
+        // PHP's heartbeat also reports the run's and the task's status.
         let mut response = json!({"task_id": task_id, "workflow_task_attempt": body["workflow_task_attempt"],
-            "lease_owner": body["lease_owner"], "lease_expires_at": expires, "renewed": true});
+            "lease_owner": body["lease_owner"], "lease_expires_at": expires, "renewed": true,
+            "run_status": DB::string(&run, "status")?, "task_status": "leased", "reason": null});
         if let Some(cancellation) = Self::cancellation_request(&run)? {
             response["cancellation_request"] = cancellation;
         }
@@ -1848,12 +1955,8 @@ where
         // replay block, without a retry, until an operator repairs the run.
         let range_blocked =
             range_blocked || (!waiting && super::task_failures::blocks_replay(&body["failure"]));
-        if !waiting && self.namespace.as_ref() != "default" {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "development_workflow_task_retry_namespace_unqualified",
-            ));
-        }
+        // The task is read within the request's namespace, and its retry
+        // copies the run's namespace.
         let mut tx = self.begin().await?;
         let task = self.task_row(&mut tx, task_id).await?;
         if DB::string(&task, "task_type")? != "workflow" {
@@ -2012,36 +2115,21 @@ where
         // Validate the entire batch before mutation. Unknown commands and
         // options cannot be silently accepted as unsupported durable effects.
         for (index, command) in commands.iter().enumerate() {
+            // The command normalizer's field scopes and value rules, with
+            // PHP's messages, before native's own refusals.
+            super::completion_rules::normalizer_checks(index, command)?;
             let command_type = text(command, "type")?;
-            if self.namespace.as_ref() != "default"
-                && !matches!(
-                    command_type,
-                    "complete_workflow" | "fail_workflow" | "schedule_activity" | "start_timer" | "start_child_workflow"
-                )
-                && !(commands.len() == 1
-                    && matches!(command_type, "open_condition_wait" | "open_signal_wait"))
-            {
-                return Err(refuse(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "development_namespace_command_unqualified",
-                ));
-            }
             match command_type {
                 "fail_workflow" => {
                     super::workflow_failures::validate(command)?;
                 }
-                "complete_workflow" if index + 1 == commands.len() => {
+                "complete_workflow" => {
                     reject_fields(command, &["type", "result"])?;
                     if !external.contains_key(&index) {
                         envelope(command, "result")?;
                     }
                 }
-                "continue_as_new"
-                    if index + 1 == commands.len()
-                        && commands[..index]
-                            .iter()
-                            .all(|prior| matches!(prior["type"].as_str(), Some("upsert_memo" | "upsert_search_attributes"))) =>
-                {
+                "continue_as_new" => {
                     super::continuations::validate(command)?;
                 }
                 "schedule_activity" => {
@@ -2065,7 +2153,7 @@ where
                     }
                     super::activity_failures::retry_policy(command)?;
                 }
-                "start_child_workflow" if commands.len() == 1 => {
+                "start_child_workflow" => {
                     super::children::validate_child(command)?;
                 }
                 "start_timer" => {
@@ -2128,12 +2216,12 @@ where
                     text(command, "signal_name")?;
                     super::wait_timeouts::timeout(command)?;
                 }
-                "complete_update" if commands.len() == 1 => {
+                "complete_update" => {
                     reject_fields(command, &["type", "update_id", "result"])?;
                     text(command, "update_id")?;
                     envelope(command, "result")?;
                 }
-                "fail_update" if commands.len() == 1 => {
+                "fail_update" => {
                     super::updates::update_failure(command)?;
                 }
                 _ => {
@@ -2165,18 +2253,23 @@ where
                 .bind(&run_id)
                 .fetch_one(&mut *tx)
                 .await?;
+            let created = DB::optional_document_row(&task, "receipt")?
+                .and_then(|receipt| receipt.get(COMPLETION_RECEIPT).map(|receipt| receipt["created_task_ids"].clone()))
+                .unwrap_or_else(|| json!([]));
             return Ok(
                 json!({"task_id": task_id, "run_id": run_id, "run_status": DB::string(&current,"status")?, "workflow_task_attempt": body["workflow_task_attempt"],
-                "outcome": "completed", "recorded": false, "reason": "already_completed"}),
+                "outcome": "completed", "recorded": false, "reason": "already_completed", "created_task_ids": created}),
             );
         }
         Self::workflow_task_guard(&mut tx, &task, &body).await?;
         // `childCancellationPolicyGuard`: a child that requests cancellation
         // on parent close, or propagates the parent's cancellation, needs a
         // cooperative worker's claim and a protocol 1.20 request.
-        if let Some(command) = commands.iter().find(|command| command["type"] == "start_child_workflow")
-            && super::children::policies(command)?.cooperative()
-        {
+        let mut cooperative_child = false;
+        for command in commands.iter().filter(|command| command["type"] == "start_child_workflow") {
+            cooperative_child |= super::children::policies(command)?.cooperative();
+        }
+        if cooperative_child {
             let mut unavailable = Vec::new();
             if !protocol
                 .and_then(|version| version.strip_prefix("1."))
@@ -2198,6 +2291,11 @@ where
                         "remediation": "Use a runtime with child cancellation policies and a claim from a cooperative worker on protocol 1.20 or newer."}),
                 });
             }
+        }
+        // `parseCommands`: at most one terminal command, anywhere in the
+        // batch. It applies after every other command.
+        if commands.iter().filter(|command| is_terminal(command)).count() > 1 {
+            return Err(refuse(StatusCode::CONFLICT, "invalid_commands"));
         }
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
@@ -2239,31 +2337,20 @@ where
                 "development_selection_cancellation_unqualified",
             ));
         }
-        let update_id = task_payload["workflow_update_id"].as_str();
-        if commands.iter().any(|command| {
-            matches!(
-                command["type"].as_str(),
-                Some("complete_update" | "fail_update")
-            )
-        }) != update_id.is_some()
-            || update_id.is_some_and(|update_id| {
-                commands.len() != 1
-                    || if commands[0]["type"] == "fail_update" {
-                        super::updates::update_failure(&commands[0])
-                            .map_or(true, |failure| failure.update_id != update_id)
-                    } else {
-                        commands[0]["update_id"] != update_id
-                    }
-            })
-        {
-            return Err(refuse(StatusCode::CONFLICT, "update_task_mismatch"));
-        }
+        Self::validate_update_commands(&mut tx, &run_id, &task, commands).await?;
         let mut sequence = Self::authored_sequence(&mut tx, &run_id).await?;
+        // The tasks this batch's commands create, in order, as PHP reports them.
+        let mut created = Vec::new();
         Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec).await?;
-        for (index, command) in commands.iter().enumerate() {
+        // Published parseCommands applies every other command first, whatever
+        // the terminal command's position in the batch.
+        let order = (0..commands.len())
+            .filter(|index| !is_terminal(&commands[*index]))
+            .chain((0..commands.len()).filter(|index| is_terminal(&commands[*index])));
+        for index in order {
+            let command = &commands[index];
             if command["type"] == "fail_workflow" {
-                // Published parseCommands applies every nonterminal command
-                // first, regardless of the terminal command's batch position.
+                // Applied after the loop.
                 continue;
             } else if matches!(
                 command["type"].as_str(),
@@ -2277,12 +2364,11 @@ where
                 {
                     Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1").bind(&run_id).execute(&mut *tx).await?;
                 } else {
-                    self.continue_run(&mut tx, &run, &task, command, sequence)
-                        .await?;
+                    created.push(self.continue_run(&mut tx, &run, &task, command, sequence).await?);
                 }
             } else if command["type"] == "start_child_workflow" {
                 sequence += 1;
-                Self::start_child(&mut tx, &run, task_id, command, sequence).await?;
+                created.push(Self::start_child(&mut tx, &run, task_id, command, sequence).await?);
             } else if command["type"] == "record_side_effect" {
                 // `applyRecordSideEffect`: one authored sequence and its result.
                 sequence += 1;
@@ -2367,14 +2453,18 @@ where
                     Some(recorded_at),
                 )
                 .await?;
-                let activity_task = Self::create_task(
+                // PHP publishes only timer tasks a completion creates, so this
+                // activity task waits for a poller undispatched.
+                let activity_task = Self::create_task_dispatched(
                     &mut tx,
                     &run_id,
                     &queue,
                     "activity",
                     json!({"activity_execution_id": activity_id}),
+                    false,
                 )
                 .await?;
+                created.push(activity_task.clone());
                 Self::create_activity_wait(
                     &mut tx,
                     &run_id,
@@ -2421,6 +2511,7 @@ where
                     timer_task_payload,
                 )
                 .await?;
+                created.push(timer_task.clone());
                 Self::query("UPDATE workflow_tasks SET available_at=$1 WHERE id=$2")
                     .bind(DB::bind_time(fire_at))
                     .bind(&timer_task)
@@ -2563,10 +2654,16 @@ where
             .bind(task_id)
             .execute(&mut *tx)
             .await?;
-        Self::record_completion(&mut tx, task_id, &body).await?;
+        Self::record_completion(&mut tx, task_id, &json!({COMPLETION_RECEIPT: {"request": body, "created_task_ids": created}})).await?;
         Self::resume_undelivered_cancellation(&mut tx, &run_id, &DB::string(&run, "queue")?)
             .await?;
         Self::enqueue_next_message(&mut tx, &run_id, &DB::string(&run, "queue")?).await?;
+        // PHP's executor leaves every run a completed task did not close
+        // waiting, even when the task recorded only markers or side effects.
+        Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1 AND status IN ('pending','running')")
+            .bind(&run_id)
+            .execute(&mut *tx)
+            .await?;
         let current = Self::query("SELECT status FROM workflow_runs WHERE id=$1")
             .bind(&run_id)
             .fetch_one(&mut *tx)
@@ -2579,7 +2676,7 @@ where
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(
-            json!({"task_id": task_id, "run_id": run_id, "run_status": run_status, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed", "recorded": true, "reason": null}),
+            json!({"task_id": task_id, "run_id": run_id, "run_status": run_status, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed", "recorded": true, "reason": null, "created_task_ids": created}),
         )
     }
 
@@ -2786,6 +2883,7 @@ where
         payload["activity_attempt_id"] = json!(attempt_id);
         payload["attempt_number"] = json!(DB::number(&attempt, "attempt_number")?);
         payload["result"] = wire(&result);
+        payload["payload_codec"] = json!("avro");
         payload["task"] = json!({"id":task_id,"type":"activity","status":"leased",
             "repair_count":DB::number(&task,"repair_count")?,
             "available_at":DB::optional_instant(&task,"available_at")?,"leased_at":DB::optional_instant(&task,"leased_at")?,
@@ -2818,15 +2916,21 @@ where
             .execute(&mut *tx)
             .await?;
         Self::record_completion(&mut tx, task_id, &body).await?;
-        let next_task_id = Self::selection_resume(
-            &mut tx,
-            &run_id,
-            &DB::string(&run, "queue")?,
-            json!({"activity_execution_id": activity_id}),
-            &metadata,
-            true,
-        )
-        .await?;
+        // A standalone activity's host run closes with its result.
+        let closed = Self::close_standalone_host(&mut tx, &run_id, super::standalone_activities::HostClose::Completed { output: &result }).await?;
+        let next_task_id = if closed {
+            None
+        } else {
+            Self::selection_resume(
+                &mut tx,
+                &run_id,
+                &DB::string(&run, "queue")?,
+                json!({"activity_execution_id": activity_id}),
+                &metadata,
+                true,
+            )
+            .await?
+        };
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(
@@ -2837,6 +2941,8 @@ where
         // Expired root authority wins before any ordinary due timer fires.
         self.expire_cooperative_deadlines().await?;
         self.expire_activity_deadlines().await?;
+        // An activity task whose lease expired is settled, not re-claimed.
+        self.expire_activity_leases().await?;
         // New timers use the canonical PHP timestamp shape on SQLite and typed
         // UTC values elsewhere. Existing PHP data still cannot be adopted.
         // The read probe avoids acquiring the transition lock when idle.
@@ -2987,6 +3093,10 @@ where
         // receipt. A later completion must refuse it, not decode SQL NULL.
         let receipt = DB::optional_document_row(task, "receipt")?
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "task_not_leased"))?;
+        let receipt = match receipt.get(COMPLETION_RECEIPT) {
+            Some(stored) => stored["request"].clone(),
+            None => receipt,
+        };
         if receipt == *body {
             return Ok(true);
         }
@@ -3159,21 +3269,35 @@ where
         kind: &str,
         payload: Value,
     ) -> Result<String> {
+        Self::create_task_dispatched(tx, run_id, queue, kind, payload, true).await
+    }
+
+    /// A new ready task. As PHP in poll mode, a task it dispatches is stamped
+    /// dispatched when created; one it leaves to pollers is not.
+    pub(super) async fn create_task_dispatched(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        queue: &str,
+        kind: &str,
+        payload: Value,
+        dispatched: bool,
+    ) -> Result<String> {
         tx.summary_changed(run_id);
         let task_id = id();
         // A task carries its run's priority and fairness tags, as in PHP.
-        let run = Self::query("SELECT namespace,priority,fairness_key,fairness_weight FROM workflow_runs WHERE id=$1")
+        let run = Self::query("SELECT namespace,priority,fairness_key,fairness_weight,compatibility FROM workflow_runs WHERE id=$1")
             .bind(run_id)
             .fetch_one(&mut **tx)
             .await?;
         let namespace = DB::string(&run, "namespace")?;
-        // As PHP in poll mode, a task is dispatched to pollers when it is created.
         let created = now();
+        let dispatched_at = dispatched.then_some(created);
         let fairness_key = DB::optional_string(&run, "fairness_key")?;
-        Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,payload,queue,available_at,namespace,created_at,updated_at,last_dispatched_at,last_dispatch_attempt_at,priority,fairness_key,fairness_weight) VALUES ($1,$2,$3,'ready',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
+        Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,payload,queue,available_at,namespace,created_at,updated_at,last_dispatched_at,last_dispatch_attempt_at,priority,fairness_key,fairness_weight,compatibility) VALUES ($1,$2,$3,'ready',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
         .bind(&task_id).bind(run_id).bind(kind).bind(DB::document(&payload)).bind(queue).bind(DB::bind_time(created)).bind(&namespace)
-        .bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::bind_time(created))
+        .bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::optional_time(dispatched_at)).bind(DB::optional_time(dispatched_at))
         .bind(DB::number(&run, "priority")?).bind(fairness_key.as_deref()).bind(DB::number(&run, "fairness_weight")?)
+        .bind(DB::optional_string(&run, "compatibility")?.as_deref())
         .execute(&mut **tx).await?;
         Ok(task_id)
     }
@@ -3189,7 +3313,7 @@ where
         Self::append_at(tx, run_id, event_type, payload, task_id, command_id, None).await
     }
 
-    async fn append_at(
+    pub(super) async fn append_at(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
         event_type: &str,
@@ -3379,7 +3503,7 @@ where
         "activity": {"id":DB::string(activity,"id")?,"idempotency_key":DB::string(activity,"id")?,
             "sequence":DB::number(activity,"sequence")?,"type":DB::string(activity,"activity_type")?,
             "class":DB::string(activity,"activity_class")?,"local_activity":false,
-            "activity_type": DB::string(activity,"activity_type")?, "arguments": wire(&DB::string(activity,"arguments")?),
+            "activity_type": DB::string(activity,"activity_type")?, "arguments": DB::optional_string(activity,"arguments")?.map(|arguments| wire(&arguments)),
             "retry_policy":DB::optional_document_row(activity,"retry_policy")?,
             "status":DB::string(activity,"status")?,"attempt_count":DB::number(activity,"attempt_count")?,
             "closed_at":DB::optional_instant(activity,"closed_at")?,
@@ -3397,6 +3521,9 @@ where
             if let Some(value) = DB::optional_instant(activity, field)? {
                 payload["activity"][field] = json!(value);
             }
+        }
+        if payload["activity"]["arguments"].is_null() {
+            payload["activity"].as_object_mut().unwrap().remove("arguments");
         }
         if payload["activity"]["retry_policy"].is_null() {
             // A legacy absent snapshot stays absent in its durable history.
@@ -3579,7 +3706,7 @@ pub(super) async fn prepare_rejected_command(
         // Only small server-authored diagnostics cross this conversion.
         // Original customer arguments remain official decoded Values, so a
         // JSON projection cannot round an int64 or turn bytes into strings.
-        // A number has no exact diagnostic form, so it is refused.
+        // Only an int64, such as a structural limit, is an exact number.
         fn diagnostic(value: Value) -> Option<Payload> {
             Some(match value {
                 Value::Null => Payload::Null,
@@ -3594,7 +3721,7 @@ pub(super) async fn prepare_rejected_command(
                         .map(|(key, value)| Some((key, diagnostic(value)?)))
                         .collect::<Option<_>>()?,
                 ),
-                Value::Number(_) => return None,
+                Value::Number(number) => Payload::Long(number.as_i64()?),
             })
         }
         let unavailable = || refuse(StatusCode::SERVICE_UNAVAILABLE, unavailable);
@@ -3735,6 +3862,19 @@ pub(super) fn validate_arguments(
     Ok(())
 }
 
+/// A workflow task completion's stored receipt: its request and the tasks it
+/// created, so a repeat answers as the original did. Older receipts, and
+/// activity receipts, are the bare request.
+const COMPLETION_RECEIPT: &str = "workflow_task_completion";
+
+/// PHP's `TERMINAL_TYPES`: the commands that close the run.
+fn is_terminal(command: &Value) -> bool {
+    matches!(
+        command["type"].as_str(),
+        Some("complete_workflow" | "fail_workflow" | "continue_as_new")
+    )
+}
+
 fn timer_deadline(command: &Value) -> Result<DateTime<Utc>> {
     command["delay_seconds"]
         .as_i64()
@@ -3789,11 +3929,16 @@ fn version_marker_payload(command: &Value) -> Result<Value> {
     let version = integer("version")?;
     let min = integer("min_supported")?;
     let max = integer("max_supported")?;
-    if change_id.is_empty() || min > max || version < min || version > max {
+    if change_id.is_empty() {
         return Err(refuse(
             StatusCode::UNPROCESSABLE_ENTITY,
             "invalid_version_marker",
         ));
+    }
+    // PHP's bridge refuses a version outside its supported range with 409
+    // `invalid_commands`, recording nothing.
+    if min > max || version < min || version > max {
+        return Err(refuse(StatusCode::CONFLICT, "invalid_commands"));
     }
     Ok(json!({"change_id":change_id,"version":version,"min_supported":min,"max_supported":max}))
 }
