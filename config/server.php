@@ -364,14 +364,10 @@ return [
                 null,
             ),
         ],
-        'queue_overrides' => json_decode(
-            (string) EnvAuditor::env(
-                'DW_TASK_QUEUE_ADMISSION_OVERRIDES',
-                'WORKFLOW_SERVER_TASK_QUEUE_ADMISSION_OVERRIDES',
-                '{}',
-            ),
-            true,
-        ) ?: [],
+        'queue_overrides' => EnvAuditor::jsonObject(
+            'DW_TASK_QUEUE_ADMISSION_OVERRIDES',
+            'WORKFLOW_SERVER_TASK_QUEUE_ADMISSION_OVERRIDES',
+        ),
         'lock_ttl_seconds' => 5,
         'lock_wait_seconds' => 1,
     ],
@@ -409,14 +405,10 @@ return [
             'WORKFLOW_SERVER_NAMESPACE_HARD_MAX_CONCURRENT_REQUESTS',
             null,
         ),
-        'overrides' => json_decode(
-            (string) EnvAuditor::env(
-                'DW_NAMESPACE_ADMISSION_OVERRIDES',
-                'WORKFLOW_SERVER_NAMESPACE_ADMISSION_OVERRIDES',
-                '{}',
-            ),
-            true,
-        ) ?: [],
+        'overrides' => EnvAuditor::jsonObject(
+            'DW_NAMESPACE_ADMISSION_OVERRIDES',
+            'WORKFLOW_SERVER_NAMESPACE_ADMISSION_OVERRIDES',
+        ),
         'lock_ttl_seconds' => 5,
         'lock_wait_seconds' => 1,
         'request_lease_ttl_seconds' => 120,
@@ -437,29 +429,17 @@ return [
     */
 
     'namespace_durable_state' => [
-        'limits' => json_decode(
-            (string) EnvAuditor::env(
-                'DW_NAMESPACE_DURABLE_LIMITS',
-                'WORKFLOW_SERVER_NAMESPACE_DURABLE_LIMITS',
-                '{}',
-            ),
-            true,
+        'limits' => EnvAuditor::jsonObject(
+            'DW_NAMESPACE_DURABLE_LIMITS',
+            'WORKFLOW_SERVER_NAMESPACE_DURABLE_LIMITS',
         ),
-        'hard_limits' => json_decode(
-            (string) EnvAuditor::env(
-                'DW_NAMESPACE_DURABLE_HARD_LIMITS',
-                'WORKFLOW_SERVER_NAMESPACE_DURABLE_HARD_LIMITS',
-                '{}',
-            ),
-            true,
+        'hard_limits' => EnvAuditor::jsonObject(
+            'DW_NAMESPACE_DURABLE_HARD_LIMITS',
+            'WORKFLOW_SERVER_NAMESPACE_DURABLE_HARD_LIMITS',
         ),
-        'overrides' => json_decode(
-            (string) EnvAuditor::env(
-                'DW_NAMESPACE_DURABLE_OVERRIDES',
-                'WORKFLOW_SERVER_NAMESPACE_DURABLE_OVERRIDES',
-                '{}',
-            ),
-            true,
+        'overrides' => EnvAuditor::jsonObject(
+            'DW_NAMESPACE_DURABLE_OVERRIDES',
+            'WORKFLOW_SERVER_NAMESPACE_DURABLE_OVERRIDES',
         ),
     ],
 
@@ -540,13 +520,9 @@ return [
             'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_HARD_MAX_OBJECTS_PER_NAMESPACE',
             null,
         ),
-        'namespace_overrides' => json_decode(
-            (string) EnvAuditor::env(
-                'DW_EXTERNAL_PAYLOAD_NAMESPACE_OVERRIDES',
-                'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_NAMESPACE_OVERRIDES',
-                '{}',
-            ),
-            true,
+        'namespace_overrides' => EnvAuditor::jsonObject(
+            'DW_EXTERNAL_PAYLOAD_NAMESPACE_OVERRIDES',
+            'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_NAMESPACE_OVERRIDES',
         ),
     ],
 
