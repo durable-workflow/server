@@ -230,18 +230,11 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/service-catalog/{catalog}/{id}", get(service_catalog_show))
         .route("/api/task-queues/{task_queue}", get(describe_task_queue))
         .route("/api/task-queues/{task_queue}/build-ids", get(task_queue_build_ids))
-        .route(
-            "/api/task-queues/{task_queue}/build-ids/promote",
-            post(build_id_rollout_unqualified),
-        )
-        .route(
-            "/api/task-queues/{task_queue}/build-ids/drain",
-            post(build_id_rollout_unqualified),
-        )
-        .route(
-            "/api/task-queues/{task_queue}/build-ids/resume",
-            post(build_id_rollout_unqualified),
-        )
+        .route("/api/task-queues/{task_queue}/build-ids/promote", post(build_id_promote))
+        .route("/api/task-queues/{task_queue}/build-ids/drain", post(build_id_drain))
+        .route("/api/task-queues/{task_queue}/build-ids/resume", post(build_id_resume))
+        .route("/api/deployments", get(list_deployments))
+        .route("/api/deployments/{*name}", get(show_deployment).post(deployment_action))
         .route(
             "/api/workers/{worker_id}",
             get(describe_worker).delete(deregister),
@@ -647,6 +640,13 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
             }
             _ => {}
         }
+    }
+    // Deployments are the namespace's own build-id rollouts.
+    if path == "/api/deployments" {
+        return method == "GET";
+    }
+    if path.strip_prefix("/api/deployments/").is_some_and(|name| !name.is_empty()) {
+        return matches!(method, "GET" | "POST");
     }
     if path == "/api/workers"
         || path == "/api/system/operator-metrics"
@@ -1674,13 +1674,67 @@ async fn task_queue_build_ids(
 ) -> Result<Json<Value>> {
     runtime.task_queue_build_ids(&task_queue).await.map(Json)
 }
-/// `POST /api/task-queues/{name}/build-ids/{promote|drain|resume}`. Native
-/// keeps no build-id rollouts, so it refuses to promote, drain or resume one.
-async fn build_id_rollout_unqualified() -> Result<Json<Value>> {
-    Err(refuse(
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "task_queue_build_id_rollout_unqualified",
-    ))
+/// `POST /api/task-queues/{name}/build-ids/promote`.
+async fn build_id_promote(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_queue): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    build_id_action(runtime, task_queue, body, super::deployments::Action::Promote).await
+}
+/// `POST /api/task-queues/{name}/build-ids/drain`.
+async fn build_id_drain(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_queue): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    build_id_action(runtime, task_queue, body, super::deployments::Action::Drain).await
+}
+/// `POST /api/task-queues/{name}/build-ids/resume`.
+async fn build_id_resume(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_queue): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    build_id_action(runtime, task_queue, body, super::deployments::Action::Resume).await
+}
+async fn build_id_action(
+    runtime: Runtime,
+    task_queue: String,
+    body: Value,
+    action: super::deployments::Action,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, body) = runtime.build_id_action(&task_queue, body, action).await?;
+    Ok((status, Json(body)))
+}
+/// `GET /api/deployments`.
+async fn list_deployments(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    runtime.deployments().await.map(Json)
+}
+/// `GET /api/deployments/{name}`: the name holds slashes,
+/// `namespace/task_queue@build_id`.
+async fn show_deployment(
+    Extension(runtime): Extension<Runtime>,
+    Path(name): Path<String>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, body) = runtime.deployment(&name).await?;
+    Ok((status, Json(body)))
+}
+/// `POST /api/deployments/{name}/{promote|drain|resume|rollback}`.
+async fn deployment_action(
+    Extension(runtime): Extension<Runtime>,
+    Path(name): Path<String>,
+) -> Response {
+    let Some((name, action)) = name
+        .rsplit_once('/')
+        .and_then(|(name, action)| super::deployments::Action::named(action).map(|action| (name, action)))
+    else {
+        return unavailable().await;
+    };
+    match runtime.deployment_action(name, action).await {
+        Ok((status, body)) => (status, Json(body)).into_response(),
+        Err(error) => error.into_response(),
+    }
 }
 async fn describe_worker(
     Extension(runtime): Extension<Runtime>,

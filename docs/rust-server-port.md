@@ -110,6 +110,12 @@ These published PHP routes on this tree have no native handler yet, by family.
   ([checkpoint](rust-server-port-checkpoints/2026-10-23-cli-sweep-and-archive.md));
   run redrive of a failed run at its failed activity
   ([checkpoint](rust-server-port-checkpoints/2026-10-23-redrive.md));
+  build pins at start and in polls, where unpinned activities follow
+  [Workflow #908](https://github.com/durable-workflow/workflow/issues/908)
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-build-pins.md));
+  build-id rollouts and deployments: promote, drain, resume and rollback,
+  draining polls and starts
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-deployments.md));
   the service catalog read contract in cluster info, which Waterline 2.12.3's
   Services pages require; with it, every Waterline route answered native as it
   answered PHP
@@ -146,11 +152,6 @@ These published PHP routes on this tree have no native handler yet, by family.
     native never holds catalog rows, so every list is PHP's empty page and every
     identity its not-found answer; the `service-catalog` fixture checks 37 cases.)
   - Nexus operations.
-  - Deployments: build-id promote, drain, resume and rollback. (Runs are
-    pinned to their start cohort's build, and polls route pinned tasks only
-    to that build, as on 2.11.1; unpinned activities follow
-    [Workflow #908](https://github.com/durable-workflow/workflow/issues/908)
-    ([checkpoint](rust-server-port-checkpoints/2026-10-23-build-pins.md)).)
   - Bridge adapters.
 
 ## Known gaps found in review

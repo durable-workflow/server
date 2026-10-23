@@ -191,6 +191,19 @@ where
         let activity_id = request.activity_id.clone().unwrap_or_else(id);
         let existing = Self::query("SELECT i.namespace,i.workflow_type,i.run_count,r.status AS run_status,r.run_number FROM workflow_instances i LEFT JOIN workflow_runs r ON r.id=i.current_run_id WHERE i.id=$1")
             .bind(&activity_id).fetch_optional(&mut *tx).await?;
+        // `TaskQueueRoutingGate`, after the identifier reservation check.
+        let reserved = match &existing {
+            Some(instance) => DB::optional_string(instance, "namespace")?.as_deref() != Some(self.namespace.as_ref()),
+            None => false,
+        };
+        if !reserved && let Some(block) = Self::routing_block(&mut tx, &self.namespace, &request.task_queue, self.worker_stale_after_seconds).await? {
+            let mut response = json!({"message":format!("Task queue [{}] is draining and cannot accept new standalone activity starts until an active worker cohort is available.", request.task_queue),
+                "reason":"task_queue_draining","activity_type":request.activity_type,"task_queue":request.task_queue});
+            response.as_object_mut().expect("object").extend(block);
+            response["command_status"] = json!("rejected");
+            response["rejection_reason"] = json!("task_queue_draining");
+            return Err(RuntimeError::Protocol { status: StatusCode::CONFLICT, response });
+        }
         let started_at = now();
         let run_id = id();
         let run_number = match &existing {

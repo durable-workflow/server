@@ -161,15 +161,9 @@ async fn build_ids_group_workers_and_pending_tasks_as_php_does() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body, expected);
 
-    // Promote, drain and resume change nothing: native keeps no rollouts.
-    for action in ["promote", "drain", "resume"] {
-        let (status, refused) = request(&app, "POST", &format!("{PATH}/{action}"), json!({"build_id":"v2"})).await;
-        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
-        assert_eq!(
-            refused,
-            json!({"reason":"task_queue_build_id_rollout_unqualified","message":"task_queue_build_id_rollout_unqualified"})
-        );
-    }
+    // Promoting a build no worker or rollout knows is refused and changes nothing.
+    let (status, refused) = request(&app, "POST", &format!("{PATH}/promote"), json!({"build_id":"v404"})).await;
+    assert_eq!((status, refused["reason"].clone()), (StatusCode::CONFLICT, json!("unknown_deployment")), "{refused}");
     assert_eq!(request(&app, "GET", PATH, Value::Null).await.1, expected);
     runtime.close().await;
     database.remove().await;
@@ -190,8 +184,7 @@ async fn an_empty_queue_has_no_build_ids() {
 }
 
 // The route is namespace-scoped and needs an operator or administrator, as
-// the other task queue routes do; rollout changes are refused in every
-// namespace.
+// the other task queue routes do; rollouts belong to their namespace.
 #[tokio::test]
 async fn build_ids_follow_task_queue_roles_and_namespaces() {
     let database = TestDatabase::new().await;
@@ -237,14 +230,22 @@ async fn build_ids_follow_task_queue_roles_and_namespaces() {
     assert_eq!(unknown.0, StatusCode::NOT_FOUND, "{}", unknown.1);
     assert_eq!(unknown.1["reason"], "namespace_not_found");
     assert_eq!(call(&app, "operator-token", "missing", "GET", PATH, Value::Null).await, unknown);
+    // nv1 is only registered in `builds`, so only there can it be promoted.
+    let (status, promoted) = call(&app, "operator-token", "builds", "POST", &format!("{PATH}/promote"), json!({"build_id":"nv1"})).await;
+    assert_eq!((status, promoted["new_start_selected"].clone()), (StatusCode::OK, json!(true)), "{promoted}");
+    let (status, refused) = call(&app, "operator-token", "default", "POST", &format!("{PATH}/promote"), json!({"build_id":"nv1"})).await;
+    assert_eq!((status, refused["reason"].clone()), (StatusCode::CONFLICT, json!("unknown_deployment")), "{refused}");
     for namespace in ["default", "builds"] {
-        for action in ["promote", "drain", "resume"] {
-            let (status, refused) =
+        for (action, intent) in [("drain", "draining"), ("resume", "active")] {
+            let (status, changed) =
                 call(&app, "operator-token", namespace, "POST", &format!("{PATH}/{action}"), json!({"build_id":"nv1"})).await;
-            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
-            assert_eq!(refused["reason"], "task_queue_build_id_rollout_unqualified");
+            assert_eq!((status, changed["drain_intent"].clone(), changed["namespace"].clone()), (StatusCode::OK, json!(intent), json!(namespace)), "{changed}");
         }
     }
+    let (_, named) = call(&app, "operator-token", "builds", "GET", PATH, Value::Null).await;
+    assert_eq!(named["build_ids"][0]["new_start_selected"], true, "{named}");
+    let (_, default) = call(&app, "operator-token", "default", "GET", PATH, Value::Null).await;
+    assert!(default["build_ids"].as_array().unwrap().iter().all(|entry| entry["new_start_selected"] == false), "{default}");
     runtime.close().await;
     database.remove().await;
 }

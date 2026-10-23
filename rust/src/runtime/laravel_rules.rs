@@ -15,6 +15,8 @@ use serde_json::{Map, Value, json};
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Rule {
     Required,
+    /// `present`: the attribute is in the request, even as null.
+    Present,
     Nullable,
     /// Validate only when the attribute is present.
     Sometimes,
@@ -189,6 +191,7 @@ fn message(rule: Rule, attribute: &str, rules: &[Rule], value: Option<&Value>) -
     };
     match rule {
         Rule::Required => format!("The {attribute} field is required."),
+        Rule::Present => format!("The {attribute} field must be present."),
         Rule::RequiredWith(other) => {
             format!("The {attribute} field is required when {} is present.", display(other, false))
         }
@@ -247,6 +250,7 @@ fn size(value: &Value, rules: &[Rule]) -> Option<f64> {
 fn passes(rule: Rule, data: &Value, value: Option<&Value>, rules: &[Rule]) -> bool {
     match rule {
         Rule::Required => filled(value),
+        Rule::Present => value.is_some(),
         Rule::RequiredWith(other) => !filled(lookup(data, other)) || filled(value),
         Rule::Nullable | Rule::Sometimes => true,
         Rule::NotBlank => value.and_then(Value::as_str).is_some_and(|text| text.chars().any(|character| !character.is_whitespace())),
@@ -318,7 +322,7 @@ pub(crate) fn errors(body: &Value, rules: &Rules) -> Vec<(String, Vec<String>)> 
         let name = display(&attribute, raw);
         let mut messages = Vec::new();
         for rule in list {
-            let implicit = matches!(rule, Rule::Required | Rule::RequiredWith(_));
+            let implicit = matches!(rule, Rule::Required | Rule::RequiredWith(_) | Rule::Present);
             if matches!(rule, Rule::Nullable | Rule::Sometimes) {
                 continue;
             }

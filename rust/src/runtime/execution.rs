@@ -1066,6 +1066,34 @@ impl Runtime {
             Storage::MySql(store) => store.describe_task_queue(queue, &self.queries).await,
         }
     }
+    pub(crate) async fn build_id_action(&self, queue: &str, body: Value, action: super::deployments::Action) -> Result<(StatusCode, Value)> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.build_id_action(queue, &body, action).await,
+            Storage::Postgres(store) => store.build_id_action(queue, &body, action).await,
+            Storage::MySql(store) => store.build_id_action(queue, &body, action).await,
+        }
+    }
+    pub(crate) async fn deployments(&self) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.deployments().await,
+            Storage::Postgres(store) => store.deployments().await,
+            Storage::MySql(store) => store.deployments().await,
+        }
+    }
+    pub(crate) async fn deployment(&self, name: &str) -> Result<(StatusCode, Value)> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.deployment(name).await,
+            Storage::Postgres(store) => store.deployment(name).await,
+            Storage::MySql(store) => store.deployment(name).await,
+        }
+    }
+    pub(crate) async fn deployment_action(&self, name: &str, action: super::deployments::Action) -> Result<(StatusCode, Value)> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.deployment_action(name, action).await,
+            Storage::Postgres(store) => store.deployment_action(name, action).await,
+            Storage::MySql(store) => store.deployment_action(name, action).await,
+        }
+    }
     pub(crate) async fn task_queue_build_ids(&self, queue: &str) -> Result<Value> {
         match &*self.storage {
             Storage::Sqlite(store) => store.task_queue_build_ids(queue, &self.queries).await,

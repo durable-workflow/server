@@ -211,6 +211,26 @@ where
             self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
                 .await?;
         }
+        // `TaskQueueRoutingGate`: a queue whose live workers all drain takes
+        // no new start. A workflow id reserved in another namespace is
+        // refused for that first.
+        let request = super::start_request::validate(&body)?;
+        let reserved = match &request.workflow_id {
+            Some(workflow_id) => Self::query("SELECT namespace FROM workflow_instances WHERE id=$1")
+                .bind(workflow_id.as_str()).fetch_optional(&mut *tx).await?
+                .map(|instance| DB::optional_string(&instance, "namespace")).transpose()?.flatten()
+                .is_some_and(|reserved| reserved != self.namespace.as_ref()),
+            None => false,
+        };
+        if !reserved && let Some(block) = Self::routing_block(&mut tx, &self.namespace, &request.task_queue, self.worker_stale_after_seconds).await? {
+            let mut response = json!({"workflow_id":request.workflow_id,"command_status":"rejected","command_source":"control_plane",
+                "outcome":"rejected_task_queue_draining","reason":"task_queue_draining","rejection_reason":"task_queue_draining",
+                "message":format!("Task queue [{}] is draining and cannot accept new workflow starts until an active worker cohort is available.", request.task_queue),
+                "workflow_type":request.workflow_type,"task_queue":request.task_queue});
+            response.as_object_mut().expect("object").extend(block);
+            response.as_object_mut().expect("object").retain(|_, value| !value.is_null());
+            return Err(super::RuntimeError::Protocol { status: StatusCode::CONFLICT, response });
+        }
         let started = Self::start_in(
             &mut tx,
             &body,
@@ -271,7 +291,10 @@ where
         // `WorkflowStartVersionPin::resolveForStart`: the run is pinned to its
         // cohort's build, and records the definition that cohort agrees on.
         let workers = Self::start_workers(tx, namespace, queue, stale_after).await?;
-        let cohort = super::start_definition::resolve(&workers, workflow_type);
+        let cohort = match Self::promoted_cohort(tx, namespace, queue).await? {
+            Some(cohort) => Some(cohort),
+            None => super::start_definition::resolve(&workers, workflow_type),
+        };
         let pin = cohort.as_ref().and_then(|cohort| cohort.pin().map(str::to_owned));
         // DefaultWorkflowControlPlane::start: each deadline follows its own
         // timeout, and a run without timeouts has no deadline.
@@ -1278,8 +1301,9 @@ where
             .bind(DB::bind_time(now()))
             .execute(&mut *tx)
             .await?;
-        Self::query("UPDATE workflow_worker_registrations SET status='active',workflow_command_contracts=$1 WHERE worker_id=$2 AND namespace=$3")
-            .bind(DB::document(&contracts)).bind(worker_id).bind(self.namespace.as_ref()).execute(&mut *tx).await?;
+        let status = Self::registration_status(&mut tx, self.namespace.as_ref(), queue, body["build_id"].as_str()).await?;
+        Self::query("UPDATE workflow_worker_registrations SET status=$1,workflow_command_contracts=$2 WHERE worker_id=$3 AND namespace=$4")
+            .bind(status).bind(DB::document(&contracts)).bind(worker_id).bind(self.namespace.as_ref()).execute(&mut *tx).await?;
         Self::record_registration(
             &mut tx,
             self.namespace.as_ref(),
@@ -1294,7 +1318,7 @@ where
         Ok(
             json!({"worker_id": worker_id, "registration_token":token, "registered": true, "namespace": self.namespace.as_ref(), "task_queue": queue,
             "runtime": body["runtime"], "build_id": body["build_id"], "heartbeat_interval_seconds": config.worker_heartbeat_interval_seconds,
-            "status": "active", "capabilities": body["capabilities"], "capability_manifest": body["capability_manifest"]}),
+            "status": status, "capabilities": body["capabilities"], "capability_manifest": body["capability_manifest"]}),
         )
     }
 
@@ -1346,8 +1370,7 @@ where
         pages: super::history_pages::HistoryPages,
         default_wait: u64,
     ) -> Result<Value> {
-        text(&body, "worker_id")?;
-        text(&body, "task_queue")?;
+        self.refuse_draining_worker(text(&body, "worker_id")?, text(&body, "task_queue")?).await?;
         // Laravel's `nullable|integer|min:0|max:60` bounds a requested wait;
         // the configured default is not capped.
         let timeout = match body.get("timeout_seconds") {

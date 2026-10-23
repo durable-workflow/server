@@ -172,6 +172,8 @@ mod archive;
 mod redrive;
 #[path = "execution/build_pins.rs"]
 mod build_pins;
+#[path = "execution/deployments.rs"]
+mod deployments;
 #[path = "execution/activity_timeout_pass.rs"]
 mod activity_timeout_pass;
 #[path = "execution/start_request.rs"]
