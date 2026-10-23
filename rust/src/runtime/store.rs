@@ -1839,8 +1839,10 @@ where
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
+        // PHP's heartbeat also reports the run's and the task's status.
         let mut response = json!({"task_id": task_id, "workflow_task_attempt": body["workflow_task_attempt"],
-            "lease_owner": body["lease_owner"], "lease_expires_at": expires, "renewed": true});
+            "lease_owner": body["lease_owner"], "lease_expires_at": expires, "renewed": true,
+            "run_status": DB::string(&run, "status")?, "task_status": "leased", "reason": null});
         if let Some(cancellation) = Self::cancellation_request(&run)? {
             response["cancellation_request"] = cancellation;
         }

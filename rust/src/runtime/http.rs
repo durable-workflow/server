@@ -1831,7 +1831,7 @@ async fn heartbeat_task(
     Path(task_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    runtime.heartbeat_task(&task_id, body).await.map(Json)
+    runtime.heartbeat_task(&task_id, body).await.map(|body| Json(worker_response(body)))
 }
 
 async fn deliver_cancellation(
@@ -1935,7 +1935,7 @@ async fn fail_workflow_task(
                 "Workflow task not found.",
             )
         })
-        .map(Json)
+        .map(|body| Json(worker_response(body)))
 }
 
 async fn complete_activity(
@@ -1956,7 +1956,7 @@ async fn complete_activity(
                 "Activity task not found.",
             )
         })
-        .map(Json)
+        .map(|body| Json(worker_response(body)))
 }
 
 fn completion_refusal(
@@ -2029,7 +2029,7 @@ async fn fail_activity(
     Path(task_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    runtime.fail_activity(&task_id, body).await.map(Json)
+    runtime.fail_activity(&task_id, body).await.map(|body| Json(worker_response(body)))
 }
 /// The query's command context, as PHP's controller builds it.
 fn query_context(request: &CommandRequest, body: &Value, workflow_id: &str, name: &str) -> Value {

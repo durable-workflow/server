@@ -66,6 +66,12 @@ parent is not listed. The response also carries `protocol_version` and
 `server_capabilities`, as every PHP worker response does. Native's response
 had none of these three fields, and now has all of them.
 
+The same probe found the worker envelope missing from workflow task
+failures, workflow task heartbeats and activity results and failures. Native
+now adds it to each of them. A workflow task heartbeat also reports PHP's
+`run_status`, `task_status` and `reason`. Timestamps differ in precision:
+native's lease expiry has milliseconds, PHP's microseconds.
+
 ## Differences that remain
 
 - **Resume tasks.** PHP folds a child's result into the parent's ready or
