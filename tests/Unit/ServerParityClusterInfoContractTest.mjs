@@ -22,14 +22,13 @@ const observation = (implementation = null) => {
   }]));
   return {mode: 'http', cluster_info: {applicable: true, namespaces: names, policies, discovery}};
 };
-const statuses = {available: 'available', unconfigured: 'unconfigured', disabled: 'disabled', missing: 'unconfigured'};
 
 test('cluster info accepts the published PHP answers', () => {
-  assert.deepStrictEqual(checkClusterInfo(fixture, observation(), id), {scope: 'cluster_info', cases: 4, statuses});
+  assert.deepStrictEqual(checkClusterInfo(fixture, observation(), id), {scope: 'cluster_info', cases: 4});
 });
 
 test('cluster info accepts native answers with the reviewed differences', () => {
-  assert.deepStrictEqual(checkClusterInfo(fixture, observation('rust'), id), {scope: 'cluster_info', cases: 4, statuses});
+  assert.deepStrictEqual(checkClusterInfo(fixture, observation('rust'), id), {scope: 'cluster_info', cases: 4});
 });
 
 test('the reviewed native differences are each a published member', () => {

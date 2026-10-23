@@ -54,7 +54,6 @@ export function checkClusterInfo(fixture, observation, workflowId) {
     `${key} namespace discovery`);
   }
 
-  return {scope: 'cluster_info', cases: Object.keys(definition.namespaces).length,
-    statuses: Object.fromEntries(Object.entries(state.discovery)
-      .map(([key, discovery]) => [key, discovery.namespace.external_payload_storage.status]))};
+  // The same for every target: embedded applications have no cluster info.
+  return {scope: 'cluster_info', cases: Object.keys(definition.namespaces).length};
 }
