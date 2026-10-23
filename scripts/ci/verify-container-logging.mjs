@@ -59,11 +59,18 @@ async function waitForApi(name) {
   const port = docker(['port', name, '8080/tcp']).split(':').at(-1);
   // Poll serially so startup cannot accumulate concurrent health requests.
   for (let attempt = 0; attempt < 100; attempt += 1) {
+    // AbortSignal.timeout's timer does not keep Node running, so a request
+    // left on an unreferenced keep-alive socket could end the process with an
+    // unsettled await (exit 13). A referenced timer always aborts it.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 1000);
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/health`, {signal: AbortSignal.timeout(1000)});
+      const response = await fetch(`http://127.0.0.1:${port}/api/health`, {signal: controller.signal});
       await response.text();
       if (response.status === 200) return;
-    } catch { /* The real API may still be starting. */ }
+    } catch { /* The real API may still be starting. */ } finally {
+      clearTimeout(timer);
+    }
     await pause(100);
   }
   assert.fail('API did not become live within its original probe budget');
