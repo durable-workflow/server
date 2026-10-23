@@ -234,7 +234,7 @@ class WorkflowSearchAttributeVisibilityQueryTest extends TestCase
         $this->assertSame(['wf-date-match'], $this->workflowIdsForQuery('occurred_at = "'.$literal.'"'));
         $this->assertSame(['wf-date-neighbor'], $this->workflowIdsForQuery('occurred_at != "'.$literal.'"'));
         $this->assertSame(['wf-date-match'], $this->workflowIdsForQuery('occurred_at IN ("'.$literal.'")'));
-        $this->assertSame(['wf-date-neighbor'], $this->workflowIdsForQuery('occurred_at NOT IN ("'.$literal.'")'));
+        $this->assertSame(['wf-date-neighbor'], $this->workflowIdsForQuery('NOT occurred_at IN ("'.$literal.'")'));
         $this->assertSame(['wf-date-match'], $this->workflowIdsForQuery(
             'occurred_at >= "'.$literal.'" AND occurred_at < "2026-10-08T10:34:56.123457Z"',
         ));
