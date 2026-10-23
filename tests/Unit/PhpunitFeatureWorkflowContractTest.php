@@ -163,6 +163,7 @@ class PhpunitFeatureWorkflowContractTest extends TestCase
             'python scripts/ci/test-regression-corpus-policy.py',
             'python3 -m unittest tests/Unit/Support/patched_pip_test.py',
             'python3 -m unittest tests/Unit/Support/cargo_trust_test.py',
+            'python3 -m unittest tests/Unit/Support/cargo_lock_trust_test.py',
             'python3 -m unittest tests/Unit/Support/composer_trust_test.py',
         ] as $needle) {
             $this->assertStringContainsString($needle, $this->workflow);

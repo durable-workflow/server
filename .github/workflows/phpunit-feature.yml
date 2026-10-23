@@ -123,6 +123,9 @@ jobs:
           DW_REQUIRE_CARGO_TRUST_TEST: '1'
         run: python3 -m unittest tests/Unit/Support/cargo_trust_test.py
 
+      - name: Prove every active Cargo.lock resolves the fixed TLS trust crates
+        run: python3 -m unittest tests/Unit/Support/cargo_lock_trust_test.py
+
       - name: Prove Composer runs pinned or confined to a checked CA file
         env:
           DW_REQUIRE_COMPOSER_TRUST_TEST: '1'
