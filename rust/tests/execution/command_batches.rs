@@ -236,3 +236,33 @@ async fn an_update_completes_alongside_other_commands_like_php() {
     let completed = order.iter().position(|kind| kind == "UpdateCompleted").expect("the update completes");
     assert!(order[completed..].iter().any(|kind| kind == "TimerScheduled"), "{order:?}");
 }
+
+// `applyContinueAsNew` takes a new workflow type, which also becomes the
+// class, and a new queue from the command.
+#[tokio::test]
+async fn continue_as_new_takes_a_new_type_and_queue_like_php() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register(&app, "worker", json!(["echo", "other"]), json!([])).await;
+    let (status, body) = request(&app, "POST", "/api/worker/register", json!({"worker_id":"far","task_queue":"elsewhere",
+        "runtime":"php","supported_workflow_types":["echo","other"],"supported_activity_types":[]})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    start(&app, "rerouted").await;
+    let task = poll(&app, "worker", "workflow").await;
+    let (status, body) = finish_task(&app, &task, json!([{"type":"continue_as_new","workflow_type":"other"}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let described = current(&app, "rerouted").await;
+    assert_eq!(described["workflow_type"], "other", "{described}");
+    let next = task_for(&app, "worker", "rerouted").await;
+    assert_eq!(next["workflow_type"], "other", "{next}");
+    let history = run_history(&app, &json!("rerouted"), &described["run_id"]).await;
+    let started = &first(&history, "WorkflowStarted")["payload"];
+    assert_eq!(started["workflow_class"], "other", "{started}");
+
+    let (status, body) = finish_task(&app, &next, json!([{"type":"continue_as_new","queue":"elsewhere"}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, polled) = request(&app, "POST", "/api/worker/workflow-tasks/poll",
+        json!({"worker_id":"far","task_queue":"elsewhere","timeout_seconds":0})).await;
+    assert_eq!(status, StatusCode::OK, "{polled}");
+    assert_eq!(polled["task"]["workflow_id"], "rerouted", "{polled}");
+}

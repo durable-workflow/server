@@ -326,8 +326,8 @@ contract fixture before its correction.
   ([checkpoint](rust-server-port-checkpoints/2026-10-23-command-batches.md)).
   It still refuses continue-as-new while the instance has durable or inbound
   streams, the run has service calls, or a query is live
-  (`continue_as_new_transfer_unqualified`). It refuses a new workflow type or
-  queue (`continue_as_new_routing_unqualified`). PHP applies them.
+  (`continue_as_new_transfer_unqualified`); PHP continues it. A new workflow
+  type or queue on the command now applies, as in PHP.
 - **Trace context (Workflow #773 / workflow#788, not yet published).** A
   Workflow minor will add nullable `observability_context` columns on runs,
   commands and tasks, plus an entry in schedule metadata. Native-owned

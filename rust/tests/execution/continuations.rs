@@ -51,31 +51,6 @@ async fn continuation_inherits_committed_upserts_before_successor_commands() {
             {"type":"continue_as_new"}
         ]),
     );
-    let initial = request(
-        &app,
-        "GET",
-        "/api/workflows/continuation-authored-memos",
-        Value::Null,
-    )
-    .await
-    .1;
-    let mut refused_routing = body.clone();
-    refused_routing["commands"][1]["queue"] = json!("different");
-    let refused = request(&app, "POST", &path, refused_routing).await;
-    assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(refused.1["reason"], "continue_as_new_routing_unqualified");
-    assert_eq!(
-        request(
-            &app,
-            "GET",
-            "/api/workflows/continuation-authored-memos",
-            Value::Null
-        )
-        .await
-        .1,
-        initial,
-        "rejected continuation rolls back its preceding memo mutation"
-    );
     // Published PHP applies the memo before the continuation wherever the
     // continuation sits in the batch (`command_batches`).
     let committed = request(&app, "POST", &path, body.clone()).await;
@@ -274,8 +249,6 @@ async fn malformed_or_unsupported_continuation_refuses_without_a_successor() {
     // Two terminal commands are the bridge's 409 `invalid_commands`, as PHP's.
     for (commands, expected) in [
         (json!([{"type":"continue_as_new","arguments":envelope(Payload::Long(7))}]), StatusCode::UNPROCESSABLE_ENTITY),
-        (json!([{"type":"continue_as_new","workflow_type":"different"}]), StatusCode::UNPROCESSABLE_ENTITY),
-        (json!([{"type":"continue_as_new","queue":"different"}]), StatusCode::UNPROCESSABLE_ENTITY),
         (json!([{"type":"continue_as_new"},{"type":"complete_workflow","result":envelope(Payload::Null)}]), StatusCode::CONFLICT),
     ] {
         assert_eq!(

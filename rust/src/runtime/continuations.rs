@@ -90,16 +90,6 @@ where
     ) -> Result<String> {
         let old = DB::string(run, "id")?;
         let workflow = DB::string(run, "workflow_instance_id")?;
-        for field in ["workflow_type", "queue"] {
-            if command.get(field).is_some_and(|value| !value.is_null())
-                && super::text(command, field)? != DB::string(run, field)?
-            {
-                return Err(refuse(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "continue_as_new_routing_unqualified",
-                ));
-            }
-        }
         let instance = Self::query(
             "SELECT current_run_id FROM workflow_instances WHERE id=$1 AND namespace=$2",
         )
@@ -228,11 +218,19 @@ where
         } else {
             DB::string(run, "arguments")?
         };
-        let kind = DB::string(run, "workflow_type")?;
-        let class = DB::string(run, "workflow_class")?;
-        let queue = DB::string(run, "queue")?;
-        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,workflow_type,workflow_class,run_number,status,payload_codec,arguments,connection,queue,business_key,visibility_labels,compatibility,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at,namespace,last_progress_at) SELECT $1,workflow_instance_id,workflow_type,workflow_class,$2,'pending',payload_codec,$3,connection,queue,business_key,visibility_labels,compatibility,run_timeout_seconds,execution_deadline_at,$4,$5,$6,$7,namespace,$8 FROM workflow_runs WHERE id=$9")
-            .bind(&next).bind(number).bind(&arguments).bind(DB::optional_time(deadline))
+        // `applyContinueAsNew`: the command may name a new workflow type and
+        // queue. The type also becomes the run's and the instance's class.
+        let routed = |field: &str| -> Result<String> {
+            match command.get(field) {
+                Some(value) if !value.is_null() => Ok(super::text(command, field)?.to_owned()),
+                _ => DB::string(run, field),
+            }
+        };
+        let kind = routed("workflow_type")?;
+        let class = kind.clone();
+        let queue = routed("queue")?;
+        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,workflow_type,workflow_class,run_number,status,payload_codec,arguments,connection,queue,business_key,visibility_labels,compatibility,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at,namespace,last_progress_at) SELECT $1,workflow_instance_id,$2,$3,$4,'pending',payload_codec,$5,connection,$6,business_key,visibility_labels,compatibility,run_timeout_seconds,execution_deadline_at,$7,$8,$9,$10,namespace,$11 FROM workflow_runs WHERE id=$12")
+            .bind(&next).bind(&kind).bind(&class).bind(number).bind(&arguments).bind(&queue).bind(DB::optional_time(deadline))
             .bind(DB::bind_time(started)).bind(DB::bind_time(started))
             .bind(DB::bind_time(started)).bind(DB::bind_time(started)).bind(&old)
             .execute(&mut **tx).await?;
@@ -257,8 +255,8 @@ where
             .bind(&old)
             .execute(&mut **tx)
             .await?;
-        Self::query("UPDATE workflow_instances SET current_run_id=$1,run_count=$2,updated_at=$3 WHERE id=$4")
-            .bind(&next).bind(number).bind(DB::bind_time(started)).bind(&workflow).execute(&mut **tx).await?;
+        Self::query("UPDATE workflow_instances SET current_run_id=$1,run_count=$2,workflow_class=$3,updated_at=$4 WHERE id=$5")
+            .bind(&next).bind(number).bind(&class).bind(DB::bind_time(started)).bind(&workflow).execute(&mut **tx).await?;
         Self::query("INSERT INTO workflow_links(id,link_type,sequence,parent_workflow_instance_id,parent_workflow_run_id,child_workflow_instance_id,child_workflow_run_id,is_primary_parent,parent_close_policy,created_at,updated_at) VALUES ($1,'continue_as_new',$2,$3,$4,$5,$6,TRUE,'abandon',$7,$8)")
             .bind(&link).bind(sequence).bind(&workflow).bind(&old).bind(&workflow).bind(&next)
             .bind(DB::bind_time(started)).bind(DB::bind_time(started)).execute(&mut **tx).await?;

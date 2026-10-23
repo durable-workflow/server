@@ -55,6 +55,10 @@ Workflow 2.11's `DefaultWorkflowTaskBridge`:
 - Continue-as-new leaves open activities, timers, children and waits with
   the closed predecessor. A continued child stays its parent's child, as
   above.
+- Continue-as-new takes the command's `workflow_type` and `queue`, as PHP
+  does. The new type also becomes the run's and the instance's class. Native
+  used to refuse either with `continue_as_new_routing_unqualified`
+  (`continue_as_new_takes_a_new_type_and_queue_like_php`).
 
 ## Completion responses
 
@@ -79,8 +83,7 @@ native's lease expiry has milliseconds, PHP's microseconds.
   does for activities and timers.
 - **Continue-as-new transfers.** Native still refuses continue-as-new
   (`continue_as_new_transfer_unqualified`) while the instance has durable or
-  inbound streams, the run has service calls, or a query is live. It refuses
-  a new workflow type or queue (`continue_as_new_routing_unqualified`).
+  inbound streams, the run has service calls, or a query is live.
 - **Open waits.** A task that opens a signal or condition wait while
   another is open is still refused with `409 pending_durable_operations`.
 
