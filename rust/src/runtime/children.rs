@@ -394,7 +394,9 @@ where
             || DB::optional_string(call, "resolved_child_instance_id")?.as_deref()
                 != Some(&DB::string(child, "workflow_instance_id")?)
             || DB::document_row(call, "metadata")?["child_call_id"] != call_id
-            || DB::string(call, "child_workflow_type")? != DB::string(child, "workflow_type")?
+            // A continued child may run a new workflow type; the call keeps
+            // the type it started with, as PHP's does.
+            || (!continued && DB::string(call, "child_workflow_type")? != DB::string(child, "workflow_type")?)
             || DB::string(link, "child_workflow_instance_id")?
                 != DB::string(child, "workflow_instance_id")?
             || DB::string(call, "parent_workflow_instance_id")?

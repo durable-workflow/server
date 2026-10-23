@@ -59,6 +59,9 @@ Workflow 2.11's `DefaultWorkflowTaskBridge`:
   does. The new type also becomes the run's and the instance's class. Native
   used to refuse either with `continue_as_new_routing_unqualified`
   (`continue_as_new_takes_a_new_type_and_queue_like_php`).
+  A child continued into another type still resolves its parent's call,
+  which keeps the type it started with, and the parent records the new type
+  (`a_child_continued_into_another_type_resolves_its_parent_like_php`).
 
 ## Completion responses
 

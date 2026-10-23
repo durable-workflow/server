@@ -203,6 +203,33 @@ async fn a_child_that_continues_as_new_stays_its_parents_child_like_php() {
     assert!(resumed["task_id"].is_string(), "{resumed}");
 }
 
+// A child that continues as new into another workflow type still resolves
+// its parent's call, which keeps the type it started with.
+#[tokio::test]
+async fn a_child_continued_into_another_type_resolves_its_parent_like_php() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register(&app, "worker", json!(["echo", "other"]), json!([])).await;
+    let parent = start(&app, "retyped-parent").await;
+    let task = poll(&app, "worker", "workflow").await;
+    let (status, body) = finish_task(&app, &task, json!([child()])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &parent["workflow_id"], &parent["run_id"]).await;
+    let kid = first(&history, "ChildRunStarted")["payload"]["child_workflow_instance_id"].as_str().unwrap().to_owned();
+    let task = task_for(&app, "worker", &kid).await;
+    let (status, body) = finish_task(&app, &task, json!([{"type":"continue_as_new","workflow_type":"other"}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let task = task_for(&app, "worker", &kid).await;
+    assert_eq!(task["workflow_type"], "other", "{task}");
+    let (status, body) = finish_task(&app, &task, json!([{"type":"complete_workflow","result":envelope(Payload::Long(4))}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &parent["workflow_id"], &parent["run_id"]).await;
+    let completed = &first(&history, "ChildRunCompleted")["payload"];
+    assert_eq!(completed["child_workflow_type"], "other", "{completed}");
+    let resumed = task_for(&app, "worker", "retyped-parent").await;
+    assert!(resumed["task_id"].is_string(), "{resumed}");
+}
+
 // `validateUpdateCommands`: an update completes alongside other commands, and
 // an update task may leave its update for a later task.
 #[tokio::test]
