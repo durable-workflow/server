@@ -62,19 +62,6 @@
       ]
     },
     {
-      "path": ".github/workflows/release.yml",
-      "line": "docker run --rm --user \"$(id -u):$(id -g)\" -e COMPOSER_HOME=/tmp/composer -v \"$PWD/release-source:/app:ro\" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee audit --locked --no-dev --no-interaction",
-      "count": 1,
-      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
-      "guards": [
-        {
-          "type": "pinned-reference",
-          "line": null,
-          "distance": null
-        }
-      ]
-    },
-    {
       "path": ".github/workflows/server-perf.yml",
       "line": "-v \"$PWD:/app\" -w /app/benchmarks/capacity/v1/bindings/php composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
       "count": 1,
@@ -1319,6 +1306,32 @@
           "type": "checked-ca",
           "line": "ENV COMPOSER_CAFILE=/etc/composer-trust/ca.pem COMPOSER_CAPATH=/etc/composer-trust/no-ca-directory",
           "distance": 4
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/audit-immutable-release.sh",
+      "line": "image=composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee",
+      "count": 1,
+      "confinement": "Pinned Composer digest; checked-ca.sh provides the validated file and empty directory. Inner helper installs and verifies the decoder floor before requests.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/audit-immutable-release-container.sh",
+      "line": "exec su-exec \"$identity\" composer --no-plugins --no-scripts audit --locked --no-dev --no-interaction",
+      "count": 1,
+      "confinement": "Outer immutable-release helper binds the checked CA pair. The inner helper verifies brotli-libs>=1.2.1-r0 before the nonprivileged, plugins-disabled audit; release_composer_audit_test.py executes refusal and ordering controls.",
+      "guards": [
+        {
+          "type": "checked-ca",
+          "line": "test -s \"$COMPOSER_CAFILE\"",
+          "distance": 8
         }
       ]
     }
