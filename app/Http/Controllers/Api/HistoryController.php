@@ -139,7 +139,10 @@ class HistoryController
         $fresh = $run->fresh() ?? $run;
         $bundle = $repository->runHistoryExport($fresh);
 
-        return ControlPlaneProtocol::json(LegacyV1Projection::decorateHistoryExport($bundle, $fresh));
+        return ControlPlaneProtocol::json(
+            LegacyV1Projection::decorateHistoryExport($bundle, $fresh),
+            options: JSON_PRESERVE_ZERO_FRACTION,
+        );
     }
 
     private function loadEvents(string $runId, ?int $afterSequence, int $pageSize)
