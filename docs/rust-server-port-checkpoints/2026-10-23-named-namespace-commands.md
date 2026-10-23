@@ -34,6 +34,17 @@ queries already used the request's namespace, as redrive's do.
 - Update admission and cooperative cancellation requests read the instance
   and run in the request's namespace.
 
+## Search attribute upserts need the typed capability
+
+The same probe showed a difference in every namespace. PHP's
+`validateWorkflowTaskSearchAttributeCommands` fills in the registered type of
+each attribute an upsert names. Its second metadata capability check therefore
+requires the worker to advertise `typed_search_attributes` for any
+`upsert_search_attributes` with attributes. Without it, PHP answers 409
+`workflow_metadata_capability_not_advertised`. Native required the capability
+only when the worker sent `attribute_types`, and now requires it as PHP does
+(`an_upsert_needs_the_typed_capability_like_php`).
+
 ## Differences that remain
 
 - A route native does not implement at all, such as message streams or Nexus
