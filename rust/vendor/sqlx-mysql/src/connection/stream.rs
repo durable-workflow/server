@@ -19,6 +19,9 @@ pub struct MySqlStream<S = Box<dyn Socket>> {
     pub(crate) sequence_id: u8,
     pub(crate) waiting: VecDeque<Waiting>,
     pub(crate) is_tls: bool,
+    // The write buffer holds only commands without a reply, queued to leave
+    // with the next command.
+    pub(crate) queued_unanswered: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -56,11 +59,14 @@ impl<S: Socket> MySqlStream<S> {
             sequence_id: 0,
             socket: BufferedSocket::new(socket),
             is_tls: false,
+            queued_unanswered: false,
         }
     }
 
     pub(crate) async fn wait_until_ready(&mut self) -> Result<(), Error> {
-        if !self.socket.write_buffer().is_empty() {
+        // Queued commands without a reply wait for the next command; nothing
+        // pending needs them to be sent first.
+        if !self.socket.write_buffer().is_empty() && !self.queued_unanswered {
             self.socket.flush().await?;
         }
 
@@ -108,10 +114,26 @@ impl<S: Socket> MySqlStream<S> {
         Ok(())
     }
 
+    /// Buffer a command that has no server reply (`COM_STMT_CLOSE`) so it
+    /// leaves in the same write as the next command. Flushing it alone leaves
+    /// unacknowledged data in flight, and Nagle's algorithm then holds the next
+    /// command until the server's delayed acknowledgement (about 40 ms).
+    pub(crate) fn queue_packet<'en, T>(&mut self, payload: T) -> Result<(), Error>
+    where
+        T: ProtocolEncode<'en, Capabilities>,
+    {
+        let unanswered = self.socket.write_buffer().is_empty() || self.queued_unanswered;
+        self.sequence_id = 0;
+        self.write_packet(payload)?;
+        self.queued_unanswered = unanswered;
+        Ok(())
+    }
+
     pub(crate) fn write_packet<'en, T>(&mut self, payload: T) -> Result<(), Error>
     where
         T: ProtocolEncode<'en, Capabilities>,
     {
+        self.queued_unanswered = false;
         self.socket
             .write_with(Packet(payload), (self.capabilities, &mut self.sequence_id))
     }
@@ -213,6 +235,7 @@ impl<S: Socket> MySqlStream<S> {
             sequence_id: self.sequence_id,
             waiting: self.waiting,
             is_tls: self.is_tls,
+            queued_unanswered: self.queued_unanswered,
         }
     }
 }

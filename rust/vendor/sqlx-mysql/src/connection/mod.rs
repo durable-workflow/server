@@ -105,10 +105,9 @@ impl Connection for MySqlConnection {
         while let Some((statement_id, _)) = self.inner.cache_statement.remove_lru() {
             self.inner
                 .stream
-                .send_packet(StmtClose {
+                .queue_packet(StmtClose {
                     statement: statement_id,
-                })
-                .await?;
+                })?;
         }
 
         Ok(())
