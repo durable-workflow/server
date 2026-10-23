@@ -1208,6 +1208,19 @@ impl Runtime {
             }
         }
     }
+    /// `WorkflowController::redriveRun`: the run must exist before its
+    /// request is validated.
+    pub(crate) async fn redrive_run(&self, workflow_id: &str, run_id: &str, body: Value, context: Value) -> Result<(StatusCode, Value)> {
+        if !self.run_in_namespace(workflow_id, run_id).await? {
+            return Err(super::redrive::run_not_found(workflow_id, run_id));
+        }
+        let request_id = super::redrive::request_id(&body)?;
+        match &*self.storage {
+            Storage::Sqlite(store) => store.redrive_run(workflow_id, run_id, request_id, context).await,
+            Storage::Postgres(store) => store.redrive_run(workflow_id, run_id, request_id, context).await,
+            Storage::MySql(store) => store.redrive_run(workflow_id, run_id, request_id, context).await,
+        }
+    }
     /// `WorkflowStub::attemptArchive` for the current run.
     pub(crate) async fn archive_workflow(
         &self,

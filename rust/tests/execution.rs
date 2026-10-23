@@ -168,6 +168,8 @@ mod structural_limits;
 mod standalone_activities;
 #[path = "execution/archive.rs"]
 mod archive;
+#[path = "execution/redrive.rs"]
+mod redrive;
 #[path = "execution/activity_timeout_pass.rs"]
 mod activity_timeout_pass;
 #[path = "execution/start_request.rs"]

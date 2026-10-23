@@ -357,7 +357,7 @@ where
     /// `WorkflowStartVersionPin::definitionFingerprintForCohort` over the
     /// queue's active registrations: unexpired or never heartbeated, and
     /// not draining or deregistered.
-    async fn start_definition_fingerprint(
+    pub(super) async fn start_definition_fingerprint(
         tx: &mut Transaction<'_, DB>,
         namespace: &str,
         queue: &str,
@@ -839,14 +839,28 @@ where
         let children = Self::query("SELECT sequence FROM workflow_child_calls WHERE parent_workflow_run_id=$1 ORDER BY sequence DESC LIMIT 1")
             .bind(run_id).fetch_optional(&mut **tx).await?.map(|row| DB::number(&row,"sequence")).transpose()?.unwrap_or(0);
         let run =
-            Self::query("SELECT cancellation_delivery_sequence FROM workflow_runs WHERE id=$1")
+            Self::query("SELECT cancellation_delivery_sequence,run_number FROM workflow_runs WHERE id=$1")
                 .bind(run_id)
                 .fetch_one(&mut **tx)
                 .await?;
+        // A redriven run replays the activities before its resume step from
+        // reused completions, which have no execution rows.
+        let mut reused = 0;
+        if DB::number(&run, "run_number")? > 1 {
+            let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
+                .bind(run_id).fetch_optional(&mut **tx).await?;
+            if let Some(started) = started {
+                let payload = DB::document_row(&started, "payload")?;
+                if payload["recovery_kind"] == "redrive" {
+                    reused = payload["resume_step_sequence"].as_i64().unwrap_or(1) - 1;
+                }
+            }
+        }
         Ok(activities
             .max(timers)
             .max(wait_sequence)
             .max(children)
+            .max(reused)
             .max(DB::optional_number(&run, "cancellation_delivery_sequence")?.unwrap_or(0)))
     }
 
@@ -2826,6 +2840,7 @@ where
         payload["activity_attempt_id"] = json!(attempt_id);
         payload["attempt_number"] = json!(DB::number(&attempt, "attempt_number")?);
         payload["result"] = wire(&result);
+        payload["payload_codec"] = json!("avro");
         payload["task"] = json!({"id":task_id,"type":"activity","status":"leased",
             "repair_count":DB::number(&task,"repair_count")?,
             "available_at":DB::optional_instant(&task,"available_at")?,"leased_at":DB::optional_instant(&task,"leased_at")?,

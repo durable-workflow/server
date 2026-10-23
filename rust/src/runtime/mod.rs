@@ -65,6 +65,7 @@ mod memo_json;
 mod memo_limits;
 mod standalone_activities;
 mod archive;
+mod redrive;
 mod memos;
 pub mod mysql;
 mod namespace_cleanup;

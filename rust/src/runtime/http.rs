@@ -154,6 +154,7 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route("/api/workflows/{workflow_id}/archive", post(archive_current))
         .route("/api/workflows/{workflow_id}/runs/{run_id}/archive", post(archive_run))
+        .route("/api/workflows/{workflow_id}/runs/{run_id}/redrive", post(redrive_run))
         .route(
             "/api/workflows/{workflow_id}/query/{query_name}",
             post(query_current),
@@ -1112,6 +1113,25 @@ async fn archive(
         .archive_workflow(workflow_id, run_id, body, context)
         .await
         .map_err(|error| operation().refusal(error, workflow_id, run_id))?;
+    Ok((status, Json(operation().response(response))))
+}
+
+/// `POST /api/workflows/{id}/runs/{run}/redrive`.
+async fn redrive_run(
+    Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
+    Path((workflow_id, run_id)): Path<(String, String)>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let operation = || super::control_plane::Operation::Redrive;
+    let context = request.context(&body, &workflow_id, "redrive", metadata(&[
+        ("request_id", present(&body, "request_id")),
+        ("continued_from_run_id", Some(json!(run_id))),
+    ]));
+    let (status, response) = runtime
+        .redrive_run(&workflow_id, &run_id, body, context)
+        .await
+        .map_err(|error| operation().refusal(error, &workflow_id, Some(&run_id)))?;
     Ok((status, Json(operation().response(response))))
 }
 

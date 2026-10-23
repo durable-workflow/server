@@ -14,6 +14,7 @@ pub(super) enum Operation<'a> {
     Cancel,
     Terminate,
     Archive,
+    Redrive,
     Repair,
     Debug,
     Update(&'a str),
@@ -110,6 +111,7 @@ impl Operation<'_> {
             Self::Cancel => ("cancel", &["workflow_id"], &["outcome"]),
             Self::Terminate => ("terminate", &["workflow_id"], &["outcome"]),
             Self::Archive => ("archive", &["workflow_id"], &["outcome"]),
+            Self::Redrive => ("redrive", &["workflow_id", "continued_from_run_id"], &["run_id", "resume_step_sequence", "outcome"]),
             Self::Repair => ("repair", &["workflow_id"], &["outcome"]),
             Self::Debug => ("debug_workflow", &["workflow_id"], &["run_id", "diagnostic_status"]),
             Self::Update(_) => (
@@ -135,7 +137,10 @@ impl Operation<'_> {
                 "required_fields":required, "success_fields":success}});
         if let Some((fields, reasons)) = self.rejection_contract() {
             metadata["contract"]["rejection_fields"] = words(fields);
-            metadata["contract"]["rejection_reasons"] = words(reasons);
+            // PHP's redrive contract names no rejection reasons.
+            if !reasons.is_empty() {
+                metadata["contract"]["rejection_reasons"] = words(reasons);
+            }
         }
         match self {
             Self::Update(name) => {
@@ -255,6 +260,7 @@ impl Operation<'_> {
                 "workflow_id run_id reason message retryable error_id exception",
                 "control_plane_internal_error",
             ),
+            Self::Redrive => ("workflow_id continued_from_run_id run_id reason message", ""),
             Self::Cancel | Self::Terminate | Self::Archive | Self::Repair => {
                 ("workflow_id run_id reason message remediation", "v1_projection_read_only")
             }
@@ -317,6 +323,7 @@ pub(super) async fn admission_response(request: Request, mut body: Value) -> Val
         | ("POST", ["api", "workflows", _, "runs", _, "cancel"]) => Operation::Cancel,
         ("POST", ["api", "workflows", _, "terminate"])
         | ("POST", ["api", "workflows", _, "runs", _, "terminate"]) => Operation::Terminate,
+        ("POST", ["api", "workflows", _, "runs", _, "redrive"]) => Operation::Redrive,
         ("POST", ["api", "workflows", _, "archive"])
         | ("POST", ["api", "workflows", _, "runs", _, "archive"]) => Operation::Archive,
         ("POST", ["api", "workflows", _, "repair"])
