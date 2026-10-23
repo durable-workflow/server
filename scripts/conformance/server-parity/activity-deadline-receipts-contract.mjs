@@ -150,7 +150,16 @@ export function checkActivityDeadlineReceipts(fixture, observation, workflowId, 
   assert.equal(retry.payload.retry_task_id, second.task_id);
   assert.equal(retry.payload.retry_of_task_id, first.task_id);
   assert.equal(retry.payload.retry_backoff_seconds, spec.backoff_seconds[0]);
-  assert(instant(retry.timestamp) >= instant(started.timestamp) + BigInt(spec.start_to_close_timeout) * 1_000_000_000n);
+  // The deadline runs from the attempt's own start, which the event snapshot
+  // carries. Published PHP stamps the event a few milliseconds after that start.
+  const attemptStart = started.payload.activity.started_at;
+  assert.equal(typeof attemptStart, 'string', 'ActivityStarted carries the attempt start');
+  const stampLag = instant(started.timestamp) - instant(attemptStart);
+  assert(stampLag >= 0n && stampLag < 1_000_000_000n,
+    `ActivityStarted is stamped ${stampLag}ns after the attempt start; expected 0 to under 1s`);
+  const closeDeadline = instant(attemptStart) + BigInt(spec.start_to_close_timeout) * 1_000_000_000n;
+  assert(instant(retry.timestamp) >= closeDeadline,
+    `${observation.mode} retry ${retry.timestamp} precedes the start-to-close deadline by ${closeDeadline - instant(retry.timestamp)}ns`);
   assert(instant(restarted.timestamp) >= instant(retry.payload.retry_available_at));
   assert(instant(completed.timestamp) < instant(restarted.timestamp) + BigInt(spec.start_to_close_timeout) * 1_000_000_000n);
   assert.deepEqual(completed.typed_decoded.result, fixture.typed_value);
