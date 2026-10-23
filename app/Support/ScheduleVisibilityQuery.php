@@ -276,11 +276,27 @@ class ScheduleVisibilityQuery
         }
 
         if (preg_match('/^-?(?:0|[1-9][0-9]*)$/', $literal) === 1) {
-            return (int) $literal;
+            $value = filter_var($literal, FILTER_VALIDATE_INT);
+
+            if ($value === false) {
+                throw new ScheduleVisibilityQueryException(
+                    'Schedule visibility integer literal is outside the supported integer range.',
+                );
+            }
+
+            return $value;
         }
 
         if (preg_match('/^-?(?:0|[1-9][0-9]*)\.[0-9]+$/', $literal) === 1) {
-            return (float) $literal;
+            $value = (float) $literal;
+
+            if (! is_finite($value)) {
+                throw new ScheduleVisibilityQueryException(
+                    'Schedule visibility numeric literal must be finite.',
+                );
+            }
+
+            return $value;
         }
 
         throw new ScheduleVisibilityQueryException(
