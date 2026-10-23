@@ -15,6 +15,8 @@ use serde_json::{Map, Value, json};
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Rule {
     Required,
+    /// `present`: the attribute is in the request, even as null.
+    Present,
     Nullable,
     /// Validate only when the attribute is present.
     Sometimes,
@@ -189,6 +191,7 @@ fn message(rule: Rule, attribute: &str, rules: &[Rule], value: Option<&Value>) -
     };
     match rule {
         Rule::Required => format!("The {attribute} field is required."),
+        Rule::Present => format!("The {attribute} field must be present."),
         Rule::RequiredWith(other) => {
             format!("The {attribute} field is required when {} is present.", display(other, false))
         }
@@ -247,6 +250,7 @@ fn size(value: &Value, rules: &[Rule]) -> Option<f64> {
 fn passes(rule: Rule, data: &Value, value: Option<&Value>, rules: &[Rule]) -> bool {
     match rule {
         Rule::Required => filled(value),
+        Rule::Present => value.is_some(),
         Rule::RequiredWith(other) => !filled(lookup(data, other)) || filled(value),
         Rule::Nullable | Rule::Sometimes => true,
         Rule::NotBlank => value.and_then(Value::as_str).is_some_and(|text| text.chars().any(|character| !character.is_whitespace())),
@@ -298,50 +302,67 @@ pub(crate) fn validate(body: &Value, rules: &Rules) -> Result<(), RuntimeError> 
 
 /// Every failing attribute and its messages, in Laravel's order.
 pub(crate) fn errors(body: &Value, rules: &Rules) -> Vec<(String, Vec<String>)> {
-    let mut checks: Vec<(String, bool, &[Rule])> = Vec::new();
-    let mut expanded = Vec::new();
-    for (pattern, list) in rules {
-        if pattern.contains('*') {
-            expanded.extend(expand(body, pattern).into_iter().map(|path| (path, true, *list)));
-        } else {
-            checks.push(((*pattern).to_owned(), false, *list));
-        }
+    checks(body, rules)
+        .into_iter()
+        .filter_map(|(attribute, expanded, list)| {
+            let messages = attribute_errors(body, &attribute, expanded, list);
+            (!messages.is_empty()).then_some((attribute, messages))
+        })
+        .collect()
+}
+
+/// The attributes to check: named ones in rule order, then each wildcard's
+/// expansions, as Laravel lists them. The flag marks an expansion.
+fn checks(body: &Value, rules: &Rules) -> Vec<(String, bool, &'static [Rule])> {
+    let named = rules
+        .iter()
+        .filter(|(pattern, _)| !pattern.contains('*'))
+        .map(|&(pattern, list)| (pattern.to_owned(), false, list));
+    let expanded = rules
+        .iter()
+        .filter(|(pattern, _)| pattern.contains('*'))
+        .flat_map(|&(pattern, list)| expand(body, pattern).into_iter().map(move |path| (path, true, list)));
+    named.chain(expanded).collect()
+}
+
+/// One attribute's messages. An implicit rule (required, required_with,
+/// present) stops at its first failure, as Laravel's does.
+fn attribute_errors(body: &Value, attribute: &str, expanded: bool, list: &[Rule]) -> Vec<String> {
+    let value = lookup(body, attribute);
+    if value.is_none() && list.iter().any(|rule| matches!(rule, Rule::Sometimes)) {
+        return Vec::new();
     }
-    checks.extend(expanded);
-    let mut errors: Vec<(String, Vec<String>)> = Vec::new();
-    for (attribute, raw, list) in checks {
-        let value = lookup(body, &attribute);
-        let nullable = list.iter().any(|rule| matches!(rule, Rule::Nullable));
-        if value.is_none() && list.iter().any(|rule| matches!(rule, Rule::Sometimes)) {
+    let nullable = list.iter().any(|rule| matches!(rule, Rule::Nullable));
+    let name = display(attribute, expanded);
+    let mut messages = Vec::new();
+    for rule in list {
+        if matches!(rule, Rule::Nullable | Rule::Sometimes) {
             continue;
         }
-        let name = display(&attribute, raw);
-        let mut messages = Vec::new();
-        for rule in list {
-            let implicit = matches!(rule, Rule::Required | Rule::RequiredWith(_));
-            if matches!(rule, Rule::Nullable | Rule::Sometimes) {
-                continue;
-            }
-            // presentOrRuleIsImplicit, then isNotNullIfMarkedAsNullable.
-            let blank = value.is_some_and(|value| value.as_str().is_some_and(|text| text.trim().is_empty()));
-            if !implicit && (value.is_none() || blank) {
-                continue;
-            }
-            if !implicit && nullable && value.is_some_and(Value::is_null) {
-                continue;
-            }
-            if !passes(*rule, body, value, list) {
-                messages.push(message(*rule, &name, list, value));
-                if implicit {
-                    break;
-                }
-            }
+        let implicit = matches!(rule, Rule::Required | Rule::RequiredWith(_) | Rule::Present);
+        if !implicit && skipped(value, nullable) {
+            continue;
         }
-        if !messages.is_empty() {
-            errors.push((attribute, messages));
+        if !passes(*rule, body, value, list) {
+            messages.push(message(*rule, &name, list, value));
+            if implicit {
+                break;
+            }
         }
     }
-    errors
+    messages
+}
+
+/// Laravel's presentOrRuleIsImplicit and isNotNullIfMarkedAsNullable: a rule
+/// that is not implicit skips a missing or blank value, and a null one when
+/// the attribute is nullable.
+fn skipped(value: Option<&Value>, nullable: bool) -> bool {
+    match value {
+        None => true,
+        Some(Value::String(text)) => text.trim().is_empty(),
+        Some(Value::Null) => nullable,
+        Some(_) => false,
+    }
 }
 
 /// Laravel's 422 ValidationException body: the first message, a count of the

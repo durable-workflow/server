@@ -129,6 +129,10 @@ impl Context {
             value,
         })
     }
+    /// The task, attempt and lease owner this context names.
+    pub(super) fn lease_identity(&self) -> (&str, &str, &str) {
+        (&self.task, &self.attempt, &self.owner)
+    }
     fn scope(&self, namespace: &str) -> String {
         identity(&json!([
             namespace,

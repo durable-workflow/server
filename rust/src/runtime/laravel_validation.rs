@@ -4,12 +4,27 @@ use super::RuntimeError;
 use axum::http::StatusCode;
 use serde_json::{Map, Value, json};
 
+/// The characters Laravel's `Str::trim` removes from either end: PHP's
+/// default trim set, `\s` and `Str::INVISIBLE_CHARACTERS`. A pinned,
+/// reviewed set rather than a changing Unicode whitespace predicate.
+pub(super) fn laravel_trim(text: &str) -> &str {
+    text.trim_matches(|ch| {
+        matches!(ch,
+            '\0' | '\t'..='\r' | ' ' | '\u{85}' | '\u{a0}' | '\u{ad}' |
+            '\u{34f}' | '\u{61c}' | '\u{115f}' | '\u{1160}' | '\u{1680}' |
+            '\u{17b4}' | '\u{17b5}' | '\u{180e}' | '\u{2000}'..='\u{200f}' |
+            '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' |
+            '\u{2060}'..='\u{2065}' | '\u{206a}'..='\u{206f}' | '\u{2800}' |
+            '\u{3000}' | '\u{3164}' | '\u{feff}' | '\u{ffa0}' | '\u{1d159}' |
+            '\u{1d173}'..='\u{1d17a}' | '\u{e0020}')
+    })
+}
+
 /// Laravel's TrimStrings and ConvertEmptyStringsToNull run before validation.
 pub(super) fn normalized(value: Option<&Value>) -> Option<Value> {
-    let trimmed = |c: char| c.is_whitespace() || matches!(c, '\u{feff}' | '\u{200b}' | '\u{200e}');
     match value {
         Some(Value::String(text)) => {
-            let text = text.trim_matches(trimmed);
+            let text = laravel_trim(text);
             Some(if text.is_empty() {
                 Value::Null
             } else {
@@ -176,7 +191,7 @@ fn size(value: &Value, numeric: bool) -> f64 {
     }
 }
 
-fn passes(rule: Rule, value: Option<&Value>, numeric: bool) -> bool {
+pub(super) fn passes(rule: Rule, value: Option<&Value>, numeric: bool) -> bool {
     let Some(value) = value else {
         return !matches!(rule, Required);
     };
@@ -201,7 +216,7 @@ fn passes(rule: Rule, value: Option<&Value>, numeric: bool) -> bool {
     }
 }
 
-fn default_message(attribute: &str, rule: Rule, numeric: bool, array: bool) -> String {
+pub(super) fn default_message(attribute: &str, rule: Rule, numeric: bool, array: bool) -> String {
     let kind = if numeric { "numeric" } else if array { "array" } else { "string" };
     match (rule, kind) {
         (Required, _) => format!("The {attribute} field is required."),

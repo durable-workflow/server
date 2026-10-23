@@ -1,0 +1,30 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "prometheus-metrics",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "prometheus metrics λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "prometheus metrics λ"},
+    "count": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null}
+  }},
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "prometheus_metrics": {
+    "workflow_types": ["parity.v1.prom_a", "parity.v1.prom_b"],
+    "activity_type": "parity.v1.prom_act",
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "workflow_slots": 4,
+    "activity_slots": 3,
+    "minimum_duration_ms": 1100,
+    "statuses": {
+      "register": 201, "start completed": 201, "claim": 200, "schedule activity": 200, "claim activity": 200,
+      "complete activity": 200, "claim resume": 200, "complete run": 200, "start terminated": 201, "terminate": 200,
+      "start waiting": 201
+    },
+    "first_queue": {"workflow_tasks_added_last_minute": 3, "workflow_tasks_dispatched_last_minute": 3, "activity_tasks_added_last_minute": 1},
+    "second_queue": {"workflow_ready_tasks": 1, "workflow_ready_due_tasks": 1, "workflow_tasks_added_last_minute": 1, "workflow_tasks_dispatched_last_minute": 1}
+  },
+  "contract": "GET /api/system/prometheus-metrics (published Server 2.11) summarizes a namespace for Prometheus scrapers: workflow series by task queue and workflow type, activity series by task queue, workflow type and activity type, and task-queue runtime state, each family capped at 100 series with its suppression disclosed and its label policy declared. A fresh namespace reports no series. After a worker with four workflow and three activity slots registers on the first queue, a run there completes after one activity, a second run there is terminated, and a run waits on a second queue without a worker, the summary holds three workflow series, one activity series and two task queues with exact counters, task counts and worker capacity. Each counted run and activity lasts at least 1.1 seconds. Latency sums cover those durations, buckets are cumulative, and every duration falls within the 900-second bound. The buckets below the minimum duration are empty, except on published PHP with SQLite: it binds each bound as text, which SQLite orders after every number, so every bucket holds every duration. That reference defect is recorded, not adopted; native reports the cumulative histogram on every backend. Embedded applications have no HTTP metrics."
+}

@@ -447,7 +447,7 @@ const NEXUS: &str = "native cannot apply a changed Nexus operation limit";
 const PROVENANCE: &str = "native does not publish package provenance";
 const BOUNDARY: &str = "native has no service boundary policy";
 const V1: &str = "native does not run Workflow 1 workflows";
-const COMPATIBILITY: &str = "native does not route work by worker compatibility markers";
+const COMPATIBILITY: &str = "native pins runs to registered worker build ids only; it has no server-wide compatibility markers";
 const PINNING: &str = "native always pins runs to their recorded workflow definition";
 const STRUCTURAL: &str = "native cannot apply a changed structural limit";
 const REPAIR: &str = "native cannot apply changed task repair timing";
@@ -591,12 +591,12 @@ pub const SETTINGS: &[Setting] = &[
     Setting { name: "DW_V2_LIMIT_COMMAND_BATCH_SIZE", legacy: Some("WORKFLOW_V2_LIMIT_COMMAND_BATCH_SIZE"), disposition: Refused(Int(1000), STRUCTURAL) },
     Setting { name: "DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE", legacy: Some("WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_SIZE"), disposition: Ignored },
     Setting { name: "DW_V2_LIMIT_MEMO_SIZE_BYTES", legacy: Some("WORKFLOW_V2_LIMIT_MEMO_SIZE_BYTES"), disposition: Honored },
-    Setting { name: "DW_V2_LIMIT_PAYLOAD_SIZE_BYTES", legacy: Some("WORKFLOW_V2_LIMIT_PAYLOAD_SIZE_BYTES"), disposition: Refused(Int(2097152), STRUCTURAL) },
+    Setting { name: "DW_V2_LIMIT_PAYLOAD_SIZE_BYTES", legacy: Some("WORKFLOW_V2_LIMIT_PAYLOAD_SIZE_BYTES"), disposition: Honored },
     Setting { name: "DW_V2_LIMIT_PENDING_ACTIVITIES", legacy: Some("WORKFLOW_V2_LIMIT_PENDING_ACTIVITIES"), disposition: Refused(Int(2000), STRUCTURAL) },
     Setting { name: "DW_V2_LIMIT_PENDING_CHILDREN", legacy: Some("WORKFLOW_V2_LIMIT_PENDING_CHILDREN"), disposition: Ignored },
-    Setting { name: "DW_V2_LIMIT_PENDING_SIGNALS", legacy: Some("WORKFLOW_V2_LIMIT_PENDING_SIGNALS"), disposition: Refused(Int(5000), STRUCTURAL) },
+    Setting { name: "DW_V2_LIMIT_PENDING_SIGNALS", legacy: Some("WORKFLOW_V2_LIMIT_PENDING_SIGNALS"), disposition: Honored },
     Setting { name: "DW_V2_LIMIT_PENDING_TIMERS", legacy: Some("WORKFLOW_V2_LIMIT_PENDING_TIMERS"), disposition: Ignored },
-    Setting { name: "DW_V2_LIMIT_PENDING_UPDATES", legacy: Some("WORKFLOW_V2_LIMIT_PENDING_UPDATES"), disposition: Refused(Int(500), STRUCTURAL) },
+    Setting { name: "DW_V2_LIMIT_PENDING_UPDATES", legacy: Some("WORKFLOW_V2_LIMIT_PENDING_UPDATES"), disposition: Honored },
     Setting { name: "DW_V2_LIMIT_SEARCH_ATTRIBUTE_SIZE_BYTES", legacy: Some("WORKFLOW_V2_LIMIT_SEARCH_ATTRIBUTE_SIZE_BYTES"), disposition: Ignored },
     Setting { name: "DW_V2_LIMIT_WARNING_THRESHOLD_PERCENT", legacy: Some("WORKFLOW_V2_LIMIT_WARNING_THRESHOLD_PERCENT"), disposition: Ignored },
     Setting { name: "DW_V2_MATCHING_ROLE_QUEUE_WAKE", legacy: Some("WORKFLOW_V2_MATCHING_ROLE_QUEUE_WAKE"), disposition: Ignored },

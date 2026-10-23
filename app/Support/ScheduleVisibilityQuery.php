@@ -111,6 +111,18 @@ class ScheduleVisibilityQuery
                 continue;
             }
 
+            if ($predicate['type'] === 'double' && $builder->getConnection()->getDriverName() === 'sqlite') {
+                // JSON extraction has no numeric column affinity in SQLite,
+                // while PDO binds floats as strings. Retain the exact number
+                // and cast the bound value without coercing stored JSON text.
+                $column = $builder->getQuery()->getGrammar()->wrap($path);
+                $builder->whereRaw($column.' = CAST(? AS NUMERIC)', [
+                    json_encode($predicate['literal'], JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR),
+                ]);
+
+                continue;
+            }
+
             $builder->where($path, '=', $predicate['literal']);
         }
     }
@@ -276,16 +288,42 @@ class ScheduleVisibilityQuery
         }
 
         if (preg_match('/^-?(?:0|[1-9][0-9]*)$/', $literal) === 1) {
-            return (int) $literal;
+            return $this->parseIntegerLiteral($literal);
         }
 
         if (preg_match('/^-?(?:0|[1-9][0-9]*)\.[0-9]+$/', $literal) === 1) {
-            return (float) $literal;
+            return $this->parseDecimalLiteral($literal);
         }
 
         throw new ScheduleVisibilityQueryException(
             sprintf('Schedule visibility literal [%s] must be a quoted string, number, or boolean.', $literal),
         );
+    }
+
+    private function parseIntegerLiteral(string $literal): int
+    {
+        $value = filter_var($literal, FILTER_VALIDATE_INT);
+
+        if ($value === false) {
+            throw new ScheduleVisibilityQueryException(
+                'Schedule visibility integer literal is outside the supported integer range.',
+            );
+        }
+
+        return $value;
+    }
+
+    private function parseDecimalLiteral(string $literal): float
+    {
+        $value = (float) $literal;
+
+        if (! is_finite($value)) {
+            throw new ScheduleVisibilityQueryException(
+                'Schedule visibility numeric literal must be finite.',
+            );
+        }
+
+        return $value;
     }
 
     private function validateLiteralType(string $field, string $type, bool|float|int|string $literal): void

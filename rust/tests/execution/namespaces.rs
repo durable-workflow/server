@@ -524,6 +524,8 @@ async fn same_worker_id_isolated_claims_completion_and_deregistration_by_namespa
         first["run_id"].as_str().unwrap()
     );
     let before = scoped(&app, "alpha", "GET", &history_path, Value::Null).await;
+    // A refused completion in the namespace changes nothing. (Published PHP
+    // serves every workflow command in a named namespace: `named_namespace_commands`.)
     let unsupported = scoped(
         &app,
         "alpha",
@@ -531,18 +533,13 @@ async fn same_worker_id_isolated_claims_completion_and_deregistration_by_namespa
         &path,
         completion(
             &first_task,
-            // Timers and children have separate positive namespace coverage.
-            // Side effects remain outside this namespace slice and must fail
-            // atomically.
-            json!([{"type":"record_side_effect","result":envelope(Payload::Long(9007199254740993))}]),
+            json!([{"type":"record_side_effect","result":envelope(Payload::Long(1))},
+                {"type":"complete_workflow","result":envelope(Payload::Null)},{"type":"fail_workflow","message":"x"}]),
         ),
     )
     .await;
-    assert_eq!(unsupported.0, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(
-        unsupported.1["reason"],
-        "development_namespace_command_unqualified"
-    );
+    assert_eq!(unsupported.0, StatusCode::CONFLICT, "{}", unsupported.1);
+    assert_eq!(unsupported.1["reason"], "invalid_commands", "{}", unsupported.1);
     assert_eq!(
         scoped(&app, "alpha", "GET", &history_path, Value::Null).await,
         before
@@ -613,6 +610,39 @@ async fn same_worker_id_isolated_claims_completion_and_deregistration_by_namespa
         json!([{"type":"complete_workflow","result":envelope(Payload::Long(9007199254740993))}]))).await.0, StatusCode::OK);
     runtime.close().await;
     database.remove().await;
+}
+
+#[tokio::test]
+async fn named_namespace_workflow_task_failure_retries_only_in_its_own_namespace() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    for name in ["alpha", "beta"] {
+        create(&app, name).await;
+        let (status, body) = scoped(&app, name, "POST", "/api/worker/register", json!({
+            "worker_id":"shared-worker","task_queue":"test","runtime":"php",
+            "supported_workflow_types":["echo"],"supported_activity_types":[]})).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    let run = start_scoped(&app, "alpha", "retry-alpha").await;
+    let poll = json!({"worker_id":"shared-worker","task_queue":"test","timeout_seconds":0});
+    let task = scoped(&app, "alpha", "POST", "/api/worker/workflow-tasks/poll", poll.clone()).await.1["task"].clone();
+    let path = format!("/api/worker/workflow-tasks/{}/fail", task["task_id"].as_str().unwrap());
+    let body = json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"],
+        "failure":{"message":"named failure","type":"RuntimeException"}});
+    let refused = scoped(&app, "beta", "POST", &path, body.clone()).await;
+    assert_eq!(refused.0, StatusCode::NOT_FOUND, "{}", refused.1);
+    assert_eq!(refused.1["reason"], "task_not_found");
+
+    let (status, failed) = scoped(&app, "alpha", "POST", &path, body).await;
+    assert_eq!(status, StatusCode::OK, "{failed}");
+    assert_eq!([&failed["outcome"], &failed["recorded"]], [&json!("failed"), &json!(true)]);
+    let foreign = scoped(&app, "beta", "POST", "/api/worker/workflow-tasks/poll", poll.clone()).await;
+    assert_eq!(foreign.0, StatusCode::OK, "{}", foreign.1);
+    assert!(foreign.1["task"].is_null(), "{}", foreign.1);
+    let retry = scoped(&app, "alpha", "POST", "/api/worker/workflow-tasks/poll", poll).await.1["task"].clone();
+    assert_eq!(retry["task_id"], failed["next_task_id"], "{retry}");
+    assert_eq!([&retry["run_id"], &retry["workflow_task_attempt"]], [&run["run_id"], &json!(2)]);
 }
 
 #[tokio::test]
@@ -809,6 +839,79 @@ async fn namespace_delete_refuses_while_external_payloads_remain() {
     let (status, body) = scoped(&app, "held", "GET", "/api/workflows", Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body.to_string().contains("namespace-delete-held"), "its run remains: {body}");
+    runtime.close().await;
+    database.remove().await;
+}
+
+async fn claim_named(app: &Router, namespace: &str) -> Value {
+    let (status, body) = scoped(app, namespace, "POST", "/api/worker/workflow-tasks/poll",
+        json!({"worker_id":"named-worker","task_queue":"test","timeout_seconds":0})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["task"].clone()
+}
+
+async fn complete_named(app: &Router, namespace: &str, task: &Value, commands: Value) -> (StatusCode, Value) {
+    let path = format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap());
+    scoped(app, namespace, "POST", &path, completion(task, commands)).await
+}
+
+// Published PHP serves every workflow command and operation in a named
+// namespace: version markers, side effects, updates and their completion,
+// repair, cooperative cancellation requests and continue-as-new
+// (`named_namespace_commands`).
+#[tokio::test]
+async fn named_namespace_commands_like_php() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    create(&app, "gamma").await;
+    let (status, body) = scoped(&app, "gamma", "POST", "/api/worker/register", json!({"worker_id":"named-worker",
+        "task_queue":"test","runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":[],
+        "capabilities":["workflow_updates","cooperative_cancellation"],"workflow_command_contracts":{"echo":{
+            "signals":[],"queries":[],"updates":["set"],"update_validators":[],"update_contracts":[{"name":"set","parameters":[
+                {"name":"value","type":"int","required":true,"variadic":false,"default_available":false,"allows_null":false}]}]}}})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let started = start_scoped(&app, "gamma", "named-commands").await;
+    let task = claim_named(&app, "gamma").await;
+    let (status, body) = complete_named(&app, "gamma", &task, json!([
+        {"type":"record_version_marker","change_id":"c","version":1,"min_supported":1,"max_supported":1},
+        {"type":"record_side_effect","result":envelope(Payload::Long(1))},
+        {"type":"start_timer","delay_seconds":3600}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = scoped(&app, "gamma", "POST", "/api/workflows/named-commands/update/set",
+        json!({"input":[1],"wait_for":"accepted"})).await;
+    assert!(status.is_success(), "{status} {body}");
+    let update = body["update_id"].clone();
+    let task = claim_named(&app, "gamma").await;
+    assert_eq!(task["workflow_update_id"], update, "{task}");
+    let (status, body) = complete_named(&app, "gamma", &task,
+        json!([{"type":"complete_update","update_id":update,"result":envelope(Payload::Long(2))}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = scoped(&app, "gamma", "POST", "/api/workflows/named-commands/repair", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = scoped(&app, "gamma", "POST", "/api/workflows/named-commands/request-cancellation",
+        json!({"reason":"stop"})).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let history_path = format!("/api/workflows/named-commands/runs/{}/history", started["run_id"].as_str().unwrap());
+    let (_, history) = scoped(&app, "gamma", "GET", &history_path, Value::Null).await;
+    let kinds: Vec<_> = history["events"].as_array().unwrap().iter().map(|event| event["event_type"].clone()).collect();
+    for kind in ["VersionMarkerRecorded", "SideEffectRecorded", "UpdateCompleted"] {
+        assert!(kinds.contains(&json!(kind)), "{kind}: {history}");
+    }
+
+    let continued = start_scoped(&app, "gamma", "named-continue").await;
+    let mut task = claim_named(&app, "gamma").await;
+    while task["workflow_id"] != "named-continue" {
+        task = claim_named(&app, "gamma").await;
+    }
+    let (status, body) = complete_named(&app, "gamma", &task, json!([{"type":"continue_as_new"}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["run_status"], "completed", "{body}");
+    let (_, described) = scoped(&app, "gamma", "GET", "/api/workflows/named-continue", Value::Null).await;
+    assert_ne!(described["run_id"], continued["run_id"], "{described}");
     runtime.close().await;
     database.remove().await;
 }

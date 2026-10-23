@@ -6,5 +6,7 @@
   "clock_or_row_edit": false,
   "worker_revocation": false,
   "receipt_rebudget": false,
+  "activity_retry_policy": {"max_attempts": 2, "backoff_seconds": [0]},
+  "lease_loss": "Published PHP claims only ready activity tasks. Its repair loop settles an expired activity lease through the activity's retry policy: the original attempt closes as expired and ActivityRetryScheduled records retry_reason lease_expired. The original activity therefore declares two attempts, so the recovered worker runs attempt two after that retry.",
   "contract": "The new native revision follows the published PHP ordinary five-minute activity lease. Recovery waits for the already committed original lease, with this bound declared before preparing a new cohort. The previous sub-forty-second native recovery observations and failures remain unchanged. No current run receives a replacement lease or deadline to fit the test. This wait allocation does not claim performance or modify workflow execution budgets."
 }

@@ -223,6 +223,7 @@ where
         }
         Self::query("UPDATE workflow_worker_registrations SET status='superseded' WHERE namespace=$1 AND worker_id=$2")
             .bind(self.namespace.as_ref()).bind(worker_id).execute(&mut *tx).await?;
+        Self::revoke_worker_activity_leases(&mut tx, self.namespace.as_ref(), worker_id).await?;
         let tasks = Self::query("SELECT * FROM workflow_tasks WHERE namespace=$1 AND lease_owner=$2 AND task_type='workflow' AND status='leased' ORDER BY available_at,id")
             .bind(self.namespace.as_ref()).bind(worker_id).fetch_all(&mut *tx).await?;
         let recovered = i64::try_from(tasks.len())

@@ -552,7 +552,7 @@ where
 
     pub(super) async fn poll_query(&self, body: Value, config: &QueryTaskConfig) -> Result<Value> {
         let owner = text(&body, "worker_id")?;
-        text(&body, "task_queue")?;
+        self.refuse_draining_worker(owner, text(&body, "task_queue")?).await?;
         // `queryPollTimeoutSeconds`: the requested wait, or the worker poll
         // wait (DW_WORKER_POLL_TIMEOUT), capped by DW_QUERY_TASK_POLL_TIMEOUT.
         let timeout = match body.get("timeout_seconds") {

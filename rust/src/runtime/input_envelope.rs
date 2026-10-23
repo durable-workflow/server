@@ -3,8 +3,7 @@
 //! Its refusals are Laravel validation failures on `input.codec` and
 //! `input.blob`.
 use super::laravel_validation::failure_messages;
-use super::{Result, RuntimeError, refuse};
-use axum::http::StatusCode;
+use super::{Result, RuntimeError};
 use serde_json::Value;
 
 /// `PayloadCodecContract::canonicalize`: null, empty or `avro` names the
@@ -32,7 +31,7 @@ fn invalid(field: &str, message: String) -> RuntimeError {
 /// before the request reaches validation.
 pub(super) fn transport(body: &Value) -> Result<()> {
     if body["input"].get("external_storage").is_some() {
-        return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "external_payload_unsupported"));
+        return Err(super::external_transport::provider_reference());
     }
     Ok(())
 }

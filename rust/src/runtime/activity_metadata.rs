@@ -639,7 +639,7 @@ pub(super) fn project(events: &[Value], executions: &[Value]) -> Value {
         let mut presented: Vec<_> = attempts
             .get(&id)
             .into_iter()
-            .flat_map(|a| a.values())
+            .flat_map(BTreeMap::values)
             .map(|a| present_attempt(a, execution))
             .collect();
         if let Some(synthetic) = synthetic_attempt(&state, row)

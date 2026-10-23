@@ -128,6 +128,35 @@ store_methods! {
         Ok(status)
     }
 
+    /// `RuntimePayloadCompletionLease::mayResume` for an activity: its task
+    /// is still leased to the owner and its attempt can continue on that task
+    /// for that owner. An expired lease alone does not end it, since the
+    /// activity may still renew before lease recovery.
+    pub(super) async fn activity_completion_may_resume(
+        &self,
+        tx: &mut Transaction<'_, DB>,
+        task_id: &str,
+        attempt_id: &str,
+        owner: &str,
+    ) -> Result<bool> {
+        let Some(task) = Self::query("SELECT status,lease_owner FROM workflow_tasks WHERE id=$1 AND namespace=$2")
+            .bind(task_id)
+            .bind(self.namespace.as_ref())
+            .fetch_optional(&mut **tx)
+            .await?
+        else {
+            return Ok(false);
+        };
+        if DB::string(&task, "status")? != "leased" || DB::optional_string(&task, "lease_owner")?.as_deref() != Some(owner) {
+            return Ok(false);
+        }
+        let Some(rows) = Self::attempt_rows(tx, attempt_id).await? else {
+            return Ok(false);
+        };
+        let status = Self::attempt_status(attempt_id, &rows, None)?;
+        Ok(status["can_continue"] == true && status["workflow_task_id"] == task_id && status["lease_owner"] == owner)
+    }
+
     async fn attempt_rows(tx: &mut Transaction<'_, DB>, attempt_id: &str) -> Result<Option<Rows<DB::Row>>> {
         let Some(attempt) = Self::query("SELECT * FROM activity_attempts WHERE id=$1")
             .bind(attempt_id)

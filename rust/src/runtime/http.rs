@@ -67,6 +67,8 @@ pub fn router(runtime: Runtime) -> Router {
             delete(delete_search_attribute),
         )
         .route("/api/workflows", get(list_workflows).post(start))
+        .route("/api/activities", get(list_activities).post(start_activity))
+        .route("/api/activities/{activity_id}", get(show_activity))
         .route(
             "/api/schedules",
             get(super::schedule_list::list).post(super::schedule_http::create),
@@ -150,6 +152,9 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/workflows/{workflow_id}/runs/{run_id}/terminate",
             post(terminate_run),
         )
+        .route("/api/workflows/{workflow_id}/archive", post(archive_current))
+        .route("/api/workflows/{workflow_id}/runs/{run_id}/archive", post(archive_run))
+        .route("/api/workflows/{workflow_id}/runs/{run_id}/redrive", post(redrive_run))
         .route(
             "/api/workflows/{workflow_id}/query/{query_name}",
             post(query_current),
@@ -203,6 +208,10 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route("/api/system/operator-metrics", get(operator_metrics))
         .route("/api/system/health", get(system_health))
+        .route("/api/system/metrics", get(system_metrics).post(system_metrics))
+        .route("/api/system/prometheus-metrics", get(prometheus_metrics))
+        .route("/api/system/external-payload-cleanup", get(payload_cleanup_status))
+        .route("/api/system/external-payload-cleanup/pass", post(payload_cleanup_pass))
         .route("/api/system/operator-dashboard", get(operator_dashboard))
         .route("/api/system/operator-dashboard/bounded", get(bounded_operator_dashboard))
         .route(
@@ -210,6 +219,7 @@ pub fn router(runtime: Runtime) -> Router {
             get(workflow_type_operator_dashboard),
         )
         .route("/api/system/repair", get(repair_status))
+        .route("/api/system/repair/pass", post(repair_pass))
         .route("/api/system/retention", get(retention_status))
         .route("/api/system/retention/pass", post(retention_pass))
         .route("/api/system/activity-timeouts", get(activity_timeout_status))
@@ -220,18 +230,12 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/service-catalog/{catalog}/{id}", get(service_catalog_show))
         .route("/api/task-queues/{task_queue}", get(describe_task_queue))
         .route("/api/task-queues/{task_queue}/build-ids", get(task_queue_build_ids))
-        .route(
-            "/api/task-queues/{task_queue}/build-ids/promote",
-            post(build_id_rollout_unqualified),
-        )
-        .route(
-            "/api/task-queues/{task_queue}/build-ids/drain",
-            post(build_id_rollout_unqualified),
-        )
-        .route(
-            "/api/task-queues/{task_queue}/build-ids/resume",
-            post(build_id_rollout_unqualified),
-        )
+        .route("/api/task-queues/{task_queue}/priority-fairness", get(priority_fairness))
+        .route("/api/task-queues/{task_queue}/build-ids/promote", post(build_id_promote))
+        .route("/api/task-queues/{task_queue}/build-ids/drain", post(build_id_drain))
+        .route("/api/task-queues/{task_queue}/build-ids/resume", post(build_id_resume))
+        .route("/api/deployments", get(list_deployments))
+        .route("/api/deployments/{*name}", get(show_deployment).post(deployment_action))
         .route(
             "/api/workers/{worker_id}",
             get(describe_worker).delete(deregister),
@@ -288,7 +292,8 @@ pub fn router(runtime: Runtime) -> Router {
             post(complete_query),
         )
         .route("/api/worker/query-tasks/{task_id}/fail", post(fail_query))
-        .fallback(unavailable)
+        .fallback(route_fallback)
+        .method_not_allowed_fallback(route_fallback)
         .layer(middleware::from_fn(empty_list_body))
         // `payload_limits` reads and bounds every body first.
         .layer(DefaultBodyLimit::disable())
@@ -314,8 +319,14 @@ async fn empty_list_body(request: Request, next: Next) -> Response {
     let Ok(bytes) = axum::body::to_bytes(body, 16).await else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    let body = if bytes.trim_ascii() == b"[]" {
+    // PHP reads an empty body, like `[]`, as empty input.
+    let empty = bytes.trim_ascii().is_empty()
+        && matches!(parts.method, axum::http::Method::POST | axum::http::Method::PUT | axum::http::Method::PATCH);
+    let body = if bytes.trim_ascii() == b"[]" || empty {
         parts.headers.insert(header::CONTENT_LENGTH, HeaderValue::from_static("2"));
+        if empty && !parts.headers.contains_key(header::CONTENT_TYPE) {
+            parts.headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        }
         Body::from("{}")
     } else {
         Body::from(bytes)
@@ -558,161 +569,192 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
     request.extensions_mut().insert(AuthenticatedPrincipal {
         principal,
     });
+    // The workflow route a typed refusal came from, to name the workflow
+    // in its envelope.
+    let route = (!worker && path.starts_with("/api/workflows")).then(|| {
+        let mut route = Request::new(Body::empty());
+        *route.method_mut() = request.method().clone();
+        *route.uri_mut() = request.uri().clone();
+        *route.extensions_mut() = request.extensions().clone();
+        route
+    });
     let mut response = next.run(request).await;
+    if response.extensions().get::<super::external_transport::TypedRefusal>().is_some() && (worker || route.is_some()) {
+        response = typed_refusal_envelope(response, route, worker).await;
+    }
     response
         .headers_mut()
         .insert(header, HeaderValue::from_static(version));
     response
 }
 
-fn named_namespace_operation(method: &str, path: &str) -> bool {
+/// PHP renders a typed external payload error through `WorkerProtocol` or
+/// `ControlPlaneProtocol`, which add the route's envelope fields.
+async fn typed_refusal_envelope(response: Response, route: Option<Request>, worker: bool) -> Response {
+    let status = response.status();
+    let (parts, body) = response.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, 64 * 1024).await else {
+        return (status, Json(json!({"reason":"external_payload_unavailable"}))).into_response();
+    };
+    let Ok(body) = serde_json::from_slice::<Value>(&bytes) else {
+        return Response::from_parts(parts, Body::from(bytes));
+    };
+    let mut response = admission_error(route.unwrap_or_else(|| Request::new(Body::empty())), worker, status, body).await;
+    if let Some(retry) = parts.headers.get("retry-after") {
+        response.headers_mut().insert("retry-after", retry.clone());
+    }
+    response
+}
+
+/// The methods a named namespace may use on a route.
+#[derive(Clone, Copy)]
+enum Allowed {
+    Any,
+    Only(&'static [&'static str]),
+}
+
+const READ: Allowed = Allowed::Only(&["GET"]);
+const WRITE: Allowed = Allowed::Only(&["POST"]);
+const READ_WRITE: Allowed = Allowed::Only(&["GET", "POST"]);
+
+/// What follows a family's prefix.
+#[derive(Clone, Copy)]
+enum Rest {
+    Anything,
+    NonEmpty,
+    OneSegment,
+}
+
+/// Route families a named namespace may use, by prefix.
+const NAMESPACE_FAMILIES: [(&str, Rest, Allowed); 8] = [
     // Runtime credentials are server-wide; the namespace only scopes a tenant.
-    if path == "/api/runtime-credentials" || path.starts_with("/api/runtime-credentials/") {
-        return true;
-    }
-    if path == "/api/external-payloads/v1" {
-        return method == "POST";
-    }
-    if path.starts_with("/api/external-payloads/v1/") {
-        return method == "GET";
-    }
+    ("/api/runtime-credentials/", Rest::Anything, Allowed::Any),
+    ("/api/external-payloads/v1/", Rest::Anything, READ),
     // The service catalog is namespace-scoped and, in native, always empty.
-    if path.starts_with("/api/service-catalog/") {
-        return method == "GET";
-    }
+    ("/api/service-catalog/", Rest::Anything, READ),
     // Schedules are namespace-scoped rows, as in PHP.
-    if path == "/api/schedules" || path.starts_with("/api/schedules/") {
-        return true;
-    }
-    // Keep unimplemented families from reaching default-namespace selectors.
-    // Further families require their own shared namespace fixtures.
-    if path == "/api/workflows" {
-        return matches!(method, "GET" | "POST");
-    }
-    if path == "/api/storage/test" {
-        return method == "POST";
-    }
+    ("/api/schedules/", Rest::Anything, Allowed::Any),
+    // Standalone activities are host runs in the requested namespace.
+    ("/api/activities/", Rest::OneSegment, READ),
     // The registry is namespace-scoped state with no default-namespace selector.
-    if path == "/api/search-attributes" {
-        return matches!(method, "GET" | "POST");
-    }
-    if path
-        .strip_prefix("/api/search-attributes/")
-        .is_some_and(|name| !name.is_empty() && !name.contains('/'))
-    {
-        return method == "DELETE";
-    }
+    ("/api/search-attributes/", Rest::OneSegment, Allowed::Only(&["DELETE"])),
     // Deregistration deletes only the namespace's own registration.
-    if path
-        .strip_prefix("/api/workers/")
-        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
-    {
-        return matches!(method, "GET" | "DELETE");
+    ("/api/workers/", Rest::OneSegment, Allowed::Only(&["GET", "DELETE"])),
+    // Deployments are the namespace's own build-id rollouts.
+    ("/api/deployments/", Rest::NonEmpty, READ_WRITE),
+];
+
+fn named_namespace_operation(method: &str, path: &str) -> bool {
+    match namespace_route(path) {
+        Some(Allowed::Any) => true,
+        Some(Allowed::Only(methods)) => methods.contains(&method),
+        None => false,
     }
-    // Task queue views are namespace-scoped reads.
-    if path == "/api/task-queues"
-        || path
-            .strip_prefix("/api/task-queues/")
-            .is_some_and(|queue| !queue.is_empty() && !queue.contains('/'))
-    {
-        return method == "GET";
-    }
-    // Build-id cohorts are a namespace-scoped read too. Rollout changes are
-    // refused alike in every namespace.
-    if let Some(rest) = path.strip_prefix("/api/task-queues/") {
-        match rest.split('/').collect::<Vec<_>>().as_slice() {
-            [queue, "build-ids"] if !queue.is_empty() => return method == "GET",
-            [queue, "build-ids", "promote" | "drain" | "resume"] if !queue.is_empty() => {
-                return method == "POST";
-            }
-            _ => {}
-        }
-    }
-    if path == "/api/workers"
-        || path == "/api/system/operator-metrics"
-        || path == "/api/system/health"
-        || path == "/api/system/operator-dashboard"
-        || path == "/api/system/operator-dashboard/bounded"
-        || path == "/api/system/operator-dashboard/bounded/workflow-types"
+}
+
+/// The methods a named namespace may use on `path`. Other routes are refused,
+/// so unimplemented families never reach default-namespace selectors; each
+/// further family needs its own shared namespace fixtures.
+fn namespace_route(path: &str) -> Option<Allowed> {
+    exact_namespace_route(path)
+        .or_else(|| {
+            NAMESPACE_FAMILIES.iter().find_map(|(prefix, shape, allowed)| {
+                let rest = path.strip_prefix(prefix)?;
+                let fits = match shape {
+                    Rest::Anything => true,
+                    Rest::NonEmpty => !rest.is_empty(),
+                    Rest::OneSegment => !rest.is_empty() && !rest.contains('/'),
+                };
+                fits.then_some(*allowed)
+            })
+        })
+        .or_else(|| path.strip_prefix("/api/task-queues/").and_then(task_queue_route))
+        .or_else(|| path.strip_prefix("/api/workflows/").and_then(workflow_route))
+        .or_else(|| path.strip_prefix("/api/worker/").and_then(worker_route))
+}
+
+fn exact_namespace_route(path: &str) -> Option<Allowed> {
+    Some(match path {
+        "/api/runtime-credentials" | "/api/schedules" => Allowed::Any,
+        "/api/workflows" | "/api/activities" | "/api/search-attributes" => READ_WRITE,
+        // The metrics describe the namespace's own state, read by GET or POST.
+        "/api/system/metrics" => READ_WRITE,
+        "/api/external-payloads/v1" | "/api/storage/test" => WRITE,
+        "/api/task-queues"
+        | "/api/deployments"
+        | "/api/workers"
+        | "/api/system/operator-metrics"
+        | "/api/system/health"
+        | "/api/system/operator-dashboard"
+        | "/api/system/operator-dashboard/bounded"
+        | "/api/system/operator-dashboard/bounded/workflow-types"
+        | "/api/system/prometheus-metrics"
+        | "/api/system/external-payload-cleanup"
         // Retention reads and prunes the namespace's own runs; the activity
         // timeout scan spans namespaces in PHP too.
-        || path == "/api/system/retention"
-        || path == "/api/system/activity-timeouts"
-        || path == "/api/system/repair"
-    {
-        return method == "GET";
+        | "/api/system/retention"
+        | "/api/system/activity-timeouts"
+        | "/api/system/repair" => READ,
+        // The repair pass is server-wide in PHP too. The cleanup pass reclaims
+        // only the namespace's own expired payloads.
+        "/api/system/retention/pass"
+        | "/api/system/activity-timeouts/pass"
+        | "/api/system/repair/pass"
+        | "/api/system/external-payload-cleanup/pass" => WRITE,
+        _ => return None,
+    })
+}
+
+/// Task queue views, build-id cohorts and fairness are namespace-scoped reads;
+/// rollout changes act on the namespace's own cohorts.
+fn task_queue_route(rest: &str) -> Option<Allowed> {
+    match rest.split('/').collect::<Vec<_>>().as_slice() {
+        [queue, ..] if queue.is_empty() => None,
+        [_] | [_, "build-ids" | "priority-fairness"] => Some(READ),
+        [_, "build-ids", "promote" | "drain" | "resume"] => Some(WRITE),
+        _ => None,
     }
-    if path == "/api/system/retention/pass" || path == "/api/system/activity-timeouts/pass" {
-        return method == "POST";
-    }
-    if let Some(path) = path.strip_prefix("/api/workflows/") {
-        let parts: Vec<_> = path.split('/').collect();
-        if matches!(
-            parts.as_slice(),
-            [_, "observation"] | [_, "runs", _, "observation"]
-        ) {
-            return method == "GET";
-        }
-        if matches!(parts.as_slice(), [_, "runs", _, "activities", _, "result"]) {
-            return method == "GET";
-        }
+}
+
+fn workflow_route(rest: &str) -> Option<Allowed> {
+    match rest.split('/').collect::<Vec<_>>().as_slice() {
+        [_, "observation"]
+        | [_, "runs", _, "observation"]
+        | [_, "runs", _, "activities", _, "result"]
         // Waterline's run detail: the run list, debug view and history export.
         // Each reads the instance within the request's namespace first.
-        if matches!(
-            parts.as_slice(),
-            [_, "runs"] | [_, "debug"] | [_, "runs", _, "debug"] | [_, "runs", _, "history", "export"]
-        ) {
-            return method == "GET";
-        }
-        if matches!(
-            parts.as_slice(),
-            [_, "runs", _, "streams"] | [_, "runs", _, "streams", _] | [_, "runs", _, "streams", _, "items"]
-        ) {
-            return method == "GET";
-        }
-        if matches!(
-            parts.as_slice(),
-            [_, "signal", _] | [_, "runs", _, "signal", _]
-        ) {
-            return method == "POST";
-        }
-        if matches!(
-            parts.as_slice(),
-            [_, "query", _] | [_, "runs", _, "query", _]
-        ) {
-            return method == "POST";
-        }
-        return matches!(
-            parts.as_slice(),
-            [_] | [_, "cancel" | "terminate"]
-                | [_, "runs", _]
-                | [
-                    _,
-                    "runs",
-                    _,
-                    "history" | "cancel" | "terminate" | "activities"
-                ]
-        );
+        | [_, "runs"]
+        | [_, "debug"]
+        | [_, "runs", _, "debug"]
+        | [_, "runs", _, "history", "export"]
+        | [_, "runs", _, "streams"]
+        | [_, "runs", _, "streams", _]
+        | [_, "runs", _, "streams", _, "items"] => Some(READ),
+        [_, "signal" | "query" | "update", _]
+        | [_, "runs", _, "signal" | "query" | "update", _]
+        | [_, "repair" | "request-cancellation"]
+        | [_, "runs", _, "repair" | "request-cancellation" | "redrive"] => Some(WRITE),
+        [_]
+        | [_, "cancel" | "terminate" | "archive"]
+        | [_, "runs", _]
+        | [_, "runs", _, "history" | "cancel" | "terminate" | "archive" | "activities"] => Some(Allowed::Any),
+        _ => None,
     }
-    if let Some(path) = path.strip_prefix("/api/worker/") {
-        let parts: Vec<_> = path.split('/').collect();
-        return matches!(
-            parts.as_slice(),
-            ["register" | "heartbeat"]
-                | ["registrations", _]
-                | ["registrations", _, "deregister"]
-                | ["workflow-tasks" | "activity-tasks", "poll"]
-                | ["query-tasks", "poll"]
-                | ["query-tasks", _, "complete" | "fail" | "status"]
-                | ["workflow-tasks", _, "complete" | "history" | "heartbeat"]
-                | [
-                    "activity-tasks",
-                    _,
-                    "complete" | "fail" | "heartbeat" | "status" | "renew-lease"
-                ]
-        );
-    }
-    false
+}
+
+fn worker_route(rest: &str) -> Option<Allowed> {
+    matches!(
+        rest.split('/').collect::<Vec<_>>().as_slice(),
+        ["register" | "heartbeat"]
+            | ["registrations", _]
+            | ["registrations", _, "deregister"]
+            | ["workflow-tasks" | "activity-tasks", "poll"]
+            | ["query-tasks", "poll"]
+            | ["query-tasks", _, "complete" | "fail" | "status"]
+            | ["workflow-tasks", _, "complete" | "fail" | "history" | "heartbeat"]
+            | ["activity-tasks", _, "complete" | "fail" | "heartbeat" | "status" | "renew-lease"]
+    )
+    .then_some(Allowed::Any)
 }
 
 async fn list_namespaces(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
@@ -866,11 +908,17 @@ async fn cluster() -> Json<Value> {
     let principal_attribution: Value =
         serde_json::from_str(include_str!("principal-attribution-contract.v2.json"))
             .expect("valid bundled principal attribution contract");
+    // Server 2.11.1's service catalog read contract. Native serves its eight
+    // reads; the SDK requires this advertisement before calling them.
+    let service_catalog: Value =
+        serde_json::from_str(include_str!("service-catalog-read-contract.v1.json"))
+            .expect("valid bundled service catalog read contract");
     Json(
         json!({"version": env!("CARGO_PKG_VERSION"), "implementation": "rust", "development": true,
         "control_plane": {"version": "2", "request_contract": super::visibility::request_contract()}, "worker_protocol": {"version": super::WORKER_PROTOCOL_VERSION, "server_capabilities": capabilities()},
         "auth_composition_contract": auth_composition,
         "principal_attribution_contract": principal_attribution,
+        "service_catalog_read_contract": service_catalog,
         "payload_codec": "avro", "qualified_for_php_takeover": false}),
     )
 }
@@ -955,6 +1003,39 @@ async fn start(
     Ok((status, Json(super::control_plane::Operation::Start.response(result))))
 }
 
+/// `POST /api/activities`: a standalone activity in its own host run.
+async fn start_activity(
+    Extension(runtime): Extension<Runtime>,
+    command: CommandRequest,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    // PHP names the target `pending` until the start assigns an id.
+    let trimmed = |field: &str| body[field].as_str().map(str::trim).filter(|text| !text.is_empty()).map(str::to_owned);
+    let target = trimmed("activity_id").unwrap_or_else(|| "pending".into());
+    let queue = trimmed("task_queue").unwrap_or_else(|| "default".into());
+    let context = command.context(&body, &target, "standalone_activity_start", metadata(&[
+        ("activity_type", trimmed("activity_type").map(Value::from)),
+        ("task_queue", Some(json!(queue))),
+    ]));
+    let started = runtime.start_standalone_activity(body, context).await?;
+    Ok((StatusCode::CREATED, Json(started)))
+}
+
+async fn show_activity(
+    Extension(runtime): Extension<Runtime>,
+    Path(activity_id): Path<String>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.standalone_activity(&activity_id).await?))
+}
+
+async fn list_activities(
+    Extension(runtime): Extension<Runtime>,
+    Query(query): Query<std::collections::BTreeMap<String, String>>,
+) -> Result<Json<Value>> {
+    let query = Value::Object(query.into_iter().map(|(key, value)| (key, Value::String(value))).collect());
+    Ok(Json(runtime.standalone_activities(query).await?))
+}
+
 async fn list_workflows(
     Extension(runtime): Extension<Runtime>,
     Query(query): Query<super::visibility::VisibilityQuery>,
@@ -1020,6 +1101,63 @@ async fn close(
         .await
         .map_err(|error| operation().refusal(error, workflow_id, run_id))?;
     Ok((status, Json(operation().response(response))))
+}
+
+/// `POST /api/workflows/{id}/archive` and its run-targeted route.
+async fn archive(
+    runtime: Runtime,
+    request: CommandRequest,
+    workflow_id: &str,
+    run_id: Option<&str>,
+    body: Value,
+) -> Result<(StatusCode, Json<Value>)> {
+    let operation = || super::control_plane::Operation::Archive;
+    let context = request.context(&body, workflow_id, "archive", metadata(&[
+        ("request_id", present(&body, "request_id")),
+        ("reason", present(&body, "reason")),
+    ]));
+    let (status, response) = runtime
+        .archive_workflow(workflow_id, run_id, body, context)
+        .await
+        .map_err(|error| operation().refusal(error, workflow_id, run_id))?;
+    Ok((status, Json(operation().response(response))))
+}
+
+/// `POST /api/workflows/{id}/runs/{run}/redrive`.
+async fn redrive_run(
+    Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
+    Path((workflow_id, run_id)): Path<(String, String)>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let operation = || super::control_plane::Operation::Redrive;
+    let context = request.context(&body, &workflow_id, "redrive", metadata(&[
+        ("request_id", present(&body, "request_id")),
+        ("continued_from_run_id", Some(json!(run_id))),
+    ]));
+    let (status, response) = runtime
+        .redrive_run(&workflow_id, &run_id, body, context)
+        .await
+        .map_err(|error| operation().refusal(error, &workflow_id, Some(&run_id)))?;
+    Ok((status, Json(operation().response(response))))
+}
+
+async fn archive_current(
+    Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
+    Path(workflow_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    archive(runtime, request, &workflow_id, None, body).await
+}
+
+async fn archive_run(
+    Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
+    Path((workflow_id, run_id)): Path<(String, String)>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    archive(runtime, request, &workflow_id, Some(&run_id), body).await
 }
 
 async fn cancel_current(
@@ -1395,6 +1533,7 @@ fn metrics_config(runtime: &Runtime) -> super::operator_metrics::MetricsConfig {
         workflow_task_lease_seconds: runtime.queries.workflow_task_lease_seconds,
         activity_task_lease_seconds: runtime.queries.activity_task_lease_seconds,
         abandoned_upload_expiry_seconds: runtime.external.abandoned_seconds.max(1),
+        structural: runtime.structural,
     }
 }
 
@@ -1430,6 +1569,14 @@ type QueryMap = Query<std::collections::HashMap<String, String>>;
 
 async fn repair_status(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
     Ok(Json(runtime.repair_status().await?))
+}
+
+/// `SystemController::repairPass`: 207 when a candidate failed.
+async fn repair_pass(Extension(runtime): Extension<Runtime>, body: axum::body::Bytes) -> Result<Response> {
+    let request = super::repair_pass::pass_request(&request_json(&body)?)?;
+    let report = runtime.repair_pass(&request).await?;
+    let failed = super::repair_pass::failed(&report);
+    Ok(pass_response((report, failed)))
 }
 
 async fn retention_status(Extension(runtime): Extension<Runtime>, Query(query): QueryMap) -> Result<Json<Value>> {
@@ -1473,6 +1620,26 @@ async fn activity_timeout_status(
     Ok(Json(runtime.activity_timeout_status(limit).await?))
 }
 
+async fn system_metrics(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    Ok(Json(runtime.system_metrics().await?))
+}
+
+async fn prometheus_metrics(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    Ok(Json(runtime.prometheus_metrics().await?))
+}
+
+async fn payload_cleanup_status(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    Ok(Json(runtime.payload_cleanup_status(&metrics_config(&runtime)).await?))
+}
+
+/// PHP answers 207 when the pass blocked any reference.
+async fn payload_cleanup_pass(Extension(runtime): Extension<Runtime>, body: axum::body::Bytes) -> Result<Response> {
+    let limit = super::payload_cleanup::pass_limit(&request_json(&body)?)?;
+    let report = runtime.payload_cleanup_pass(limit).await?;
+    let blocked = report["blocked"].as_i64().is_some_and(|blocked| blocked > 0);
+    Ok(pass_response((json!({"namespace": runtime.namespace(), "cleanup": report}), blocked)))
+}
+
 /// PHP answers 503 while a check reports an error.
 async fn system_health(Extension(runtime): Extension<Runtime>) -> Result<Response> {
     let (unavailable, body) = runtime.system_health(&metrics_config(&runtime)).await?;
@@ -1514,13 +1681,75 @@ async fn task_queue_build_ids(
 ) -> Result<Json<Value>> {
     runtime.task_queue_build_ids(&task_queue).await.map(Json)
 }
-/// `POST /api/task-queues/{name}/build-ids/{promote|drain|resume}`. Native
-/// keeps no build-id rollouts, so it refuses to promote, drain or resume one.
-async fn build_id_rollout_unqualified() -> Result<Json<Value>> {
-    Err(refuse(
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "task_queue_build_id_rollout_unqualified",
-    ))
+/// `POST /api/task-queues/{name}/build-ids/promote`.
+async fn build_id_promote(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_queue): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    build_id_action(runtime, task_queue, body, super::deployments::Action::Promote).await
+}
+/// `POST /api/task-queues/{name}/build-ids/drain`.
+async fn build_id_drain(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_queue): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    build_id_action(runtime, task_queue, body, super::deployments::Action::Drain).await
+}
+/// `POST /api/task-queues/{name}/build-ids/resume`.
+async fn build_id_resume(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_queue): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    build_id_action(runtime, task_queue, body, super::deployments::Action::Resume).await
+}
+async fn build_id_action(
+    runtime: Runtime,
+    task_queue: String,
+    body: Value,
+    action: super::deployments::Action,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, body) = runtime.build_id_action(&task_queue, body, action).await?;
+    Ok((status, Json(body)))
+}
+/// `GET /api/task-queues/{name}/priority-fairness`.
+async fn priority_fairness(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_queue): Path<String>,
+) -> Result<Json<Value>> {
+    runtime.priority_fairness(&task_queue).await.map(Json)
+}
+/// `GET /api/deployments`.
+async fn list_deployments(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    runtime.deployments().await.map(Json)
+}
+/// `GET /api/deployments/{name}`: the name holds slashes,
+/// `namespace/task_queue@build_id`.
+async fn show_deployment(
+    Extension(runtime): Extension<Runtime>,
+    Path(name): Path<String>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, body) = runtime.deployment(&name).await?;
+    Ok((status, Json(body)))
+}
+/// `POST /api/deployments/{name}/{promote|drain|resume|rollback}`.
+async fn deployment_action(
+    Extension(runtime): Extension<Runtime>,
+    Path(name): Path<String>,
+    uri: axum::http::Uri,
+) -> Response {
+    let Some((name, action)) = name
+        .rsplit_once('/')
+        .and_then(|(name, action)| super::deployments::Action::named(action).map(|action| (name, action)))
+    else {
+        return route_fallback(axum::http::Method::POST, uri).await;
+    };
+    match runtime.deployment_action(name, action).await {
+        Ok((status, body)) => (status, Json(body)).into_response(),
+        Err(error) => error.into_response(),
+    }
 }
 async fn describe_worker(
     Extension(runtime): Extension<Runtime>,
@@ -1602,7 +1831,7 @@ async fn heartbeat_task(
     Path(task_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    runtime.heartbeat_task(&task_id, body).await.map(Json)
+    runtime.heartbeat_task(&task_id, body).await.map(|body| Json(worker_response(body)))
 }
 
 async fn deliver_cancellation(
@@ -1624,6 +1853,8 @@ async fn complete_workflow(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
+    // PHP's transport rules come before every guard, ownership included.
+    let body = super::completion_rules::checked(body).map_err(worker_refusal)?;
     if body["commands"].as_array().is_some_and(|commands| {
         commands
             .iter()
@@ -1660,7 +1891,7 @@ async fn complete_workflow(
                 "Workflow task not found.",
             )
         })
-        .map(Json)
+        .map(|body| Json(worker_response(body)))
 }
 
 /// Whether the request's worker protocol is `1.<minor>` or newer.
@@ -1704,7 +1935,7 @@ async fn fail_workflow_task(
                 "Workflow task not found.",
             )
         })
-        .map(Json)
+        .map(|body| Json(worker_response(body)))
 }
 
 async fn complete_activity(
@@ -1725,7 +1956,7 @@ async fn complete_activity(
                 "Activity task not found.",
             )
         })
-        .map(Json)
+        .map(|body| Json(worker_response(body)))
 }
 
 fn completion_refusal(
@@ -1736,6 +1967,14 @@ fn completion_refusal(
     message: &str,
 ) -> super::RuntimeError {
     match error {
+        // The bridge's refusal of a batch it cannot apply, in PHP's
+        // completion shape.
+        super::RuntimeError::Refused { status, reason: "invalid_commands" } if status == StatusCode::CONFLICT => {
+            let mut response = json!({"task_id":task_id,"outcome":"completed","recorded":false,"run_id":null,
+                "run_status":null,"created_task_ids":[],"reason":"invalid_commands"});
+            response[attempt_field] = attempt;
+            super::RuntimeError::Protocol { status, response: worker_response(response) }
+        }
         super::RuntimeError::Refused { status, reason } if status == StatusCode::CONFLICT => {
             let mut response = json!({"reason":reason,"message":reason,"task_id":task_id});
             response[attempt_field] = attempt;
@@ -1790,7 +2029,7 @@ async fn fail_activity(
     Path(task_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    runtime.fail_activity(&task_id, body).await.map(Json)
+    runtime.fail_activity(&task_id, body).await.map(|body| Json(worker_response(body)))
 }
 /// The query's command context, as PHP's controller builds it.
 fn query_context(request: &CommandRequest, body: &Value, workflow_id: &str, name: &str) -> Value {
@@ -1905,6 +2144,21 @@ async fn service_catalog_show(
     }
 }
 
+/// A request no native route serves gets PHP's answer for it: 501 when PHP
+/// serves it and native does not yet, else PHP's 405 or 404.
+async fn route_fallback(method: axum::http::Method, uri: axum::http::Uri) -> Response {
+    let path = uri.path();
+    let (status, body) = match super::route_fallback::answer(method.as_str(), path) {
+        super::route_fallback::Answer::NotImplemented => return unavailable().await,
+        super::route_fallback::Answer::MethodNotAllowed(message) => {
+            (StatusCode::METHOD_NOT_ALLOWED, json!({"message":message,"reason":"method_not_allowed"}))
+        }
+        super::route_fallback::Answer::NotFound(message) => (StatusCode::NOT_FOUND, json!({"message":message,"reason":"not_found"})),
+    };
+    // PHP's worker plane adds its protocol fields to every answer.
+    let body = if path.starts_with("/api/worker/") { worker_response(body) } else { body };
+    (status, Json(body)).into_response()
+}
 async fn unavailable() -> Response {
     refuse(
         StatusCode::NOT_IMPLEMENTED,

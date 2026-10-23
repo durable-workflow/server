@@ -677,17 +677,18 @@ async fn invalid_condition_timeouts_preserve_the_original_batch_and_lease() {
     let run = namespaces::start_scoped(&app, "default", "invalid-condition-timeout").await;
     let task = claim(&app, "default", "condition-worker", 0).await;
     let prefix = read(&app, "default", &run, "history").await;
-    for seconds in [
-        json!(-1),
-        json!(1.5),
-        json!(true),
-        json!("1"),
-        json!([]),
-        json!(i64::MAX),
+    // PHP's rule and normalizer refusals, then native's own for a timeout too
+    // large for a timestamp, which PHP accepts. "1" is an integer to PHP.
+    for (seconds, reason) in [
+        (json!(-1), "validation_failed"),
+        (json!(1.5), "validation_failed"),
+        (json!(true), "validation_failed"),
+        (json!([]), "validation_failed"),
+        (json!(i64::MAX), "invalid_condition_timeout"),
     ] {
         let result=finish(&app,"default",&task,json!([{"type":"record_version_marker","change_id":"condition-atomic","version":1,"min_supported":1,"max_supported":1},condition(seconds,"logical:0")])).await;
         assert_eq!(result.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", result.1);
-        assert_eq!(result.1["reason"], "invalid_condition_timeout");
+        assert_eq!(result.1["reason"], reason, "{}", result.1);
         assert_eq!(read(&app, "default", &run, "history").await, prefix);
     }
     let mut untimed = condition(Value::Null, "logical:0");
