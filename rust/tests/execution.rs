@@ -178,6 +178,8 @@ mod deployments;
 mod priority_fairness;
 #[path = "execution/completion_rules.rs"]
 mod completion_rules;
+#[path = "execution/command_batches.rs"]
+mod command_batches;
 #[path = "execution/update_routing.rs"]
 mod update_routing;
 #[path = "execution/command_payloads.rs"]
@@ -1918,12 +1920,14 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
             StatusCode::CONFLICT
         );
     }
+    // Published PHP's `validateUpdateCommands` refuses another update in a
+    // task that carries its own.
     let mut wrong_update = original.clone();
     wrong_update["commands"][0]["update_id"] = json!("another-update");
-    assert_eq!(
-        request(&a, "POST", &complete_path, wrong_update).await.1["reason"],
-        "update_task_mismatch"
-    );
+    let refused = request(&a, "POST", &complete_path, wrong_update).await;
+    assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
+    assert_eq!(refused.1["reason"], "invalid_commands", "{}", refused.1);
+    assert_eq!(refused.1["recorded"], false, "{}", refused.1);
     // Published PHP refuses an undecodable result before it applies the
     // update, naming the field.
     let mut malformed = original.clone();
@@ -1931,20 +1935,6 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
     let refused = request(&a, "POST", &complete_path, malformed).await.1;
     assert_eq!(refused["reason"], "validation_failed", "{refused}");
     assert!(refused["errors"]["commands.0.result.blob"].is_array(), "{refused}");
-    assert_eq!(
-        request(
-            &a,
-            "POST",
-            &complete_path,
-            completion(
-                &old,
-                json!([{"type":"complete_workflow","result":envelope(Payload::Null)}])
-            )
-        )
-        .await
-        .1["reason"],
-        "update_task_mismatch"
-    );
     assert_eq!(
         request(&a, "GET", &history_path, Value::Null).await.1,
         before

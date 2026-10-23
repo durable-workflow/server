@@ -959,6 +959,47 @@ where
         Ok(())
     }
 
+    /// `validateUpdateCommands`: each update command in a completion names a
+    /// different update accepted on this run, the task's own update when the
+    /// task carries one, with no earlier signal still to apply. A task may
+    /// complete its update together with other commands, or leave it for a
+    /// later task, and any task may complete an accepted update.
+    pub(super) async fn validate_update_commands(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        task: &DB::Row,
+        commands: &[Value],
+    ) -> Result<()> {
+        let payload = DB::document_row(task, "payload")?;
+        let own = payload["workflow_update_id"].as_str().filter(|id| !id.is_empty());
+        let carried = payload["workflow_command_id"].as_str().filter(|id| !id.is_empty());
+        let invalid = || refuse(StatusCode::CONFLICT, "invalid_commands");
+        let mut seen = std::collections::BTreeSet::new();
+        for command in commands
+            .iter()
+            .filter(|command| matches!(command["type"].as_str(), Some("complete_update" | "fail_update")))
+        {
+            let update_id = command["update_id"].as_str().filter(|id| !id.is_empty()).ok_or_else(invalid)?;
+            if !seen.insert(update_id) || own.is_some_and(|own| own != update_id) {
+                return Err(invalid());
+            }
+            let update = Self::query("SELECT status,command_sequence FROM workflow_updates WHERE id=$1 AND workflow_run_id=$2")
+                .bind(update_id)
+                .bind(run_id)
+                .fetch_optional(&mut **tx)
+                .await?
+                .ok_or_else(invalid)?;
+            if DB::string(&update, "status")? != "accepted"
+                || Self::blocking_signal(tx, run_id, DB::optional_number(&update, "command_sequence")?, carried)
+                    .await?
+                    .is_some()
+            {
+                return Err(invalid());
+            }
+        }
+        Ok(())
+    }
+
     /// `UpdateCommandGate::blockingSignal`: the earliest accepted signal not
     /// yet applied, optionally only one before `before` and other than
     /// `ignored`.

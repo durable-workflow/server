@@ -232,11 +232,10 @@ contract fixture before its correction.
 - **Child completion while the parent has an open workflow task.** Published
   Workflow records the child resolution and reuses the parent's existing ready
   or leased workflow task (`WorkflowExecutor::dispatchParentResumeTasks`).
-  Native gives the resolution its own resume task when the parent's open
-  tasks only deliver updates, as activity and timer resolutions do. With any
-  other open task it refuses the child's completion with
-  `409 child_parent_task_conflict`, unless the parent has a cooperative
-  cancellation request. Signals still create no resume while the parent
+  Without a cooperative cancellation request, native gives the resolution
+  its own resume task, as activity and timer resolutions do
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-command-batches.md)).
+  Signals still create no resume while the parent
   waits on a child, because only signal and condition waits count as open
   waits.
 - **Update delivery into a ready task.** Published PHP admits an update
@@ -324,10 +323,18 @@ contract fixture before its correction.
   - **Root conflicts.** PHP records a rejected command when a child refuses
     a request under another root. Native records only the refusal on the
     parent's events.
-- **Several open operations at once.** Published PHP lets a run hold any
-  number of open activities, timers, children and waits. Native refuses
+- **Several open waits at once.** Published PHP lets a run hold any number
+  of open activities, timers, children and waits. Native now starts children
+  alongside other open work, but still refuses
   `409 pending_durable_operations` when a task opens a wait while another
-  wait is open, or starts a child while other work is outstanding.
+  wait is open.
+- **Continue-as-new transfers.** Native continues a run over open
+  activities, timers, children and waits, and from a child run, as PHP does
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-command-batches.md)).
+  It still refuses continue-as-new while the instance has durable or inbound
+  streams, the run has service calls, or a query is live
+  (`continue_as_new_transfer_unqualified`). It refuses a new workflow type or
+  queue (`continue_as_new_routing_unqualified`). PHP applies them.
 - **Trace context (Workflow #773 / workflow#788, not yet published).** A
   Workflow minor will add nullable `observability_context` columns on runs,
   commands and tasks, plus an entry in schedule metadata. Native-owned

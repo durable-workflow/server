@@ -2134,18 +2134,13 @@ where
                 "fail_workflow" => {
                     super::workflow_failures::validate(command)?;
                 }
-                "complete_workflow" if index + 1 == commands.len() => {
+                "complete_workflow" => {
                     reject_fields(command, &["type", "result"])?;
                     if !external.contains_key(&index) {
                         envelope(command, "result")?;
                     }
                 }
-                "continue_as_new"
-                    if index + 1 == commands.len()
-                        && commands[..index]
-                            .iter()
-                            .all(|prior| matches!(prior["type"].as_str(), Some("upsert_memo" | "upsert_search_attributes"))) =>
-                {
+                "continue_as_new" => {
                     super::continuations::validate(command)?;
                 }
                 "schedule_activity" => {
@@ -2169,7 +2164,7 @@ where
                     }
                     super::activity_failures::retry_policy(command)?;
                 }
-                "start_child_workflow" if commands.len() == 1 => {
+                "start_child_workflow" => {
                     super::children::validate_child(command)?;
                 }
                 "start_timer" => {
@@ -2232,12 +2227,12 @@ where
                     text(command, "signal_name")?;
                     super::wait_timeouts::timeout(command)?;
                 }
-                "complete_update" if commands.len() == 1 => {
+                "complete_update" => {
                     reject_fields(command, &["type", "update_id", "result"])?;
                     text(command, "update_id")?;
                     envelope(command, "result")?;
                 }
-                "fail_update" if commands.len() == 1 => {
+                "fail_update" => {
                     super::updates::update_failure(command)?;
                 }
                 _ => {
@@ -2278,9 +2273,11 @@ where
         // `childCancellationPolicyGuard`: a child that requests cancellation
         // on parent close, or propagates the parent's cancellation, needs a
         // cooperative worker's claim and a protocol 1.20 request.
-        if let Some(command) = commands.iter().find(|command| command["type"] == "start_child_workflow")
-            && super::children::policies(command)?.cooperative()
-        {
+        let mut cooperative_child = false;
+        for command in commands.iter().filter(|command| command["type"] == "start_child_workflow") {
+            cooperative_child |= super::children::policies(command)?.cooperative();
+        }
+        if cooperative_child {
             let mut unavailable = Vec::new();
             if !protocol
                 .and_then(|version| version.strip_prefix("1."))
@@ -2302,6 +2299,11 @@ where
                         "remediation": "Use a runtime with child cancellation policies and a claim from a cooperative worker on protocol 1.20 or newer."}),
                 });
             }
+        }
+        // `parseCommands`: at most one terminal command, anywhere in the
+        // batch. It applies after every other command.
+        if commands.iter().filter(|command| is_terminal(command)).count() > 1 {
+            return Err(refuse(StatusCode::CONFLICT, "invalid_commands"));
         }
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
@@ -2343,31 +2345,18 @@ where
                 "development_selection_cancellation_unqualified",
             ));
         }
-        let update_id = task_payload["workflow_update_id"].as_str();
-        if commands.iter().any(|command| {
-            matches!(
-                command["type"].as_str(),
-                Some("complete_update" | "fail_update")
-            )
-        }) != update_id.is_some()
-            || update_id.is_some_and(|update_id| {
-                commands.len() != 1
-                    || if commands[0]["type"] == "fail_update" {
-                        super::updates::update_failure(&commands[0])
-                            .map_or(true, |failure| failure.update_id != update_id)
-                    } else {
-                        commands[0]["update_id"] != update_id
-                    }
-            })
-        {
-            return Err(refuse(StatusCode::CONFLICT, "update_task_mismatch"));
-        }
+        Self::validate_update_commands(&mut tx, &run_id, &task, commands).await?;
         let mut sequence = Self::authored_sequence(&mut tx, &run_id).await?;
         Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec).await?;
-        for (index, command) in commands.iter().enumerate() {
+        // Published parseCommands applies every other command first, whatever
+        // the terminal command's position in the batch.
+        let order = (0..commands.len())
+            .filter(|index| !is_terminal(&commands[*index]))
+            .chain((0..commands.len()).filter(|index| is_terminal(&commands[*index])));
+        for index in order {
+            let command = &commands[index];
             if command["type"] == "fail_workflow" {
-                // Published parseCommands applies every nonterminal command
-                // first, regardless of the terminal command's batch position.
+                // Applied after the loop.
                 continue;
             } else if matches!(
                 command["type"].as_str(),
@@ -3872,6 +3861,14 @@ pub(super) fn validate_arguments(
         }
     }
     Ok(())
+}
+
+/// PHP's `TERMINAL_TYPES`: the commands that close the run.
+fn is_terminal(command: &Value) -> bool {
+    matches!(
+        command["type"].as_str(),
+        Some("complete_workflow" | "fail_workflow" | "continue_as_new")
+    )
 }
 
 fn timer_deadline(command: &Value) -> Result<DateTime<Utc>> {

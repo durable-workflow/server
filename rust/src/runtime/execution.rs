@@ -1237,12 +1237,6 @@ impl Runtime {
                 .iter()
                 .filter(|command| command["type"] == "complete_update")
             {
-                if commands.len() != 1 {
-                    return Err(refuse(
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        "invalid_update_task_commands",
-                    ));
-                }
                 let result = super::envelope(command, "result")?;
                 if result.len() > super::queries::RESULT_BYTES {
                     return Err(refuse(
