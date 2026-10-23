@@ -304,6 +304,8 @@ where
         context: Option<Value>,
         codec: Arc<Semaphore>,
     ) -> Result<(StatusCode, Value)> {
+        // PHP's update_name column holds 255 bytes, one fewer than its
+        // validation allows; native refuses what it cannot store.
         if name.trim().is_empty() || name.len() > 255 {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,

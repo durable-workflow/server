@@ -91,6 +91,20 @@ fn slot(value: &Value, capacity: i64) -> Option<i64> {
     Some(count.max(0).min(capacity.max(0)))
 }
 
+/// The key under which PHP records a worker's protocol version.
+pub(super) const PROTOCOL_METRIC: &str = "_worker_protocol_version";
+
+/// Process metrics with the request's protocol version added, as PHP's
+/// `[...$metrics, PROTOCOL_METRIC => requestVersion]`.
+pub(super) fn with_protocol(metrics: Option<Value>, protocol: Option<&str>) -> Value {
+    let mut metrics = match metrics {
+        Some(Value::Object(metrics)) => metrics,
+        _ => Map::new(),
+    };
+    metrics.insert(PROTOCOL_METRIC.into(), json!(protocol));
+    Value::Object(metrics)
+}
+
 /// Validates the process metrics a worker reports and keeps PHP's normalized
 /// subset. Absent means "not reported"; the outer Option is presence.
 fn process_metrics(body: &Value) -> Result<Option<Option<Value>>> {
@@ -209,6 +223,13 @@ pub(super) struct Registration {
 }
 
 impl Registration {
+    /// `WorkflowReplayEligibility::PROTOCOL_METRIC`: PHP keeps the protocol
+    /// version of each registration and heartbeat in the worker's process
+    /// metrics, after the metrics the worker reported.
+    pub(super) fn record_protocol(&mut self, protocol: Option<&str>) {
+        self.process_metrics = Some(with_protocol(self.process_metrics.take(), protocol));
+    }
+
     pub(super) fn parse(body: &Value) -> Result<Self> {
         let fingerprints = match body.get("workflow_definition_fingerprints") {
             None => None,
@@ -439,12 +460,13 @@ where
         &self,
         body: Value,
         config: &QueryTaskConfig,
+        protocol: Option<&str>,
     ) -> Result<Value> {
         let worker_id = super::text(&body, "worker_id")?;
         let metrics = process_metrics(&body)?;
         let interval = bounded(&body, "heartbeat_interval_seconds", 1, 3600)?;
         let mut tx = self.begin().await?;
-        let Some(worker) = Self::query("SELECT max_concurrent_workflow_tasks,max_concurrent_activity_tasks,max_concurrent_worker_sessions FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2")
+        let Some(worker) = Self::query("SELECT max_concurrent_workflow_tasks,max_concurrent_activity_tasks,max_concurrent_worker_sessions,process_metrics FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2")
             .bind(worker_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?
         else {
             return Err(RuntimeError::Protocol {
@@ -471,11 +493,15 @@ where
                 }
             }
         }
-        if let Some(metrics) = metrics {
-            Self::query("UPDATE workflow_worker_registrations SET process_metrics=$1 WHERE worker_id=$2 AND namespace=$3")
-                .bind(metrics.as_ref().map(DB::document)).bind(worker_id).bind(namespace)
-                .execute(&mut *tx).await?;
-        }
+        // PHP stores the reported metrics, else keeps the stored ones, and adds
+        // this heartbeat's protocol version either way.
+        let reported = match metrics {
+            Some(metrics) => metrics,
+            None => DB::optional_document_row(&worker, "process_metrics").ok().flatten(),
+        };
+        Self::query("UPDATE workflow_worker_registrations SET process_metrics=$1 WHERE worker_id=$2 AND namespace=$3")
+            .bind(DB::document(&with_protocol(reported, protocol))).bind(worker_id).bind(namespace)
+            .execute(&mut *tx).await?;
         if interval.is_some() {
             Self::set_count(&mut tx, &INTERVAL, interval, worker_id, namespace).await?;
         }

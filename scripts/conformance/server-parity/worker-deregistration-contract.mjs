@@ -2,6 +2,16 @@ import assert from 'node:assert/strict';
 import {checkSdkDatabasePressure} from './worker-pressure-contract.mjs';
 import {checkSdkPersistentPressure} from './worker-persistent-contract.mjs';
 
+// A run read without `definition_routing`: that block (Server 2.10.0 and
+// native) reports how the next ready workflow task would route now, so a
+// lease release or a registration change alters it without touching the
+// run or its history.
+const durable = run => {
+  if (!run?.execution?.definition_routing) return run;
+  const {definition_routing: _routing, ...execution} = run.execution;
+  return {...run, execution};
+};
+
 export function checkWorkerDeregistration(fixture, observation, workflowId) {
   const definition = fixture.worker_deregistration;
   const state = observation.worker_deregistration;
@@ -131,7 +141,7 @@ export function checkWorkerDeregistration(fixture, observation, workflowId) {
     assert.equal(initial.workflow_task_attempt, 1);
     assert.equal(task.workflow_task_attempt, initial.workflow_task_attempt+1);
     assert.deepStrictEqual(live.before_replacement.events, history.slice(0,2));
-    assert.deepStrictEqual(live.after_replacement, live.before_replacement, 'registration release preserves full original run/history');
+    assert.deepStrictEqual(durable(live.after_replacement), durable(live.before_replacement), 'registration release preserves full original run/history');
     for (const key of ['before_replacement','after_replacement','after_superseded','after_stale_before_poll','before_stale_after_poll','after_stale_after_poll']) {
       const run = live[key];
       assert.equal(run.workflow_id, peerId);
@@ -141,10 +151,10 @@ export function checkWorkerDeregistration(fixture, observation, workflowId) {
       assert.equal(run.status, state.before_unknown.status);
       assert.deepStrictEqual(run.typed_input, {type:'list',value:[fixture.typed_value]});
     }
-    assert.deepStrictEqual(live.after_superseded, live.after_replacement);
-    assert.deepStrictEqual(live.after_stale_before_poll, live.after_replacement);
-    assert.deepStrictEqual(live.after_stale_after_poll, live.before_stale_after_poll);
-    assert.deepStrictEqual(live.after_stale_after_poll, state.before_unknown);
+    assert.deepStrictEqual(durable(live.after_superseded), durable(live.after_replacement));
+    assert.deepStrictEqual(durable(live.after_stale_before_poll), durable(live.after_replacement));
+    assert.deepStrictEqual(durable(live.after_stale_after_poll), durable(live.before_stale_after_poll));
+    assert.deepStrictEqual(durable(live.after_stale_after_poll), durable(state.before_unknown));
     assert.equal(live.superseded.status, 409);
     assert.equal(live.superseded.response.reason, 'worker_registration_lost_authority');
     assert.equal(live.superseded.response.worker_id, workerId);

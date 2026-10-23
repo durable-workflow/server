@@ -19,8 +19,10 @@ export function normalized(value, names = {}) {
 }
 
 export const STATUSES = [201, 202, 202, 202, 202, 422, 200, 409, 422, 404, 200];
+// From Server 2.10, signals that a run closed before applying are recorded as
+// rejected after its terminal event.
 const EVENTS = ['StartAccepted', 'WorkflowStarted', 'SignalReceived', 'SignalReceived', 'SignalReceived', 'SignalReceived',
-  'TerminateRequested', 'WorkflowTerminated'];
+  'TerminateRequested', 'WorkflowTerminated', 'SignalRejected', 'SignalRejected', 'SignalRejected', 'SignalRejected'];
 
 export function checkSignalsBeforeWorker(fixture, observation, workflowId) {
   const state = observation.signals_before_worker;

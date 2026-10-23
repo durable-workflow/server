@@ -2,11 +2,33 @@
 //! arguments use the official codec on a bounded blocking worker.
 //! Typed database adapters share transitions; existing PHP data requires qualification.
 
+/// Store methods for every backend: the bounds the shared SQL helpers need,
+/// written once rather than in each module.
+macro_rules! store_methods {
+    ($($body:tt)*) => {
+        impl<DB: $crate::runtime::backend::Backend> $crate::runtime::store::Store<DB>
+        where
+            for<'c> &'c mut DB::Connection: ::sqlx::Executor<'c, Database = DB>,
+            DB::Arguments: ::sqlx::IntoArguments<DB>,
+            for<'q> &'q str: ::sqlx::Encode<'q, DB> + ::sqlx::Type<DB>,
+            for<'q> Option<&'q str>: ::sqlx::Encode<'q, DB>,
+            for<'q> Option<DB::EncodedDocument>: ::sqlx::Encode<'q, DB>,
+            for<'q> String: ::sqlx::Encode<'q, DB> + ::sqlx::Type<DB>,
+            for<'q> i64: ::sqlx::Encode<'q, DB> + ::sqlx::Type<DB>,
+            for<'r> i64: ::sqlx::Decode<'r, DB>,
+            usize: ::sqlx::ColumnIndex<DB::Row>,
+        {
+            $($body)*
+        }
+    };
+}
+
 mod active_summary;
 mod activity_completion_uploads;
 mod activity_deadlines;
 mod activity_failures;
 mod activity_heartbeats;
+mod activity_lease_renewal;
 mod activity_metadata;
 mod activity_metadata_read;
 mod activity_results;
@@ -21,6 +43,7 @@ mod children;
 mod command_context;
 mod command_requests;
 mod continuations;
+mod definition_routing;
 mod control_plane;
 mod cooperative;
 mod cross_kind_poll;
@@ -42,6 +65,7 @@ mod memo_json;
 mod memo_limits;
 mod memos;
 pub mod mysql;
+mod namespace_cleanup;
 mod namespaces;
 mod operator_dashboard;
 mod operator_metrics;
@@ -78,6 +102,7 @@ mod search_attribute_upserts;
 mod search_attributes;
 mod selection_summary;
 mod selections;
+mod service_catalog;
 mod sqlite;
 mod start_definition;
 mod start_request;
@@ -101,6 +126,7 @@ mod wait_timeouts;
 mod worker_contracts;
 mod worker_incarnations;
 mod worker_management;
+mod worker_admission;
 mod workflow_failures;
 mod workflow_task_guard;
 

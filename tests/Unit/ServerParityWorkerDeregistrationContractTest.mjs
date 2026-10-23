@@ -116,6 +116,17 @@ test('modeled live lease replacement requires unchanged original history and fen
   assert.deepStrictEqual(checkLive(liveModel()),checkWorkerDeregistration(liveFixture,
     {mode:'embedded',worker_deregistration:{applicable:false,reason:'embedded_has_no_http_worker_registration_lifecycle'}},id));
 });
+test('a live release may change only the current definition routing of the run read', () => {
+  const s=liveModel();
+  const routing=runnable=>({status:'not_worker_pinned',blocked:false,runnable_task:runnable});
+  s.live_replacement.before_replacement={...s.live_replacement.before_replacement,execution:{definition_routing:routing(false)}};
+  for (const key of ['after_replacement','after_superseded','after_stale_before_poll']) {
+    s.live_replacement[key]={...s.live_replacement[key],execution:{definition_routing:routing(true)}};
+  }
+  assert.doesNotThrow(()=>checkLive(s));
+  s.live_replacement.after_replacement.execution.status='completed';
+  assert.throws(()=>checkLive(s));
+});
 const liveMutations={
   'missing live replacement evidence':s=>{delete s.live_replacement;},
   'live token reused':s=>{s.live_replacement.initial_registration.registration_token=tokens[0];},

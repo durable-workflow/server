@@ -835,6 +835,18 @@ where
             findings.extend(self.routing_findings(&run, &rows, at, &fleet, config).await?);
         }
         payload["cancellation_cascade"] = cascade;
+        // `WorkflowRunDiagnostics`: the definition route of the next ready
+        // task, and a warning when no eligible worker can take it.
+        let mut tx = self.begin_read().await?;
+        let routing = self.definition_inspect(&mut tx, &run, None).await?;
+        tx.commit().await?;
+        if routing["blocked"] == true {
+            findings.push(json!({"severity": "warning", "code": "workflow_definition_routing_blocked",
+                "message": "A ready workflow task has no eligible definition route.",
+                "routing_status": routing["status"], "expected_resolution": routing["resolution"]}));
+            payload["diagnostic_status"] = json!("needs_attention");
+        }
+        payload["definition_routing"] = routing;
         payload["findings"] = json!(findings);
         Ok(payload)
     }

@@ -48,3 +48,25 @@ for (const [label, mutate] of [
     assert.throws(() => checkSchedulePolicies(fixture, observation, workflowId));
   });
 }
+test('a status difference names the step and its response', () => {
+  const observation = model();
+  observation.schedule_policies.steps[47] = {request: 'POST schedules/quota/trigger', status: 404,
+    response: {reason: 'schedule_not_found', schedule_id: 'quota'}};
+  assert.throws(() => checkSchedulePolicies(fixture, observation, workflowId),
+    /step 47 POST schedules\/quota\/trigger: 404, expected 200: \{"reason":"schedule_not_found","schedule_id":"quota"\}/);
+});
+test('an outcome difference shows the trigger responses', () => {
+  const observation = model();
+  Object.assign(at(observation, 'POST schedules/policy-skip/trigger')[0].response, {outcome: 'skipped', reason: 'overlap_policy_skip'});
+  assert.throws(() => checkSchedulePolicies(fixture, observation, workflowId),
+    /skip trigger outcomes \["skipped","skipped","skipped"\], expected \["triggered","skipped","skipped"\]: .*"reason":"overlap_policy_skip"/);
+});
+test('a fifth sequence in its own namespace passes, a sixth does not', () => {
+  const fifth = model();
+  const replayed = JSON.parse(JSON.stringify(fifth.schedule_policies).replaceAll('test-schedule-policies-schedules', 'test-schedule-policies-schedules-r5'));
+  fifth.schedule_policies = {...replayed, attempts: 5};
+  assert.deepStrictEqual(checkSchedulePolicies(fixture, fifth, workflowId), projection);
+  const sixth = model();
+  sixth.schedule_policies = {...JSON.parse(JSON.stringify(sixth.schedule_policies).replaceAll('test-schedule-policies-schedules', 'test-schedule-policies-schedules-r6')), attempts: 6};
+  assert.throws(() => checkSchedulePolicies(fixture, sixth, workflowId), /recorded sequence attempts/);
+});

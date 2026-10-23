@@ -567,6 +567,8 @@ where
         // The authenticated request's context; a direct call records only
         // the request id and signal name.
         let context = context.unwrap_or_else(|| json!({"request":{"request_id":body["request_id"]},"signal_name":name}));
+        // PHP's signal_name column holds 255 bytes, one fewer than its
+        // validation allows; native refuses what it cannot store.
         if name.trim().is_empty() || name.len() > 255 {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -1125,6 +1127,7 @@ where
         &self,
         body: Value,
         config: &super::QueryTaskConfig,
+        protocol: Option<&str>,
     ) -> Result<Value> {
         let worker_id = text(&body, "worker_id")?;
         let queue = text(&body, "task_queue")?;
@@ -1142,7 +1145,8 @@ where
             }
         }
         let runtime = text(&body, "runtime")?;
-        let registration = super::worker_management::Registration::parse(&body)?;
+        let mut registration = super::worker_management::Registration::parse(&body)?;
+        registration.record_protocol(protocol);
         let supplied_contracts = body
             .get("workflow_command_contracts")
             .map(|contracts| {
@@ -1252,31 +1256,40 @@ where
         )
     }
 
+    /// A poll with the default page sizes and PHP's default 30-second wait.
+    #[cfg(test)]
     pub(crate) async fn poll(
         &self,
         body: Value,
         kind: &'static str,
         protocol_version: &str,
     ) -> Result<Value> {
-        self.poll_with_pages(body, kind, protocol_version, Default::default())
+        self.poll_with_pages(body, kind, protocol_version, Default::default(), 30)
             .await
     }
 
     /// A workflow or activity poll, with the configured history page sizes.
+    /// A poll that names no `timeout_seconds` waits `default_wait` seconds,
+    /// as PHP's `LongPoller` waits DW_WORKER_POLL_TIMEOUT.
     pub(crate) async fn poll_with_pages(
         &self,
         body: Value,
         kind: &'static str,
         protocol_version: &str,
         pages: super::history_pages::HistoryPages,
+        default_wait: u64,
     ) -> Result<Value> {
         text(&body, "worker_id")?;
         text(&body, "task_queue")?;
-        let timeout = body
-            .get("timeout_seconds")
-            .map_or(Some(5), Value::as_u64)
-            .filter(|t| *t <= 60)
-            .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_poll_timeout"))?;
+        // Laravel's `nullable|integer|min:0|max:60` bounds a requested wait;
+        // the configured default is not capped.
+        let timeout = match body.get("timeout_seconds") {
+            None | Some(Value::Null) => default_wait,
+            Some(value) => super::laravel_validation::integer(value)
+                .filter(|t| (0..=60).contains(t))
+                .and_then(|t| u64::try_from(t).ok())
+                .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_poll_timeout"))?,
+        };
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
         let requested = super::history_pages::requested_size(&body)?;
         let encoding = if kind == "workflow" {
@@ -1479,6 +1492,17 @@ where
             {
                 continue;
             }
+            // `matchesRecordedWorkflowDefinition`: a run pinned to its recorded
+            // definition goes to a worker that has it, while one is live.
+            if kind == "workflow" {
+                let required = DB::optional_string(&task, "compatibility")?
+                    .map(|build| build.trim().to_owned())
+                    .filter(|build| !build.is_empty());
+                let context = Self::definition_context(&mut tx, &run, Some(queue), required).await?;
+                if !self.definition_allows(&mut tx, &run, &worker, &context).await?.0 {
+                    continue;
+                }
+            }
             if kind == "workflow"
                 && let Some(update_id) = task_payload["workflow_update_id"].as_str()
             {
@@ -1565,7 +1589,7 @@ where
                 super::activity_deadlines::validate_policy(&policy)?;
                 let attempt_id = id();
                 let started_at = now();
-                Self::query("UPDATE activity_attempts SET status='expired',closed_at=$1 WHERE activity_execution_id=$2 AND status='running'")
+                Self::query("UPDATE activity_attempts SET status='expired',lease_expires_at=NULL,closed_at=$1 WHERE activity_execution_id=$2 AND status='running'")
                     .bind(DB::bind_time(started_at)).bind(&activity_id).execute(&mut *tx).await?;
                 Self::query("INSERT INTO activity_attempts(id,activity_execution_id,workflow_run_id,workflow_task_id,attempt_number,status,lease_owner,lease_expires_at,started_at) VALUES ($1,$2,$3,$4,$5,'running',$6,$7,$8)")
                     .bind(&attempt_id).bind(&activity_id).bind(&run_id).bind(&task_id).bind(attempt)
@@ -2784,12 +2808,12 @@ where
             "ActivityCompleted",
         )
         .await?;
-        Self::query("UPDATE activity_attempts SET status='completed',closed_at=$1 WHERE id=$2")
+        Self::query("UPDATE activity_attempts SET status='completed',lease_expires_at=NULL,closed_at=$1 WHERE id=$2")
             .bind(DB::bind_time(now()))
             .bind(attempt_id)
             .execute(&mut *tx)
             .await?;
-        Self::query("UPDATE workflow_tasks SET status='completed' WHERE id=$1")
+        Self::query("UPDATE workflow_tasks SET status='completed',lease_expires_at=NULL WHERE id=$1")
             .bind(task_id)
             .execute(&mut *tx)
             .await?;
@@ -3792,7 +3816,8 @@ pub(crate) fn capabilities() -> Value {
         "worker_deregistration_fencing":{"schema":"durable-workflow.v2.worker-deregistration.v1","supported":true,"receipt_retention_seconds":600,"endpoint":"/worker/registrations/{workerId}/deregister"},
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
         "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,
-        "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": true});
+        "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": true,
+        "activity_lease_renewal": true});
     value["supported_workflow_task_commands"]
         .as_array_mut()
         .expect("commands")

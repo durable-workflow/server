@@ -464,7 +464,7 @@ where
                     "invalid_activity_retry_policy",
                 )
             })?;
-        Self::query("UPDATE activity_attempts SET status='failed',closed_at=$1 WHERE id=$2")
+        Self::query("UPDATE activity_attempts SET status='failed',lease_expires_at=NULL,closed_at=$1 WHERE id=$2")
             .bind(DB::bind_time(closed_at))
             .bind(attempt_id)
             .execute(&mut *tx)

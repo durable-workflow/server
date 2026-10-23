@@ -13,6 +13,23 @@ if (upstream.protocol !== 'http:') throw new Error('Isolated fixture target must
 const arrivalJournal = process.env.DW_PARITY_HTTP_REQUEST_ARRIVALS;
 const captureNamespace = process.env.DW_PARITY_HTTP_CAPTURE_NAMESPACE === '1';
 const captureTiming = process.env.DW_PARITY_HTTP_CAPTURE_TIMING === '1';
+// Opt-in: retry the SQLite reference's documented retryable operation refusal
+// (503 backend_lock_pressure, retryable, nothing recorded) below the SDK, as
+// lockPressureOperationRetryDelay does for PHP clients. Polls are never
+// retried here, so their pressure stays visible. Only the final reply is
+// recorded and returned.
+const retryLockPressure = process.env.DW_PARITY_PROXY_RETRY_LOCK_PRESSURE === '1';
+const lockPressureRetryDelay = (method, path, status, text, retries, waited) => {
+  if (!retryLockPressure || status !== 503 || path.endsWith('/poll') || retries >= 15) return null;
+  let reply;
+  try { reply = JSON.parse(text); } catch { return null; }
+  if (!reply || reply.reason !== 'backend_lock_pressure' || reply.retryable !== true
+    || (Object.hasOwn(reply, 'recorded') && reply.recorded !== false)) return null;
+  const hint = reply.retry_after_seconds ?? 1;
+  if (typeof hint !== 'number') return null;
+  const delay = Math.min(Math.max(hint, 0.1), 5);
+  return waited + delay <= 30 ? delay : null;
+};
 if (arrivalJournal !== undefined && (!arrivalJournal || observationMode !== '--forwarding-state')) {
   throw new Error('Request-arrival capture requires a journal and forwarding-state mode');
 }
@@ -65,7 +82,7 @@ const server = http.createServer((request, response) => {
       if (arrivalLine && (arrivalCount >= 512 || arrivalBytes + arrivalSize > 4 * 1024 * 1024)) {
         throw new Error('Request-arrival journal exceeds its bounded fixture budget');
       }
-      forwarded = proxyHttpRequest(request.url, upstream, {
+      const send = (retries, waited) => { forwarded = proxyHttpRequest(request.url, upstream, {
         method: request.method,
         headers: {...request.headers, host: upstream.host},
       }, incoming => {
@@ -78,6 +95,12 @@ const server = http.createServer((request, response) => {
           const decoders = {identity: value => value, gzip: gunzipSync, deflate: inflateSync, br: brotliDecompressSync};
           if (!decoders[encoding]) throw new Error(`Unsupported observed content encoding: ${encoding}`);
           const decoded = decoders[encoding](bytes).toString('utf8');
+          const delay = lockPressureRetryDelay(request.method, proxyTargetPath(request.url).pathname, incoming.statusCode,
+            decoded, retries, waited);
+          if (delay !== null) {
+            setTimeout(() => { if (!recorded) send(retries + 1, waited + delay); }, delay * 1000);
+            return;
+          }
           record({status: incoming.statusCode, response_encoding: encoding,
             response_retry_after: incoming.headers['retry-after'] ?? null,
             response_bytes_base64: bytes.toString('base64'), response_body: decoded});
@@ -98,7 +121,8 @@ const server = http.createServer((request, response) => {
         incoming.on('error', failed);
       });
       forwarded.on('error', failed);
-      forwarded.end(body);
+      forwarded.end(body); };
+      send(0, 0);
       if (arrivalLine) {
         appendFileSync(arrivalJournal, arrivalLine);
         arrivalCount++;

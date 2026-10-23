@@ -9,8 +9,11 @@ use DurableWorkflow\Transport\Transport;
 require_once __DIR__.'/lock-pressure-retry.php';
 
 /**
- * Applies the documented worker-poll lock-pressure retry to an SDK transport and
- * records each retry so evidence shows when a reference backend was contended.
+ * Applies the documented lock-pressure retries to an SDK transport and records
+ * each retry so evidence shows when a reference backend was contended. A poll
+ * is retried only when no task was handed out. Any other request is retried
+ * only when the server marked its refusal retryable, so nothing was committed
+ * (see lockPressureOperationRetryDelay).
  */
 final class LockPressurePollRetryTransport implements Transport
 {
@@ -31,7 +34,7 @@ final class LockPressurePollRetryTransport implements Transport
             try {
                 return $this->inner->send($method, $uri, $headers, $body);
             } catch (TransportException $exception) {
-                $delay = lockPressurePollRetryDelay($method, $uri, $exception->status, $exception->response,
+                $delay = lockPressureOperationRetryDelay($method, $uri, $exception->status, $exception->response,
                     count($this->retries), $waited);
                 if ($delay === null) {
                     throw $exception;

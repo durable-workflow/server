@@ -32,7 +32,7 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route(
             "/api/namespaces/{namespace}",
-            get(describe_namespace).put(update_namespace),
+            get(describe_namespace).put(update_namespace).delete(delete_namespace),
         )
         .route(
             "/api/namespaces/{namespace}/external-storage",
@@ -216,6 +216,8 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/system/activity-timeouts/pass", post(activity_timeout_pass))
         .route("/api/workers", get(list_workers))
         .route("/api/task-queues", get(list_task_queues))
+        .route("/api/service-catalog/{catalog}", get(service_catalog_list))
+        .route("/api/service-catalog/{catalog}/{id}", get(service_catalog_show))
         .route("/api/task-queues/{task_queue}", get(describe_task_queue))
         .route("/api/task-queues/{task_queue}/build-ids", get(task_queue_build_ids))
         .route(
@@ -259,6 +261,10 @@ pub fn router(runtime: Runtime) -> Router {
         .route(
             "/api/worker/activity-tasks/{task_id}/heartbeat",
             post(heartbeat_activity),
+        )
+        .route(
+            "/api/worker/activity-tasks/{task_id}/renew-lease",
+            post(renew_activity_lease),
         )
         .route(
             "/api/worker/activity-tasks/{task_id}/fail",
@@ -411,8 +417,8 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
     } else if path.starts_with("/api/workers/") && request.method() != Method::GET
         || path == "/api/namespaces" && request.method() == Method::POST
         || path == "/api/storage/test"
-        // Updating a namespace or its external storage needs an admin.
-        || path.starts_with("/api/namespaces/") && request.method() == Method::PUT
+        // Updating or deleting a namespace, or its external storage, needs an admin.
+        || path.starts_with("/api/namespaces/") && matches!(*request.method(), Method::PUT | Method::DELETE)
         // PHP's system routes are admin-only.
         || path.starts_with("/api/system/")
         || path == "/api/runtime-credentials"
@@ -570,6 +576,10 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     if path.starts_with("/api/external-payloads/v1/") {
         return method == "GET";
     }
+    // The service catalog is namespace-scoped and, in native, always empty.
+    if path.starts_with("/api/service-catalog/") {
+        return method == "GET";
+    }
     // Schedules are namespace-scoped rows, as in PHP.
     if path == "/api/schedules" || path.starts_with("/api/schedules/") {
         return true;
@@ -698,7 +708,7 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
                 | [
                     "activity-tasks",
                     _,
-                    "complete" | "fail" | "heartbeat" | "status"
+                    "complete" | "fail" | "heartbeat" | "status" | "renew-lease"
                 ]
         );
     }
@@ -720,6 +730,12 @@ async fn update_namespace(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     Ok(Json(runtime.update_namespace(&namespace, body).await?))
+}
+async fn delete_namespace(
+    Extension(runtime): Extension<Runtime>,
+    Path(namespace): Path<String>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.delete_namespace(&namespace).await?))
 }
 async fn create_namespace(
     Extension(runtime): Extension<Runtime>,
@@ -1319,29 +1335,46 @@ async fn register(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
-    if body["capabilities"]
+    let protocol = request_protocol(&headers)?;
+    // Laravel trims every string and turns empty ones into null first.
+    let mut body = super::laravel_rules::normalize(&body);
+    super::worker_admission::admit(&body, Some(protocol.trim())).map_err(worker_refusal)?;
+    // PHP names an unnamed worker with a fresh ULID and stores the
+    // normalized capability manifest.
+    if body["worker_id"].is_null() {
+        body["worker_id"] = json!(ulid::Ulid::new().to_string());
+    }
+    let manifest = super::worker_admission::manifest(&body);
+    body["capability_manifest"] = manifest;
+    // Missing type lists are empty; capabilities keep their non-empty
+    // strings (`nonEmptyStringArray`).
+    for field in ["supported_workflow_types", "supported_activity_types"] {
+        if body[field].is_null() {
+            body[field] = json!([]);
+        }
+    }
+    let flags: Vec<Value> = body["capabilities"]
         .as_array()
-        .is_some_and(|flags| flags.iter().any(|flag| flag == "memo_upserts"))
-    {
-        memo_protocol(&headers)?;
+        .into_iter()
+        .flatten()
+        .filter(|flag| flag.as_str().is_some_and(|flag| !flag.is_empty()))
+        .cloned()
+        .collect();
+    body["capabilities"] = json!(flags);
+    let registered = runtime.register(body, Some(protocol)).await.map_err(worker_refusal)?;
+    Ok((StatusCode::CREATED, Json(worker_response(registered))))
+}
+
+/// `WorkerProtocol::json` names the protocol and server capabilities on
+/// every worker response, refusals included.
+fn worker_refusal(error: super::RuntimeError) -> super::RuntimeError {
+    match error {
+        super::RuntimeError::Protocol { status, response } => super::RuntimeError::Protocol {
+            status,
+            response: worker_response(response),
+        },
+        other => other,
     }
-    if body["capabilities"].as_array().is_some_and(|flags| {
-        flags
-            .iter()
-            .any(|flag| flag == super::search_attribute_upserts::CAPABILITY)
-    }) && !protocol_at_least(&headers, 16)?
-    {
-        return Err(super::RuntimeError::Protocol {
-            status: StatusCode::CONFLICT,
-            response: json!({"reason":"workflow_metadata_capability_protocol_mismatch",
-                "worker_capability":super::search_attribute_upserts::CAPABILITY,
-                "minimum_protocol_version":super::search_attribute_upserts::MINIMUM_PROTOCOL_VERSION,"recorded":false}),
-        });
-    }
-    Ok((
-        StatusCode::CREATED,
-        Json(worker_response(runtime.register(body).await?)),
-    ))
 }
 
 fn worker_response(mut body: Value) -> Value {
@@ -1351,9 +1384,10 @@ fn worker_response(mut body: Value) -> Value {
 }
 async fn worker_heartbeat(
     Extension(runtime): Extension<Runtime>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    runtime.worker_heartbeat(body).await.map(Json)
+    runtime.worker_heartbeat(body, Some(request_protocol(&headers)?)).await.map(Json)
 }
 fn metrics_config(runtime: &Runtime) -> super::operator_metrics::MetricsConfig {
     super::operator_metrics::MetricsConfig {
@@ -1539,8 +1573,9 @@ async fn poll_workflow(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     let pages = runtime.history_pages();
+    let wait = runtime.worker_poll_wait();
     runtime
-        .poll_with_pages(body, "workflow", request_protocol(&headers)?, pages)
+        .poll_with_pages(body, "workflow", request_protocol(&headers)?, pages, wait)
         .await
         .map(Json)
 }
@@ -1549,8 +1584,9 @@ async fn poll_activity(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
+    let wait = runtime.worker_poll_wait();
     runtime
-        .poll(body, "activity", request_protocol(&headers)?)
+        .poll_with_pages(body, "activity", request_protocol(&headers)?, Default::default(), wait)
         .await
         .map(Json)
 }
@@ -1730,6 +1766,14 @@ async fn heartbeat_activity(
         .map(Json)
 }
 
+async fn renew_activity_lease(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    runtime.renew_activity_lease(&task_id, body).await.map(Json)
+}
+
 async fn activity_status(
     Extension(runtime): Extension<Runtime>,
     Path(task_id): Path<String>,
@@ -1838,6 +1882,29 @@ async fn fail_query(
 ) -> Result<Json<Value>> {
     runtime.finish_query(&task_id, body, true).await.map(Json)
 }
+/// `GET /api/service-catalog/{catalog}`: endpoints, services, operations or calls.
+async fn service_catalog_list(
+    Extension(runtime): Extension<Runtime>,
+    Path(catalog): Path<String>,
+    Query(query): Query<Vec<(String, String)>>,
+) -> Response {
+    match super::service_catalog::Catalog::from_path(&catalog) {
+        Some(catalog) => super::service_catalog::list(&query, catalog, runtime.namespace()).map(Json).into_response(),
+        None => unavailable().await,
+    }
+}
+
+/// `GET /api/service-catalog/{catalog}/{id}`.
+async fn service_catalog_show(
+    Path((catalog, _id)): Path<(String, String)>,
+    Query(query): Query<Vec<(String, String)>>,
+) -> Response {
+    match super::service_catalog::Catalog::from_path(&catalog) {
+        Some(catalog) => super::service_catalog::show(&query, catalog).map(Json).into_response(),
+        None => unavailable().await,
+    }
+}
+
 async fn unavailable() -> Response {
     refuse(
         StatusCode::NOT_IMPLEMENTED,
