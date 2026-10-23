@@ -369,8 +369,9 @@ contract fixture before its correction.
   transport rules, then its payload and normalizer rules
   ([checkpoint](rust-server-port-checkpoints/2026-10-23-completion-rules.md)).
   Two differences remain:
-  - PHP ignores unknown and null command fields. Native's per-command field
-    lists refuse them with `unsupported_request_field`.
+  - A field for a feature native cannot run, such as `worker_session`, is
+    refused with `unsupported_request_field`. Fields PHP ignores are dropped
+    as PHP drops them.
   - A timer delay, retry backoff or wait timeout too large for a timestamp
     is refused on native. PHP accepts it, and wraps a timer's fire time into
     the past, so the timer fires at once.

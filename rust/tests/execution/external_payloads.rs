@@ -471,8 +471,10 @@ async fn external_workflow_completion_fences_before_retention_and_keeps_opaque_r
             .1,
         before
     );
+    // PHP ignores an unknown field but refuses a timer delay on a
+    // complete_workflow command.
     let mut unsupported = body.clone();
-    unsupported["commands"][0]["unknown"] = json!(true);
+    unsupported["commands"][0]["delay_seconds"] = json!(1);
     assert_eq!(
         json_request(&app, "POST", &path, "worker-token", unsupported)
             .await

@@ -73,6 +73,15 @@ Native now runs the same stages with PHP's messages.
 - **Plain continue-as-new arguments.** An array or object without a codec is
   no arguments to PHP, so the next run keeps the current input. A number is
   refused with PHP's message.
+- **Fields PHP ignores.** PHP's normalizer reads a fixed set of fields for
+  each command type. It ignores any other field unless a scope check refuses
+  it, and ignores unknown retry policy keys. Native's per-command field lists
+  used to refuse those fields with `unsupported_request_field`. Native now
+  drops a field before its own checks only when PHP neither reads nor
+  scope-checks it for that command type. Examples are an unknown field, a
+  null option, `queue` on a timer and `priority` on an activity. A field
+  PHP reads stays. So native still refuses one it cannot run, such as
+  `worker_session`, rather than silently ignoring a feature.
 - **An open run is waiting after its task.** PHP's executor leaves every run
   that a completed task did not close `waiting`, even when the task recorded
   only version markers. Native left such a run `pending`.
@@ -98,11 +107,11 @@ was compared live with 2.11.1 and corrected:
 
 ## Differences that remain
 
-- **Unknown and null command fields.** PHP ignores them. Native's per-command
-  field lists refuse them with `unsupported_request_field`. Those lists also
-  refuse fields for features native cannot run (worker sessions, local
-  activity attempts, workflow streams), so relaxing them needs PHP's full
-  normalizer read set first. That is the next slice.
+- **Features native cannot run.** A field PHP reads for a feature native does
+  not have, such as `worker_session`, local activity attempts or workflow
+  streams, is refused with `unsupported_request_field`. PHP runs it, or
+  refuses it with its own capability reason when the worker lacks the
+  capability (409 `worker_capability_not_supported` in the probe).
 - **Numbers too large for a timestamp.** PHP accepts `9223372036854775807` as
   a timer delay, retry backoff or wait timeout. For a timer it wraps the fire
   time into the past (year -292277022601), so the timer fires at once. Native

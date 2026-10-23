@@ -601,6 +601,74 @@ const BLOB_FIELDS: &[(&str, &str)] = &[
     ("complete_update", "result"),
 ];
 
+/// The fields `WorkflowCommandNormalizer::normalize` reads for each command
+/// type native runs. PHP ignores any other field, apart from the ones its
+/// scope checks refuse on the wrong command.
+const READS: &[(&str, &[&str])] = &[
+    ("complete_workflow", &["result", "payload_codec"]),
+    ("fail_workflow", &["message", "exception_class", "exception_type", "non_retryable", "exception",
+        "failed_step_sequence", "failed_activity_execution_id"]),
+    ("schedule_activity", &["activity_type", "arguments", "payload_codec", "connection", "queue", "retry_policy",
+        "start_to_close_timeout", "schedule_to_start_timeout", "schedule_to_close_timeout", "heartbeat_timeout",
+        "cancellation_policy", "worker_session"]),
+    ("start_timer", &["delay_seconds", "cancellation_cleanup"]),
+    ("start_child_workflow", &["workflow_type", "arguments", "payload_codec", "connection", "queue", "retry_policy",
+        "execution_timeout_seconds", "run_timeout_seconds", "parent_close_policy", "cancellation_policy"]),
+    ("continue_as_new", &["arguments", "payload_codec", "workflow_type", "queue"]),
+    ("complete_update", &["update_id", "result", "payload_codec"]),
+    ("fail_update", &["update_id", "message", "exception_class", "exception_type", "non_retryable"]),
+    ("record_side_effect", &["result", "payload_codec"]),
+    ("record_version_marker", &["change_id", "version", "min_supported", "max_supported"]),
+    ("upsert_search_attributes", &["attributes", "attribute_types"]),
+    ("upsert_memo", &["entries"]),
+    ("open_condition_wait", &["condition_key", "condition_definition_fingerprint", "condition_wait_occurrence_id", "timeout_seconds"]),
+    ("open_signal_wait", &["signal_name", "timeout_seconds"]),
+];
+
+/// `parallelMetadataValidationRules`' fields, read for the leaf commands.
+const PARALLEL_FIELDS: &[&str] = &["parallel_group_id", "parallel_group_kind", "parallel_group_mode",
+    "parallel_group_base_sequence", "parallel_group_size", "parallel_group_index", "selection_member_key",
+    "selection_member_index", "selection_member_base_sequence", "selection_member_size", "selection_member_kind",
+    "parallel_group_path"];
+const PARALLEL_LEAVES: &[&str] = &["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait"];
+
+/// Fields a scope check refuses on the wrong command, so they must reach it.
+const SCOPED_FIELDS: &[&str] = &["retry_policy", "start_to_close_timeout", "schedule_to_start_timeout", "schedule_to_close_timeout",
+    "heartbeat_timeout", "worker_session", "execution_timeout_seconds", "run_timeout_seconds", "cancellation_policy",
+    "non_retryable", "exception", "failed_step_sequence", "failed_activity_execution_id", "timeout_kind",
+    "parent_close_policy", "cancellation_scope_id", "cancellation_cleanup", "delay_seconds", "timeout_seconds",
+    "payload_codec", "entries", "principal_subject", "principal_method", "principal_roles", "principal_tenant",
+    "principal_claims"];
+
+/// `optionalRetryPolicy` reads these keys and ignores the rest.
+const RETRY_POLICY_FIELDS: &[&str] = &["max_attempts", "backoff_seconds", "non_retryable_error_types"];
+
+/// Drops what PHP ignores before native's own field checks: on a command
+/// type native runs, a field PHP's normalizer neither reads nor scope-checks,
+/// and an unknown retry policy key. A field PHP reads stays, so native still
+/// refuses one it cannot run.
+fn ignored_fields(command: &mut Value) {
+    let Some(kind) = command.get("type").and_then(Value::as_str).map(str::to_owned) else {
+        return;
+    };
+    let Some((_, reads)) = READS.iter().find(|(owner, _)| *owner == kind) else {
+        return;
+    };
+    let Some(fields) = command.as_object_mut() else {
+        return;
+    };
+    let parallel = PARALLEL_LEAVES.contains(&kind.as_str());
+    fields.retain(|field, value| {
+        field == "type"
+            || reads.contains(&field.as_str())
+            || parallel && PARALLEL_FIELDS.contains(&field.as_str())
+            || SCOPED_FIELDS.contains(&field.as_str()) && !value.is_null()
+    });
+    if let Some(Value::Object(policy)) = fields.get_mut("retry_policy") {
+        policy.retain(|key, _| RETRY_POLICY_FIELDS.contains(&key.as_str()));
+    }
+}
+
 /// Gives each payload the envelope form native applies, as PHP's normalizer
 /// reads it: a bare string is an Avro blob, an empty one is no payload, and
 /// continue-as-new arguments that are plain values are no arguments, so the
@@ -611,6 +679,7 @@ pub(super) fn canonical_payloads(mut body: Value) -> Result<Value> {
         return Ok(body);
     };
     for (index, command) in commands.iter_mut().enumerate() {
+        ignored_fields(command);
         let Some(kind) = command["type"].as_str().map(str::to_owned) else {
             continue;
         };

@@ -4463,16 +4463,15 @@ async fn reported_activity_failure_commits_one_persistent_retry_and_fences_old_o
     let workflow = poll(&app_a, "worker", "workflow").await;
     let arguments = envelope(Payload::Array(vec![Payload::Long(9007199254740993)]));
     let policy = json!({"max_attempts":2,"backoff_seconds":[1],"non_retryable_error_types":[]});
-    // A digit string such as "2" is an integer to PHP. A backoff too large
-    // for a timestamp is native's own refusal; PHP accepts it. PHP ignores an
-    // unknown retry policy key that native still refuses.
+    // A digit string such as "2" is an integer to PHP, and PHP ignores an
+    // unknown retry policy key. A backoff too large for a timestamp is
+    // native's own refusal; PHP accepts it.
     for invalid in [
         json!({"max_attempts":0}),
         json!({"max_attempts":1.5}),
         json!({"max_attempts":2,"backoff_seconds":[-1]}),
         json!({"max_attempts":2,"backoff_seconds":[i64::MAX]}),
         json!({"max_attempts":2,"non_retryable_error_types":[17]}),
-        json!({"max_attempts":2,"unsupported":true}),
     ] {
         let refused = finish_task(&app_a,&workflow,json!([{"type":"schedule_activity","activity_type":"retry-activity","arguments":arguments,"retry_policy":invalid}])).await;
         assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", refused.1);
