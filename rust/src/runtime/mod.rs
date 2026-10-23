@@ -232,7 +232,13 @@ impl IntoResponse for RuntimeError {
             eprintln!("{diagnostic}");
         }
         let (status, reason) = match self {
+            Self::Protocol { status, response } if response["schema"] == external_transport::TYPED_SCHEMA => {
+                return external_transport::typed_response(status, response);
+            }
             Self::Protocol { status, response } => return (status, Json(response)).into_response(),
+            Self::Refused { status, reason } if external_transport::TYPED_REASONS.contains(&reason) => {
+                return external_transport::typed_refusal(status, reason);
+            }
             Self::Refused { status, reason } => (status, reason),
             _ => {
                 // Database errors can contain stored payloads. Keep responses

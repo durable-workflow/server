@@ -176,6 +176,8 @@ mod build_pins;
 mod deployments;
 #[path = "execution/priority_fairness.rs"]
 mod priority_fairness;
+#[path = "execution/update_routing.rs"]
+mod update_routing;
 #[path = "execution/command_payloads.rs"]
 mod command_payloads;
 #[path = "execution/activity_timeout_pass.rs"]

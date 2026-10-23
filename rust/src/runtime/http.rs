@@ -569,10 +569,40 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
     request.extensions_mut().insert(AuthenticatedPrincipal {
         principal,
     });
+    // The workflow route a typed refusal came from, to name the workflow
+    // in its envelope.
+    let route = (!worker && path.starts_with("/api/workflows")).then(|| {
+        let mut route = Request::new(Body::empty());
+        *route.method_mut() = request.method().clone();
+        *route.uri_mut() = request.uri().clone();
+        *route.extensions_mut() = request.extensions().clone();
+        route
+    });
     let mut response = next.run(request).await;
+    if response.extensions().get::<super::external_transport::TypedRefusal>().is_some() && (worker || route.is_some()) {
+        response = typed_refusal_envelope(response, route, worker).await;
+    }
     response
         .headers_mut()
         .insert(header, HeaderValue::from_static(version));
+    response
+}
+
+/// PHP renders a typed external payload error through `WorkerProtocol` or
+/// `ControlPlaneProtocol`, which add the route's envelope fields.
+async fn typed_refusal_envelope(response: Response, route: Option<Request>, worker: bool) -> Response {
+    let status = response.status();
+    let (parts, body) = response.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, 64 * 1024).await else {
+        return (status, Json(json!({"reason":"external_payload_unavailable"}))).into_response();
+    };
+    let Ok(body) = serde_json::from_slice::<Value>(&bytes) else {
+        return Response::from_parts(parts, Body::from(bytes));
+    };
+    let mut response = admission_error(route.unwrap_or_else(|| Request::new(Body::empty())), worker, status, body).await;
+    if let Some(retry) = parts.headers.get("retry-after") {
+        response.headers_mut().insert("retry-after", retry.clone());
+    }
     response
 }
 

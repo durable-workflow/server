@@ -30,6 +30,13 @@ impl Operation<'_> {
         run_id: Option<&str>,
     ) -> super::RuntimeError {
         let (status, mut body) = match error {
+            // A typed external payload error gets the route's envelope once,
+            // from the guard.
+            super::RuntimeError::Protocol { ref response, .. }
+                if response["schema"] == super::external_transport::TYPED_SCHEMA =>
+            {
+                return error;
+            }
             super::RuntimeError::Refused { status, reason }
                 if status == axum::http::StatusCode::NOT_FOUND
                     && matches!(reason, "instance_not_found" | "run_not_found") =>

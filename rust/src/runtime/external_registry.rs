@@ -386,6 +386,15 @@ where
         Ok(())
     }
 
+    /// Claims the reference in a transaction of its own, for a request
+    /// that records nothing else.
+    pub(super) async fn claim_external(&self, prepared: &super::external_resolution::PreparedExternal) -> Result<()> {
+        let mut tx = self.begin().await?;
+        self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub(super) async fn mark_external_fetched(&self, expected: &Reference) -> Result<()> {
         let mut tx = self.begin().await?;
         let timestamp = now();

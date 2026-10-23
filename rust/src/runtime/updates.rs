@@ -304,6 +304,7 @@ where
         context: Option<Value>,
         codec: Arc<Semaphore>,
         limits: super::memo_limits::StructuralLimits,
+        external: Option<&super::external_resolution::PreparedExternal>,
     ) -> Result<(StatusCode, Value)> {
         // PHP's update_name column holds 255 bytes, one fewer than its
         // validation allows; native refuses what it cannot store.
@@ -331,6 +332,11 @@ where
             .begin()
             .await
             .map_err(|error| at_update_lookup(error, UpdateLookup::AdmissionOwnership))?;
+        // The referenced object now belongs to the update; a refusal rolls
+        // the claim back with everything else.
+        if let Some(prepared) = external {
+            self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri).await?;
+        }
         let instance = Self::query("SELECT current_run_id,last_message_sequence FROM workflow_instances WHERE id=$1 AND namespace='default'")
             .bind(workflow_id).fetch_optional(&mut *tx).await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;

@@ -1,6 +1,8 @@
 use super::*;
 #[path = "external_payloads/cleanup.rs"]
 mod cleanup;
+#[path = "external_payloads/commands.rs"]
+mod commands;
 #[path = "external_payloads/completion_uploads.rs"]
 mod completion_uploads;
 use axum::{body::Bytes, http::HeaderMap};

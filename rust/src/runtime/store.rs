@@ -608,6 +608,7 @@ where
         transition_codec: Arc<Semaphore>,
         context: Option<Value>,
         limits: super::memo_limits::StructuralLimits,
+        external: Option<&super::external_resolution::PreparedExternal>,
     ) -> Result<Value> {
         // The authenticated request's context; a direct call records only
         // the request id and signal name.
@@ -629,6 +630,11 @@ where
             ));
         }
         let mut tx = self.begin().await?;
+        // The referenced object now belongs to the signal; a refusal rolls
+        // the claim back with everything else.
+        if let Some(prepared) = external {
+            self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri).await?;
+        }
         let instance = Self::query("SELECT current_run_id,last_message_sequence FROM workflow_instances WHERE id=$1 AND namespace=$2")
             .bind(workflow_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?.ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
         let current_run = DB::string(&instance, "current_run_id")?;

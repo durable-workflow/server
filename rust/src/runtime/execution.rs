@@ -685,8 +685,14 @@ impl Runtime {
         super::input_envelope::transport(&body)?;
         super::laravel_validation::operation_name(name, "signal")?;
         super::command_requests::signal(&body)?;
-        let arguments = self.command_arguments(&body).await?;
-        let prepared = super::store::prepare_control_arguments(
+        // `AvroPayloadEnvelopeResolver::resolve` with the namespace's storage:
+        // a runtime external reference is checked, then kept by reference.
+        let mut external = self.prepare_external(&body["input"]).await?;
+        let arguments = match external.as_mut() {
+            Some(prepared) => prepared.blob()?,
+            None => self.command_arguments(&body).await?,
+        };
+        let mut prepared = super::store::prepare_control_arguments(
             self.signal_codec.clone(),
             name.to_owned(),
             arguments,
@@ -694,6 +700,9 @@ impl Runtime {
             true,
         )
         .await?;
+        if let Some(external) = &external {
+            prepared.arguments = external.stored();
+        }
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
@@ -706,6 +715,7 @@ impl Runtime {
                         self.transition_codec.clone(),
                         context,
                         self.structural,
+                        external.as_ref(),
                     )
                     .await
             }
@@ -720,6 +730,7 @@ impl Runtime {
                         self.transition_codec.clone(),
                         context,
                         self.structural,
+                        external.as_ref(),
                     )
                     .await
             }
@@ -734,6 +745,7 @@ impl Runtime {
                         self.transition_codec.clone(),
                         context,
                         self.structural,
+                        external.as_ref(),
                     )
                     .await
             }
@@ -806,8 +818,14 @@ impl Runtime {
         super::laravel_validation::operation_name(name, "update")?;
         super::command_requests::update(&body)?;
         // PHP bounds update arguments by its structural payload ceiling,
-        // which rejects them durably, not by a request budget.
-        let arguments = self.command_arguments(&body).await?;
+        // which rejects them durably, not by a request budget. A runtime
+        // external reference is resolved to its bytes, which the update
+        // keeps inline (`resolveToArray`).
+        let mut external = self.prepare_external(&body["input"]).await?;
+        let arguments = match external.as_mut() {
+            Some(prepared) => prepared.blob()?,
+            None => self.command_arguments(&body).await?,
+        };
         let prepared = super::store::prepare_control_arguments(
             self.signal_codec.clone(),
             name.to_owned(),
@@ -819,17 +837,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone(), self.structural)
+                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone(), self.structural, external.as_ref())
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone(), self.structural)
+                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone(), self.structural, external.as_ref())
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone(), self.structural)
+                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone(), self.structural, external.as_ref())
                     .await
             }
         }
@@ -862,11 +880,24 @@ impl Runtime {
             return Err(invalid("input", "The input field must be an array."));
         }
         // Like PHP's AvroPayloadEnvelopeResolver, plain values are encoded
-        // as the query's arguments.
-        let arguments = match input {
-            None => super::queries::empty_arguments(self.signal_codec.clone()).await?,
-            Some(_) => self.command_arguments(&body).await?,
+        // as the query's arguments. A runtime external reference is claimed
+        // and resolved to its bytes, which the query carries inline.
+        let mut external = match input {
+            Some(_) => self.prepare_external(&body["input"]).await?,
+            None => None,
         };
+        let arguments = match (input, external.as_mut()) {
+            (None, _) => super::queries::empty_arguments(self.signal_codec.clone()).await?,
+            (Some(_), Some(prepared)) => prepared.blob()?,
+            (Some(_), None) => self.command_arguments(&body).await?,
+        };
+        if let Some(prepared) = &external {
+            match &*self.storage {
+                Storage::Sqlite(store) => store.claim_external(prepared).await?,
+                Storage::Postgres(store) => store.claim_external(prepared).await?,
+                Storage::MySql(store) => store.claim_external(prepared).await?,
+            }
+        }
         if arguments.len() > super::queries::ARGUMENT_BYTES {
             return Err(refuse(
                 StatusCode::PAYLOAD_TOO_LARGE,

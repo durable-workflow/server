@@ -181,9 +181,23 @@ contract fixture before its correction.
   arguments at admission and refuses an undecodable blob with
   `invalid_query_arguments`. Published PHP first looks for a query worker,
   and answers `409 query_worker_unavailable` when there is none.
-- **External payload references on signal, update and query.** Published
-  PHP resolves `{codec, external_payload}` input on these routes; native
-  supports it only on start.
+- **When an external payload reference is claimed.** Published PHP retains
+  a referenced object once it fetches the bytes, before the command is
+  recorded, so a refused command still retains it. Native claims it in the
+  command's transaction, so the upload of a refused command expires
+  unclaimed. Signal, update and query input otherwise resolve references as
+  PHP does
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-external-command-input.md)).
+- **Which worker receives an accepted update.** Published PHP gives the
+  workflow task that carries an update to any worker of the type. During a
+  rolling deploy that adds the handler, an older worker can take the update
+  and fail it (`UnknownUpdate`).
+  Native offers that task only to a worker that advertises
+  `workflow_updates` and declares the update for the run's type. The PHP,
+  Python and Rust SDKs do both exactly when they register the handler. This
+  is a contract decision, recorded in
+  [Server #690](https://github.com/durable-workflow/server/issues/690)
+  (`tests/execution/update_routing.rs`).
 - **Repair of a run without a recoverable task.** Published PHP's repair
   command creates a run's missing task, and settles an expired activity-task
   lease through the activity's retry policy. Native's repair command refuses

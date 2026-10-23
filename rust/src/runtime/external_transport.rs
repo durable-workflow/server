@@ -25,17 +25,92 @@ const CODEC: &str = "x-durable-workflow-payload-codec";
 const SIZE: &str = "x-durable-workflow-payload-size";
 const DIGEST: &str = "x-durable-workflow-payload-sha256";
 
+/// PHP's `RuntimeExternalPayloadException` reasons, which its transport
+/// middleware renders as the typed external payload error on every route.
+pub(super) const TYPED_REASONS: &[&str] = &[
+    "external_payload_not_found",
+    "external_payload_expired",
+    "external_payload_unauthorized",
+    "external_payload_unavailable",
+    "external_payload_oversized",
+    "external_payload_unsupported",
+    "external_payload_integrity_mismatch",
+    "external_payload_namespace_bytes_exhausted",
+    "external_payload_namespace_objects_exhausted",
+    "external_payload_namespace_quota_unavailable",
+    "external_payload_completion_invalid",
+    "external_payload_completion_lease_rejected",
+    "external_payload_completion_conflict",
+    "external_payload_completion_budget_exhausted",
+];
+
+/// PHP's message for a reference refused as a request is resolved. PHP
+/// words a few reasons differently on other paths; the reason, status and
+/// retryability are the contract.
+fn message(reason: &str) -> &str {
+    match reason {
+        "external_payload_not_found" => "External payload reference was not found in this namespace.",
+        "external_payload_expired" => "External payload reference has expired.",
+        "external_payload_oversized" => "External payload exceeds the runtime transport size limit.",
+        "external_payload_unsupported" => "External payload envelopes must contain exactly codec and external_payload.",
+        "external_payload_integrity_mismatch" => "External payload envelope codec does not match the runtime reference.",
+        "external_payload_unavailable" => "External payload storage is temporarily unavailable.",
+        "external_payload_completion_invalid" => "A canonical worker completion context is required.",
+        "external_payload_completion_lease_rejected" => "The payload upload does not belong to a current worker completion lease.",
+        "external_payload_completion_conflict" => "A completion payload slot is already bound to different bytes.",
+        "external_payload_completion_budget_exhausted" => "The bounded payload allowance for this completion lease is exhausted.",
+        other => other,
+    }
+}
+
+/// Marks a response as PHP's typed external payload error, so the route's
+/// envelope can be added to it.
+#[derive(Clone, Copy)]
+pub(super) struct TypedRefusal;
+
 pub(super) fn error_body(status: StatusCode, reason: &str) -> Value {
     let retryable =
         status == StatusCode::SERVICE_UNAVAILABLE || status == StatusCode::TOO_MANY_REQUESTS;
     let mut body = json!({"schema":"durable-workflow.v2.runtime-external-payload-error.v1",
-        "reason":reason,"message":reason,"retryable":retryable,"status":status.as_u16()});
+        "reason":reason,"message":message(reason),"retryable":retryable,"status":status.as_u16()});
     if reason.starts_with("external_payload_namespace_") {
         body["retry_after_seconds"] = json!(60);
     } else if reason == "external_payload_completion_budget_exhausted" {
         body["retry_after_seconds"] = json!(5);
     }
     body
+}
+
+pub(super) const TYPED_SCHEMA: &str = "durable-workflow.v2.runtime-external-payload-error.v1";
+
+/// A typed refusal with PHP's message for this case.
+pub(super) fn typed_error(status: StatusCode, reason: &'static str, message: impl Into<String>) -> RuntimeError {
+    let mut response = error_body(status, reason);
+    response["message"] = json!(message.into());
+    RuntimeError::Protocol { status, response }
+}
+
+/// The provider reference PHP's transport never accepts.
+pub(super) fn provider_reference() -> RuntimeError {
+    typed_error(StatusCode::UNPROCESSABLE_ENTITY, "external_payload_unsupported",
+        "Provider-specific external_storage references are not accepted by the runtime transport.")
+}
+
+/// A typed refusal from a route's handler, with PHP's body and retry header.
+pub(super) fn typed_refusal(status: StatusCode, reason: &str) -> Response {
+    typed_response(status, error_body(status, reason))
+}
+
+pub(super) fn typed_response(status: StatusCode, body: Value) -> Response {
+    let reason = body["reason"].as_str().unwrap_or_default().to_owned();
+    let mut response = (status, Json(body)).into_response();
+    if reason.starts_with("external_payload_namespace_") {
+        response.headers_mut().insert("retry-after", "60".parse().expect("static header"));
+    } else if reason == "external_payload_completion_budget_exhausted" {
+        response.headers_mut().insert("retry-after", "5".parse().expect("static header"));
+    }
+    response.extensions_mut().insert(TypedRefusal);
+    response
 }
 
 fn response_error(error: RuntimeError) -> Response {
