@@ -288,32 +288,42 @@ class ScheduleVisibilityQuery
         }
 
         if (preg_match('/^-?(?:0|[1-9][0-9]*)$/', $literal) === 1) {
-            $value = filter_var($literal, FILTER_VALIDATE_INT);
-
-            if ($value === false) {
-                throw new ScheduleVisibilityQueryException(
-                    'Schedule visibility integer literal is outside the supported integer range.',
-                );
-            }
-
-            return $value;
+            return $this->parseIntegerLiteral($literal);
         }
 
         if (preg_match('/^-?(?:0|[1-9][0-9]*)\.[0-9]+$/', $literal) === 1) {
-            $value = (float) $literal;
-
-            if (! is_finite($value)) {
-                throw new ScheduleVisibilityQueryException(
-                    'Schedule visibility numeric literal must be finite.',
-                );
-            }
-
-            return $value;
+            return $this->parseDecimalLiteral($literal);
         }
 
         throw new ScheduleVisibilityQueryException(
             sprintf('Schedule visibility literal [%s] must be a quoted string, number, or boolean.', $literal),
         );
+    }
+
+    private function parseIntegerLiteral(string $literal): int
+    {
+        $value = filter_var($literal, FILTER_VALIDATE_INT);
+
+        if ($value === false) {
+            throw new ScheduleVisibilityQueryException(
+                'Schedule visibility integer literal is outside the supported integer range.',
+            );
+        }
+
+        return $value;
+    }
+
+    private function parseDecimalLiteral(string $literal): float
+    {
+        $value = (float) $literal;
+
+        if (! is_finite($value)) {
+            throw new ScheduleVisibilityQueryException(
+                'Schedule visibility numeric literal must be finite.',
+            );
+        }
+
+        return $value;
     }
 
     private function validateLiteralType(string $field, string $type, bool|float|int|string $literal): void
