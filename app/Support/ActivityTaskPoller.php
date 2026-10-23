@@ -1283,7 +1283,11 @@ final class ActivityTaskPoller
                     ->orWhere('workflow_tasks.compatibility', '');
             });
         } else {
-            $query->where('workflow_tasks.compatibility', $buildId);
+            $query->where(function ($builder) use ($buildId): void {
+                $builder->whereNull('workflow_tasks.compatibility')
+                    ->orWhere('workflow_tasks.compatibility', '')
+                    ->orWhere('workflow_tasks.compatibility', $buildId);
+            });
         }
 
         /** @var WorkflowTask|null $task */
