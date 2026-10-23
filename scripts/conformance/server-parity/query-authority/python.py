@@ -117,6 +117,17 @@ async def main():
                 if MODE == 'timely':
                     result = await client.query_workflow(namespace, 'value', args=[])
                     assert result['result'] == EXPECTED and type(result['result']['long']) is int
+                    # The independent caller can observe the commit before the
+                    # Worker receives its acknowledgement. Wait inside the
+                    # original budget before stopping it, as worker.php does.
+                    PHASE = 'acknowledgement'
+                    while not any(x['event'] == 'acknowledgement' for x in events()):
+                        if runner.done():
+                            await runner
+                            raise RuntimeError('Worker stopped before its acknowledgement')
+                        if time.monotonic() - started >= 30:
+                            raise AssertionError('No acknowledgement inside the original budget')
+                        await asyncio.sleep(.02)
                 else:
                     try:
                         await client.query_workflow(namespace, 'value', args=[])
