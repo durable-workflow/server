@@ -7,6 +7,7 @@ use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 use Workflow\V2\Models\WorkflowSchedule;
 
@@ -24,6 +25,7 @@ class ScheduleListVisibilityTest extends TestCase
         foreach ([
             'Region' => 'keyword',
             'Priority' => 'int',
+            'Amount' => 'double',
             'Expedited' => 'bool',
             'Tags' => 'keyword_list',
         ] as $name => $type) {
@@ -212,6 +214,44 @@ class ScheduleListVisibilityTest extends TestCase
                 sprintf('Blank schedule-list filter [%s] must preserve validation evidence.', $field),
             );
         }
+    }
+
+    #[DataProvider('outOfRangeNumericQueries')]
+    public function test_numeric_overflow_returns_typed_refusal_instead_of_clamping_or_infinity(string $query): void
+    {
+        $this->getJson('/api/schedules?'.http_build_query(['query' => $query]), $this->headers())
+            ->assertUnprocessable()
+            ->assertJsonPath('reason', 'invalid_schedule_visibility_query')
+            ->assertJsonPath('field', 'query')
+            ->assertJsonPath('last_safe_cursor', null);
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function outOfRangeNumericQueries(): iterable
+    {
+        yield 'integer overflow' => ['Priority = 9223372036854775808'];
+        yield 'integer underflow' => ['Priority = -9223372036854775809'];
+        yield 'very large integer' => ['Priority = '.str_repeat('9', 400)];
+        yield 'positive infinity' => ['Amount = '.str_repeat('9', 400).'.0'];
+        yield 'negative infinity' => ['Amount = -'.str_repeat('9', 400).'.0'];
+        yield 'overflow with another predicate' => ['Region = "eu" AND Priority = 9223372036854775808'];
+    }
+
+    public function test_integer_boundaries_and_finite_decimal_queries_keep_their_original_values(): void
+    {
+        $this->schedule('minimum', attributes: ['Priority' => PHP_INT_MIN, 'Amount' => -0.5]);
+        $this->schedule('maximum', attributes: ['Priority' => PHP_INT_MAX, 'Amount' => 0.5]);
+        $this->schedule('zero', attributes: ['Priority' => 0]);
+
+        $this->assertSame(['minimum'], $this->listIds(['query' => 'Priority = '.PHP_INT_MIN]));
+        $this->assertSame(['maximum'], $this->listIds(['query' => 'Priority = '.PHP_INT_MAX]));
+        $this->assertSame(['zero'], $this->listIds(['query' => 'Priority = 0']));
+        $this->assertSame(['zero'], $this->listIds(['query' => 'Priority = -0']));
+        $this->assertSame(['minimum'], $this->listIds(['query' => 'Amount = -0.5']));
+        $this->assertSame(['maximum'], $this->listIds(['query' => 'Amount = 0.5']));
+        $this->getJson('/api/schedules?'.http_build_query([
+            'query' => 'Amount = '.str_repeat('9', 308).'.0',
+        ]), $this->headers())->assertOk();
     }
 
     public function test_continuation_token_refusals_preserve_reason_field_and_last_safe_cursor(): void
