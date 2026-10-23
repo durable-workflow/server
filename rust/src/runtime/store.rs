@@ -17,12 +17,19 @@ pub(super) struct PreparedControlArguments {
 }
 /// The runtime-owned message-stream delivery signal (`WorkflowStub::MESSAGE_STREAM_RUNTIME_SIGNAL`).
 const MESSAGE_STREAM_SIGNAL: &str = "__durable_workflow_message_stream";
-pub(super) const TASK_CANDIDATES_SQL: &str = "SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) ORDER BY t.priority,t.available_at,t.id LIMIT 100";
+pub(super) const TASK_CANDIDATES_SQL: &str = "SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ORDER BY t.priority,t.available_at,t.id LIMIT 100";
 /// `nextEligibleSignal`: a run's received signals in PHP's order: command
 /// sequence (unsequenced last), receipt time, then id.
 const RECEIVED_SIGNALS: &str = "SELECT id,signal_name,signal_wait_id,command_sequence FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received' AND closed_at IS NULL ORDER BY CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END,command_sequence,received_at,id LIMIT 100";
 pub(super) const POLL_RECEIPT_CLEANUP_SQL: &str = "DELETE FROM dw_poll_receipts WHERE expires_at<=$1 AND task_id IN (SELECT id FROM workflow_tasks WHERE status!='leased' OR lease_expires_at<=$2)";
 pub(super) const WORKER_REGISTRATION_SQL: &str = "INSERT INTO workflow_worker_registrations(namespace,worker_id,task_queue,runtime,sdk_version,build_id,supported_workflow_types,supported_activity_types,capabilities,capability_manifest,last_heartbeat_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(worker_id,namespace) DO UPDATE SET task_queue=excluded.task_queue,runtime=excluded.runtime,sdk_version=excluded.sdk_version,build_id=excluded.build_id,supported_workflow_types=excluded.supported_workflow_types,supported_activity_types=excluded.supported_activity_types,capabilities=excluded.capabilities,capability_manifest=excluded.capability_manifest,last_heartbeat_at=excluded.last_heartbeat_at,updated_at=excluded.updated_at";
+/// A registration's build id as the pollers compare it: trimmed, and none
+/// when blank. A task pinned to a build goes only to that build's workers.
+pub(super) fn worker_build<DB: Backend>(row: &DB::Row) -> Result<Option<String>> {
+    Ok(DB::optional_string(row, "build_id")?
+        .map(|build| build.trim().to_owned())
+        .filter(|build| !build.is_empty()))
+}
 pub(super) struct Store<DB: Backend> {
     pub(super) pool: Pool<DB>,
     pub(super) wake: Arc<Notify>,
@@ -261,6 +268,11 @@ where
         let run_id = id();
         let command_id = id();
         let started_at = now();
+        // `WorkflowStartVersionPin::resolveForStart`: the run is pinned to its
+        // cohort's build, and records the definition that cohort agrees on.
+        let workers = Self::start_workers(tx, namespace, queue, stale_after).await?;
+        let cohort = super::start_definition::resolve(&workers, workflow_type);
+        let pin = cohort.as_ref().and_then(|cohort| cohort.pin().map(str::to_owned));
         // DefaultWorkflowControlPlane::start: each deadline follows its own
         // timeout, and a run without timeouts has no deadline.
         let execution_deadline = execution_timeout.map(|seconds| started_at + chrono::Duration::seconds(seconds));
@@ -276,12 +288,12 @@ where
             .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(namespace)
             .bind(DB::optional_document(&authored_memo)).bind(request.business_key.as_deref()).execute(&mut **tx).await?;
         // PHP records the start as the run's first progress.
-        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at,namespace,last_progress_at,business_key,priority,fairness_key,fairness_weight) VALUES ($1,$2,$3,$4,1,'pending','avro',$5,$6,NULLIF($7,0),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)")
+        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at,namespace,last_progress_at,business_key,priority,fairness_key,fairness_weight,compatibility) VALUES ($1,$2,$3,$4,1,'pending','avro',$5,$6,NULLIF($7,0),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)")
             .bind(&run_id).bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(&arguments)
             .bind(queue).bind(run_timeout.unwrap_or(0)).bind(DB::optional_time(execution_deadline)).bind(DB::optional_time(run_deadline))
             .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(namespace)
             .bind(DB::bind_time(started_at)).bind(request.business_key.as_deref()).bind(request.priority)
-            .bind(request.fairness_key.as_deref()).bind(request.fairness_weight).execute(&mut **tx).await?;
+            .bind(request.fairness_key.as_deref()).bind(request.fairness_weight).bind(pin.as_deref()).execute(&mut **tx).await?;
         if let Some(memo) = memo {
             for (key, value) in memo {
                 Self::query(DB::MEMO_INITIAL_INSERT)
@@ -326,16 +338,20 @@ where
         started["run_timeout_seconds"] = json!(run_timeout);
         started["execution_deadline_at"] = json!(execution_deadline);
         started["run_deadline_at"] = json!(run_deadline);
-        if let Some(fingerprint) = Self::start_definition_fingerprint(tx, namespace, queue, workflow_type, stale_after).await? {
+        if let Some(fingerprint) = cohort.as_ref().and_then(|cohort| super::start_definition::fingerprint_for(&workers, workflow_type, cohort)) {
             started["workflow_definition_fingerprint"] = json!(fingerprint);
             started["workflow_definition_fingerprint_source"] = json!("worker");
         }
+        started["compatibility"] = json!(pin);
         // PHP filters null fields out of the started payload, then adds the
         // declared contract.
         if let Some(fields) = started.as_object_mut() {
             fields.retain(|_, value| !value.is_null());
         }
-        Self::attach_workflow_contract(tx, queue, workflow_type, &mut started).await?;
+        // PHP enriches the start with a contract only from its cohort.
+        if let Some(cohort) = &cohort {
+            Self::attach_workflow_contract(tx, queue, workflow_type, Some(cohort), &mut started).await?;
+        }
         Self::append(
             tx,
             &run_id,
@@ -357,13 +373,12 @@ where
     /// `WorkflowStartVersionPin::definitionFingerprintForCohort` over the
     /// queue's active registrations: unexpired or never heartbeated, and
     /// not draining or deregistered.
-    pub(super) async fn start_definition_fingerprint(
+    pub(super) async fn start_workers(
         tx: &mut Transaction<'_, DB>,
         namespace: &str,
         queue: &str,
-        workflow_type: &str,
         stale_after: i64,
-    ) -> Result<Option<String>> {
+    ) -> Result<Vec<super::start_definition::CohortWorker>> {
         let cutoff = now() - chrono::Duration::seconds(stale_after.max(1));
         let rows = Self::query("SELECT build_id,supported_workflow_types,workflow_definition_fingerprints,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND task_queue=$2 AND (last_heartbeat_at IS NULL OR last_heartbeat_at>=$3) AND (status IS NULL OR status='active')")
             .bind(namespace).bind(queue).bind(DB::bind_time(cutoff)).fetch_all(&mut **tx).await?;
@@ -376,7 +391,7 @@ where
                 heartbeated: DB::optional_instant(row, "last_heartbeat_at")?.is_some(),
             });
         }
-        Ok(super::start_definition::fingerprint(&workers, workflow_type))
+        Ok(workers)
     }
 
     /// `DefaultWorkflowControlPlane::start` for an instance that already has
@@ -1398,16 +1413,16 @@ where
         let queue = text(body, "task_queue")?;
         // The claim refuses a removed or moved registration.
         let registration = Self::query(
-            "SELECT task_queue FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2",
+            "SELECT task_queue,build_id FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2",
         )
         .bind(worker_id)
         .bind(self.namespace.as_ref())
         .fetch_optional(&self.pool)
         .await?;
-        match registration {
-            Some(row) if DB::string(&row, "task_queue")? == queue => {}
+        let build = match registration {
+            Some(row) if DB::string(&row, "task_queue")? == queue => worker_build::<DB>(&row)?,
             _ => return Ok(true),
-        }
+        };
         // A concurrent poll with the same request ID may have claimed already;
         // the claim replays its receipt.
         if let Some(request_id) = body.get("poll_request_id").and_then(Value::as_str)
@@ -1424,6 +1439,7 @@ where
             .bind(kind)
             .bind(DB::bind_time(at))
             .bind(DB::bind_time(at))
+            .bind(build.as_deref())
             .fetch_optional(&self.pool)
             .await?
             .is_some())
@@ -1477,12 +1493,14 @@ where
                 "supported_activity_types"
             },
         )?;
+        let build = worker_build::<DB>(&worker)?;
         let candidates = Self::query(DB::TASK_CANDIDATES_SQL)
             .bind(self.namespace.as_ref())
             .bind(queue)
             .bind(kind)
             .bind(DB::bind_time(now()))
             .bind(DB::bind_time(now()))
+            .bind(build.as_deref())
             .fetch_all(&mut *tx)
             .await?;
         for task in candidates {
@@ -1696,6 +1714,9 @@ where
                     claim["workflow_update_id"] = json!(update_id);
                 }
                 claim["sticky_replay_mode"] = json!("cold_replay");
+                claim["compatibility"] = json!(DB::optional_string(&task, "compatibility")?
+                    .filter(|build| !build.trim().is_empty())
+                    .or(DB::optional_string(&run, "compatibility")?.filter(|build| !build.trim().is_empty())));
                 if let Some(cancellation) = cancellation {
                     claim["cancellation_request"] = cancellation;
                 }
@@ -3238,7 +3259,7 @@ where
         tx.summary_changed(run_id);
         let task_id = id();
         // A task carries its run's priority and fairness tags, as in PHP.
-        let run = Self::query("SELECT namespace,priority,fairness_key,fairness_weight FROM workflow_runs WHERE id=$1")
+        let run = Self::query("SELECT namespace,priority,fairness_key,fairness_weight,compatibility FROM workflow_runs WHERE id=$1")
             .bind(run_id)
             .fetch_one(&mut **tx)
             .await?;
@@ -3246,10 +3267,11 @@ where
         let created = now();
         let dispatched_at = dispatched.then_some(created);
         let fairness_key = DB::optional_string(&run, "fairness_key")?;
-        Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,payload,queue,available_at,namespace,created_at,updated_at,last_dispatched_at,last_dispatch_attempt_at,priority,fairness_key,fairness_weight) VALUES ($1,$2,$3,'ready',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
+        Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,payload,queue,available_at,namespace,created_at,updated_at,last_dispatched_at,last_dispatch_attempt_at,priority,fairness_key,fairness_weight,compatibility) VALUES ($1,$2,$3,'ready',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
         .bind(&task_id).bind(run_id).bind(kind).bind(DB::document(&payload)).bind(queue).bind(DB::bind_time(created)).bind(&namespace)
         .bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::optional_time(dispatched_at)).bind(DB::optional_time(dispatched_at))
         .bind(DB::number(&run, "priority")?).bind(fairness_key.as_deref()).bind(DB::number(&run, "fairness_weight")?)
+        .bind(DB::optional_string(&run, "compatibility")?.as_deref())
         .execute(&mut **tx).await?;
         Ok(task_id)
     }

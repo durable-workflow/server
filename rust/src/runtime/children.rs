@@ -200,10 +200,13 @@ where
         Ok(consistent.then_some((parent_close, cancellation)))
     }
 
+    /// `externalCommandContract`: the type's contract from the most recently
+    /// heartbeated active worker, in the start's cohort when it has one.
     pub(super) async fn attach_workflow_contract(
         tx: &mut Transaction<'_, DB>,
         queue: &str,
         workflow_type: &str,
+        cohort: Option<&super::start_definition::Cohort>,
         started: &mut Value,
     ) -> Result<()> {
         let instance = Self::query("SELECT namespace FROM workflow_instances WHERE id=$1")
@@ -211,9 +214,13 @@ where
             .fetch_one(&mut **tx)
             .await?;
         let namespace = DB::string(&instance, "namespace")?;
-        let workers = Self::query("SELECT supported_workflow_types,workflow_command_contracts FROM workflow_worker_registrations WHERE task_queue=$1 AND status='active' AND workflow_command_contracts IS NOT NULL AND last_heartbeat_at>$2 AND namespace=$3 ORDER BY id DESC LIMIT 100")
+        let workers = Self::query("SELECT build_id,supported_workflow_types,workflow_command_contracts FROM workflow_worker_registrations WHERE task_queue=$1 AND status='active' AND workflow_command_contracts IS NOT NULL AND last_heartbeat_at>$2 AND namespace=$3 ORDER BY last_heartbeat_at DESC,id DESC LIMIT 100")
             .bind(queue).bind(DB::bind_time(now() - chrono::Duration::seconds(60))).bind(&namespace).fetch_all(&mut **tx).await?;
         for worker in workers {
+            let build = DB::optional_string(&worker, "build_id")?;
+            if cohort.is_some_and(|cohort| !cohort.admits(build.as_deref())) {
+                continue;
+            }
             if DB::document_row(&worker, "supported_workflow_types")?
                 .as_array()
                 .is_some_and(|types| types.iter().any(|value| value == workflow_type))
@@ -292,12 +299,15 @@ where
         // A child lives in its parent's namespace (ChildWorkflowNamespaceProjection).
         let namespace = DB::optional_string(parent, "namespace")?;
         let started_at = now();
+        // `ChildCallService`: a child keeps its parent's build pin. A child of
+        // an unpinned parent is unpinned too (checked against published 2.11.1).
+        let compatibility = DB::optional_string(parent, "compatibility")?.filter(|build| !build.trim().is_empty());
         // PHP children without explicit timeout options have nullable budgets
         // and deadlines. Do not invent parent defaults for these runs.
         Self::query("INSERT INTO workflow_instances(id,namespace,workflow_type,workflow_class,current_run_id,run_count,started_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,1,$6,$7,$8)")
             .bind(&child_instance).bind(namespace.as_deref()).bind(workflow_type).bind(workflow_type).bind(&child_run).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
-        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,namespace,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,started_at,created_at,updated_at,last_progress_at) VALUES ($1,$2,$3,$4,$5,1,'pending','avro',$6,$7,$8,$9,$10,$11)")
-            .bind(&child_run).bind(&child_instance).bind(namespace.as_deref()).bind(workflow_type).bind(workflow_type).bind(&arguments).bind(&queue).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
+        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,namespace,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,started_at,created_at,updated_at,last_progress_at,compatibility) VALUES ($1,$2,$3,$4,$5,1,'pending','avro',$6,$7,$8,$9,$10,$11,$12)")
+            .bind(&child_run).bind(&child_instance).bind(namespace.as_deref()).bind(workflow_type).bind(workflow_type).bind(&arguments).bind(&queue).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(compatibility.as_deref()).execute(&mut **tx).await?;
         Self::query("INSERT INTO workflow_child_calls(parent_workflow_run_id,parent_workflow_instance_id,sequence,child_workflow_type,child_workflow_class,resolved_child_instance_id,resolved_child_run_id,parent_close_policy,cancellation_propagation,queue,status,scheduled_at,started_at,arguments,metadata,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,($9<>'abandon'),$10,'started',$11,$12,$13,$14,$15,$16)")
             .bind(&parent_run).bind(&parent_instance).bind(sequence).bind(workflow_type).bind(workflow_type).bind(&child_instance).bind(&child_run).bind(&policies.parent_close).bind(&policies.cancellation).bind(&queue).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at))
             .bind(DB::document(&json!({"payload":arguments}))).bind(DB::document(&json!({"child_call_id":call,"attempt_count":1,"cancellation_policy":policies.cancellation}))).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
@@ -333,7 +343,7 @@ where
         )
         .await?;
         let mut child_started = json!({"workflow_class":workflow_type,"workflow_type":workflow_type,"workflow_instance_id":child_instance,"workflow_run_id":child_run,"parent_workflow_instance_id":parent_instance,"parent_workflow_run_id":parent_run,"parent_sequence":sequence,"workflow_link_id":call,"child_call_id":call,"retry_policy":null,"timeout_policy":null,"execution_timeout_seconds":null,"run_timeout_seconds":null,"execution_deadline_at":null,"run_deadline_at":null});
-        Self::attach_workflow_contract(tx, &queue, workflow_type, &mut child_started).await?;
+        Self::attach_workflow_contract(tx, &queue, workflow_type, None, &mut child_started).await?;
         Self::append(tx, &child_run, "WorkflowStarted", child_started, None, None).await?;
         Self::create_task(tx, &child_run, &queue, "workflow", json!({})).await?;
         Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1")

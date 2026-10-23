@@ -170,6 +170,8 @@ mod standalone_activities;
 mod archive;
 #[path = "execution/redrive.rs"]
 mod redrive;
+#[path = "execution/build_pins.rs"]
+mod build_pins;
 #[path = "execution/activity_timeout_pass.rs"]
 mod activity_timeout_pass;
 #[path = "execution/start_request.rs"]

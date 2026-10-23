@@ -212,7 +212,11 @@ where
         // An external workflow's definition must still match its worker cohort.
         let workflow_type = DB::string(&source, "workflow_type")?;
         let queue = DB::string(&source, "queue")?;
-        let cohort = Self::start_definition_fingerprint(&mut tx, &self.namespace, &queue, &workflow_type, self.worker_stale_after_seconds).await?;
+        // `ServerWorkflowControlPlane::redrive`: the source run's own cohort,
+        // its build or the unversioned workers.
+        let workers = Self::start_workers(&mut tx, &self.namespace, &queue, self.worker_stale_after_seconds).await?;
+        let source_cohort = super::start_definition::Cohort::of_run(DB::optional_string(&source, "compatibility")?.as_deref());
+        let cohort = super::start_definition::fingerprint_for(&workers, &workflow_type, &source_cohort);
         let recorded = started["workflow_definition_fingerprint"].as_str().filter(|value| !value.is_empty());
         if DB::string(&source, "workflow_class")? != workflow_type || recorded.is_none() || recorded != cohort.as_deref() {
             return conflict("workflow_definition_unavailable_or_changed");

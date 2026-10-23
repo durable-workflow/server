@@ -146,7 +146,11 @@ These published PHP routes on this tree have no native handler yet, by family.
     native never holds catalog rows, so every list is PHP's empty page and every
     identity its not-found answer; the `service-catalog` fixture checks 37 cases.)
   - Nexus operations.
-  - Deployments.
+  - Deployments: build-id promote, drain, resume and rollback. (Runs are
+    pinned to their start cohort's build, and polls route pinned tasks only
+    to that build, as on 2.11.1; unpinned activities follow
+    [Workflow #908](https://github.com/durable-workflow/workflow/issues/908)
+    ([checkpoint](rust-server-port-checkpoints/2026-10-23-build-pins.md)).)
   - Bridge adapters.
 
 ## Known gaps found in review
