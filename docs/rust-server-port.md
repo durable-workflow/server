@@ -178,12 +178,6 @@ contract fixture before its correction.
   Waterline's activity-result view waits on
   `capabilities.workflow_activity_result_inspection`, which stays held until
   that read is qualified. `version` is `0.0.0`.
-- **Takeover of a payload storage policy native cannot serve.** A PHP
-  namespace whose external payload policy names `s3`, `gcs`, `azure` or
-  `custom` keeps it after a takeover. Native reports it as
-  `driver_unavailable` and refuses its uploads with 503, where PHP may have
-  served them. Takeover should refuse such a namespace, as it refuses
-  schedules native cannot run.
 - **Search attributes on start.** Published PHP validates `search_attributes`
   against the namespace registry and stores them as typed rows. Native
   answers a start that names any with

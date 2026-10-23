@@ -38,6 +38,21 @@ unadvertised".
 The config audit now lists `DW_SERVER_ID`, `DW_MAX_PENDING_ACTIVITIES` and
 `DW_MAX_PENDING_CHILDREN` as honored, since cluster info reports them.
 
+## Takeover of a policy native cannot serve
+
+Native stores and serves only the `local` driver. A PHP namespace with an
+enabled `s3`, `gcs`, `azure`, `custom` or unknown driver used to keep its
+policy through a takeover. Native then reported it as `driver_unavailable`
+and refused every upload in it with 503, where PHP may have served them.
+
+Inspection now reports `storage_inspection`, which counts such namespaces by
+reason without naming them. Takeover refuses them with
+`upgrade_source_external_payload_storage_unsupported` before any change, as
+it refuses schedules native cannot run. A disabled policy, the `local` driver
+and an unconfigured namespace do not block it. The inspection and refusal
+tests use the frozen 2.9.7 layout and check that the source bytes are
+unchanged.
+
 ## Where native's manifest differs, and why
 
 Each manifest claim was checked against what native serves:
@@ -103,11 +118,6 @@ context native parses.
   them. The CLI treats an absent `client_compatibility` as compatible.
   Waterline reads `capabilities.workflow_activity_result_inspection`, which
   stays held until that read is qualified. `version` is still `0.0.0`.
-- **Takeover keeps a policy native cannot serve.** A PHP namespace whose policy
-  names `s3`, `gcs`, `azure` or `custom` keeps it after a takeover. Native
-  reports it as `driver_unavailable` and refuses uploads with 503, where PHP
-  might have served them. Takeover should refuse such a namespace, as it
-  refuses schedules native cannot run.
 - **Audit events.** Native writes none. Structured logging belongs to the ops
   gate.
 - **Worker capabilities native does not advertise.** `update_validation_tasks`
