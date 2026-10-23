@@ -15,6 +15,7 @@ import {checkStorageTest} from './storage-test-contract.mjs';
 import {checkActivityLeaseRenewal} from './activity-lease-renewal-contract.mjs';
 import {checkServiceCatalog} from './service-catalog-contract.mjs';
 import {checkSystemMetrics} from './system-metrics-contract.mjs';
+import {checkOperatorDashboardTypes} from './operator-dashboard-types-contract.mjs';
 import {checkPrometheusMetrics} from './prometheus-metrics-contract.mjs';
 import {checkPayloadCleanup} from './payload-cleanup-contract.mjs';
 import {checkClusterInfo} from './cluster-info-contract.mjs';
@@ -152,6 +153,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const activityLeaseRenewal = fixture.activity_lease_renewal ? checkActivityLeaseRenewal(fixture, observation, workflowId) : null;
   const serviceCatalog = fixture.service_catalog ? checkServiceCatalog(fixture, observation, workflowId) : null;
   const systemMetrics = fixture.system_metrics ? checkSystemMetrics(fixture, observation, workflowId) : null;
+  const operatorDashboardTypes = fixture.operator_dashboard_types ? checkOperatorDashboardTypes(fixture, observation, workflowId) : null;
   const prometheusMetrics = fixture.prometheus_metrics ? checkPrometheusMetrics(fixture, observation, workflowId) : null;
   const payloadCleanup = fixture.payload_cleanup ? checkPayloadCleanup(fixture, observation, workflowId) : null;
   const clusterInfo = fixture.cluster_info ? checkClusterInfo(fixture, observation, workflowId) : null;
@@ -706,6 +708,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(activityLeaseRenewal ? {activity_lease_renewal: activityLeaseRenewal} : {}),
     ...(serviceCatalog ? {service_catalog: serviceCatalog} : {}),
     ...(systemMetrics ? {system_metrics: systemMetrics} : {}),
+    ...(operatorDashboardTypes ? {operator_dashboard_types: operatorDashboardTypes} : {}),
     ...(prometheusMetrics ? {prometheus_metrics: prometheusMetrics} : {}),
     ...(payloadCleanup ? {payload_cleanup: payloadCleanup} : {}),
     ...(clusterInfo ? {cluster_info: clusterInfo} : {}),

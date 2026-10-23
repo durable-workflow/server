@@ -58,18 +58,71 @@ async fn operator_dashboard_summarizes_runs_like_php() {
     assert!(full["operator_metrics"].get("history_audit_evaluation").is_none());
 }
 
-// Totals filtered by workflow type need an observer native does not have, so
-// native answers as PHP does when its observer cannot filter.
+async fn start_of_type(app: &Router, workflow: &str, workflow_type: &str) {
+    let (status, body) = request(app, "POST", "/api/workflows", json!({"workflow_id": workflow,
+        "workflow_type": workflow_type, "task_queue": "test", "input": envelope(Payload::Array(vec![]))})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+// `workflowTypeDashboardSummary`: published PHP 2.11.1 narrows the run
+// figures to the listed workflow types and echoes the list; the operator
+// metrics keep the whole namespace.
 #[tokio::test]
-async fn workflow_type_dashboard_validates_then_reports_the_missing_capability() {
+async fn workflow_type_dashboard_narrows_run_figures_like_php() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    for workflow in ["first", "second"] {
+        start(&app, workflow).await;
+    }
+    start_of_type(&app, "invoice", "billing").await;
+    let path = "/api/system/operator-dashboard/bounded/workflow-types?workflow_types=";
+    let echo = dashboard(&app, &format!("{path}%5B%22echo%22%5D")).await;
+    assert_eq!(echo["flows"], 2);
+    assert_eq!(echo["flows_past_hour"], 2);
+    assert_eq!(echo["fleet_overview"]["current"], json!({"running":2,"failed":0}));
+    assert_eq!(echo["workflow_type_health"].as_array().unwrap().len(), 1);
+    assert_eq!(echo["workflow_type_health"][0]["workflow_type"], "echo");
+    assert_eq!(echo["workflow_type_health"][0]["total_runs"], 2);
+    assert_eq!(echo["workflow_scope"], json!({"namespace":"default","workflow_types":["echo"],"all_workflow_types":false}));
+    assert_eq!(echo["operator_metrics_scope"], json!({"namespace":"default","workflow_types":null}));
+    assert_eq!(echo["operator_metrics"]["history_audit_evaluation"], "not_requested");
+    assert_eq!(echo["operator_metrics"]["runs"]["total"], 3, "the operator metrics keep the namespace");
+    let billing = dashboard(&app, &format!("{path}%5B%22billing%22%2C%22missing%22%5D")).await;
+    assert_eq!(billing["flows"], 1);
+    assert_eq!(billing["max_wait_time_workflow"]["instance_id"], "invoice");
+    assert_eq!(billing["workflow_type_health"][0]["workflow_type"], "billing");
+    let none = dashboard(&app, &format!("{path}%5B%5D")).await;
+    assert_eq!(none["flows"], 0);
+    assert_eq!(none["max_wait_time_workflow"], Value::Null);
+    assert_eq!(none["workflow_type_health"], json!([]));
+    assert_eq!(none["fleet_overview"]["current"], json!({"running":0,"failed":0}));
+    assert_eq!(none["workflow_scope"]["workflow_types"], json!([]));
+    let repeated = dashboard(&app, &format!("{path}%5B%22echo%22%2C%22echo%22%5D")).await;
+    assert_eq!(repeated["flows"], 2);
+    assert_eq!(repeated["workflow_scope"]["workflow_types"], json!(["echo", "echo"]));
+    // PHP's whereIn compares through the column: MySQL and MariaDB collations
+    // ignore case, SQLite and PostgreSQL do not.
+    let upper = dashboard(&app, &format!("{path}%5B%22ECHO%22%5D")).await;
+    let folds_case = matches!(database, TestDatabase::MySql { .. });
+    assert_eq!(upper["flows"], if folds_case { 2 } else { 0 });
+    let all = dashboard(&app, "/api/system/operator-dashboard/bounded").await;
+    assert_eq!(all["flows"], 3);
+    assert_eq!(all["workflow_scope"]["all_workflow_types"], true);
+}
+
+#[tokio::test]
+async fn workflow_type_dashboard_validates_its_list_like_php() {
     let database = TestDatabase::new().await;
     let app = router(database.open().await.unwrap());
     let path = "/api/system/operator-dashboard/bounded/workflow-types";
-    let (status, body) = request(&app, "GET", path, Value::Null).await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    assert_eq!(body["errors"]["workflow_types"], json!(["The workflow types field is required."]));
-    let (status, body) = request(&app, "GET", &format!("{path}?workflow_types=%5B%22echo%22%5D"), Value::Null).await;
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{body}");
-    assert_eq!(body["reason"], "backend_capability_unavailable");
-    assert_eq!(body["capability"], "workflow_type_dashboard");
+    for (query, message) in [
+        ("", "The workflow types field is required."),
+        ("?workflow_types=%7B%22a%22%3A%22b%22%7D", "Provide a JSON list of workflow types with at most 4096 encoded bytes."),
+        ("?workflow_types=%5B%22%22%5D", "Workflow types must be nonempty strings of at most 255 characters."),
+        ("?workflow_types=nope", "The workflow types field must be a valid JSON string."),
+    ] {
+        let (status, body) = request(&app, "GET", &format!("{path}{query}"), Value::Null).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{query}: {body}");
+        assert_eq!(body["errors"]["workflow_types"], json!([message]), "{query}");
+    }
 }

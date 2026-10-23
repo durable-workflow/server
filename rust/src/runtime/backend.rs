@@ -485,13 +485,21 @@ impl Backend for MySql {
         // Shared templates use ordered, unique $N positions. Convert only
         // compiled static SQL; request data never enters this string and stays
         // in SQLx bind parameters. The adapter accepts no arbitrary SQL input.
+        // A '$' without digits, such as a JSON path '$[*]', stays literal.
         let mut parts = sql.split('$');
         let mut result = parts.next().unwrap().to_owned();
-        for (index, part) in parts.enumerate() {
+        let mut position = 0;
+        for part in parts {
             let digits = part.bytes().take_while(u8::is_ascii_digit).count();
+            if digits == 0 {
+                result.push('$');
+                result.push_str(part);
+                continue;
+            }
+            position += 1;
             assert_eq!(
                 part[..digits].parse::<usize>().ok(),
-                Some(index + 1),
+                Some(position),
                 "native SQL templates require ordered unique positions"
             );
             result.push('?');
@@ -587,6 +595,21 @@ mod timestamp_tests {
         assert!(sql.contains("JSON_EXTRACT(value,'$.run_id')"));
         assert!(sql.contains("JSON_EXTRACT(value,'$.status')"));
         assert!(!sql.contains("$1") && !sql.contains("$2"));
+    }
+
+    #[test]
+    fn mysql_statement_converts_numbered_positions_and_keeps_json_paths() {
+        let sql = "SELECT COUNT(*) FROM s WHERE namespace=$1 AND at>=$2 AND t IN (SELECT jt.t FROM JSON_TABLE($3,'$[*]' COLUMNS(t VARCHAR(255) PATH '$')) jt)";
+        assert_eq!(
+            MySql::statement(sql),
+            "SELECT COUNT(*) FROM s WHERE namespace=? AND at>=? AND t IN (SELECT jt.t FROM JSON_TABLE(?,'$[*]' COLUMNS(t VARCHAR(255) PATH '$')) jt)"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "ordered unique positions")]
+    fn mysql_statement_refuses_out_of_order_positions_after_a_json_path() {
+        let _ = MySql::statement("SELECT '$[*]' WHERE a=$2");
     }
 
     #[tokio::test]

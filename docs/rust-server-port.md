@@ -538,11 +538,15 @@ October 21, operator dashboard:
   - the operator metrics snapshot. The bounded variant marks the history
     audits as not requested and reports capacity evidence unavailable.
 - **By workflow type.** `/bounded/workflow-types` applies PHP's
-  `workflow_types` validation, then answers PHP's 501
-  `backend_capability_unavailable` for an observer that cannot filter by
-  type. Native does not advertise `workflow_type_dashboard_summary`, so
-  Waterline does not ask for it. Published PHP 2.5.14 answers with
-  filtered totals; porting that filter is open.
+  `workflow_types` validation and answers the bounded dashboard with every
+  run figure narrowed to the listed types, as published Server 2.11.1 does.
+  `workflow_scope` echoes the list, and the operator metrics keep the whole
+  namespace. The list is bound as one JSON value, and each database compares
+  through the column, as PHP's `whereIn` does: MySQL and MariaDB collations
+  ignore case, SQLite and PostgreSQL do not. Waterline turns on its workflow
+  type filter whenever the bounded dashboard has a `workflow_scope`, so it
+  asked native for this and got 501 until
+  [the checkpoint](rust-server-port-checkpoints/2026-10-23-dashboard-by-workflow-type.md).
 - **Verification.** `operator_dashboard` integration tests pass on SQLite,
   PostgreSQL and MySQL, and the full native suite passes on SQLite. With
   identical seeds, Waterline's stats from native and from published PHP

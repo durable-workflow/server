@@ -1567,25 +1567,21 @@ async fn operator_metrics(Extension(runtime): Extension<Runtime>) -> Result<Json
 }
 
 async fn operator_dashboard(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
-    Ok(Json(runtime.operator_dashboard(&metrics_config(&runtime), false).await?))
+    Ok(Json(runtime.operator_dashboard(&metrics_config(&runtime), false, None).await?))
 }
 
 async fn bounded_operator_dashboard(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
-    Ok(Json(runtime.operator_dashboard(&metrics_config(&runtime), true).await?))
+    Ok(Json(runtime.operator_dashboard(&metrics_config(&runtime), true, None).await?))
 }
 
-/// PHP validates `workflow_types` and then answers 501 when its observer
-/// cannot filter dashboard totals by workflow type; native cannot either.
+/// `workflowTypeOperatorDashboard`: the bounded dashboard with its run
+/// figures narrowed to the listed workflow types.
 async fn workflow_type_operator_dashboard(
+    Extension(runtime): Extension<Runtime>,
     Query(query): Query<std::collections::HashMap<String, String>>,
-) -> Result<Response> {
-    super::operator_dashboard::workflow_types(query.get("workflow_types").map(String::as_str))?;
-    Ok((
-        StatusCode::NOT_IMPLEMENTED,
-        Json(json!({"message":"The installed workflow observer cannot filter dashboard totals by workflow type.",
-            "reason":"backend_capability_unavailable","capability":"workflow_type_dashboard"})),
-    )
-        .into_response())
+) -> Result<Json<Value>> {
+    let types = super::operator_dashboard::workflow_types(query.get("workflow_types").map(String::as_str))?;
+    Ok(Json(runtime.operator_dashboard(&metrics_config(&runtime), true, Some(&types)).await?))
 }
 
 type QueryMap = Query<std::collections::HashMap<String, String>>;
