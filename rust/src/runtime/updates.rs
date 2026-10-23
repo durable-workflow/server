@@ -110,7 +110,7 @@ fn update_argument_errors(contract: &Value, name: &str, values: &[crate::codec::
     }
     Value::Object(errors)
 }
-const UPDATE_ROW: &str = "SELECT u.*,c.workflow_type,c.message_sequence FROM workflow_updates u JOIN workflow_commands c ON c.id=u.workflow_command_id WHERE u.id=$1";
+const UPDATE_ROW: &str = "SELECT u.*,c.workflow_type,c.message_sequence,c.context AS command_context FROM workflow_updates u JOIN workflow_commands c ON c.id=u.workflow_command_id WHERE u.id=$1";
 
 #[derive(Clone, Copy)]
 enum UpdateLookup {
@@ -526,14 +526,18 @@ where
                 Some(command) => (json!(DB::string(command, "id")?), json!(DB::number(command, "command_sequence")?)),
                 None => (Value::Null, Value::Null),
             };
-            Self::append(&mut tx, &run_id, "UpdateAccepted", json!({
+            let mut accepted = json!({
                 "workflow_command_id":command_id,"update_id":update_id,"workflow_instance_id":workflow_id,
                 "workflow_run_id":run_id,"update_name":name,"arguments":wire(&prepared.arguments),
                 "ordering_state":if blocking.is_some() {"queued"} else {"ready"},
                 "queued_behind_command_id":queued_id,"queued_behind_command_sequence":queued_sequence,
                 "queued_behind_command_type":if blocking.is_some() {json!("signal")} else {Value::Null},
-                "request_id":request_id
-            }), None, Some(&command_id)).await
+            });
+            // PHP adds the request id only when the request named one.
+            if let Some(request_id) = request_id {
+                accepted["request_id"] = json!(request_id);
+            }
+            Self::append(&mut tx, &run_id, "UpdateAccepted", accepted, None, Some(&command_id)).await
                 .map_err(|error| at_update_lookup(error, UpdateLookup::HistoryAppend))?;
             // A ready update is delivered now when the run has no open
             // workflow task. Otherwise the open task's completion delivers
@@ -746,7 +750,7 @@ where
         let validation_errors = DB::optional_document_row(update, "validation_errors")?
             .filter(|errors| !errors.is_null())
             .unwrap_or_else(|| json!([]));
-        let response = json!({
+        let mut response = json!({
             "accepted":!rejected,"workflow_id":DB::string(update,"workflow_instance_id")?,"run_id":DB::string(update,"workflow_run_id")?,
             "resolved_run_id":DB::string(update,"resolved_workflow_run_id")?,"requested_run_id":null,"target_scope":"instance",
             "workflow_type":DB::string(update,"workflow_type")?,"command_id":DB::string(update,"workflow_command_id")?,
@@ -758,8 +762,21 @@ where
             "accepted_at":DB::optional_instant(update,"accepted_at")?,"applied_at":DB::optional_instant(update,"applied_at")?,
             "closed_at":DB::optional_instant(update,"closed_at")?,"reason":if rejected {json!(rejection_reason)} else {Value::Null},
             "rejection_reason":rejection_reason,"validation_errors":validation_errors,
-            "wait_for":wait_for,"wait_timed_out":timed_out,"wait_timeout_seconds":timeout
+            "wait_for":wait_for,"wait_timed_out":timed_out,"wait_timeout_seconds":timeout,
+            "rejected_at":DB::optional_instant(update,"rejected_at")?
         });
+        // The requester recorded on the command, as `principalPayload`.
+        let context = DB::optional_document_row(update, "command_context")?.unwrap_or(Value::Null);
+        let principal: serde_json::Map<String, Value> = ["type", "id", "label"]
+            .iter()
+            .filter_map(|field| {
+                context["principal"][*field].as_str().filter(|value| !value.trim().is_empty())
+                    .map(|value| ((*field).to_owned(), json!(value)))
+            })
+            .collect();
+        if !principal.is_empty() {
+            response["principal"] = Value::Object(principal);
+        }
         let name = response["update_name"].as_str().unwrap_or_default().to_owned();
         Ok(super::control_plane::Operation::Update(&name).response(response))
     }

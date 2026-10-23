@@ -134,6 +134,10 @@ async fn updates_over_a_structural_limit_are_rejected_durably_like_php() {
     ] {
         assert_eq!(big[field], expected, "{field}: {big}");
     }
+    // Like PHP, the answer names the requester and when it was rejected.
+    assert_eq!(big["principal"]["type"], "auth:token", "{big}");
+    assert!(big["principal"]["id"].is_string(), "{big}");
+    assert_eq!(big["rejected_at"], big["closed_at"], "{big}");
     // A retried request returns the original rejection with its limit.
     let (status, retried) = request(&app, "POST", path, json!({"input":oversized(),"request_id":"big"})).await;
     assert_eq!(status, StatusCode::CONFLICT, "{retried}");
@@ -156,7 +160,10 @@ async fn updates_over_a_structural_limit_are_rejected_durably_like_php() {
     assert_eq!(rejected[0]["payload"]["arguments"], arguments(vec![]), "{history}");
     assert_eq!(rejected[0]["payload"]["validation_errors"], big["validation_errors"]);
     assert_eq!(rejected[1]["payload"]["arguments"], arguments(vec![]), "{history}");
-    assert_eq!(events_of(&history, "UpdateAccepted").len(), 1, "{history}");
+    let accepted = events_of(&history, "UpdateAccepted");
+    assert_eq!(accepted.len(), 1, "{history}");
+    // PHP records a request id only when the request named one.
+    assert!(accepted[0]["payload"].get("request_id").is_none(), "{history}");
     runtime.close().await;
     database.remove().await;
 }

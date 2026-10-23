@@ -54,7 +54,7 @@
     unchanged.
   - Native still caps a run at 64 updates over its lifetime, with a 503
     `update_inventory_exceeds_budget`. PHP has no lifetime cap.
-  - PHP's update answer names the authenticated `principal`, and its
-    `UpdateAccepted` event omits a null `request_id`. Native's answer has no
-    `principal`, and its event keeps `request_id` null. Both predate this
-    change.
+- **Also fixed.** The same comparison showed three older differences in
+  updates, now matched: the answer names the requester's `principal` and
+  carries `rejected_at`, and `UpdateAccepted` records `request_id` only
+  when the request named one.
