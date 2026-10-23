@@ -30,17 +30,31 @@
   kernel holds it about 40 ms. SQLx sets no `TCP_NODELAY`; PHP's mysqlnd does.
   PostgreSQL's driver sends its closes together with the next request.
 - **Change.** In the vendored driver, `MySqlStream::queue_packet` buffers each
-  statement close with sequence number 0. `wait_until_ready` no longer flushes
-  a buffer that holds only replyless closes, so they leave in the same write as
-  the next command. Packets, order and server behavior are unchanged. The
-  patch record is `rust/vendor/sqlx-mysql/DURABLE-PATCH.md`.
-- **Test.** `qualification_statement_close_leaves_with_the_next_command`
-  records the client's writes through a proxy. It uses a one-entry statement
-  cache and one uncached statement, so both close paths are exercised.
-  - With the fix it passes on MySQL 8.0.46 and MariaDB 10.11 in 0.01 s.
-  - With the published driver it fails on both: every close ends its own
-    write, and the same 14 statements take 0.6 s.
-  - The existing cancelled-boundary qualification still passes.
+  statement close with sequence number 0. On the path before the next command,
+  `wait_until_ready` no longer flushes a buffer that holds only replyless
+  closes, so they leave in the same write as that command. `Connection::flush`
+  and `clear_cached_statements` still send queued closes before returning;
+  Security's review of the first revision found that they did not. Packets,
+  order and server behavior are unchanged. The patch record is
+  `rust/vendor/sqlx-mysql/DURABLE-PATCH.md`.
+- **Tests.** A proxy records the TCP read chunks it receives from the client.
+  TCP is a byte stream, so a chunk boundary shows bytes that arrived
+  separately.
+  - `qualification_statement_close_leaves_with_the_next_command` uses a
+    one-entry statement cache and one uncached statement, so both close paths
+    are exercised. With the fix it passes on MySQL 8.0.46 and MariaDB 10.11 in
+    0.01 s. With the published driver it fails on both: every close arrives
+    as a chunk of its own, and the same 14 statements take 0.6 s.
+  - `qualification_explicit_flush_sends_queued_statement_closes`: a queued
+    close stays buffered until `flush`, which sends it with no later command
+    and leaves `should_flush` false.
+  - `qualification_clearing_the_statement_cache_closes_them_now`:
+    `clear_cached_statements` sends all three closes before it returns. On
+    MySQL 8.0 with the performance schema on, the server's statements for the
+    connection drop from three to none.
+  - Both lifecycle tests fail with the first revision (`f31c4c361`) on MySQL
+    8.0 and MariaDB, and pass with this one. The existing cancelled-boundary
+    qualification still passes.
 - **Hosted-cell A/B on the VM.** Interleaved cells with the spec and limits
   unchanged. Both builds were instrumented: one without the driver change, one
   with its first revision. That revision already buffered the closes, but

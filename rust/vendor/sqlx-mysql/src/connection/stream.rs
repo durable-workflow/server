@@ -63,6 +63,17 @@ impl<S: Socket> MySqlStream<S> {
         }
     }
 
+    /// Send every buffered byte now, including queued commands without a
+    /// reply. Explicit flushes and statement cache clears use this; only the
+    /// path before the next command leaves queued closes to share its write.
+    pub(crate) async fn flush_queued(&mut self) -> Result<(), Error> {
+        if !self.socket.write_buffer().is_empty() {
+            self.socket.flush().await?;
+        }
+        self.queued_unanswered = false;
+        Ok(())
+    }
+
     pub(crate) async fn wait_until_ready(&mut self) -> Result<(), Error> {
         // Queued commands without a reply wait for the next command; nothing
         // pending needs them to be sent first.

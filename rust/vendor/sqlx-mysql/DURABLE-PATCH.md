@@ -33,15 +33,28 @@ so these stalls added up to holds of 0.3 to 1 s under load. A due timer
 waiting behind them fired more than the 1 s maximum late (Server #714).
 
 `MySqlStream::queue_packet` now buffers each close with the reset sequence
-number that `send_packet` would use, so it leaves in the same write as the next
-command. The server receives the same packets in the same order. A connection
-dropped before its next command leaves the close unsent; the server releases
-that connection's prepared statements when it closes.
+number that `send_packet` would use. On the path before the next command
+(`wait_until_ready`), a buffer that holds only such closes is not flushed, so
+they leave in the same write as that command. The server receives the same
+packets in the same order. A connection dropped before its next command leaves
+the close unsent; the server releases that connection's prepared statements
+when it closes.
 
-`qualification_statement_close_leaves_with_the_next_command` in
-`rust/src/runtime/mysql_pool_tests.rs` records every client write through a
-proxy. It fails with the published driver, where each close ends its write, and
-passes with this correction.
+The public lifecycle is unchanged. `Connection::flush` sends every buffered
+byte, queued closes included, and leaves `should_flush` false.
+`clear_cached_statements` sends its closes before it returns. Neither needs a
+later command.
+
+Three tests in `rust/src/runtime/mysql_pool_tests.rs` record the TCP read
+chunks a proxy receives from the client:
+- `qualification_statement_close_leaves_with_the_next_command` fails with the
+  published driver, where each close arrives as a chunk of its own, and passes
+  with this correction;
+- `qualification_explicit_flush_sends_queued_statement_closes` and
+  `qualification_clearing_the_statement_cache_closes_them_now` prove the two
+  lifecycle calls without a later command. Where the performance schema is on,
+  the second also sees the server's statements for the connection drop from
+  three to none.
 
 All upstream source is retained. The source-code changes are in
 `src/connection/mod.rs`, `src/connection/stream.rs` and

@@ -222,9 +222,12 @@ async fn qualification_cancelled_pool_boundaries_preserve_fresh_reads_and_commit
     .expect("bounded real transaction-boundary qualification");
 }
 
-/// Forward one client to `upstream`, recording each client write as it
-/// arrives.
-async fn record_client_writes(
+const COM_STMT_CLOSE: u8 = 0x19;
+
+/// Forward clients to `upstream`, recording each TCP read chunk received from
+/// a client. TCP is a byte stream: a chunk boundary shows bytes that arrived
+/// separately, not a write call.
+async fn record_client_chunks(
     listener: TcpListener,
     upstream: String,
     writes: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
@@ -258,7 +261,7 @@ async fn record_client_writes(
 }
 
 /// Each client command packet (sequence 0): its command byte, and whether a
-/// recorded write ended with it.
+/// received chunk ended with it.
 fn recorded_commands(writes: &[Vec<u8>]) -> Vec<(u8, bool)> {
     let mut stream = Vec::new();
     let mut write_ends = std::collections::BTreeSet::new();
@@ -284,21 +287,21 @@ fn recorded_commands(writes: &[Vec<u8>]) -> Vec<(u8, bool)> {
     commands
 }
 
-/// A statement close has no reply. Flushed on its own, it leaves
+/// A statement close has no reply. Sent on its own, it leaves
 /// unacknowledged data in flight, and Nagle's algorithm then holds the next
 /// command until the server's delayed acknowledgement, about 40 ms per close.
-/// Under the transition lock those stalls added up to a late timer (#714).
+/// The proxy then receives the close as a chunk of its own. Under the
+/// transition lock those stalls added up to a late timer (#714).
 #[tokio::test]
 #[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
 async fn qualification_statement_close_leaves_with_the_next_command() {
-    const COM_STMT_CLOSE: u8 = 0x19;
     tokio::time::timeout(Duration::from_secs(15), async {
         let url = std::env::var("DW_TEST_MYSQL_URL").unwrap();
         let direct = MySqlConnectOptions::from_str(&url).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let proxy = tokio::spawn(record_client_writes(
+        let proxy = tokio::spawn(record_client_chunks(
             listener,
             format!("{}:{}", direct.get_host(), direct.get_port()),
             writes.clone(),
@@ -334,9 +337,130 @@ async fn qualification_statement_close_leaves_with_the_next_command() {
         assert!(closes >= 12, "eviction and uncached closes were exercised: {closes}");
         assert!(
             commands.iter().all(|(command, ended)| *command != COM_STMT_CLOSE || !ended),
-            "a statement close ended its own write: {commands:?}"
+            "a statement close arrived as a chunk of its own: {commands:?}"
         );
     })
     .await
-    .expect("bounded statement-close write qualification");
+    .expect("bounded statement-close chunk qualification");
+}
+
+/// A plaintext connection through a recording proxy.
+async fn proxied_connection(
+    capacity: usize,
+) -> (MySqlConnection, Arc<std::sync::Mutex<Vec<Vec<u8>>>>, tokio::task::JoinHandle<()>, MySqlConnectOptions) {
+    let url = std::env::var("DW_TEST_MYSQL_URL").unwrap();
+    let direct = MySqlConnectOptions::from_str(&url).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let proxy = tokio::spawn(record_client_chunks(
+        listener,
+        format!("{}:{}", direct.get_host(), direct.get_port()),
+        writes.clone(),
+    ));
+    let options = direct
+        .clone()
+        .host("127.0.0.1")
+        .port(port)
+        .ssl_mode(sqlx::mysql::MySqlSslMode::Disabled)
+        .statement_cache_capacity(capacity);
+    (MySqlConnection::connect_with(&options).await.unwrap(), writes, proxy, direct)
+}
+
+fn closes(writes: &std::sync::Mutex<Vec<Vec<u8>>>) -> usize {
+    recorded_commands(&writes.lock().unwrap())
+        .iter()
+        .filter(|(command, _)| *command == COM_STMT_CLOSE)
+        .count()
+}
+
+/// Wait, bounded, until the proxy has received `count` statement closes.
+async fn closes_arrive(writes: &std::sync::Mutex<Vec<Vec<u8>>>, count: usize) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while closes(writes) < count {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{count} statement closes did not leave the client: {:?}",
+            recorded_commands(&writes.lock().unwrap())
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// `Connection::flush` sends queued closes by itself: no later command is
+/// needed, and the connection reports nothing left to flush.
+#[tokio::test]
+#[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+async fn qualification_explicit_flush_sends_queued_statement_closes() {
+    use sqlx::Connection as _;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let (mut connection, writes, proxy, _) = proxied_connection(1).await;
+        // An uncached statement queues its close after it executes.
+        let value: i64 = sqlx::query_scalar("SELECT ? + 4")
+            .bind(1_i64)
+            .persistent(false)
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+        assert_eq!(value, 5);
+        assert!(connection.should_flush(), "the close is queued");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(closes(&writes), 0, "the queued close waits for a command or flush");
+        connection.flush().await.unwrap();
+        assert!(!connection.should_flush(), "an explicit flush leaves nothing buffered");
+        closes_arrive(&writes, 1).await;
+        connection.close().await.unwrap();
+        proxy.abort();
+    })
+    .await
+    .expect("bounded explicit-flush qualification");
+}
+
+/// `clear_cached_statements` closes every cached statement on the server
+/// before it returns, without a later command.
+#[tokio::test]
+#[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+async fn qualification_clearing_the_statement_cache_closes_them_now() {
+    use sqlx::Connection as _;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let (mut connection, writes, proxy, direct) = proxied_connection(100).await;
+        // A separate session can see this connection's server-side
+        // statements where the performance schema is on (MySQL 8 default).
+        let thread: u64 = sqlx::query_scalar("SELECT CONNECTION_ID()").fetch_one(&mut connection).await.unwrap();
+        connection.clear_cached_statements().await.unwrap();
+        let before = closes(&writes);
+        for sql in ["SELECT ? + 1", "SELECT ? + 2", "SELECT ? + 3"] {
+            let _: i64 = sqlx::query_scalar(sql).bind(1_i64).fetch_one(&mut connection).await.unwrap();
+        }
+        assert_eq!(connection.cached_statements_size(), 3);
+        let mut observer = MySqlConnection::connect_with(&direct).await.unwrap();
+        let schema: i64 = sqlx::query_scalar("SELECT @@performance_schema").fetch_one(&mut observer).await.unwrap();
+        let server_statements = async |observer: &mut MySqlConnection| -> i64 {
+            sqlx::query_scalar("SELECT COUNT(*) FROM performance_schema.prepared_statements_instances p JOIN performance_schema.threads t ON t.THREAD_ID=p.OWNER_THREAD_ID WHERE t.PROCESSLIST_ID=?")
+                .bind(thread)
+                .fetch_one(observer)
+                .await
+                .unwrap()
+        };
+        if schema == 1 {
+            let held = server_statements(&mut observer).await;
+            assert_eq!(held, 3, "the server holds this connection's three statements");
+        }
+        connection.clear_cached_statements().await.unwrap();
+        assert_eq!(connection.cached_statements_size(), 0);
+        assert!(!connection.should_flush(), "clearing leaves nothing buffered");
+        closes_arrive(&writes, before + 3).await;
+        if schema == 1 {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            while server_statements(&mut observer).await != 0 {
+                assert!(tokio::time::Instant::now() < deadline, "the server still holds the statements");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        observer.close().await.unwrap();
+        connection.close().await.unwrap();
+        proxy.abort();
+    })
+    .await
+    .expect("bounded statement-cache clear qualification");
 }
