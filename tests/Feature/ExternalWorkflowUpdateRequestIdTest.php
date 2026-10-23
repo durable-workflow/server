@@ -361,6 +361,7 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
         WorkerRegistration::query()->updateOrCreate(['worker_id' => 'retained-'.$namespace, 'namespace' => $namespace], [
             'task_queue' => 'retained-'.$namespace, 'runtime' => 'php', 'supported_workflow_types' => [self::WORKFLOW_TYPE],
             'workflow_command_contracts' => [self::WORKFLOW_TYPE => $contract], 'supported_activity_types' => [],
+            'capabilities' => ['workflow_updates'],
             'last_heartbeat_at' => now(), 'status' => 'active',
         ]);
         $this->postJson('/api/workflows', [

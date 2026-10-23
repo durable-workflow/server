@@ -5090,6 +5090,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 $workerId,
                 'python-queries',
                 ['python.queryable'],
+                capabilities: ['query_tasks', 'workflow_updates'],
                 workflowCommandContracts: [
                     'python.queryable' => $this->querySignalUpdateCommandContract(),
                 ],
