@@ -39,6 +39,9 @@ pub(super) struct Store<DB: Backend> {
     pub(super) search_attribute_limit: i64,
     /// When a silent registration stops counting (`server.workers.stale_after_seconds`).
     pub(super) worker_stale_after_seconds: i64,
+    /// When this server last ran a task repair pass, shared by its namespaces
+    /// as PHP shares its loop throttle key.
+    pub(super) repair_pass_at: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
 /// The `closed_reason` a terminal history event gives its run, or `None` for
 /// an event that does not close the run.
@@ -118,6 +121,7 @@ where
             update_wait_seconds: 10,
             search_attribute_limit: 100,
             worker_stale_after_seconds: 30,
+            repair_pass_at: Arc::default(),
         }
     }
     pub(super) fn in_namespace(&self, namespace: &str) -> Self {
@@ -133,6 +137,7 @@ where
             update_wait_seconds: self.update_wait_seconds,
             search_attribute_limit: self.search_attribute_limit,
             worker_stale_after_seconds: self.worker_stale_after_seconds,
+            repair_pass_at: self.repair_pass_at.clone(),
         }
     }
     pub(super) async fn database_live(&self) -> bool {

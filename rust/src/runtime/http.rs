@@ -214,6 +214,7 @@ pub fn router(runtime: Runtime) -> Router {
             get(workflow_type_operator_dashboard),
         )
         .route("/api/system/repair", get(repair_status))
+        .route("/api/system/repair/pass", post(repair_pass))
         .route("/api/system/retention", get(retention_status))
         .route("/api/system/retention/pass", post(retention_pass))
         .route("/api/system/activity-timeouts", get(activity_timeout_status))
@@ -646,7 +647,11 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     {
         return method == "GET";
     }
-    if path == "/api/system/retention/pass" || path == "/api/system/activity-timeouts/pass" {
+    // The repair pass is server-wide in PHP too.
+    if path == "/api/system/retention/pass"
+        || path == "/api/system/activity-timeouts/pass"
+        || path == "/api/system/repair/pass"
+    {
         return method == "POST";
     }
     // The metrics describe the namespace's own state, read by GET or POST.
@@ -1445,6 +1450,14 @@ type QueryMap = Query<std::collections::HashMap<String, String>>;
 
 async fn repair_status(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
     Ok(Json(runtime.repair_status().await?))
+}
+
+/// `SystemController::repairPass`: 207 when a candidate failed.
+async fn repair_pass(Extension(runtime): Extension<Runtime>, body: axum::body::Bytes) -> Result<Response> {
+    let request = super::repair_pass::pass_request(&request_json(&body)?)?;
+    let report = runtime.repair_pass(&request).await?;
+    let failed = super::repair_pass::failed(&report);
+    Ok(pass_response((report, failed)))
 }
 
 async fn retention_status(Extension(runtime): Extension<Runtime>, Query(query): QueryMap) -> Result<Json<Value>> {

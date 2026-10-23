@@ -17,6 +17,7 @@ import {checkServiceCatalog} from './service-catalog-contract.mjs';
 import {checkSystemMetrics} from './system-metrics-contract.mjs';
 import {checkPrometheusMetrics} from './prometheus-metrics-contract.mjs';
 import {checkPayloadCleanup} from './payload-cleanup-contract.mjs';
+import {checkRepairPass} from './repair-pass-contract.mjs';
 import {checkNamespaceDelete} from './namespace-delete-contract.mjs';
 import {checkSchedulePolicies} from './schedule-policies-contract.mjs';
 import {checkScheduleCatalog} from './schedule-catalog-contract.mjs';
@@ -152,6 +153,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const systemMetrics = fixture.system_metrics ? checkSystemMetrics(fixture, observation, workflowId) : null;
   const prometheusMetrics = fixture.prometheus_metrics ? checkPrometheusMetrics(fixture, observation, workflowId) : null;
   const payloadCleanup = fixture.payload_cleanup ? checkPayloadCleanup(fixture, observation, workflowId) : null;
+  const repairPass = fixture.repair_pass ? checkRepairPass(fixture, observation, workflowId) : null;
   const namespaceDelete = fixture.namespace_delete ? checkNamespaceDelete(fixture, observation, workflowId) : null;
   const schedulePolicies = fixture.schedule_policies ? checkSchedulePolicies(fixture, observation, workflowId) : null;
   const scheduleCatalog = fixture.schedule_catalog ? checkScheduleCatalog(fixture, observation, workflowId) : null;
@@ -704,6 +706,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(systemMetrics ? {system_metrics: systemMetrics} : {}),
     ...(prometheusMetrics ? {prometheus_metrics: prometheusMetrics} : {}),
     ...(payloadCleanup ? {payload_cleanup: payloadCleanup} : {}),
+    ...(repairPass ? {repair_pass: repairPass} : {}),
     ...(namespaceDelete ? {namespace_delete: namespaceDelete} : {}),
     ...(schedulePolicies ? {schedule_policies: schedulePolicies} : {}),
     ...(scheduleCatalog ? {schedule_catalog: scheduleCatalog} : {}),

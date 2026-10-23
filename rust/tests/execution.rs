@@ -158,6 +158,8 @@ mod workflow_repair;
 mod history_retention;
 #[path = "execution/repair_status.rs"]
 mod repair_status;
+#[path = "execution/repair_pass.rs"]
+mod repair_pass;
 #[path = "execution/activity_timeout_pass.rs"]
 mod activity_timeout_pass;
 #[path = "execution/start_request.rs"]

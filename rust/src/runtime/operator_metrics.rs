@@ -1084,14 +1084,9 @@ where
     /// published PHP's repair pass would select across every namespace.
     pub(super) async fn repair_status(&self) -> Result<Value> {
         let at = now();
-        let bound = whole_second(at);
-        let cutoff = whole_second(at - Duration::seconds(REDISPATCH_AFTER_SECONDS));
-        let mut tasks = Self::query(repair_candidates::TASK_SCOPES);
-        for time in [bound, bound, bound, cutoff, cutoff, cutoff, bound] {
-            tasks = tasks.bind(DB::bind_time(time));
-        }
-        let tasks = scope_rows::<DB>(tasks.fetch_all(&self.pool).await?)?;
-        let runs = scope_rows::<DB>(Self::query(repair_candidates::RUN_SCOPES).fetch_all(&self.pool).await?)?;
+        let unfiltered = super::repair_pass::PassRequest::default();
+        let tasks = self.repairable_task_scopes(&unfiltered, at).await?;
+        let runs = self.missing_task_scopes(&unfiltered).await?;
         let oldest_run = match Self::query(repair_candidates::OLDEST_RUN).fetch_optional(&self.pool).await? {
             Some(row) => DB::optional_instant(&row, "wait_started_at")?
                 .or(DB::optional_instant(&row, "started_at")?)
@@ -1450,7 +1445,7 @@ fn backend_capabilities(now: DateTime<Utc>, connection: &str) -> Value {
 
 /// Native claims ready tasks on each poll; it runs no repair loop.
 /// The grouped candidate rows of one repair candidate query.
-fn scope_rows<DB: Backend>(rows: Vec<DB::Row>) -> Result<Vec<ScopeRow>>
+pub(super) fn scope_rows<DB: Backend>(rows: Vec<DB::Row>) -> Result<Vec<ScopeRow>>
 where
     usize: ColumnIndex<DB::Row>,
     for<'r> i64: Decode<'r, DB>,
