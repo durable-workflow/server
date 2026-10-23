@@ -217,7 +217,8 @@ async fn build_ids_follow_task_queue_roles_and_namespaces() {
         .collect();
     assert_eq!(
         cohorts,
-        vec![(json!("nv1"), json!("active"), json!("idle")), (Value::Null, json!("no_workers"), json!("pending"))],
+        // The start is pinned to the queue's one build, as on published 2.11.1.
+        vec![(json!("nv1"), json!("active"), json!("pending"))],
         "{named}"
     );
     let (status, default) = call(&app, "admin-token", "default", "GET", PATH, Value::Null).await;
