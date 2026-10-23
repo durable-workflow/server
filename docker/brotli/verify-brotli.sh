@@ -14,11 +14,13 @@ fail() { echo "$*" >&2; exit 1; }
 installed=$(dpkg-query -W -f '${Version}' libbrotli1)
 [ "$installed" = "$expected" ] || fail "libbrotli1 $installed is not the fixed $expected."
 library=$(readlink -f "$(dpkg -L libbrotli1 | grep '/libbrotlidec\.so\.1$')")
+case $(dpkg -S "$library" 2>/dev/null) in
+    libbrotli1:*) ;;
+    *) fail "$library is not owned by libbrotli1." ;;
+esac
 
-# Every libbrotlidec file on the image belongs to that package.
-for file in $(find / -xdev \( -path /proc -o -path /sys \) -prune -o -type f -name 'libbrotlidec*' -print); do
-    [ "$file" = "$library" ] || fail "$file is a libbrotlidec outside libbrotli1."
-done
+# Every libbrotlidec file or link on the image resolves to that library.
+sh "$here/decoder-inventory.sh" / "$library"
 
 # Every object that needs the decoder loads that file.
 for object in $(grep -rlsF libbrotlidec.so.1 /usr/lib /usr/local/lib /usr/bin /usr/local/bin /usr/sbin /usr/local/sbin); do

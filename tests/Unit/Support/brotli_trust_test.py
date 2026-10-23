@@ -12,7 +12,10 @@ Run with: python3 -m unittest tests/Unit/Support/brotli_trust_test.py
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -127,9 +130,47 @@ class BrotliTrustTest(unittest.TestCase):
         self.assertIn('BrotliDecoderErrorString(-17)', check)
         self.assertIn('b"_ERROR_FORMAT_BLOCK_SWITCH"', check)
         verify = (BROTLI / "verify-brotli.sh").read_text()
-        for required in ("dpkg-query -W -f '${Version}' libbrotli1", "-name 'libbrotlidec*'", "ldd ",
+        for required in ("dpkg-query -W -f '${Version}' libbrotli1", "dpkg -S \"$library\"", "libbrotli1:*)",
+                         'sh "$here/decoder-inventory.sh" / "$library"', "ldd ",
                          "{22: [23, 4], 24: [22, 1], 26: [12, 1]}", "brotli-check.py"):
             self.assertIn(required, verify)
+        inventory = (BROTLI / "decoder-inventory.sh").read_text()
+        for required in ("\\( -type f -o -type l \\) -name 'libbrotlidec*'", 'readlink -f "$path"'):
+            self.assertIn(required, inventory)
+
+    def test_every_decoder_path_must_resolve_to_the_reviewed_library(self) -> None:
+        def inventory(root: Path, library: Path) -> subprocess.CompletedProcess:
+            return subprocess.run(["sh", str(BROTLI / "decoder-inventory.sh"), str(root), str(library)],
+                                  capture_output=True, text=True, check=False)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lib = root / "usr" / "lib"
+            lib.mkdir(parents=True)
+            library = lib / "libbrotlidec.so.1.1.0"
+            library.write_bytes(b"reviewed decoder")
+            os.symlink("libbrotlidec.so.1.1.0", lib / "libbrotlidec.so.1")
+            self.assertEqual(inventory(root, library).returncode, 0, "the package's own file and link")
+            stray = root / "opt" / "app" / "libbrotlidec.so.1"
+            stray.parent.mkdir(parents=True)
+            os.symlink(library, stray)
+            self.assertEqual(inventory(root, library).returncode, 0, "another link to the reviewed library")
+            other = lib / "libdecoder-other.so.1"
+            other.write_bytes(b"another decoder")
+            for label, make in [
+                ("a link to a differently named decoder", lambda: os.symlink(other, stray)),
+                ("a dangling link", lambda: os.symlink(root / "missing" / "libbrotlidec.so.1", stray)),
+                ("a separate copy", lambda: stray.write_bytes(b"reviewed decoder")),
+            ]:
+                with self.subTest(label):
+                    stray.unlink()
+                    make()
+                    result = inventory(root, library)
+                    self.assertNotEqual(result.returncode, 0, label)
+                    self.assertIn(str(stray), result.stderr)
+            stray.unlink()
+            self.assertNotEqual(inventory(root, root / "usr" / "lib" / "libbrotlidec.so.1").returncode, 0,
+                                "the expected library must be the resolved file, not a link")
 
     def test_the_dockerfile_builds_installs_and_verifies_the_fix(self) -> None:
         self.assertEqual(dockerfile_problems((ROOT / "Dockerfile").read_text()), [])
