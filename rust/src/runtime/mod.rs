@@ -63,6 +63,7 @@ mod http;
 mod laravel_validation;
 mod memo_json;
 mod memo_limits;
+mod standalone_activities;
 mod memos;
 pub mod mysql;
 mod namespace_cleanup;

@@ -506,7 +506,8 @@ where
             commands.push(public);
         }
         let current = DB::optional_string(&row,"current_run_id")?.as_deref() == Some(DB::string(&row,"id")?.as_str());
-        let input_envelope = wire(&DB::string(&row,"arguments")?);
+        // A standalone activity's host run may have no input.
+        let input_envelope = DB::optional_string(&row,"arguments")?.map(|arguments| wire(&arguments)).unwrap_or(Value::Null);
         let output_envelope = output.as_deref().map(wire);
         let mut described =
             json!({"workflow_id": workflow_id, "run_id": DB::string(&row,"id")?, "workflow_type": DB::string(&row,"workflow_type")?,
@@ -1663,7 +1664,10 @@ where
                 claim["attempt_number"] = json!(attempt);
                 claim["activity_type"] = json!(type_name);
                 claim["idempotency_key"] = json!(activity_id);
-                claim["arguments"] = wire(&DB::string(&activity, "arguments")?);
+                // A standalone activity started without input has none.
+                if let Some(arguments) = DB::optional_string(&activity, "arguments")? {
+                    claim["arguments"] = wire(&arguments);
+                }
                 claim["retry_policy"] =
                     DB::optional_document_row(&activity, "retry_policy")?.unwrap_or(Value::Null);
                 // PHP omits the field when the activity has no deadline.
@@ -2854,15 +2858,21 @@ where
             .execute(&mut *tx)
             .await?;
         Self::record_completion(&mut tx, task_id, &body).await?;
-        let next_task_id = Self::selection_resume(
-            &mut tx,
-            &run_id,
-            &DB::string(&run, "queue")?,
-            json!({"activity_execution_id": activity_id}),
-            &metadata,
-            true,
-        )
-        .await?;
+        // A standalone activity's host run closes with its result.
+        let closed = Self::close_standalone_host(&mut tx, &run_id, super::standalone_activities::HostClose::Completed { output: &result }).await?;
+        let next_task_id = if closed {
+            None
+        } else {
+            Self::selection_resume(
+                &mut tx,
+                &run_id,
+                &DB::string(&run, "queue")?,
+                json!({"activity_execution_id": activity_id}),
+                &metadata,
+                true,
+            )
+            .await?
+        };
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(
@@ -3240,7 +3250,7 @@ where
         Self::append_at(tx, run_id, event_type, payload, task_id, command_id, None).await
     }
 
-    async fn append_at(
+    pub(super) async fn append_at(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
         event_type: &str,
@@ -3430,7 +3440,7 @@ where
         "activity": {"id":DB::string(activity,"id")?,"idempotency_key":DB::string(activity,"id")?,
             "sequence":DB::number(activity,"sequence")?,"type":DB::string(activity,"activity_type")?,
             "class":DB::string(activity,"activity_class")?,"local_activity":false,
-            "activity_type": DB::string(activity,"activity_type")?, "arguments": wire(&DB::string(activity,"arguments")?),
+            "activity_type": DB::string(activity,"activity_type")?, "arguments": DB::optional_string(activity,"arguments")?.map(|arguments| wire(&arguments)),
             "retry_policy":DB::optional_document_row(activity,"retry_policy")?,
             "status":DB::string(activity,"status")?,"attempt_count":DB::number(activity,"attempt_count")?,
             "closed_at":DB::optional_instant(activity,"closed_at")?,
@@ -3448,6 +3458,9 @@ where
             if let Some(value) = DB::optional_instant(activity, field)? {
                 payload["activity"][field] = json!(value);
             }
+        }
+        if payload["activity"]["arguments"].is_null() {
+            payload["activity"].as_object_mut().unwrap().remove("arguments");
         }
         if payload["activity"]["retry_policy"].is_null() {
             // A legacy absent snapshot stays absent in its durable history.

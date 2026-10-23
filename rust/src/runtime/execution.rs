@@ -495,6 +495,114 @@ impl Runtime {
             Storage::MySql(store) => store.start(body, memo, external, context).await,
         }
     }
+    /// `ActivityController::start`: validates like PHP, then starts the
+    /// activity in its own host run.
+    pub(crate) async fn start_standalone_activity(&self, body: Value, context: Value) -> Result<Value> {
+        let mut body = super::laravel_rules::normalize(&body);
+        let request = super::standalone_activities::start_request(&body)?;
+        // `AvroPayloadEnvelopeResolver::resolve`: no input stores none; plain
+        // values are encoded; an external reference is retained.
+        let input = body.get("input").is_some_and(|input| !input.is_null());
+        let mut external = None;
+        if input {
+            super::input_envelope::transport(&body)?;
+            match self.plain_arguments(&body).await? {
+                Some(blob) => body["input"] = json!({"codec": "avro", "blob": blob}),
+                None => {
+                    external = self.prepare_external(&body["input"]).await?;
+                    if external.is_none() {
+                        self.decodable(&body["input"]["blob"]).await?;
+                    }
+                }
+            }
+        }
+        let arguments = match &external {
+            Some(prepared) => Some(prepared.stored()),
+            None if input => Some(super::envelope(&body, "input")?),
+            None => None,
+        };
+        match &*self.storage {
+            Storage::Sqlite(store) => store.start_standalone_activity(request, arguments, external, context).await,
+            Storage::Postgres(store) => store.start_standalone_activity(request, arguments, external, context).await,
+            Storage::MySql(store) => store.start_standalone_activity(request, arguments, external, context).await,
+        }
+    }
+
+    /// `ActivityController::show`.
+    pub(crate) async fn standalone_activity(&self, activity_id: &str) -> Result<Value> {
+        let (host, execution) = match &*self.storage {
+            Storage::Sqlite(store) => store.standalone_host(activity_id).await?,
+            Storage::Postgres(store) => store.standalone_host(activity_id).await?,
+            Storage::MySql(store) => store.standalone_host(activity_id).await?,
+        };
+        let attempts = self.standalone_attempts(&host, &execution).await?;
+        let mut view = json!({"activity_id":host["workflow_instance_id"],"workflow_id":host["workflow_instance_id"],
+            "workflow_run_id":host["id"],"workflow_type":host["workflow_type"],"namespace":self.namespace(),
+            "activity_type":execution["activity_type"],"activity_class":execution["activity_class"],
+            "activity_execution_id":execution["id"],"activity_status":execution["status"]});
+        Self::extend_attempts(&mut view, &attempts);
+        for (key, value) in [("task_queue", &host["queue"]), ("business_key", &host["business_key"]), ("status", &host["status"]),
+            ("closed_reason", &host["closed_reason"]), ("started_at", &host["started_at"]), ("closed_at", &host["closed_at"]),
+            ("last_progress_at", &host["last_progress_at"]), ("compatibility", &host["compatibility"]),
+            ("payload_codec", &host["payload_codec"]), ("schedule_to_start_deadline_at", &execution["schedule_deadline_at"]),
+            ("schedule_to_close_deadline_at", &execution["schedule_to_close_deadline_at"]),
+            ("last_heartbeat_at", &execution["last_heartbeat_at"])] {
+            view[key] = value.clone();
+        }
+        view["result"] = match execution["result"].as_str() {
+            Some(result) if execution["status"] == "completed" => super::wire(result),
+            _ => Value::Null,
+        };
+        Ok(view)
+    }
+
+    /// `ActivityController::index`.
+    pub(crate) async fn standalone_activities(&self, query: Value) -> Result<Value> {
+        let request = super::standalone_activities::list_request(&query)?;
+        let (page, more) = match &*self.storage {
+            Storage::Sqlite(store) => store.standalone_hosts(&request).await?,
+            Storage::Postgres(store) => store.standalone_hosts(&request).await?,
+            Storage::MySql(store) => store.standalone_hosts(&request).await?,
+        };
+        let mut activities = Vec::with_capacity(page.len());
+        for (host, execution) in &page {
+            let attempts = self.standalone_attempts(host, execution).await?;
+            let mut entry = json!({"activity_id":host["workflow_instance_id"],"workflow_id":host["workflow_instance_id"],
+                "workflow_run_id":host["id"],"activity_execution_id":execution["id"],"activity_type":execution["activity_type"],
+                "activity_class":execution["activity_class"],"activity_status":execution["status"]});
+            Self::extend_attempts(&mut entry, &attempts);
+            for (key, value) in [("task_queue", &host["queue"]), ("status", &host["status"]),
+                ("status_bucket", &host["status_bucket"]), ("business_key", &host["business_key"]),
+                ("started_at", &host["started_at"]), ("closed_at", &host["closed_at"])] {
+                entry[key] = value.clone();
+            }
+            activities.push(entry);
+        }
+        Ok(json!({"activity_count":activities.len(),"activities":activities,
+            "next_page_token":more.then(|| super::standalone_activities::page_token(request.offset + request.page_size))}))
+    }
+
+    /// The host run's activity view, as `RunActivityView` reads it.
+    async fn standalone_attempts(&self, host: &Value, execution: &Value) -> Result<Value> {
+        let activities = if execution.is_null() {
+            json!([])
+        } else {
+            let workflow_id = host["workflow_instance_id"].as_str().unwrap_or_default();
+            let run_id = host["id"].as_str().unwrap_or_default();
+            self.activities(workflow_id, run_id).await?["activities"].clone()
+        };
+        Ok(super::standalone_activities::attempt_fields(execution, &activities))
+    }
+
+    fn extend_attempts(view: &mut Value, attempts: &Value) {
+        for key in ["attempt_count", "current_attempt_id", "current_attempt_status", "current_attempt", "attempts"] {
+            view[key] = attempts[key].clone();
+        }
+        view["attempt_state"] = json!({"activity_execution_id":attempts["activity_execution_id"],
+            "attempt_count":attempts["attempt_count"],"current_attempt_id":attempts["current_attempt_id"],
+            "current_attempt_status":attempts["current_attempt_status"],"attempts":attempts["attempts"]});
+    }
+
     pub(crate) async fn create_schedule(
         &self,
         body: Value,

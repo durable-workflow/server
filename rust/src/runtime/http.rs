@@ -67,6 +67,8 @@ pub fn router(runtime: Runtime) -> Router {
             delete(delete_search_attribute),
         )
         .route("/api/workflows", get(list_workflows).post(start))
+        .route("/api/activities", get(list_activities).post(start_activity))
+        .route("/api/activities/{activity_id}", get(show_activity))
         .route(
             "/api/schedules",
             get(super::schedule_list::list).post(super::schedule_http::create),
@@ -597,6 +599,16 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     if path == "/api/storage/test" {
         return method == "POST";
     }
+    // Standalone activities are host runs in the requested namespace.
+    if path == "/api/activities" {
+        return matches!(method, "GET" | "POST");
+    }
+    if path
+        .strip_prefix("/api/activities/")
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+    {
+        return method == "GET";
+    }
     // The registry is namespace-scoped state with no default-namespace selector.
     if path == "/api/search-attributes" {
         return matches!(method, "GET" | "POST");
@@ -973,6 +985,39 @@ async fn start(
         _ => StatusCode::OK,
     };
     Ok((status, Json(super::control_plane::Operation::Start.response(result))))
+}
+
+/// `POST /api/activities`: a standalone activity in its own host run.
+async fn start_activity(
+    Extension(runtime): Extension<Runtime>,
+    command: CommandRequest,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    // PHP names the target `pending` until the start assigns an id.
+    let trimmed = |field: &str| body[field].as_str().map(str::trim).filter(|text| !text.is_empty()).map(str::to_owned);
+    let target = trimmed("activity_id").unwrap_or_else(|| "pending".into());
+    let queue = trimmed("task_queue").unwrap_or_else(|| "default".into());
+    let context = command.context(&body, &target, "standalone_activity_start", metadata(&[
+        ("activity_type", trimmed("activity_type").map(Value::from)),
+        ("task_queue", Some(json!(queue))),
+    ]));
+    let started = runtime.start_standalone_activity(body, context).await?;
+    Ok((StatusCode::CREATED, Json(started)))
+}
+
+async fn show_activity(
+    Extension(runtime): Extension<Runtime>,
+    Path(activity_id): Path<String>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.standalone_activity(&activity_id).await?))
+}
+
+async fn list_activities(
+    Extension(runtime): Extension<Runtime>,
+    Query(query): Query<std::collections::BTreeMap<String, String>>,
+) -> Result<Json<Value>> {
+    let query = Value::Object(query.into_iter().map(|(key, value)| (key, Value::String(value))).collect());
+    Ok(Json(runtime.standalone_activities(query).await?))
 }
 
 async fn list_workflows(

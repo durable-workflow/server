@@ -101,10 +101,12 @@ Updated October 22, 2026.
 These published PHP routes on this tree have no native handler yet, by family.
 
 - **Used by the CLI or Waterline.**
-  - Standalone activities: list, describe and start.
   - Task queue priority and fairness.
 
-  Served from this family since: namespace delete, with the
+  Served from this family since: standalone activities (start, list and
+  describe), compared live with published 2.11.1
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-standalone-activities.md));
+  namespace delete, with the
   `namespace-delete` fixture. The JSON
   `GET|POST /api/system/metrics` is served with the `system-metrics`
   fixture: namespace failure, durable-state and payload counts are exact;

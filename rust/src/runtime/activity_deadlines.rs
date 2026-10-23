@@ -609,15 +609,23 @@ where
                 event,
             )
             .await?;
-            Self::selection_resume(
-                tx,
-                &run_id,
-                &DB::string(&run, "queue")?,
-                json!({"activity_execution_id":activity_id}),
-                &metadata,
-                false,
-            )
-            .await?;
+            // A standalone activity's host run fails with it: as failed for a
+            // lost lease, otherwise as timed out.
+            let host = super::standalone_activities::HostClose::Failed {
+                payload: super::standalone_activities::timed_out_payload(&failure_id, activity_id, category, non_retryable, class, &message),
+                closed_reason: if lease.is_some() { "failed" } else { "timed_out" },
+            };
+            if !Self::close_standalone_host(tx, &run_id, host).await? {
+                Self::selection_resume(
+                    tx,
+                    &run_id,
+                    &DB::string(&run, "queue")?,
+                    json!({"activity_execution_id":activity_id}),
+                    &metadata,
+                    false,
+                )
+                .await?;
+            }
         }
         Ok(retried)
     }

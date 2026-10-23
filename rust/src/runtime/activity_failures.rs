@@ -541,6 +541,7 @@ where
             payload["task"] = json!({"id":task_id,"type":"activity","status":"leased",
                 "available_at":DB::optional_instant(&task,"available_at")?,"leased_at":DB::optional_instant(&task,"leased_at")?,
                 "lease_owner":DB::optional_string(&task,"lease_owner")?,"attempt_count":count});
+            let failed_event = payload.clone();
             Self::append(
                 &mut tx,
                 &run_id,
@@ -551,15 +552,23 @@ where
             )
             .await?;
             let run = Self::active_run(&mut tx, &run_id).await?;
-            let next = Self::selection_resume(
-                &mut tx,
-                &run_id,
-                &DB::string(&run, "queue")?,
-                json!({"activity_execution_id":activity_id}),
-                &metadata,
-                false,
-            )
-            .await?;
+            let host = super::standalone_activities::HostClose::Failed {
+                payload: super::standalone_activities::failed_payload(&failed_event, &activity_id),
+                closed_reason: "failed",
+            };
+            let next = if Self::close_standalone_host(&mut tx, &run_id, host).await? {
+                None
+            } else {
+                Self::selection_resume(
+                    &mut tx,
+                    &run_id,
+                    &DB::string(&run, "queue")?,
+                    json!({"activity_execution_id":activity_id}),
+                    &metadata,
+                    false,
+                )
+                .await?
+            };
             tx.commit().await?;
             self.wake.notify_waiters();
             return Ok(
