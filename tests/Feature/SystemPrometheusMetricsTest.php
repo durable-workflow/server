@@ -33,6 +33,43 @@ class SystemPrometheusMetricsTest extends TestCase
         parent::tearDown();
     }
 
+    public function test_latency_buckets_exclude_durations_above_the_bound(): void
+    {
+        $run = $this->workflowRun(
+            workflowId: 'histogram-run',
+            workflowType: 'HistogramWorkflow',
+            queue: 'histogram',
+            status: 'completed',
+            statusBucket: 'completed',
+            durationMs: 2000,
+        );
+        $this->activity($run, 'HistogramActivity', 'histogram', 'completed', 1500);
+
+        $response = $this->getJson(
+            '/api/system/prometheus-metrics',
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+
+        $response->assertOk()
+            ->assertJsonPath('series.workflows.0.latency_seconds.count', 1)
+            ->assertJsonPath('series.activities.0.latency_seconds.count', 1);
+
+        $expected = [
+            '0.1' => 0,
+            '0.5' => 0,
+            '1' => 0,
+            '2.5' => 1,
+            '5' => 1,
+            '10' => 1,
+            '30' => 1,
+            '60' => 1,
+            '300' => 1,
+            '900' => 1,
+        ];
+        $this->assertSame($expected, $response->json('series.workflows.0.latency_seconds.buckets'));
+        $this->assertSame($expected, $response->json('series.activities.0.latency_seconds.buckets'));
+    }
+
     public function test_prometheus_metrics_summary_is_granular_by_queue_workflow_and_activity_type(): void
     {
         $runA = $this->workflowRun(
