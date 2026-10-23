@@ -26,3 +26,9 @@
 - **Not changed yet.** Some events PHP records with a task snapshot have
   none in native, such as `ConditionWaitOpened` and `SignalWaitOpened`.
   That audit is a #325 follow-up.
+- **Known difference now visible in snapshots.** PHP stamps a dispatch only
+  on tasks a control-plane call dispatches, such as a signal's task. Tasks a
+  workflow task completion creates, such as the next message task, carry
+  none. Native stamps every new task, so those snapshots show stamps where
+  PHP's do not. This is the cause of the known `tasks_dispatched_last_minute`
+  difference too; fixing it is a #325 follow-up.
