@@ -606,186 +606,152 @@ async fn typed_refusal_envelope(response: Response, route: Option<Request>, work
     response
 }
 
-fn named_namespace_operation(method: &str, path: &str) -> bool {
+/// The methods a named namespace may use on a route.
+#[derive(Clone, Copy)]
+enum Allowed {
+    Any,
+    Only(&'static [&'static str]),
+}
+
+const READ: Allowed = Allowed::Only(&["GET"]);
+const WRITE: Allowed = Allowed::Only(&["POST"]);
+const READ_WRITE: Allowed = Allowed::Only(&["GET", "POST"]);
+
+/// What follows a family's prefix.
+#[derive(Clone, Copy)]
+enum Rest {
+    Anything,
+    NonEmpty,
+    OneSegment,
+}
+
+/// Route families a named namespace may use, by prefix.
+const NAMESPACE_FAMILIES: [(&str, Rest, Allowed); 8] = [
     // Runtime credentials are server-wide; the namespace only scopes a tenant.
-    if path == "/api/runtime-credentials" || path.starts_with("/api/runtime-credentials/") {
-        return true;
-    }
-    if path == "/api/external-payloads/v1" {
-        return method == "POST";
-    }
-    if path.starts_with("/api/external-payloads/v1/") {
-        return method == "GET";
-    }
+    ("/api/runtime-credentials/", Rest::Anything, Allowed::Any),
+    ("/api/external-payloads/v1/", Rest::Anything, READ),
     // The service catalog is namespace-scoped and, in native, always empty.
-    if path.starts_with("/api/service-catalog/") {
-        return method == "GET";
-    }
+    ("/api/service-catalog/", Rest::Anything, READ),
     // Schedules are namespace-scoped rows, as in PHP.
-    if path == "/api/schedules" || path.starts_with("/api/schedules/") {
-        return true;
-    }
-    // Keep unimplemented families from reaching default-namespace selectors.
-    // Further families require their own shared namespace fixtures.
-    if path == "/api/workflows" {
-        return matches!(method, "GET" | "POST");
-    }
-    if path == "/api/storage/test" {
-        return method == "POST";
-    }
+    ("/api/schedules/", Rest::Anything, Allowed::Any),
     // Standalone activities are host runs in the requested namespace.
-    if path == "/api/activities" {
-        return matches!(method, "GET" | "POST");
-    }
-    if path
-        .strip_prefix("/api/activities/")
-        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
-    {
-        return method == "GET";
-    }
+    ("/api/activities/", Rest::OneSegment, READ),
     // The registry is namespace-scoped state with no default-namespace selector.
-    if path == "/api/search-attributes" {
-        return matches!(method, "GET" | "POST");
-    }
-    if path
-        .strip_prefix("/api/search-attributes/")
-        .is_some_and(|name| !name.is_empty() && !name.contains('/'))
-    {
-        return method == "DELETE";
-    }
+    ("/api/search-attributes/", Rest::OneSegment, Allowed::Only(&["DELETE"])),
     // Deregistration deletes only the namespace's own registration.
-    if path
-        .strip_prefix("/api/workers/")
-        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
-    {
-        return matches!(method, "GET" | "DELETE");
-    }
-    // Task queue views are namespace-scoped reads.
-    if path == "/api/task-queues"
-        || path
-            .strip_prefix("/api/task-queues/")
-            .is_some_and(|queue| !queue.is_empty() && !queue.contains('/'))
-    {
-        return method == "GET";
-    }
-    // Build-id cohorts are a namespace-scoped read too. Rollout changes are
-    // refused alike in every namespace.
-    if let Some(rest) = path.strip_prefix("/api/task-queues/") {
-        match rest.split('/').collect::<Vec<_>>().as_slice() {
-            [queue, "build-ids" | "priority-fairness"] if !queue.is_empty() => return method == "GET",
-            [queue, "build-ids", "promote" | "drain" | "resume"] if !queue.is_empty() => {
-                return method == "POST";
-            }
-            _ => {}
-        }
-    }
+    ("/api/workers/", Rest::OneSegment, Allowed::Only(&["GET", "DELETE"])),
     // Deployments are the namespace's own build-id rollouts.
-    if path == "/api/deployments" {
-        return method == "GET";
+    ("/api/deployments/", Rest::NonEmpty, READ_WRITE),
+];
+
+fn named_namespace_operation(method: &str, path: &str) -> bool {
+    match namespace_route(path) {
+        Some(Allowed::Any) => true,
+        Some(Allowed::Only(methods)) => methods.contains(&method),
+        None => false,
     }
-    if path.strip_prefix("/api/deployments/").is_some_and(|name| !name.is_empty()) {
-        return matches!(method, "GET" | "POST");
-    }
-    if path == "/api/workers"
-        || path == "/api/system/operator-metrics"
-        || path == "/api/system/health"
-        || path == "/api/system/operator-dashboard"
-        || path == "/api/system/operator-dashboard/bounded"
-        || path == "/api/system/operator-dashboard/bounded/workflow-types"
+}
+
+/// The methods a named namespace may use on `path`. Other routes are refused,
+/// so unimplemented families never reach default-namespace selectors; each
+/// further family needs its own shared namespace fixtures.
+fn namespace_route(path: &str) -> Option<Allowed> {
+    exact_namespace_route(path)
+        .or_else(|| {
+            NAMESPACE_FAMILIES.iter().find_map(|(prefix, shape, allowed)| {
+                let rest = path.strip_prefix(prefix)?;
+                let fits = match shape {
+                    Rest::Anything => true,
+                    Rest::NonEmpty => !rest.is_empty(),
+                    Rest::OneSegment => !rest.is_empty() && !rest.contains('/'),
+                };
+                fits.then_some(*allowed)
+            })
+        })
+        .or_else(|| path.strip_prefix("/api/task-queues/").and_then(task_queue_route))
+        .or_else(|| path.strip_prefix("/api/workflows/").and_then(workflow_route))
+        .or_else(|| path.strip_prefix("/api/worker/").and_then(worker_route))
+}
+
+fn exact_namespace_route(path: &str) -> Option<Allowed> {
+    Some(match path {
+        "/api/runtime-credentials" | "/api/schedules" => Allowed::Any,
+        "/api/workflows" | "/api/activities" | "/api/search-attributes" => READ_WRITE,
+        // The metrics describe the namespace's own state, read by GET or POST.
+        "/api/system/metrics" => READ_WRITE,
+        "/api/external-payloads/v1" | "/api/storage/test" => WRITE,
+        "/api/task-queues"
+        | "/api/deployments"
+        | "/api/workers"
+        | "/api/system/operator-metrics"
+        | "/api/system/health"
+        | "/api/system/operator-dashboard"
+        | "/api/system/operator-dashboard/bounded"
+        | "/api/system/operator-dashboard/bounded/workflow-types"
+        | "/api/system/prometheus-metrics"
+        | "/api/system/external-payload-cleanup"
         // Retention reads and prunes the namespace's own runs; the activity
         // timeout scan spans namespaces in PHP too.
-        || path == "/api/system/retention"
-        || path == "/api/system/activity-timeouts"
-        || path == "/api/system/repair"
-    {
-        return method == "GET";
+        | "/api/system/retention"
+        | "/api/system/activity-timeouts"
+        | "/api/system/repair" => READ,
+        // The repair pass is server-wide in PHP too. The cleanup pass reclaims
+        // only the namespace's own expired payloads.
+        "/api/system/retention/pass"
+        | "/api/system/activity-timeouts/pass"
+        | "/api/system/repair/pass"
+        | "/api/system/external-payload-cleanup/pass" => WRITE,
+        _ => return None,
+    })
+}
+
+/// Task queue views, build-id cohorts and fairness are namespace-scoped reads;
+/// rollout changes act on the namespace's own cohorts.
+fn task_queue_route(rest: &str) -> Option<Allowed> {
+    match rest.split('/').collect::<Vec<_>>().as_slice() {
+        [queue, ..] if queue.is_empty() => None,
+        [_] | [_, "build-ids" | "priority-fairness"] => Some(READ),
+        [_, "build-ids", "promote" | "drain" | "resume"] => Some(WRITE),
+        _ => None,
     }
-    // The repair pass is server-wide in PHP too.
-    if path == "/api/system/retention/pass"
-        || path == "/api/system/activity-timeouts/pass"
-        || path == "/api/system/repair/pass"
-    {
-        return method == "POST";
-    }
-    // The metrics describe the namespace's own state, read by GET or POST.
-    if path == "/api/system/metrics" {
-        return matches!(method, "GET" | "POST");
-    }
-    if path == "/api/system/prometheus-metrics" || path == "/api/system/external-payload-cleanup" {
-        return method == "GET";
-    }
-    // The pass reclaims only the namespace's own expired payloads.
-    if path == "/api/system/external-payload-cleanup/pass" {
-        return method == "POST";
-    }
-    if let Some(path) = path.strip_prefix("/api/workflows/") {
-        let parts: Vec<_> = path.split('/').collect();
-        if matches!(
-            parts.as_slice(),
-            [_, "observation"] | [_, "runs", _, "observation"]
-        ) {
-            return method == "GET";
-        }
-        if matches!(parts.as_slice(), [_, "runs", _, "activities", _, "result"]) {
-            return method == "GET";
-        }
+}
+
+fn workflow_route(rest: &str) -> Option<Allowed> {
+    match rest.split('/').collect::<Vec<_>>().as_slice() {
+        [_, "observation"]
+        | [_, "runs", _, "observation"]
+        | [_, "runs", _, "activities", _, "result"]
         // Waterline's run detail: the run list, debug view and history export.
         // Each reads the instance within the request's namespace first.
-        if matches!(
-            parts.as_slice(),
-            [_, "runs"] | [_, "debug"] | [_, "runs", _, "debug"] | [_, "runs", _, "history", "export"]
-        ) {
-            return method == "GET";
-        }
-        if matches!(
-            parts.as_slice(),
-            [_, "runs", _, "streams"] | [_, "runs", _, "streams", _] | [_, "runs", _, "streams", _, "items"]
-        ) {
-            return method == "GET";
-        }
-        if matches!(
-            parts.as_slice(),
-            [_, "signal", _] | [_, "runs", _, "signal", _]
-        ) {
-            return method == "POST";
-        }
-        if matches!(
-            parts.as_slice(),
-            [_, "query", _] | [_, "runs", _, "query", _]
-        ) {
-            return method == "POST";
-        }
-        return matches!(
-            parts.as_slice(),
-            [_] | [_, "cancel" | "terminate" | "archive"]
-                | [_, "runs", _]
-                | [
-                    _,
-                    "runs",
-                    _,
-                    "history" | "cancel" | "terminate" | "archive" | "activities"
-                ]
-        );
+        | [_, "runs"]
+        | [_, "debug"]
+        | [_, "runs", _, "debug"]
+        | [_, "runs", _, "history", "export"]
+        | [_, "runs", _, "streams"]
+        | [_, "runs", _, "streams", _]
+        | [_, "runs", _, "streams", _, "items"] => Some(READ),
+        [_, "signal" | "query", _] | [_, "runs", _, "signal" | "query", _] => Some(WRITE),
+        [_]
+        | [_, "cancel" | "terminate" | "archive"]
+        | [_, "runs", _]
+        | [_, "runs", _, "history" | "cancel" | "terminate" | "archive" | "activities"] => Some(Allowed::Any),
+        _ => None,
     }
-    if let Some(path) = path.strip_prefix("/api/worker/") {
-        let parts: Vec<_> = path.split('/').collect();
-        return matches!(
-            parts.as_slice(),
-            ["register" | "heartbeat"]
-                | ["registrations", _]
-                | ["registrations", _, "deregister"]
-                | ["workflow-tasks" | "activity-tasks", "poll"]
-                | ["query-tasks", "poll"]
-                | ["query-tasks", _, "complete" | "fail" | "status"]
-                | ["workflow-tasks", _, "complete" | "fail" | "history" | "heartbeat"]
-                | [
-                    "activity-tasks",
-                    _,
-                    "complete" | "fail" | "heartbeat" | "status" | "renew-lease"
-                ]
-        );
-    }
-    false
+}
+
+fn worker_route(rest: &str) -> Option<Allowed> {
+    matches!(
+        rest.split('/').collect::<Vec<_>>().as_slice(),
+        ["register" | "heartbeat"]
+            | ["registrations", _]
+            | ["registrations", _, "deregister"]
+            | ["workflow-tasks" | "activity-tasks", "poll"]
+            | ["query-tasks", "poll"]
+            | ["query-tasks", _, "complete" | "fail" | "status"]
+            | ["workflow-tasks", _, "complete" | "fail" | "history" | "heartbeat"]
+            | ["activity-tasks", _, "complete" | "fail" | "heartbeat" | "status" | "renew-lease"]
+    )
+    .then_some(Allowed::Any)
 }
 
 async fn list_namespaces(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
