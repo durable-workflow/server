@@ -1930,6 +1930,10 @@ The image's default command runs Apache with mod_php, two prefork request
 processes ready at startup, up to four idle spare processes, and a maximum of
 24 concurrent request processes. Keeping the eager and idle pools small leaves
 memory for Laravel requests while retaining burst capacity.
+HTTP keep-alive is disabled in this prefork configuration. Each completed
+response releases its connection instead of reserving a PHP process between
+requests. Clients reconnect for their next request; an active long poll still
+holds its connection until its normal response or deadline.
 A workflow query may hold one process while it waits for a worker response;
 worker heartbeats, query-task polls, completions, and control-plane requests
 continue to enter Laravel through other processes.

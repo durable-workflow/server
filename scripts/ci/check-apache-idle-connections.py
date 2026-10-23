@@ -111,4 +111,6 @@ print(json.dumps(result, indent=2))
 assert result["ready_clients"] == CLIENTS, "Not every load client reached the static fixture"
 assert not result["load_errors"], "The load itself failed"
 assert not result["threads_remaining"], "A load thread did not stop"
-assert all(control.get("status") == 200 for control in controls), "Idle clients starved a fresh request"
+assert all(
+    control.get("status") == 200 and control["seconds"] < 5 for control in controls
+), "Idle clients starved a fresh request"
