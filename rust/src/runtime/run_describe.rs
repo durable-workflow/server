@@ -31,7 +31,7 @@ fn max_payload_bytes() -> i64 {
 }
 
 /// `oversizedPayloadPreview`: an external payload larger than the limit.
-fn oversized(envelope: &Value) -> bool {
+pub(super) fn oversized(envelope: &Value) -> bool {
     envelope["external_storage"]["size_bytes"].as_i64().is_some_and(|size| size > max_payload_bytes())
 }
 

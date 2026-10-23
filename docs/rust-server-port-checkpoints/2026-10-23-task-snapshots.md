@@ -1,4 +1,4 @@
-# October 23, task snapshots on history events
+# October 23, task snapshots on history events and described commands
 
 - **The gap.** Published PHP's `WorkflowHistoryEvent::record` adds a `task`
   snapshot to every event it records with the task model in hand. Native
@@ -25,6 +25,14 @@
 - **How it was checked.** The same probe now finds the same events with
   snapshots on both servers, with the same fields. A new integration test
   checks the timer, child, signal-wait, signal and condition-wait events.
+- **Described commands.** A field-by-field diff of the same workflow's
+  description on both servers found two more gaps. Each command PHP
+  describes names the run's `workflow_class` (`WorkflowCommand::record` keeps
+  it), and says whether its payload preview is omitted
+  (`payload_preview_omitted`, true only for a stored external payload over the
+  size limit). Native now sends both. With fresh workers on both sides, the
+  descriptions then differ only in `request_route_name` and the
+  `request_fingerprint` hashed from it.
 - **Left as they are.**
   - PHP's command snapshots carry `request_route_name`, a name Laravel
     generates at random for the deployment's cached routes. Native has no

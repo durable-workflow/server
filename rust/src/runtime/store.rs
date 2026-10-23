@@ -553,7 +553,9 @@ where
         // refused signals which intentionally have no workflow history event.
         // Select metadata only: large customer payloads are never decoded or
         // copied merely to display the command's target and admission result.
-        let command_rows = Self::query("SELECT c.id,c.command_sequence,c.command_type,c.target_scope,c.requested_workflow_run_id,c.resolved_workflow_run_id,c.source,c.status,c.outcome,c.rejection_reason,c.workflow_type,c.workflow_class,c.accepted_at,c.applied_at,c.rejected_at,c.context,s.signal_name FROM workflow_commands c LEFT JOIN workflow_signal_records s ON s.workflow_command_id=c.id WHERE c.workflow_run_id=$1 AND c.workflow_instance_id=$2 ORDER BY c.command_sequence,c.created_at,c.id")
+        // Only a stored external reference is read, to tell whether its preview
+        // is omitted; inline payloads stay unread.
+        let command_rows = Self::query("SELECT c.id,c.command_sequence,c.command_type,c.target_scope,c.requested_workflow_run_id,c.resolved_workflow_run_id,c.source,c.status,c.outcome,c.rejection_reason,c.workflow_type,c.workflow_class,c.accepted_at,c.applied_at,c.rejected_at,c.context,s.signal_name,CASE WHEN c.payload LIKE 'dw-%' THEN c.payload END AS stored_payload FROM workflow_commands c LEFT JOIN workflow_signal_records s ON s.workflow_command_id=c.id WHERE c.workflow_run_id=$1 AND c.workflow_instance_id=$2 ORDER BY c.command_sequence,c.created_at,c.id")
             .bind(DB::string(&row, "id")?).bind(workflow_id).fetch_all(&self.pool).await?;
         let mut commands = Vec::with_capacity(command_rows.len());
         for command in command_rows {
@@ -564,7 +566,12 @@ where
                 "target_name":DB::optional_string(&command,"signal_name")?,"source":DB::string(&command,"source")?,
                 "status":DB::string(&command,"status")?,"outcome":DB::optional_string(&command,"outcome")?,
                 "reason":DB::optional_string(&command,"rejection_reason")?,"rejection_reason":DB::optional_string(&command,"rejection_reason")?,
-                "workflow_type":DB::optional_string(&command,"workflow_type")?,"workflow_class":DB::optional_string(&command,"workflow_class")?,
+                // `WorkflowCommand::record` keeps the run's class on each command.
+                "workflow_type":DB::optional_string(&command,"workflow_type")?,
+                "workflow_class":DB::optional_string(&command,"workflow_class")?.or(DB::optional_string(&row,"workflow_class")?),
+                "payload_preview_omitted":DB::optional_string(&command,"stored_payload")?.as_deref()
+                    .and_then(super::external_resolution::stored_envelope)
+                    .is_some_and(|envelope| super::run_describe::oversized(&envelope)),
                 "accepted_at":DB::optional_instant(&command,"accepted_at")?,"applied_at":DB::optional_instant(&command,"applied_at")?,
                 "rejected_at":DB::optional_instant(&command,"rejected_at")?});
             let fields = public.as_object_mut().expect("command object");
