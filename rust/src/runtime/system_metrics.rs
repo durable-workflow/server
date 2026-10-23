@@ -117,8 +117,9 @@ store_methods! {
     /// `WorkflowTaskFailureMetrics::snapshot`: failed workflow tasks, the
     /// first failure counting as one.
     async fn workflow_task_failures(&self) -> Result<Value> {
-        // PostgreSQL's MAX keeps the integer column's width; decode it by row.
-        const MAX: &str = concat!("SELECT COALESCE(MAX(t.attempt_count),0) AS n ", failed_tasks!());
+        // PostgreSQL's MAX keeps the integer column's width, so decode it by
+        // row. No COALESCE: MariaDB turns COALESCE(MAX(unsigned),0) into DECIMAL.
+        const MAX: &str = concat!("SELECT MAX(t.attempt_count) AS n ", failed_tasks!());
         const COUNT: &str = concat!("SELECT COUNT(t.id) ", failed_tasks!());
         const TYPES: &str = concat!("SELECT COUNT(DISTINCT r.workflow_type) ", failed_tasks!());
         const ROWS: &str = concat!(
@@ -126,7 +127,8 @@ store_methods! {
             failed_tasks!(),
             " GROUP BY r.workflow_type ORDER BY max_consecutive_failures DESC,r.workflow_type LIMIT 20"
         );
-        let max = DB::number(&Self::query(MAX).bind(self.namespace.as_ref()).fetch_one(&self.pool).await?, "n")?;
+        let max = DB::optional_number(&Self::query(MAX).bind(self.namespace.as_ref()).fetch_one(&self.pool).await?, "n")?
+            .unwrap_or(0);
         let failed = self.namespace_count(COUNT, 1).await?;
         let types = self.namespace_count(TYPES, 1).await?;
         let rows = Self::query(ROWS).bind(self.namespace.as_ref()).fetch_all(&self.pool).await?;
