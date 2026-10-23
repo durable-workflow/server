@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import {isDeepStrictEqual} from 'node:util';
 
-// Reviewed operator metrics and health of one namespace, as published PHP
-// 2.5.14 reports them through a run's stages. Counts must match exactly, with
+// Reviewed operator metrics and health of one namespace, as published Server
+// 2.11.1 reports them through a run's stages. Counts must match exactly, with
 // two normalizations:
 // - Laravel compares "now" in whole seconds, so a task made available within
 //   the current second counts as delayed. Ready-due and delayed tasks are
@@ -79,24 +79,90 @@ const EXPECTED = {
 //     and its run is not yet projected again;
 //   3 redispatched: the run is projected again.
 // The task is overdue in states 0 and 1, carries a repair count from state 1,
-// and its run reads as needing repair in states 1 and 2. A stage makes many
-// reads: the operator metrics document reads runs, then tasks, then the
-// backlog counts, and the health request comes after it. Each read sees the
-// state at its own moment, so the states it sees never go backwards in that
-// order. Native runs no repair loop: it keeps the task overdue, or shows it
-// redispatched once repaired.
+// and its run reads as needing repair in states 1 and 2.
+// Workflow aca7928484's OperatorMetrics::snapshot reads each value with its
+// own query, so one document can see several states, never going backwards
+// in query order. Its reads that depend on the state, in that order:
+//   runMetrics: oldest_repair_needed_at, then repair_needed;
+//   taskMetrics: oldest_dispatch_overdue_since (oldest_unhealthy_at is built
+//     from the same timestamps), then dispatch_overdue, then
+//     max_repair_count, then unhealthy, counted again;
+//   backlogMetrics: unhealthy_tasks, then repair_needed_runs.
+// The health request reads its own snapshot afterwards, in the same order:
+// task_transport warns on tasks.unhealthy, routing_health on
+// tasks.dispatch_overdue, and durable_resume_paths on
+// backlog.repair_needed_runs. Native runs no repair loop: it keeps the task
+// overdue, or shows it redispatched once repaired.
 const PHP_REPAIR_STATES = [0, 1, 2, 3];
+const PHP_READS = 8;
 const overdueAt = state => state <= 1;
 const runNeedsRepairAt = state => state === 1 || state === 2;
 const runsAt = state => (runNeedsRepairAt(state) ? {...waitingRun, repair_needed: 1} : waitingRun);
-const tasksAt = state => ({open: 1, ready: 1, ready_due_or_delayed: 1,
-  ...(overdueAt(state) ? {dispatch_overdue: 1, unhealthy: 1} : {}), ...(state >= 1 ? {max_repair_count: 1} : {})});
 const backlogAt = (unhealthy, repairNeeded) => ({runnable_or_delayed_tasks: 1, tasks_added_last_minute: 1,
   ...(overdueAt(unhealthy) ? {unhealthy_tasks: 1} : {}), ...(runNeedsRepairAt(repairNeeded) ? {repair_needed_runs: 1} : {})});
 const warningsAt = (task, run) => ['command_contract_snapshots',
   ...(overdueAt(task) ? ['task_transport', 'routing_health'] : []), ...(runNeedsRepairAt(run) ? ['durable_resume_paths'] : [])];
 const REDISPATCHED = {...EXPECTED.waiting_after_redispatch, runs: runsAt(3),
   tasks: {open: 1, ready: 1, ready_due_or_delayed: 1}, backlog: backlogAt(3, 3)};
+// The timestamps a PHP read may take apart from their counts.
+const PHP_STAMPED = {runs: ['oldest_repair_needed_at'], tasks: ['oldest_dispatch_overdue_since', 'oldest_unhealthy_at']};
+
+// Every way `count` reads can see the states without going backwards.
+function forwardReads(count, from = 0) {
+  if (count === 0) return [[]];
+  return PHP_REPAIR_STATES.filter(state => state >= from)
+    .flatMap(state => forwardReads(count - 1, state).map(rest => [state, ...rest]));
+}
+const PHP_DOCUMENT_READS = forwardReads(PHP_READS);
+
+// What a PHP document whose reads saw these states reports.
+function phpDocument([runStamp, runCount, taskStamp, overdue, repairs, unhealthy, backlogUnhealthy, backlogRepair]) {
+  return {
+    counts: {
+      runs: runsAt(runCount),
+      tasks: {open: 1, ready: 1, ready_due_or_delayed: 1, ...(overdueAt(overdue) ? {dispatch_overdue: 1} : {}),
+        ...(repairs >= 1 ? {max_repair_count: 1} : {}), ...(overdueAt(unhealthy) ? {unhealthy: 1} : {})},
+      backlog: backlogAt(backlogUnhealthy, backlogRepair),
+    },
+    timestamps: {
+      runs: {oldest_repair_needed_at: runNeedsRepairAt(runStamp)},
+      tasks: {oldest_dispatch_overdue_since: overdueAt(taskStamp), oldest_unhealthy_at: overdueAt(taskStamp)},
+    },
+  };
+}
+
+// The warnings of a PHP health request whose reads saw these states.
+const phpWarnings = reads => ['command_contract_snapshots', ...(overdueAt(reads[5]) ? ['task_transport'] : []),
+  ...(overdueAt(reads[3]) ? ['routing_health'] : []), ...(runNeedsRepairAt(reads[7]) ? ['durable_resume_paths'] : [])];
+
+const nonzero = values => Object.fromEntries(Object.entries(values).filter(([, value]) => value !== 0));
+
+// Published PHP past the redispatch window: the expected counts, timestamps
+// and the warnings its health may report. `timestamps` holds the presence of
+// the PHP_STAMPED fields. The document's reads take the states that match
+// and end earliest; the health request's reads start from there. With no
+// match, the reads that match the counts alone are expected, so a timestamp
+// difference is reported; with none either, the overdue state is expected.
+export function phpRedispatchExpectation(counts, timestamps) {
+  const base = EXPECTED.waiting_after_redispatch;
+  const seen = {runs: nonzero(counts.runs), tasks: nonzero(counts.tasks), backlog: nonzero(counts.backlog)};
+  const earliest = matches => matches.reduce((best, reads) => (best === null || reads[PHP_READS - 1] < best[PHP_READS - 1] ? reads : best), null);
+  const countMatches = PHP_DOCUMENT_READS.filter(reads => isDeepStrictEqual(phpDocument(reads).counts, seen));
+  const best = earliest(countMatches.filter(reads => isDeepStrictEqual(phpDocument(reads).timestamps, timestamps)))
+    ?? earliest(countMatches);
+  if (best === null) {
+    const overdue = phpDocument(Array(PHP_READS).fill(0));
+    return {counts: {...base, ...overdue.counts}, timestamps: overdue.timestamps, warnings: [WARNINGS.waiting_after_redispatch]};
+  }
+  const document = phpDocument(best);
+  const warnings = [];
+  for (const reads of forwardReads(PHP_READS, best[PHP_READS - 1])) {
+    const list = phpWarnings(reads);
+    if (!warnings.some(listed => isDeepStrictEqual(listed, list))) warnings.push(list);
+  }
+  return {counts: {...base, ...document.counts}, timestamps: document.timestamps, warnings};
+}
+
 // Checks other than ok at each stage (the uncompared check aside).
 const WARNINGS = {
   empty: [],
@@ -107,51 +173,6 @@ const WARNINGS = {
   activity_retrying: ['command_contract_snapshots'],
   completed: [],
 };
-
-const nonzero = values => Object.fromEntries(Object.entries(values).filter(([, value]) => value !== 0));
-
-// Published PHP past the redispatch window: the expected counts and the
-// warnings its health may report. The metrics reads (runs, then tasks, then
-// each backlog count) take the earliest states that never go backwards and
-// match. The health request sees that last state or a later one. With no
-// match, the overdue state is expected so the difference is reported.
-export function phpRedispatchExpectation(counts) {
-  const base = EXPECTED.waiting_after_redispatch;
-  let best = null;
-  for (const runs of PHP_REPAIR_STATES) {
-    for (const tasks of PHP_REPAIR_STATES.filter(state => state >= runs)) {
-      if (!isDeepStrictEqual(nonzero(counts.runs), runsAt(runs)) || !isDeepStrictEqual(nonzero(counts.tasks), tasksAt(tasks))) continue;
-      const later = PHP_REPAIR_STATES.filter(state => state >= tasks);
-      for (const unhealthy of later) {
-        for (const repairNeeded of later) {
-          if (!isDeepStrictEqual(nonzero(counts.backlog), backlogAt(unhealthy, repairNeeded))) continue;
-          const last = Math.max(unhealthy, repairNeeded);
-          if (best === null || last < best.last) best = {runs, tasks, unhealthy, repairNeeded, last};
-        }
-      }
-    }
-  }
-  if (best === null) {
-    return {counts: {...base, tasks: tasksAt(0)}, warnings: [WARNINGS.waiting_after_redispatch]};
-  }
-  // HealthCheck reads one snapshot after the metrics request, again runs,
-  // then tasks, then backlog. Task checks warn on an overdue task in tasks or
-  // backlog; durable resume paths warns on a run needing repair in runs or
-  // backlog.
-  const warnings = [];
-  for (const runs of PHP_REPAIR_STATES.filter(state => state >= best.last)) {
-    for (const tasks of PHP_REPAIR_STATES.filter(state => state >= runs)) {
-      for (const backlog of PHP_REPAIR_STATES.filter(state => state >= tasks)) {
-        const task = overdueAt(tasks) || overdueAt(backlog) ? 0 : 3;
-        const run = runNeedsRepairAt(runs) || runNeedsRepairAt(backlog) ? 1 : 3;
-        const list = warningsAt(task, run);
-        if (!warnings.some(seen => isDeepStrictEqual(seen, list))) warnings.push(list);
-      }
-    }
-  }
-  return {counts: {...base, runs: runsAt(best.runs), tasks: tasksAt(best.tasks),
-    backlog: backlogAt(best.unhealthy, best.repairNeeded)}, warnings};
-}
 
 function normalized(sections) {
   const counts = {};
@@ -185,8 +206,12 @@ function checkStage(name, stage, namespace, family) {
   assert.deepStrictEqual([stage.metrics_status, stage.metrics_namespace, defect ? namespace : stage.health_namespace, stage.expected_namespace],
     [200, namespace, namespace, namespace], `${label} namespace`);
   assert.deepStrictEqual(stage.metrics_keys, ['namespace', 'operator_metrics'], `${label} document`);
+  const phpRedispatch = name === 'waiting_after_redispatch' && stage.runtime === 'php';
   for (const [section, pairs] of Object.entries(TIMESTAMPS)) {
     for (const [field, count] of Object.entries(pairs)) {
+      // PHP's repair loop may move between a timestamp's query and its
+      // count's; the redispatch model checks those timestamps.
+      if (phpRedispatch && PHP_STAMPED[section]?.includes(field)) continue;
       assert.equal(stage.sections[section].timestamps[field], stage.sections[section].counts[count] > 0,
         `${label} ${section}.${field} present exactly when ${count} is not zero`);
     }
@@ -203,8 +228,11 @@ function checkStage(name, stage, namespace, family) {
   const counts = normalized(raw);
   const redispatch = name === 'waiting_after_redispatch';
   let expected = {counts: EXPECTED[name], warnings: [WARNINGS[name]]};
-  if (redispatch && stage.runtime === 'php') {
-    expected = phpRedispatchExpectation(counts);
+  let stamps = null;
+  if (phpRedispatch) {
+    stamps = Object.fromEntries(Object.entries(PHP_STAMPED).map(([section, fields]) =>
+      [section, Object.fromEntries(fields.map(field => [field, raw[section].timestamps[field]]))]));
+    expected = phpRedispatchExpectation(counts, stamps);
   } else if (redispatch && counts.tasks.max_repair_count > 0) {
     delete counts.tasks.max_repair_count;
     expected = {counts: REDISPATCHED, warnings: [warningsAt(3, 3)]};
@@ -212,6 +240,7 @@ function checkStage(name, stage, namespace, family) {
   for (const [section, values] of Object.entries(counts)) {
     assert.deepStrictEqual(nonzero(values), expected.counts[section] ?? {}, `${label} ${section} counts`);
   }
+  if (stamps !== null) assert.deepStrictEqual(stamps, expected.timestamps, `${label} repair timestamps`);
   assert.equal(stage.active_workers, ['empty', 'waiting', 'waiting_after_redispatch'].includes(name) ? 0 : 1,
     `${label} active workers`);
   if (defect) return counts;

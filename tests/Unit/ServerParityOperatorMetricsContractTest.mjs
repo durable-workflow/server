@@ -39,7 +39,7 @@ const NAMES = ['backend_capabilities', 'run_summary_projection', 'selected_run_p
   'command_contract_snapshots', 'task_transport', 'activity_path', 'routing_health', 'durable_resume_paths',
   'worker_compatibility', 'scheduler_role', 'long_poll_wake_acceleration'];
 
-// PHP 2.5.14's recorded stages, with PHP's thresholds and sizes.
+// Published PHP's recorded stages, with PHP's thresholds and sizes.
 const WAITING = {runs: {total: 1, current: 1, running: 1, waiting: 1}, tasks: {open: 1, ready: 1, delayed: 1},
   backlog: {delayed_tasks: 1, tasks_added_last_minute: 1, tasks_dispatched_last_minute: 1},
   starts: {pending_runs: 1, pending_commands: 1}, history: {events: 2, max_event_count: 2},
@@ -179,9 +179,16 @@ test('published PHP health read after the repair its metrics caught midway passe
   setChecks(midRepair(observation), {task_transport: 'ok', routing_health: 'ok'});
   assert.deepStrictEqual(checkOperatorMetrics(fixture, observation, 'TEST'), projection);
 });
-test('rejects PHP health behind metrics caught mid-repair', () => {
+// Health reads its backlog with its own query, after its task counts: the run
+// may be projected again in between.
+test('published PHP health whose backlog was read after the run was projected again passes', () => {
   const observation = model();
   midRepair(observation);
+  assert.deepStrictEqual(checkOperatorMetrics(fixture, observation, 'TEST'), projection);
+});
+test('rejects PHP health whose recount is overdue after metrics caught mid-repair and a dispatch count past it', () => {
+  const observation = model();
+  setChecks(midRepair(observation), {routing_health: 'ok', durable_resume_paths: 'warning'});
   assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /warnings/);
 });
 test('rejects native metrics showing a repair native never runs', () => {
@@ -242,10 +249,96 @@ test('rejects a repair warning at another stage', () => {
   setChecks(observation.operator_metrics.stages.waiting, {durable_resume_paths: 'warning'});
   assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /warnings/);
 });
-test('rejects a repaired task still reported overdue', () => {
+// Repaired and still overdue in tasks, with no run needing repair: only a
+// backlog read after the run was projected again explains it, and the health
+// read after that cannot still warn about the task.
+test('rejects health still overdue after a backlog read past the repair', () => {
   const observation = model();
   observation.operator_metrics.stages.waiting_after_redispatch.sections.tasks.counts.max_repair_count = 1;
+  assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /warnings/);
+});
+
+// Workflow aca7928484's taskMetrics reads each value with its own query, so
+// the repair loop can move on inside the tasks section.
+const straddle = (observation, {runs = 0, stamp, overdue, repaired, unhealthy, backlogUnhealthy, backlogRepair,
+  runStamp = false, runtime = 'php'}) => {
+  const stage = observation.operator_metrics.stages.waiting_after_redispatch;
+  stage.runtime = runtime;
+  stage.sections.runs.counts.repair_needed = runs;
+  stage.sections.runs.timestamps.oldest_repair_needed_at = runStamp;
+  Object.assign(stage.sections.tasks.counts, {dispatch_overdue: overdue, max_repair_count: repaired, unhealthy});
+  Object.assign(stage.sections.tasks.timestamps, {oldest_dispatch_overdue_since: stamp, oldest_unhealthy_at: stamp});
+  Object.assign(stage.sections.backlog.counts, {unhealthy_tasks: backlogUnhealthy, repair_needed_runs: backlogRepair});
+  return stage;
+};
+// Security's counterexample on #708: runs at 0, overdue at 0, the repair
+// count at 1, the recount and backlog at 2.
+const securityStraddle = {stamp: true, overdue: 1, repaired: 1, unhealthy: 0, backlogUnhealthy: 0, backlogRepair: 1};
+test('published PHP tasks read across a repair inside taskMetrics pass', () => {
+  for (const health of [{task_transport: 'ok', routing_health: 'ok', durable_resume_paths: 'warning'},
+    {task_transport: 'ok', routing_health: 'ok'}]) {
+    const observation = model();
+    setChecks(straddle(observation, securityStraddle), health);
+    assert.deepStrictEqual(checkOperatorMetrics(fixture, observation, 'TEST'), projection);
+  }
+});
+test('rejects native tasks read across a repair', () => {
+  const observation = model();
+  setChecks(straddle(observation, {...securityStraddle, runtime: 'rust'}),
+    {task_transport: 'ok', routing_health: 'ok', durable_resume_paths: 'warning'});
   assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'));
+});
+test('published PHP timestamps kept from before a redispatch inside taskMetrics pass', () => {
+  for (const backlogRepair of [1, 0]) {
+    const observation = model();
+    setChecks(straddle(observation, {stamp: true, overdue: 0, repaired: 1, unhealthy: 0, backlogUnhealthy: 0, backlogRepair}),
+      {task_transport: 'ok', routing_health: 'ok', durable_resume_paths: backlogRepair ? 'warning' : 'ok'});
+    assert.deepStrictEqual(checkOperatorMetrics(fixture, observation, 'TEST'), projection);
+  }
+});
+test('published PHP run timestamp read before the repair its count shows passes', () => {
+  const observation = model();
+  setChecks(straddle(observation, {runs: 1, stamp: true, overdue: 1, repaired: 1, unhealthy: 1, backlogUnhealthy: 1,
+    backlogRepair: 1}), {durable_resume_paths: 'warning'});
+  assert.deepStrictEqual(checkOperatorMetrics(fixture, observation, 'TEST'), projection);
+});
+test('published PHP health whose dispatch count was read before the redispatch passes', () => {
+  const observation = model();
+  setChecks(observation.operator_metrics.stages.waiting_after_redispatch, {task_transport: 'ok'});
+  assert.deepStrictEqual(checkOperatorMetrics(fixture, observation, 'TEST'), projection);
+});
+test('rejects PHP health whose recount is overdue after its dispatch count was not', () => {
+  const observation = model();
+  setChecks(observation.operator_metrics.stages.waiting_after_redispatch, {routing_health: 'ok'});
+  assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /warnings/);
+});
+test('rejects a PHP recount overdue after the dispatch count showed the redispatch', () => {
+  const observation = model();
+  straddle(observation, {stamp: true, overdue: 0, repaired: 1, unhealthy: 1, backlogUnhealthy: 1, backlogRepair: 1});
+  assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /counts/);
+});
+test('rejects a PHP backlog overdue after the tasks recount showed the redispatch', () => {
+  const observation = model();
+  straddle(observation, {stamp: true, overdue: 1, repaired: 1, unhealthy: 0, backlogUnhealthy: 1, backlogRepair: 1});
+  assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /counts/);
+});
+test('rejects a PHP overdue count after its timestamp showed the redispatch', () => {
+  const observation = model();
+  straddle(observation, {stamp: false, overdue: 1, repaired: 0, unhealthy: 1, backlogUnhealthy: 1, backlogRepair: 0});
+  assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /repair timestamps/);
+});
+test('rejects a PHP run timestamp from a repair its later reads have not reached', () => {
+  const observation = model();
+  straddle(observation, {runStamp: true, stamp: true, overdue: 1, repaired: 0, unhealthy: 1, backlogUnhealthy: 1,
+    backlogRepair: 0});
+  assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /repair timestamps/);
+});
+test('rejects a native timestamp without its count', () => {
+  const observation = model();
+  const stage = observation.operator_metrics.stages.waiting_after_redispatch;
+  stage.runtime = 'rust';
+  stage.sections.tasks.timestamps.oldest_dispatch_overdue_since = false;
+  assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /present exactly when/);
 });
 // Published PHP on MariaDB answers health with 500 once an activity exists.
 const mariaDbHealthDefect = (observation, runtime, stages) => {
@@ -290,7 +383,10 @@ for (const [label, mutate] of [
   ['a closed run still actionable', s => s.stages.completed.sections.command_contracts.counts.actionable_backfill_needed_runs = 1],
   ['history events miscounted', s => s.stages.completed.sections.history.counts.events = 7],
   ['a worker never counted', s => s.stages.activity_running.active_workers = 0],
-  ['a transport warning missed', s => s.stages.waiting_after_redispatch.checks[5].status = 'ok'],
+  ['a transport warning missed by native', s => {
+    s.stages.waiting_after_redispatch.runtime = 'rust';
+    s.stages.waiting_after_redispatch.checks[5].status = 'ok';
+  }],
   ['an unexpected warning', s => s.stages.completed.checks[9].status = 'warning'],
   ['a check error', s => s.stages.empty.checks[0].status = 'error'],
   ['a missing check', s => s.stages.empty.checks.pop()],
@@ -306,3 +402,40 @@ for (const [label, mutate] of [
     assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'));
   });
 }
+
+// Every document the redispatch stage could report, from the eight values
+// that depend on the repair state: exactly those some forward-only sequence
+// of PHP's per-query reads produces pass, with health read after the run was
+// projected again; every other one is rejected.
+test('PHP redispatch documents pass exactly when a forward-only read order produces them', () => {
+  const overdue = state => state <= 1;
+  const needsRepair = state => state === 1 || state === 2;
+  const document = reads => [needsRepair(reads[0]), needsRepair(reads[1]), overdue(reads[2]), overdue(reads[3]),
+    reads[4] >= 1, overdue(reads[5]), overdue(reads[6]), needsRepair(reads[7])].map(Number).join('');
+  const forward = new Set();
+  const walk = (reads, from) => {
+    if (reads.length === 8) {
+      forward.add(document(reads));
+      return;
+    }
+    for (let state = from; state <= 3; state++) walk([...reads, state], state);
+  };
+  walk([], 0);
+  let passed = 0;
+  for (let bits = 0; bits < 256; bits++) {
+    const [runStamp, runs, stamp, overdueTasks, repaired, unhealthy, backlogUnhealthy, backlogRepair] =
+      [...bits.toString(2).padStart(8, '0')].map(Number);
+    const observation = model();
+    const stage = straddle(observation, {runStamp: runStamp === 1, runs, stamp: stamp === 1, overdue: overdueTasks,
+      repaired, unhealthy, backlogUnhealthy, backlogRepair});
+    setChecks(stage, {task_transport: 'ok', routing_health: 'ok', durable_resume_paths: 'ok'});
+    const key = [runStamp, runs, stamp, overdueTasks, repaired, unhealthy, backlogUnhealthy, backlogRepair].join('');
+    if (forward.has(key)) {
+      assert.deepStrictEqual(checkOperatorMetrics(fixture, observation, 'TEST'), projection, key);
+      passed++;
+    } else {
+      assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /counts|repair timestamps/, key);
+    }
+  }
+  assert.equal(passed, forward.size);
+});
