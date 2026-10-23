@@ -68,6 +68,7 @@ mod archive;
 mod command_payloads;
 mod deployments;
 mod priority_fairness;
+mod route_fallback;
 mod redrive;
 mod memos;
 pub mod mysql;

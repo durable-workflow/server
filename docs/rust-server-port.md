@@ -99,6 +99,9 @@ Updated October 22, 2026.
 ## API surface still missing
 
 These published PHP routes on this tree have no native handler yet, by family.
+A request for one of them answers `501 rust_capability_not_implemented`;
+any other unknown path or method answers PHP's own 404 or 405
+([checkpoint](rust-server-port-checkpoints/2026-10-23-route-fallback.md)).
 
 - **Used by the CLI or Waterline.** None remain. Served from this family
   since: task queue priority and fairness

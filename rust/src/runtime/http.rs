@@ -292,7 +292,8 @@ pub fn router(runtime: Runtime) -> Router {
             post(complete_query),
         )
         .route("/api/worker/query-tasks/{task_id}/fail", post(fail_query))
-        .fallback(unavailable)
+        .fallback(route_fallback)
+        .method_not_allowed_fallback(route_fallback)
         .layer(middleware::from_fn(empty_list_body))
         // `payload_limits` reads and bounds every body first.
         .layer(DefaultBodyLimit::disable())
@@ -1732,12 +1733,13 @@ async fn show_deployment(
 async fn deployment_action(
     Extension(runtime): Extension<Runtime>,
     Path(name): Path<String>,
+    uri: axum::http::Uri,
 ) -> Response {
     let Some((name, action)) = name
         .rsplit_once('/')
         .and_then(|(name, action)| super::deployments::Action::named(action).map(|action| (name, action)))
     else {
-        return unavailable().await;
+        return route_fallback(axum::http::Method::POST, uri).await;
     };
     match runtime.deployment_action(name, action).await {
         Ok((status, body)) => (status, Json(body)).into_response(),
@@ -2127,6 +2129,21 @@ async fn service_catalog_show(
     }
 }
 
+/// A request no native route serves gets PHP's answer for it: 501 when PHP
+/// serves it and native does not yet, else PHP's 405 or 404.
+async fn route_fallback(method: axum::http::Method, uri: axum::http::Uri) -> Response {
+    let path = uri.path();
+    let (status, body) = match super::route_fallback::answer(method.as_str(), path) {
+        super::route_fallback::Answer::NotImplemented => return unavailable().await,
+        super::route_fallback::Answer::MethodNotAllowed(message) => {
+            (StatusCode::METHOD_NOT_ALLOWED, json!({"message":message,"reason":"method_not_allowed"}))
+        }
+        super::route_fallback::Answer::NotFound(message) => (StatusCode::NOT_FOUND, json!({"message":message,"reason":"not_found"})),
+    };
+    // PHP's worker plane adds its protocol fields to every answer.
+    let body = if path.starts_with("/api/worker/") { worker_response(body) } else { body };
+    (status, Json(body)).into_response()
+}
 async fn unavailable() -> Response {
     refuse(
         StatusCode::NOT_IMPLEMENTED,
