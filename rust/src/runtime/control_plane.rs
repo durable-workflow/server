@@ -13,6 +13,7 @@ pub(super) enum Operation<'a> {
     History,
     Cancel,
     Terminate,
+    Archive,
     Repair,
     Debug,
     Update(&'a str),
@@ -108,6 +109,7 @@ impl Operation<'_> {
             Self::History => ("history", &["workflow_id", "run_id"], &["next_page_token"]),
             Self::Cancel => ("cancel", &["workflow_id"], &["outcome"]),
             Self::Terminate => ("terminate", &["workflow_id"], &["outcome"]),
+            Self::Archive => ("archive", &["workflow_id"], &["outcome"]),
             Self::Repair => ("repair", &["workflow_id"], &["outcome"]),
             Self::Debug => ("debug_workflow", &["workflow_id"], &["run_id", "diagnostic_status"]),
             Self::Update(_) => (
@@ -253,7 +255,7 @@ impl Operation<'_> {
                 "workflow_id run_id reason message retryable error_id exception",
                 "control_plane_internal_error",
             ),
-            Self::Cancel | Self::Terminate | Self::Repair => {
+            Self::Cancel | Self::Terminate | Self::Archive | Self::Repair => {
                 ("workflow_id run_id reason message remediation", "v1_projection_read_only")
             }
             Self::Update(_) => (
@@ -315,6 +317,8 @@ pub(super) async fn admission_response(request: Request, mut body: Value) -> Val
         | ("POST", ["api", "workflows", _, "runs", _, "cancel"]) => Operation::Cancel,
         ("POST", ["api", "workflows", _, "terminate"])
         | ("POST", ["api", "workflows", _, "runs", _, "terminate"]) => Operation::Terminate,
+        ("POST", ["api", "workflows", _, "archive"])
+        | ("POST", ["api", "workflows", _, "runs", _, "archive"]) => Operation::Archive,
         ("POST", ["api", "workflows", _, "repair"])
         | ("POST", ["api", "workflows", _, "runs", _, "repair"]) => Operation::Repair,
         ("GET", ["api", "workflows", _, "debug"])

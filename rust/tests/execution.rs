@@ -166,6 +166,8 @@ mod activity_lease_expiry;
 mod structural_limits;
 #[path = "execution/standalone_activities.rs"]
 mod standalone_activities;
+#[path = "execution/archive.rs"]
+mod archive;
 #[path = "execution/activity_timeout_pass.rs"]
 mod activity_timeout_pass;
 #[path = "execution/start_request.rs"]

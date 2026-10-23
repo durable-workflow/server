@@ -152,6 +152,8 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/workflows/{workflow_id}/runs/{run_id}/terminate",
             post(terminate_run),
         )
+        .route("/api/workflows/{workflow_id}/archive", post(archive_current))
+        .route("/api/workflows/{workflow_id}/runs/{run_id}/archive", post(archive_run))
         .route(
             "/api/workflows/{workflow_id}/query/{query_name}",
             post(query_current),
@@ -716,13 +718,13 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
         }
         return matches!(
             parts.as_slice(),
-            [_] | [_, "cancel" | "terminate"]
+            [_] | [_, "cancel" | "terminate" | "archive"]
                 | [_, "runs", _]
                 | [
                     _,
                     "runs",
                     _,
-                    "history" | "cancel" | "terminate" | "activities"
+                    "history" | "cancel" | "terminate" | "archive" | "activities"
                 ]
         );
     }
@@ -1091,6 +1093,44 @@ async fn close(
         .await
         .map_err(|error| operation().refusal(error, workflow_id, run_id))?;
     Ok((status, Json(operation().response(response))))
+}
+
+/// `POST /api/workflows/{id}/archive` and its run-targeted route.
+async fn archive(
+    runtime: Runtime,
+    request: CommandRequest,
+    workflow_id: &str,
+    run_id: Option<&str>,
+    body: Value,
+) -> Result<(StatusCode, Json<Value>)> {
+    let operation = || super::control_plane::Operation::Archive;
+    let context = request.context(&body, workflow_id, "archive", metadata(&[
+        ("request_id", present(&body, "request_id")),
+        ("reason", present(&body, "reason")),
+    ]));
+    let (status, response) = runtime
+        .archive_workflow(workflow_id, run_id, body, context)
+        .await
+        .map_err(|error| operation().refusal(error, workflow_id, run_id))?;
+    Ok((status, Json(operation().response(response))))
+}
+
+async fn archive_current(
+    Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
+    Path(workflow_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    archive(runtime, request, &workflow_id, None, body).await
+}
+
+async fn archive_run(
+    Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
+    Path((workflow_id, run_id)): Path<(String, String)>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    archive(runtime, request, &workflow_id, Some(&run_id), body).await
 }
 
 async fn cancel_current(

@@ -1208,6 +1208,22 @@ impl Runtime {
             }
         }
     }
+    /// `WorkflowStub::attemptArchive` for the current run.
+    pub(crate) async fn archive_workflow(
+        &self,
+        workflow_id: &str,
+        run_id: Option<&str>,
+        body: Value,
+        context: Value,
+    ) -> Result<(StatusCode, Value)> {
+        let reason = super::archive::reason(&body, workflow_id)?;
+        let blob = super::archive::payload(reason.as_deref())?;
+        match &*self.storage {
+            Storage::Sqlite(store) => store.archive_workflow(workflow_id, run_id, reason, blob, context).await,
+            Storage::Postgres(store) => store.archive_workflow(workflow_id, run_id, reason, blob, context).await,
+            Storage::MySql(store) => store.archive_workflow(workflow_id, run_id, reason, blob, context).await,
+        }
+    }
     pub(crate) async fn request_cancellation(
         &self,
         workflow_id: &str,

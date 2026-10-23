@@ -106,6 +106,8 @@ These published PHP routes on this tree have no native handler yet, by family.
   Served from this family since: standalone activities (start, list and
   describe), compared live with published 2.11.1
   ([checkpoint](rust-server-port-checkpoints/2026-10-23-standalone-activities.md));
+  run archive, instance and run-targeted
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-cli-sweep-and-archive.md));
   the service catalog read contract in cluster info, which Waterline 2.12.3's
   Services pages require; with it, every Waterline route answered native as it
   answered PHP
@@ -134,7 +136,6 @@ These published PHP routes on this tree have no native handler yet, by family.
     is served: `POST /api/worker/activity-tasks/{task}/renew-lease`, with the
     `activity_lease_renewal` capability and the `activity-lease-renewal` fixture.)
 - **Run operations.**
-  - Archive (instance and run).
   - Redrive.
   - Imports from embedded v2 and Waterline v1.
 - **Other families.**
