@@ -88,6 +88,28 @@ for (const [label, change, message] of [
   ['a cleanup budget other than the requested one', state => {
     state.request.response.cancellation_request.cleanup_deadline_at = '2026-10-24T07:21:08.747589Z';
   }, /the cleanup budget runs from the request/],
+  // The defect in Server #745's first native head: an activity delivery at
+  // an activity that already completed was recorded instead of refused.
+  ['a delivery recorded at an activity that resolved before the request', state => {
+    state.boundary_resolved_activity = structuredClone(state.boundary_delivery);
+    Object.assign(state.boundary_resolved_activity.response, {sequence: 1, call_kind: 'activity'});
+  }, /an activity that resolved before the request is not eligible/],
+  ['a resolved activity refused as a shape mismatch', state => {
+    state.boundary_resolved_activity.response.reason = 'cancellation_delivery_shape_mismatch';
+  }, /an activity that resolved before the request is not eligible/],
+  ['an activity delivery accepted at a timer', state => {
+    state.boundary_timer_as_activity.status = 200;
+    state.boundary_timer_as_activity.response.delivered = true;
+  }, /an activity delivery at a timer is a shape mismatch/],
+  ['a boundary refusal that records history', state => {
+    state.boundary_history_after_refusals.push(structuredClone(state.boundary_history_before.at(-1)));
+  }, /boundary refusals record nothing/],
+  ['a refusal that pins the delivery sequence', state => {
+    state.boundary_pending.response.cancellation_request.delivery_sequence = 1;
+  }, /the request is still undelivered after the refusals/],
+  ['a timer delivery that leaves the timer pending', state => {
+    state.boundary_history_after_delivery.splice(-2, 1);
+  }, /delivery only appends|the timer is cancelled under the delivery/],
 ]) {
   test(`the contract refuses ${label}`, () => {
     assert.throws(() => check(observation(change)), message);

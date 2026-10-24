@@ -12,6 +12,8 @@ const ACKS = ['before_request', 'before_delivery', 'foreign_owner', 'unknown_att
   'terminated_ack'];
 const MAIN_EVENTS = ['StartAccepted', 'WorkflowStarted', 'ActivityScheduled', 'ActivityStarted',
   'CooperativeCancellationRequested', 'ActivityCancelled', 'CooperativeCancellationDelivered'];
+const BOUNDARY_EVENTS = ['StartAccepted', 'WorkflowStarted', 'ActivityScheduled', 'ActivityStarted', 'ActivityCompleted',
+  'TimerScheduled', 'CooperativeCancellationRequested'];
 
 // Milliseconds since the epoch of a UTC timestamp with any fraction length.
 function at(value, label) {
@@ -243,5 +245,37 @@ export function checkActivityCancellationAcknowledgement(fixture, observation, w
     'a terminated run still acknowledges');
   equal(state.terminated_history, [...MAIN_EVENTS, 'TerminateRequested', 'WorkflowTerminated', 'ActivityCancellationAcknowledged'],
     'the late acknowledgement follows the terminal event');
+
+  // An activity delivery is checked against the run's typed history before
+  // anything is cancelled (CooperativeCancellationDelivery::validateCallBoundary).
+  // The activity at sequence 1 completed before the request and sequence 2 is
+  // a timer. Both refusals carry the bridge's undelivered body and record
+  // nothing, and the pending timer then takes the delivery.
+  const boundary = state.boundary_claim;
+  equal(boundary.workflow_id, `${workflowId}-boundary`, 'boundary run');
+  equal([state.boundary_complete, state.boundary_timer, state.boundary_request], [200, 200, 202],
+    'activity completed, timer started, then cancellation requested');
+  assert.match(state.boundary_task_id ?? '', ULID, 'boundary cancellation workflow task');
+  const undelivered = reason => ({status: 409, acknowledgement_capability: true, response: {delivered: false,
+    task_id: state.boundary_task_id, workflow_run_id: boundary.run_id, request_id: null, sequence: null, call_kind: null,
+    sequence_span: null, operation_sequence: null, operation_sequence_span: null, reason, protocol_version: '1.20'}});
+  equal(state.boundary_resolved_activity, undelivered('cancellation_delivery_not_eligible'),
+    'an activity that resolved before the request is not eligible');
+  equal(state.boundary_timer_as_activity, undelivered('cancellation_delivery_shape_mismatch'),
+    'an activity delivery at a timer is a shape mismatch');
+  equal(state.boundary_history_before.map(event => event.event_type), BOUNDARY_EVENTS, 'boundary history before delivery');
+  equal(state.boundary_history_after_refusals, state.boundary_history_before, 'boundary refusals record nothing');
+  const pendingRequest = state.boundary_pending.response?.cancellation_request;
+  equal([state.boundary_pending.status, state.boundary_pending.response?.duplicate, pendingRequest?.delivery_sequence,
+    pendingRequest?.delivered_at], [200, true, null, null], 'the request is still undelivered after the refusals');
+  assert.match(pendingRequest.request_id ?? '', REQUEST, 'boundary request id');
+  equal(state.boundary_delivery, {status: 200, acknowledgement_capability: true, response: {delivered: true,
+    task_id: state.boundary_task_id, workflow_run_id: boundary.run_id, request_id: pendingRequest.request_id, sequence: 2,
+    call_kind: 'timer', sequence_span: 1, operation_sequence: null, operation_sequence_span: 1, reason: null,
+    protocol_version: '1.20'}}, 'the pending timer takes the delivery');
+  const boundaryHistory = state.boundary_history_after_delivery;
+  equal(boundaryHistory.slice(0, -2), state.boundary_history_before, 'delivery only appends');
+  equal(boundaryHistory.slice(-2).map(event => event.event_type), ['TimerCancelled', 'CooperativeCancellationDelivered'],
+    'the timer is cancelled under the delivery');
   return projection;
 }

@@ -1906,8 +1906,10 @@ async fn deliver_cancellation(
     runtime
         .deliver_cancellation(&task_id, body, request_protocol(&headers)?)
         .await
-        // `WorkerProtocol::json`: every answer carries the worker envelope.
+        // `WorkerProtocol::json`: every answer carries the worker envelope,
+        // the bridge's refused deliveries included.
         .map(|body| Json(worker_response(body)))
+        .map_err(worker_refusal)
 }
 async fn complete_workflow(
     Extension(runtime): Extension<Runtime>,

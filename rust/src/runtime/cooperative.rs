@@ -105,6 +105,75 @@ pub(super) async fn encode_command(value: Value, semaphore: Arc<Semaphore>) -> R
 /// PHP's default `command_batch_size` structural limit.
 const PARALLEL_SPAN_LIMIT: i64 = 1000;
 
+/// The reasons `CooperativeCancellationDelivery::validate` returns.
+/// `DefaultWorkflowTaskBridge::deliverCancellation` answers each with its
+/// full delivery body under 409: the task and run, no delivery.
+const VALIDATION_REASONS: [&str; 8] = [
+    "cancellation_request_mismatch",
+    "cancellation_request_history_missing",
+    "cancellation_delivery_mismatch",
+    "cancellation_delivery_history_missing",
+    "cancellation_delivery_sequence_mismatch",
+    "cancellation_delivery_shape_mismatch",
+    "cancellation_delivery_not_eligible",
+    "cancellation_delivery_requires_scope",
+];
+
+fn validation_refusal(task_id: &str, run_id: &str, error: RuntimeError) -> RuntimeError {
+    match error {
+        RuntimeError::Refused { status: StatusCode::CONFLICT, reason } if VALIDATION_REASONS.contains(&reason) => {
+            RuntimeError::Protocol {
+                status: StatusCode::CONFLICT,
+                response: json!({"delivered":false,"task_id":task_id,"workflow_run_id":run_id,"request_id":null,
+                    "sequence":null,"call_kind":null,"sequence_span":null,"operation_sequence":null,
+                    "operation_sequence_span":null,"reason":reason}),
+            }
+        }
+        other => other,
+    }
+}
+
+/// `WorkflowStepHistory::WORKFLOW_STEP_EVENT_TYPES` without activity starts
+/// and heartbeats: each follows its own `ActivityScheduled` at the same
+/// sequence, so neither changes a boundary's shape, and heartbeats are
+/// unbounded.
+const STEP_EVENTS: [&str; 30] = [
+    "CancellationScopeOpened", "ActivityScheduled", "ActivityRetryScheduled", "ActivityCompleted", "ActivityFailed",
+    "ActivityCancelled", "ActivityTimedOut", "ChildWorkflowScheduled", "ChildRunStarted", "ChildRunCompleted",
+    "ChildRunFailed", "ChildRunCancelled", "ChildRunTerminated", "ServiceCallStarted", "ServiceCallCompleted",
+    "ServiceCallFailed", "ServiceCallCancelled", "WorkflowContinuedAsNew", "ConditionWaitOpened",
+    "ConditionWaitSatisfied", "ConditionWaitTimedOut", "SignalWaitOpened", "SignalApplied", "MemoUpserted",
+    "SearchAttributesUpserted", "SideEffectRecorded", "VersionMarkerRecorded", "TimerScheduled", "TimerFired",
+    "TimerCancelled",
+];
+
+/// `CooperativeCancellationDelivery::RESOLUTION_TYPES`.
+const RESOLUTION_EVENTS: [&str; 18] = [
+    "ActivityCompleted", "ActivityFailed", "ActivityCancelled", "ActivityTimedOut", "TimerFired", "TimerCancelled",
+    "ConditionWaitSatisfied", "ConditionWaitTimedOut", "SignalApplied", "ChildRunCompleted", "ChildRunFailed",
+    "ChildRunCancelled", "ChildRunTerminated", "ServiceCallCompleted", "ServiceCallFailed", "ServiceCallCancelled",
+    "SelectionResolved", "SelectionOperationCancelled",
+];
+
+/// `WorkflowStepHistory::eventMatchesShape` for an activity or timer call.
+fn matches_call_shape(call_kind: &str, event_type: &str, payload: &Value) -> bool {
+    match call_kind {
+        "activity" => {
+            matches!(event_type, "ActivityScheduled" | "ActivityRetryScheduled" | "ActivityCompleted"
+                | "ActivityFailed" | "ActivityCancelled" | "ActivityTimedOut")
+                // `isLocalActivityEvent`
+                && payload["execution_mode"] != "local"
+                && payload["local_activity"] != true
+        }
+        "timer" => {
+            matches!(event_type, "TimerScheduled" | "TimerFired" | "TimerCancelled")
+                // `isPureTimerEvent`: a wait's timeout timer belongs to the wait.
+                && !matches!(payload["timer_kind"].as_str(), Some("condition_timeout" | "signal_timeout"))
+        }
+        _ => false,
+    }
+}
+
 impl<DB: Backend> Store<DB>
 where
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
@@ -237,13 +306,16 @@ where
         }
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
+        // `CooperativeCancellationDelivery::validate` refusals carry the
+        // bridge's delivery body.
+        let refusal = |error: RuntimeError| validation_refusal(task_id, &run_id, error);
         if DB::optional_string(&run, "cancellation_request_command_id")?.as_deref()
             != Some(request_id)
         {
-            return Err(refuse(
+            return Err(refusal(refuse(
                 StatusCode::CONFLICT,
                 "cancellation_request_mismatch",
-            ));
+            )));
         }
         if DB::optional_instant(&run, "cancellation_deadline_at")?
             .is_none_or(|deadline| deadline <= now())
@@ -258,16 +330,16 @@ where
             "operation_sequence_span":1,"reason":null});
         let requested=Self::query("SELECT sequence,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND workflow_command_id=$2 AND event_type='CooperativeCancellationRequested' ORDER BY sequence LIMIT 1")
             .bind(&run_id).bind(request_id).fetch_optional(&mut *tx).await?
-            .ok_or_else(|| refuse(StatusCode::CONFLICT,"cancellation_request_history_missing"))?;
+            .ok_or_else(|| refusal(refuse(StatusCode::CONFLICT,"cancellation_request_history_missing")))?;
         let request_sequence = DB::number(&requested, "sequence")?;
         let requested = DB::document_row(&requested, "payload")?;
         if requested["workflow_command_id"] != request_id
             || requested["cancellation"]["request_id"] != request_id
         {
-            return Err(refuse(
+            return Err(refusal(refuse(
                 StatusCode::CONFLICT,
                 "cancellation_request_history_missing",
-            ));
+            )));
         }
         if let Some(delivery)=Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='CooperativeCancellationDelivered' ORDER BY sequence LIMIT 1")
             .bind(&run_id).fetch_optional(&mut *tx).await? {
@@ -275,7 +347,7 @@ where
             if payload["workflow_command_id"]!=request_id || payload["sequence"]!=sequence || payload["call_kind"]!=call_kind
                 || payload["sequence_span"].as_i64().unwrap_or(1)!=span
                 || payload["cancellation"]!=requested["cancellation"] || DB::optional_number(&run,"cancellation_delivery_sequence")?!=Some(sequence) {
-                return Err(refuse(StatusCode::CONFLICT,"cancellation_delivery_mismatch"));
+                return Err(refusal(refuse(StatusCode::CONFLICT,"cancellation_delivery_mismatch")));
             }
             Self::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE id=$2")
                 .bind(DB::bind_time(self.cancellation_lease_expiry(&run)?))
@@ -284,26 +356,26 @@ where
             return Ok(response);
         }
         if DB::optional_number(&run, "cancellation_delivery_sequence")?.is_some() {
-            return Err(refuse(
+            return Err(refusal(refuse(
                 StatusCode::CONFLICT,
                 "cancellation_delivery_history_missing",
-            ));
+            )));
         }
         let next = Self::authored_sequence(&mut tx, &run_id)
             .await?
             .checked_add(1)
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "command_sequence_exhausted"))?;
         if sequence > next {
-            return Err(refuse(
+            return Err(refusal(refuse(
                 StatusCode::CONFLICT,
                 "cancellation_delivery_sequence_mismatch",
-            ));
+            )));
         }
         if call_kind == "parallel" {
             // `parallelEligibility`; a boundary at the next sequence has no
             // authored member yet.
             if sequence < next {
-                for timer in Self::parallel_timer_members(&mut tx, &run_id, sequence, span, request_sequence).await? {
+                for timer in Self::parallel_timer_members(&mut tx, &run_id, sequence, span, request_sequence).await.map_err(refusal)? {
                     if DB::string(&timer, "status")? == "pending" {
                         Self::cancel_root_timer(&mut tx, &run, request_id, &timer, Some(task_id), now()).await?;
                     }
@@ -317,7 +389,8 @@ where
                     sequence,
                     request_sequence,
                 )
-                .await?;
+                .await
+                .map_err(refusal)?;
                 // `ChildCancellation::prepare`: a waiting policy holds the
                 // delivery and releases the claim until the child closes.
                 if boundary.policy != "abandon"
@@ -337,16 +410,23 @@ where
                 }
             }
         } else if call_kind == "activity" {
-            // `cancelOpenWaitAtSequence` with the default `try_cancel`
-            // policy: an open activity at the sequence is cancelled under the
-            // request. Native records no explicit activity cancellation
-            // policy, so it has no waiting or abandoning delivery.
+            // `validateCallBoundary`, then `cancelOpenWaitAtSequence` with
+            // the default `try_cancel` policy: an open activity at the
+            // sequence is cancelled under the request, and one that resolved
+            // after the request takes the delivery as it is. Native records
+            // no explicit activity cancellation policy, so it has no waiting
+            // or abandoning delivery.
+            Self::validate_call_boundary(&mut tx, &run_id, sequence, call_kind, sequence < next, request_sequence)
+                .await
+                .map_err(refusal)?;
             if sequence < next {
                 Self::deliver_activity_cancellation(&mut tx, &run_id, request_id, sequence, now()).await?;
             }
         } else if matches!(call_kind, "condition" | "signal") {
             if sequence < next {
-                Self::validate_wait_cancellation_boundary(&mut tx, &run_id, sequence, call_kind, request_sequence).await?;
+                Self::validate_wait_cancellation_boundary(&mut tx, &run_id, sequence, call_kind, request_sequence)
+                    .await
+                    .map_err(refusal)?;
             }
             // `cancelOpenWaitAtSequence`: a timed wait's pending timeout timer is
             // cancelled, as at a timer boundary.
@@ -357,28 +437,18 @@ where
                 Self::cancel_root_timer(&mut tx, &run, request_id, &timer, Some(task_id), now()).await?;
             }
         } else {
-            let timer = Self::query(
-                "SELECT * FROM workflow_run_timers WHERE workflow_run_id=$1 AND sequence=$2",
-            )
-            .bind(&run_id)
-            .bind(sequence)
-            .fetch_optional(&mut *tx)
-            .await?;
-            if sequence < next && timer.is_none() {
-                return Err(refuse(
-                    StatusCode::CONFLICT,
-                    "cancellation_delivery_shape_mismatch",
-                ));
-            }
-            if let Some(timer) = timer {
-                if DB::string(&timer, "status")? != "pending" {
-                    return Err(refuse(
-                        StatusCode::CONFLICT,
-                        "cancellation_delivery_not_eligible",
-                    ));
-                }
-                Self::cancel_root_timer(&mut tx, &run, request_id, &timer, Some(task_id), now())
-                    .await?;
+            // A timer: `validateCallBoundary`, then `cancelOpenWaitAtSequence`
+            // cancels it while pending. A wait's timeout timer is not a timer
+            // boundary, and a timer that fired after the request takes the
+            // delivery as it is.
+            Self::validate_call_boundary(&mut tx, &run_id, sequence, call_kind, sequence < next, request_sequence)
+                .await
+                .map_err(refusal)?;
+            if let Some(timer) = Self::query("SELECT * FROM workflow_run_timers WHERE workflow_run_id=$1 AND sequence=$2")
+                .bind(&run_id).bind(sequence).fetch_optional(&mut *tx).await?
+                && DB::string(&timer, "status")? == "pending"
+            {
+                Self::cancel_root_timer(&mut tx, &run, request_id, &timer, Some(task_id), now()).await?;
             }
         }
         let at = now();
@@ -539,6 +609,55 @@ where
             return Err(refuse(StatusCode::CONFLICT, "cancellation_delivery_not_eligible"));
         }
         Ok(members)
+    }
+
+    /// `validateCallBoundary` for an activity or timer call. Every typed step
+    /// at the sequence must have the call's shape
+    /// (`WorkflowStepHistory::assertCompatible`), and an authored sequence
+    /// must have typed history (`assertTypedHistoryRecorded`); either fault is
+    /// a shape mismatch. Then a call that resolved before the request is not
+    /// eligible (`resolvedBeforeRequest`). The next sequence may be a call not
+    /// yet authored.
+    async fn validate_call_boundary(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        sequence: i64,
+        call_kind: &str,
+        authored: bool,
+        request_sequence: i64,
+    ) -> Result<()> {
+        let events = Self::query("SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('CancellationScopeOpened','ActivityScheduled','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityCancelled','ActivityTimedOut','ChildWorkflowScheduled','ChildRunStarted','ChildRunCompleted','ChildRunFailed','ChildRunCancelled','ChildRunTerminated','ServiceCallStarted','ServiceCallCompleted','ServiceCallFailed','ServiceCallCancelled','WorkflowContinuedAsNew','ConditionWaitOpened','ConditionWaitSatisfied','ConditionWaitTimedOut','SignalWaitOpened','SignalApplied','MemoUpserted','SearchAttributesUpserted','SideEffectRecorded','VersionMarkerRecorded','TimerScheduled','TimerFired','TimerCancelled','SelectionResolved','SelectionOperationCancelled') ORDER BY sequence LIMIT 10001")
+            .bind(run_id)
+            .fetch_all(&mut **tx)
+            .await?;
+        if events.len() > 10000 {
+            return Err(refuse(StatusCode::SERVICE_UNAVAILABLE, "cancellation_inventory_exceeds_budget"));
+        }
+        let (mut typed, mut conflicting, mut resolved) = (false, false, false);
+        for event in &events {
+            let kind = DB::string(event, "event_type")?;
+            let payload = DB::document_row(event, "payload")?;
+            let at = payload["sequence"].as_i64() == Some(sequence);
+            if at && STEP_EVENTS.contains(&kind.as_str()) {
+                typed = true;
+                conflicting |= !matches_call_shape(call_kind, &kind, &payload);
+            }
+            // A cancelled selection operation resolves each member it spans.
+            let covered = at
+                || (kind == "SelectionOperationCancelled"
+                    && payload["member_base_sequence"].as_i64().zip(payload["member_size"].as_i64())
+                        .is_some_and(|(base, size)| base >= 1 && base <= sequence && size > sequence - base));
+            resolved |= covered
+                && RESOLUTION_EVENTS.contains(&kind.as_str())
+                && DB::number(event, "sequence")? < request_sequence;
+        }
+        if conflicting || (authored && !typed) {
+            return Err(refuse(StatusCode::CONFLICT, "cancellation_delivery_shape_mismatch"));
+        }
+        if resolved {
+            return Err(refuse(StatusCode::CONFLICT, "cancellation_delivery_not_eligible"));
+        }
+        Ok(())
     }
 
     /// `validateCallBoundary` for a condition or signal wait: the authored
