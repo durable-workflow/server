@@ -87,6 +87,8 @@ mod rejected_updates;
 mod continue_messages;
 #[path = "execution/update_wait.rs"]
 mod update_wait;
+#[path = "execution/keyless_condition_waits.rs"]
+mod keyless_condition_waits;
 #[path = "execution/payload_limits.rs"]
 mod payload_limits;
 #[path = "execution/start_definition.rs"]

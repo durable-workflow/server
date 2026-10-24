@@ -2260,17 +2260,9 @@ where
                     {
                         return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"));
                     }
-                    text(command, "condition_key")?;
+                    // `normalizeOpenConditionWaitCommand`: the key and the
+                    // definition fingerprint are optional strings, of any form.
                     super::wait_timeouts::timeout_for(command, "invalid_condition_timeout")?;
-                    let fingerprint = text(command, "condition_definition_fingerprint")?;
-                    if !fingerprint.strip_prefix("sha256:").is_some_and(|hash| {
-                        hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-                    }) {
-                        return Err(refuse(
-                            StatusCode::UNPROCESSABLE_ENTITY,
-                            "invalid_condition_fingerprint",
-                        ));
-                    }
                 }
                 "open_signal_wait" => {
                     reject_fields(command, &["type", "signal_name", "timeout_seconds"])?;
@@ -2615,6 +2607,18 @@ where
                         .as_object_mut()
                         .unwrap()
                         .remove("condition_wait_occurrence_id");
+                }
+                // `normalizeOptionalString`: PHP trims the condition's key and
+                // definition fingerprint and drops them when empty.
+                if !direct {
+                    for field in ["condition_key", "condition_definition_fingerprint"] {
+                        match payload[field].as_str().map(str::trim).filter(|value| !value.is_empty()) {
+                            Some(value) => payload[field] = json!(value),
+                            None => {
+                                payload.as_object_mut().unwrap().remove(field);
+                            }
+                        }
+                    }
                 }
                 let pending_wait_id = if direct {
                     let pending = Self::query("SELECT signal_wait_id FROM workflow_signal_records WHERE workflow_run_id=$1 AND signal_name=$2 AND status='received' ORDER BY command_sequence,id LIMIT 1")
