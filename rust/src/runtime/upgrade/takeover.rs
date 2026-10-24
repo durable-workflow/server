@@ -257,6 +257,14 @@ fn qualified(inventory: &Value) -> Result<&str> {
             return Err(refuse(StatusCode::CONFLICT, reason));
         }
     }
+    // A namespace storage policy native cannot serve would refuse every
+    // upload in that namespace after takeover.
+    if inventory["storage_inspection"]["unsupported"] != 0 {
+        return Err(refuse(
+            StatusCode::CONFLICT,
+            "upgrade_source_external_payload_storage_unsupported",
+        ));
+    }
     // A schedule native cannot run would stop firing after takeover.
     if inventory["schedule_inspection"]["unsupported"] != 0 {
         return Err(refuse(

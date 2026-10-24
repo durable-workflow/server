@@ -1,0 +1,295 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "cluster-info",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "cluster info λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "cluster info λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "cluster_info": {
+    "namespaces": {
+      "available": "info-on",
+      "unconfigured": "info-plain",
+      "disabled": "info-off",
+      "missing": "info-absent"
+    },
+    "created": [
+      "available",
+      "unconfigured",
+      "disabled"
+    ],
+    "policies": {
+      "available": {
+        "driver": "local",
+        "enabled": true,
+        "threshold_bytes": 16,
+        "config": {
+          "uri": "file:///tmp/dw-parity-cluster-info"
+        }
+      },
+      "disabled": {
+        "driver": "local",
+        "enabled": false,
+        "threshold_bytes": 32,
+        "config": {
+          "uri": "file:///tmp/dw-parity-cluster-info"
+        }
+      }
+    },
+    "rows": {
+      "available": {
+        "exists": true,
+        "status": "active",
+        "retention_mode": "bounded",
+        "retention_days": 30
+      },
+      "unconfigured": {
+        "exists": true,
+        "status": "active",
+        "retention_mode": "bounded",
+        "retention_days": 30
+      },
+      "disabled": {
+        "exists": true,
+        "status": "active",
+        "retention_mode": "bounded",
+        "retention_days": 30
+      },
+      "missing": {
+        "exists": false,
+        "status": null,
+        "retention_mode": null,
+        "retention_days": null
+      }
+    },
+    "storage": {
+      "available": {
+        "configured": true,
+        "enabled": true,
+        "status": "available",
+        "configuration_error": null,
+        "threshold_bytes": 16
+      },
+      "unconfigured": {
+        "configured": false,
+        "enabled": false,
+        "status": "unconfigured",
+        "configuration_error": null,
+        "threshold_bytes": 2097152
+      },
+      "disabled": {
+        "configured": true,
+        "enabled": false,
+        "status": "disabled",
+        "configuration_error": null,
+        "threshold_bytes": 32
+      },
+      "missing": {
+        "configured": false,
+        "enabled": false,
+        "status": "unconfigured",
+        "configuration_error": null,
+        "threshold_bytes": 2097152
+      }
+    },
+    "storage_envelope": {
+      "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+      "version": 1,
+      "provider_details_exposed": false,
+      "direct_provider_adapters": {
+        "required": false,
+        "default_enabled": false,
+        "capability_negotiated": true
+      }
+    },
+    "limits": {
+      "max_payload_bytes": 2097152,
+      "max_memo_bytes": 262144,
+      "max_search_attributes": 100,
+      "max_search_attribute_key_length": 128,
+      "max_search_attribute_value_bytes": 2048,
+      "max_operation_name_length": 256,
+      "max_pending_activities": 2000,
+      "max_pending_children": 2000
+    },
+    "default_namespace": "default",
+    "transport": {
+      "schema": "durable-workflow.v2.runtime-external-payload-transport.v1",
+      "version": 1,
+      "reference_schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+      "mode": "authenticated_namespace_runtime",
+      "upload": {
+        "method": "POST",
+        "path": "/api/external-payloads/v1",
+        "content_type": "application/octet-stream",
+        "declared_metadata_headers": [
+          "X-Durable-Workflow-Payload-Codec",
+          "X-Durable-Workflow-Payload-Size",
+          "X-Durable-Workflow-Payload-SHA256"
+        ],
+        "idempotency": "content_addressed_per_namespace",
+        "completion_context": {
+          "schema": "durable-workflow.v2.payload-completion-context.v1",
+          "prepared_schema": "durable-workflow.v2.payload-completion-context.v2",
+          "scope_schema": "durable-workflow.v2.payload-completion-context.v2",
+          "header": "X-Durable-Workflow-Payload-Completion",
+          "use": "retry_draining_refusal_for_current_worker_completion_only",
+          "max_bytes_per_lease": 67108864,
+          "max_slots_per_lease": 128,
+          "fenced_or_stale_admission": "refuse"
+        }
+      },
+      "fetch": {
+        "method": "GET",
+        "path_template": "/api/external-payloads/v1/{referenceId}",
+        "content_type": "application/octet-stream",
+        "cache_control": "immutable, max-age=60, private"
+      },
+      "authorization": {
+        "authentication": "normal_runtime_role_credential",
+        "namespace_header": "X-Namespace",
+        "roles": [
+          "worker",
+          "operator",
+          "admin"
+        ],
+        "cross_namespace_lookup": "not_found_without_existence_disclosure",
+        "provider_credentials_exposed": false
+      },
+      "limits": {
+        "max_payload_bytes": 67108864,
+        "buffering": "bounded_by_declared_and_observed_size",
+        "request_timeout_seconds": 30,
+        "abandoned_upload_expiry_seconds": 3600
+      },
+      "integrity": {
+        "algorithm": "sha256",
+        "upload_verified_before_reference_commit": true,
+        "fetch_verified_before_response": true,
+        "sdk_must_verify_before_decode": true
+      },
+      "retention": {
+        "authority": "namespace_runtime",
+        "client_delete_supported": false,
+        "sdk_cache_may_delete_backing_object": false,
+        "reference_claim": "first_verified_state-bearing_request"
+      },
+      "direct_provider_adapters": {
+        "required": false,
+        "default_enabled": false,
+        "self_hosted_only": true,
+        "capability_negotiated": true
+      },
+      "typed_outcomes": {
+        "external_payload_not_found": {
+          "status": 404,
+          "retryable": false
+        },
+        "external_payload_expired": {
+          "status": 410,
+          "retryable": false
+        },
+        "external_payload_unauthorized": {
+          "statuses": [
+            401,
+            403
+          ],
+          "retryable": false
+        },
+        "external_payload_unavailable": {
+          "status": 503,
+          "retryable": true
+        },
+        "external_payload_oversized": {
+          "status": 413,
+          "retryable": false
+        },
+        "external_payload_unsupported": {
+          "statuses": [
+            415,
+            422
+          ],
+          "retryable": false
+        },
+        "external_payload_integrity_mismatch": {
+          "status": 422,
+          "retryable": false
+        },
+        "external_payload_namespace_bytes_exhausted": {
+          "status": 429,
+          "retryable": true
+        },
+        "external_payload_namespace_objects_exhausted": {
+          "status": 429,
+          "retryable": true
+        },
+        "external_payload_namespace_quota_unavailable": {
+          "status": 503,
+          "retryable": true
+        },
+        "external_payload_completion_invalid": {
+          "status": 422,
+          "retryable": false
+        },
+        "external_payload_completion_lease_rejected": {
+          "status": 409,
+          "retryable": false
+        },
+        "external_payload_completion_conflict": {
+          "status": 409,
+          "retryable": false
+        },
+        "external_payload_completion_budget_exhausted": {
+          "status": 429,
+          "retryable": true
+        }
+      },
+      "audit_events": [
+        "external_payload.uploaded",
+        "external_payload.fetched",
+        "external_payload.claimed",
+        "external_payload.rejected"
+      ],
+      "secrets_in_references_or_logs": false
+    },
+    "native_differences": {
+      "upload.completion_context.prepared_schema": {
+        "value": null,
+        "reason": "Native serves no prepared local activities, so a completion context never takes their version-2 form."
+      },
+      "upload.completion_context.scope_schema": {
+        "value": null,
+        "reason": "Native serves no cancellation-scope checkpoints, so a completion context never takes their version-2 form."
+      },
+      "audit_events": {
+        "value": [],
+        "reason": "Native writes no external payload audit log events yet. The ops gate owns structured logging."
+      }
+    }
+  }
+}

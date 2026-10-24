@@ -433,8 +433,10 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $activityLeaseRenewal = isset($fixture['activity_lease_renewal']) ? finishHttpActivityLeaseRenewal($client, $fixture, $workflowId, $url) : null;
     $serviceCatalog = isset($fixture['service_catalog']) ? finishHttpServiceCatalog($client, $fixture, $workflowId, $url) : null;
     $systemMetrics = isset($fixture['system_metrics']) ? finishHttpSystemMetrics($client, $fixture, $workflowId, $url) : null;
+    $operatorDashboardTypes = isset($fixture['operator_dashboard_types']) ? finishHttpOperatorDashboardTypes($client, $fixture, $workflowId, $url) : null;
     $prometheusMetrics = isset($fixture['prometheus_metrics']) ? finishHttpPrometheusMetrics($client, $fixture, $workflowId, $url) : null;
     $payloadCleanup = isset($fixture['payload_cleanup']) ? finishHttpPayloadCleanup($client, $fixture, $workflowId, $url) : null;
+    $clusterInfo = isset($fixture['cluster_info']) ? finishHttpClusterInfo($client, $fixture, $workflowId, $url) : null;
     $repairPass = isset($fixture['repair_pass']) ? finishHttpRepairPass($client, $fixture, $workflowId, $url) : null;
     $namespaceDelete = isset($fixture['namespace_delete']) ? finishHttpNamespaceDelete($client, $fixture, $workflowId, $queue, $url) : null;
     $schedulePolicies = isset($fixture['schedule_policies']) ? finishHttpSchedulePolicies($client, $fixture, $workflowId, $url) : null;
@@ -539,8 +541,10 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'activity_lease_renewal' => $activityLeaseRenewal,
         'service_catalog' => $serviceCatalog,
         'system_metrics' => $systemMetrics,
+        'operator_dashboard_types' => $operatorDashboardTypes,
         'prometheus_metrics' => $prometheusMetrics,
         'payload_cleanup' => $payloadCleanup,
+        'cluster_info' => $clusterInfo,
         'repair_pass' => $repairPass,
         'namespace_delete' => $namespaceDelete,
         'schedule_policies' => $schedulePolicies,
@@ -849,8 +853,10 @@ try {
     require __DIR__.'/activity-lease-renewal-probe.php';
     require __DIR__.'/service-catalog-probe.php';
     require __DIR__.'/system-metrics-probe.php';
+    require __DIR__.'/operator-dashboard-types-probe.php';
     require __DIR__.'/prometheus-metrics-probe.php';
     require __DIR__.'/payload-cleanup-probe.php';
+    require __DIR__.'/cluster-info-probe.php';
     require __DIR__.'/repair-pass-probe.php';
     require __DIR__.'/namespace-delete-probe.php';
     require __DIR__.'/schedule-policies-probe.php';
@@ -1020,8 +1026,14 @@ try {
     if ($mode === 'embedded' && isset($fixture['system_metrics'])) {
         $observation['system_metrics'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_metrics'];
     }
+    if ($mode === 'embedded' && isset($fixture['operator_dashboard_types'])) {
+        $observation['operator_dashboard_types'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_dashboard'];
+    }
     if ($mode === 'embedded' && isset($fixture['prometheus_metrics'])) {
         $observation['prometheus_metrics'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_metrics'];
+    }
+    if ($mode === 'embedded' && isset($fixture['cluster_info'])) {
+        $observation['cluster_info'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_cluster_info'];
     }
     if ($mode === 'embedded' && isset($fixture['payload_cleanup'])) {
         $observation['payload_cleanup'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_system_routes'];

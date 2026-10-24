@@ -3963,6 +3963,7 @@ pub(crate) fn capabilities() -> Value {
         "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,
         "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": true,
         "activity_lease_renewal": true});
+    value["runtime_external_payload_transport"] = super::payload_discovery::transport_manifest();
     value["supported_workflow_task_commands"]
         .as_array_mut()
         .expect("commands")

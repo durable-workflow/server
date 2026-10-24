@@ -899,7 +899,25 @@ async fn ready(Extension(runtime): Extension<Runtime>) -> Response {
         .into_response()
 }
 
-async fn cluster() -> Json<Value> {
+/// The namespace cluster info describes: the X-Namespace header, else the
+/// `namespace` query selector, else the default. Like PHP, it need not exist.
+fn discovery_namespace(headers: &axum::http::HeaderMap, uri: &axum::http::Uri) -> String {
+    if let Some(header) = headers.get("x-namespace") {
+        return header.to_str().unwrap_or("").to_ascii_lowercase();
+    }
+    Query::<std::collections::HashMap<String, String>>::try_from_uri(uri)
+        .ok()
+        .and_then(|Query(fields)| fields.get("namespace").cloned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "default".to_owned())
+        .to_ascii_lowercase()
+}
+
+async fn cluster(
+    Extension(runtime): Extension<Runtime>,
+    headers: axum::http::HeaderMap,
+    uri: axum::http::Uri,
+) -> Result<Json<Value>> {
     let auth_composition: Value = serde_json::from_str(include_str!("auth-composition.v1.json"))
         .expect("valid bundled carrier auth composition contract");
     // Published PHP's `PrincipalAttributionContract::manifest()`, identical in
@@ -913,14 +931,19 @@ async fn cluster() -> Json<Value> {
     let service_catalog: Value =
         serde_json::from_str(include_str!("service-catalog-read-contract.v1.json"))
             .expect("valid bundled service catalog read contract");
-    Json(
+    // Runtime external payload discovery, as SDKs read it before an upload.
+    let namespace = runtime.in_namespace(&discovery_namespace(&headers, &uri)).namespace_discovery().await?;
+    let limits = super::payload_discovery::limits()?;
+    Ok(Json(
         json!({"version": env!("CARGO_PKG_VERSION"), "implementation": "rust", "development": true,
+        "server_id": super::payload_discovery::server_id(), "default_namespace": "default",
+        "namespace": namespace, "limits": limits,
         "control_plane": {"version": "2", "request_contract": super::visibility::request_contract()}, "worker_protocol": {"version": super::WORKER_PROTOCOL_VERSION, "server_capabilities": capabilities()},
         "auth_composition_contract": auth_composition,
         "principal_attribution_contract": principal_attribution,
         "service_catalog_read_contract": service_catalog,
         "payload_codec": "avro", "qualified_for_php_takeover": false}),
-    )
+    ))
 }
 
 async fn activity_result(
@@ -1544,25 +1567,21 @@ async fn operator_metrics(Extension(runtime): Extension<Runtime>) -> Result<Json
 }
 
 async fn operator_dashboard(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
-    Ok(Json(runtime.operator_dashboard(&metrics_config(&runtime), false).await?))
+    Ok(Json(runtime.operator_dashboard(&metrics_config(&runtime), false, None).await?))
 }
 
 async fn bounded_operator_dashboard(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
-    Ok(Json(runtime.operator_dashboard(&metrics_config(&runtime), true).await?))
+    Ok(Json(runtime.operator_dashboard(&metrics_config(&runtime), true, None).await?))
 }
 
-/// PHP validates `workflow_types` and then answers 501 when its observer
-/// cannot filter dashboard totals by workflow type; native cannot either.
+/// `workflowTypeOperatorDashboard`: the bounded dashboard with its run
+/// figures narrowed to the listed workflow types.
 async fn workflow_type_operator_dashboard(
+    Extension(runtime): Extension<Runtime>,
     Query(query): Query<std::collections::HashMap<String, String>>,
-) -> Result<Response> {
-    super::operator_dashboard::workflow_types(query.get("workflow_types").map(String::as_str))?;
-    Ok((
-        StatusCode::NOT_IMPLEMENTED,
-        Json(json!({"message":"The installed workflow observer cannot filter dashboard totals by workflow type.",
-            "reason":"backend_capability_unavailable","capability":"workflow_type_dashboard"})),
-    )
-        .into_response())
+) -> Result<Json<Value>> {
+    let types = super::operator_dashboard::workflow_types(query.get("workflow_types").map(String::as_str))?;
+    Ok(Json(runtime.operator_dashboard(&metrics_config(&runtime), true, Some(&types)).await?))
 }
 
 type QueryMap = Query<std::collections::HashMap<String, String>>;

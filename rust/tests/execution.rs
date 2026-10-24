@@ -91,6 +91,8 @@ mod update_wait;
 mod payload_limits;
 #[path = "execution/start_definition.rs"]
 mod start_definition;
+#[path = "execution/payload_discovery.rs"]
+mod payload_discovery;
 #[path = "execution/signal_rejection.rs"]
 mod signal_rejection;
 #[path = "execution/cooperative_waits.rs"]

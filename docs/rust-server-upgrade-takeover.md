@@ -68,6 +68,15 @@ fields under native, so its inspection is `unqualified` and takeover refuses
 with `upgrade_source_schedules_unsupported` before any change. Deleted
 schedules keep only their audit history and do not block takeover.
 
+Native serves external payload storage only through the `local` driver.
+Every inspection also reports `storage_inspection`: the number of namespaces
+and, by reason, how many have an enabled policy naming another driver
+(`s3`, `gcs`, `azure`, `custom` or an unknown one), without naming them.
+Native would refuse every upload in such a namespace with 503, so its
+inspection is `unqualified` and takeover refuses with
+`upgrade_source_external_payload_storage_unsupported` before any change. A
+disabled policy does not block takeover.
+
 ## Exclusive transaction per backend
 
 The marker, the fingerprint check and the schema changes must not interleave

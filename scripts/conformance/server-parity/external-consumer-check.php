@@ -111,10 +111,31 @@ function checkExternalConsumers(array $records, array $artifacts): array
         $require($completion['controls'] === ['identical_upload', 'conflicting_slot', 'foreign_owner',
             'closed_upload_reconciliation', 'cold_parent', 'utf8_completion_context'], "$target completion controls");
         $runs['completion-upload'] = $completion['run_id'];
-        $require(count(array_unique($runs)) === 6, "$target distinct originals");
+        // The installed SDK's own discovery: cluster info decides an upload
+        // for a start input over the namespace's 16-byte threshold.
+        $discovery = $data['discovery'];
+        $require($discovery['scope'] === 'installed_sdk_runtime_payload_discovery'
+            && $discovery['described_run_id'] === $discovery['run_id'], "$target discovery original");
+        $require($discovery['requests'] === [['method' => 'GET', 'path' => '/api/cluster/info'],
+            ['method' => 'POST', 'path' => '/api/external-payloads/v1'],
+            ['method' => 'POST', 'path' => '/api/workflows', 'input_members' => ['codec', 'external_payload']]],
+            "$target SDK discovered, uploaded and referenced its input");
+        foreach (['available' => ['available', 16], 'unconfigured' => ['unconfigured', 2097152],
+            'disabled' => ['disabled', 32], 'missing' => ['unconfigured', 2097152]] as $case => [$status, $threshold]) {
+            $read = $discovery['discovery'][$case];
+            $storage = $read['namespace']['external_payload_storage'] ?? [];
+            $require($read['status'] === 200 && ($storage['status'] ?? null) === $status
+                && ($storage['threshold_bytes'] ?? null) === $threshold
+                && ($read['limits']['max_payload_bytes'] ?? null) === 2097152
+                && is_array($read['transport_capability']) && $storage['transport'] === $read['transport_capability']
+                && $read['default_namespace'] === 'default' && $read['server_id_present'] === true,
+                "$target $case discovery");
+        }
+        $runs['discovery'] = $discovery['run_id'];
+        $require(count(array_unique($runs)) === 7, "$target distinct originals");
         $joinedRuns[$target] = $runs;
     }
-    $require(count(array_unique(array_merge(array_values($joinedRuns['php']), array_values($joinedRuns['native'])))) === 12,
+    $require(count(array_unique(array_merge(array_values($joinedRuns['php']), array_values($joinedRuns['native'])))) === 14,
         'Implementations must have independent original runs');
     foreach (['input', 'workflow-author', 'activity-author', 'arguments-1-author', 'arguments-2-author'] as $label) {
         foreach (['encoded_bytes', 'encoded_sha256'] as $field) {
@@ -129,7 +150,7 @@ function checkExternalConsumers(array $records, array $artifacts): array
 $artifacts = json_decode(file_get_contents($profilePath), true, flags: JSON_THROW_ON_ERROR)['artifacts'];
 $labels = ['input', 'workflow-author', 'workflow-reader', 'activity-author', 'activity-reader',
     'arguments-1-author', 'arguments-1-activity', 'arguments-1-reader',
-    'arguments-2-author', 'arguments-2-activity', 'arguments-2-reader', 'completion-upload'];
+    'arguments-2-author', 'arguments-2-activity', 'arguments-2-reader', 'completion-upload', 'discovery'];
 $records = [];
 foreach (['php', 'native'] as $target) {
     foreach ($labels as $label) {
@@ -150,6 +171,10 @@ $mutations = [
     'completion_rounded_int64' => static function (array &$bad): void { $bad['native']['completion-upload']['result'][0] = 9007199254740992; },
     'completion_duplicate_reference' => static function (array &$bad): void { $bad['php']['completion-upload']['duplicate_reference']['reference_id'] = 'other'; },
     'completion_duplicate_size_type' => static function (array &$bad): void { $bad['native']['completion-upload']['duplicate_reference']['size_bytes'] = '44'; },
+    'discovery_inline_input' => static function (array &$bad): void { $bad['native']['discovery']['requests'][2]['input_members'] = ['codec', 'blob']; },
+    'discovery_without_upload' => static function (array &$bad): void { array_splice($bad['php']['discovery']['requests'], 1, 1); },
+    'discovery_disabled_available' => static function (array &$bad): void { $bad['native']['discovery']['discovery']['disabled']['namespace']['external_payload_storage']['status'] = 'available'; },
+    'discovery_without_capability' => static function (array &$bad): void { $bad['native']['discovery']['discovery']['available']['transport_capability'] = null; },
 ];
 foreach ($mutations as $label => $mutate) {
     $bad = $records;
@@ -162,5 +187,5 @@ foreach ($mutations as $label => $mutate) {
     throw new RuntimeException('Reader accepted '.$label);
 }
 echo json_encode(['outcome' => 'pass', 'scope' => 'installed_service_external_consumers',
-    'original_runs' => $runs, 'scenarios_per_target' => 6, 'original_budget_seconds' => 30,
+    'original_runs' => $runs, 'scenarios_per_target' => 7, 'original_budget_seconds' => 30,
     'reader_refusals' => array_keys($mutations), 'embedded_transport' => 'inapplicable'], JSON_THROW_ON_ERROR)."\n";
