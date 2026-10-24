@@ -43,9 +43,6 @@ POST /api/worker/workflow-tasks/{taskId}/local-activities/{attemptId}/heartbeat
 POST /api/worker/workflow-tasks/{taskId}/local-activities/{attemptId}/outcome
 POST /api/workflows/import/embedded-v2
 POST /api/workflows/import/waterline-v1
-GET /api/workflows/{workflowId}/message-streams
-GET /api/workflows/{workflowId}/message-streams/{streamName}
-POST /api/workflows/{workflowId}/message-streams/{streamName}/messages
 GET /api/workflows/{workflowId}/nexus-operations
 GET /api/workflows/{workflowId}/runs/{runId}/nexus-operations
 POST /api/workflows/{workflowId}/runs/{runId}/streams/{streamName}/close
