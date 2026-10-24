@@ -122,7 +122,8 @@ jobs:
   feature:
     name: PHPUnit feature suite
     needs: action-policy
-    if: ${{ always() }}
+    # Report policy failures while allowing cancelled revisions to stop.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
