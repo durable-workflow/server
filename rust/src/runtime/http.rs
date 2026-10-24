@@ -67,6 +67,7 @@ pub fn router(runtime: Runtime) -> Router {
             delete(delete_search_attribute),
         )
         .route("/api/workflows", get(list_workflows).post(start))
+        .route("/api/workflows/import/embedded-v2", post(import_embedded_v2))
         .route("/api/activities", get(list_activities).post(start_activity))
         .route("/api/activities/{activity_id}", get(show_activity))
         .route(
@@ -434,6 +435,8 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         || path.starts_with("/api/system/")
         || path == "/api/runtime-credentials"
         || path.starts_with("/api/runtime-credentials/")
+        // History import writes runs into the store; PHP serves it to admins.
+        || path.starts_with("/api/workflows/import/")
     {
         &["admin"]
     } else {
@@ -679,7 +682,8 @@ fn exact_namespace_route(path: &str) -> Option<Allowed> {
         "/api/workflows" | "/api/activities" | "/api/search-attributes" => READ_WRITE,
         // The metrics describe the namespace's own state, read by GET or POST.
         "/api/system/metrics" => READ_WRITE,
-        "/api/external-payloads/v1" | "/api/storage/test" => WRITE,
+        // An import writes into the requested namespace.
+        "/api/external-payloads/v1" | "/api/storage/test" | "/api/workflows/import/embedded-v2" => WRITE,
         "/api/task-queues"
         | "/api/deployments"
         | "/api/workers"
@@ -1024,6 +1028,21 @@ async fn start(
         _ => StatusCode::OK,
     };
     Ok((status, Json(super::control_plane::Operation::Start.response(result))))
+}
+
+/// `POST /api/workflows/import/embedded-v2`. The controller reads the body
+/// and the query string itself, as Laravel's request input.
+async fn import_embedded_v2(
+    Extension(runtime): Extension<Runtime>,
+    uri: axum::http::Uri,
+    body: axum::body::Bytes,
+) -> Result<(StatusCode, Json<Value>)> {
+    let query: Vec<(String, String)> = uri
+        .query()
+        .map(|query| form_urlencoded::parse(query.as_bytes()).into_owned().collect())
+        .unwrap_or_default();
+    let (status, answer) = runtime.import_embedded_v2(&body, &query).await?;
+    Ok((status, Json(answer)))
 }
 
 /// `POST /api/activities`: a standalone activity in its own host run.
