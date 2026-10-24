@@ -20,6 +20,12 @@ on:
 permissions:
   contents: read
 
+# Retargeting or updating a PR supersedes its previous qualification. Main and
+# manual runs keep distinct run IDs so each requested qualification can finish.
+concurrency:
+  group: phpunit-feature-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   action-policy:
     name: Central action policy preflight
