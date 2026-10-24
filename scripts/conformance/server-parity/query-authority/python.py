@@ -136,12 +136,19 @@ async def main():
                         assert error.status == 504 and error.reason == 'query_worker_execution_timeout'
                     # Delivery is recorded before the SDK receives its response.
                     # Wait for its actual refusal before stopping the worker.
+                    # A late handler's callback counter moves before the SDK
+                    # logs the lost authority, so every mode also waits for
+                    # that evidence, as worker.php waits for its refusal.
                     PHASE = 'expiry-observation'
-                    while (MODE == 'late-poll' and not any(
-                               expired_losses(event['claim']['query_task_id'])
-                               for event in events() if event['event'] == 'claim')
+                    while (not any(expired_losses(event['claim']['query_task_id'])
+                                   for event in events() if event['event'] == 'claim')
                            or MODE == 'late-handler-async' and COUNTERS['cancelled'] != 1
                            or MODE == 'late-handler-sync' and COUNTERS['returned'] != 1):
+                        if runner.done():
+                            await runner
+                            raise RuntimeError('Worker stopped before its expiry evidence')
+                        if time.monotonic() - started >= 30:
+                            raise AssertionError('No expiry evidence inside the original budget')
                         await asyncio.sleep(.02)
             finally:
                 PHASE = 'worker-stop'
