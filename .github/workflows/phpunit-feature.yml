@@ -71,6 +71,9 @@ jobs:
       - name: Require safe PHP image build context
         run: node --test tests/Unit/PhpImageContextTest.mjs
 
+      - name: Restore PHP's SQLite maintenance loop on every path
+        run: node --test tests/Unit/PhpMaintenanceWindowTest.mjs
+
       - name: Validate embedded Workflow package authority
         run: php scripts/ci/test-workflow-package-authority.php
 
@@ -106,13 +109,10 @@ jobs:
       - name: Prove corpus policy guards cannot be weakened
         run: python scripts/ci/test-regression-corpus-policy.py
 
-  # !cancelled() still runs these jobs when a needed job failed, so the
-  # required checks report that failure instead of being skipped, and lets a
-  # superseded pull request run be cancelled (always() is never cancelled).
   feature:
     name: PHPUnit feature suite
     needs: action-policy
-    if: ${{ !cancelled() }}
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -341,7 +341,7 @@ jobs:
   qualification:
     name: Feature source qualification
     needs: [preflight, feature]
-    if: ${{ !cancelled() }}
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
 
