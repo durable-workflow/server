@@ -46,15 +46,19 @@ const TASK_SNAPSHOT_EVENTS: &[&str] = &[
     "WorkflowFailed",
     "WorkflowTimedOut",
 ];
-/// Describe's command journal. `$stored` is each backend's exact,
-/// case-sensitive test for native's stored-reference prefix
-/// (`external_resolution::STORED_PREFIX`), so a command's payload is read only
-/// when it is a stored reference.
+/// Describe's command journal. Each backend passes its exact, case-sensitive
+/// test for native's stored-reference prefix
+/// (`external_resolution::STORED_PREFIX`) over the column that holds a
+/// command's input: a signal's in its signal record (`s.arguments`), a start's
+/// in the command row (`c.payload`). Other commands keep no stored reference.
+/// Only a stored reference is read; inline payloads are not.
 macro_rules! run_commands_sql {
-    ($stored:literal) => {
+    ($signal:literal, $start:literal) => {
         concat!(
-            "SELECT c.id,c.command_sequence,c.command_type,c.target_scope,c.requested_workflow_run_id,c.resolved_workflow_run_id,c.source,c.status,c.outcome,c.rejection_reason,c.workflow_type,c.workflow_class,c.accepted_at,c.applied_at,c.rejected_at,c.context,s.signal_name,CASE WHEN ",
-            $stored,
+            "SELECT c.id,c.command_sequence,c.command_type,c.target_scope,c.requested_workflow_run_id,c.resolved_workflow_run_id,c.source,c.status,c.outcome,c.rejection_reason,c.workflow_type,c.workflow_class,c.accepted_at,c.applied_at,c.rejected_at,c.context,s.signal_name,CASE WHEN c.command_type='signal' AND ",
+            $signal,
+            " THEN s.arguments WHEN c.command_type='start' AND ",
+            $start,
             " THEN c.payload END AS stored_payload FROM workflow_commands c LEFT JOIN workflow_signal_records s ON s.workflow_command_id=c.id WHERE c.workflow_run_id=$1 AND c.workflow_instance_id=$2 ORDER BY c.command_sequence,c.created_at,c.id"
         )
     };

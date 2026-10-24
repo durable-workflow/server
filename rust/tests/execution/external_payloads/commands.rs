@@ -152,11 +152,11 @@ async fn signal_update_and_query_input_resolve_runtime_references_like_php() {
     database.remove().await;
 }
 
-/// The described signal command, which must show only metadata.
-async fn described_signal(app: &Router, workflow_id: &str) -> Value {
+/// One described command of `kind`, which must show only metadata.
+async fn described(app: &Router, workflow_id: &str, kind: &str) -> Value {
     let (status, body) = json_request(app, "GET", &format!("/api/workflows/{workflow_id}"), "operator-token", Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let command = body["commands"].as_array().unwrap().iter().find(|command| command["type"] == "signal").unwrap().clone();
+    let command = body["commands"].as_array().unwrap().iter().find(|command| command["type"] == kind).unwrap().clone();
     for field in ["payload", "external_payload", "external_storage", "reference_id", "sha256", "size_bytes", "arguments"] {
         assert!(command.get(field).is_none(), "{field}: {command}");
     }
@@ -166,7 +166,9 @@ async fn described_signal(app: &Router, workflow_id: &str) -> Value {
 
 // `WorkflowController::oversizedPayloadPreview` over each command's stored
 // envelope: only a stored external reference larger than the payload limit
-// (2 MiB by default) omits the preview, and then the target name too.
+// (2 MiB by default) omits the preview, and then the target name too. Native
+// keeps a signal's stored reference in its signal record and a start's in the
+// command row.
 #[tokio::test]
 async fn described_commands_omit_only_an_oversized_stored_reference() {
     let temp = tempfile::tempdir().unwrap();
@@ -177,9 +179,15 @@ async fn described_commands_omit_only_an_oversized_stored_reference() {
     let (status, body) = json_request(&app, "POST", "/api/workflows/described-reference/signal/s", "operator-token",
         json!({"input":{"codec":"avro","external_payload":reference}})).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
-    let command = described_signal(&app, "described-reference").await;
+    let command = described(&app, "described-reference", "signal").await;
     assert_eq!((command["payload_preview_omitted"].clone(), command["target_name"].clone()), (json!(false), json!("s")), "{command}");
-    let command_id = command["id"].as_str().unwrap().to_owned();
+    let signal = command["id"].as_str().unwrap().to_owned();
+    // The real stored reference is in the signal record, not the command row.
+    let identity = reference["reference_id"].as_str().unwrap();
+    assert_eq!(count(&database, sqlx::AssertSqlSafe(format!(
+        "SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_command_id='{signal}' AND arguments LIKE 'dw-native-external-payload-v1:%{identity}%'"))).await, 1);
+    assert_eq!(count(&database, sqlx::AssertSqlSafe(format!(
+        "SELECT COUNT(*) FROM workflow_commands WHERE id='{signal}' AND payload LIKE 'dw-native%'"))).await, 0);
 
     // The same stored reference, as native writes it, at sizes around the
     // limit, and counterfactuals that are not native stored references.
@@ -189,7 +197,7 @@ async fn described_commands_omit_only_an_oversized_stored_reference() {
         reference["size_bytes"] = json!(size);
         format!("dw-native-external-payload-v1:{reference}")
     };
-    for (payload, omitted) in [
+    let cases = [
         (stored(limit), false),
         (stored(limit + 1), true),
         // Not native's exact prefix, so never read.
@@ -199,11 +207,29 @@ async fn described_commands_omit_only_an_oversized_stored_reference() {
         (format!("dw-native-external-payload-v1:{{\"size_bytes\":{}}}", limit + 1), false),
         // A large inline payload.
         (format!("dw-{}", "A".repeat(limit as usize + 1)), false),
-    ] {
-        database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_commands SET payload='{payload}' WHERE id='{command_id}'"))).await;
-        let command = described_signal(&app, "described-reference").await;
-        assert_eq!(command["payload_preview_omitted"], json!(omitted), "{}: {command}", &payload[..payload.len().min(48)]);
-        assert_eq!(command.get("target_name").is_none(), omitted, "{command}");
+    ];
+    for (arguments, omitted) in &cases {
+        database.execute(sqlx::AssertSqlSafe(format!(
+            "UPDATE workflow_signal_records SET arguments='{arguments}' WHERE workflow_command_id='{signal}'"))).await;
+        let command = described(&app, "described-reference", "signal").await;
+        assert_eq!(command["payload_preview_omitted"], json!(omitted), "{}: {command}", &arguments[..arguments.len().min(48)]);
+        assert_eq!(command.get("target_name").is_none(), *omitted, "{command}");
+    }
+    // An oversized reference in the signal's command row is not its input.
+    database.execute(sqlx::AssertSqlSafe(format!(
+        "UPDATE workflow_signal_records SET arguments='{}' WHERE workflow_command_id='{signal}'", stored(limit)))).await;
+    database.execute(sqlx::AssertSqlSafe(format!(
+        "UPDATE workflow_commands SET payload='{}' WHERE id='{signal}'", stored(limit + 1)))).await;
+    let command = described(&app, "described-reference", "signal").await;
+    assert_eq!((command["payload_preview_omitted"].clone(), command["target_name"].clone()), (json!(false), json!("s")), "{command}");
+
+    // A start keeps its stored input reference in the command row.
+    let start = described(&app, "described-reference", "start").await["id"].as_str().unwrap().to_owned();
+    for (payload, omitted) in &cases {
+        database.execute(sqlx::AssertSqlSafe(format!(
+            "UPDATE workflow_commands SET payload='{payload}' WHERE id='{start}'"))).await;
+        let command = described(&app, "described-reference", "start").await;
+        assert_eq!(command["payload_preview_omitted"], json!(omitted), "start {}: {command}", &payload[..payload.len().min(48)]);
     }
     runtime.close().await;
     database.remove().await;

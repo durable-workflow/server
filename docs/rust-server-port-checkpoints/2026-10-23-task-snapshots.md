@@ -39,23 +39,31 @@
     always false. It now reads both, which also corrects the run's input and
     output previews. As PHP does, an omitted preview also omits the
     command's `target_name`.
-  - The query read any payload starting with `dw-`, and SQLite's `LIKE` and
-    MySQL's case-insensitive collation ignore case. It now reads a payload
-    only when its first 30 characters equal native's stored prefix exactly:
-    `COLLATE BINARY` on SQLite, a binary cast on MySQL and MariaDB, and
-    PostgreSQL's case-sensitive text comparison. On MySQL 8.0 and MariaDB
+  - The query read any command payload starting with `dw-`, and SQLite's
+    `LIKE` and MySQL's case-insensitive collation ignore case. It also read the
+    wrong column for signals. Native keeps a signal's stored input reference
+    in its signal record (`workflow_signal_records.arguments`) and a start's
+    in the command row (`workflow_commands.payload`). Other commands keep
+    none. The query now reads only that column for each of the two command
+    types, and only when its first 30 characters equal native's stored prefix
+    exactly: `COLLATE BINARY` on SQLite, a binary cast on MySQL and MariaDB,
+    and PostgreSQL's case-sensitive text comparison. On MySQL 8.0 and MariaDB
     10.11 the binary cast refuses the upper-case prefix that the column's
     collation would match.
   - A task snapshot is read only from a task of the event's own run.
   - Tests:
-    - a real uploaded reference on a signal, then the same reference stored
-      at the 2 MiB limit (not omitted) and one byte over (omitted, with no
-      target name); the described command never includes the reference;
+    - a real uploaded reference on a signal, found in the signal record and
+      not in the command row;
+    - that signal record rewritten with the same reference at the 2 MiB limit
+      (not omitted) and one byte over (omitted, with no target name). The
+      described command never includes the reference;
     - counterfactuals that are not native references: an upper-case or v2
       prefix, the prefix with no valid reference after it, and a large inline
-      payload starting with `dw-`;
-    - on SQLite, the query itself returns the payload only for the exact
-      prefix;
+      payload starting with `dw-`. An oversized reference in the signal's
+      command row is not counted either;
+    - the same sizes and counterfactuals in a start command's row;
+    - on SQLite, the query itself returns only the exact prefix in the
+      command type's own column;
     - an event recorded on one run with another run's task carries no
       snapshot.
 

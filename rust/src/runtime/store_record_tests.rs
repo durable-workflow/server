@@ -8,16 +8,21 @@ use std::collections::BTreeMap;
 
 #[test]
 fn described_commands_read_only_the_exact_native_stored_prefix() {
-    // Each backend compares the first 30 characters, byte for byte, with
-    // the whole prefix.
+    // Each backend compares the first 30 characters, byte for byte, with the
+    // whole prefix: a signal's in its signal record, a start's in its command.
     assert_eq!(STORED_PREFIX.len(), 30);
     let quoted = format!("'{STORED_PREFIX}'");
-    for (backend, sql, comparison) in [
-        ("sqlite", <sqlx::Sqlite as Backend>::RUN_COMMANDS_SQL, "substr(c.payload,1,30) COLLATE BINARY="),
-        ("postgres", <sqlx::Postgres as Backend>::RUN_COMMANDS_SQL, "substr(c.payload,1,30)="),
-        ("mysql", <sqlx::MySql as Backend>::RUN_COMMANDS_SQL, "CAST(SUBSTRING(c.payload,1,30) AS BINARY)="),
+    for (backend, sql, signal, start) in [
+        ("sqlite", <sqlx::Sqlite as Backend>::RUN_COMMANDS_SQL,
+            "substr(s.arguments,1,30) COLLATE BINARY=", "substr(c.payload,1,30) COLLATE BINARY="),
+        ("postgres", <sqlx::Postgres as Backend>::RUN_COMMANDS_SQL,
+            "substr(s.arguments,1,30)=", "substr(c.payload,1,30)="),
+        ("mysql", <sqlx::MySql as Backend>::RUN_COMMANDS_SQL,
+            "CAST(SUBSTRING(s.arguments,1,30) AS BINARY)=", "CAST(SUBSTRING(c.payload,1,30) AS BINARY)="),
     ] {
-        assert!(sql.contains(&format!("CASE WHEN {comparison}{quoted} THEN c.payload END")), "{backend}: {sql}");
+        let expected = format!("CASE WHEN c.command_type='signal' AND {signal}{quoted} THEN s.arguments \
+            WHEN c.command_type='start' AND {start}{quoted} THEN c.payload END");
+        assert!(sql.contains(&expected), "{backend}: {sql}");
         assert!(!sql.contains("LIKE"), "{backend}: {sql}");
     }
 }
@@ -86,8 +91,8 @@ async fn a_task_snapshot_comes_only_from_the_events_own_run() {
     assert!(recorded_task(&store, &runs[1]).await.is_null());
 }
 
-// The query itself, run on rows whose payloads begin like a stored
-// reference: only native's exact prefix is selected.
+// The query itself, run on rows whose inputs begin like a stored reference:
+// only native's exact prefix in the command type's own input column is read.
 #[tokio::test]
 async fn described_commands_select_no_inline_payload() {
     let directory = tempfile::tempdir().unwrap();
@@ -97,21 +102,40 @@ async fn described_commands_select_no_inline_payload() {
             .unwrap(),
     );
     let exact = format!("{STORED_PREFIX}{{}}");
+    let large = format!("dw-{}", "A".repeat(4096));
+    let near = format!("dw-native-external-payload-v1{}", "A".repeat(4096));
+    let upper = exact.to_uppercase();
+    // (id, type, command payload, signal arguments, read)
     let rows = [
-        ("c1", exact.clone(), true),
-        ("c2", exact.to_uppercase(), false),
-        ("c3", format!("dw-native-external-payload-v1{}", "A".repeat(4096)), false),
-        ("c4", format!("dw-{}", "A".repeat(4096)), false),
-        ("c5", "dw-native".to_owned(), false),
+        ("c1", "signal", "AA==", Some(exact.as_str()), Some(exact.as_str())),
+        ("c2", "signal", "AA==", Some(upper.as_str()), None),
+        ("c3", "signal", "AA==", Some(near.as_str()), None),
+        ("c4", "signal", "AA==", Some(large.as_str()), None),
+        // A signal's command row is not its input.
+        ("c5", "signal", exact.as_str(), Some("AA=="), None),
+        ("c6", "start", exact.as_str(), None, Some(exact.as_str())),
+        ("c7", "start", large.as_str(), None, None),
+        // Other commands keep no stored reference.
+        ("c8", "update", exact.as_str(), None, None),
     ];
-    for (sequence, (id, payload, _)) in rows.iter().enumerate() {
-        Store::<sqlx::Sqlite>::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,command_type,status,payload,command_sequence) VALUES ($1,'instance','run','signal','accepted',$2,$3)")
+    for (sequence, (id, kind, payload, arguments, _)) in rows.iter().enumerate() {
+        Store::<sqlx::Sqlite>::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,command_type,status,payload,command_sequence) VALUES ($1,'instance','run',$2,'accepted',$3,$4)")
             .bind(*id)
-            .bind(payload.as_str())
+            .bind(*kind)
+            .bind(*payload)
             .bind(sequence as i64 + 1)
             .execute(&store.pool)
             .await
             .unwrap();
+        if let Some(arguments) = arguments {
+            Store::<sqlx::Sqlite>::query("INSERT INTO workflow_signal_records(id,workflow_command_id,signal_name,status,arguments) VALUES ($1,$2,'s','received',$3)")
+                .bind(format!("s-{id}"))
+                .bind(*id)
+                .bind(*arguments)
+                .execute(&store.pool)
+                .await
+                .unwrap();
+        }
     }
     let selected = Store::<sqlx::Sqlite>::query(<sqlx::Sqlite as Backend>::RUN_COMMANDS_SQL)
         .bind("run")
@@ -120,9 +144,9 @@ async fn described_commands_select_no_inline_payload() {
         .await
         .unwrap();
     assert_eq!(selected.len(), rows.len());
-    for (row, (id, payload, read)) in selected.iter().zip(&rows) {
+    for (row, (id, _, _, _, read)) in selected.iter().zip(&rows) {
         assert_eq!(<sqlx::Sqlite as Backend>::string(row, "id").unwrap(), *id);
         let stored = <sqlx::Sqlite as Backend>::optional_string(row, "stored_payload").unwrap();
-        assert_eq!(stored.as_deref(), read.then_some(payload.as_str()), "{id}");
+        assert_eq!(stored.as_deref(), *read, "{id}");
     }
 }
