@@ -8,6 +8,12 @@
 //! validation lease while it stays leased at the same attempt. Once a lease is
 //! no longer deliverable, the ID polls afresh. PHP never refuses a retry as
 //! expired.
+//!
+//! PHP elects one pending leader per ID, and duplicates only read its answer.
+//! Native duplicates each probe, so every write of an answer first replays a
+//! deliverable lease a duplicate committed: a claim replays it instead of
+//! leasing again, and a poll that found nothing returns it instead of
+//! recording `empty` or `task_queue_changed` over it.
 use super::transaction::Transaction;
 use super::{Result, RuntimeError, store::now};
 use axum::http::StatusCode;
@@ -193,6 +199,20 @@ store_methods! {
         Ok(None)
     }
 
+    /// A deliverable lease a duplicate left under this request ID, which a
+    /// claim or a no-task answer must replay rather than overwrite. Call it
+    /// after `bind_workflow_poll`, whose lock orders it after any duplicate's
+    /// committed answer.
+    pub(super) async fn deliverable_workflow_lease(
+        &self,
+        tx: &mut Transaction<'_, DB>,
+        request: &WorkflowPollRequest,
+        worker_id: &str,
+        queue: &str,
+    ) -> Result<Option<Value>> {
+        Ok(self.deliverable_workflow_poll(tx, request, worker_id, queue).await?.filter(|answer| answer["task"].is_object()))
+    }
+
     /// `cachedTaskStillDeliverable` for a workflow task: leased on this
     /// queue to this worker at the delivered attempt, with a live lease,
     /// which the replay then shows.
@@ -260,12 +280,27 @@ store_methods! {
         })
     }
 
-    /// Remember an answer that leased nothing, in its own transaction.
-    pub(super) async fn remember_empty_workflow_poll(&self, request: &WorkflowPollRequest, poll_status: &str) -> Result<()> {
+    /// Remember an answer that leased nothing (`empty` or
+    /// `task_queue_changed`), in its own transaction. A duplicate may have
+    /// leased under this ID after this poll's last probe; its deliverable
+    /// lease is returned for the caller to replay, and stays recorded.
+    pub(super) async fn remember_empty_workflow_poll(
+        &self,
+        request: &WorkflowPollRequest,
+        worker_id: &str,
+        queue: &str,
+        poll_status: &str,
+    ) -> Result<Option<Value>> {
+        #[cfg(debug_assertions)]
+        super::poll_pauses::stop_at(&request.id, super::poll_pauses::PollPoint::Terminal).await;
         let mut tx = self.begin().await?;
         Self::bind_workflow_poll(&mut tx, request).await?;
-        Self::remember_workflow_poll(&mut tx, request, &json!({"task": null, "poll_status": poll_status})).await?;
-        tx.commit().await
+        let lease = self.deliverable_workflow_lease(&mut tx, request, worker_id, queue).await?;
+        if lease.is_none() {
+            Self::remember_workflow_poll(&mut tx, request, &json!({"task": null, "poll_status": poll_status})).await?;
+        }
+        tx.commit().await?;
+        Ok(lease)
     }
 
     async fn workflow_poll_row(tx: &mut Transaction<'_, DB>, key: &str) -> Result<Option<Value>> {

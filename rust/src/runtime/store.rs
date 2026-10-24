@@ -1466,12 +1466,8 @@ where
                     return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
                 }
                 let request = self.workflow_poll_request(worker_id, queue, id, default_wait, &["workflow"]).await?;
-                if let Some(mut replay) = self.replay_workflow_poll(&request, worker_id, queue).await? {
-                    if replay["task"].is_object() {
-                        super::history_pages::compress(&mut replay["task"], encoding)?;
-                    }
-                    replay["server_capabilities"] = capabilities();
-                    return Ok(replay);
+                if let Some(replay) = self.replay_workflow_poll(&request, worker_id, queue).await? {
+                    return replayed_poll(replay, encoding);
                 }
                 Some(request)
             }
@@ -1502,27 +1498,39 @@ where
                 );
             }
             if tokio::time::Instant::now() >= deadline {
-                if let Some(request) = &poll_request {
-                    self.remember_empty_workflow_poll(request, "empty").await?;
-                }
-                return Ok(
-                    json!({"task": null, "poll_status": "empty", "server_capabilities": capabilities()}),
-                );
+                return self.no_task_answer(&body, poll_request.as_ref(), "empty", encoding).await;
             }
             if self
                 .poll_queue_changed(&body, kind, &mut cross_kind)
                 .await?
                 && tokio::time::Instant::now() < deadline
             {
-                if let Some(request) = &poll_request {
-                    self.remember_empty_workflow_poll(request, "task_queue_changed").await?;
-                }
-                return Ok(
-                    json!({"task":null,"poll_status":"task_queue_changed","server_capabilities":capabilities()}),
-                );
+                return self.no_task_answer(&body, poll_request.as_ref(), "task_queue_changed", encoding).await;
+            }
+            #[cfg(debug_assertions)]
+            if let Some(request) = &poll_request {
+                super::poll_pauses::stop_at(&request.id, super::poll_pauses::PollPoint::Waiting).await;
             }
             pace.wait(wake, deadline).await;
         }
+    }
+
+    /// A poll's answer when it leased nothing. Under a request ID, a
+    /// duplicate's lease committed after this poll's last probe replays
+    /// instead, as a retry with that ID would see it.
+    async fn no_task_answer(
+        &self,
+        body: &Value,
+        poll_request: Option<&super::workflow_poll_requests::WorkflowPollRequest>,
+        poll_status: &str,
+        encoding: Option<&'static str>,
+    ) -> Result<Value> {
+        if let Some(request) = poll_request
+            && let Some(lease) = self.remember_empty_workflow_poll(request, text(body, "worker_id")?, text(body, "task_queue")?, poll_status).await?
+        {
+            return replayed_poll(lease, encoding);
+        }
+        Ok(json!({"task": null, "poll_status": poll_status, "server_capabilities": capabilities()}))
     }
 
     /// Whether a held workflow or activity poll should claim again.
@@ -1624,8 +1632,7 @@ where
         // replays a validation answer itself before claiming.
         if let Some(request) = poll_request {
             Self::bind_workflow_poll(tx, request).await?;
-            if let Some(answer) = self.deliverable_workflow_poll(tx, request, worker_id, queue).await?
-                && answer["task"].is_object()
+            if let Some(answer) = self.deliverable_workflow_lease(tx, request, worker_id, queue).await?
                 && answer["task"]["task_kind"] != "update_validation"
             {
                 return Ok(Some(answer["task"].clone()));
@@ -4139,6 +4146,16 @@ pub(super) fn reject_fields(body: &Value, allowed: &[&str]) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// A replayed answer as a workflow poll delivers it: a lease takes this
+/// request's history encoding.
+pub(super) fn replayed_poll(mut replay: Value, encoding: Option<&'static str>) -> Result<Value> {
+    if replay["task"].is_object() {
+        super::history_pages::compress(&mut replay["task"], encoding)?;
+    }
+    replay["server_capabilities"] = capabilities();
+    Ok(replay)
 }
 
 pub(crate) fn capabilities() -> Value {
