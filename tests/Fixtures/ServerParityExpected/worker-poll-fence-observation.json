@@ -37,6 +37,14 @@
     "attempt": 1,
     "reason": null
   },
+  "workflow_removed": 200,
+  "workflow_after_removal": {
+    "status": 200,
+    "poll_status": "stale_worker_registration",
+    "own_run": null,
+    "attempt": null,
+    "reason": null
+  },
   "activity_control_scheduled": 200,
   "activity_control": {
     "status": 200,
@@ -98,6 +106,81 @@
     "attempt": 1,
     "reason": null
   },
+  "query_control_held": {
+    "status": 200,
+    "poll_status": "leased",
+    "own_run": true,
+    "attempt": 1,
+    "reason": null
+  },
+  "query_control_answered": 200,
+  "query_control_client": 200,
+  "query_heartbeat_heartbeat": 200,
+  "query_heartbeat_held": {
+    "status": 200,
+    "poll_status": "empty",
+    "own_run": null,
+    "attempt": null,
+    "reason": null
+  },
+  "query_heartbeat_next": {
+    "status": 200,
+    "poll_status": "leased",
+    "own_run": true,
+    "attempt": 1,
+    "reason": null
+  },
+  "query_heartbeat_answered": 200,
+  "query_heartbeat_client": 200,
+  "query_replaced_held": {
+    "status": 200,
+    "poll_status": "empty",
+    "own_run": null,
+    "attempt": null,
+    "reason": null
+  },
+  "query_replaced_next": {
+    "status": 200,
+    "poll_status": "leased",
+    "own_run": true,
+    "attempt": 1,
+    "reason": null
+  },
+  "query_replaced_answered": 200,
+  "query_replaced_client": 200,
+  "query_heartbeat-id_heartbeat": 200,
+  "query_heartbeat-id_held": {
+    "status": 200,
+    "poll_status": "empty",
+    "own_run": null,
+    "attempt": null,
+    "reason": null
+  },
+  "query_heartbeat-id_next": {
+    "status": 200,
+    "poll_status": "leased",
+    "own_run": true,
+    "attempt": 1,
+    "reason": null
+  },
+  "query_heartbeat-id_answered": 200,
+  "query_heartbeat-id_client": 200,
+  "query_replaced-id_held": {
+    "status": 200,
+    "poll_status": "empty",
+    "own_run": null,
+    "attempt": null,
+    "reason": null
+  },
+  "query_replaced-id_next": {
+    "status": 200,
+    "poll_status": "leased",
+    "own_run": true,
+    "attempt": 1,
+    "reason": null
+  },
+  "query_replaced-id_answered": 200,
+  "query_replaced-id_client": 200,
   "recovery_leased": {
     "status": 200,
     "poll_status": "leased",

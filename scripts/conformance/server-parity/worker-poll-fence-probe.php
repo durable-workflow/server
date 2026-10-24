@@ -114,10 +114,15 @@ PHP;
     // change is separated from the previous one by more than a second.
     $register = static function (string $case, ?array $process = null) use ($ok, $raw, $definition, $workflowId): array {
         $worker = ['worker_id' => $workflowId.'-wpf-'.$case, 'task_queue' => $workflowId.'-wpf-'.$case.'-queue'];
+        // Query cases answer one query without parameters.
+        $queries = str_starts_with($case, 'query-');
         $ok($raw('POST', '/api/worker/register', $worker + ['runtime' => 'php', 'sdk_version' => 'raw-http',
             'supported_workflow_types' => [$definition['workflow_type']], 'supported_activity_types' => [$definition['activity_type']],
-            'capabilities' => [], 'capability_manifest' => array_fill_keys(['local_activities', 'worker_sessions', 'sticky_execution'],
+            'capabilities' => $queries ? ['query_tasks'] : [],
+            'capability_manifest' => array_fill_keys(['local_activities', 'worker_sessions', 'sticky_execution'],
                 ['supported' => false, 'minimum_protocol_version' => '1.18', 'reason' => 'raw_http'])]
+            + ($queries ? ['workflow_command_contracts' => [$definition['workflow_type'] => ['signals' => [], 'updates' => [],
+                'queries' => [$definition['query']], 'query_contracts' => [['name' => $definition['query'], 'parameters' => []]]]]] : [])
             + ($process === null ? [] : ['process_metrics' => $process])), 201, 'registration '.$case);
         usleep(1100000);
 
@@ -146,7 +151,8 @@ PHP;
     $outcome = static fn (array $recorded, array $worker): array => ['status' => $recorded['status'],
         'poll_status' => $recorded['response']['poll_status'] ?? null,
         'own_run' => isset($recorded['response']['task']) ? ($recorded['response']['task']['workflow_id'] ?? null) === $worker['worker_id'].'-run' : null,
-        'attempt' => $recorded['response']['task']['workflow_task_attempt'] ?? $recorded['response']['task']['attempt_number'] ?? null,
+        'attempt' => $recorded['response']['task']['workflow_task_attempt'] ?? $recorded['response']['task']['attempt_number']
+            ?? $recorded['response']['task']['query_task_attempt'] ?? null,
         'reason' => $recorded['response']['reason'] ?? null];
 
     $state = ['applicable' => true, 'namespace' => $namespace];
@@ -168,6 +174,14 @@ PHP;
     $start($worker);
     $state['workflow_after_replacement'] = $outcome($collect($held), $worker);
     $state['workflow_next_after_replacement'] = $outcome($workflowTask($worker), $worker);
+
+    // A held workflow poll whose registration is removed while it waits.
+    $worker = $register('workflow-removed');
+    $held = $heldWorkflow($worker);
+    $state['workflow_removed'] = $raw('DELETE', '/api/worker/registrations/'.$worker['worker_id'], null)['status'];
+    $start($worker);
+    $removed = $collect($held);
+    $state['workflow_after_removal'] = $outcome($removed, $worker);
 
     // Activity polls, each reached by an activity scheduled while it waits.
     $worker = $register('activity-control');
@@ -201,6 +215,52 @@ PHP;
     $start($worker);
     $state['process_after_replacement'] = $outcome($collect($held), $worker);
     $state['process_next_after_replacement'] = $outcome($workflowTask($worker), $worker);
+
+    // Query polls, each reached by a query sent while it waits to the
+    // case's run, idle on a signal wait. The query is sent from a child
+    // process and answered by the poll that leases it.
+    $idle = static function (array $worker) use ($start, $workflowTask, $raw, $ok): string {
+        $runId = $start($worker)['run_id'];
+        $task = $ok($workflowTask($worker), 200, 'workflow task')['task'] ?? [];
+        $raw('POST', '/api/worker/workflow-tasks/'.($task['task_id'] ?? 'missing').'/complete', [
+            'lease_owner' => $task['lease_owner'] ?? null, 'workflow_task_attempt' => $task['workflow_task_attempt'] ?? null,
+            'commands' => [['type' => 'open_signal_wait', 'signal_name' => 'finish']]]);
+
+        return $runId;
+    };
+    $query = static fn (array $worker, string $runId): array => $hold('/api/workflows/'.$worker['worker_id'].'-run/runs/'.$runId
+        .'/query/'.$definition['query'], ['input' => $empty]);
+    $answer = static function (array $recorded) use ($raw, $empty): ?int {
+        $task = $recorded['response']['task'] ?? null;
+
+        return is_array($task) ? $raw('POST', '/api/worker/query-tasks/'.$task['query_task_id'].'/complete', [
+            'lease_owner' => $task['lease_owner'], 'query_task_attempt' => $task['query_task_attempt'], 'result_envelope' => $empty])['status'] : null;
+    };
+    $queryTask = static fn (array $worker): array => $raw('POST', '/api/worker/query-tasks/poll', $worker + ['timeout_seconds' => 2]);
+    $heldQuery = static fn (array $worker, ?string $requestId): array => $hold('/api/worker/query-tasks/poll',
+        $worker + ['timeout_seconds' => $definition['hold_seconds']] + ($requestId === null ? [] : ['poll_request_id' => $requestId]));
+    // Without a request ID a fenced query poll answers empty; with one, it
+    // answers stale. Either way the next poll leases the query.
+    foreach (['control' => null, 'heartbeat' => null, 'replaced' => null, 'heartbeat-id' => 'held-query', 'replaced-id' => 'held-query']
+        as $case => $requestId) {
+        $worker = $register('query-'.$case);
+        $runId = $idle($worker);
+        $held = $heldQuery($worker, $requestId);
+        if (str_starts_with($case, 'heartbeat')) {
+            $state['query_'.$case.'_heartbeat'] = $heartbeat($worker);
+        } elseif (str_starts_with($case, 'replaced')) {
+            $register('query-'.$case);
+        }
+        $client = $query($worker, $runId);
+        $polled = $collect($held);
+        $state['query_'.$case.'_held'] = $outcome($polled, $worker);
+        if ($case !== 'control') {
+            $polled = $queryTask($worker);
+            $state['query_'.$case.'_next'] = $outcome($polled, $worker);
+        }
+        $state['query_'.$case.'_answered'] = $answer($polled);
+        $state['query_'.$case.'_client'] = $collect($client)['status'];
+    }
 
     // A workflow task leased before a same-ID re-registration.
     $worker = $register('recovered');

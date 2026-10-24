@@ -166,3 +166,36 @@ async fn a_silent_registration_is_answered_stale_at_admission() {
         json!({"worker_id":"silent","task_queue":"silent","timeout_seconds":0,"poll_request_id":"silent-id"})).await;
     assert_eq!((status, outcome(&body, "silent")), (StatusCode::OK, leased()), "{body}");
 }
+
+// A held query poll fenced off by a heartbeat ends empty, as published
+// 2.11.1's `performPoll` answers, and the next poll leases the query.
+#[tokio::test]
+async fn a_held_query_poll_ends_empty_when_the_worker_heartbeats() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    query_worker(&app, "query-fence").await;
+    let started = start(&app, "query-fence-run").await;
+    let task = poll(&app, "query-fence", "workflow").await;
+    let done = finish_task(&app, &task, json!([{"type":"open_signal_wait","signal_name":"finish"}])).await;
+    assert_eq!(done.0, StatusCode::OK, "{}", done.1);
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let held = {
+        let app = app.clone();
+        tokio::spawn(async move {
+            request(&app, "POST", "/api/worker/query-tasks/poll", json!({"worker_id":"query-fence","task_queue":"test","timeout_seconds":4})).await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    heartbeat(&app, "query-fence", None).await;
+    let query = {
+        let app = app.clone();
+        let path = format!("/api/workflows/query-fence-run/runs/{}/query/state", started["run_id"].as_str().unwrap());
+        tokio::spawn(async move { request(&app, "POST", &path, json!({"input":envelope(Payload::Array(vec![Payload::Long(1)]))})).await })
+    };
+    let (status, ended) = held.await.unwrap();
+    assert_eq!((status, ended["poll_status"].clone(), ended["task"].clone()), (StatusCode::OK, json!("empty"), Value::Null), "{ended}");
+    let (status, next) = request(&app, "POST", "/api/worker/query-tasks/poll",
+        json!({"worker_id":"query-fence","task_queue":"test","timeout_seconds":2})).await;
+    assert_eq!((status, next["task"]["query_name"].clone()), (StatusCode::OK, json!("state")), "{next}");
+    query.abort();
+}

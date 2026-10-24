@@ -53,6 +53,21 @@ for (const [label, change, message] of [
   ['an old attempt that completes after the re-registration', state => {
     state.recovery_old_completion = {status: 200, reason: null};
   }, /the old attempt cannot complete it/],
+  // Native query polls before this fixture: a heartbeat kept the poll, and
+  // a re-registration answered stale instead of empty.
+  ['a held query poll that ignores a heartbeat', state => {
+    state.query_heartbeat_held = leased();
+    state.query_heartbeat_next = empty;
+  }, /query heartbeat: the held query poll ends empty/],
+  ['a fenced query poll that answers stale', state => {
+    state['query_replaced-id_held'] = {...empty, poll_status: 'stale_worker_registration'};
+  }, /query replaced-id: the held query poll ends empty/],
+  ['a query left unanswered after the fence', state => {
+    state.query_replaced_client = 504;
+  }, /query replaced: the query is answered/],
+  ['a held poll refused when its registration is removed', state => {
+    state.workflow_after_removal = {status: 409, poll_status: null, own_run: null, attempt: null, reason: 'worker_not_registered'};
+  }, /a registration removed while a poll waits ends it as stale/],
   ['a stale answer that is not a 200', state => {
     state.activity_after_heartbeat = {...state.activity_after_heartbeat, status: 409};
   }, /activity: a heartbeat ends the held poll as stale/],

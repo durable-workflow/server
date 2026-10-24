@@ -11,7 +11,10 @@ import assert from 'node:assert/strict';
 // - a worker that reports its process keeps its held poll across a heartbeat
 //   from the same process, and loses it to a re-registration from a new one;
 // - a re-registration hands the worker's leased workflow task out again at
-//   the next attempt, and the old attempt's completion is refused.
+//   the next attempt, and the old attempt's completion is refused;
+// - a held workflow poll whose registration is removed ends stale too;
+// - a held query poll ends the same way but answers empty, with or without
+//   a request ID, and the next poll leases the query, which is answered.
 // Registration changes are more than a second apart: PHP keeps registration
 // times in whole seconds.
 export function checkWorkerPollFence(fixture, observation, workflowId) {
@@ -35,12 +38,23 @@ export function checkWorkerPollFence(fixture, observation, workflowId) {
     equal(state[`${kind}_after_replacement`], stale, `${kind}: a same-ID re-registration ends the held poll as stale`);
     equal(state[`${kind}_next_after_replacement`], leased(), `${kind}: the replacement leases the work`);
   }
+  equal([state.workflow_removed, state.workflow_after_removal], [200, stale],
+    'workflow: a registration removed while a poll waits ends it as stale, not refused');
   equal([state.activity_control_scheduled, state.activity_heartbeat_scheduled, state.activity_replaced_scheduled],
     [200, 200, 200], 'each activity scheduled');
   equal(state.process_heartbeat, 200, 'process heartbeat accepted');
   equal(state.process_after_heartbeat, leased(), 'a heartbeat from the same process keeps the held poll');
   equal(state.process_after_replacement, stale, 'a re-registration from a new process ends the held poll as stale');
   equal(state.process_next_after_replacement, leased(), 'the new process leases the work');
+  const empty = {status: 200, poll_status: 'empty', own_run: null, attempt: null, reason: null};
+  equal([state.query_control_held, state.query_control_answered, state.query_control_client], [leased(), 200, 200],
+    'query: a query reaching a held poll under an unchanged registration is leased and answered');
+  for (const change of ['heartbeat', 'replaced', 'heartbeat-id', 'replaced-id']) {
+    if (change.startsWith('heartbeat')) equal(state[`query_${change}_heartbeat`], 200, `query ${change}: worker heartbeat accepted`);
+    equal(state[`query_${change}_held`], empty, `query ${change}: the held query poll ends empty`);
+    equal(state[`query_${change}_next`], leased(), `query ${change}: the next query poll leases the query`);
+    equal([state[`query_${change}_answered`], state[`query_${change}_client`]], [200, 200], `query ${change}: the query is answered`);
+  }
   equal(state.recovery_leased, leased(), 'a workflow task leased before the re-registration');
   equal(state.recovery_after_registration, leased(2), 'the re-registration hands it out again at the next attempt');
   equal(state.recovery_old_completion, {status: 409, reason: 'workflow_task_attempt_mismatch'},

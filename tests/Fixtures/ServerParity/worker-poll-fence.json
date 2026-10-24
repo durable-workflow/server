@@ -14,8 +14,10 @@
   "worker_poll_fence": {
     "workflow_type": "parity.v1.poll_fence",
     "activity_type": "parity.v1.poll_fence_activity",
+    "query": "state",
     "empty_blob": "wwHioz3/VYAiNwwA",
-    "hold_seconds": 4
+    "hold_seconds": 4,
+    "overall_budget_seconds": 150
   },
-  "contract": "A held POST /api/worker/workflow-tasks/poll or /api/worker/activity-tasks/poll belongs to the worker registration it started under (WorkerPollFence). Work that reaches it while the registration is unchanged is leased. A worker heartbeat or a same-ID re-registration while it waits ends it with 200, task null and poll_status stale_worker_registration, leasing nothing, and the worker's next poll leases that work. A worker that reports its process keeps its held poll across a heartbeat from the same process and loses it to a re-registration from a new process. A re-registration hands the worker's leased workflow task out again at the next attempt, and the old attempt's completion is refused with 409 workflow_task_attempt_mismatch. Registration changes are more than a second apart, since PHP keeps registration times in whole seconds. Embedded applications have no worker protocol."
+  "contract": "A held POST /api/worker/workflow-tasks/poll, /api/worker/activity-tasks/poll or /api/worker/query-tasks/poll belongs to the worker registration it started under (WorkerPollFence). Work that reaches it while the registration is unchanged is leased. A worker heartbeat or a same-ID re-registration while it waits ends it, leasing nothing, as does removing the registration: a workflow or activity poll answers 200 with task null and poll_status stale_worker_registration, a query poll answers empty with or without a request ID, and the worker's next poll leases that work. A worker that reports its process keeps its held poll across a heartbeat from the same process and loses it to a re-registration from a new process. A re-registration hands the worker's leased workflow task out again at the next attempt, and the old attempt's completion is refused with 409 workflow_task_attempt_mismatch. Registration changes are more than a second apart, since PHP keeps registration times in whole seconds. Embedded applications have no worker protocol."
 }

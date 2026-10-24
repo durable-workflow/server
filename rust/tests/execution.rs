@@ -1408,6 +1408,10 @@ async fn child_lease_expiry_and_fresh_pool_recovery_preserve_original_parent_res
         .unwrap_or_default()
         + std::time::Duration::from_millis(100);
     tokio::time::sleep(delay).await;
+    // The lease outlasts the 30-second stale window; a registration that has
+    // not heartbeated since cannot poll (`WorkerPollFence::isFresh`).
+    let (status, body) = request(&app, "POST", "/api/worker/heartbeat", json!({"worker_id":"replacement"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         finish_task(&app, &old, commands.clone()).await.0,
         StatusCode::CONFLICT
