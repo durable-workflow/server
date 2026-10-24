@@ -87,6 +87,8 @@ mod rejected_updates;
 mod continue_messages;
 #[path = "execution/update_wait.rs"]
 mod update_wait;
+#[path = "execution/update_validation.rs"]
+mod update_validation;
 #[path = "execution/payload_limits.rs"]
 mod payload_limits;
 #[path = "execution/start_definition.rs"]
@@ -286,6 +288,9 @@ mod external_payloads;
 
 #[path = "execution/trace_carriers.rs"]
 mod trace_carriers;
+
+#[path = "execution/workflow_poll_requests.rs"]
+mod workflow_poll_requests;
 
 enum TestDatabase {
     Sqlite(tempfile::TempDir),

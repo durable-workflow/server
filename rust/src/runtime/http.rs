@@ -292,6 +292,15 @@ pub fn router(runtime: Runtime) -> Router {
             post(complete_query),
         )
         .route("/api/worker/query-tasks/{task_id}/fail", post(fail_query))
+        .route("/api/worker/update-validation-tasks/poll", post(poll_update_validation))
+        .route(
+            "/api/worker/update-validation-tasks/{task_id}/approve",
+            post(approve_update_validation),
+        )
+        .route(
+            "/api/worker/update-validation-tasks/{task_id}/reject",
+            post(reject_update_validation),
+        )
         .fallback(route_fallback)
         .method_not_allowed_fallback(route_fallback)
         .layer(middleware::from_fn(empty_list_body))
@@ -751,6 +760,8 @@ fn worker_route(rest: &str) -> Option<Allowed> {
             | ["workflow-tasks" | "activity-tasks", "poll"]
             | ["query-tasks", "poll"]
             | ["query-tasks", _, "complete" | "fail" | "status"]
+            | ["update-validation-tasks", "poll"]
+            | ["update-validation-tasks", _, "approve" | "reject"]
             | ["workflow-tasks", _, "complete" | "fail" | "history" | "heartbeat"]
             | ["activity-tasks", _, "complete" | "fail" | "heartbeat" | "status" | "renew-lease"]
     )
@@ -1820,12 +1831,46 @@ async fn poll_workflow(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    let pages = runtime.history_pages();
-    let wait = runtime.worker_poll_wait();
     runtime
-        .poll_with_pages(body, "workflow", request_protocol(&headers)?, pages, wait)
+        .poll_workflow_tasks(body, request_protocol(&headers)?)
         .await
         .map(Json)
+        .map_err(worker_refusal)
+}
+
+async fn poll_update_validation(
+    Extension(runtime): Extension<Runtime>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    request_protocol(&headers)?;
+    runtime
+        .poll_update_validation(body)
+        .await
+        .map(|body| Json(worker_response(body)))
+        .map_err(worker_refusal)
+}
+
+async fn approve_update_validation(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    request_protocol(&headers)?;
+    let (status, body) = runtime.complete_update_validation(&task_id, body, false).await.map_err(worker_refusal)?;
+    Ok((status, Json(worker_response(body))))
+}
+
+async fn reject_update_validation(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    request_protocol(&headers)?;
+    let (status, body) = runtime.complete_update_validation(&task_id, body, true).await.map_err(worker_refusal)?;
+    Ok((status, Json(worker_response(body))))
 }
 async fn poll_activity(
     Extension(runtime): Extension<Runtime>,

@@ -13,6 +13,7 @@ import {checkLateWorkflowCompletion} from './late-workflow-completion-contract.m
 import {checkSearchAttributes} from './search-attribute-contract.mjs';
 import {checkStorageTest} from './storage-test-contract.mjs';
 import {checkActivityLeaseRenewal} from './activity-lease-renewal-contract.mjs';
+import {checkWorkflowPollRequest} from './workflow-poll-request-contract.mjs';
 import {checkServiceCatalog} from './service-catalog-contract.mjs';
 import {checkSystemMetrics} from './system-metrics-contract.mjs';
 import {checkOperatorDashboardTypes} from './operator-dashboard-types-contract.mjs';
@@ -21,6 +22,7 @@ import {checkPayloadCleanup} from './payload-cleanup-contract.mjs';
 import {checkClusterInfo} from './cluster-info-contract.mjs';
 import {checkRepairPass} from './repair-pass-contract.mjs';
 import {checkNamespaceDelete} from './namespace-delete-contract.mjs';
+import {checkUpdateValidation} from './update-validation-contract.mjs';
 import {checkSchedulePolicies} from './schedule-policies-contract.mjs';
 import {checkScheduleCatalog} from './schedule-catalog-contract.mjs';
 import {checkSignalsBeforeWorker} from './signals-before-worker-contract.mjs';
@@ -151,6 +153,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const searchAttributes = fixture.search_attributes ? checkSearchAttributes(fixture, observation, workflowId) : null;
   const storageTest = fixture.storage_test ? checkStorageTest(fixture, observation, workflowId) : null;
   const activityLeaseRenewal = fixture.activity_lease_renewal ? checkActivityLeaseRenewal(fixture, observation, workflowId) : null;
+  const workflowPollRequest = fixture.workflow_poll_request ? checkWorkflowPollRequest(fixture, observation, workflowId) : null;
   const serviceCatalog = fixture.service_catalog ? checkServiceCatalog(fixture, observation, workflowId) : null;
   const systemMetrics = fixture.system_metrics ? checkSystemMetrics(fixture, observation, workflowId) : null;
   const operatorDashboardTypes = fixture.operator_dashboard_types ? checkOperatorDashboardTypes(fixture, observation, workflowId) : null;
@@ -159,6 +162,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const clusterInfo = fixture.cluster_info ? checkClusterInfo(fixture, observation, workflowId) : null;
   const repairPass = fixture.repair_pass ? checkRepairPass(fixture, observation, workflowId) : null;
   const namespaceDelete = fixture.namespace_delete ? checkNamespaceDelete(fixture, observation, workflowId) : null;
+  const updateValidation = fixture.update_validation ? checkUpdateValidation(fixture, observation, workflowId) : null;
   const schedulePolicies = fixture.schedule_policies ? checkSchedulePolicies(fixture, observation, workflowId) : null;
   const scheduleCatalog = fixture.schedule_catalog ? checkScheduleCatalog(fixture, observation, workflowId) : null;
   const signalsBeforeWorker = fixture.signals_before_worker ? checkSignalsBeforeWorker(fixture, observation, workflowId) : null;
@@ -706,6 +710,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(searchAttributes ? {search_attributes: searchAttributes} : {}),
     ...(storageTest ? {storage_test: storageTest} : {}),
     ...(activityLeaseRenewal ? {activity_lease_renewal: activityLeaseRenewal} : {}),
+    ...(workflowPollRequest ? {workflow_poll_request: workflowPollRequest} : {}),
     ...(serviceCatalog ? {service_catalog: serviceCatalog} : {}),
     ...(systemMetrics ? {system_metrics: systemMetrics} : {}),
     ...(operatorDashboardTypes ? {operator_dashboard_types: operatorDashboardTypes} : {}),
@@ -714,6 +719,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(clusterInfo ? {cluster_info: clusterInfo} : {}),
     ...(repairPass ? {repair_pass: repairPass} : {}),
     ...(namespaceDelete ? {namespace_delete: namespaceDelete} : {}),
+    ...(updateValidation ? {update_validation: updateValidation} : {}),
     ...(schedulePolicies ? {schedule_policies: schedulePolicies} : {}),
     ...(scheduleCatalog ? {schedule_catalog: scheduleCatalog} : {}),
     ...(signalsBeforeWorker ? {signals_before_worker: signalsBeforeWorker} : {}),

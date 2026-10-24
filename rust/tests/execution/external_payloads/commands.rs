@@ -70,7 +70,7 @@ async fn signal_update_and_query_input_resolve_runtime_references_like_php() {
     // An update resolves the reference to its bytes and keeps them inline.
     waiting_run(&app, "external-update", json!({"worker_id":"update-worker","task_queue":"external-update",
         "runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":[],"capabilities":["workflow_updates"],
-        "workflow_command_contracts":{"echo":{"updates":["u"],"update_contracts":[{"name":"u","parameters":string_parameter()}]}}})).await;
+        "workflow_command_contracts":{"echo":{"updates":["u"],"update_validators":[],"update_contracts":[{"name":"u","parameters":string_parameter()}]}}})).await;
     let blob = argument("update");
     let update = upload(&app, &blob).await;
     let (status, body) = json_request(&app, "POST", "/api/workflows/external-update/update/u", "operator-token",
