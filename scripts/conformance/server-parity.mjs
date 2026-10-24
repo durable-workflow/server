@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import {mkdtempSync, readFileSync, readdirSync, rmSync} from 'node:fs';
+import {mkdtempSync, readFileSync, rmSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {basename, dirname, join, resolve} from 'node:path';
@@ -14,6 +14,7 @@ import {checkSdkChildDirectionArtifacts, checkSdkChildDirectionPackages} from '.
 import {checkSdkTimerAuthorArtifacts, checkSdkTimerAuthorPackages} from './server-parity/sdk-timer-author-contract.mjs';
 import {checkSdkSignalDirectionArtifacts, checkSdkSignalDirectionPackages} from './server-parity/sdk-signal-direction-contract.mjs';
 import {captureProbe} from './server-parity/probe-capture.mjs';
+import {selectFixturePaths} from './server-parity/fixture-selection.mjs';
 import {writeRecord} from './server-parity/record-file.mjs';
 import {checkCorrectedMarkerArtifacts, checkCorrectedMarkerPackages} from './server-parity/corrected-marker-contract.mjs';
 import {checkCorrectedRangeArtifacts, checkCorrectedRangePackages} from './server-parity/corrected-range-contract.mjs';
@@ -28,6 +29,7 @@ const {values, positionals} = parseArgs({allowPositionals: true, options: {
   fixture: {type: 'string', multiple: true},
   'database-resource-limits': {type: 'string'},
   'include-fixture': {type: 'string', multiple: true},
+  'exclude-fixture': {type: 'string', multiple: true},
 }});
 const [command, ...files] = positionals;
 if (values.help) {
@@ -50,16 +52,16 @@ selected records with the same --fixture paths so current source bytes remain
 authoritative; selected candidates do not enlarge the default passing corpus.
 --include-fixture PATH adds an explicit candidate to the reviewed default set;
 use that same option when comparing the combined recordings. It cannot be
-combined with --fixture and does not change default fixture discovery.`);
+combined with --fixture and does not change default fixture discovery.
+--exclude-fixture PATH removes one fixture of that set because a separate,
+explicitly selected record covers it. It must name a selected fixture, the
+comparison must use the same option, and it cannot be combined with --fixture.`);
   process.exit(0);
 }
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
 try {
   const directory = resolve(root, 'tests/Fixtures/ServerParity');
-  if (values.fixture?.length && values['include-fixture']?.length) throw new Error('Choose either --fixture or --include-fixture');
-  const paths = values.fixture?.length ? values.fixture.map(path => resolve(root, path))
-    : [...readdirSync(directory).filter(name => name !== 'php-baseline.json' && name.endsWith('.json')).map(name => resolve(directory, name)),
-      ...(values['include-fixture'] ?? []).map(path => resolve(root, path))];
+  const paths = selectFixturePaths({root, directory, fixture: values.fixture, include: values['include-fixture'], exclude: values['exclude-fixture']});
   if (paths.some(path => !path.endsWith('.json')) || new Set(paths.map(path => basename(path))).size !== paths.length) throw new Error('Selected fixtures require distinct JSON filenames');
   const byName = Object.fromEntries(paths.map(path => [basename(path), path]));
   const fixtures = Object.keys(byName).sort();

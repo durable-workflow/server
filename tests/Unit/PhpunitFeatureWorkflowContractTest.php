@@ -41,7 +41,7 @@ class PhpunitFeatureWorkflowContractTest extends TestCase
             'pull_request:',
             'workflow_dispatch:',
             'name: PHPUnit feature suite',
-            'if: ${{ !cancelled() }}',
+            'if: ${{ always() }}',
             'vendor/bin/phpunit tests/Feature',
             'tests/Unit/NexusContractTest.php',
             'tests/Unit/PhpunitFeatureWorkflowContractTest.php',
@@ -172,7 +172,7 @@ class PhpunitFeatureWorkflowContractTest extends TestCase
             'qualification:',
             'name: Feature source qualification',
             'needs: [preflight, feature]',
-            'if: ${{ !cancelled() }}',
+            'if: ${{ always() }}',
             'test "$PREFLIGHT_RESULT" = success',
             'test "$FEATURE_RESULT" = success',
         ] as $needle) {
