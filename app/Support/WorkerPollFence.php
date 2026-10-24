@@ -17,6 +17,7 @@ final class WorkerPollFence
             'worker_id' => self::stringValue($worker->worker_id),
             'namespace' => self::stringValue($worker->namespace),
             'routing_revision' => self::routingRevision($worker),
+            'registration_incarnation' => self::registrationIncarnation($worker),
             'process_identity' => self::workerProcessIdentity($worker->process_metrics),
             'updated_at' => self::timestamp($worker->updated_at),
             'last_heartbeat_at' => self::timestamp($worker->last_heartbeat_at),
@@ -84,6 +85,13 @@ final class WorkerPollFence
             return false;
         }
 
+        // Every registration rotates the token and a heartbeat keeps it, so a
+        // replacement ends polls held under the previous registration even
+        // when it reports the same process or lands in the same stored second.
+        if (($snapshot['registration_incarnation'] ?? null) !== ($currentSnapshot['registration_incarnation'] ?? null)) {
+            return false;
+        }
+
         $processIdentity = is_array($snapshot['process_identity'] ?? null)
             ? $snapshot['process_identity']
             : [];
@@ -124,6 +132,15 @@ final class WorkerPollFence
             is_numeric($configured) ? (int) $configured : null,
             is_numeric($pollingTimeout) ? (int) $pollingTimeout : null,
         );
+    }
+
+    /**
+     * Snapshots are persisted in task payloads, so they carry a digest of the
+     * registration token, never the deregistration credential itself.
+     */
+    private static function registrationIncarnation(WorkerRegistration $worker): ?string
+    {
+        return is_string($worker->registration_token) ? hash('sha256', $worker->registration_token) : null;
     }
 
     private static function routingRevision(WorkerRegistration $worker): string

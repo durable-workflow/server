@@ -94,6 +94,50 @@ class WorkerPollFenceTest extends TestCase
         }
     }
 
+    public function test_worker_fence_rejects_a_reregistration_that_reports_the_same_process(): void
+    {
+        $worker = $this->createWorker('php-worker-same-process-fence');
+        $worker->forceFill([
+            'registration_token' => bin2hex(random_bytes(16)),
+            'process_metrics' => ['host' => 'worker-host', 'process_id' => 123, 'process_started_at' => '2026-10-24T00:00:00Z'],
+        ])->save();
+        $snapshot = WorkerPollFence::snapshot($worker->fresh());
+
+        $worker->forceFill(['last_heartbeat_at' => now()])->save();
+        $this->assertTrue(WorkerPollFence::isCurrent($snapshot), 'a heartbeat keeps the registration');
+
+        $worker->forceFill(['registration_token' => bin2hex(random_bytes(16))])->save();
+        $this->assertFalse(WorkerPollFence::isCurrent($snapshot));
+        $this->assertFalse(WorkerPollFence::isCurrentForUpdate($snapshot));
+    }
+
+    public function test_worker_fence_rejects_a_reregistration_in_the_same_second_without_process_metadata(): void
+    {
+        $this->travelTo(now()->startOfSecond());
+        $worker = $this->createWorker('php-worker-same-second-fence');
+        $worker->forceFill(['registration_token' => bin2hex(random_bytes(16))])->save();
+        $snapshot = WorkerPollFence::snapshot($worker->fresh());
+
+        $worker->forceFill(['registration_token' => bin2hex(random_bytes(16))])->save();
+        $replacement = $worker->fresh();
+
+        $this->assertSame($snapshot['updated_at'], WorkerPollFence::snapshot($replacement)['updated_at']);
+        $this->assertSame($snapshot['last_heartbeat_at'], WorkerPollFence::snapshot($replacement)['last_heartbeat_at']);
+        $this->assertFalse(WorkerPollFence::isCurrent($snapshot));
+        $this->assertFalse(WorkerPollFence::isCurrentForUpdate($snapshot));
+    }
+
+    public function test_worker_fence_snapshot_never_carries_the_registration_token(): void
+    {
+        $token = bin2hex(random_bytes(16));
+        $worker = $this->createWorker('php-worker-token-digest-fence');
+        $worker->forceFill(['registration_token' => $token])->save();
+        $snapshot = WorkerPollFence::snapshot($worker->fresh());
+
+        $this->assertSame(hash('sha256', $token), $snapshot['registration_incarnation']);
+        $this->assertStringNotContainsString($token, json_encode($snapshot, JSON_THROW_ON_ERROR));
+    }
+
     private function createWorker(string $workerId): WorkerRegistration
     {
         return WorkerRegistration::query()->create([
