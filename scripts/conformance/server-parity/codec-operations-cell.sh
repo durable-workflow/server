@@ -39,6 +39,9 @@ db="$scope-db"
 probe="$scope-ready"
 cleanup() {
   docker logs --tail 40 "$native_server" > "$output/server-log.txt" 2>&1 || true
+  # Retire this cell's exact resources on every exit, failure included, so a
+  # failed cell never leaves its database or server running.
+  bash "$source_root/scripts/conformance/server-parity/codec-operations-cleanup.sh" cell || true
 }
 trap cleanup EXIT
 docker network create "$scope" >/dev/null
