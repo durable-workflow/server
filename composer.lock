@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "d99dd86d09e048c04ae6a4edff646739",
+    "content-hash": "2e60ebd4e4219304b0287bb1c5215a43",
     "packages": [
         {
             "name": "apache/avro",
@@ -655,21 +655,21 @@
         },
         {
             "name": "durable-workflow/workflow",
-            "version": "2.11.4",
+            "version": "2.13.1",
             "source": {
                 "type": "git",
                 "url": "https://github.com/durable-workflow/workflow.git",
-                "reference": "ae6bf6c8a7c4b9597ee4eecb15ecd786e78b0430"
+                "reference": "b2a3369110b8cbdf060802ff91e475110e66e333"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/ae6bf6c8a7c4b9597ee4eecb15ecd786e78b0430",
-                "reference": "ae6bf6c8a7c4b9597ee4eecb15ecd786e78b0430",
+                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/b2a3369110b8cbdf060802ff91e475110e66e333",
+                "reference": "b2a3369110b8cbdf060802ff91e475110e66e333",
                 "shasum": ""
             },
             "require": {
                 "apache/avro": "^1.12",
-                "laravel/framework": "^9.52.17|^10.48.29|^11.44.1|^12.69.0|^13.30.0",
+                "laravel/framework": "^9.52.17|^10.48.29|^11.56.1|^12.69.0|^13.30.0",
                 "php": "^8.1",
                 "react/promise": "^2.9|^3.0",
                 "symfony/yaml": "^6.0|^7.0|^8.0"
@@ -705,7 +705,7 @@
                     "dev-main": "2.0.x-dev"
                 },
                 "durable-workflow": {
-                    "product-train": "2.11.4",
+                    "product-train": "2.13.1",
                     "laravel-embedded-upgrade-contract": "resources/laravel-embedded-upgrade-contract.json",
                     "laravel-dependency-security-policy": "resources/laravel-dependency-security-policy.json"
                 }
@@ -732,9 +732,9 @@
             "description": "Embedded durable workflow runtime and orchestration engine for Laravel applications.",
             "support": {
                 "issues": "https://github.com/durable-workflow/workflow/issues",
-                "source": "https://github.com/durable-workflow/workflow/tree/2.11.4"
+                "source": "https://github.com/durable-workflow/workflow/tree/2.13.1"
             },
-            "time": "2026-10-23T11:36:13+00:00"
+            "time": "2026-10-24T14:18:09+00:00"
         },
         {
             "name": "egulias/email-validator",

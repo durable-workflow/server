@@ -505,3 +505,64 @@ async fn concurrent_probes_alternate_kinds_without_losing_a_turn() {
         }
     }
 }
+
+// A duplicate can lease either kind after a multiplexed poll's last probe and
+// before that poll records `empty`. The held poll then returns the
+// duplicate's lease, and a retry whose original response was lost recovers
+// it. Debug builds stop the held poll between the two steps.
+#[cfg(debug_assertions)]
+mod terminal_races {
+    use super::*;
+    use durable_workflow_server::runtime::poll_pauses::{PollPoint, pause_workflow_poll};
+
+    async fn multiplexed(app: &Router, worker: &str, queue: &str, request_id: &str, timeout: u64) -> (StatusCode, Value) {
+        request(app, "POST", "/api/worker/workflow-tasks/poll", json!({"worker_id":worker,"task_queue":queue,
+            "timeout_seconds":timeout,"poll_request_id":request_id,"task_kinds":["workflow","update_validation"]})).await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_lease_committed_before_the_empty_answer_replays_for_either_kind() {
+        for kind in ["update_validation", "workflow"] {
+            let database = TestDatabase::new().await;
+            let runtime = database.open().await.unwrap();
+            let app = router(runtime.clone());
+            let (worker, queue, run) = ("late", format!("q-late-{kind}"), format!("late-run-{kind}"));
+            validating_worker(&app, worker, &queue, Some(json!(["approve_me"])), true).await;
+            waiting_run(&app, &run, &queue, worker).await;
+            let id = format!("terminal-race-multiplexed-{kind}");
+            let mut terminal = pause_workflow_poll(&id, PollPoint::Terminal);
+
+            // The held poll finds neither kind and stops before answering.
+            let held = {
+                let (app, queue, id) = (app.clone(), queue.clone(), id.clone());
+                tokio::spawn(async move { multiplexed(&app, worker, &queue, &id, 0).await })
+            };
+            (&mut terminal.reached).await.unwrap();
+            // Work of one kind arrives, and a duplicate waits for it and
+            // leases it; its response is lost.
+            let pending = if kind == "update_validation" {
+                Some(send_update(&app, &run, "approve_me", update_body(7, Some("late-update"))))
+            } else {
+                start_on(&app, &format!("late-ready-{kind}"), &queue).await;
+                None
+            };
+            let (status, leased) = multiplexed(&app, worker, &queue, &id, 10).await;
+            assert_eq!((status, leased["poll_status"].clone(), delivery(&leased).0), (StatusCode::OK, json!("leased"), json!(kind)), "{leased}");
+            terminal.release.send(()).unwrap();
+
+            let (status, answered) = held.await.unwrap();
+            assert_eq!(status, StatusCode::OK, "{answered}");
+            assert_eq!((answered["poll_status"].clone(), delivery(&answered)), (json!("leased"), delivery(&leased)), "{kind}: {answered}");
+            let (status, retried) = multiplexed(&app, worker, &queue, &id, 0).await;
+            assert_eq!((status, delivery(&retried)), (StatusCode::OK, delivery(&leased)), "{kind}: {retried}");
+            if let Some(pending) = pending {
+                let task = delivery(&leased).1;
+                let approved = complete(&app, task.as_str().unwrap(), "approve", json!({"lease_owner":worker,"update_validation_attempt":1})).await;
+                assert_eq!(approved.0, StatusCode::OK, "{}", approved.1);
+                assert_eq!(pending.await.unwrap().0, StatusCode::ACCEPTED);
+            }
+            runtime.close().await;
+            database.remove().await;
+        }
+    }
+}

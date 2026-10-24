@@ -80,6 +80,9 @@ mod operator_metrics;
 mod payload_cleanup;
 mod payload_discovery;
 mod payload_limits;
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub mod poll_pauses;
 mod poll_readiness;
 pub mod postgres;
 mod previews;

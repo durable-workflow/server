@@ -199,3 +199,121 @@ async fn a_held_query_poll_ends_empty_when_the_worker_heartbeats() {
     assert_eq!((status, next["task"]["query_name"].clone()), (StatusCode::OK, json!("state")), "{next}");
     query.abort();
 }
+
+/// Waits for the start of a wall-clock second, so that registrations made
+/// within the next few hundred milliseconds share PHP's whole-second times.
+async fn at_second_start() {
+    loop {
+        let millis = chrono::Utc::now().timestamp_subsec_millis();
+        if millis < 50 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(u64::from(1000 - millis) + 5)).await;
+    }
+}
+
+/// A held poll started without the one-second pause `held` takes.
+async fn held_now(app: &Router, worker: &str, queue: &str, kind: &str) -> tokio::task::JoinHandle<(StatusCode, Value)> {
+    let app = app.clone();
+    let (path, body) = (format!("/api/worker/{kind}-tasks/poll"), json!({"worker_id":worker,"task_queue":queue,"timeout_seconds":4}));
+    let poll = tokio::spawn(async move { request(&app, "POST", &path, body).await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    poll
+}
+
+// Native is stricter than published PHP here (Server #749): every native
+// registration rotates its incarnation token, so a re-registration ends the
+// held poll even when PHP's heuristic would keep it, whether it repeats the
+// same process metadata or lands in the same stored second without any.
+#[tokio::test]
+async fn a_reregistration_ends_held_polls_whatever_its_metadata_and_timing() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    for (case, process) in [("same-process", Some("t0")), ("same-second", None)] {
+        for kind in ["workflow", "activity"] {
+            let worker = format!("reg-{case}-{kind}");
+            if process.is_none() {
+                at_second_start().await;
+            }
+            let (status, body) = request(&app, "POST", "/api/worker/register", registration(&worker, process)).await;
+            assert_eq!(status, StatusCode::CREATED, "{body}");
+            if kind == "activity" {
+                // Another worker on the same queue takes the run's first
+                // workflow task and schedules the activity, so the
+                // re-registration below, which releases the replaced
+                // registration's leases, cannot touch that task.
+                let author = format!("{worker}-author");
+                let (status, body) = request(&app, "POST", "/api/worker/register", json!({"worker_id":author,"task_queue":worker,
+                    "runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":[]})).await;
+                assert_eq!(status, StatusCode::CREATED, "{body}");
+                start_on(&app, &worker).await;
+                let (status, polled) = request(&app, "POST", "/api/worker/workflow-tasks/poll",
+                    json!({"worker_id":author,"task_queue":worker,"timeout_seconds":0})).await;
+                assert_eq!((status, polled["poll_status"].clone()), (StatusCode::OK, json!("leased")), "{polled}");
+                let task = polled["task"].clone();
+                let poll = held_now(&app, &worker, &worker, "activity").await;
+                let (status, body) = request(&app, "POST", "/api/worker/register", registration(&worker, process)).await;
+                assert_eq!(status, StatusCode::CREATED, "{body}");
+                let done = finish_task(&app, &task, json!([{"type":"schedule_activity","activity_type":"act","arguments":envelope(Payload::Array(vec![]))}])).await;
+                assert_eq!(done.0, StatusCode::OK, "{}", done.1);
+                assert_eq!(outcome(&answer(poll).await, &worker), stale(), "{case} {kind}");
+                assert_eq!(outcome(&poll_now(&app, &worker, "activity").await, &worker), leased(), "{case} {kind} next poll");
+            } else {
+                let poll = held_now(&app, &worker, &worker, "workflow").await;
+                let (status, body) = request(&app, "POST", "/api/worker/register", registration(&worker, process)).await;
+                assert_eq!(status, StatusCode::CREATED, "{body}");
+                start_on(&app, &worker).await;
+                assert_eq!(outcome(&answer(poll).await, &worker), stale(), "{case} {kind}");
+                assert_eq!(outcome(&poll_now(&app, &worker, "workflow").await, &worker), leased(), "{case} {kind} next poll");
+            }
+        }
+    }
+}
+
+/// `query_worker`'s registration, optionally reporting a process.
+async fn register_query_worker(app: &Router, worker: &str, process: Option<&str>) {
+    let mut body = json!({"worker_id":worker,"task_queue":"test","runtime":"php","supported_workflow_types":["echo"],
+        "supported_activity_types":[],"capabilities":["query_tasks"],"workflow_command_contracts":{"echo":{
+        "queries":["state"],"query_contracts":[{"name":"state","parameters":[{"name":"request","position":0,
+        "type":"int","required":true,"variadic":false,"default_available":false,"allows_null":false}]}]}}});
+    if let Some(started) = process {
+        body["process_metrics"] = json!({"host":"fence-host","process_id":4242,"process_started_at":started});
+    }
+    let (status, answer) = request(app, "POST", "/api/worker/register", body).await;
+    assert_eq!(status, StatusCode::CREATED, "{answer}");
+}
+
+// A held query poll ends empty when its worker re-registers, whether the
+// replacement repeats the same process metadata or lands in the same stored
+// second without any, and the next poll leases the query. Each case has its
+// own database, so no query from another case can answer its next poll.
+#[tokio::test]
+async fn a_reregistration_ends_a_held_query_poll_whatever_its_metadata_and_timing() {
+    for (case, process) in [("same-second", None), ("same-process", Some("t0"))] {
+        let database = TestDatabase::new().await;
+        let app = router(database.open().await.unwrap());
+        let worker = format!("query-rereg-{case}");
+        let run = format!("{worker}-run");
+        register_query_worker(&app, &worker, process).await;
+        let started = start(&app, &run).await;
+        let task = poll(&app, &worker, "workflow").await;
+        let done = finish_task(&app, &task, json!([{"type":"open_signal_wait","signal_name":"finish"}])).await;
+        assert_eq!(done.0, StatusCode::OK, "{case}: {}", done.1);
+        at_second_start().await;
+        register_query_worker(&app, &worker, process).await;
+        let held = held_now(&app, &worker, "test", "query").await;
+        register_query_worker(&app, &worker, process).await;
+        let query = {
+            let app = app.clone();
+            let path = format!("/api/workflows/{run}/runs/{}/query/state", started["run_id"].as_str().unwrap());
+            tokio::spawn(async move { request(&app, "POST", &path, json!({"input":envelope(Payload::Array(vec![Payload::Long(1)]))})).await })
+        };
+        let (status, ended) = held.await.unwrap();
+        assert_eq!((status, ended["poll_status"].clone(), ended["task"].clone()), (StatusCode::OK, json!("empty"), Value::Null),
+            "{case}: {ended}");
+        let (status, next) = request(&app, "POST", "/api/worker/query-tasks/poll",
+            json!({"worker_id":worker,"task_queue":"test","timeout_seconds":2})).await;
+        assert_eq!((status, next["task"]["query_name"].clone()), (StatusCode::OK, json!("state")), "{case}: {next}");
+        query.abort();
+    }
+}

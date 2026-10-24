@@ -14,6 +14,17 @@
 //! does not, by those times, which PHP keeps in whole seconds, so a heartbeat
 //! ends its held poll. A registration that is not active or has not
 //! heartbeated within the stale window is never current.
+//!
+//! Native is stricter than published PHP in one place. Every registration
+//! native accepts rotates a unique incarnation token, and a heartbeat keeps
+//! it; a snapshot whose token is no longer the active one is never current,
+//! on top of PHP's checks. PHP's heuristic alone leaves an old poll current
+//! when its replacement registers in the same stored second without process
+//! metadata, or reports the same process metadata (Server #749). Fixtures
+//! never take either path, since every PHP replacement they record lands in
+//! a later second with different metadata. A registration without a token,
+//! such as one kept by a takeover from PHP, keeps that absence, so only the
+//! heuristic applies to it.
 use super::backend::Backend;
 use super::{Result, store::now};
 use serde_json::{Value, json};
@@ -22,7 +33,7 @@ use std::collections::BTreeMap;
 pub(super) const STALE: &str = "stale_worker_registration";
 
 /// The registration a fence reads.
-const FENCE_ROW: &str = "SELECT status,task_queue,build_id,supported_workflow_types,workflow_definition_fingerprints,workflow_command_contracts,supported_activity_types,capabilities,process_metrics,updated_at,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2";
+const FENCE_ROW: &str = "SELECT status,task_queue,build_id,supported_workflow_types,workflow_definition_fingerprints,workflow_command_contracts,supported_activity_types,capabilities,process_metrics,updated_at,last_heartbeat_at,(SELECT dw_worker_registration_incarnations.token FROM dw_worker_registration_incarnations WHERE dw_worker_registration_incarnations.namespace=workflow_worker_registrations.namespace AND dw_worker_registration_incarnations.worker_id=workflow_worker_registrations.worker_id AND dw_worker_registration_incarnations.status='active' ORDER BY dw_worker_registration_incarnations.created_at DESC LIMIT 1) AS incarnation_token FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2";
 
 /// How a poll is admitted.
 pub(super) enum PollAdmission {
@@ -36,6 +47,8 @@ pub(super) enum PollAdmission {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct WorkerPollFence {
+    /// The registration's active incarnation token, when native issued one.
+    incarnation: Option<String>,
     routing: Value,
     process: BTreeMap<&'static str, Value>,
     updated_at: Option<i64>,
@@ -111,6 +124,7 @@ impl WorkerPollFence {
             "capabilities": string_list(DB::optional_document_row(row, "capabilities")?),
         });
         Ok(Self {
+            incarnation: DB::optional_string(row, "incarnation_token")?,
             routing,
             process: process_identity(DB::optional_document_row(row, "process_metrics")?),
             updated_at: DB::optional_instant(row, "updated_at")?.map(|at| at.timestamp()),
@@ -136,6 +150,12 @@ impl WorkerPollFence {
         }
         let current = Self::snapshot::<DB>(row)?;
         if current.routing != self.routing {
+            return Ok(false);
+        }
+        // A re-registration native accepted rotates the incarnation, which
+        // ends the snapshot whatever its metadata and timing; PHP's checks
+        // below still apply on top.
+        if current.incarnation != self.incarnation {
             return Ok(false);
         }
         if !self.process.is_empty() || !current.process.is_empty() {

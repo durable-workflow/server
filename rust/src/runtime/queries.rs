@@ -796,7 +796,7 @@ where
             return Ok(QueryClaim::StaleWorker);
         };
         if let Some(fence) = fence
-            && !fence.holds::<DB>(Some(&worker), self.worker_stale_after_seconds)?
+            && !self.worker_poll_fence_holds_in(&mut tx, fence, owner).await?
         {
             return Ok(QueryClaim::StaleWorker);
         }

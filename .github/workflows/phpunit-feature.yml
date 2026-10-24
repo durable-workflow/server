@@ -5,6 +5,7 @@ on:
     branches:
       - main
   pull_request:
+  merge_group:
   workflow_dispatch:
     inputs:
       corpus_base_ref:
@@ -74,6 +75,12 @@ jobs:
       - name: Restore PHP's SQLite maintenance loop on every path
         run: node --test tests/Unit/PhpMaintenanceWindowTest.mjs
 
+      - name: Run the required checks for merge queue groups
+        run: node --test tests/Unit/MergeGroupTriggersTest.mjs
+
+      - name: Report one Shared Server fixtures result on every pull request
+        run: node --test tests/Unit/ServerParityAggregateTest.mjs tests/Unit/ServerParityPartsTest.mjs
+
       - name: Validate embedded Workflow package authority
         run: php scripts/ci/test-workflow-package-authority.php
 
@@ -88,7 +95,7 @@ jobs:
 
       - name: Require versioned worker OpenAPI evolution
         env:
-          OPENAPI_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'push' && github.event.before || inputs.corpus_base_ref }}
+          OPENAPI_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event_name == 'push' && github.event.before || inputs.corpus_base_ref }}
         run: php scripts/ci/check-worker-openapi-evolution.php "$OPENAPI_BASE_REF"
 
       - name: Audit locked PHP dependencies
@@ -96,7 +103,7 @@ jobs:
 
       - name: Require durable codec evidence
         env:
-          CORPUS_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'push' && github.event.before || inputs.corpus_base_ref }}
+          CORPUS_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event_name == 'push' && github.event.before || inputs.corpus_base_ref }}
         run: |
           set -euo pipefail
           if [[ ! "$CORPUS_BASE_REF" =~ ^[0-9a-f]{40}$ ]] || [[ "$CORPUS_BASE_REF" =~ ^0+$ ]]; then
@@ -170,7 +177,7 @@ jobs:
       - name: Run feature, Nexus, and regression corpus suites
         shell: bash
         env:
-          CORPUS_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'push' && github.event.before || inputs.corpus_base_ref }}
+          CORPUS_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event_name == 'push' && github.event.before || inputs.corpus_base_ref }}
         run: |
           set -euo pipefail
           if [[ ! "$CORPUS_BASE_REF" =~ ^[0-9a-f]{40}$ ]] || [[ "$CORPUS_BASE_REF" =~ ^0+$ ]]; then
@@ -265,7 +272,7 @@ jobs:
       - name: Select production image qualification for changed build inputs
         id: image_inputs
         run: |
-          if git diff --quiet '${{ github.event.pull_request.base.sha || github.event.before || inputs.corpus_base_ref }}' HEAD -- Dockerfile Dockerfile.dockerignore .dockerignore composer.json composer.lock ':(glob)docker/**'; then
+          if git diff --quiet '${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || inputs.corpus_base_ref }}' HEAD -- Dockerfile Dockerfile.dockerignore .dockerignore composer.json composer.lock ':(glob)docker/**'; then
             echo 'required=false' >> "$GITHUB_OUTPUT"
           else
             echo 'required=true' >> "$GITHUB_OUTPUT"

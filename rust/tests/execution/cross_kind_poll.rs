@@ -40,9 +40,8 @@ async fn register_mixed(app: &Router, namespace: &str, opt_in: bool) {
             "supported_workflow_types":["echo"], "supported_activity_types":["echo_activity"],
             "capabilities":capabilities, "workflow_command_contracts":{"echo":{"queries":["state"],
                 "query_contracts":[{"name":"state","parameters":[]}]}},
-            // One process throughout, so the poll fence follows the process
-            // rather than whole-second registration times: a replacement in
-            // the next second stays the same worker.
+            // One process throughout. A re-registration still rotates the
+            // incarnation token, so it ends a poll held under the previous one.
             "process_metrics":{"host":"mixed-host","process_id":4242,"process_started_at":"2026-10-24T00:00:00Z"}
         }),
     )
@@ -180,8 +179,11 @@ async fn scoped_hints_require_original_opt_in_and_a_new_ready_identity() {
         .await;
         let result = held.await.unwrap();
         assert_eq!(result.0, StatusCode::OK, "{scenario}: {}", result.1);
+        // A replacement registration fences the held poll off; every other
+        // scenario lets it run out empty. Neither wakes it with a task.
+        let expected = if scenario == "replacement" { "stale_worker_registration" } else { "empty" };
         assert_eq!(
-            result.1["poll_status"], "empty",
+            result.1["poll_status"], expected,
             "{scenario}: {}",
             result.1
         );
