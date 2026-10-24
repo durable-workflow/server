@@ -14,6 +14,7 @@ import {checkSearchAttributes} from './search-attribute-contract.mjs';
 import {checkStorageTest} from './storage-test-contract.mjs';
 import {checkActivityLeaseRenewal} from './activity-lease-renewal-contract.mjs';
 import {checkBridgeAdapters} from './bridge-adapters-contract.mjs';
+import {checkNexusOperations} from './nexus-operations-contract.mjs';
 import {checkServiceCatalog} from './service-catalog-contract.mjs';
 import {checkSystemMetrics} from './system-metrics-contract.mjs';
 import {checkOperatorDashboardTypes} from './operator-dashboard-types-contract.mjs';
@@ -153,6 +154,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const storageTest = fixture.storage_test ? checkStorageTest(fixture, observation, workflowId) : null;
   const activityLeaseRenewal = fixture.activity_lease_renewal ? checkActivityLeaseRenewal(fixture, observation, workflowId) : null;
   const bridgeAdapters = fixture.bridge_adapters ? checkBridgeAdapters(fixture, observation, workflowId) : null;
+  const nexusOperations = fixture.nexus_operations ? checkNexusOperations(fixture, observation, workflowId) : null;
   const serviceCatalog = fixture.service_catalog ? checkServiceCatalog(fixture, observation, workflowId) : null;
   const systemMetrics = fixture.system_metrics ? checkSystemMetrics(fixture, observation, workflowId) : null;
   const operatorDashboardTypes = fixture.operator_dashboard_types ? checkOperatorDashboardTypes(fixture, observation, workflowId) : null;
@@ -709,6 +711,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(storageTest ? {storage_test: storageTest} : {}),
     ...(activityLeaseRenewal ? {activity_lease_renewal: activityLeaseRenewal} : {}),
     ...(bridgeAdapters ? {bridge_adapters: bridgeAdapters} : {}),
+    ...(nexusOperations ? {nexus_operations: nexusOperations} : {}),
     ...(serviceCatalog ? {service_catalog: serviceCatalog} : {}),
     ...(systemMetrics ? {system_metrics: systemMetrics} : {}),
     ...(operatorDashboardTypes ? {operator_dashboard_types: operatorDashboardTypes} : {}),

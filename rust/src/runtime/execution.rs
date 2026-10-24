@@ -1412,6 +1412,7 @@ impl Runtime {
         }
     }
     delegate!(bridge_command(workflow_id: &str, kind: &str, adapter: &str, action: &str, key: &str, field: &str, name: &str) -> Result<Option<String>>);
+    delegate!(nexus_operations(workflow_id: &str, run_id: Option<&str>, limit: i64) -> Result<Vec<Value>>);
     pub(crate) async fn fail_activity(&self, task_id: &str, body: Value) -> Result<Value> {
         let (failure, blob) =
             super::activity_failures::prepare_failure(&body, self.signal_codec.clone()).await?;
