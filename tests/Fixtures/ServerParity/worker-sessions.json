@@ -1,0 +1,1735 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "worker-sessions",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "worker sessions λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "worker sessions λ"},
+    "count": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null}
+  }},
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "worker_sessions": {
+    "workflow_type": "parity.v1.sessions",
+    "activity_type": "parity.v1.session_activity",
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "overall_budget_seconds": 120,
+    "published_defects": {
+      "reacquired_failure_reason": {
+        "paths": [
+          "reacquired.response.session.failure_reason",
+          "orphan_reacquired.response.session.failure_reason",
+          "list_sessions[{id}-wss-held].failure_reason"
+        ],
+        "published": [
+          "lease_expired",
+          "worker_heartbeat_stale",
+          "worker_heartbeat_stale"
+        ],
+        "reason": "WorkerSessionRegistry::renewHeldSession writes failure_reason => null and closed_at => null through array_filter(... !== null), which drops both; a reacquired session stays active with the old failure_reason until a heartbeat or close clears it. Native clears it, as the code intends."
+      }
+    },
+    "expected": {
+      "applicable": true,
+      "namespace": "{id}-wss",
+      "workers": [
+        "{id}-wss-w1",
+        "{id}-wss-w2",
+        "{id}-wss-w3"
+      ],
+      "queues": [
+        "{id}-wss-q1",
+        "{id}-wss-q2"
+      ],
+      "gate_no_protocol": {
+        "status": 400,
+        "response": {
+          "error": "Missing worker protocol version header.",
+          "reason": "missing_protocol_version",
+          "supported_version": "1.20",
+          "requested_version": null,
+          "remediation": "Send the X-Durable-Workflow-Protocol-Version: 1.20 header on worker protocol requests.",
+          "protocol_version": "1.20"
+        }
+      },
+      "gate_protocol_1_7": {
+        "status": 409,
+        "response": {
+          "error": "Worker sessions require worker protocol 1.8 or newer.",
+          "reason": "worker_sessions_unavailable",
+          "supported_version": "1.20",
+          "requested_version": "1.7",
+          "minimum_protocol_version": "1.8",
+          "remediation": "Send the X-Durable-Workflow-Protocol-Version header with worker protocol 1.8 or newer and use a worker SDK that implements worker-session semantics.",
+          "protocol_version": "1.20"
+        }
+      },
+      "gate_protocol_1_21": {
+        "status": 400,
+        "response": {
+          "error": "Unsupported worker protocol version.",
+          "reason": "unsupported_protocol_version",
+          "supported_version": "1.20",
+          "requested_version": "1.21",
+          "remediation": "Worker requested protocol version 1.21; this server supports 1.20. Workers may target any 1.x version with x ≤ 20. Upgrade the worker to a release that targets a compatible version, or connect to a server that matches.",
+          "protocol_version": "1.20"
+        }
+      },
+      "gate_protocol_1_8_empty": {
+        "status": 422,
+        "response": {
+          "message": "The worker id field is required. (and 1 more error)",
+          "reason": "validation_failed",
+          "errors": {
+            "worker_id": [
+              "The worker id field is required."
+            ],
+            "session_id": [
+              "The session id field is required."
+            ]
+          },
+          "validation_errors": {
+            "worker_id": [
+              "The worker id field is required."
+            ],
+            "session_id": [
+              "The session id field is required."
+            ]
+          },
+          "protocol_version": "1.20"
+        }
+      },
+      "gate_unknown_namespace": {
+        "status": 404,
+        "response": {
+          "message": "Namespace 'no-such-namespace-wss' does not exist.",
+          "reason": "namespace_not_found",
+          "namespace": "no-such-namespace-wss",
+          "remediation": "Register the namespace via POST /api/namespaces, or send an X-Namespace header naming an existing namespace.",
+          "protocol_version": "1.20"
+        }
+      },
+      "gate_list_without_control_plane": {
+        "status": 400,
+        "response": {
+          "message": "Missing control-plane version header.",
+          "reason": "missing_control_plane_version",
+          "supported_version": "2",
+          "requested_version": null,
+          "remediation": "Send the X-Durable-Workflow-Control-Plane-Version: 2 header on control-plane requests."
+        }
+      },
+      "gate_list_unknown_namespace": {
+        "status": 404,
+        "response": {
+          "message": "Namespace 'no-such-namespace-wss' does not exist.",
+          "reason": "namespace_not_found",
+          "namespace": "no-such-namespace-wss",
+          "remediation": "Register the namespace via POST /api/namespaces, or send an X-Namespace header naming an existing namespace."
+        }
+      },
+      "invalid_empty": {
+        "status": 422,
+        "response": {
+          "message": "The worker id field is required. (and 1 more error)",
+          "reason": "validation_failed",
+          "errors": {
+            "worker_id": [
+              "The worker id field is required."
+            ],
+            "session_id": [
+              "The session id field is required."
+            ]
+          },
+          "validation_errors": {
+            "worker_id": [
+              "The worker id field is required."
+            ],
+            "session_id": [
+              "The session id field is required."
+            ]
+          },
+          "protocol_version": "1.20"
+        }
+      },
+      "invalid_types": {
+        "status": 422,
+        "response": {
+          "message": "The worker id field must be a string. (and 9 more errors)",
+          "reason": "validation_failed",
+          "errors": {
+            "worker_id": [
+              "The worker id field must be a string."
+            ],
+            "session_id": [
+              "The session id field is required."
+            ],
+            "connection": [
+              "The connection field must be a string."
+            ],
+            "queue": [
+              "The queue field must be a string."
+            ],
+            "requirements": [
+              "The requirements field must be an array."
+            ],
+            "lease_seconds": [
+              "The lease seconds field must be at least 1."
+            ],
+            "ttl_seconds": [
+              "The ttl seconds field must be an integer."
+            ],
+            "max_concurrent_activities": [
+              "The max concurrent activities field must be an integer."
+            ],
+            "create_if_missing": [
+              "The create if missing field must be true or false."
+            ],
+            "allow_reacquire_after_failure": [
+              "The allow reacquire after failure field must be true or false."
+            ]
+          },
+          "validation_errors": {
+            "worker_id": [
+              "The worker id field must be a string."
+            ],
+            "session_id": [
+              "The session id field is required."
+            ],
+            "connection": [
+              "The connection field must be a string."
+            ],
+            "queue": [
+              "The queue field must be a string."
+            ],
+            "requirements": [
+              "The requirements field must be an array."
+            ],
+            "lease_seconds": [
+              "The lease seconds field must be at least 1."
+            ],
+            "ttl_seconds": [
+              "The ttl seconds field must be an integer."
+            ],
+            "max_concurrent_activities": [
+              "The max concurrent activities field must be an integer."
+            ],
+            "create_if_missing": [
+              "The create if missing field must be true or false."
+            ],
+            "allow_reacquire_after_failure": [
+              "The allow reacquire after failure field must be true or false."
+            ]
+          },
+          "protocol_version": "1.20"
+        }
+      },
+      "invalid_heartbeat": {
+        "status": 422,
+        "response": {
+          "message": "The worker id field is required. (and 1 more error)",
+          "reason": "validation_failed",
+          "errors": {
+            "worker_id": [
+              "The worker id field is required."
+            ],
+            "lease_seconds": [
+              "The lease seconds field must be at least 1."
+            ]
+          },
+          "validation_errors": {
+            "worker_id": [
+              "The worker id field is required."
+            ],
+            "lease_seconds": [
+              "The lease seconds field must be at least 1."
+            ]
+          },
+          "protocol_version": "1.20"
+        }
+      },
+      "invalid_close": {
+        "status": 422,
+        "response": {
+          "message": "The worker id field is required.",
+          "reason": "validation_failed",
+          "errors": {
+            "worker_id": [
+              "The worker id field is required."
+            ]
+          },
+          "validation_errors": {
+            "worker_id": [
+              "The worker id field is required."
+            ]
+          },
+          "protocol_version": "1.20"
+        }
+      },
+      "unregistered": {
+        "status": 412,
+        "response": {
+          "error": "Worker must be registered before creating a worker session.",
+          "reason": "worker_not_registered",
+          "worker_id": "{id}-wss-nobody",
+          "protocol_version": "1.20"
+        }
+      },
+      "queue_mismatch": {
+        "status": 409,
+        "response": {
+          "error": "Worker [{id}-wss-w1] is registered for task queue [{id}-wss-q1], not session queue [{id}-wss-q2].",
+          "reason": "session_queue_mismatch",
+          "worker_id": "{id}-wss-w1",
+          "registered_task_queue": "{id}-wss-q1",
+          "requested_session_queue": "{id}-wss-q2",
+          "protocol_version": "1.20"
+        }
+      },
+      "requirements_missing": {
+        "status": 409,
+        "response": {
+          "missing_requirements": [
+            "tpu",
+            "fpga"
+          ],
+          "admitted": false,
+          "error": "Worker does not advertise every worker-session requirement.",
+          "reason": "session_requirements_not_met",
+          "status": 409,
+          "protocol_version": "1.20"
+        }
+      },
+      "missing_without_create": {
+        "status": 409,
+        "response": {
+          "admitted": false,
+          "error": "Worker session does not exist and creation is disabled.",
+          "reason": "session_missing",
+          "status": 409,
+          "protocol_version": "1.20"
+        }
+      },
+      "created": {
+        "status": 201,
+        "response": {
+          "admitted": true,
+          "outcome": "created",
+          "session": {
+            "session_id": "{id}-wss-s1",
+            "namespace": "{id}-wss",
+            "connection": "c1",
+            "queue": "{id}-wss-q1",
+            "requirements": [
+              "gpu"
+            ],
+            "status": "active",
+            "lease_owner": "{id}-wss-w1",
+            "holder": {
+              "worker_id": "{id}-wss-w1",
+              "task_queue": "{id}-wss-q1",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": null,
+            "lease_seconds": 60,
+            "ttl_seconds": 600,
+            "max_concurrent_activities": 1,
+            "create_if_missing": true,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 60,
+            "ttl_span": 600,
+            "closed": false,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "null",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "activity_task_id": null,
+          "status": 201,
+          "reason": null,
+          "protocol_version": "1.20"
+        }
+      },
+      "float_lease": {
+        "status": 201,
+        "response": {
+          "admitted": true,
+          "outcome": "created",
+          "session": {
+            "session_id": "{id}-wss-s2",
+            "namespace": "{id}-wss",
+            "connection": null,
+            "queue": "{id}-wss-q1",
+            "requirements": [],
+            "status": "active",
+            "lease_owner": "{id}-wss-w1",
+            "holder": {
+              "worker_id": "{id}-wss-w1",
+              "task_queue": "{id}-wss-q1",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": null,
+            "lease_seconds": 120,
+            "ttl_seconds": 1800,
+            "max_concurrent_activities": 1,
+            "create_if_missing": true,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 120,
+            "ttl_span": 1800,
+            "closed": false,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "null",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "activity_task_id": null,
+          "status": 201,
+          "reason": null,
+          "protocol_version": "1.20"
+        }
+      },
+      "reused": {
+        "status": 200,
+        "response": {
+          "admitted": true,
+          "outcome": "reused",
+          "session": {
+            "session_id": "{id}-wss-s1",
+            "namespace": "{id}-wss",
+            "connection": "c1",
+            "queue": "{id}-wss-q1",
+            "requirements": [],
+            "status": "active",
+            "lease_owner": "{id}-wss-w1",
+            "holder": {
+              "worker_id": "{id}-wss-w1",
+              "task_queue": "{id}-wss-q1",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": null,
+            "lease_seconds": 30,
+            "ttl_seconds": 9999,
+            "max_concurrent_activities": 3,
+            "create_if_missing": false,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 30,
+            "ttl_span": 600,
+            "closed": false,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "null",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "activity_task_id": null,
+          "status": 200,
+          "reason": null,
+          "protocol_version": "1.20"
+        }
+      },
+      "foreign_create": {
+        "status": 409,
+        "response": {
+          "session": {
+            "session_id": "{id}-wss-s1",
+            "namespace": "{id}-wss",
+            "connection": "c1",
+            "queue": "{id}-wss-q1",
+            "requirements": [],
+            "status": "active",
+            "lease_owner": "{id}-wss-w1",
+            "holder": {
+              "worker_id": "{id}-wss-w1",
+              "task_queue": "{id}-wss-q1",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": null,
+            "lease_seconds": 30,
+            "ttl_seconds": 9999,
+            "max_concurrent_activities": 3,
+            "create_if_missing": false,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 30,
+            "ttl_span": 600,
+            "closed": false,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "null",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "admitted": false,
+          "error": "Worker session is currently leased by another worker.",
+          "reason": "session_owned_by_another_worker",
+          "status": 409,
+          "protocol_version": "1.20"
+        }
+      },
+      "foreign_heartbeat": {
+        "status": 409,
+        "response": {
+          "session": {
+            "session_id": "{id}-wss-s1",
+            "namespace": "{id}-wss",
+            "connection": "c1",
+            "queue": "{id}-wss-q1",
+            "requirements": [],
+            "status": "active",
+            "lease_owner": "{id}-wss-w1",
+            "holder": {
+              "worker_id": "{id}-wss-w1",
+              "task_queue": "{id}-wss-q1",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": null,
+            "lease_seconds": 30,
+            "ttl_seconds": 9999,
+            "max_concurrent_activities": 3,
+            "create_if_missing": false,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 30,
+            "ttl_span": 600,
+            "closed": false,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "null",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "admitted": false,
+          "error": "Worker session lease is owned by another worker.",
+          "reason": "session_owner_mismatch",
+          "status": 409,
+          "protocol_version": "1.20"
+        }
+      },
+      "foreign_close": {
+        "status": 409,
+        "response": {
+          "session": {
+            "session_id": "{id}-wss-s1",
+            "namespace": "{id}-wss",
+            "connection": "c1",
+            "queue": "{id}-wss-q1",
+            "requirements": [],
+            "status": "active",
+            "lease_owner": "{id}-wss-w1",
+            "holder": {
+              "worker_id": "{id}-wss-w1",
+              "task_queue": "{id}-wss-q1",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": null,
+            "lease_seconds": 30,
+            "ttl_seconds": 9999,
+            "max_concurrent_activities": 3,
+            "create_if_missing": false,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 30,
+            "ttl_span": 600,
+            "closed": false,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "null",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "admitted": false,
+          "error": "Worker session lease is owned by another worker.",
+          "reason": "session_owner_mismatch",
+          "status": 409,
+          "protocol_version": "1.20"
+        }
+      },
+      "heartbeat_missing": {
+        "status": 404,
+        "response": {
+          "admitted": false,
+          "error": "Worker session was not found.",
+          "reason": "session_not_found",
+          "status": 404,
+          "protocol_version": "1.20"
+        }
+      },
+      "heartbeat": {
+        "status": 200,
+        "response": {
+          "admitted": true,
+          "outcome": "heartbeat_recorded",
+          "session": {
+            "session_id": "{id}-wss-s1",
+            "namespace": "{id}-wss",
+            "connection": "c1",
+            "queue": "{id}-wss-q1",
+            "requirements": [],
+            "status": "active",
+            "lease_owner": "{id}-wss-w1",
+            "holder": {
+              "worker_id": "{id}-wss-w1",
+              "task_queue": "{id}-wss-q1",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": null,
+            "lease_seconds": 30,
+            "ttl_seconds": 9999,
+            "max_concurrent_activities": 3,
+            "create_if_missing": false,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 5,
+            "ttl_span": 600,
+            "closed": false,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "null",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "activity_task_id": null,
+          "status": 200,
+          "reason": null,
+          "protocol_version": "1.20"
+        }
+      },
+      "limit": {
+        "status": 409,
+        "response": {
+          "max_concurrent_worker_sessions": 2,
+          "admitted": false,
+          "error": "Worker has reached max_concurrent_worker_sessions.",
+          "reason": "worker_session_limit_exceeded",
+          "status": 409,
+          "protocol_version": "1.20"
+        }
+      },
+      "short_created": {
+        "status": 201,
+        "response": {
+          "admitted": true,
+          "outcome": "created",
+          "session": {
+            "session_id": "{id}-wss-short",
+            "namespace": "{id}-wss",
+            "connection": null,
+            "queue": "{id}-wss-q1",
+            "requirements": [],
+            "status": "active",
+            "lease_owner": "{id}-wss-w2",
+            "holder": {
+              "worker_id": "{id}-wss-w2",
+              "task_queue": "{id}-wss-q1",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": null,
+            "lease_seconds": 2,
+            "ttl_seconds": 1800,
+            "max_concurrent_activities": 1,
+            "create_if_missing": true,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 2,
+            "ttl_span": 1800,
+            "closed": false,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "null",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "activity_task_id": null,
+          "status": 201,
+          "reason": null,
+          "protocol_version": "1.20"
+        }
+      },
+      "short_expired": {
+        "status": 200,
+        "response": {
+          "namespace": "{id}-wss",
+          "session": {
+            "session_id": "{id}-wss-short",
+            "namespace": "{id}-wss",
+            "connection": null,
+            "queue": "{id}-wss-q1",
+            "requirements": [],
+            "status": "expired",
+            "lease_owner": "{id}-wss-w2",
+            "holder": {
+              "worker_id": "{id}-wss-w2",
+              "task_queue": "{id}-wss-q1",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": "lease_expired",
+            "lease_seconds": 2,
+            "ttl_seconds": 1800,
+            "max_concurrent_activities": 1,
+            "create_if_missing": true,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 2,
+            "ttl_span": 1800,
+            "closed": false,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "null",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          }
+        }
+      },
+      "reacquired": {
+        "status": 200,
+        "response": {
+          "admitted": true,
+          "outcome": "reacquired",
+          "session": {
+            "session_id": "{id}-wss-short",
+            "namespace": "{id}-wss",
+            "connection": null,
+            "queue": "{id}-wss-q2",
+            "requirements": [],
+            "status": "active",
+            "lease_owner": "{id}-wss-w3",
+            "holder": {
+              "worker_id": "{id}-wss-w3",
+              "task_queue": "{id}-wss-q2",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": null,
+            "lease_seconds": 120,
+            "ttl_seconds": 1800,
+            "max_concurrent_activities": 1,
+            "create_if_missing": true,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 120,
+            "ttl_span": 1800,
+            "closed": false,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "null",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "activity_task_id": null,
+          "status": 200,
+          "reason": null,
+          "protocol_version": "1.20"
+        }
+      },
+      "reacquired_heartbeat": {
+        "status": 200,
+        "response": {
+          "admitted": true,
+          "outcome": "heartbeat_recorded",
+          "session": {
+            "session_id": "{id}-wss-short",
+            "namespace": "{id}-wss",
+            "connection": null,
+            "queue": "{id}-wss-q2",
+            "requirements": [],
+            "status": "active",
+            "lease_owner": "{id}-wss-w3",
+            "holder": {
+              "worker_id": "{id}-wss-w3",
+              "task_queue": "{id}-wss-q2",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": null,
+            "lease_seconds": 120,
+            "ttl_seconds": 1800,
+            "max_concurrent_activities": 1,
+            "create_if_missing": true,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 120,
+            "ttl_span": 1800,
+            "closed": false,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "null",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "activity_task_id": null,
+          "status": 200,
+          "reason": null,
+          "protocol_version": "1.20"
+        }
+      },
+      "close_by_old_owner": {
+        "status": 409,
+        "response": {
+          "session": {
+            "session_id": "{id}-wss-short",
+            "namespace": "{id}-wss",
+            "connection": null,
+            "queue": "{id}-wss-q2",
+            "requirements": [],
+            "status": "active",
+            "lease_owner": "{id}-wss-w3",
+            "holder": {
+              "worker_id": "{id}-wss-w3",
+              "task_queue": "{id}-wss-q2",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": null,
+            "lease_seconds": 120,
+            "ttl_seconds": 1800,
+            "max_concurrent_activities": 1,
+            "create_if_missing": true,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 120,
+            "ttl_span": 1800,
+            "closed": false,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "null",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "admitted": false,
+          "error": "Worker session lease is owned by another worker.",
+          "reason": "session_owner_mismatch",
+          "status": 409,
+          "protocol_version": "1.20"
+        }
+      },
+      "closed": {
+        "status": 200,
+        "response": {
+          "admitted": true,
+          "outcome": "closed",
+          "session": {
+            "session_id": "{id}-wss-short",
+            "namespace": "{id}-wss",
+            "connection": null,
+            "queue": "{id}-wss-q2",
+            "requirements": [],
+            "status": "closed",
+            "lease_owner": "{id}-wss-w3",
+            "holder": {
+              "worker_id": "{id}-wss-w3",
+              "task_queue": "{id}-wss-q2",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": null,
+            "lease_seconds": 120,
+            "ttl_seconds": 1800,
+            "max_concurrent_activities": 1,
+            "create_if_missing": true,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 120,
+            "ttl_span": 1800,
+            "closed": true,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "present",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "activity_task_id": null,
+          "status": 200,
+          "reason": null,
+          "protocol_version": "1.20"
+        }
+      },
+      "closed_again": {
+        "status": 200,
+        "response": {
+          "admitted": true,
+          "outcome": "already_closed",
+          "session": {
+            "session_id": "{id}-wss-short",
+            "namespace": "{id}-wss",
+            "connection": null,
+            "queue": "{id}-wss-q2",
+            "requirements": [],
+            "status": "closed",
+            "lease_owner": "{id}-wss-w3",
+            "holder": {
+              "worker_id": "{id}-wss-w3",
+              "task_queue": "{id}-wss-q2",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": null,
+            "lease_seconds": 120,
+            "ttl_seconds": 1800,
+            "max_concurrent_activities": 1,
+            "create_if_missing": true,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 120,
+            "ttl_span": 1800,
+            "closed": true,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "present",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "activity_task_id": null,
+          "status": 200,
+          "reason": null,
+          "protocol_version": "1.20"
+        }
+      },
+      "closed_by_other": {
+        "status": 409,
+        "response": {
+          "session": {
+            "session_id": "{id}-wss-short",
+            "namespace": "{id}-wss",
+            "connection": null,
+            "queue": "{id}-wss-q2",
+            "requirements": [],
+            "status": "closed",
+            "lease_owner": "{id}-wss-w3",
+            "holder": {
+              "worker_id": "{id}-wss-w3",
+              "task_queue": "{id}-wss-q2",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": null,
+            "lease_seconds": 120,
+            "ttl_seconds": 1800,
+            "max_concurrent_activities": 1,
+            "create_if_missing": true,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 120,
+            "ttl_span": 1800,
+            "closed": true,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "present",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "admitted": false,
+          "error": "Worker session lease is owned by another worker.",
+          "reason": "session_owner_mismatch",
+          "status": 409,
+          "protocol_version": "1.20"
+        }
+      },
+      "closed_heartbeat": {
+        "status": 409,
+        "response": {
+          "session": {
+            "session_id": "{id}-wss-short",
+            "namespace": "{id}-wss",
+            "connection": null,
+            "queue": "{id}-wss-q2",
+            "requirements": [],
+            "status": "closed",
+            "lease_owner": "{id}-wss-w3",
+            "holder": {
+              "worker_id": "{id}-wss-w3",
+              "task_queue": "{id}-wss-q2",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": null,
+            "lease_seconds": 120,
+            "ttl_seconds": 1800,
+            "max_concurrent_activities": 1,
+            "create_if_missing": true,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 120,
+            "ttl_span": 1800,
+            "closed": true,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "present",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "admitted": false,
+          "error": "Worker session is not active.",
+          "reason": "session_not_active",
+          "status": 409,
+          "protocol_version": "1.20"
+        }
+      },
+      "closed_create": {
+        "status": 409,
+        "response": {
+          "session": {
+            "session_id": "{id}-wss-short",
+            "namespace": "{id}-wss",
+            "connection": null,
+            "queue": "{id}-wss-q2",
+            "requirements": [],
+            "status": "closed",
+            "lease_owner": "{id}-wss-w3",
+            "holder": {
+              "worker_id": "{id}-wss-w3",
+              "task_queue": "{id}-wss-q2",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": null,
+            "lease_seconds": 120,
+            "ttl_seconds": 1800,
+            "max_concurrent_activities": 1,
+            "create_if_missing": true,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 120,
+            "ttl_span": 1800,
+            "closed": true,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "present",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "admitted": false,
+          "error": "Worker session was closed and cannot be reacquired.",
+          "reason": "session_closed",
+          "status": 409,
+          "protocol_version": "1.20"
+        }
+      },
+      "closed_create_unmet": {
+        "status": 409,
+        "response": {
+          "missing_requirements": [
+            "gpu"
+          ],
+          "admitted": false,
+          "error": "Worker does not advertise every worker-session requirement.",
+          "reason": "session_requirements_not_met",
+          "status": 409,
+          "protocol_version": "1.20"
+        }
+      },
+      "reacquire_terminal": {
+        "status": 409,
+        "response": {
+          "session": {
+            "session_id": "{id}-wss-terminal",
+            "namespace": "{id}-wss",
+            "connection": null,
+            "queue": "{id}-wss-q1",
+            "requirements": [],
+            "status": "expired",
+            "lease_owner": "{id}-wss-w2",
+            "holder": {
+              "worker_id": "{id}-wss-w2",
+              "task_queue": "{id}-wss-q1",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": "lease_expired",
+            "lease_seconds": 2,
+            "ttl_seconds": 1800,
+            "max_concurrent_activities": 1,
+            "create_if_missing": true,
+            "allow_reacquire_after_failure": false,
+            "active_activity_count": 0,
+            "lease_span": 2,
+            "ttl_span": 1800,
+            "closed": false,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "null",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "admitted": false,
+          "error": "Worker session is terminal and cannot be reacquired.",
+          "reason": "session_reacquire_disallowed",
+          "status": 409,
+          "protocol_version": "1.20"
+        }
+      },
+      "reacquire_disallowed": {
+        "status": 409,
+        "response": {
+          "session": {
+            "session_id": "{id}-wss-optional",
+            "namespace": "{id}-wss",
+            "connection": null,
+            "queue": "{id}-wss-q1",
+            "requirements": [],
+            "status": "expired",
+            "lease_owner": "{id}-wss-w2",
+            "holder": {
+              "worker_id": "{id}-wss-w2",
+              "task_queue": "{id}-wss-q1",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": "lease_expired",
+            "lease_seconds": 2,
+            "ttl_seconds": 1800,
+            "max_concurrent_activities": 1,
+            "create_if_missing": true,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 2,
+            "ttl_span": 1800,
+            "closed": false,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "null",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "admitted": false,
+          "error": "Worker session options disallow reacquisition after holder failure.",
+          "reason": "session_reacquire_disallowed",
+          "status": 409,
+          "protocol_version": "1.20"
+        }
+      },
+      "ttl_heartbeat": {
+        "status": 409,
+        "response": {
+          "session": {
+            "session_id": "{id}-wss-ttl",
+            "namespace": "{id}-wss",
+            "connection": null,
+            "queue": "{id}-wss-q1",
+            "requirements": [],
+            "status": "expired",
+            "lease_owner": "{id}-wss-w2",
+            "holder": {
+              "worker_id": "{id}-wss-w2",
+              "task_queue": "{id}-wss-q1",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": "ttl_expired",
+            "lease_seconds": 60,
+            "ttl_seconds": 2,
+            "max_concurrent_activities": 1,
+            "create_if_missing": true,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 60,
+            "ttl_span": 2,
+            "closed": false,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "null",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "admitted": false,
+          "error": "Worker session is not active.",
+          "reason": "session_not_active",
+          "status": 409,
+          "protocol_version": "1.20"
+        }
+      },
+      "ttl_create": {
+        "status": 409,
+        "response": {
+          "session": {
+            "session_id": "{id}-wss-ttl",
+            "namespace": "{id}-wss",
+            "connection": null,
+            "queue": "{id}-wss-q1",
+            "requirements": [],
+            "status": "expired",
+            "lease_owner": "{id}-wss-w2",
+            "holder": {
+              "worker_id": "{id}-wss-w2",
+              "task_queue": "{id}-wss-q1",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": "ttl_expired",
+            "lease_seconds": 60,
+            "ttl_seconds": 2,
+            "max_concurrent_activities": 1,
+            "create_if_missing": true,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 60,
+            "ttl_span": 2,
+            "closed": false,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "null",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "admitted": false,
+          "error": "Worker session is terminal and cannot be reacquired.",
+          "reason": "session_reacquire_disallowed",
+          "status": 409,
+          "protocol_version": "1.20"
+        }
+      },
+      "ttl_close": {
+        "status": 200,
+        "response": {
+          "admitted": true,
+          "outcome": "closed",
+          "session": {
+            "session_id": "{id}-wss-ttl",
+            "namespace": "{id}-wss",
+            "connection": null,
+            "queue": "{id}-wss-q1",
+            "requirements": [],
+            "status": "closed",
+            "lease_owner": "{id}-wss-w2",
+            "holder": {
+              "worker_id": "{id}-wss-w2",
+              "task_queue": "{id}-wss-q1",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": null,
+            "lease_seconds": 60,
+            "ttl_seconds": 2,
+            "max_concurrent_activities": 1,
+            "create_if_missing": true,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 60,
+            "ttl_span": 2,
+            "closed": true,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "present",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "activity_task_id": null,
+          "status": 200,
+          "reason": null,
+          "protocol_version": "1.20"
+        }
+      },
+      "held_created": {
+        "status": 201,
+        "response": {
+          "admitted": true,
+          "outcome": "created",
+          "session": {
+            "session_id": "{id}-wss-held",
+            "namespace": "{id}-wss",
+            "connection": null,
+            "queue": "{id}-wss-q2",
+            "requirements": [],
+            "status": "active",
+            "lease_owner": "{id}-wss-w3",
+            "holder": {
+              "worker_id": "{id}-wss-w3",
+              "task_queue": "{id}-wss-q2",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": null,
+            "lease_seconds": 120,
+            "ttl_seconds": 1800,
+            "max_concurrent_activities": 1,
+            "create_if_missing": true,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 120,
+            "ttl_span": 1800,
+            "closed": false,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "null",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "activity_task_id": null,
+          "status": 201,
+          "reason": null,
+          "protocol_version": "1.20"
+        }
+      },
+      "holder_deregistered": 200,
+      "held_orphaned": {
+        "status": 200,
+        "response": {
+          "namespace": "{id}-wss",
+          "session": {
+            "session_id": "{id}-wss-held",
+            "namespace": "{id}-wss",
+            "connection": null,
+            "queue": "{id}-wss-q2",
+            "requirements": [],
+            "status": "orphaned",
+            "lease_owner": "{id}-wss-w3",
+            "holder": {
+              "worker_id": "{id}-wss-w3",
+              "task_queue": null,
+              "status": null,
+              "last_heartbeat_at": null,
+              "is_stale": true
+            },
+            "failure_reason": "worker_heartbeat_stale",
+            "lease_seconds": 120,
+            "ttl_seconds": 1800,
+            "max_concurrent_activities": 1,
+            "create_if_missing": true,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 120,
+            "ttl_span": 1800,
+            "closed": false,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "null",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          }
+        }
+      },
+      "deregistered_create": {
+        "status": 412,
+        "response": {
+          "error": "Worker must be registered before creating a worker session.",
+          "reason": "worker_not_registered",
+          "worker_id": "{id}-wss-w3",
+          "protocol_version": "1.20"
+        }
+      },
+      "orphan_reacquired": {
+        "status": 200,
+        "response": {
+          "admitted": true,
+          "outcome": "reacquired",
+          "session": {
+            "session_id": "{id}-wss-held",
+            "namespace": "{id}-wss",
+            "connection": null,
+            "queue": "{id}-wss-q1",
+            "requirements": [],
+            "status": "active",
+            "lease_owner": "{id}-wss-w2",
+            "holder": {
+              "worker_id": "{id}-wss-w2",
+              "task_queue": "{id}-wss-q1",
+              "status": "active",
+              "last_heartbeat_at": "present",
+              "is_stale": false
+            },
+            "failure_reason": null,
+            "lease_seconds": 120,
+            "ttl_seconds": 1800,
+            "max_concurrent_activities": 1,
+            "create_if_missing": true,
+            "allow_reacquire_after_failure": true,
+            "active_activity_count": 0,
+            "lease_span": 120,
+            "ttl_span": 1800,
+            "closed": false,
+            "times": {
+              "lease_expires_at": "present",
+              "ttl_expires_at": "present",
+              "closed_at": "null",
+              "last_heartbeat_at": "present",
+              "created_at": "present",
+              "updated_at": "present"
+            }
+          },
+          "activity_task_id": null,
+          "status": 200,
+          "reason": null,
+          "protocol_version": "1.20"
+        }
+      },
+      "orphan_queue_mismatch": {
+        "status": 409,
+        "response": {
+          "error": "Worker [{id}-wss-w2] is registered for task queue [{id}-wss-q1], not session queue [{id}-wss-q2].",
+          "reason": "session_queue_mismatch",
+          "worker_id": "{id}-wss-w2",
+          "registered_task_queue": "{id}-wss-q1",
+          "requested_session_queue": "{id}-wss-q2",
+          "protocol_version": "1.20"
+        }
+      },
+      "show_missing": {
+        "status": 404,
+        "response": {
+          "message": "Worker session [{id}-wss-none] not found in namespace [{id}-wss].",
+          "reason": "worker_session_not_found"
+        }
+      },
+      "list_metrics": {
+        "total": 7,
+        "active": 2,
+        "closed": 2,
+        "expired": 3,
+        "failed": 0,
+        "orphaned": 0
+      },
+      "list_namespace": "{id}-wss",
+      "list_sessions": [
+        {
+          "session_id": "{id}-wss-held",
+          "namespace": "{id}-wss",
+          "connection": null,
+          "queue": "{id}-wss-q1",
+          "requirements": [],
+          "status": "active",
+          "lease_owner": "{id}-wss-w2",
+          "holder": {
+            "worker_id": "{id}-wss-w2",
+            "task_queue": "{id}-wss-q1",
+            "status": "active",
+            "last_heartbeat_at": "present",
+            "is_stale": false
+          },
+          "failure_reason": null,
+          "lease_seconds": 120,
+          "ttl_seconds": 1800,
+          "max_concurrent_activities": 1,
+          "create_if_missing": true,
+          "allow_reacquire_after_failure": true,
+          "active_activity_count": 0,
+          "lease_span": 120,
+          "ttl_span": 1800,
+          "closed": false,
+          "times": {
+            "lease_expires_at": "present",
+            "ttl_expires_at": "present",
+            "closed_at": "null",
+            "last_heartbeat_at": "present",
+            "created_at": "present",
+            "updated_at": "present"
+          }
+        },
+        {
+          "session_id": "{id}-wss-optional",
+          "namespace": "{id}-wss",
+          "connection": null,
+          "queue": "{id}-wss-q1",
+          "requirements": [],
+          "status": "expired",
+          "lease_owner": "{id}-wss-w2",
+          "holder": {
+            "worker_id": "{id}-wss-w2",
+            "task_queue": "{id}-wss-q1",
+            "status": "active",
+            "last_heartbeat_at": "present",
+            "is_stale": false
+          },
+          "failure_reason": "lease_expired",
+          "lease_seconds": 2,
+          "ttl_seconds": 1800,
+          "max_concurrent_activities": 1,
+          "create_if_missing": true,
+          "allow_reacquire_after_failure": true,
+          "active_activity_count": 0,
+          "lease_span": 2,
+          "ttl_span": 1800,
+          "closed": false,
+          "times": {
+            "lease_expires_at": "present",
+            "ttl_expires_at": "present",
+            "closed_at": "null",
+            "last_heartbeat_at": "present",
+            "created_at": "present",
+            "updated_at": "present"
+          }
+        },
+        {
+          "session_id": "{id}-wss-s1",
+          "namespace": "{id}-wss",
+          "connection": "c1",
+          "queue": "{id}-wss-q1",
+          "requirements": [],
+          "status": "expired",
+          "lease_owner": "{id}-wss-w1",
+          "holder": {
+            "worker_id": "{id}-wss-w1",
+            "task_queue": "{id}-wss-q1",
+            "status": "active",
+            "last_heartbeat_at": "present",
+            "is_stale": false
+          },
+          "failure_reason": "lease_expired",
+          "lease_seconds": 30,
+          "ttl_seconds": 9999,
+          "max_concurrent_activities": 3,
+          "create_if_missing": false,
+          "allow_reacquire_after_failure": true,
+          "active_activity_count": 0,
+          "lease_span": 5,
+          "ttl_span": 600,
+          "closed": false,
+          "times": {
+            "lease_expires_at": "present",
+            "ttl_expires_at": "present",
+            "closed_at": "null",
+            "last_heartbeat_at": "present",
+            "created_at": "present",
+            "updated_at": "present"
+          }
+        },
+        {
+          "session_id": "{id}-wss-s2",
+          "namespace": "{id}-wss",
+          "connection": null,
+          "queue": "{id}-wss-q1",
+          "requirements": [],
+          "status": "active",
+          "lease_owner": "{id}-wss-w1",
+          "holder": {
+            "worker_id": "{id}-wss-w1",
+            "task_queue": "{id}-wss-q1",
+            "status": "active",
+            "last_heartbeat_at": "present",
+            "is_stale": false
+          },
+          "failure_reason": null,
+          "lease_seconds": 120,
+          "ttl_seconds": 1800,
+          "max_concurrent_activities": 1,
+          "create_if_missing": true,
+          "allow_reacquire_after_failure": true,
+          "active_activity_count": 0,
+          "lease_span": 120,
+          "ttl_span": 1800,
+          "closed": false,
+          "times": {
+            "lease_expires_at": "present",
+            "ttl_expires_at": "present",
+            "closed_at": "null",
+            "last_heartbeat_at": "present",
+            "created_at": "present",
+            "updated_at": "present"
+          }
+        },
+        {
+          "session_id": "{id}-wss-short",
+          "namespace": "{id}-wss",
+          "connection": null,
+          "queue": "{id}-wss-q2",
+          "requirements": [],
+          "status": "closed",
+          "lease_owner": "{id}-wss-w3",
+          "holder": {
+            "worker_id": "{id}-wss-w3",
+            "task_queue": null,
+            "status": null,
+            "last_heartbeat_at": null,
+            "is_stale": true
+          },
+          "failure_reason": null,
+          "lease_seconds": 120,
+          "ttl_seconds": 1800,
+          "max_concurrent_activities": 1,
+          "create_if_missing": true,
+          "allow_reacquire_after_failure": true,
+          "active_activity_count": 0,
+          "lease_span": 120,
+          "ttl_span": 1800,
+          "closed": true,
+          "times": {
+            "lease_expires_at": "present",
+            "ttl_expires_at": "present",
+            "closed_at": "present",
+            "last_heartbeat_at": "present",
+            "created_at": "present",
+            "updated_at": "present"
+          }
+        },
+        {
+          "session_id": "{id}-wss-terminal",
+          "namespace": "{id}-wss",
+          "connection": null,
+          "queue": "{id}-wss-q1",
+          "requirements": [],
+          "status": "expired",
+          "lease_owner": "{id}-wss-w2",
+          "holder": {
+            "worker_id": "{id}-wss-w2",
+            "task_queue": "{id}-wss-q1",
+            "status": "active",
+            "last_heartbeat_at": "present",
+            "is_stale": false
+          },
+          "failure_reason": "lease_expired",
+          "lease_seconds": 2,
+          "ttl_seconds": 1800,
+          "max_concurrent_activities": 1,
+          "create_if_missing": true,
+          "allow_reacquire_after_failure": false,
+          "active_activity_count": 0,
+          "lease_span": 2,
+          "ttl_span": 1800,
+          "closed": false,
+          "times": {
+            "lease_expires_at": "present",
+            "ttl_expires_at": "present",
+            "closed_at": "null",
+            "last_heartbeat_at": "present",
+            "created_at": "present",
+            "updated_at": "present"
+          }
+        },
+        {
+          "session_id": "{id}-wss-ttl",
+          "namespace": "{id}-wss",
+          "connection": null,
+          "queue": "{id}-wss-q1",
+          "requirements": [],
+          "status": "closed",
+          "lease_owner": "{id}-wss-w2",
+          "holder": {
+            "worker_id": "{id}-wss-w2",
+            "task_queue": "{id}-wss-q1",
+            "status": "active",
+            "last_heartbeat_at": "present",
+            "is_stale": false
+          },
+          "failure_reason": null,
+          "lease_seconds": 60,
+          "ttl_seconds": 2,
+          "max_concurrent_activities": 1,
+          "create_if_missing": true,
+          "allow_reacquire_after_failure": true,
+          "active_activity_count": 0,
+          "lease_span": 60,
+          "ttl_span": 2,
+          "closed": true,
+          "times": {
+            "lease_expires_at": "present",
+            "ttl_expires_at": "present",
+            "closed_at": "present",
+            "last_heartbeat_at": "present",
+            "created_at": "present",
+            "updated_at": "present"
+          }
+        }
+      ]
+    }
+  },
+  "contract": "Worker sessions over the worker protocol and their visibility on the control plane, as published Server 2.11.1 serves them: the protocol gates (no header 400, below 1.8 409 worker_sessions_unavailable, above 1.20 400), validation, registration (412) and queue (409) refusals, requirements checked before the session lookup, create (201), reuse and reacquire (200, options the request omits reset to defaults, the TTL deadline never extended, the queue defaulting to the worker's own), heartbeat (lease renewed from now, stored lease unchanged), the per-worker session limit, lease and TTL expiry applied when the session is read, close and already_closed, the reacquire refusals, a deregistered holder orphaned on read, and the namespace list and metrics. Session times are whole seconds, so times are compared as spans. One published defect is bounded: a reacquired session keeps its old failure_reason (renewHeldSession filters out its own null clears); the published value or the intended null is accepted. Embedded applications have no worker protocol."
+}

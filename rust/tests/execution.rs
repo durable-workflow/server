@@ -89,6 +89,8 @@ mod continue_messages;
 mod update_wait;
 #[path = "execution/keyless_condition_waits.rs"]
 mod keyless_condition_waits;
+#[path = "execution/update_validation.rs"]
+mod update_validation;
 #[path = "execution/payload_limits.rs"]
 mod payload_limits;
 #[path = "execution/start_definition.rs"]
@@ -296,6 +298,14 @@ mod activity_cancellation_ack;
 
 #[path = "execution/route_coverage.rs"]
 mod route_coverage;
+#[path = "execution/workflow_poll_requests.rs"]
+mod workflow_poll_requests;
+
+#[path = "execution/worker_poll_fence.rs"]
+mod worker_poll_fence;
+
+#[path = "execution/worker_sessions.rs"]
+mod worker_sessions;
 
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
@@ -1410,6 +1420,10 @@ async fn child_lease_expiry_and_fresh_pool_recovery_preserve_original_parent_res
         .unwrap_or_default()
         + std::time::Duration::from_millis(100);
     tokio::time::sleep(delay).await;
+    // The lease outlasts the 30-second stale window; a registration that has
+    // not heartbeated since cannot poll (`WorkerPollFence::isFresh`).
+    let (status, body) = request(&app, "POST", "/api/worker/heartbeat", json!({"worker_id":"replacement"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         finish_task(&app, &old, commands.clone()).await.0,
         StatusCode::CONFLICT

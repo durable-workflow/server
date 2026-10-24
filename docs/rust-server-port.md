@@ -134,13 +134,18 @@ any other unknown path or method answers PHP's own 404 or 405
   reported as its candidate's failure, with 207.
 - **Worker protocol features.**
   - Worker sessions.
-  - Update validation tasks.
   - Local activities (prepare, checkpoint, recover, heartbeat, control,
     outcome and cancellation acknowledgement).
   - Cancellation scopes.
   - Activity cancellation acknowledgement. (Lease renewal, from Server 2.11,
     is served: `POST /api/worker/activity-tasks/{task}/renew-lease`, with the
     `activity_lease_renewal` capability and the `activity-lease-renewal` fixture.)
+  - (Synchronous update validation is served: the validation task poll,
+    approve and reject routes, the multiplexed workflow poll with
+    `task_kinds`, and validator-gated update admission, with the
+    `update-validation` fixture. Native does not replay a validation task by
+    `poll_request_id` or bind a request id to its task kinds; see
+    `docs/rust-server-port-checkpoints/2026-10-23-update-validation.md`.)
 - **Run operations.**
   - Imports from embedded v2 and Waterline v1.
 - **Other families.**

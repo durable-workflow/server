@@ -39,7 +39,11 @@ async fn register_mixed(app: &Router, namespace: &str, opt_in: bool) {
             "worker_id":"mixed", "task_queue":"test", "runtime":"php",
             "supported_workflow_types":["echo"], "supported_activity_types":["echo_activity"],
             "capabilities":capabilities, "workflow_command_contracts":{"echo":{"queries":["state"],
-                "query_contracts":[{"name":"state","parameters":[]}]}}
+                "query_contracts":[{"name":"state","parameters":[]}]}},
+            // One process throughout, so the poll fence follows the process
+            // rather than whole-second registration times: a replacement in
+            // the next second stays the same worker.
+            "process_metrics":{"host":"mixed-host","process_id":4242,"process_started_at":"2026-10-24T00:00:00Z"}
         }),
     )
     .await;

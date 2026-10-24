@@ -576,14 +576,20 @@ where
         else {
             return Ok(poll_result(None, "stale_worker_registration"));
         };
+        // `WorkerPollFence`, as for workflow and activity polls.
+        let fence = match self.admit_worker_poll(owner, text(&body, "task_queue")?).await? {
+            super::worker_poll_fence::PollAdmission::Stale => return Ok(poll_result(None, "stale_worker_registration")),
+            super::worker_poll_fence::PollAdmission::Fenced(fence) => Some(fence),
+            super::worker_poll_fence::PollAdmission::Unregistered => None,
+        };
         match request_id {
             None => {
-                self.wait_for_query(&body, config, &proof, timeout, deadline, None)
+                self.wait_for_query(&body, config, &proof, fence.as_ref(), timeout, deadline, None)
                     .await
             }
             Some(request_id) => {
                 let keys = self.poll_keys(&body, request_id).await?;
-                self.coordinated_query_poll(&body, config, &proof, timeout, deadline, &keys)
+                self.coordinated_query_poll(&body, config, &proof, fence.as_ref(), timeout, deadline, &keys)
                     .await
             }
         }
@@ -596,6 +602,7 @@ where
         body: &Value,
         config: &QueryTaskConfig,
         proof: &str,
+        fence: Option<&super::worker_poll_fence::WorkerPollFence>,
         timeout: u64,
         deadline: tokio::time::Instant,
         keys: Option<&poll_requests::PollKeys>,
@@ -612,12 +619,17 @@ where
         let mut pace = super::poll_readiness::ReadPace::new();
         loop {
             let wake = self.wake.notified();
+            // `performPoll`: a registration replaced or silenced during the
+            // wait ends the poll empty, leasing nothing.
+            if let Some(fence) = fence
+                && !self.worker_poll_fence_holds(fence, text(body, "worker_id")?).await?
+            {
+                return Ok(poll_result(None, "empty"));
+            }
             if std::mem::take(&mut first) || self.query_poll_ready(body, config, proof, keys).await? {
-                match self.claim_query(body, config, proof, keys).await? {
+                match self.claim_query(body, config, proof, fence, keys).await? {
                     QueryClaim::Task(task) => return Ok(poll_result(Some(task), "leased")),
-                    QueryClaim::StaleWorker => {
-                        return Ok(poll_result(None, "stale_worker_registration"));
-                    }
+                    QueryClaim::StaleWorker => return Ok(poll_result(None, "empty")),
                     QueryClaim::Superseded => return Ok(poll_result(None, "empty")),
                     // `performPoll`: a query held by a ready resume task ends
                     // the poll at once; one held by a leased task waits.
@@ -761,6 +773,7 @@ where
         body: &Value,
         config: &QueryTaskConfig,
         expected_proof: &str,
+        fence: Option<&super::worker_poll_fence::WorkerPollFence>,
         keys: Option<&poll_requests::PollKeys>,
     ) -> Result<QueryClaim> {
         let owner = text(body, "worker_id")?;
@@ -782,6 +795,11 @@ where
         let Some(proof) = proof.filter(|proof| proof == expected_proof) else {
             return Ok(QueryClaim::StaleWorker);
         };
+        if let Some(fence) = fence
+            && !fence.holds::<DB>(Some(&worker), self.worker_stale_after_seconds)?
+        {
+            return Ok(QueryClaim::StaleWorker);
+        }
         if let Some(keys) = keys
             && !Self::poll_request_is_current(&mut tx, keys).await?
         {

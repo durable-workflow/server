@@ -73,6 +73,8 @@ jobs:
 
       - name: Restore the patch cohort's maintenance loop on every path
         run: node --test tests/Unit/PatchCohortMaintenanceTest.mjs
+      - name: Restore PHP's SQLite maintenance loop on every path
+        run: node --test tests/Unit/PhpMaintenanceWindowTest.mjs
 
       - name: Validate embedded Workflow package authority
         run: php scripts/ci/test-workflow-package-authority.php
