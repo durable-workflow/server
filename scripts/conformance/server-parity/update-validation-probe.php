@@ -36,22 +36,43 @@ function finishHttpUpdateValidation(Client $client, array $fixture, string $work
 
         return ['status' => $response->getStatusCode(), 'response' => $decoded];
     };
-    // A request that waits for a validator, sent from a child process.
+    // A request that waits for a validator, sent from a child process. Like
+    // the requests above, it retries only the documented lock-pressure
+    // refusal, which committed nothing (lockPressureOperationRetryDelay);
+    // `seconds` is the answered attempt's own wait, and retries are reported
+    // on stderr.
     $background = static function (string $workflow, string $update, array $body) use ($url, $token): array {
         $child = <<<'PHP'
-[, $url, $token, $path, $body] = $argv;
+[, $url, $token, $path, $body, $retryRule] = $argv;
+require $retryRule;
 $headers = "Accept: application/json\r\nContent-Type: application/json\r\nX-Namespace: default\r\n"
     ."X-Durable-Workflow-Control-Plane-Version: 2\r\n".($token === '' ? '' : "Authorization: Bearer {$token}\r\n");
 $context = stream_context_create(['http' => ['method' => 'POST', 'header' => $headers, 'content' => $body,
     'ignore_errors' => true, 'timeout' => 60]]);
-$started = microtime(true);
-$response = file_get_contents(rtrim($url, '/').'/api/'.$path, false, $context);
-preg_match('#^HTTP/\S+ (\d{3})#', $http_response_header[0] ?? '', $status);
-echo json_encode(['status' => (int) ($status[1] ?? 0), 'response' => json_decode((string) $response, true),
-    'seconds' => microtime(true) - $started]);
+$retries = [];
+$waited = 0.0;
+while (true) {
+    $started = microtime(true);
+    $response = file_get_contents(rtrim($url, '/').'/api/'.$path, false, $context);
+    preg_match('#^HTTP/\S+ (\d{3})#', $http_response_header[0] ?? '', $status);
+    $status = (int) ($status[1] ?? 0);
+    $decoded = json_decode((string) $response, true);
+    $delay = lockPressureOperationRetryDelay('POST', $path, $status, $decoded, count($retries), $waited);
+    if ($delay === null) {
+        break;
+    }
+    $retries[] = $delay;
+    usleep((int) round($delay * 1_000_000));
+    $waited += $delay;
+}
+if ($retries !== []) {
+    fwrite(STDERR, json_encode(['lock_pressure_update_retries' => ['path' => $path, 'delays' => $retries]]).PHP_EOL);
+}
+echo json_encode(['status' => $status, 'response' => $decoded, 'seconds' => microtime(true) - $started]);
 PHP;
         $process = proc_open([PHP_BINARY, '-r', $child, '--', $url, $token ?? '', "workflows/{$workflow}/update/{$update}",
-            json_encode($body, JSON_THROW_ON_ERROR)], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+            json_encode($body, JSON_THROW_ON_ERROR), __DIR__.'/lock-pressure-retry.php'],
+            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
         if (! is_resource($process)) {
             throw new RuntimeException('The waiting update request could not start.');
         }
@@ -66,6 +87,9 @@ PHP;
         $result = json_decode((string) $output, true);
         if (! is_array($result)) {
             throw new RuntimeException('The waiting update request failed: '.trim((string) $errors));
+        }
+        if (trim((string) $errors) !== '') {
+            fwrite(STDERR, (string) $errors);
         }
 
         return $result;
