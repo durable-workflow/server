@@ -16,16 +16,17 @@ maintenance_container="dw-parity-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1
 
 maintenance_state() {
   docker inspect -f '{{.State.Status}}' "$maintenance_container" 2>/dev/null || echo unknown
+  return 0
 }
 
 # Running at each of three checks, one poll interval apart.
 maintenance_stays_running() {
   local check
   for check in 1 2 3; do
-    test "$(maintenance_state)" = running || return 1
+    [[ "$(maintenance_state)" == running ]] || return 1
     sleep "$maintenance_poll_seconds"
   done
-  test "$(maintenance_state)" = running
+  [[ "$(maintenance_state)" == running ]]
 }
 
 # Up to three starts, each followed by the sustained check.
@@ -44,9 +45,10 @@ maintenance_restore() {
 run_without_maintenance() {
   local schedule="$1"
   shift
-  test "$1" = -- && shift
+  local separator="$1"
+  [[ "$separator" == -- ]] && shift
   # The job started this container as "$RESOURCE_SCOPE-php-maintenance".
-  test "$maintenance_container" = "$RESOURCE_SCOPE-php-maintenance"
+  [[ "$maintenance_container" == "$RESOURCE_SCOPE-php-maintenance" ]]
   echo "before: $(maintenance_state)" > "$schedule"
   grep -qx 'before: running' "$schedule"
   trap 'maintenance_restore || true' EXIT
