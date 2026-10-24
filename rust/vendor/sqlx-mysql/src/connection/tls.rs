@@ -97,6 +97,7 @@ impl WithSocket for MapStream {
             sequence_id: self.sequence_id,
             waiting: self.waiting,
             is_tls: true,
+            queued_unanswered: false,
         }
     }
 }

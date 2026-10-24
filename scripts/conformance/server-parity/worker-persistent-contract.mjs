@@ -10,7 +10,8 @@ export function checkSdkPersistentPressure(fixture,state,workflowId,token) {
   assert.equal(p.bounded_transport,true);
   assert.ok(['sqlite','mysql','pgsql'].includes(p.backend));
   assert.ok(Number.isFinite(p.shutdown_elapsed_seconds) && p.shutdown_elapsed_seconds>=8
-    && p.shutdown_elapsed_seconds<=10,'one real SDK budget expires while pressure stays held');
+    && p.shutdown_elapsed_seconds<=10,
+    `one real SDK budget expires while pressure stays held: shutdown took ${p.shutdown_elapsed_seconds} s on ${p.backend}, outside 8-10 s`);
   for(const sample of [p.reference_php_session_before,p.reference_php_session_after]) {
     assert.equal(sample.origin,'php_application_cli_connection');
     assert.equal(sample.driver,p.backend);

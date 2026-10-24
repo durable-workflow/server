@@ -92,8 +92,7 @@ impl MySqlConnection {
         {
             self.inner
                 .stream
-                .send_packet(StmtClose { statement: id })
-                .await?;
+                .queue_packet(StmtClose { statement: id })?;
         }
 
         Ok((id, metadata))
@@ -168,7 +167,7 @@ impl MySqlConnection {
                         })
                         .await?;
 
-                    self.inner.stream.send_packet(StmtClose { statement: id }).await?;
+                    self.inner.stream.queue_packet(StmtClose { statement: id })?;
 
                     MySqlValueFormat::Binary
                 }
@@ -337,8 +336,7 @@ impl<'c> Executor<'c> for &'c mut MySqlConnection {
 
                 self.inner
                     .stream
-                    .send_packet(StmtClose { statement: id })
-                    .await?;
+                    .queue_packet(StmtClose { statement: id })?;
 
                 metadata
             };
@@ -367,8 +365,7 @@ impl<'c> Executor<'c> for &'c mut MySqlConnection {
 
             self.inner
                 .stream
-                .send_packet(StmtClose { statement: id })
-                .await?;
+                .queue_packet(StmtClose { statement: id })?;
 
             let columns = (*metadata.columns).clone();
 
