@@ -15,17 +15,18 @@
 set -euo pipefail
 php_url="$1"
 native_url="$2"
-test -n "$RESOURCE_SCOPE"
-test -n "$DW_PARITY_RUNNER_REVISION"
+[[ -n "$RESOURCE_SCOPE" ]]
+[[ -n "$DW_PARITY_RUNNER_REVISION" ]]
 fixture=tests/Fixtures/ServerParity/update-validation.json
 image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
 . scripts/conformance/server-parity/php-maintenance-window.sh
 
 http_record() {
+  local url="$1" target="$2"
   docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
     -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
     -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
-    --mode http --url "$1" --target "$2" --output "/evidence/update-validation-$2.json" --fixture "$fixture"
+    --mode http --url "$url" --target "$target" --output "/evidence/update-validation-$target.json" --fixture "$fixture"
 }
 
 run_without_maintenance parity-evidence/update-validation-maintenance-schedule.txt -- http_record "$php_url" php
