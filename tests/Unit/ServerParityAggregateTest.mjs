@@ -9,7 +9,7 @@ import {execFileSync, spawnSync} from 'node:child_process';
 import {copyFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
-import {matchingFiles, patternRegExp, pushPathPatterns} from '../../scripts/conformance/server-parity/changes.mjs';
+import {matchingFiles, nulSeparatedPaths, patternRegExp, pushPathPatterns} from '../../scripts/conformance/server-parity/changes.mjs';
 import {decide} from '../../scripts/conformance/server-parity/aggregate.mjs';
 
 const workflowPath = '.github/workflows/server-parity.yml';
@@ -58,6 +58,31 @@ test('path patterns follow GitHub filter semantics for the forms in use', () => 
   assert.ok(!patternRegExp('tests/Unit/ServerParityRunnerTest.mjs').test('tests/Unit/ServerParityRunnerTestXmjs'));
   assert.throws(() => patternRegExp('docs/{a,b}/**'), /Unsupported path filter pattern/);
   assert.deepEqual(matchingFiles(['rust/**', 'docs/x.md'], ['README.md', 'rust/Cargo.toml', 'docs/x.md']), ['rust/Cargo.toml', 'docs/x.md']);
+});
+
+test('path patterns accept no regular-expression syntax and match every other character literally', () => {
+  for (const pattern of ['rust\\**', 'rust/\\d', 'a+b', 'a?b', 'a(b)', 'a[b]', 'a|b', 'a^b', 'a$b', 'a{1}', 'docs/{a,b}/**', 'a b', '']) {
+    assert.throws(() => patternRegExp(pattern), /Unsupported path filter pattern/, JSON.stringify(pattern));
+  }
+  assert.ok(!patternRegExp('a.b').test('aXb'));
+  assert.ok(patternRegExp('a-b/c_d.e').test('a-b/c_d.e'));
+  assert.ok(!patternRegExp('a-b').test('a+b'));
+});
+
+test('path patterns match file names holding newlines and tabs', () => {
+  assert.ok(patternRegExp('rust/**').test('rust/hidden\nfixture.rs'));
+  assert.ok(patternRegExp('rust/**').test('rust/a\n/b\tc.rs'));
+  assert.ok(patternRegExp('scripts/conformance/server-parity*').test('scripts/conformance/server-parity\n.sh'));
+  assert.ok(!patternRegExp('scripts/conformance/server-parity*').test('scripts/conformance/server-parity\n/run.mjs'));
+  assert.ok(!patternRegExp('rust/**').test('docs/x\nrust/y'));
+});
+
+test('the file list splits only on NUL and refuses what it cannot decode', () => {
+  assert.deepEqual(nulSeparatedPaths(Buffer.from('README.md\0rust/hidden\nfixture.rs\0 lead\ttab \0')),
+    ['README.md', 'rust/hidden\nfixture.rs', ' lead\ttab ']);
+  assert.deepEqual(nulSeparatedPaths(Buffer.alloc(0)), []);
+  assert.throws(() => nulSeparatedPaths(Buffer.from('rust/a.rs')), /does not end with NUL/);
+  assert.throws(() => nulSeparatedPaths(Buffer.from([0x72, 0xff, 0])), TypeError);
 });
 
 test('the fixture jobs run only through the classifier and the result waits for all of them', () => {
@@ -192,6 +217,18 @@ function classify(root, env) {
 for (const [label, change, expected] of [
   ['a documentation-only change skips the fixtures', ({write}) => write('docs/note.md', 'x\n'), 'run=false'],
   ['a Rust change runs the fixtures', ({write}) => write('rust/src/lib.rs', 'x\n'), 'run=true'],
+  ['a Rust file whose name holds a newline runs the fixtures', ({write}) => write('rust/hidden\nfixture.rs', 'x\n'), 'run=true'],
+  ['a Rust file whose name holds a tab runs the fixtures', ({write}) => write('rust/hidden\tfixture.rs', 'x\n'), 'run=true'],
+  ['a fixture whose name holds a newline runs the fixtures', ({write}) => write('tests/Fixtures/ServerParity/a\nb.json', '{}\n'), 'run=true'],
+  ['a documentation file whose name holds a newline still skips', ({write}) => write('docs/a\nrust/b.md', 'x\n'), 'run=false'],
+  ['a file name that is not UTF-8 runs the fixtures', ({root}) => {
+    mkdirSync(join(root, 'docs'), {recursive: true});
+    writeFileSync(Buffer.concat([Buffer.from(join(root, 'docs/')), Buffer.from([0xff, 0x2e, 0x6d, 0x64])]), 'x\n');
+  }, 'run=true'],
+  ['an unsupported push path pattern runs the fixtures', ({write}) => {
+    write('docs/note.md', 'x\n');
+    write(workflowPath, workflowText.replace('    paths:\n', '    paths:\n      - docs/{a,b}/**\n'));
+  }, 'run=true'],
   ['moving a fixture out of the corpus runs the fixtures', ({root, write}) => {
     write('docs/.keep', '');
     renameSync(join(root, 'tests/Fixtures/ServerParity/case.json'), join(root, 'docs/case.json'));

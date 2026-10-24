@@ -35,11 +35,28 @@ export function pushPathPatterns(workflowText) {
 }
 
 // GitHub's filter syntax, limited to the forms this workflow uses:
-// `**` matches any characters, `*` matches any characters except `/`.
+// `**` matches any characters, `*` matches any characters except `/`. Every
+// other character is literal, and file names may hold any character but NUL,
+// newlines included.
 export function patternRegExp(pattern) {
   if (!/^[A-Za-z0-9._/*-]+$/.test(pattern)) throw new Error(`Unsupported path filter pattern: ${pattern}`);
-  const body = pattern.split('**').map(part => part.split('*').map(text => text.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')).join('[^/]*')).join('.*');
+  const literal = text => text.replace(/[\\^$.*+?()[\]{}|\/-]/g, '\\$&');
+  const body = pattern.split('**').map(part => part.split('*').map(literal).join('[^/]*')).join('[^]*');
   return new RegExp(`^${body}$`);
+}
+
+// `git diff --name-only -z` output: complete paths split only on NUL, never
+// quoted. A path that is not UTF-8 cannot be classified.
+export function nulSeparatedPaths(bytes) {
+  const decoder = new TextDecoder('utf-8', {fatal: true});
+  const paths = [];
+  let start = 0;
+  for (let index = bytes.indexOf(0); index >= 0; index = bytes.indexOf(0, start)) {
+    paths.push(decoder.decode(bytes.subarray(start, index)));
+    start = index + 1;
+  }
+  if (start !== bytes.length) throw new Error('The file list does not end with NUL');
+  return paths;
 }
 
 export function matchingFiles(patterns, files) {
@@ -49,19 +66,21 @@ export function matchingFiles(patterns, files) {
 
 function classify({event, headSha, workflowPath}) {
   if (event !== 'pull_request') return {run: true, reason: `${event} runs every fixture job`};
-  // The checkout is the pull request's merge commit: base, then head.
-  const git = (...args) => execFileSync('git', args, {encoding: 'utf8'}).trim();
+  // The checkout is the pull request's merge commit: base, then head. Git runs
+  // without a shell, and its file list is read as bytes.
+  const git = (...args) => execFileSync('git', args);
   let files;
+  let matched;
   try {
-    const parents = git('rev-list', '--parents', '-n', '1', 'HEAD').split(' ');
+    const parents = git('rev-list', '--parents', '-n', '1', 'HEAD').toString('utf8').trim().split(' ');
     if (parents.length !== 3 || parents[2] !== headSha) throw new Error('HEAD is not this pull request\'s merge commit');
-    files = git('diff', '--name-only', '--no-renames', 'HEAD^1', 'HEAD').split('\n').filter(Boolean);
+    files = nulSeparatedPaths(git('diff', '--name-only', '-z', '--no-renames', 'HEAD^1', 'HEAD'));
+    matched = matchingFiles(pushPathPatterns(readFileSync(workflowPath, 'utf8')), files);
   } catch (error) {
     return {run: true, reason: `changes could not be classified (${error.message}); running every fixture job`};
   }
-  const matched = matchingFiles(pushPathPatterns(readFileSync(workflowPath, 'utf8')), files);
   return matched.length > 0
-    ? {run: true, reason: `fixture inputs changed: ${matched.join(', ')}`}
+    ? {run: true, reason: `fixture inputs changed: ${matched.map(file => JSON.stringify(file)).join(', ')}`}
     : {run: false, reason: `no fixture input among ${files.length} changed files`};
 }
 
