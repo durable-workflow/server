@@ -287,6 +287,9 @@ mod external_payloads;
 #[path = "execution/trace_carriers.rs"]
 mod trace_carriers;
 
+#[path = "execution/route_coverage.rs"]
+mod route_coverage;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {
