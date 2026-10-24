@@ -389,16 +389,7 @@ final class WorkflowUpdateValidationTaskBroker
     private function claim(string $namespace, WorkerRegistration $worker, array $fence): array
     {
         $claim = function () use ($namespace, $worker, $fence): array {
-            if (! WorkerPollFence::isCurrentForUpdate($fence)) {
-                return ['task' => null, 'poll_status' => 'stale_worker_registration'];
-            }
-
-            // The existing fence holds the row lock through this claim. A new
-            // registration can retain every routing and process identity field.
-            $current = WorkerRegistration::query()
-                ->where('namespace', $worker->namespace)->where('worker_id', $worker->worker_id)->first();
-            $incarnation = is_string($current?->registration_token) ? hash('sha256', $current->registration_token) : null;
-            if ($fence['registration_incarnation'] !== $incarnation) {
+            if (! $this->workerFenceIsCurrent($worker, $fence)) {
                 return ['task' => null, 'poll_status' => 'stale_worker_registration'];
             }
 
@@ -439,6 +430,22 @@ final class WorkflowUpdateValidationTaskBroker
         return app(WorkerProtocolMutationRetrier::class)->run(
             fn (): array => DB::transaction($claim),
         );
+    }
+
+    /** @param array<string, mixed> $fence */
+    private function workerFenceIsCurrent(WorkerRegistration $worker, array $fence): bool
+    {
+        if (! WorkerPollFence::isCurrentForUpdate($fence)) {
+            return false;
+        }
+
+        // The existing fence holds the row lock through this claim. A new
+        // registration can retain every routing and process identity field.
+        $token = WorkerRegistration::query()
+            ->where('namespace', $worker->namespace)->where('worker_id', $worker->worker_id)->value('registration_token');
+        $incarnation = is_string($token) ? hash('sha256', $token) : null;
+
+        return $fence['registration_incarnation'] === $incarnation;
     }
 
     /** @return array<string, mixed> */
