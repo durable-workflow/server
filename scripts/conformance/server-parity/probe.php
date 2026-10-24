@@ -433,6 +433,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $activityLeaseRenewal = isset($fixture['activity_lease_renewal']) ? finishHttpActivityLeaseRenewal($client, $fixture, $workflowId, $url) : null;
     $workflowPollRequest = isset($fixture['workflow_poll_request']) ? finishHttpWorkflowPollRequest($client, $fixture, $workflowId, $url) : null;
     $workerPollFence = isset($fixture['worker_poll_fence']) ? finishHttpWorkerPollFence($client, $fixture, $workflowId, $url) : null;
+    $workerSessions = isset($fixture['worker_sessions']) ? finishHttpWorkerSessions($client, $fixture, $workflowId, $url) : null;
     $serviceCatalog = isset($fixture['service_catalog']) ? finishHttpServiceCatalog($client, $fixture, $workflowId, $url) : null;
     $systemMetrics = isset($fixture['system_metrics']) ? finishHttpSystemMetrics($client, $fixture, $workflowId, $url) : null;
     $operatorDashboardTypes = isset($fixture['operator_dashboard_types']) ? finishHttpOperatorDashboardTypes($client, $fixture, $workflowId, $url) : null;
@@ -544,6 +545,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'activity_lease_renewal' => $activityLeaseRenewal,
         'workflow_poll_request' => $workflowPollRequest,
         'worker_poll_fence' => $workerPollFence,
+        'worker_sessions' => $workerSessions,
         'service_catalog' => $serviceCatalog,
         'system_metrics' => $systemMetrics,
         'operator_dashboard_types' => $operatorDashboardTypes,
@@ -859,6 +861,7 @@ try {
     require __DIR__.'/activity-lease-renewal-probe.php';
     require __DIR__.'/workflow-poll-request-probe.php';
     require __DIR__.'/worker-poll-fence-probe.php';
+    require __DIR__.'/worker-sessions-probe.php';
     require __DIR__.'/service-catalog-probe.php';
     require __DIR__.'/system-metrics-probe.php';
     require __DIR__.'/operator-dashboard-types-probe.php';
@@ -1034,6 +1037,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['worker_poll_fence'])) {
         $observation['worker_poll_fence'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
+    }
+    if ($mode === 'embedded' && isset($fixture['worker_sessions'])) {
+        $observation['worker_sessions'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
     }
     if ($mode === 'embedded' && isset($fixture['service_catalog'])) {
         $observation['service_catalog'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_service_catalog'];
