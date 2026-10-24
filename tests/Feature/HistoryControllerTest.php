@@ -2,12 +2,15 @@
 
 namespace Tests\Feature;
 
+use App\Support\HistoryPageToken;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Str;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
 
 class HistoryControllerTest extends TestCase
 {
@@ -68,6 +71,62 @@ class HistoryControllerTest extends TestCase
             $sequences,
             collect($sequences)->sort()->values()->all(),
         );
+    }
+
+    public function test_history_and_export_read_a_stored_rejected_outcome_without_mutating_the_run(): void
+    {
+        Queue::fake();
+        $this->createNamespace('default');
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-history-rejected-outcome',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'input' => ['Ada'],
+        ], $this->apiHeaders())->assertCreated();
+        $runId = (string) $start->json('run_id');
+        $sequence = (int) WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->max('sequence') + 1;
+        $payload = [
+            'activity_execution_id' => 'activity-reader',
+            'activity_attempt_id' => 'attempt-reader',
+            'attempt_number' => 2,
+            'lease_owner' => 'old-worker',
+            'outcome' => 'completed',
+            'reason' => 'lease_expired',
+            'observed_at' => now()->toIso8601String(),
+        ];
+
+        // Seed an existing fact directly. Reader adoption does not enable its producer.
+        WorkflowHistoryEvent::query()->insert([
+            'id' => (string) Str::ulid(),
+            'workflow_run_id' => $runId,
+            'sequence' => $sequence,
+            'event_type' => 'ActivityOutcomeRejected',
+            'payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+            'recorded_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        WorkflowRun::query()->whereKey($runId)->update(['last_history_sequence' => $sequence]);
+        $before = WorkflowRun::query()->findOrFail($runId)->getRawOriginal();
+        $eventCount = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count();
+        $historyUrl = "/api/workflows/wf-history-rejected-outcome/runs/{$runId}/history";
+        $pageToken = HistoryPageToken::encode($sequence - 1);
+
+        $this->getJson($historyUrl.'?page_size=1&next_page_token='.$pageToken, $this->apiHeaders())
+            ->assertOk()
+            ->assertJsonCount(1, 'events')
+            ->assertJsonPath('events.0.sequence', $sequence)
+            ->assertJsonPath('events.0.event_type', 'ActivityOutcomeRejected')
+            ->assertJsonPath('events.0.payload', $payload)
+            ->assertJsonPath('next_page_token', null);
+        $export = $this->getJson($historyUrl.'/export', $this->apiHeaders())->assertOk();
+        $event = collect($export->json('history_events'))->firstWhere('sequence', $sequence);
+        $this->assertSame('ActivityOutcomeRejected', $event['type'] ?? null);
+        $this->assertSame($payload, $event['payload'] ?? null);
+        $timelineEntry = collect($export->json('timeline'))->firstWhere('sequence', $sequence);
+        $this->assertSame('ActivityOutcomeRejected', $timelineEntry['type'] ?? null);
+        $this->assertSame('Rejected completed outcome from activity attempt 2: lease_expired.', $timelineEntry['summary'] ?? null);
+        $this->assertSame($before, WorkflowRun::query()->findOrFail($runId)->getRawOriginal());
+        $this->assertSame($eventCount, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count());
     }
 
     public function test_it_surfaces_run_compatibility_on_history_response_and_start_event(): void
