@@ -3,10 +3,7 @@ name: Public Boundary
 on:
   pull_request:
   merge_group:
-  # A merge-queue branch is scanned by its merge_group run, over the exact range.
   push:
-    branches-ignore:
-      - gh-readonly-queue/**
   workflow_dispatch:
 
 permissions:
