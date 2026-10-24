@@ -1,7 +1,7 @@
 // The Actions checks a GitHub merge queue waits for must run on merge_group.
-// Source-only: enabling the queue is a separate repository setting, and its
-// Sonar gate and terminal Shared Server fixtures result are separate
-// prerequisites (Server #725).
+// Source-only: enabling the queue is a separate repository setting. Its Sonar
+// gate is a separate prerequisite (Server #725); the terminal Shared Server
+// fixtures result is covered by ServerParityAggregateTest.mjs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';

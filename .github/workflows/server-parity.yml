@@ -1,62 +1,9 @@
 name: Shared Server fixtures
 
 on:
+  # Pull requests run without a path filter so that the terminal result always
+  # reports. The `changes` job applies the push path list below to them.
   pull_request:
-    paths:
-      - .github/workflows/server-parity.yml
-      - scripts/conformance/server-parity*
-      - scripts/conformance/server-parity/**
-      - tests/Fixtures/ServerParity/**
-      - tests/Fixtures/ServerParityBaselines/**
-      - tests/Fixtures/ServerParityNormalization/**
-      - tests/Unit/ServerParityRunnerTest.mjs
-      - tests/Unit/ServerParityArtifactSummaryTest.mjs
-      - tests/Unit/ServerParityQueryObserverTest.mjs
-      - tests/Unit/ServerParityCodecDeadlineLoadTest.mjs
-      - tests/Unit/ServerParityCooperativeContractTest.mjs
-      - tests/Unit/ServerParityChildCancellationContractTest.mjs
-      - tests/Support/ServerParityChildCancellationObservation.mjs
-      - tests/Unit/ServerParityScheduleContractTest.mjs
-      - tests/Support/ServerParityScheduleObservation.mjs
-      - tests/Fixtures/ServerParityPending/**
-      - tests/Fixtures/ServerParityExpected/**
-      - tests/Fixtures/ServerParityProfiles/**
-      - tests/Unit/ServerParityVisibilityContractTest.mjs
-      - tests/Unit/ServerParityAdmissionContractTest.mjs
-      - tests/Unit/ServerParityRoleTokenContractTest.mjs
-      - tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs
-      - tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs
-      - tests/Unit/ServerParitySearchAttributeContractTest.mjs
-      - tests/Unit/ServerParityStorageTestContractTest.mjs
-      - tests/Unit/ServerParitySchedulePoliciesContractTest.mjs
-      - tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs
-      - tests/Unit/ServerParityScheduleCatalogContractTest.mjs
-      - tests/Unit/ServerParityWorkerListingContractTest.mjs
-      - tests/Unit/ServerParityWorkerReplacementContractTest.mjs
-      - tests/Unit/ServerParityOperatorMetricsContractTest.mjs
-      - tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs
-      - tests/Unit/ServerParityServiceCatalogContractTest.mjs
-      - tests/Unit/ServerParitySystemMetricsContractTest.mjs
-      - tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs
-      - tests/Unit/ServerParityPrometheusMetricsContractTest.mjs
-      - tests/Unit/ServerParityPayloadCleanupContractTest.mjs
-      - tests/Unit/ServerParityRepairPassContractTest.mjs
-      - tests/Unit/ServerParityClusterInfoContractTest.mjs
-      - tests/Unit/ServerParityNamespaceDeleteContractTest.mjs
-      - tests/Unit/ServerParityUpdateValidationContractTest.mjs
-      - tests/Unit/ServerParityWaitingHistoryContractTest.mjs
-      - tests/Unit/ServerParityTaskRetryContractTest.mjs
-      - tests/Unit/ServerParityPublishedPatchContractTest.mjs
-      - tests/Unit/ServerParityPublishedPatchTransportTest.mjs
-      - tests/Unit/ServerParityLegacyMarkerContractTest.mjs
-      - tests/Unit/ServerParityRangeRepairContractTest.mjs
-      - tests/Unit/ServerParitySdkDirectionContractTest.mjs
-      - tests/Unit/ServerParitySdkChildDirectionContractTest.mjs
-      - tests/Unit/ServerParitySdkTimerAuthorContractTest.mjs
-      - tests/Unit/ServerParitySdkSignalDirectionContractTest.mjs
-      - tests/Support/ServerParityAdmissionObservation.mjs
-      - tests/Support/ServerParityVisibilityObservation.mjs
-      - rust/**
   push:
     branches: [main]
     paths:
@@ -134,7 +81,27 @@ env:
   DW_PARITY_CONTINUE_MEMO_UPSERTS: '1'
 
 jobs:
+  changes:
+    name: Shared Server fixture inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.classify.outputs.run }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Decide whether fixture inputs changed
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/conformance/server-parity/changes.mjs >> "$GITHUB_OUTPUT"
+
   published-sdk-adapters:
+    needs: changes
+    if: ${{ needs.changes.outputs.run == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -1883,3 +1850,30 @@ jobs:
           path: parity-summary
           retention-days: 1
           if-no-files-found: error
+
+  # The one Shared Server fixtures result. It always runs, including after a
+  # failure or cancellation, and passes only when every fixture job passed, or
+  # when no fixture input changed and every fixture job was skipped for that
+  # reason.
+  result:
+    name: Shared Server fixtures result
+    needs:
+      - changes
+      - published-sdk-adapters
+      - codec-deadline-health
+      - mysql-execution
+      - postgres-storage
+      - execution-and-codec
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          sparse-checkout: scripts/conformance/server-parity/aggregate.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Require every fixture job to pass, or every one to be skipped for unchanged inputs
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: node scripts/conformance/server-parity/aggregate.mjs
