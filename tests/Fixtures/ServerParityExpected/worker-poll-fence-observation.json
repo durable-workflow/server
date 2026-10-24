@@ -1,0 +1,119 @@
+{
+  "applicable": true,
+  "namespace": "pr1-worker-poll-fence-wpf",
+  "workflow_control": {
+    "status": 200,
+    "poll_status": "leased",
+    "own_run": true,
+    "attempt": 1,
+    "reason": null
+  },
+  "workflow_heartbeat": 200,
+  "workflow_after_heartbeat": {
+    "status": 200,
+    "poll_status": "stale_worker_registration",
+    "own_run": null,
+    "attempt": null,
+    "reason": null
+  },
+  "workflow_next_after_heartbeat": {
+    "status": 200,
+    "poll_status": "leased",
+    "own_run": true,
+    "attempt": 1,
+    "reason": null
+  },
+  "workflow_after_replacement": {
+    "status": 200,
+    "poll_status": "stale_worker_registration",
+    "own_run": null,
+    "attempt": null,
+    "reason": null
+  },
+  "workflow_next_after_replacement": {
+    "status": 200,
+    "poll_status": "leased",
+    "own_run": true,
+    "attempt": 1,
+    "reason": null
+  },
+  "activity_control_scheduled": 200,
+  "activity_control": {
+    "status": 200,
+    "poll_status": "leased",
+    "own_run": true,
+    "attempt": 1,
+    "reason": null
+  },
+  "activity_heartbeat": 200,
+  "activity_heartbeat_scheduled": 200,
+  "activity_after_heartbeat": {
+    "status": 200,
+    "poll_status": "stale_worker_registration",
+    "own_run": null,
+    "attempt": null,
+    "reason": null
+  },
+  "activity_next_after_heartbeat": {
+    "status": 200,
+    "poll_status": "leased",
+    "own_run": true,
+    "attempt": 1,
+    "reason": null
+  },
+  "activity_replaced_scheduled": 200,
+  "activity_after_replacement": {
+    "status": 200,
+    "poll_status": "stale_worker_registration",
+    "own_run": null,
+    "attempt": null,
+    "reason": null
+  },
+  "activity_next_after_replacement": {
+    "status": 200,
+    "poll_status": "leased",
+    "own_run": true,
+    "attempt": 1,
+    "reason": null
+  },
+  "process_heartbeat": 200,
+  "process_after_heartbeat": {
+    "status": 200,
+    "poll_status": "leased",
+    "own_run": true,
+    "attempt": 1,
+    "reason": null
+  },
+  "process_after_replacement": {
+    "status": 200,
+    "poll_status": "stale_worker_registration",
+    "own_run": null,
+    "attempt": null,
+    "reason": null
+  },
+  "process_next_after_replacement": {
+    "status": 200,
+    "poll_status": "leased",
+    "own_run": true,
+    "attempt": 1,
+    "reason": null
+  },
+  "recovery_leased": {
+    "status": 200,
+    "poll_status": "leased",
+    "own_run": true,
+    "attempt": 1,
+    "reason": null
+  },
+  "recovery_after_registration": {
+    "status": 200,
+    "poll_status": "leased",
+    "own_run": true,
+    "attempt": 2,
+    "reason": null
+  },
+  "recovery_old_completion": {
+    "status": 409,
+    "reason": "workflow_task_attempt_mismatch"
+  }
+}

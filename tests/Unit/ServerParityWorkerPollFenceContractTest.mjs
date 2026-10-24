@@ -1,0 +1,63 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import test from 'node:test';
+import {checkWorkerPollFence} from '../../scripts/conformance/server-parity/worker-poll-fence-contract.mjs';
+
+const fixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/worker-poll-fence.json', import.meta.url)));
+// The observation published Server 2.11.1 returned for this fixture.
+const recorded = JSON.parse(readFileSync(
+  new URL('../Fixtures/ServerParityExpected/worker-poll-fence-observation.json', import.meta.url)));
+const id = 'pr1-worker-poll-fence';
+const observation = (change = () => {}) => {
+  const state = structuredClone(recorded);
+  change(state);
+  return {mode: 'http', worker_poll_fence: state};
+};
+const check = state => checkWorkerPollFence(fixture, state, id);
+const leased = (attempt = 1) => ({status: 200, poll_status: 'leased', own_run: true, attempt, reason: null});
+const empty = {status: 200, poll_status: 'empty', own_run: null, attempt: null, reason: null};
+
+test('the published 2.11.1 recording satisfies the contract', () => {
+  assert.deepStrictEqual(check(observation()), {scope: 'worker_poll_fence'});
+});
+
+test('embedded applications are explicitly inapplicable', () => {
+  assert.deepStrictEqual(check({mode: 'embedded', worker_poll_fence:
+    {applicable: false, reason: 'embedded_has_no_worker_protocol'}}), {scope: 'worker_poll_fence'});
+});
+
+for (const [label, change, message] of [
+  // Divergences a server without the fence shows.
+  ['a held workflow poll that leases after a re-registration', state => {
+    state.workflow_after_replacement = leased();
+    state.workflow_next_after_replacement = empty;
+  }, /workflow: a same-ID re-registration ends the held poll as stale/],
+  ['a held activity poll that leases after a re-registration', state => {
+    state.activity_after_replacement = leased();
+    state.activity_next_after_replacement = empty;
+  }, /activity: a same-ID re-registration ends the held poll as stale/],
+  ['a held poll that ignores a heartbeat', state => {
+    state.workflow_after_heartbeat = leased();
+    state.workflow_next_after_heartbeat = empty;
+  }, /workflow: a heartbeat ends the held poll as stale/],
+  ['a fence that ends a poll on a heartbeat from the same process', state => {
+    state.process_after_heartbeat = {...empty, poll_status: 'stale_worker_registration'};
+  }, /a heartbeat from the same process keeps the held poll/],
+  ['a fence that ignores a new process', state => {
+    state.process_after_replacement = leased();
+  }, /a re-registration from a new process ends the held poll as stale/],
+  ['a re-registration that keeps the old lease', state => {
+    state.recovery_after_registration = empty;
+    state.recovery_old_completion = {status: 200, reason: null};
+  }, /hands it out again at the next attempt/],
+  ['an old attempt that completes after the re-registration', state => {
+    state.recovery_old_completion = {status: 200, reason: null};
+  }, /the old attempt cannot complete it/],
+  ['a stale answer that is not a 200', state => {
+    state.activity_after_heartbeat = {...state.activity_after_heartbeat, status: 409};
+  }, /activity: a heartbeat ends the held poll as stale/],
+]) {
+  test(`the contract refuses ${label}`, () => {
+    assert.throws(() => check(observation(change)), message);
+  });
+}
