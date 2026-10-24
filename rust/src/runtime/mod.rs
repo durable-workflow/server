@@ -61,6 +61,7 @@ mod input_envelope;
 mod history_presentation;
 mod http;
 mod laravel_validation;
+mod local_activities;
 mod memo_json;
 mod memo_limits;
 mod standalone_activities;

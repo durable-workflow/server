@@ -174,6 +174,11 @@ where
         ) {
             return Ok(());
         }
+        // A recorded local activity opens no wait: it ran inside the
+        // workflow task that reports it.
+        if payload["local_activity"] == true {
+            return Ok(());
+        }
         let activity_id = super::text(payload, "activity_execution_id")?;
         let wait_id = format!("activity:{activity_id}");
         if event_type == "ActivityRetryScheduled" {
