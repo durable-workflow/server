@@ -15,6 +15,55 @@ pub(super) struct PreparedControlArguments {
     pub(super) value: String,
     pub(super) command: String,
 }
+/// The events PHP's Workflow package records with the task model in hand,
+/// which therefore carry the task's snapshot.
+const TASK_SNAPSHOT_EVENTS: &[&str] = &[
+    "ActivityCompleted",
+    "ActivityFailed",
+    "ActivityHeartbeatRecorded",
+    "ActivityRetryScheduled",
+    "ActivityScheduled",
+    "ActivityStarted",
+    "ActivityTimedOut",
+    "ChildRunStarted",
+    "ChildWorkflowScheduled",
+    "ConditionWaitOpened",
+    "ConditionWaitSatisfied",
+    "ConditionWaitTimedOut",
+    "FailureHandled",
+    "MemoUpserted",
+    "MessageCursorAdvanced",
+    "SearchAttributesUpserted",
+    "SelectionOperationCancelled",
+    "SideEffectRecorded",
+    "SignalApplied",
+    "SignalWaitOpened",
+    "TimerFired",
+    "TimerScheduled",
+    "VersionMarkerRecorded",
+    "WorkflowCompleted",
+    "WorkflowContinuedAsNew",
+    "WorkflowFailed",
+    "WorkflowTimedOut",
+];
+/// Describe's command journal. Each backend passes its exact, case-sensitive
+/// test for native's stored-reference prefix
+/// (`external_resolution::STORED_PREFIX`) over the column that holds a
+/// command's input: a signal's in its signal record (`s.arguments`), a start's
+/// in the command row (`c.payload`). Other commands keep no stored reference.
+/// Only a stored reference is read; inline payloads are not.
+macro_rules! run_commands_sql {
+    ($signal:literal, $start:literal) => {
+        concat!(
+            "SELECT c.id,c.command_sequence,c.command_type,c.target_scope,c.requested_workflow_run_id,c.resolved_workflow_run_id,c.source,c.status,c.outcome,c.rejection_reason,c.workflow_type,c.workflow_class,c.accepted_at,c.applied_at,c.rejected_at,c.context,s.signal_name,CASE WHEN c.command_type='signal' AND ",
+            $signal,
+            " THEN s.arguments WHEN c.command_type='start' AND ",
+            $start,
+            " THEN c.payload END AS stored_payload FROM workflow_commands c LEFT JOIN workflow_signal_records s ON s.workflow_command_id=c.id WHERE c.workflow_run_id=$1 AND c.workflow_instance_id=$2 ORDER BY c.command_sequence,c.created_at,c.id"
+        )
+    };
+}
+pub(super) use run_commands_sql;
 /// The runtime-owned message-stream delivery signal (`WorkflowStub::MESSAGE_STREAM_RUNTIME_SIGNAL`).
 const MESSAGE_STREAM_SIGNAL: &str = "__durable_workflow_message_stream";
 pub(super) const TASK_CANDIDATES_SQL: &str = "SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ORDER BY t.priority,t.available_at,t.id LIMIT 100";
@@ -522,18 +571,30 @@ where
         // refused signals which intentionally have no workflow history event.
         // Select metadata only: large customer payloads are never decoded or
         // copied merely to display the command's target and admission result.
-        let command_rows = Self::query("SELECT c.id,c.command_sequence,c.command_type,c.target_scope,c.requested_workflow_run_id,c.resolved_workflow_run_id,c.source,c.status,c.outcome,c.rejection_reason,c.workflow_type,c.workflow_class,c.accepted_at,c.applied_at,c.rejected_at,c.context,s.signal_name FROM workflow_commands c LEFT JOIN workflow_signal_records s ON s.workflow_command_id=c.id WHERE c.workflow_run_id=$1 AND c.workflow_instance_id=$2 ORDER BY c.command_sequence,c.created_at,c.id")
+        // Only a stored external reference is read, to tell whether its preview
+        // is omitted; inline payloads stay unread.
+        let command_rows = Self::query(DB::RUN_COMMANDS_SQL)
             .bind(DB::string(&row, "id")?).bind(workflow_id).fetch_all(&self.pool).await?;
         let mut commands = Vec::with_capacity(command_rows.len());
         for command in command_rows {
+            // `oversizedPayloadPreview` over the stored reference's envelope;
+            // an omitted preview also omits the target name, as PHP does.
+            let omitted = DB::optional_string(&command, "stored_payload")?
+                .as_deref()
+                .and_then(super::external_resolution::stored_envelope)
+                .is_some_and(|envelope| super::run_describe::oversized(&envelope));
+            let target_name = DB::optional_string(&command, "signal_name")?.filter(|_| !omitted);
             let mut public = json!({"id":DB::string(&command,"id")?,"sequence":DB::optional_number(&command,"command_sequence")?,
                 "type":DB::string(&command,"command_type")?,"target_scope":DB::string(&command,"target_scope")?,
                 "requested_run_id":DB::optional_string(&command,"requested_workflow_run_id")?,
                 "resolved_run_id":DB::optional_string(&command,"resolved_workflow_run_id")?,
-                "target_name":DB::optional_string(&command,"signal_name")?,"source":DB::string(&command,"source")?,
+                "target_name":target_name,"source":DB::string(&command,"source")?,
                 "status":DB::string(&command,"status")?,"outcome":DB::optional_string(&command,"outcome")?,
                 "reason":DB::optional_string(&command,"rejection_reason")?,"rejection_reason":DB::optional_string(&command,"rejection_reason")?,
-                "workflow_type":DB::optional_string(&command,"workflow_type")?,"workflow_class":DB::optional_string(&command,"workflow_class")?,
+                // `WorkflowCommand::record` keeps the run's class on each command.
+                "workflow_type":DB::optional_string(&command,"workflow_type")?,
+                "workflow_class":DB::optional_string(&command,"workflow_class")?.or(DB::optional_string(&row,"workflow_class")?),
+                "payload_preview_omitted":omitted,
                 "accepted_at":DB::optional_instant(&command,"accepted_at")?,"applied_at":DB::optional_instant(&command,"applied_at")?,
                 "rejected_at":DB::optional_instant(&command,"rejected_at")?});
             let fields = public.as_object_mut().expect("command object");
@@ -1713,7 +1774,8 @@ where
                 payload["task"] = json!({"id":task_id,"type":"activity","status":"leased",
                     "repair_count":DB::number(&task,"repair_count")?,
                     "available_at":DB::optional_instant(&task,"available_at")?,"leased_at":leased_at,
-                    "lease_owner":worker_id,"lease_expires_at":expires,"attempt_count":attempt,"queue":queue});
+                    "lease_owner":worker_id,"lease_expires_at":expires,"attempt_count":attempt,"queue":queue,
+                    "connection":DB::PHP_CONNECTION});
                 Self::append_at(
                     &mut tx,
                     &run_id,
@@ -2486,8 +2548,7 @@ where
                 Self::query("INSERT INTO workflow_run_timers(id,workflow_run_id,sequence,status,delay_seconds,fire_at) VALUES ($1,$2,$3,'pending',$4,$5)")
                     .bind(&timer_id).bind(&run_id).bind(sequence).bind(delay).bind(DB::bind_time(fire_at)).execute(&mut *tx).await?;
                 let mut timer_payload = json!({"timer_id":timer_id,"sequence":sequence,"delay_seconds":delay,"fire_at":fire_at,
-                    "task":{"id":task_id,"type":"workflow","status":"leased","lease_owner":DB::optional_string(&task,"lease_owner")?,
-                        "lease_expires_at":DB::optional_instant(&task,"lease_expires_at")?,"attempt_count":DB::number(&task,"attempt_count")?}});
+                    "task":Self::task_snapshot(&task)?});
                 super::selections::merge(&mut timer_payload, &metadata);
                 Self::append_at(
                     &mut tx,
@@ -2897,7 +2958,8 @@ where
         payload["task"] = json!({"id":task_id,"type":"activity","status":"leased",
             "repair_count":DB::number(&task,"repair_count")?,
             "available_at":DB::optional_instant(&task,"available_at")?,"leased_at":DB::optional_instant(&task,"leased_at")?,
-            "lease_owner":DB::optional_string(&task,"lease_owner")?,"attempt_count":DB::number(&task,"attempt_count")?});
+            "lease_owner":DB::optional_string(&task,"lease_owner")?,"lease_expires_at":DB::optional_instant(&task,"lease_expires_at")?,
+            "attempt_count":DB::number(&task,"attempt_count")?,"queue":DB::string(&task,"queue")?,"connection":DB::PHP_CONNECTION});
         Self::append(
             &mut tx,
             &run_id,
@@ -3023,6 +3085,15 @@ where
                 json!({"timer_id":timer_id})
             };
             super::selections::merge(&mut payload, &metadata);
+            // `RunTimerTask`: the timer task is leased to itself while its
+            // timer fires, so `TimerFired` carries the leased task.
+            Self::query("UPDATE workflow_tasks SET status='leased',leased_at=$1,lease_owner=$2,lease_expires_at=$3,attempt_count=attempt_count+1 WHERE id=$4")
+                .bind(DB::bind_time(fired_at))
+                .bind(&task_id)
+                .bind(DB::bind_time(fired_at + chrono::Duration::seconds(self.workflow_task_lease_seconds)))
+                .bind(&task_id)
+                .execute(&mut *tx)
+                .await?;
             Self::append(
                 &mut tx,
                 &run_id,
@@ -3046,7 +3117,7 @@ where
                 .bind(&timer_id)
                 .execute(&mut *tx)
                 .await?;
-            Self::query("UPDATE workflow_tasks SET status='completed' WHERE id=$1")
+            Self::query("UPDATE workflow_tasks SET status='completed',lease_expires_at=NULL WHERE id=$1")
                 .bind(&task_id)
                 .execute(&mut *tx)
                 .await?;
@@ -3375,9 +3446,22 @@ where
             .execute(&mut **tx)
             .await?;
         let recorded_at = recorded_at.unwrap_or_else(now);
-        // `WorkflowHistoryEvent::record`: an event recorded with a command
-        // carries that command's snapshot.
         let mut payload = payload;
+        // `WorkflowHistoryEvent::record`: an event PHP records with its task
+        // model carries that task's snapshot.
+        if let Some(task_id) = task_id
+            && TASK_SNAPSHOT_EVENTS.contains(&event_type)
+            && payload.as_object().is_some_and(|fields| !fields.contains_key("task"))
+            && let Some(task) = Self::query("SELECT * FROM workflow_tasks WHERE id=$1 AND workflow_run_id=$2")
+                .bind(task_id)
+                .bind(run_id)
+                .fetch_optional(&mut **tx)
+                .await?
+        {
+            // Only the run's own task: another run's is never copied.
+            payload["task"] = Self::task_snapshot(&task)?;
+        }
+        // An event recorded with a command carries that command's snapshot.
         if let Some(command_id) = command_id.filter(|_| command_snapshot)
             && payload.as_object().is_some_and(|fields| !fields.contains_key("command"))
             && let Some(snapshot) = Self::command_snapshot(tx, command_id).await?
@@ -4028,3 +4112,7 @@ pub(crate) fn capabilities() -> Value {
     }
     value
 }
+
+#[cfg(test)]
+#[path = "store_record_tests.rs"]
+mod record_tests;
