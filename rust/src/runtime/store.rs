@@ -1398,6 +1398,31 @@ where
             None
         };
         let page = pages.poll(requested, encoding);
+        // A workflow poll's request ID replays its last deliverable answer,
+        // after the registration checks that come first in PHP.
+        let poll_request = match (kind, super::workflow_poll_requests::request_id(&body)) {
+            ("workflow", Some(id)) => {
+                let worker_id = text(&body, "worker_id")?;
+                let queue = text(&body, "task_queue")?;
+                let registration = Self::query("SELECT task_queue FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2")
+                    .bind(worker_id).bind(self.namespace.as_ref()).fetch_optional(&self.pool).await?
+                    .ok_or_else(|| refuse(StatusCode::CONFLICT, "worker_not_registered"))?;
+                if DB::string(&registration, "task_queue")? != queue {
+                    return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
+                }
+                let keys = self.workflow_poll_keys(worker_id, queue, &id).await?;
+                let pending_ttl = super::workflow_poll_requests::pending_ttl(default_wait);
+                if let Some(mut replay) = self.replay_workflow_poll(&keys, worker_id, queue, pending_ttl).await? {
+                    if replay["task"].is_object() {
+                        super::history_pages::compress(&mut replay["task"], encoding)?;
+                    }
+                    replay["server_capabilities"] = capabilities();
+                    return Ok(replay);
+                }
+                Some(super::workflow_poll_requests::WorkflowPollRequest { id, keys, pending_ttl })
+            }
+            _ => None,
+        };
         let mut cross_kind = if timeout > 0 {
             self.poll_wake_snapshot(&body, kind).await?
         } else {
@@ -1412,8 +1437,8 @@ where
         loop {
             // Register the notification before probing.
             let wake = self.wake.notified();
-            if (std::mem::take(&mut first) || self.task_poll_ready(&body, kind).await?)
-                && let Some(mut task) = self.claim(&body, kind, protocol_version, page).await?
+            if (std::mem::take(&mut first) || self.task_poll_ready(&body, kind, poll_request.as_ref()).await?)
+                && let Some(mut task) = self.claim(&body, kind, protocol_version, page, poll_request.as_ref()).await?
             {
                 // Compressed after the claim commits; a replayed receipt keeps
                 // the plain events and takes this request's encoding.
@@ -1423,6 +1448,9 @@ where
                 );
             }
             if tokio::time::Instant::now() >= deadline {
+                if let Some(request) = &poll_request {
+                    self.remember_empty_workflow_poll(&request.keys, "empty", request.pending_ttl).await?;
+                }
                 return Ok(
                     json!({"task": null, "poll_status": "empty", "server_capabilities": capabilities()}),
                 );
@@ -1432,6 +1460,9 @@ where
                 .await?
                 && tokio::time::Instant::now() < deadline
             {
+                if let Some(request) = &poll_request {
+                    self.remember_empty_workflow_poll(&request.keys, "task_queue_changed", request.pending_ttl).await?;
+                }
                 return Ok(
                     json!({"task":null,"poll_status":"task_queue_changed","server_capabilities":capabilities()}),
                 );
@@ -1441,7 +1472,12 @@ where
     }
 
     /// Whether a held workflow or activity poll should claim again.
-    async fn task_poll_ready(&self, body: &Value, kind: &str) -> Result<bool> {
+    async fn task_poll_ready(
+        &self,
+        body: &Value,
+        kind: &str,
+        poll_request: Option<&super::workflow_poll_requests::WorkflowPollRequest>,
+    ) -> Result<bool> {
         let worker_id = text(body, "worker_id")?;
         let queue = text(body, "task_queue")?;
         // The claim refuses a removed or moved registration.
@@ -1456,9 +1492,15 @@ where
             Some(row) if DB::string(&row, "task_queue")? == queue => worker_build::<DB>(&row)?,
             _ => return Ok(true),
         };
-        // A concurrent poll with the same request ID may have claimed already;
-        // the claim replays its receipt.
-        if let Some(request_id) = body.get("poll_request_id").and_then(Value::as_str)
+        // A concurrent poll with the same request ID may have answered
+        // already; the claim replays that answer.
+        if let Some(request) = poll_request
+            && self.workflow_poll_answered(&request.keys).await?
+        {
+            return Ok(true);
+        }
+        if kind != "workflow"
+            && let Some(request_id) = body.get("poll_request_id").and_then(Value::as_str)
             && Self::query("SELECT task_id FROM dw_poll_receipts WHERE worker_id=$1 AND kind=$2 AND request_id=$3 AND namespace=$4")
                 .bind(worker_id).bind(kind).bind(request_id).bind(self.namespace.as_ref())
                 .fetch_optional(&self.pool).await?.is_some()
@@ -1484,6 +1526,7 @@ where
         kind: &str,
         protocol_version: &str,
         page: Option<i64>,
+        poll_request: Option<&super::workflow_poll_requests::WorkflowPollRequest>,
     ) -> Result<Option<Value>> {
         let worker_id = text(body, "worker_id")?;
         let queue = text(body, "task_queue")?;
@@ -1504,10 +1547,21 @@ where
             .bind(DB::bind_time(now()))
             .execute(&mut *tx)
             .await?;
-        let request_id = body
-            .get("poll_request_id")
-            .map(|_| text(body, "poll_request_id"))
-            .transpose()?;
+        // A concurrent duplicate may have leased since this poll began.
+        if let Some(request) = poll_request
+            && let Some(answer) = Self::deliverable_workflow_poll(&mut tx, &request.keys, worker_id, queue).await?
+            && answer["task"].is_object()
+        {
+            tx.commit().await?;
+            return Ok(Some(answer["task"].clone()));
+        }
+        // Activity polls keep their receipts; workflow polls use the answer
+        // above.
+        let request_id = if kind == "workflow" {
+            None
+        } else {
+            body.get("poll_request_id").map(|_| text(body, "poll_request_id")).transpose()?
+        };
         if let Some(request_id) = request_id
             && let Some(receipt) = Self::query("SELECT p.*,t.status,t.attempt_count,t.lease_owner,t.lease_expires_at FROM dw_poll_receipts p JOIN workflow_tasks t ON t.id=p.task_id WHERE p.worker_id=$1 AND p.kind=$2 AND p.request_id=$3 AND p.namespace=$4")
                 .bind(worker_id).bind(kind).bind(request_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await? {
@@ -1663,6 +1717,20 @@ where
                 self.cancellation_lease_expiry(&run)?
             };
             let leased_at = now();
+            // `PollRequestLeaseBinding::bindClaimedTask`: a workflow claim
+            // records its poll request ID, or clears an older one.
+            if kind == "workflow"
+                && let Some(map) = task_payload.as_object_mut()
+            {
+                match poll_request {
+                    Some(request) => {
+                        map.insert("_server_poll_request_id".into(), json!(request.id));
+                    }
+                    None => {
+                        map.remove("_server_poll_request_id");
+                    }
+                }
+            }
             if kind == "workflow" {
                 task_payload[super::cooperative::CLAIM_KEY] = json!({"registration_id":DB::number(&worker,"id")?,
                     "worker_id":worker_id,"namespace":self.namespace.as_ref(),"protocol_version":protocol_version,
@@ -1684,7 +1752,7 @@ where
             let mut claim = json!({"task_id": task_id, "workflow_id": DB::string(&run,"workflow_instance_id")?,
                 "run_id": run_id, "workflow_instance_id": DB::string(&run,"workflow_instance_id")?, "workflow_run_id": run_id,
                 "workflow_type": DB::string(&run,"workflow_type")?, "namespace": self.namespace.as_ref(), "payload_codec": "avro",
-                "queue": queue, "task_queue": queue, "lease_owner": worker_id, "lease_expires_at": expires});
+                "queue": queue, "task_queue": queue, "lease_owner": worker_id, "lease_expires_at": super::cooperative::timestamp(expires)});
             if let Some(activity) = activity {
                 let activity_id = DB::string(&activity, "id")?;
                 let policy =
@@ -1821,6 +1889,9 @@ where
                 Self::query("INSERT INTO dw_poll_receipts(worker_id,kind,request_id,task_id,attempt,response,expires_at,namespace) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
                     .bind(worker_id).bind(kind).bind(request_id).bind(&task_id).bind(attempt).bind(DB::document(&claim)).bind(DB::bind_time(after(120))).bind(self.namespace.as_ref()).execute(&mut *tx).await?;
             }
+            if let Some(request) = poll_request {
+                Self::remember_workflow_poll(&mut tx, &request.keys, &json!({"task": claim, "poll_status": "leased"}), request.pending_ttl).await?;
+            }
             tx.commit().await?;
             return Ok(Some(claim));
         }
@@ -1846,7 +1917,7 @@ where
         tx.commit().await?;
         // PHP's heartbeat also reports the run's and the task's status.
         let mut response = json!({"task_id": task_id, "workflow_task_attempt": body["workflow_task_attempt"],
-            "lease_owner": body["lease_owner"], "lease_expires_at": expires, "renewed": true,
+            "lease_owner": body["lease_owner"], "lease_expires_at": super::cooperative::timestamp(expires), "renewed": true,
             "run_status": DB::string(&run, "status")?, "task_status": "leased", "reason": null});
         if let Some(cancellation) = Self::cancellation_request(&run)? {
             response["cancellation_request"] = cancellation;

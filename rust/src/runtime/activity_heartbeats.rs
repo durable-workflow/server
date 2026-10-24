@@ -130,8 +130,10 @@ where
         // Observation preserves the existing lease and never records progress.
         let response = json!({"task_id":task_id,"activity_attempt_id":attempt_id,"lease_owner":owner,
             "can_continue":can_continue,"cancel_requested":cancel_requested,"reason":reason,"heartbeat_recorded":false,
-            "lease_expires_at":expires,"last_heartbeat_at":DB::optional_instant(&attempt,"last_heartbeat_at")?.or(DB::optional_instant(&activity,"last_heartbeat_at")?),
-            "run_status":run_status,"run_closed_reason":DB::optional_string(&run,"closed_reason")?,"run_closed_at":DB::optional_instant(&run,"closed_at")?,
+            // PHP formats each time in UTC with microseconds.
+            "lease_expires_at":expires.map(super::cooperative::timestamp),
+            "last_heartbeat_at":DB::optional_instant(&attempt,"last_heartbeat_at")?.or(DB::optional_instant(&activity,"last_heartbeat_at")?).map(super::cooperative::timestamp),
+            "run_status":run_status,"run_closed_reason":DB::optional_string(&run,"closed_reason")?,"run_closed_at":DB::optional_instant(&run,"closed_at")?.map(super::cooperative::timestamp),
             "activity_status":activity_status,"attempt_status":attempt_status,"task_status":task_status,
             "deadlines":super::activity_deadlines::deadlines_view::<DB>(&activity)?,"worker_session":null,"protocol_version":protocol,"server_capabilities":super::store::capabilities()});
         Ok((response, Self::cancellation_request(&run)?.is_none()))

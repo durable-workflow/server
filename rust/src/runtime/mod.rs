@@ -138,6 +138,7 @@ mod wait_projection;
 mod wait_timeouts;
 mod worker_contracts;
 mod worker_incarnations;
+mod workflow_poll_requests;
 mod worker_management;
 mod worker_admission;
 mod workflow_failures;

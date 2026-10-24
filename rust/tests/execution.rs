@@ -287,6 +287,9 @@ mod external_payloads;
 #[path = "execution/trace_carriers.rs"]
 mod trace_carriers;
 
+#[path = "execution/workflow_poll_requests.rs"]
+mod workflow_poll_requests;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {
