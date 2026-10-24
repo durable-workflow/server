@@ -562,6 +562,7 @@ class WorkflowController
             $signalName,
             [
                 'namespace' => $namespace,
+                'run_id' => $this->controlPlaneRunId($request),
                 'arguments' => AvroPayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input', $externalStorage),
                 'payload_codec' => $envelope['codec'],
                 'payload_blob' => $envelope['blob'],
@@ -572,6 +573,7 @@ class WorkflowController
                     metadata: array_filter([
                         'request_id' => $validated['request_id'] ?? null,
                         'signal_name' => $signalName,
+                        'requested_run_id' => $this->controlPlaneRunId($request),
                     ], static fn (mixed $value): bool => $value !== null),
                 ),
                 'strict_configured_type_validation' => true,
@@ -765,6 +767,7 @@ class WorkflowController
                 'request_id' => $validated['request_id'] ?? null,
                 'update_name' => $updateName,
                 'wait_for' => $waitFor,
+                'requested_run_id' => $this->controlPlaneRunId($request),
             ], static fn (mixed $value): bool => $value !== null),
         );
 
@@ -794,6 +797,7 @@ class WorkflowController
             [
                 'namespace' => $namespace,
                 'arguments' => $arguments,
+                'run_id' => $this->controlPlaneRunId($request),
                 'command_context' => $commandContext,
                 'wait_for' => $waitFor,
                 'wait_timeout_seconds' => $validated['wait_timeout_seconds'] ?? null,
@@ -1134,7 +1138,18 @@ class WorkflowController
             ], 404);
         }
 
-        if ((string) $currentRun->id !== $runId) {
+        $keyedCommand = in_array($operation, ['signal', 'update'], true)
+            && is_string($request->input('request_id')) && $request->input('request_id') !== '';
+        if ($keyedCommand && NamespaceWorkflowScope::run($namespace, $workflowId, $runId) === null) {
+            return ControlPlaneProtocol::jsonForRequest($request, [
+                'message' => 'Workflow run not found.',
+                'reason' => 'run_not_found',
+            ], 404);
+        }
+
+        // Keyed commands must compare their original run-scoped receipt under
+        // admission's lock. A historical run never authorizes new execution.
+        if ((string) $currentRun->id !== $runId && ! $keyedCommand) {
             return ControlPlaneProtocol::json(
                 ControlPlaneResponseContract::attach(
                     operation: $operation,
