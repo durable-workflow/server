@@ -2,7 +2,11 @@ name: Public Boundary
 
 on:
   pull_request:
+  merge_group:
+  # A merge-queue branch is scanned by its merge_group run, over the exact range.
   push:
+    branches-ignore:
+      - gh-readonly-queue/**
   workflow_dispatch:
 
 permissions:
@@ -28,6 +32,8 @@ jobs:
 
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          elif [[ "${{ github.event_name }}" == "merge_group" ]]; then
+            range="${{ github.event.merge_group.base_sha }}..${{ github.event.merge_group.head_sha }}"
           elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             range="-1 ${{ github.sha }}"
           elif [[ "${{ github.event.before }}" =~ ^0+$ ]]; then

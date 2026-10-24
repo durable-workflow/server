@@ -114,6 +114,7 @@ on:
       - tests/Support/ServerParityAdmissionObservation.mjs
       - tests/Support/ServerParityVisibilityObservation.mjs
       - rust/**
+  merge_group:
   workflow_dispatch:
 
 # A newer push to the same pull request supersedes the run in progress, so a
