@@ -209,6 +209,7 @@ return Application::configure(basePath: dirname(__DIR__))
                 $request->is('api/worker/workflow-tasks/poll') => 'workflow_task',
                 $request->is('api/worker/activity-tasks/poll') => 'activity_task',
                 $request->is('api/worker/query-tasks/poll') => 'query_task',
+                $request->is('api/worker/update-validation-tasks/poll') => 'update_validation_task',
                 default => null,
             };
 
