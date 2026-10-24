@@ -781,10 +781,12 @@ pub(super) fn task_kinds(body: &Value) -> Result<Vec<&'static str>> {
     Ok(requested)
 }
 
-/// What one multiplexed probe found: a duplicate's answer, or a new lease.
+/// What one multiplexed probe found: a duplicate's answer, a new lease, or
+/// a registration replaced since the poll began.
 enum Probe {
     Replayed(Value),
     Leased(Leased),
+    Stale,
 }
 
 /// A validation lease: the task, its attempt and when the lease ends.
@@ -967,6 +969,12 @@ where
         let task_queue = text(body, "task_queue")?.to_owned();
         let encoding = super::history_pages::requested(body)?;
         let page = pages.poll(super::history_pages::requested_size(body)?, encoding);
+        // `WorkerPollFence`, as for a workflow poll.
+        let fence = match self.admit_worker_poll(&worker_id, &task_queue).await? {
+            super::worker_poll_fence::PollAdmission::Stale => return Ok(Leased::Workflow(super::worker_poll_fence::stale_answer())),
+            super::worker_poll_fence::PollAdmission::Fenced(fence) => Some(fence),
+            super::worker_poll_fence::PollAdmission::Unregistered => None,
+        };
         let request = match super::workflow_poll_requests::request_id(body) {
             Some(id) => Some(self.workflow_poll_request(&worker_id, &task_queue, id, default_wait, kinds).await?),
             None => None,
@@ -980,7 +988,22 @@ where
         let mut pace = super::poll_readiness::ReadPace::new();
         loop {
             let wake = self.wake.notified();
-            match self.probe_task_kinds(body, kinds, protocol_version, page, request.as_ref()).await? {
+            let current = match &fence {
+                Some(fence) => self.worker_poll_fence_holds(fence, &worker_id).await?,
+                None => true,
+            };
+            let probed = if current {
+                self.probe_task_kinds(body, kinds, protocol_version, page, request.as_ref(), fence.as_ref()).await?
+            } else {
+                Some(Probe::Stale)
+            };
+            match probed {
+                Some(Probe::Stale) => {
+                    if let Some(request) = &request {
+                        self.remember_empty_workflow_poll(request, super::worker_poll_fence::STALE).await?;
+                    }
+                    return Ok(Leased::Workflow(super::worker_poll_fence::stale_answer()));
+                }
                 Some(Probe::Replayed(answer)) => return Self::replayed(answer, encoding),
                 Some(Probe::Leased(Leased::Workflow(mut answer))) => {
                     super::history_pages::compress(&mut answer["task"], encoding)?;
@@ -1007,10 +1030,16 @@ where
         protocol_version: &str,
         page: Option<i64>,
         request: Option<&WorkflowPollRequest>,
+        fence: Option<&super::worker_poll_fence::WorkerPollFence>,
     ) -> Result<Option<Probe>> {
         let worker_id = text(body, "worker_id")?;
         let task_queue = text(body, "task_queue")?;
         let mut tx = self.begin().await?;
+        if let Some(fence) = fence
+            && !self.worker_poll_fence_holds_in(&mut tx, fence, worker_id).await?
+        {
+            return Ok(Some(Probe::Stale));
+        }
         // A concurrent duplicate may have leased since this poll began: the
         // binding row, locked first, makes it wait for that one's answer.
         if let Some(request) = request {

@@ -292,6 +292,9 @@ mod trace_carriers;
 #[path = "execution/workflow_poll_requests.rs"]
 mod workflow_poll_requests;
 
+#[path = "execution/worker_poll_fence.rs"]
+mod worker_poll_fence;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {

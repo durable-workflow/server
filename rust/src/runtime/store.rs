@@ -1398,6 +1398,14 @@ where
             None
         };
         let page = pages.poll(requested, encoding);
+        // `WorkerPollFence`: the poll belongs to the registration it is
+        // admitted under. One that is not fresh is answered at once,
+        // uncached, before any replay.
+        let fence = match self.admit_worker_poll(text(&body, "worker_id")?, text(&body, "task_queue")?).await? {
+            super::worker_poll_fence::PollAdmission::Stale => return Ok(super::worker_poll_fence::stale_answer()),
+            super::worker_poll_fence::PollAdmission::Fenced(fence) => Some(fence),
+            super::worker_poll_fence::PollAdmission::Unregistered => None,
+        };
         // A workflow poll's request ID replays its last deliverable answer,
         // after the registration checks that come first in PHP.
         let poll_request = match (kind, super::workflow_poll_requests::request_id(&body)) {
@@ -1433,12 +1441,33 @@ where
         // something to claim or refuse.
         let mut first = true;
         let mut pace = super::poll_readiness::ReadPace::new();
+        let worker_id = text(&body, "worker_id")?;
         loop {
             // Register the notification before probing.
             let wake = self.wake.notified();
-            if (std::mem::take(&mut first) || self.task_poll_ready(&body, kind, poll_request.as_ref()).await?)
-                && let Some(mut task) = self.claim(&body, kind, protocol_version, page, poll_request.as_ref()).await?
-            {
+            // A replaced or silent registration ends the held poll, before
+            // every probe and inside the claim.
+            let current = match &fence {
+                Some(fence) => self.worker_poll_fence_holds(fence, worker_id).await?,
+                None => true,
+            };
+            let claimed = if !current {
+                Err(super::worker_poll_fence::stale_claim())
+            } else if std::mem::take(&mut first) || self.task_poll_ready(&body, kind, poll_request.as_ref()).await? {
+                self.claim(&body, kind, protocol_version, page, poll_request.as_ref(), fence.as_ref()).await
+            } else {
+                Ok(None)
+            };
+            let claimed = match claimed {
+                Err(error) if super::worker_poll_fence::is_stale_claim(&error) => {
+                    if let Some(request) = &poll_request {
+                        self.remember_empty_workflow_poll(request, super::worker_poll_fence::STALE).await?;
+                    }
+                    return Ok(super::worker_poll_fence::stale_answer());
+                }
+                other => other?,
+            };
+            if let Some(mut task) = claimed {
                 // Compressed after the claim commits; a replayed receipt keeps
                 // the plain events and takes this request's encoding.
                 super::history_pages::compress(&mut task, encoding)?;
@@ -1526,8 +1555,14 @@ where
         protocol_version: &str,
         page: Option<i64>,
         poll_request: Option<&super::workflow_poll_requests::WorkflowPollRequest>,
+        fence: Option<&super::worker_poll_fence::WorkerPollFence>,
     ) -> Result<Option<Value>> {
         let mut tx = self.begin().await?;
+        if let Some(fence) = fence
+            && !self.worker_poll_fence_holds_in(&mut tx, fence, text(body, "worker_id")?).await?
+        {
+            return Err(super::worker_poll_fence::stale_claim());
+        }
         let claimed = self.claim_in(&mut tx, body, kind, protocol_version, page, poll_request).await?;
         tx.commit().await?;
         Ok(claimed)
