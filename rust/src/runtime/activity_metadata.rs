@@ -498,12 +498,15 @@ fn present_attempt(attempt: &Value, execution: Option<&Value>) -> Value {
     });
     let cancelled =
         status == Some("cancelled") || execution.is_some_and(|row| row["status"] == "cancelled");
+    // Workflow 2.10's attempt view keeps a recorded lease loss as the
+    // expired attempt's failure reason.
+    let failure = string(&attempt["failure_reason"]);
     let reason = if status == Some("cancelled") {
         Some("attempt_cancelled")
+    } else if status == Some("expired") {
+        Some(failure.unwrap_or(if cancelled { "activity_cancelled" } else { "attempt_expired" }))
     } else if cancelled {
         Some("activity_cancelled")
-    } else if status == Some("expired") {
-        Some("attempt_expired")
     } else if matches!(status, Some("completed" | "failed")) {
         Some("attempt_closed")
     } else if execution
@@ -518,7 +521,7 @@ fn present_attempt(attempt: &Value, execution: Option<&Value>) -> Value {
     let mut result = json!({"id":attempt["id"],"worker_attempt_id":attempt["worker_attempt_id"],
         "attempt_number":attempt["attempt_number"],"status":attempt["status"],"task_id":attempt["workflow_task_id"],
         "lease_owner":attempt["lease_owner"],"last_heartbeat_progress":progress(&attempt["last_heartbeat_progress"]),
-        "can_continue":can_continue,"cancel_requested":cancelled,"stop_reason":reason});
+        "can_continue":can_continue,"cancel_requested":cancelled,"stop_reason":reason,"failure_reason":failure});
     for field in [
         "started_at",
         "last_heartbeat_at",
@@ -559,7 +562,7 @@ fn synthetic_attempt(state: &Value, row: &Value) -> Option<Value> {
     };
     let mut result = json!({"id":id,"attempt_number":count,"status":status,"task_id":null,
         "lease_owner":null,"lease_expires_at":null,"can_continue":can_continue,
-        "cancel_requested":cancelled,"stop_reason":reason,
+        "cancel_requested":cancelled,"stop_reason":reason,"failure_reason":null,
         "last_heartbeat_progress":progress(&state["last_heartbeat_progress"])});
     for field in ["started_at", "last_heartbeat_at", "closed_at"] {
         result[field] = first(&[&state[field], &row[field]]);

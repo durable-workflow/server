@@ -2177,10 +2177,14 @@ where
         // options cannot be silently accepted as unsupported durable effects.
         for (index, command) in commands.iter().enumerate() {
             // The command normalizer's field scopes and value rules, with
-            // PHP's messages, before native's own refusals.
-            super::completion_rules::normalizer_checks(index, command)?;
+            // PHP's messages, before native's own refusals. A local activity
+            // record meets the normalizer after the ownership guards, as in PHP.
+            if command["type"] != super::local_activities::COMMAND {
+                super::completion_rules::normalizer_checks(index, command)?;
+            }
             let command_type = text(command, "type")?;
             match command_type {
+                "record_local_activity" => {}
                 "fail_workflow" => {
                     super::workflow_failures::validate(command)?;
                 }
@@ -2353,6 +2357,15 @@ where
                 });
             }
         }
+        // `guardPortableWorkerAffinityCompletion`, then the normalizer's
+        // local activity rules inside the transaction.
+        let mut local = std::collections::BTreeMap::new();
+        let mut exceptions = std::collections::BTreeMap::new();
+        if commands.iter().any(|command| command["type"] == super::local_activities::COMMAND) {
+            Self::guard_local_activities(&mut tx, self.namespace.as_ref(), &task, &body, protocol).await?;
+            local = super::local_activities::normalize(commands, protocol)?;
+            exceptions = super::local_activities::exceptions(&local, transition_codec.clone()).await?;
+        }
         // `parseCommands`: at most one terminal command, anywhere in the
         // batch. It applies after every other command.
         if commands.iter().filter(|command| is_terminal(command)).count() > 1 {
@@ -2430,6 +2443,11 @@ where
             } else if command["type"] == "start_child_workflow" {
                 sequence += 1;
                 created.push(Self::start_child(&mut tx, &run, task_id, command, sequence).await?);
+            } else if command["type"] == super::local_activities::COMMAND {
+                // `applyRecordLocalActivity`: one authored sequence.
+                sequence += 1;
+                let record = local.get(&index).expect("a normalized local activity record");
+                Self::record_local_activity(&mut tx, &run, &task, record, exceptions.get(&index).map(String::as_str), sequence).await?;
             } else if command["type"] == "record_side_effect" {
                 // `applyRecordSideEffect`: one authored sequence and its result.
                 sequence += 1;
@@ -4052,10 +4070,13 @@ pub(super) fn reject_fields(body: &Value, allowed: &[&str]) -> Result<()> {
 }
 
 pub(crate) fn capabilities() -> Value {
-    let mut value = json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "record_side_effect", "complete_workflow", "fail_workflow", "continue_as_new", "complete_update", "fail_update"],
+    // Prepared local activities are not served yet: like a PHP server whose
+    // bridge lacks the prepared role, no groups and no cancellation policies.
+    let mut value = json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "record_side_effect", "record_local_activity", "complete_workflow", "fail_workflow", "continue_as_new", "complete_update", "fail_update"],
         "worker_deregistration_fencing":{"schema":"durable-workflow.v2.worker-deregistration.v1","supported":true,"receipt_retention_seconds":600,"endpoint":"/worker/registrations/{workerId}/deregister"},
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
-        "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,
+        "prepared_local_activity_groups": false, "prepared_local_activity_cancellation_policies": [],
+        "worker_sessions": false, "sticky_execution": false, "local_activities": super::local_activities::manifest(), "message_streams": false,
         "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": true,
         "activity_lease_renewal": true});
     value["runtime_external_payload_transport"] = super::payload_discovery::transport_manifest();
