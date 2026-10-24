@@ -46,6 +46,20 @@ const TASK_SNAPSHOT_EVENTS: &[&str] = &[
     "WorkflowFailed",
     "WorkflowTimedOut",
 ];
+/// Describe's command journal. `$stored` is each backend's exact,
+/// case-sensitive test for native's stored-reference prefix
+/// (`external_resolution::STORED_PREFIX`), so a command's payload is read only
+/// when it is a stored reference.
+macro_rules! run_commands_sql {
+    ($stored:literal) => {
+        concat!(
+            "SELECT c.id,c.command_sequence,c.command_type,c.target_scope,c.requested_workflow_run_id,c.resolved_workflow_run_id,c.source,c.status,c.outcome,c.rejection_reason,c.workflow_type,c.workflow_class,c.accepted_at,c.applied_at,c.rejected_at,c.context,s.signal_name,CASE WHEN ",
+            $stored,
+            " THEN c.payload END AS stored_payload FROM workflow_commands c LEFT JOIN workflow_signal_records s ON s.workflow_command_id=c.id WHERE c.workflow_run_id=$1 AND c.workflow_instance_id=$2 ORDER BY c.command_sequence,c.created_at,c.id"
+        )
+    };
+}
+pub(super) use run_commands_sql;
 /// The runtime-owned message-stream delivery signal (`WorkflowStub::MESSAGE_STREAM_RUNTIME_SIGNAL`).
 const MESSAGE_STREAM_SIGNAL: &str = "__durable_workflow_message_stream";
 pub(super) const TASK_CANDIDATES_SQL: &str = "SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ORDER BY t.priority,t.available_at,t.id LIMIT 100";
@@ -555,23 +569,28 @@ where
         // copied merely to display the command's target and admission result.
         // Only a stored external reference is read, to tell whether its preview
         // is omitted; inline payloads stay unread.
-        let command_rows = Self::query("SELECT c.id,c.command_sequence,c.command_type,c.target_scope,c.requested_workflow_run_id,c.resolved_workflow_run_id,c.source,c.status,c.outcome,c.rejection_reason,c.workflow_type,c.workflow_class,c.accepted_at,c.applied_at,c.rejected_at,c.context,s.signal_name,CASE WHEN c.payload LIKE 'dw-%' THEN c.payload END AS stored_payload FROM workflow_commands c LEFT JOIN workflow_signal_records s ON s.workflow_command_id=c.id WHERE c.workflow_run_id=$1 AND c.workflow_instance_id=$2 ORDER BY c.command_sequence,c.created_at,c.id")
+        let command_rows = Self::query(DB::RUN_COMMANDS_SQL)
             .bind(DB::string(&row, "id")?).bind(workflow_id).fetch_all(&self.pool).await?;
         let mut commands = Vec::with_capacity(command_rows.len());
         for command in command_rows {
+            // `oversizedPayloadPreview` over the stored reference's envelope;
+            // an omitted preview also omits the target name, as PHP does.
+            let omitted = DB::optional_string(&command, "stored_payload")?
+                .as_deref()
+                .and_then(super::external_resolution::stored_envelope)
+                .is_some_and(|envelope| super::run_describe::oversized(&envelope));
+            let target_name = DB::optional_string(&command, "signal_name")?.filter(|_| !omitted);
             let mut public = json!({"id":DB::string(&command,"id")?,"sequence":DB::optional_number(&command,"command_sequence")?,
                 "type":DB::string(&command,"command_type")?,"target_scope":DB::string(&command,"target_scope")?,
                 "requested_run_id":DB::optional_string(&command,"requested_workflow_run_id")?,
                 "resolved_run_id":DB::optional_string(&command,"resolved_workflow_run_id")?,
-                "target_name":DB::optional_string(&command,"signal_name")?,"source":DB::string(&command,"source")?,
+                "target_name":target_name,"source":DB::string(&command,"source")?,
                 "status":DB::string(&command,"status")?,"outcome":DB::optional_string(&command,"outcome")?,
                 "reason":DB::optional_string(&command,"rejection_reason")?,"rejection_reason":DB::optional_string(&command,"rejection_reason")?,
                 // `WorkflowCommand::record` keeps the run's class on each command.
                 "workflow_type":DB::optional_string(&command,"workflow_type")?,
                 "workflow_class":DB::optional_string(&command,"workflow_class")?.or(DB::optional_string(&row,"workflow_class")?),
-                "payload_preview_omitted":DB::optional_string(&command,"stored_payload")?.as_deref()
-                    .and_then(super::external_resolution::stored_envelope)
-                    .is_some_and(|envelope| super::run_describe::oversized(&envelope)),
+                "payload_preview_omitted":omitted,
                 "accepted_at":DB::optional_instant(&command,"accepted_at")?,"applied_at":DB::optional_instant(&command,"applied_at")?,
                 "rejected_at":DB::optional_instant(&command,"rejected_at")?});
             let fields = public.as_object_mut().expect("command object");
@@ -3425,11 +3444,13 @@ where
         if let Some(task_id) = task_id
             && TASK_SNAPSHOT_EVENTS.contains(&event_type)
             && payload.as_object().is_some_and(|fields| !fields.contains_key("task"))
-            && let Some(task) = Self::query("SELECT * FROM workflow_tasks WHERE id=$1")
+            && let Some(task) = Self::query("SELECT * FROM workflow_tasks WHERE id=$1 AND workflow_run_id=$2")
                 .bind(task_id)
+                .bind(run_id)
                 .fetch_optional(&mut **tx)
                 .await?
         {
+            // Only the run's own task: another run's is never copied.
             payload["task"] = Self::task_snapshot(&task)?;
         }
         // An event recorded with a command carries that command's snapshot.
@@ -4082,3 +4103,7 @@ pub(crate) fn capabilities() -> Value {
     }
     value
 }
+
+#[cfg(test)]
+#[path = "store_record_tests.rs"]
+mod record_tests;

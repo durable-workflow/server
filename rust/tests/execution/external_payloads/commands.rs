@@ -151,3 +151,60 @@ async fn signal_update_and_query_input_resolve_runtime_references_like_php() {
     runtime.close().await;
     database.remove().await;
 }
+
+/// The described signal command, which must show only metadata.
+async fn described_signal(app: &Router, workflow_id: &str) -> Value {
+    let (status, body) = json_request(app, "GET", &format!("/api/workflows/{workflow_id}"), "operator-token", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let command = body["commands"].as_array().unwrap().iter().find(|command| command["type"] == "signal").unwrap().clone();
+    for field in ["payload", "external_payload", "external_storage", "reference_id", "sha256", "size_bytes", "arguments"] {
+        assert!(command.get(field).is_none(), "{field}: {command}");
+    }
+    assert!(!command.to_string().contains("ep_"), "no reference identity: {command}");
+    command
+}
+
+// `WorkflowController::oversizedPayloadPreview` over each command's stored
+// envelope: only a stored external reference larger than the payload limit
+// (2 MiB by default) omits the preview, and then the target name too.
+#[tokio::test]
+async fn described_commands_omit_only_an_oversized_stored_reference() {
+    let temp = tempfile::tempdir().unwrap();
+    let (database, runtime, app) = setup(ExternalPayloadConfig::default(), &temp.path().join("objects")).await;
+    waiting_run(&app, "described-reference", json!({"worker_id":"describe-worker","task_queue":"described-reference",
+        "runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":[]})).await;
+    let reference = upload(&app, &argument("signal")).await;
+    let (status, body) = json_request(&app, "POST", "/api/workflows/described-reference/signal/s", "operator-token",
+        json!({"input":{"codec":"avro","external_payload":reference}})).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let command = described_signal(&app, "described-reference").await;
+    assert_eq!((command["payload_preview_omitted"].clone(), command["target_name"].clone()), (json!(false), json!("s")), "{command}");
+    let command_id = command["id"].as_str().unwrap().to_owned();
+
+    // The same stored reference, as native writes it, at sizes around the
+    // limit, and counterfactuals that are not native stored references.
+    let limit = 2 * 1024 * 1024_i64;
+    let stored = |size: i64| {
+        let mut reference = reference.clone();
+        reference["size_bytes"] = json!(size);
+        format!("dw-native-external-payload-v1:{reference}")
+    };
+    for (payload, omitted) in [
+        (stored(limit), false),
+        (stored(limit + 1), true),
+        // Not native's exact prefix, so never read.
+        (stored(limit + 1).replace("dw-native-external-payload-v1:", "DW-NATIVE-EXTERNAL-PAYLOAD-V1:"), false),
+        (stored(limit + 1).replace("dw-native-external-payload-v1:", "dw-native-external-payload-v2:"), false),
+        // Native's prefix with no valid reference after it.
+        (format!("dw-native-external-payload-v1:{{\"size_bytes\":{}}}", limit + 1), false),
+        // A large inline payload.
+        (format!("dw-{}", "A".repeat(limit as usize + 1)), false),
+    ] {
+        database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_commands SET payload='{payload}' WHERE id='{command_id}'"))).await;
+        let command = described_signal(&app, "described-reference").await;
+        assert_eq!(command["payload_preview_omitted"], json!(omitted), "{}: {command}", &payload[..payload.len().min(48)]);
+        assert_eq!(command.get("target_name").is_none(), omitted, "{command}");
+    }
+    runtime.close().await;
+    database.remove().await;
+}
