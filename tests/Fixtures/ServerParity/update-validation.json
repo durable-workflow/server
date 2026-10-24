@@ -734,6 +734,86 @@
         },
         "status": 422
       },
+      "request_default": {
+        "attempt": 1,
+        "poll_status": "leased",
+        "status": 200,
+        "task": "<id:19>",
+        "task_kind": "workflow"
+      },
+      "request_default_both": {
+        "response": {
+          "bound_task_kinds": [
+            "workflow"
+          ],
+          "error": "Poll request ID is already bound to a different task-kind set.",
+          "poll_request_id": "pr-z",
+          "poll_status": "conflict",
+          "reason": "poll_request_task_kinds_conflict",
+          "requested_task_kinds": [
+            "update_validation",
+            "workflow"
+          ],
+          "task": null
+        },
+        "status": 409
+      },
+      "request_default_replay": {
+        "attempt": 1,
+        "poll_status": "leased",
+        "status": 200,
+        "task": "<id:19>",
+        "task_kind": "workflow"
+      },
+      "request_first": {
+        "attempt": 1,
+        "poll_status": "leased",
+        "status": 200,
+        "task": "<id:20>",
+        "task_kind": "update_validation"
+      },
+      "request_other_set": {
+        "response": {
+          "bound_task_kinds": [
+            "update_validation",
+            "workflow"
+          ],
+          "error": "Poll request ID is already bound to a different task-kind set.",
+          "poll_request_id": "pr-x",
+          "poll_status": "conflict",
+          "reason": "poll_request_task_kinds_conflict",
+          "requested_task_kinds": [
+            "workflow"
+          ],
+          "task": null
+        },
+        "status": 409
+      },
+      "request_reordered": {
+        "attempt": 1,
+        "poll_status": "leased",
+        "status": 200,
+        "task": "<id:20>",
+        "task_kind": "update_validation"
+      },
+      "request_update": 202,
+      "request_validation_set": {
+        "response": {
+          "bound_task_kinds": [
+            "update_validation",
+            "workflow"
+          ],
+          "error": "Poll request ID is already bound to a different task-kind set.",
+          "poll_request_id": "pr-x",
+          "poll_status": "conflict",
+          "reason": "poll_request_task_kinds_conflict",
+          "requested_task_kinds": [
+            "update_validation"
+          ],
+          "task": null
+        },
+        "status": 409
+      },
       "retained_approval": {
         "response": {
           "accepted_at": "<time>",
@@ -866,8 +946,8 @@
           "reason": "update_validation_task_not_claimed",
           "rejection_reason": "update_validation_task_not_claimed",
           "retryable": false,
-          "run_id": "<id:19>",
-          "update_id": "<id:20>",
+          "run_id": "<id:21>",
+          "update_id": "<id:22>",
           "update_name": "approve_me",
           "update_validation_attempt": 0,
           "wait_for": "accepted",
@@ -883,8 +963,8 @@
           "reason": "update_validation_task_not_claimed",
           "rejection_reason": "update_validation_task_not_claimed",
           "retryable": false,
-          "run_id": "<id:19>",
-          "update_id": "<id:20>",
+          "run_id": "<id:21>",
+          "update_id": "<id:22>",
           "update_name": "approve_me",
           "update_validation_attempt": 0,
           "wait_for": "accepted",
@@ -900,8 +980,8 @@
           "reason": "update_validation_idempotency_conflict",
           "rejection_reason": "update_validation_idempotency_conflict",
           "retryable": false,
-          "run_id": "<id:19>",
-          "update_id": "<id:20>",
+          "run_id": "<id:21>",
+          "update_id": "<id:22>",
           "update_name": "approve_me",
           "wait_for": "accepted",
           "workflow_id": "<workflow>-idle"
@@ -924,8 +1004,8 @@
           "reason": "update_validator_worker_incompatible",
           "rejection_reason": "update_validator_worker_incompatible",
           "retryable": true,
-          "run_id": "<id:21>",
-          "update_id": "<id:22>",
+          "run_id": "<id:23>",
+          "update_id": "<id:24>",
           "update_name": "approve_me",
           "wait_for": "accepted",
           "workflow_id": "<workflow>-changed"
@@ -940,7 +1020,7 @@
           "reason": "update_validator_worker_lost",
           "rejection_reason": "update_validator_worker_lost",
           "retryable": false,
-          "run_id": "<id:23>",
+          "run_id": "<id:25>",
           "update_id": "<id:14>",
           "update_name": "approve_me",
           "update_validation_attempt": 1,
@@ -957,8 +1037,8 @@
           "reason": "update_validator_worker_unavailable",
           "rejection_reason": "update_validator_worker_unavailable",
           "retryable": true,
-          "run_id": "<id:23>",
-          "update_id": "<id:24>",
+          "run_id": "<id:25>",
+          "update_id": "<id:26>",
           "update_name": "approve_me",
           "wait_for": "accepted",
           "workflow_id": "<workflow>-lost"

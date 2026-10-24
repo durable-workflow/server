@@ -283,6 +283,39 @@ PHP;
     $state['ordered_update'] = $collect($pending)['status'];
     $state['slow_history'] = $history("{$id}-slow", $runs['slow']['run_id']);
 
+    // Poll request IDs bind to their normalized task-kind set, on their own
+    // queue: a reordered retry replays the delivery, another set is refused,
+    // and a default (workflow-only) ID retried with both kinds is refused.
+    $prWorker = "{$id}-pr";
+    $prQueue = "{$id}-q-pr";
+    $register($prWorker, $prQueue, $contract($validators), true);
+    $waitingRun("{$id}-pr", $prQueue, $prWorker);
+    $pending = $background("{$id}-pr", 'approve_me', $input(21, 'pr1'));
+    usleep(500000);
+    $pollRequest = static fn (string $requestId, ?array $kinds): array => $raw('POST', 'worker/workflow-tasks/poll',
+        ['worker_id' => $prWorker, 'task_queue' => $prQueue, 'timeout_seconds' => 2, 'poll_request_id' => $requestId]
+        + ($kinds === null ? [] : ['task_kinds' => $kinds]), true);
+    // A delivery's identity: the same task reads as the same label.
+    $identity = static function (array $recorded): array {
+        $task = $recorded['response']['task'] ?? null;
+
+        return ['status' => $recorded['status'], 'poll_status' => $recorded['response']['poll_status'] ?? null,
+            'task_kind' => $task['task_kind'] ?? null,
+            'task' => $task['update_validation_task_id'] ?? $task['task_id'] ?? null,
+            'attempt' => $task['update_validation_attempt'] ?? $task['workflow_task_attempt'] ?? null];
+    };
+    $first = $pollRequest('pr-x', ['workflow', 'update_validation']);
+    $state['request_first'] = $identity($first);
+    $state['request_reordered'] = $identity($pollRequest('pr-x', ['update_validation', 'workflow']));
+    $state['request_other_set'] = $pollRequest('pr-x', ['workflow']);
+    $state['request_validation_set'] = $pollRequest('pr-x', ['update_validation']);
+    $task = $first['response']['task'] ?? [];
+    $complete($task['update_validation_task_id'] ?? 'missing', 'approve', $fence($prWorker, $task['update_validation_attempt'] ?? 1));
+    $state['request_update'] = $collect($pending)['status'];
+    $state['request_default'] = $identity($pollRequest('pr-z', null));
+    $state['request_default_both'] = $pollRequest('pr-z', ['update_validation', 'workflow']);
+    $state['request_default_replay'] = $identity($pollRequest('pr-z', null));
+
     // Routing refusals on their own queues.
     $register("{$id}-silent", "{$id}-q-silent", $contract(null), true);
     $waitingRun("{$id}-silent", "{$id}-q-silent", "{$id}-silent");
