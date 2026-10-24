@@ -119,16 +119,36 @@ fn member<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
     }
 }
 
+const OVERRIDES: &str = "DW_EXTERNAL_PAYLOAD_NAMESPACE_OVERRIDES";
+const LEGACY_OVERRIDES: &str = "WORKFLOW_SERVER_EXTERNAL_PAYLOAD_NAMESPACE_OVERRIDES";
+
+/// The honored namespace quota map: unset, or a JSON object (Server #705).
+/// The DW name wins whenever it is set; the legacy name is read only in its
+/// absence. A value that is not UTF-8 is refused, as PHP's
+/// `JSON_THROW_ON_ERROR` refuses invalid UTF-8, rather than decoded lossily
+/// into a different namespace key. Refusals never echo the value.
+fn namespace_overrides(
+    read: impl Fn(&str) -> std::result::Result<String, env::VarError>,
+) -> Result<serde_json::Map<String, Value>> {
+    let fetch = |name: &str| match read(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err(configuration_error()),
+    };
+    let primary = fetch(OVERRIDES)?;
+    let legacy = if primary.is_none() { fetch(LEGACY_OVERRIDES)? } else { None };
+    crate::config_audit::json_object(
+        |name| if name == OVERRIDES { primary.clone() } else { legacy.clone() },
+        OVERRIDES,
+        Some(LEGACY_OVERRIDES),
+    )
+    .map_err(|_| configuration_error())
+}
+
 impl ExternalPayloadConfig {
     pub(super) fn from_env() -> Result<Self> {
         let completion = process_value("COMPLETION_MAX_BYTES", Value::Null)?;
-        // Startup refuses a value that is not a JSON object (Server #705).
-        let overrides = crate::config_audit::json_object(
-            |name| env::var_os(name).map(|value| value.to_string_lossy().into_owned()),
-            "DW_EXTERNAL_PAYLOAD_NAMESPACE_OVERRIDES",
-            Some("WORKFLOW_SERVER_EXTERNAL_PAYLOAD_NAMESPACE_OVERRIDES"),
-        )
-        .map_err(|_| configuration_error())?;
+        let overrides = namespace_overrides(|name| env::var(name))?;
         Ok(Self {
             completion_max_bytes: (!completion.is_null())
                 .then(|| integer(&completion).max(1) as u64),
@@ -244,5 +264,36 @@ mod tests {
         };
         assert!(config.quota("other").is_err());
         assert!(config.quota("default").is_ok());
+    }
+
+    /// An environment holding exactly these variables.
+    fn environment(values: Vec<(&'static str, std::ffi::OsString)>) -> impl Fn(&str) -> std::result::Result<String, env::VarError> {
+        move |name| match values.iter().find(|(key, _)| *key == name) {
+            None => Err(env::VarError::NotPresent),
+            Some((_, value)) => value.clone().into_string().map_err(env::VarError::NotUnicode),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn namespace_overrides_refuse_non_utf8_under_either_name() {
+        use std::os::unix::ffi::OsStringExt;
+        // Valid JSON once lossily decoded: "tenant\u{FFFD}" would become a
+        // different namespace key and drop the intended cap.
+        let invalid = || std::ffi::OsString::from_vec(b"{\"tenant\xff\":{\"max_bytes\":5}}".to_vec());
+        assert!(namespace_overrides(environment(vec![(OVERRIDES, invalid())])).is_err());
+        assert!(namespace_overrides(environment(vec![(LEGACY_OVERRIDES, invalid())])).is_err());
+        // The DW value wins over the legacy one, as before, even when only the
+        // DW value is invalid.
+        assert!(namespace_overrides(environment(vec![(OVERRIDES, invalid()), (LEGACY_OVERRIDES, r#"{"a":{}}"#.into())])).is_err());
+        // Valid objects under either name still load.
+        let valid = namespace_overrides(environment(vec![(OVERRIDES, r#"{"tenant":{"max_bytes":5}}"#.into())])).unwrap();
+        assert_eq!(valid["tenant"], json!({"max_bytes": 5}));
+        let legacy = namespace_overrides(environment(vec![(LEGACY_OVERRIDES, r#"{"other":{"max_objects":3}}"#.into())])).unwrap();
+        assert_eq!(legacy["other"], json!({"max_objects": 3}));
+        assert!(namespace_overrides(environment(vec![])).unwrap().is_empty());
+        // A refusal does not echo the value.
+        let refused = format!("{:?}", namespace_overrides(environment(vec![(OVERRIDES, invalid())])).unwrap_err());
+        assert!(!refused.contains("tenant"), "{refused}");
     }
 }
