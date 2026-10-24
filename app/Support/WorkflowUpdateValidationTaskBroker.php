@@ -363,7 +363,7 @@ final class WorkflowUpdateValidationTaskBroker
 
     private function claim(string $namespace, WorkerRegistration $worker): ?WorkflowUpdateValidationTask
     {
-        return DB::transaction(function () use ($namespace, $worker): ?WorkflowUpdateValidationTask {
+        $claim = function () use ($namespace, $worker): ?WorkflowUpdateValidationTask {
             /** @var Collection<int, WorkflowUpdateValidationTask> $tasks */
             $tasks = WorkflowUpdateValidationTask::query()
                 ->where('namespace', $namespace)
@@ -396,7 +396,11 @@ final class WorkflowUpdateValidationTaskBroker
             }
 
             return null;
-        });
+        };
+
+        return app(WorkerProtocolMutationRetrier::class)->run(
+            fn (): ?WorkflowUpdateValidationTask => DB::transaction($claim),
+        );
     }
 
     /**
@@ -646,7 +650,7 @@ final class WorkflowUpdateValidationTaskBroker
 
     private function markTimedOut(WorkflowUpdateValidationTask $task): WorkflowUpdateValidationTask
     {
-        return DB::transaction(function () use ($task): WorkflowUpdateValidationTask {
+        $timeout = function () use ($task): WorkflowUpdateValidationTask {
             /** @var WorkflowUpdateValidationTask $locked */
             $locked = WorkflowUpdateValidationTask::query()->lockForUpdate()->findOrFail($task->id);
 
@@ -677,7 +681,11 @@ final class WorkflowUpdateValidationTaskBroker
             ])->save();
 
             return $locked;
-        });
+        };
+
+        return app(WorkerProtocolMutationRetrier::class)->run(
+            fn (): WorkflowUpdateValidationTask => DB::transaction($timeout),
+        );
     }
 
     /**
