@@ -103,7 +103,12 @@ store_methods! {
         {
             return Err(refused("activity_cancellation_acknowledgement_fence_mismatch"));
         }
-        if DB::optional_string(run, "cancellation_request_command_id")?.as_deref() != Some(request_id) {
+        // The run's request, or a scope request the run recorded.
+        let (_, facts) = Self::scope_run(&mut tx, &run_id).await?;
+        let events = Self::scope_events(&mut tx, &run_id).await?;
+        if facts.request_id.as_deref() != Some(request_id)
+            && !events.iter().any(|event| event.kind == "CancellationScopeRequested" && event.payload["request_id"] == request_id)
+        {
             return Err(refused("cancellation_request_mismatch"));
         }
         let Some((cancellation_event, cancellation)) =
@@ -117,7 +122,14 @@ store_methods! {
         {
             return Err(refused("activity_cancellation_snapshot_mismatch"));
         }
-        let Some(context) = Self::cooperative_context(&mut tx, &run_id, request_id).await? else {
+        // `ActivityCancellationContext::forEvent`: a scoped fence's accepted
+        // scope context, or the run request's.
+        let Some(context) = events.iter().find(|event| event.id == cancellation_event)
+            .and_then(|event| super::cancellation_scopes::cancellation_facts(&events, &facts, event))
+            .filter(|(request, _, _)| request == request_id)
+            .and_then(|(_, root_request_id, deadline)| Some(CooperativeContext { root_request_id,
+                deadline: chrono::DateTime::parse_from_rfc3339(&deadline).ok()?.with_timezone(&chrono::Utc) }))
+        else {
             return Err(refused("cancellation_context_not_recorded"));
         };
         if let Some((event, _)) = Self::acknowledgement_event(&mut tx, &run_id, &cancellation_event, attempt_id).await? {
@@ -156,20 +168,21 @@ store_methods! {
         execution_id: &str,
         attempt_id: &str,
     ) -> Result<Option<Value>> {
-        let Some(request_id) = DB::optional_string(run, "cancellation_request_command_id")? else {
-            return Ok(None);
-        };
+        // The execution's original fence, whichever request recorded it.
         let run_id = DB::string(run, "id")?;
-        let Some((cancellation_event, _)) =
-            Self::activity_cancellation_event(tx, &run_id, &request_id, execution_id, attempt_id).await?
+        let (_, facts) = Self::scope_run(tx, &run_id).await?;
+        let events = Self::scope_events(tx, &run_id).await?;
+        let Some(cancelled) = events.iter().find(|event| event.kind == "ActivityCancelled" && event.payload["activity_execution_id"] == execution_id)
+            .filter(|event| event.payload["activity_attempt_id"] == attempt_id)
         else {
             return Ok(None);
         };
-        let Some(context) = Self::cooperative_context(tx, &run_id, &request_id).await? else {
+        let Some((request_id, root_request_id, deadline)) = super::cancellation_scopes::cancellation_facts(&events, &facts, cancelled) else {
             return Ok(None);
         };
-        let mut receipt = json!({"request_id":request_id,"root_request_id":context.root_request_id,
-            "cleanup_deadline_at":micros(context.deadline),"cancellation_history_event_id":cancellation_event,
+        let cancellation_event = cancelled.id.clone();
+        let mut receipt = json!({"request_id":request_id,"root_request_id":root_request_id,
+            "cleanup_deadline_at":deadline,"cancellation_history_event_id":cancellation_event,
             "callback_state":"unknown","history_event_id":null,"acknowledged_at":null,"received_after_deadline":null});
         if let Some((event, payload)) = Self::acknowledgement_event(tx, &run_id, &cancellation_event, attempt_id).await? {
             receipt["callback_state"] = payload["callback_state"].clone();
@@ -215,26 +228,6 @@ store_methods! {
             }
         }
         Ok(None)
-    }
-
-    /// The request's root and original cleanup deadline, from its
-    /// `CooperativeCancellationRequested` event.
-    async fn cooperative_context(tx: &mut Transaction<'_, DB>, run_id: &str, request_id: &str) -> Result<Option<CooperativeContext>> {
-        let Some(requested) = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND workflow_command_id=$2 AND event_type='CooperativeCancellationRequested' ORDER BY sequence LIMIT 1")
-            .bind(run_id).bind(request_id).fetch_optional(&mut **tx).await?
-        else {
-            return Ok(None);
-        };
-        let cancellation = &DB::document_row(&requested, "payload")?["cancellation"];
-        let Some(deadline) = cancellation["cleanup_deadline_at"].as_str()
-            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-            .map(|value| value.with_timezone(&chrono::Utc))
-        else {
-            return Ok(None);
-        };
-        let root_request_id = cancellation["lineage"].as_array().and_then(|lineage| lineage.first())
-            .and_then(|root| root["request_id"].as_str()).unwrap_or(request_id).to_owned();
-        Ok(Some(CooperativeContext { root_request_id, deadline }))
     }
 }
 

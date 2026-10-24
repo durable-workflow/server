@@ -261,6 +261,17 @@ where
             .ok_or_else(|| refuse(StatusCode::CONFLICT,"cancellation_request_history_missing"))?;
         let request_sequence = DB::number(&requested, "sequence")?;
         let requested = DB::document_row(&requested, "payload")?;
+        // `validateRootOperationMembership`: root delivery has no frozen
+        // scoped inventory, so a scoped operation in its range needs scope
+        // delivery.
+        if let Some(reason) = Self::root_operation_membership(&mut tx, &run_id, sequence, span).await? {
+            return Err(RuntimeError::Protocol {
+                status: StatusCode::CONFLICT,
+                response: super::cancellation_scopes::enveloped(json!({"delivered":false,"task_id":task_id,"workflow_run_id":run_id,
+                    "request_id":null,"sequence":null,"call_kind":null,"sequence_span":null,"operation_sequence":null,
+                    "operation_sequence_span":null,"reason":reason})),
+            });
+        }
         if requested["workflow_command_id"] != request_id
             || requested["cancellation"]["request_id"] != request_id
         {
@@ -675,6 +686,46 @@ where
         })
     }
 
+    async fn root_operation_membership(tx: &mut Transaction<'_, DB>, run_id: &str, start: i64, span: i64) -> Result<Option<&'static str>> {
+        for event in Self::query("SELECT event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','TimerScheduled','ChildWorkflowScheduled','ServiceCallStarted','ConditionWaitOpened','SignalWaitOpened') ORDER BY sequence")
+            .bind(run_id).fetch_all(&mut **tx).await?
+        {
+            let payload = DB::document_row(&event, "payload")?;
+            let Some(sequence) = payload["sequence"].as_i64() else {
+                continue;
+            };
+            if sequence < start || sequence - start >= span {
+                continue;
+            }
+            let descriptor = match DB::string(&event, "event_type")?.as_str() {
+                "ActivityScheduled" => payload.get("activity"),
+                "TimerScheduled" => payload.get("timer"),
+                "ChildWorkflowScheduled" => payload.get("child_workflow"),
+                "ServiceCallStarted" => payload.get("service_operation"),
+                _ => None,
+            };
+            if descriptor.is_some_and(|descriptor| !descriptor.is_object() && descriptor.as_array().is_none_or(|items| !items.is_empty())) {
+                return Ok(Some("cancellation_delivery_scope_membership_invalid"));
+            }
+            let nested = descriptor.and_then(|descriptor| descriptor.get("cancellation_scope_id"));
+            let scope = match (payload.get("cancellation_scope_id"), nested) {
+                (Some(flat), _) => flat,
+                (None, Some(nested)) => nested,
+                (None, None) => continue,
+            };
+            let Some(scope) = scope.as_str().filter(|scope| !scope.is_empty()) else {
+                return Ok(Some("cancellation_delivery_scope_membership_invalid"));
+            };
+            if nested.is_some_and(|nested| nested != scope) {
+                return Ok(Some("cancellation_delivery_scope_membership_invalid"));
+            }
+            if scope != super::cancellation_scopes::ROOT {
+                return Ok(Some("cancellation_delivery_requires_scope"));
+            }
+        }
+        Ok(None)
+    }
+
     async fn cancel_root_timer(
         tx: &mut Transaction<'_, DB>,
         run: &DB::Row,
@@ -826,11 +877,19 @@ where
         Ok(())
     }
 
+    /// `CooperativeCancellationPolicy::resumeUndeliveredRequest`: after a
+    /// cooperative claim completes, an undelivered request gets a workflow
+    /// task when none is open. The new task is reported with the tasks the
+    /// completion created.
     pub(super) async fn resume_undelivered_cancellation(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
+        task: &DB::Row,
         queue: &str,
-    ) -> Result<()> {
+    ) -> Result<Option<String>> {
+        if !Self::claim_supports_cancellation(task)? {
+            return Ok(None);
+        }
         let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
             .bind(run_id)
             .fetch_one(&mut **tx)
@@ -842,17 +901,17 @@ where
             || DB::optional_instant(&run, "cancellation_deadline_at")?
                 .is_none_or(|deadline| deadline <= now())
         {
-            return Ok(());
+            return Ok(None);
         }
         let Some(request_id) = DB::optional_string(&run, "cancellation_request_command_id")? else {
-            return Ok(());
+            return Ok(None);
         };
         if Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased')")
             .bind(run_id).fetch_one(&mut **tx).await?==0 {
-            Self::create_task(tx,run_id,queue,"workflow",json!({"resume_source_kind":"cancellation_request",
-                "resume_source_id":request_id,"workflow_command_id":request_id})).await?;
+            return Self::create_task(tx,run_id,queue,"workflow",json!({"resume_source_kind":"cancellation_request",
+                "resume_source_id":request_id,"workflow_command_id":request_id})).await.map(Some);
         }
-        Ok(())
+        Ok(None)
     }
 
     pub(crate) async fn request_cancellation(
@@ -994,6 +1053,9 @@ where
             Some(&request_id),
         )
         .await?;
+        // The unshielded scope subtree is requested in the same transaction;
+        // the first request leaves a scope-request task when none is open.
+        self.request_scope_descendants(&mut tx, run_id, super::cancellation_scopes::ROOT).await?;
         let open_tasks = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased')")
             .bind(run_id).fetch_one(&mut *tx).await?;
         if open_tasks == 0 {

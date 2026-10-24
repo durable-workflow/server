@@ -29,9 +29,6 @@ POST /api/worker/update-validation-tasks/poll
 POST /api/worker/update-validation-tasks/{taskId}/approve
 POST /api/worker/update-validation-tasks/{taskId}/reject
 POST /api/worker/workflow-tasks/{taskId}/cancellation-scopes/checkpoint
-POST /api/worker/workflow-tasks/{taskId}/cancellation-scopes/deliver
-POST /api/worker/workflow-tasks/{taskId}/cancellation-scopes/open
-POST /api/worker/workflow-tasks/{taskId}/cancellation-scopes/prepare
 POST /api/worker/workflow-tasks/{taskId}/local-activities/checkpoint
 POST /api/worker/workflow-tasks/{taskId}/local-activities/checkpoint-group
 POST /api/worker/workflow-tasks/{taskId}/local-activities/prepare
