@@ -287,6 +287,9 @@ mod external_payloads;
 #[path = "execution/trace_carriers.rs"]
 mod trace_carriers;
 
+#[path = "execution/activity_cancellation_ack.rs"]
+mod activity_cancellation_ack;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {
@@ -4533,10 +4536,12 @@ async fn reported_activity_failure_commits_one_persistent_retry_and_fences_old_o
     conflicting["failure"]["message"] = json!("different");
     let refused = request(&app_b, "POST", &fail_path, conflicting).await;
     assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
+    let mut receipt = refused.1.clone();
+    assert!(receipt.as_object_mut().unwrap().remove("server_capabilities").is_some(), "worker protocol fields");
     assert_eq!(
-        refused.1,
+        receipt,
         json!({"task_id":first["task_id"],"activity_attempt_id":first["activity_attempt_id"],
-            "outcome":"failed","recorded":false,"reason":"stale_attempt","next_task_id":null})
+            "outcome":"failed","recorded":false,"reason":"stale_attempt","next_task_id":null,"protocol_version":"1.20"})
     );
     let old_complete_path = format!(
         "/api/worker/activity-tasks/{}/complete",
@@ -4582,11 +4587,14 @@ async fn reported_activity_failure_commits_one_persistent_retry_and_fences_old_o
     // stale receipt PHP returns to that attempt's owner.
     let refused = request(&app_b, "POST", &old_complete_path, old_complete.clone()).await;
     assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
+    let mut receipt = refused.1.clone();
+    assert!(receipt.as_object_mut().unwrap().remove("server_capabilities").is_some(), "worker protocol fields");
     assert_eq!(
-        refused.1,
+        receipt,
         json!({"task_id":first["task_id"],"activity_attempt_id":first["activity_attempt_id"],
             "outcome":"completed","recorded":false,"reason":"stale_attempt","next_task_id":null,
-            "lease_owner":"worker","activity_status":"running","attempt_status":"failed","task_status":"completed"})
+            "lease_owner":"worker","activity_status":"running","attempt_status":"failed","task_status":"completed",
+            "protocol_version":"1.20"})
     );
     assert_eq!(
         request(&app_b, "POST", &old_complete_path, old_complete)
