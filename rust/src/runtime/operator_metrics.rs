@@ -283,8 +283,7 @@ where
     /// server adds.
     pub(super) async fn operator_metrics(&self, config: &MetricsConfig) -> Result<Value> {
         let mut metrics = self.operator_metrics_snapshot(config).await?;
-        metrics["worker_sessions"] =
-            json!({"total": 0, "active": 0, "closed": 0, "expired": 0, "failed": 0, "orphaned": 0});
+        metrics["worker_sessions"] = self.worker_session_metrics().await?;
         metrics["capacity_evidence"] =
             json!({"available": false, "reason": "native_capacity_evidence_unavailable"});
         metrics["runtime_external_payload_cleanup"] =
@@ -309,8 +308,7 @@ where
             metrics["capacity_evidence"] =
                 json!({"available": false, "reason": "native_capacity_evidence_unavailable"});
         }
-        metrics["worker_sessions"] =
-            json!({"total": 0, "active": 0, "closed": 0, "expired": 0, "failed": 0, "orphaned": 0});
+        metrics["worker_sessions"] = self.worker_session_metrics().await?;
         metrics["runtime_external_payload_cleanup"] = self.external_payload_cleanup_metrics(config).await?;
         let filter = types.map(|types| Value::from(types.to_vec()).to_string());
         let filter = filter.as_deref();

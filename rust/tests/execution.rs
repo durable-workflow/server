@@ -295,6 +295,9 @@ mod workflow_poll_requests;
 #[path = "execution/worker_poll_fence.rs"]
 mod worker_poll_fence;
 
+#[path = "execution/worker_sessions.rs"]
+mod worker_sessions;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {

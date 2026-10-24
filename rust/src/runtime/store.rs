@@ -1818,7 +1818,46 @@ where
             {
                 continue;
             }
+            // `workerCanSatisfySession`: a session-bound activity goes only to
+            // a worker on protocol 1.8 or newer, on the session's queue, with
+            // every requirement among its capabilities.
+            let session = match activity.as_ref() {
+                Some(activity) => DB::optional_document_row(activity, "activity_options")?
+                    .and_then(|options| super::worker_sessions::CommandSession::from_snapshot(&options["worker_session"])),
+                None => None,
+            };
+            let activity_queue = match activity.as_ref() {
+                Some(activity) => DB::optional_string(activity, "queue")?.unwrap_or_else(|| queue.to_owned()),
+                None => queue.to_owned(),
+            };
+            if let Some(session) = &session {
+                let capabilities: Vec<String> = DB::optional_document_row(&worker, "capabilities")?
+                    .as_ref()
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|value| value.as_str().map(str::to_owned))
+                    .collect();
+                if !session.claimable_by(protocol_version, &DB::string(&worker, "task_queue")?, &activity_queue, &capabilities) {
+                    continue;
+                }
+            }
             let task_id = DB::string(&task, "id")?;
+            // `admitActivity`: the session admits the claim or the claim is
+            // rolled back, so a held or full session leaves the task ready.
+            let session_view = match &session {
+                Some(session) => {
+                    let connection = match activity.as_ref() {
+                        Some(activity) => DB::optional_string(activity, "connection")?,
+                        None => None,
+                    };
+                    match self.admit_session_activity(tx, &worker, session, &activity_queue, connection.as_deref(), &task_id).await? {
+                        Some(view) => Some(view),
+                        None => continue,
+                    }
+                }
+                None => None,
+            };
             let attempt = DB::number(&task, "attempt_count")?
                 .checked_add(1)
                 .ok_or_else(|| refuse(StatusCode::CONFLICT, "task_attempt_exhausted"))?;
@@ -1908,6 +1947,9 @@ where
                 claim["attempt_number"] = json!(attempt);
                 claim["activity_type"] = json!(type_name);
                 claim["idempotency_key"] = json!(activity_id);
+                if let Some(view) = session_view.clone() {
+                    claim["worker_session"] = view;
+                }
                 // A standalone activity started without input has none.
                 if let Some(arguments) = DB::optional_string(&activity, "arguments")? {
                     claim["arguments"] = wire(&arguments);
@@ -2325,7 +2367,9 @@ where
                             "type",
                             "activity_type",
                             "arguments",
+                            "connection",
                             "queue",
+                            "worker_session",
                             "retry_policy",
                             "start_to_close_timeout",
                             "schedule_to_start_timeout",
@@ -2448,6 +2492,7 @@ where
             );
         }
         Self::workflow_task_guard(&mut tx, &task, &body).await?;
+        self.guard_worker_session_commands(&mut tx, &task, task_id, &body, protocol, commands).await?;
         // `childCancellationPolicyGuard`: a child that requests cancellation
         // on parent close, or propagates the parent's cancellation, needs a
         // cooperative worker's claim and a protocol 1.20 request.
@@ -2588,11 +2633,16 @@ where
                 let metadata = super::selections::metadata(command, "activity")?;
                 super::selections::check_sequence(&metadata, sequence)?;
                 let activity_id = id();
-                let queue = command
-                    .get("queue")
-                    .map_or(Ok(DB::string(&run, "queue")?), |_| {
-                        text(command, "queue").map(str::to_owned)
-                    })?;
+                // A session-bound activity without its own queue or
+                // connection takes the session's (`applyWorkerSessionRouting`).
+                let session = super::worker_sessions::command_session(command);
+                let queue = match command.get("queue").filter(|queue| !queue.is_null()) {
+                    Some(_) => text(command, "queue")?.to_owned(),
+                    None => session.as_ref().and_then(|session| session.queue.clone()).map_or_else(|| DB::string(&run, "queue"), Ok)?,
+                };
+                let connection = command["connection"].as_str().map(str::trim).filter(|connection| !connection.is_empty()).map(str::to_owned)
+                    .or_else(|| session.as_ref().and_then(|session| session.connection.clone()));
+                let activity_options = session.as_ref().map(|session| json!({"worker_session": session.snapshot()}));
                 let activity_type = text(command, "activity_type")?;
                 let arguments = match external.get(&index) {
                     Some(prepared) => {
@@ -2617,11 +2667,12 @@ where
                 // The preserved SQL schema defaults this counter to one.
                 // Published authored scheduling explicitly starts at zero;
                 // only the original worker claim consumes its first attempt.
-                Self::query("INSERT INTO activity_executions(id,workflow_run_id,sequence,activity_type,activity_class,status,attempt_count,payload_codec,arguments,queue,retry_policy,parallel_group_path,schedule_deadline_at,schedule_to_close_deadline_at) VALUES ($1,$2,$3,$4,$5,'pending',0,'avro',$6,$7,$8,$9,$10,$11)")
+                Self::query("INSERT INTO activity_executions(id,workflow_run_id,sequence,activity_type,activity_class,status,attempt_count,payload_codec,arguments,queue,retry_policy,parallel_group_path,schedule_deadline_at,schedule_to_close_deadline_at,connection,activity_options) VALUES ($1,$2,$3,$4,$5,'pending',0,'avro',$6,$7,$8,$9,$10,$11,$12,$13)")
                     .bind(&activity_id).bind(&run_id).bind(sequence).bind(activity_type).bind(activity_type)
                     .bind(&arguments).bind(&queue).bind(policy.as_ref().map(DB::document))
                     .bind(DB::optional_document(&metadata["parallel_group_path"]))
-                    .bind(DB::optional_time(schedule_deadline)).bind(DB::optional_time(lifecycle_deadline)).execute(&mut *tx).await?;
+                    .bind(DB::optional_time(schedule_deadline)).bind(DB::optional_time(lifecycle_deadline))
+                    .bind(connection.as_deref()).bind(activity_options.as_ref().map(DB::document)).execute(&mut *tx).await?;
                 let activity = Self::query("SELECT * FROM activity_executions WHERE id=$1")
                     .bind(&activity_id)
                     .fetch_one(&mut *tx)
@@ -4180,7 +4231,8 @@ pub(crate) fn capabilities() -> Value {
     let mut value = json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "record_side_effect", "complete_workflow", "fail_workflow", "continue_as_new", "complete_update", "fail_update"],
         "worker_deregistration_fencing":{"schema":"durable-workflow.v2.worker-deregistration.v1","supported":true,"receipt_retention_seconds":600,"endpoint":"/worker/registrations/{workerId}/deregister"},
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
-        "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,
+        "worker_sessions": super::worker_sessions::capability(), "worker_session_verbs": ["create", "heartbeat", "close"],
+        "sticky_execution": false, "local_activities": false, "message_streams": false,
         "update_validation_tasks": true, "synchronous_update_validation": super::update_validation::capability(),
         "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": true,
         "activity_lease_renewal": true});
