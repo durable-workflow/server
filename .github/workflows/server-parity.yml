@@ -1716,7 +1716,9 @@ jobs:
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           mkdir -p parity-state parity-evidence
-          chmod 0777 parity-state parity-evidence
+          # The cohorts' published PHP containers run as 1000:1000; grant that
+          # user alone, not everyone.
+          setfacl -m u:1000:rwx,d:u:1000:rwx parity-state parity-evidence
           docker network create "$RESOURCE_SCOPE"
           docker run -d --name "$RESOURCE_SCOPE-recovered" --network "$RESOURCE_SCOPE" --network-alias=parity-recovered \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
