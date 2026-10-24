@@ -115,6 +115,8 @@ mod history_pages;
 mod declared_signals;
 #[path = "execution/worker_history_presentation.rs"]
 mod worker_history_presentation;
+#[path = "execution/message_streams.rs"]
+mod message_streams;
 #[path = "execution/poll_waits.rs"]
 mod poll_waits;
 #[path = "execution/child_cascade.rs"]

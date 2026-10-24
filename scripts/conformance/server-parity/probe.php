@@ -439,6 +439,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $clusterInfo = isset($fixture['cluster_info']) ? finishHttpClusterInfo($client, $fixture, $workflowId, $url) : null;
     $repairPass = isset($fixture['repair_pass']) ? finishHttpRepairPass($client, $fixture, $workflowId, $url) : null;
     $namespaceDelete = isset($fixture['namespace_delete']) ? finishHttpNamespaceDelete($client, $fixture, $workflowId, $queue, $url) : null;
+    $messageStreams = isset($fixture['message_streams']) ? finishHttpMessageStreams($client, $fixture, $workflowId, $url) : null;
     $schedulePolicies = isset($fixture['schedule_policies']) ? finishHttpSchedulePolicies($client, $fixture, $workflowId, $url) : null;
     $scheduleCatalog = isset($fixture['schedule_catalog'])
         ? finishHttpSchedulePolicies($client, $fixture, $workflowId, $url, 'schedule_catalog')
@@ -547,6 +548,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'cluster_info' => $clusterInfo,
         'repair_pass' => $repairPass,
         'namespace_delete' => $namespaceDelete,
+        'message_streams' => $messageStreams,
         'schedule_policies' => $schedulePolicies,
         'schedule_catalog' => $scheduleCatalog,
         'signals_before_worker' => $signalsBeforeWorker,
@@ -859,6 +861,7 @@ try {
     require __DIR__.'/cluster-info-probe.php';
     require __DIR__.'/repair-pass-probe.php';
     require __DIR__.'/namespace-delete-probe.php';
+    require __DIR__.'/message-streams-probe.php';
     require __DIR__.'/schedule-policies-probe.php';
     require __DIR__.'/signals-before-worker-probe.php';
     require __DIR__.'/worker-deregistration-probe.php';
@@ -1043,6 +1046,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['namespace_delete'])) {
         $observation['namespace_delete'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_namespaces'];
+    }
+    if ($mode === 'embedded' && isset($fixture['message_streams'])) {
+        $observation['message_streams'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_message_streams'];
     }
     if ($mode === 'embedded' && isset($fixture['schedule_policies'])) {
         $observation['schedule_policies'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_schedules'];

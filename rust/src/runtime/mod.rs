@@ -118,6 +118,7 @@ mod service_catalog;
 mod sqlite;
 mod start_definition;
 mod start_request;
+mod message_streams;
 mod storage_test;
 mod store;
 mod system_metrics;
