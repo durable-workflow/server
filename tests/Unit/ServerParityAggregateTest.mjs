@@ -103,7 +103,7 @@ test('the fixture jobs run only through the classifier and the result waits for 
     // that. Every one waits for the SDK adapters, and only deadline health
     // also waits for the optimized native build.
     const expected = id === 'codec-deadline-health' ? '[published-sdk-adapters, codec-native-build]' : 'published-sdk-adapters';
-    assert.match(blocks[id], new RegExp(`^ {4}needs: ${expected.replace(/[[\]]/g, '\\$&')}$`, 'm'), id);
+    assert.ok(blocks[id].split('\n').includes(`    needs: ${expected}`), `${id} needs ${expected}`);
     assert.doesNotMatch(blocks[id], /^ {4}if:/m, id);
   }
   // Every job other than the classifier and the result is a gated fixture job.
