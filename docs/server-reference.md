@@ -62,6 +62,31 @@ curl -X POST http://localhost:8080/api/worker/register \
 Use Redis or another shared cache backend for multi-node deployments. The file
 cache default is intentionally scoped to the one-container SQLite quickstart.
 
+#### SQLite mount identity
+
+Mount the SQLite database's parent directory so the HTTP process can write both
+the database and its journal files. For a custom `DB_DATABASE`, the nearest
+existing parent must also allow that identity to create any missing directories.
+
+Root startup delegates database creation and permission checks to
+`APACHE_RUN_USER` and `APACHE_RUN_GROUP` (both default to `www-data`). Names and
+Apache's numeric `#UID` / `#GID` form are supported. Nonroot startup uses its
+current UID/GID; keep bootstrap, HTTP and other SQLite roles aligned. The image
+resolves identities at runtime rather than assuming a host UID.
+
+New files honor the caller's umask. Existing database bytes, ownership and modes
+are preserved. An incompatible file or parent fails startup with the required
+UID/GID and a mount-permission explanation, before configuration caching or
+migrations. Correct the mount's intended permissions before retrying; startup
+does not repair an existing operator-owned file's permissions.
+
+Images affected by [#706](https://github.com/durable-workflow/server/issues/706)
+can instead create a fresh custom file as root and fail on the first HTTP write.
+Use an image containing that fix or align all roles to the actual HTTP identity.
+This database contract is separate from
+[read-only root filesystem support](https://github.com/durable-workflow/server/issues/694),
+which also requires writable Laravel and Apache runtime paths.
+
 ### Official Image + Compose
 
 Use this path when you want a source-free multi-container stack backed by MySQL
@@ -1438,6 +1463,8 @@ The production image defaults to `DB_CONNECTION=sqlite`,
 services. The entrypoint creates the SQLite file when a fresh volume is mounted.
 `server-bootstrap` creates the database queue schema, and the queue-worker
 process shown above consumes the persisted timer jobs.
+For custom paths and existing operator databases, follow the
+[SQLite mount identity contract](#sqlite-mount-identity).
 SQLite uses WAL journal mode and a 5000 ms busy timeout by default. The server
 also serializes SQLite worker poll claim probes through the polling cache so
 concurrent PHP/Python workers in the single-container quickstart do not race the
@@ -1903,6 +1930,10 @@ The image's default command runs Apache with mod_php, two prefork request
 processes ready at startup, up to four idle spare processes, and a maximum of
 24 concurrent request processes. Keeping the eager and idle pools small leaves
 memory for Laravel requests while retaining burst capacity.
+HTTP keep-alive is disabled in this prefork configuration. Each completed
+response releases its connection instead of reserving a PHP process between
+requests. Clients reconnect for their next request; an active long poll still
+holds its connection until its normal response or deadline.
 A workflow query may hold one process while it waits for a worker response;
 worker heartbeats, query-task polls, completions, and control-plane requests
 continue to enter Laravel through other processes.

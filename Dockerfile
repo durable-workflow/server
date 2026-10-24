@@ -47,6 +47,7 @@ RUN chmod 0755 /usr/local/lib/server-trust/verify-trust.sh \
     python3 \
     python3-venv \
     unzip \
+    util-linux \
     && docker-php-ext-install opcache redis pdo pdo_mysql pdo_pgsql pcntl zip bcmath \
     && groupmod --gid 1000 www-data \
     && usermod --uid 1000 --gid 1000 www-data \
