@@ -38,7 +38,7 @@ export function pushPathPatterns(workflowText) {
 // `**` matches any characters, `*` matches any characters except `/`.
 export function patternRegExp(pattern) {
   if (!/^[A-Za-z0-9._/*-]+$/.test(pattern)) throw new Error(`Unsupported path filter pattern: ${pattern}`);
-  const body = pattern.split('**').map(part => part.split('*').map(text => text.replace(/[.]/g, '\\.')).join('[^/]*')).join('.*');
+  const body = pattern.split('**').map(part => part.split('*').map(text => text.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')).join('[^/]*')).join('.*');
   return new RegExp(`^${body}$`);
 }
 
