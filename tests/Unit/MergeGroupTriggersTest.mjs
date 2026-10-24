@@ -42,8 +42,14 @@ test('Public Boundary scans a queue group over its exact range and still scans e
   assert.doesNotMatch(triggers(text), /branches-ignore|branches:|paths/);
 });
 
+// A workflow the queue waits for may cancel only a superseded pull request
+// run. PHPUnit Feature has no concurrency group (its required gate runs with
+// always(), per the central action policy), so it never cancels anything.
 test('superseded-run cancellation never cancels a queue group', () => {
-  for (const name of ['phpunit-feature.yml', 'server-parity.yml']) {
-    assert.match(workflow(name), /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/, name);
+  for (const name of ['phpunit-feature.yml', 'server-parity.yml', 'public-boundary.yml']) {
+    for (const line of workflow(name).match(/^ *cancel-in-progress:.*$/gm) ?? []) {
+      assert.match(line, /^ {2}cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}$/, name);
+    }
   }
+  assert.match(workflow('server-parity.yml'), /^ {2}cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}$/m);
 });
