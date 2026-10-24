@@ -94,7 +94,11 @@ impl Connection for MySqlConnection {
 
     #[doc(hidden)]
     fn flush(&mut self) -> impl Future<Output = Result<(), Error>> + Send + '_ {
-        self.inner.stream.wait_until_ready()
+        async move {
+            // `Connection::flush` sends everything, queued closes included.
+            self.inner.stream.flush_queued().await?;
+            self.inner.stream.wait_until_ready().await
+        }
     }
 
     fn cached_statements_size(&self) -> usize {
@@ -105,13 +109,13 @@ impl Connection for MySqlConnection {
         while let Some((statement_id, _)) = self.inner.cache_statement.remove_lru() {
             self.inner
                 .stream
-                .send_packet(StmtClose {
+                .queue_packet(StmtClose {
                     statement: statement_id,
-                })
-                .await?;
+                })?;
         }
 
-        Ok(())
+        // The server closes them now, not with some later command.
+        self.inner.stream.flush_queued().await
     }
 
     #[doc(hidden)]

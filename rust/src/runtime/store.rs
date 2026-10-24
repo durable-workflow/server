@@ -80,6 +80,61 @@ pub(super) fn id() -> String {
         .to_string()
 }
 
+/// The distinct, non-empty signal IDs a history page's `SignalReceived`
+/// events name: the only signal records its hydration reads.
+fn page_signal_ids(events: &[Value]) -> std::collections::BTreeSet<String> {
+    events
+        .iter()
+        .filter(|event| event["event_type"] == "SignalReceived")
+        .filter_map(|event| event["payload"]["signal_id"].as_str())
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+#[cfg(test)]
+#[test]
+fn a_history_page_reads_only_its_own_signal_records() {
+    let signal = |id: &str| json!({"event_type":"SignalReceived","payload":{"signal_id":id}});
+    let page = [signal("b"), signal("a"), signal("a"), signal(""), json!({"event_type":"TimerFired","payload":{"signal_id":"c"}}),
+        json!({"event_type":"SignalReceived","payload":{}})];
+    assert_eq!(page_signal_ids(&page).into_iter().collect::<Vec<_>>(), ["a", "b"]);
+    // One event, one record, however many signals the run holds.
+    assert_eq!(page_signal_ids(&[signal("only")]).len(), 1);
+    assert!(page_signal_ids(&[]).is_empty());
+}
+
+// Hydration never reads a record the page does not name. The run's other
+// record holds a sequence that cannot be decoded (SQLite keeps the text in
+// an integer column), so a run-wide read fails where a page-scoped one
+// succeeds; a same-ID record of another run stays fenced out.
+#[cfg(test)]
+#[tokio::test]
+async fn signal_hydration_reads_no_record_outside_the_page() {
+    use sqlx::Connection;
+    let mut connection = sqlx::SqliteConnection::connect("sqlite::memory:").await.unwrap();
+    sqlx::query("CREATE TABLE workflow_signal_records (id TEXT, workflow_run_id TEXT, workflow_sequence INTEGER)")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    for (id, run, sequence) in [("page", "run", "7"), ("unrelated", "run", "not-a-sequence"), ("fenced", "other", "9")] {
+        sqlx::query("INSERT INTO workflow_signal_records VALUES ($1, $2, $3)")
+            .bind(id)
+            .bind(run)
+            .bind(sequence)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+    }
+    let mut events = vec![
+        json!({"event_type":"SignalReceived","payload":{"signal_id":"page"}}),
+        json!({"event_type":"SignalReceived","payload":{"signal_id":"fenced"}}),
+    ];
+    Store::<sqlx::Sqlite>::with_signal_sequences(&mut connection, "run", &mut events).await.unwrap();
+    assert_eq!(events[0]["payload"]["workflow_sequence"], 7, "{events:?}");
+    assert!(events[1]["payload"].get("workflow_sequence").is_none(), "{events:?}");
+}
+
 #[cfg(test)]
 #[test]
 fn identifiers_keep_creation_order_within_a_millisecond() {
@@ -1124,11 +1179,10 @@ where
         let wait = open.clone().filter(|wait| {
             wait.get("signal_name").is_none() || (wait["signal_name"] == name && wait["signal_wait_id"] == wait_id)
         });
-        if wait.is_none()
-            && !Self::declared_signals(tx, run_id)
-                .await?
-                .is_some_and(|names| names.contains(&name))
-        {
+        let declared = Self::declared_signals(tx, run_id)
+            .await?
+            .is_some_and(|names| names.contains(&name));
+        if wait.is_none() && !declared {
             let reason = if open.is_some() { "signal_wait_mismatch" } else { "signal_wait_not_open" };
             return Err(refuse(StatusCode::CONFLICT, reason));
         }
@@ -1156,8 +1210,13 @@ where
             .bind(&command_id)
             .execute(&mut **tx)
             .await?;
+        // PHP's `applySignal` takes a sequence only from the signal's own
+        // wait, so a declared signal applied under a condition wait keeps no
+        // workflow sequence. Only an undeclared signal takes the condition
+        // wait's (`markConditionWaitSignalConsumed`).
+        let record_sequence = if direct || !declared { sequence } else { None };
         Self::query("UPDATE workflow_signal_records SET status='applied',workflow_sequence=$1,applied_at=$2,closed_at=$3 WHERE id=$4")
-            .bind(DB::optional_integer(sequence)).bind(DB::bind_time(applied_at)).bind(DB::bind_time(applied_at)).bind(signal_id).execute(&mut **tx).await?;
+            .bind(DB::optional_integer(record_sequence)).bind(DB::bind_time(applied_at)).bind(DB::bind_time(applied_at)).bind(signal_id).execute(&mut **tx).await?;
         let run = Self::query(
             "SELECT workflow_instance_id,message_cursor_position FROM workflow_runs WHERE id=$1",
         )
@@ -1798,10 +1857,11 @@ where
                         }
                     }
                 }
-                let (events, next) = match page {
+                let (mut events, next) = match page {
                     Some(size) => Self::history_page_connection(&mut tx, &run_id, 0, size).await?,
                     None => (Self::whole_history(&mut tx, &run_id).await?, None),
                 };
+                Self::with_signal_sequences(&mut tx, &run_id, &mut events).await?;
                 let budget = Self::workflow_history_budget(
                     &mut tx,
                     &run_id,
@@ -1865,7 +1925,8 @@ where
         }
         Self::workflow_task_guard(&mut tx, &task, &body).await?;
         let run_id = DB::string(&task, "workflow_run_id")?;
-        let (events, next) = Self::history_page_connection(&mut tx, &run_id, after, size).await?;
+        let (mut events, next) = Self::history_page_connection(&mut tx, &run_id, after, size).await?;
+        Self::with_signal_sequences(&mut tx, &run_id, &mut events).await?;
         let run = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
             .bind(&run_id)
             .fetch_one(&mut *tx)
@@ -3565,6 +3626,40 @@ where
 
     /// A poll's whole history, read in bounded pages: published PHP sends
     /// every event unless the worker asks for pages.
+    /// `WorkflowTaskPoller::historyEventsWithSignalArgumentEnvelopes`: the
+    /// history a worker reads shows a consumed signal's workflow sequence on
+    /// its `SignalReceived`, from the signal's record. The run's own history
+    /// route shows the events as recorded.
+    async fn with_signal_sequences(connection: &mut DB::Connection, run_id: &str, events: &mut [Value]) -> Result<()> {
+        if !events.iter().any(|event| event["event_type"] == "SignalReceived") {
+            return Ok(());
+        }
+        // Only this page's signals, as PHP's `whereIn('id', $signalIds)` does:
+        // the work stays bounded by the page, not by the run's signal count,
+        // and the run fence keeps another run's record out.
+        let ids = page_signal_ids(events);
+        let mut sequences = std::collections::HashMap::new();
+        for id in ids {
+            if let Some(row) = Self::query("SELECT workflow_sequence FROM workflow_signal_records WHERE id=$1 AND workflow_run_id=$2 AND workflow_sequence IS NOT NULL")
+                .bind(id.as_str())
+                .bind(run_id)
+                .fetch_optional(&mut *connection)
+                .await?
+            {
+                sequences.insert(id, DB::number(&row, "workflow_sequence")?);
+            }
+        }
+        for event in events.iter_mut().filter(|event| event["event_type"] == "SignalReceived") {
+            let sequence = event["payload"]["signal_id"].as_str().and_then(|id| sequences.get(id)).copied();
+            if let (Some(sequence), Some(payload)) = (sequence, event["payload"].as_object_mut()) {
+                if payload.get("workflow_sequence").is_none_or(Value::is_null) {
+                    payload.insert("workflow_sequence".into(), json!(sequence));
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn whole_history(connection: &mut DB::Connection, run_id: &str) -> Result<Vec<Value>> {
         let mut events = Vec::new();
         let mut after = 0;
