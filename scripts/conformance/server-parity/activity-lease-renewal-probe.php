@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use DurableWorkflow\Client;
 use GuzzleHttp\Client as LeaseRenewalHttp;
+use GuzzleHttp\HandlerStack;
 
 // Runtime activity lease renewal (POST /api/worker/activity-tasks/{task}/renew-lease)
 // over raw worker HTTP in a fresh namespace. Three runs each claim one
@@ -17,8 +18,12 @@ function finishHttpActivityLeaseRenewal(Client $admin, array $fixture, string $w
     $namespace = strtolower($workflowId.'-lease');
     $admin->createNamespace($namespace, 'activity lease renewal λ', 30);
     $token = getenv('DW_PARITY_TOKEN') ?: null;
+    // The SQLite reference shares its database with a one-second maintenance
+    // loop; retry its retryable lock-pressure refusals, as the other probes do.
+    $stack = HandlerStack::create();
+    $stack->push(LockPressurePollRetries::middleware(), 'lock_pressure_poll_retry');
     $http = new LeaseRenewalHttp(['base_uri' => rtrim($url, '/'), 'http_errors' => false,
-        'connect_timeout' => 1, 'timeout' => 30]);
+        'connect_timeout' => 1, 'timeout' => 30, 'handler' => $stack]);
     $raw = static function (string $method, string $path, ?array $body = [], string $protocol = '1.20') use ($http, $token, $namespace): array {
         $options = ['headers' => array_filter([
             'Authorization' => $token === null ? null : 'Bearer '.$token,
