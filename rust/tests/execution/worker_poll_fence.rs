@@ -238,9 +238,19 @@ async fn a_reregistration_ends_held_polls_whatever_its_metadata_and_timing() {
             let (status, body) = request(&app, "POST", "/api/worker/register", registration(&worker, process)).await;
             assert_eq!(status, StatusCode::CREATED, "{body}");
             if kind == "activity" {
-                // The activity's run needs its first workflow task first.
+                // Another worker on the same queue takes the run's first
+                // workflow task and schedules the activity, so the
+                // re-registration below, which releases the replaced
+                // registration's leases, cannot touch that task.
+                let author = format!("{worker}-author");
+                let (status, body) = request(&app, "POST", "/api/worker/register", json!({"worker_id":author,"task_queue":worker,
+                    "runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":[]})).await;
+                assert_eq!(status, StatusCode::CREATED, "{body}");
                 start_on(&app, &worker).await;
-                let task = poll_now(&app, &worker, "workflow").await["task"].clone();
+                let (status, polled) = request(&app, "POST", "/api/worker/workflow-tasks/poll",
+                    json!({"worker_id":author,"task_queue":worker,"timeout_seconds":0})).await;
+                assert_eq!((status, polled["poll_status"].clone()), (StatusCode::OK, json!("leased")), "{polled}");
+                let task = polled["task"].clone();
                 let poll = held_now(&app, &worker, &worker, "activity").await;
                 let (status, body) = request(&app, "POST", "/api/worker/register", registration(&worker, process)).await;
                 assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -305,6 +315,5 @@ async fn a_reregistration_ends_a_held_query_poll_whatever_its_metadata_and_timin
             json!({"worker_id":worker,"task_queue":"test","timeout_seconds":2})).await;
         assert_eq!((status, next["task"]["query_name"].clone()), (StatusCode::OK, json!("state")), "{case}: {next}");
         query.abort();
-        database.remove().await;
     }
 }
