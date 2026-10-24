@@ -14,6 +14,7 @@ on:
       - tests/Fixtures/ServerParityBaselines/**
       - tests/Fixtures/ServerParityNormalization/**
       - tests/Unit/ServerParityRunnerTest.mjs
+      - tests/Unit/ServerParitySdkDirectionLanesTest.mjs
       - tests/Unit/ServerParityArtifactSummaryTest.mjs
       - tests/Unit/ServerParityQueryObserverTest.mjs
       - tests/Unit/ServerParityCodecDeadlineLoadTest.mjs
@@ -164,23 +165,6 @@ jobs:
           path: corrected-marker-adapters
           retention-days: 1
           if-no-files-found: error
-      - name: Build one bounded optimized native artifact for deadline health
-        run: bash scripts/conformance/server-parity/codec-operations-build.sh codec-native-build
-      - name: Share the optimized binary without compiler caches
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: codec-native-build
-          path: |
-            codec-native-build/server
-            codec-native-build/build.json
-            codec-native-build/SHA256SUMS
-          retention-days: 1
-          if-no-files-found: error
-      - name: Retire the owned optimized build container
-        if: always()
-        run: |
-          build_container="$RESOURCE_SCOPE-build"
-          docker rm -f "$build_container" >/dev/null 2>&1 || true
       - name: Share thin published SDK direction adapters
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -223,8 +207,38 @@ jobs:
           retention-days: 1
           if-no-files-found: ignore
 
+  # The optimized native build only the deadline-health cells use. It runs
+  # beside the SDK adapters, so the database jobs, which need only the
+  # adapters, no longer wait for it.
+  codec-native-build:
+    needs: changes
+    if: ${{ needs.changes.outputs.run == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      RESOURCE_SCOPE: dw-codec-native-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Build one bounded optimized native artifact for deadline health
+        run: bash scripts/conformance/server-parity/codec-operations-build.sh codec-native-build
+      - name: Share the optimized binary without compiler caches
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: codec-native-build
+          path: |
+            codec-native-build/server
+            codec-native-build/build.json
+            codec-native-build/SHA256SUMS
+          retention-days: 1
+          if-no-files-found: error
+      - name: Retire the owned optimized build container
+        if: always()
+        run: |
+          build_container="$RESOURCE_SCOPE-build"
+          docker rm -f "$build_container" >/dev/null 2>&1 || true
+
   codec-deadline-health:
-    needs: published-sdk-adapters
+    needs: [published-sdk-adapters, codec-native-build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -586,47 +600,8 @@ jobs:
           bash scripts/conformance/server-parity/legacy-marker-profile.sh mysql http://parity-php:8080 http://parity-native-a:8080
           bash scripts/conformance/server-parity/range-repair-profile.sh mysql http://parity-native-a:8080
           bash scripts/conformance/server-parity/range-repair-profile.sh mysql http://parity-native-a:8080 pending-native
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080
-          docker stop --time 30 "$RESOURCE_SCOPE-sdk-directions-server"
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 child
-          docker stop --time 30 "$RESOURCE_SCOPE-sdk-child-directions-server"
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 timer
-          docker stop --time 30 "$RESOURCE_SCOPE-sdk-timers-server"
-          # Separate queues/databases/evidence; preserve statuses even after children exit.
-          (
-            signal_status=0
-            bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 signal > parity-evidence/sdk-signals-profile.log 2>&1 || signal_status=$?
-            printf '%s\n' "$signal_status" > parity-evidence/sdk-signals-profile.status
-          ) &
-          (
-            query_status=0
-            bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 query > parity-evidence/sdk-queries-profile.log 2>&1 || query_status=$?
-            printf '%s\n' "$query_status" > parity-evidence/sdk-queries-profile.status
-          ) &
-          update_status=0
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 update || update_status=$?
-          docker stop --time 30 "$RESOURCE_SCOPE-sdk-updates-server" || true
-          failure_status=0
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 update-failure || failure_status=$?
-          wait
-          signal_status=$(cat parity-evidence/sdk-signals-profile.status)
-          query_status=$(cat parity-evidence/sdk-queries-profile.status)
-          cat parity-evidence/sdk-signals-profile.log parity-evidence/sdk-queries-profile.log
-          for completed_profile in sdk-signals sdk-queries sdk-update-failures; do
-            docker stop --time 30 "$RESOURCE_SCOPE-$completed_profile-server" || true
-          done
-          namespace_signal_status=0
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 namespace-signal || namespace_signal_status=$?
-          test "$signal_status" -eq 0
-          test "$query_status" -eq 0
-          test "$update_status" -eq 0
-          test "$failure_status" -eq 0
-          test "$namespace_signal_status" -eq 0
-          docker stop --time 30 "$RESOURCE_SCOPE-sdk-namespace-signals-server" || true
-          selected_run_signal_status=0
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 selected-run-signal || selected_run_signal_status=$?
-          docker stop --time 30 "$RESOURCE_SCOPE-sdk-selected-run-signals-server" || true
-          test "$selected_run_signal_status" -eq 0
+          # Every SDK direction profile, in three concurrent lanes.
+          bash scripts/conformance/server-parity/sdk-direction-lanes.sh mysql http://parity-native-a:8080
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
@@ -1099,47 +1074,8 @@ jobs:
           bash scripts/conformance/server-parity/legacy-marker-profile.sh pgsql http://parity-php:8080 http://parity-native-a:8080
           bash scripts/conformance/server-parity/range-repair-profile.sh pgsql http://parity-native-a:8080
           bash scripts/conformance/server-parity/range-repair-profile.sh pgsql http://parity-native-a:8080 pending-native
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080
-          docker stop --time 30 "$RESOURCE_SCOPE-sdk-directions-server"
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 child
-          docker stop --time 30 "$RESOURCE_SCOPE-sdk-child-directions-server"
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 timer
-          docker stop --time 30 "$RESOURCE_SCOPE-sdk-timers-server"
-          # Separate queues/databases/evidence; preserve statuses even after children exit.
-          (
-            signal_status=0
-            bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 signal > parity-evidence/sdk-signals-profile.log 2>&1 || signal_status=$?
-            printf '%s\n' "$signal_status" > parity-evidence/sdk-signals-profile.status
-          ) &
-          (
-            query_status=0
-            bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 query > parity-evidence/sdk-queries-profile.log 2>&1 || query_status=$?
-            printf '%s\n' "$query_status" > parity-evidence/sdk-queries-profile.status
-          ) &
-          update_status=0
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 update || update_status=$?
-          docker stop --time 30 "$RESOURCE_SCOPE-sdk-updates-server" || true
-          failure_status=0
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 update-failure || failure_status=$?
-          wait
-          signal_status=$(cat parity-evidence/sdk-signals-profile.status)
-          query_status=$(cat parity-evidence/sdk-queries-profile.status)
-          cat parity-evidence/sdk-signals-profile.log parity-evidence/sdk-queries-profile.log
-          for completed_profile in sdk-signals sdk-queries sdk-update-failures; do
-            docker stop --time 30 "$RESOURCE_SCOPE-$completed_profile-server" || true
-          done
-          namespace_signal_status=0
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 namespace-signal || namespace_signal_status=$?
-          test "$signal_status" -eq 0
-          test "$query_status" -eq 0
-          test "$update_status" -eq 0
-          test "$failure_status" -eq 0
-          test "$namespace_signal_status" -eq 0
-          docker stop --time 30 "$RESOURCE_SCOPE-sdk-namespace-signals-server" || true
-          selected_run_signal_status=0
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 selected-run-signal || selected_run_signal_status=$?
-          docker stop --time 30 "$RESOURCE_SCOPE-sdk-selected-run-signals-server" || true
-          test "$selected_run_signal_status" -eq 0
+          # Every SDK direction profile, in three concurrent lanes.
+          bash scripts/conformance/server-parity/sdk-direction-lanes.sh pgsql http://parity-native-a:8080
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
@@ -1498,7 +1434,7 @@ jobs:
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
-            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs tests/Unit/ServerParityServiceCatalogContractTest.mjs tests/Unit/ServerParitySystemMetricsContractTest.mjs tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs tests/Unit/ServerParityPrometheusMetricsContractTest.mjs tests/Unit/ServerParityPayloadCleanupContractTest.mjs tests/Unit/ServerParityRepairPassContractTest.mjs tests/Unit/ServerParityClusterInfoContractTest.mjs tests/Unit/ServerParityNamespaceDeleteContractTest.mjs > parity-evidence/comparator-tests.txt
+            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParitySdkDirectionLanesTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs tests/Unit/ServerParityServiceCatalogContractTest.mjs tests/Unit/ServerParitySystemMetricsContractTest.mjs tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs tests/Unit/ServerParityPrometheusMetricsContractTest.mjs tests/Unit/ServerParityPayloadCleanupContractTest.mjs tests/Unit/ServerParityRepairPassContractTest.mjs tests/Unit/ServerParityClusterInfoContractTest.mjs tests/Unit/ServerParityNamespaceDeleteContractTest.mjs > parity-evidence/comparator-tests.txt
           docker run --rm --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
             --network=none --entrypoint node -v "$PWD:/source:ro" -w /source \
             "$image" --test tests/Unit/ServerParityCodecDeadlineLoadTest.mjs > parity-evidence/codec-load-tests.txt
@@ -1604,47 +1540,8 @@ jobs:
           bash scripts/conformance/server-parity/legacy-marker-profile.sh sqlite http://parity-server:8080 http://parity-rust:8080
           bash scripts/conformance/server-parity/range-repair-profile.sh sqlite http://parity-rust:8080
           bash scripts/conformance/server-parity/range-repair-profile.sh sqlite http://parity-rust:8080 pending-native
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080
-          docker stop --time 30 "$RESOURCE_SCOPE-sdk-directions-server"
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 child
-          docker stop --time 30 "$RESOURCE_SCOPE-sdk-child-directions-server"
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 timer
-          docker stop --time 30 "$RESOURCE_SCOPE-sdk-timers-server"
-          # Separate queues/databases/evidence; preserve statuses even after children exit.
-          (
-            signal_status=0
-            bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 signal > parity-evidence/sdk-signals-profile.log 2>&1 || signal_status=$?
-            printf '%s\n' "$signal_status" > parity-evidence/sdk-signals-profile.status
-          ) &
-          (
-            query_status=0
-            bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 query > parity-evidence/sdk-queries-profile.log 2>&1 || query_status=$?
-            printf '%s\n' "$query_status" > parity-evidence/sdk-queries-profile.status
-          ) &
-          update_status=0
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 update || update_status=$?
-          docker stop --time 30 "$RESOURCE_SCOPE-sdk-updates-server" || true
-          failure_status=0
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 update-failure || failure_status=$?
-          wait
-          signal_status=$(cat parity-evidence/sdk-signals-profile.status)
-          query_status=$(cat parity-evidence/sdk-queries-profile.status)
-          cat parity-evidence/sdk-signals-profile.log parity-evidence/sdk-queries-profile.log
-          for completed_profile in sdk-signals sdk-queries sdk-update-failures; do
-            docker stop --time 30 "$RESOURCE_SCOPE-$completed_profile-server" || true
-          done
-          namespace_signal_status=0
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 namespace-signal || namespace_signal_status=$?
-          test "$signal_status" -eq 0
-          test "$query_status" -eq 0
-          test "$update_status" -eq 0
-          test "$failure_status" -eq 0
-          test "$namespace_signal_status" -eq 0
-          docker stop --time 30 "$RESOURCE_SCOPE-sdk-namespace-signals-server" || true
-          selected_run_signal_status=0
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 selected-run-signal || selected_run_signal_status=$?
-          docker stop --time 30 "$RESOURCE_SCOPE-sdk-selected-run-signals-server" || true
-          test "$selected_run_signal_status" -eq 0
+          # Every SDK direction profile, in three concurrent lanes.
+          bash scripts/conformance/server-parity/sdk-direction-lanes.sh sqlite http://parity-rust:8080
           docker run --rm --user=1000:1000 --entrypoint php --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
@@ -1859,6 +1756,7 @@ jobs:
     needs:
       - changes
       - published-sdk-adapters
+      - codec-native-build
       - codec-deadline-health
       - mysql-execution
       - postgres-storage
