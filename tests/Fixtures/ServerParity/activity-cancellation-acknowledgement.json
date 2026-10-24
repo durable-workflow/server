@@ -1,0 +1,129 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "activity-cancellation-acknowledgement",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "cancellation acknowledgement λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "cancellation acknowledgement λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "activity_cancellation_acknowledgement": {
+    "workflow_type": "parity.v1.cancel_ack",
+    "activity_type": "parity.v1.cancel_ack_activity",
+    "cleanup_timeout_seconds": 60,
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "result_blob": "wwHioz3/VYAiNwoIZG9uZQ==",
+    "refusals": {
+      "protocol_missing": {
+        "status": 400,
+        "error": "Missing worker protocol version header.",
+        "reason": "missing_protocol_version",
+        "supported_version": "1.20",
+        "requested_version": null,
+        "remediation": "Send the X-Durable-Workflow-Protocol-Version: 1.20 header on worker protocol requests."
+      },
+      "protocol_1_21": {
+        "status": 400,
+        "error": "Unsupported worker protocol version.",
+        "reason": "unsupported_protocol_version",
+        "supported_version": "1.20",
+        "requested_version": "1.21",
+        "remediation": "Worker requested protocol version 1.21; this server supports 1.20. Workers may target any 1.x version with x ≤ 20. Upgrade the worker to a release that targets a compatible version, or connect to a server that matches."
+      },
+      "missing_fields": {
+        "status": 422,
+        "message": "The activity attempt id field is required. (and 2 more errors)",
+        "reason": "validation_failed",
+        "errors": {
+          "activity_attempt_id": [
+            "The activity attempt id field is required."
+          ],
+          "lease_owner": [
+            "The lease owner field is required."
+          ],
+          "request_id": [
+            "The request id field is required."
+          ]
+        },
+        "validation_errors": {
+          "activity_attempt_id": [
+            "The activity attempt id field is required."
+          ],
+          "lease_owner": [
+            "The lease owner field is required."
+          ],
+          "request_id": [
+            "The request id field is required."
+          ]
+        }
+      },
+      "non_string_fields": {
+        "status": 422,
+        "message": "The activity attempt id field must be a string. (and 2 more errors)",
+        "reason": "validation_failed",
+        "errors": {
+          "activity_attempt_id": [
+            "The activity attempt id field must be a string."
+          ],
+          "lease_owner": [
+            "The lease owner field must be a string."
+          ],
+          "request_id": [
+            "The request id field must be a string."
+          ]
+        },
+        "validation_errors": {
+          "activity_attempt_id": [
+            "The activity attempt id field must be a string."
+          ],
+          "lease_owner": [
+            "The lease owner field must be a string."
+          ],
+          "request_id": [
+            "The request id field must be a string."
+          ]
+        }
+      },
+      "long_request_id": {
+        "status": 422,
+        "message": "The request id field must not be greater than 255 characters.",
+        "reason": "validation_failed",
+        "errors": {
+          "request_id": [
+            "The request id field must not be greater than 255 characters."
+          ]
+        },
+        "validation_errors": {
+          "request_id": [
+            "The request id field must not be greater than 255 characters."
+          ]
+        }
+      }
+    }
+  },
+  "contract": "POST /api/worker/activity-tasks/{task}/acknowledge-cancellation (published Server 2.11, advertised as server_capabilities.activity_cancellation_acknowledgement, also in cluster info) records an activity worker's stop after a cooperative cancellation reached its attempt. The path is request-cancellation, then deliver-cancellation with call_kind activity from the workflow task, which cancels the attempt and records ActivityCancelled; the activity heartbeat then reports attempt_closed and the status route carries the cancellation_acknowledgement receipt with the request id. The acknowledgement answers 200 and records one ActivityCancellationAcknowledged event with the stop's evidence and the cancelled task's snapshot; the receipt then reads stopped and a repeat answers duplicate with the same event, while later outcomes stay refused. Before the request, with another request id or after an immediate cancel it answers cancellation_request_mismatch; before delivery activity_cancellation_not_recorded; for an older attempt of the execution activity_cancellation_acknowledgement_fence_mismatch. Ownership is checked in PHP's order with its bodies, then the claim: an attempt polled on protocol 1.19 cannot acknowledge. A request below protocol 1.20 is refused before validation; missing, non-string or over-long fields fail Laravel's validation. A run terminated after delivery still records the late stop, after its terminal event. Published 2.11.1 delivers a retried activity's cancellation to the execution's first task (Workflow #923), so that attempt's acknowledgement is refused as not fenced; the contract accepts exactly that reference defect or the correct acknowledgement. Embedded applications have no worker protocol."
+}

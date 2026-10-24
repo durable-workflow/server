@@ -19,12 +19,34 @@ pub(super) struct ExternalWaitHistory {
 
 struct ExpectedWait {
     kind: &'static str,
+    /// The signal name, or the condition key; PHP allows a condition
+    /// without one, which reads as empty.
     name: String,
     sequence: i64,
     timeout: Option<i64>,
     timer: Option<(String, DateTime<Utc>)>,
     fired: bool,
     identity: Value,
+}
+
+/// A wait's name: a signal always has one; a condition's key is optional.
+fn wait_name<'a>(kind: &str, value: &'a Value) -> Option<&'a str> {
+    match value.as_str().filter(|name| !name.is_empty()) {
+        Some(name) => Some(name),
+        None if kind == "condition" && value.is_null() => Some(""),
+        None => None,
+    }
+}
+
+impl ExpectedWait {
+    /// `conditionLabel`: the kind, then the name when there is one.
+    fn label(&self) -> String {
+        if self.name.is_empty() {
+            self.kind.to_owned()
+        } else {
+            format!("{} {}", self.kind, self.name)
+        }
+    }
 }
 
 impl ExternalWaitHistory {
@@ -70,7 +92,7 @@ impl ExternalWaitHistory {
         }
         let (Some(id), Some(name), Some(sequence)) = (
             payload[id_key].as_str().filter(|v| !v.is_empty()),
-            payload[name_key].as_str().filter(|v| !v.is_empty()),
+            wait_name(wait_kind, &payload[name_key]),
             payload["sequence"].as_i64().filter(|v| *v > 0),
         ) else {
             return false;
@@ -102,7 +124,7 @@ impl ExternalWaitHistory {
         let (Some(timer_id), Some(wait_id), Some(name), Some(sequence), Some(delay)) = (
             payload["timer_id"].as_str().filter(|v| !v.is_empty()),
             payload[id_key].as_str().filter(|v| !v.is_empty()),
-            payload[name_key].as_str().filter(|v| !v.is_empty()),
+            wait_name(wait_kind, &payload[name_key]),
             payload["sequence"].as_i64(),
             payload["delay_seconds"].as_i64(),
         ) else {
@@ -230,14 +252,11 @@ where
             kind: expected.kind,
             id: DB::string(row, "wait_id")?,
             reason: if expected.fired {
-                format!(
-                    "Waiting to apply {} {} timeout",
-                    expected.kind, expected.name
-                )
+                format!("Waiting to apply {} timeout", expected.label())
             } else if expected.timeout.is_some() {
-                format!("Waiting for {} {} or timeout", expected.kind, expected.name)
+                format!("Waiting for {} or timeout", expected.label())
             } else {
-                format!("Waiting for {} {}", expected.kind, expected.name)
+                format!("Waiting for {}", expected.label())
             },
             started_at: DB::optional_instant(row, "opened_at")?,
             deadline_at: expected.timer.as_ref().map(|(_, at)| *at),
@@ -272,7 +291,7 @@ where
     }
     fn external_wait_matches(row: &DB::Row, expected: &ExpectedWait) -> Result<bool> {
         if DB::string(row, "kind")? != expected.kind
-            || DB::optional_string(row, "target_name")?.as_deref() != Some(expected.name.as_str())
+            || DB::optional_string(row, "target_name")?.unwrap_or_default() != expected.name
             || DB::optional_number(row, "sequence")? != Some(expected.sequence)
             || DB::optional_string(row, "history_authority")?.as_deref() != Some("typed_history")
             || DB::optional_string(row, "source_status")?.as_deref()
