@@ -938,15 +938,11 @@ where
 
     /// A replayed answer as the route delivers it: a validation lease is
     /// rebuilt from its task, any other answer is returned as cached.
-    fn replayed(mut answer: Value, encoding: Option<&'static str>) -> Result<Leased> {
+    fn replayed(answer: Value, encoding: Option<&'static str>) -> Result<Leased> {
         if answer["task"]["task_kind"] == "update_validation" {
             return Ok(Leased::Validation(text(&answer["task"], "update_validation_task_id")?.to_owned()));
         }
-        if answer["task"].is_object() {
-            super::history_pages::compress(&mut answer["task"], encoding)?;
-        }
-        answer["server_capabilities"] = super::store::capabilities();
-        Ok(Leased::Workflow(answer))
+        super::store::replayed_poll(answer, encoding).map(Leased::Workflow)
     }
 
     /// `WorkflowTaskPoller` with validation tasks requested. A request ID
@@ -955,7 +951,9 @@ where
     /// transaction: replay a duplicate's answer, lock the queue's cursor,
     /// claim the kind it names first and then the other, turn the cursor
     /// after a lease, and record the answer under the request ID. When
-    /// neither kind has work, the workflow poll's answer stands.
+    /// neither kind has work, the workflow poll's answer stands, unless a
+    /// duplicate leased under the request ID after the last probe: that
+    /// lease replays.
     pub(super) async fn poll_task_kinds(
         &self,
         body: &Value,
@@ -1013,8 +1011,10 @@ where
                 None => {}
             }
             if tokio::time::Instant::now() >= deadline {
-                if let Some(request) = &request {
-                    self.remember_empty_workflow_poll(request, "empty").await?;
+                if let Some(request) = &request
+                    && let Some(lease) = self.remember_empty_workflow_poll(request, &worker_id, &task_queue, "empty").await?
+                {
+                    return Self::replayed(lease, encoding);
                 }
                 return Ok(Leased::Workflow(json!({"task":null,"poll_status":"empty","server_capabilities":super::store::capabilities()})));
             }
@@ -1044,9 +1044,7 @@ where
         // binding row, locked first, makes it wait for that one's answer.
         if let Some(request) = request {
             Self::bind_workflow_poll(&mut tx, request).await?;
-            if let Some(answer) = self.deliverable_workflow_poll(&mut tx, request, worker_id, task_queue).await?
-                && answer["task"].is_object()
-            {
+            if let Some(answer) = self.deliverable_workflow_lease(&mut tx, request, worker_id, task_queue).await? {
                 tx.commit().await?;
                 return Ok(Some(Probe::Replayed(answer)));
             }
