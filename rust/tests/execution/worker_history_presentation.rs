@@ -62,3 +62,36 @@ async fn a_worker_reads_the_sequence_that_consumed_a_signal() {
     }
     assert!(completed["payload"]["task"].get("last_claim_error").is_none(), "unset fields stay out: {completed}");
 }
+
+// Workflow 2.10.2 `DefaultWorkflowTaskBridge::applySignal` takes a workflow
+// sequence only from the signal's own wait. A signal the run's contract
+// declares is applied without one even while a condition wait is open, so
+// `markConditionWaitSignalConsumed` finds it applied and its record keeps no
+// sequence: the history a worker reads matches the run's history.
+#[tokio::test]
+async fn a_declared_signal_consumed_by_a_condition_wait_keeps_no_sequence() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    update_worker(&app, "declared-presenter").await;
+    let started = start(&app, "declared-signals").await;
+    let task = poll(&app, "declared-presenter", "workflow").await;
+    assert_eq!(finish_task(&app, &task, wait("first")).await.0, StatusCode::OK);
+
+    let finish = json!({"input":envelope(Payload::Array(vec![Payload::Long(7)]))});
+    let (status, body) = request(&app, "POST", "/api/workflows/declared-signals/signal/finish", finish.clone()).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let task = poll(&app, "declared-presenter", "workflow").await;
+    assert_eq!(finish_task(&app, &task, wait("second")).await.0, StatusCode::OK);
+    let (status, body) = request(&app, "POST", "/api/workflows/declared-signals/signal/finish", finish).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let task = poll(&app, "declared-presenter", "workflow").await;
+
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let polled = received(&task["history_events"]);
+    assert_eq!(polled.len(), 2, "{task}");
+    assert!(polled.iter().all(|signal| signal.get("workflow_sequence").is_none()), "{polled:?}");
+    let recorded = received(&history);
+    assert_eq!(polled[0]["signal_id"], recorded[0]["signal_id"]);
+    let (_, described) = request(&app, "GET", "/api/workflows/declared-signals", Value::Null).await;
+    assert_eq!(described["status"], "waiting", "{described}");
+}
