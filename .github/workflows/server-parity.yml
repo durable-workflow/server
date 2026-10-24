@@ -15,6 +15,7 @@ on:
       - tests/Fixtures/ServerParityNormalization/**
       - tests/Unit/ServerParityRunnerTest.mjs
       - tests/Unit/ServerParitySdkDirectionLanesTest.mjs
+      - tests/Unit/ServerParityCodecDeadlineCellsTest.mjs
       - tests/Unit/ServerParityArtifactSummaryTest.mjs
       - tests/Unit/ServerParityQueryObserverTest.mjs
       - tests/Unit/ServerParityCodecDeadlineLoadTest.mjs
@@ -237,16 +238,15 @@ jobs:
           build_container="$RESOURCE_SCOPE-build"
           docker rm -f "$build_container" >/dev/null 2>&1 || true
 
+  # The six deadline-health cells take about a minute each, beside database
+  # parts that take half an hour, so one runner runs them in turn: a failed
+  # cell still lets the others run, and the job fails after all of them.
   codec-deadline-health:
     needs: [published-sdk-adapters, codec-native-build]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        database: [sqlite, postgres-16, postgres-17, mysql-8.0, mysql-8.4, mariadb-10.11]
+    timeout-minutes: 25
     env:
-      RESOURCE_SCOPE: dw-codec-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.database }}
+      RESOURCE_SCOPE: dw-codec-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Fetch this run's optimized native binary
@@ -266,47 +266,46 @@ jobs:
           set -euo pipefail
           (cd codec-native-build; sha256sum -c SHA256SUMS)
           chmod +x codec-native-build/server
-          bash scripts/conformance/server-parity/codec-operations-cell.sh \
-            '${{ matrix.database }}' cpu-cell codec-native-build corrected-marker-adapters/php codec-evidence
-      - name: Retire this cell's exact owned resources
+          bash scripts/conformance/server-parity/codec-deadline-cells.sh
+      - name: Retire every cell's exact owned resources
         if: always()
         run: |
-          scope="$RESOURCE_SCOPE"
-          native_server="$scope-native"
-          db="$scope-db"
-          probe="$scope-ready"
-          observer="$RESOURCE_SCOPE-native-codec-observer"
-          docker rm -f "$observer" "$probe" "$native_server" >/dev/null 2>&1 || true
-          docker stop --time 10 "$db" >/dev/null 2>&1 || true
-          docker rm "$db" >/dev/null 2>&1 || true
-          docker network rm "$scope" >/dev/null 2>&1 || true
-          if test -d codec-evidence/state; then rm -r -- codec-evidence/state; fi
-      - name: Publish the bounded outcome
+          for database in sqlite postgres-16 postgres-17 mysql-8.0 mysql-8.4 mariadb-10.11; do
+            scope="$RESOURCE_SCOPE-$database"
+            docker rm -f "$scope-native-codec-observer" "$scope-ready" "$scope-native" >/dev/null 2>&1 || true
+            docker stop --time 10 "$scope-db" >/dev/null 2>&1 || true
+            docker rm "$scope-db" >/dev/null 2>&1 || true
+            docker network rm "$scope" >/dev/null 2>&1 || true
+          done
+      - name: Publish the bounded outcomes
         if: always()
         run: |
-          if test -f codec-evidence/database-audit.json; then
-            printf 'Database: %s\n\n' '${{ matrix.database }}' >> "$GITHUB_STEP_SUMMARY"
-            cat codec-evidence/database-audit.json >> "$GITHUB_STEP_SUMMARY"
-          else
-            printf 'CPU/deadline original did not qualify. See this job diagnostics.\n' >> "$GITHUB_STEP_SUMMARY"
-          fi
+          for database in sqlite postgres-16 postgres-17 mysql-8.0 mysql-8.4 mariadb-10.11; do
+            if test -f "codec-evidence/$database/database-audit.json"; then
+              printf 'Database: %s\n\n' "$database" >> "$GITHUB_STEP_SUMMARY"
+              cat "codec-evidence/$database/database-audit.json" >> "$GITHUB_STEP_SUMMARY"
+            else
+              printf 'Database: %s: the CPU/deadline original did not qualify. See this job diagnostics.\n\n' "$database" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
       - name: Keep small outcomes and failure diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: codec-deadline-health-${{ matrix.database }}
+          name: codec-deadline-health
           path: |
-            codec-evidence/build.json
-            codec-evidence/database*.json
-            codec-evidence/database-version.txt
-            codec-evidence/codec-*-contract.txt
-            codec-evidence/codec-*-controls.txt
-            codec-evidence/limits.json
-            codec-evidence/*state.json
-            codec-evidence/server-log.txt
-            codec-evidence/server-ready-errors.txt
-            codec-evidence/profile.txt
-            codec-evidence/failed.json
+            codec-evidence/*.status
+            codec-evidence/*/build.json
+            codec-evidence/*/database*.json
+            codec-evidence/*/database-version.txt
+            codec-evidence/*/codec-*-contract.txt
+            codec-evidence/*/codec-*-controls.txt
+            codec-evidence/*/limits.json
+            codec-evidence/*/*state.json
+            codec-evidence/*/server-log.txt
+            codec-evidence/*/server-ready-errors.txt
+            codec-evidence/*/profile.txt
+            codec-evidence/*/failed.json
           retention-days: 1
           if-no-files-found: warn
 
@@ -1529,7 +1528,7 @@ jobs:
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
-            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParitySdkDirectionLanesTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs tests/Unit/ServerParityServiceCatalogContractTest.mjs tests/Unit/ServerParitySystemMetricsContractTest.mjs tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs tests/Unit/ServerParityPrometheusMetricsContractTest.mjs tests/Unit/ServerParityPayloadCleanupContractTest.mjs tests/Unit/ServerParityRepairPassContractTest.mjs tests/Unit/ServerParityClusterInfoContractTest.mjs tests/Unit/ServerParityNamespaceDeleteContractTest.mjs > parity-evidence/comparator-tests.txt
+            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParitySdkDirectionLanesTest.mjs tests/Unit/ServerParityCodecDeadlineCellsTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs tests/Unit/ServerParityServiceCatalogContractTest.mjs tests/Unit/ServerParitySystemMetricsContractTest.mjs tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs tests/Unit/ServerParityPrometheusMetricsContractTest.mjs tests/Unit/ServerParityPayloadCleanupContractTest.mjs tests/Unit/ServerParityRepairPassContractTest.mjs tests/Unit/ServerParityClusterInfoContractTest.mjs tests/Unit/ServerParityNamespaceDeleteContractTest.mjs > parity-evidence/comparator-tests.txt
           docker run --rm --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
             --network=none --entrypoint node -v "$PWD:/source:ro" -w /source \
             "$image" --test tests/Unit/ServerParityCodecDeadlineLoadTest.mjs > parity-evidence/codec-load-tests.txt
