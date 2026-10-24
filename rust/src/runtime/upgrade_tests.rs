@@ -947,7 +947,7 @@ async fn takeover_converts_a_php_297_database_that_native_then_opens() {
         .fetch_one(&mut connection)
         .await
         .unwrap();
-    assert_eq!(marker, ("rust-development".to_owned(), 4));
+    assert_eq!(marker, ("rust-development".to_owned(), super::super::schema::VERSION));
     connection.close().await.unwrap();
 }
 
