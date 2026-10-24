@@ -122,11 +122,13 @@ fn member<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
 impl ExternalPayloadConfig {
     pub(super) fn from_env() -> Result<Self> {
         let completion = process_value("COMPLETION_MAX_BYTES", Value::Null)?;
-        let overrides = process_value("NAMESPACE_OVERRIDES", Value::String("{}".into()))?;
-        let overrides = overrides
-            .as_str()
-            .and_then(|value| serde_json::from_str(value).ok())
-            .unwrap_or(Value::Null);
+        // Startup refuses a value that is not a JSON object (Server #705).
+        let overrides = crate::config_audit::json_object(
+            |name| env::var_os(name).map(|value| value.to_string_lossy().into_owned()),
+            "DW_EXTERNAL_PAYLOAD_NAMESPACE_OVERRIDES",
+            Some("WORKFLOW_SERVER_EXTERNAL_PAYLOAD_NAMESPACE_OVERRIDES"),
+        )
+        .map_err(|_| configuration_error())?;
         Ok(Self {
             completion_max_bytes: (!completion.is_null())
                 .then(|| integer(&completion).max(1) as u64),
@@ -150,7 +152,7 @@ impl ExternalPayloadConfig {
                 "HARD_MAX_OBJECTS_PER_NAMESPACE",
                 Value::Null,
             )?,
-            namespace_overrides: overrides,
+            namespace_overrides: Value::Object(overrides),
             ..Self::default()
         })
     }
