@@ -198,6 +198,44 @@
           "control_plane_outcome": "started_new"
         }
       },
+      "start_other_type": {
+        "status": 422,
+        "response": {
+          "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+          "version": 1,
+          "adapter": "acme.crm:v1",
+          "action": "start_workflow",
+          "accepted": false,
+          "outcome": "rejected",
+          "reason": "unknown_target",
+          "idempotency_key": "k-6",
+          "message": "Workflow instance [{id}] is reserved for durable type [parity.v1.echo] and cannot be reused for [parity.v1.bridge].",
+          "target": {
+            "workflow_id": "{id}",
+            "workflow_type": "parity.v1.bridge",
+            "task_queue": "{id}-bra-queue"
+          }
+        }
+      },
+      "start_other_namespace": {
+        "status": 422,
+        "response": {
+          "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+          "version": 1,
+          "adapter": "acme.crm:v1",
+          "action": "start_workflow",
+          "accepted": false,
+          "outcome": "rejected",
+          "reason": "unknown_target",
+          "idempotency_key": "k-7",
+          "message": "Workflow instance [{id}] cannot be reused with a different namespace.",
+          "target": {
+            "workflow_id": "{id}",
+            "workflow_type": "parity.v1.echo",
+            "task_queue": "{id}-bra-queue"
+          }
+        }
+      },
       "start": {
         "status": 202,
         "response": {

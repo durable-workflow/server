@@ -35,6 +35,7 @@ mod activity_results;
 mod activity_summary;
 mod all_groups;
 mod backend;
+mod bridge_adapters;
 mod cancellation;
 mod cancellation_cascade;
 mod child_summary;

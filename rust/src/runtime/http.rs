@@ -67,6 +67,7 @@ pub fn router(runtime: Runtime) -> Router {
             delete(delete_search_attribute),
         )
         .route("/api/workflows", get(list_workflows).post(start))
+        .route("/api/bridge-adapters/webhook/{adapter}", post(bridge_webhook))
         .route("/api/activities", get(list_activities).post(start_activity))
         .route("/api/activities/{activity_id}", get(show_activity))
         .route(
@@ -626,7 +627,7 @@ enum Rest {
 }
 
 /// Route families a named namespace may use, by prefix.
-const NAMESPACE_FAMILIES: [(&str, Rest, Allowed); 8] = [
+const NAMESPACE_FAMILIES: [(&str, Rest, Allowed); 9] = [
     // Runtime credentials are server-wide; the namespace only scopes a tenant.
     ("/api/runtime-credentials/", Rest::Anything, Allowed::Any),
     ("/api/external-payloads/v1/", Rest::Anything, READ),
@@ -642,6 +643,8 @@ const NAMESPACE_FAMILIES: [(&str, Rest, Allowed); 8] = [
     ("/api/workers/", Rest::OneSegment, Allowed::Only(&["GET", "DELETE"])),
     // Deployments are the namespace's own build-id rollouts.
     ("/api/deployments/", Rest::NonEmpty, READ_WRITE),
+    // A bridge event acts on workflows of the requested namespace.
+    ("/api/bridge-adapters/webhook/", Rest::OneSegment, WRITE),
 ];
 
 fn named_namespace_operation(method: &str, path: &str) -> bool {
@@ -1024,6 +1027,19 @@ async fn start(
         _ => StatusCode::OK,
     };
     Ok((status, Json(super::control_plane::Operation::Start.response(result))))
+}
+
+/// `POST /api/bridge-adapters/webhook/{adapter}`. PHP validates the body
+/// itself, so a body that is not a JSON object reads as an empty one.
+async fn bridge_webhook(
+    Extension(runtime): Extension<Runtime>,
+    command: CommandRequest,
+    Path(adapter): Path<String>,
+    body: axum::body::Bytes,
+) -> Result<(StatusCode, Json<Value>)> {
+    let body = serde_json::from_slice::<Value>(&body).ok().filter(Value::is_object).unwrap_or_else(|| json!({}));
+    let (status, answer) = super::bridge_adapters::webhook(&runtime, &command, &adapter, body).await?;
+    Ok((status, Json(answer)))
 }
 
 /// `POST /api/activities`: a standalone activity in its own host run.

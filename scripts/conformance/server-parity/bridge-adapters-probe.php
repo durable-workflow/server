@@ -92,6 +92,12 @@ function finishHttpBridgeAdapters(Client $admin, array $fixture, string $workflo
     $derivedKey = $workflowId.'-derive-λ';
     $state['start_unknown_type'] = $answer($webhook($adapter, ['action' => 'start_workflow', 'idempotency_key' => $unknownKey,
         'target' => ['workflow_type' => 'parity.v1.unconfigured']]));
+    // The probe's own workflow in the default namespace: an id reserved for
+    // another type, then for another namespace.
+    $state['start_other_type'] = $answer($webhook($adapter, ['action' => 'start_workflow', 'idempotency_key' => 'k-6', 'input' => $empty,
+        'target' => ['workflow_type' => $type, 'workflow_id' => $workflowId, 'task_queue' => $queue]]));
+    $state['start_other_namespace'] = $answer($webhook($adapter, ['action' => 'start_workflow', 'idempotency_key' => 'k-7', 'input' => $empty,
+        'target' => ['workflow_type' => $fixture['workflow_type'], 'workflow_id' => $workflowId, 'task_queue' => $queue]]));
     $state['start'] = $answer($webhook($adapter, ['action' => 'start_workflow', 'idempotency_key' => 'k-3', 'input' => $empty,
         'target' => ['workflow_type' => $type, 'workflow_id' => $id, 'task_queue' => $queue, 'business_key' => 'order-1'],
         'correlation' => $correlation]));
