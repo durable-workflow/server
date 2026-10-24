@@ -1,56 +1,60 @@
 # Sourced by published-sdk-patch-profile.sh (Server #721).
 #
-# run_without_maintenance CONTAINER SCHEDULE -- COMMAND...
+# run_without_maintenance SCHEDULE -- COMMAND...
 #
-# Runs COMMAND while the maintenance container is stopped, then restarts it.
-# Restoration is armed before the stop is attempted and stays armed until the
-# container has stayed running for a sustained check, so a failed stop, a
-# failed COMMAND or a restart that exits at once never leaves it stopped.
-# SCHEDULE records the container's state before, during and after.
+# Runs COMMAND while the SQLite job's PHP maintenance container is stopped,
+# then restarts it. Restoration is armed before the stop is attempted and
+# stays armed until the container has stayed running for a sustained check,
+# so a failed stop, a failed COMMAND or a restart that exits at once never
+# leaves it stopped. SCHEDULE records the container's state before, during
+# and after.
 
 maintenance_poll_seconds="${DW_PARITY_MAINTENANCE_POLL_SECONDS:-1}"
+# The SQLite job's container, named from this job's identity.
+maintenance_container="dw-parity-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-parity}-php-maintenance"
 
 maintenance_state() {
-  docker inspect -f '{{.State.Status}}' "$1" 2>/dev/null || echo unknown
+  docker inspect -f '{{.State.Status}}' "$maintenance_container" 2>/dev/null || echo unknown
 }
 
 # Running at each of three checks, one poll interval apart.
 maintenance_stays_running() {
   local check
   for check in 1 2 3; do
-    test "$(maintenance_state "$1")" = running || return 1
+    test "$(maintenance_state)" = running || return 1
     sleep "$maintenance_poll_seconds"
   done
-  test "$(maintenance_state "$1")" = running
+  test "$(maintenance_state)" = running
 }
 
 # Up to three starts, each followed by the sustained check.
 maintenance_restore() {
   local attempt
   for attempt in 1 2 3; do
-    docker start "$1" > /dev/null 2>&1 || true
-    if maintenance_stays_running "$1"; then
+    docker start "$maintenance_container" >/dev/null 2>&1 || true
+    if maintenance_stays_running; then
       return 0
     fi
   done
-  echo "maintenance container $1 did not stay running: $(maintenance_state "$1")" >&2
+  echo "maintenance container $maintenance_container did not stay running: $(maintenance_state)" >&2
   return 1
 }
 
 run_without_maintenance() {
-  local container="$1" schedule="$2"
-  shift 2
+  local schedule="$1"
+  shift
   test "$1" = -- && shift
-  echo "before: $(maintenance_state "$container")" > "$schedule"
+  # The job started this container as "$RESOURCE_SCOPE-php-maintenance".
+  test "$maintenance_container" = "$RESOURCE_SCOPE-php-maintenance"
+  echo "before: $(maintenance_state)" > "$schedule"
   grep -qx 'before: running' "$schedule"
-  # shellcheck disable=SC2064
-  trap "maintenance_restore '$container' || true" EXIT
-  docker stop --time 2 "$container" > /dev/null
-  echo "during php record: $(maintenance_state "$container")" >> "$schedule"
+  trap 'maintenance_restore || true' EXIT
+  docker stop --time 2 "$maintenance_container" >/dev/null
+  echo "during php record: $(maintenance_state)" >> "$schedule"
   grep -qx 'during php record: exited' "$schedule"
   "$@"
-  if ! maintenance_restore "$container"; then
-    echo "after php record: $(maintenance_state "$container")" >> "$schedule"
+  if ! maintenance_restore; then
+    echo "after php record: $(maintenance_state)" >> "$schedule"
     return 1
   fi
   trap - EXIT

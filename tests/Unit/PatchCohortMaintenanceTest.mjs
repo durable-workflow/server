@@ -18,6 +18,7 @@ const fakeDocker = `#!/usr/bin/env bash
 set -u
 dir=$(dirname "$0")
 echo "$*" >> "$dir/calls"
+test "\${!#}" = dw-parity-7-2-sqlite-php-maintenance || exit 3
 case "$1" in
   inspect)
     state=$(cat "$dir/state")
@@ -30,17 +31,18 @@ case "$1" in
 esac
 `;
 
-function run(scenario, command) {
+function run(scenario, command, scope = 'dw-parity-7-2-sqlite') {
   const dir = mkdtempSync(join(tmpdir(), 'patch-maintenance-'));
   writeFileSync(join(dir, 'docker'), fakeDocker);
   chmodSync(join(dir, 'docker'), 0o755);
   writeFileSync(join(dir, 'state'), 'running\n');
   writeFileSync(join(dir, 'calls'), '');
   const result = spawnSync('bash', ['-c',
-    `set -euo pipefail; . "$HELPER"; run_without_maintenance maint "$SCHEDULE" -- ${command}`], {
+    `set -euo pipefail; . "$HELPER"; run_without_maintenance "$SCHEDULE" -- ${command}`], {
     encoding: 'utf8',
     env: {...process.env, PATH: `${dir}:${process.env.PATH}`, HELPER: helper,
-      SCHEDULE: join(dir, 'schedule.txt'), SCENARIO: scenario, DW_PARITY_MAINTENANCE_POLL_SECONDS: '0.05'},
+      SCHEDULE: join(dir, 'schedule.txt'), SCENARIO: scenario, DW_PARITY_MAINTENANCE_POLL_SECONDS: '0.05',
+      GITHUB_RUN_ID: '7', GITHUB_RUN_ATTEMPT: '2', GITHUB_JOB: 'sqlite', RESOURCE_SCOPE: scope},
   });
   const read = name => (existsSync(join(dir, name)) ? readFileSync(join(dir, name), 'utf8') : '');
   const calls = read('calls').trim().split('\n');
@@ -87,4 +89,12 @@ test('a restart that exits at once stays armed and fails without recording runni
   // Three attempts after the record, then three more from the still-armed trap.
   assert.equal(result.starts, 6);
   assert.match(result.stderr, /did not stay running/);
+});
+
+test('a container outside the job scope is never touched', () => {
+  const result = run('normal', 'true', 'dw-parity-other-job');
+  assert.notEqual(result.status, 0);
+  assert.equal(result.starts, 0);
+  assert.equal(result.stopIndex, -1);
+  assert.equal(result.state, 'running');
 });

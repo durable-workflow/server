@@ -42,8 +42,8 @@ record() {
     --output "/evidence/published-sdk-patch/$2/record.json"
 }
 if test "$backend" = sqlite; then
-  run_without_maintenance "$RESOURCE_SCOPE-php-maintenance" \
-    parity-evidence/published-sdk-patch/maintenance-schedule.txt -- record "$php_url" php
+  run_without_maintenance parity-evidence/published-sdk-patch/maintenance-schedule.txt -- \
+    record "$php_url" php
 else
   record "$php_url" php
 fi
