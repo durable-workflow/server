@@ -154,3 +154,69 @@ async fn a_declared_signal_consumed_by_a_condition_wait_keeps_no_sequence() {
     let (_, described) = request(&app, "GET", "/api/workflows/declared-signals", Value::Null).await;
     assert_eq!(described["status"], "waiting", "{described}");
 }
+
+// `historyEventsWithSignalArgumentEnvelopes` looks up only the current
+// page's signal IDs (`whereIn('id', $signalIds)`), fenced to the run. A run
+// with many consumed signals, walked one event per page, hydrates exactly
+// each page's own signal, and a record moved to another run is not used.
+#[tokio::test]
+async fn small_history_pages_hydrate_only_their_own_signals() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let started = start(&app, "paged-signals").await;
+    let other = start(&app, "paged-signals-other").await;
+    let worker = json!({"worker_id":"pager","task_queue":"test","runtime":"php","supported_workflow_types":["echo"],
+        "supported_activity_types":[]});
+    assert_eq!(request(&app, "POST", "/api/worker/register", worker).await.0, StatusCode::CREATED);
+    // Both runs' first tasks open a wait, so only the signals leave work.
+    for _ in 0..2 {
+        let task = poll(&app, "pager", "workflow").await;
+        assert_eq!(finish_task(&app, &task, wait("many")).await.0, StatusCode::OK);
+    }
+    for index in 0..40 {
+        let (status, body) = request(&app, "POST", &format!("/api/workflows/paged-signals/signal/s{index}"), json!([])).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    }
+    // Give every recorded signal its own consuming sequence.
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let ids: Vec<String> = received(&history).iter().map(|payload| payload["signal_id"].as_str().unwrap().to_owned()).collect();
+    assert_eq!(ids.len(), 40);
+    for (index, id) in ids.iter().enumerate() {
+        database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_signal_records SET workflow_sequence={} WHERE id='{id}'", 1000 + index))).await;
+    }
+    // One record moves to another run; the page fence must not use it.
+    let moved = &ids[7];
+    database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_signal_records SET workflow_run_id='{}' WHERE id='{moved}'",
+        other["run_id"].as_str().unwrap()))).await;
+
+    let (status, first) = request(&app, "POST", "/api/worker/workflow-tasks/poll",
+        json!({"worker_id":"pager","task_queue":"test","timeout_seconds":0,"history_page_size":1})).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let task = first["task"].clone();
+    assert_eq!(task["run_id"], started["run_id"], "{task}");
+    let mut pages = vec![task["history_events"].clone()];
+    let mut token = task["next_history_page_token"].clone();
+    while let Some(next) = token.as_str().map(str::to_owned) {
+        let (status, page) = request(&app, "POST", &format!("/api/worker/workflow-tasks/{}/history", task["task_id"].as_str().unwrap()),
+            json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"],
+                "next_history_page_token":next,"history_page_size":1})).await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert!(page["history_events"].as_array().unwrap().len() <= 1, "{page}");
+        pages.push(page["history_events"].clone());
+        token = page["next_history_page_token"].clone();
+    }
+    let mut seen = 0;
+    for page in &pages {
+        for payload in received(page) {
+            let id = payload["signal_id"].as_str().unwrap();
+            let index = ids.iter().position(|known| known == id).unwrap();
+            if id == moved {
+                assert!(payload.get("workflow_sequence").is_none(), "another run's record: {payload}");
+            } else {
+                assert_eq!(payload["workflow_sequence"], json!(1000 + index), "{payload}");
+            }
+            seen += 1;
+        }
+    }
+    assert_eq!(seen, 40, "every signal appears on its own page");
+}
