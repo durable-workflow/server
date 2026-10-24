@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
-import {chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
@@ -130,4 +130,30 @@ test('the wrapper refuses to run without an owning resource scope', () => {
   });
   assert.equal(child.status, 2);
   assert.match(child.stderr, /Set the owning isolated network\/resource scope/);
+});
+
+// The native server is shared by every lane. Two profiles whose fixtures name
+// the same task queue would see each other's workers, so they share a lane.
+test('profiles that share a task queue run in the same lane', () => {
+  const script = readFileSync(LANES, 'utf8');
+  const lanes = [...script.slice(script.indexOf('lanes=(')).split(')')[0].matchAll(/^ {2}"([^"]+)"$/gm)]
+    .map(match => match[1].split(' ').map(entry => entry.split(':')[1]));
+  assert.deepEqual(lanes.flat().sort(), Object.values(PROFILES).sort(), 'every profile in exactly one lane');
+  const queues = tag => {
+    const directory = new URL(`../Fixtures/ServerParityProfiles/published-${tag}/`, import.meta.url);
+    const text = readdirSync(directory).filter(name => name.endsWith('.json'))
+      .map(name => readFileSync(new URL(name, directory), 'utf8')).join('\n');
+    return new Set(text.match(/server-parity-sdk-[a-z-]+/g) ?? []);
+  };
+  for (const [index, lane] of lanes.entries()) {
+    for (const other of lanes.slice(index + 1)) {
+      for (const tag of lane) {
+        for (const peer of other) {
+          const shared = [...queues(tag)].filter(queue => queues(peer).has(queue));
+          assert.deepEqual(shared, [], `${tag} and ${peer} share ${shared} but run in different lanes`);
+        }
+      }
+    }
+  }
+  assert.ok(queues('sdk-signals').has('server-parity-sdk-signals'), 'queues are read from the fixtures');
 });

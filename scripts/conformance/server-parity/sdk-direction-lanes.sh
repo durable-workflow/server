@@ -3,7 +3,7 @@
 # three concurrent lanes. Each profile already has its own containers, PHP and
 # embedded databases, evidence and state directory, and its own workflow-ID
 # prefix on the shared native server, so profiles in different lanes cannot
-# see each other. Within a lane they run in order, and each profile's PHP
+# see each other unless they share a task queue. Within a lane they run in order, and each profile's PHP
 # server is stopped as soon as its attempt ends, so at most three run at once.
 # Every profile runs even after another fails; the script fails if any did,
 # after printing each log. The job's sdk-direction-cleanup steps remove every
@@ -17,12 +17,14 @@ if [[ -z "${RESOURCE_SCOPE:-}" ]]; then
 fi
 evidence=parity-evidence/sdk-direction-lanes
 mkdir -p "$evidence"
-# Profile variant and its tag (evidence, log and container names). The lanes are
-# balanced by the durations recorded in CI (about seven to eight minutes each).
+# Profile variant and its tag (evidence, log and container names). Profiles
+# that share a task queue on the native server must share a lane: the three
+# signal profiles all use server-parity-sdk-signals, and one's workers would
+# show in another's routing diagnostics. Every other profile has its own queues.
 lanes=(
   "update:sdk-updates update-failure:sdk-update-failures child:sdk-child-directions"
-  "namespace-signal:sdk-namespace-signals timer:sdk-timers activity:sdk-directions"
-  "selected-run-signal:sdk-selected-run-signals signal:sdk-signals query:sdk-queries"
+  "signal:sdk-signals namespace-signal:sdk-namespace-signals selected-run-signal:sdk-selected-run-signals"
+  "timer:sdk-timers activity:sdk-directions query:sdk-queries"
 )
 run_lane() {
   local lane=$1 entry variant tag status
