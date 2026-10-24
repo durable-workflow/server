@@ -101,7 +101,7 @@ try {
         for (const flag of ['url', 'application-root']) {
           if (values[flag]) arguments_.push(`--${flag}`, values[flag]);
         }
-        const probe = captureProbe('php', arguments_, {directory: dirname(resolve(values.output)), timeout: fixture.memo_replay ? fixture.memo_replay.overall_budget_seconds * 1000 + 5000 : fixture.corrected_markers ? fixture.corrected_markers.overall_budget_seconds * 1000 + 5000 : fixture.namespace_signal_pair || fixture.selected_run_signal_pair ? 75000 : 45000,
+        const probe = captureProbe('php', arguments_, {directory: dirname(resolve(values.output)), timeout: fixture.memo_replay ? fixture.memo_replay.overall_budget_seconds * 1000 + 5000 : fixture.corrected_markers ? fixture.corrected_markers.overall_budget_seconds * 1000 + 5000 : fixture.namespace_signal_pair || fixture.selected_run_signal_pair ? 75000 : fixture.update_validation ? 90000 : 45000,
           env: {...process.env, DW_PARITY_FAILURE_EVIDENCE_DIR: dirname(resolve(values.output))},
           preserveStdout: join(sourceDirectory, name)});
         const item = {fixture_id: fixture.id, fixture, outcome: 'runner-blocked'};
