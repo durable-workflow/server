@@ -14,8 +14,9 @@ import {decide} from '../../scripts/conformance/server-parity/aggregate.mjs';
 
 const workflowPath = '.github/workflows/server-parity.yml';
 const workflowText = readFileSync(workflowPath, 'utf8');
-const classifier = resolve('scripts/conformance/server-parity/changes.mjs');
 const aggregate = resolve('scripts/conformance/server-parity/aggregate.mjs');
+const aggregateWrapper = 'scripts/conformance/server-parity/aggregate.sh';
+const classifierWrapper = 'scripts/conformance/server-parity/changes.sh';
 
 // Top-level job ids and each job's block of text.
 function jobs(text) {
@@ -65,6 +66,7 @@ test('the fixture jobs run only through the classifier and the result waits for 
   assert.equal(ids[0], 'changes');
   assert.match(blocks.changes, /^ {4}timeout-minutes: \d+$/m);
   assert.match(blocks.changes, /run: \$\{\{ steps\.classify\.outputs\.run \}\}/);
+  assert.match(blocks.changes, /run: bash scripts\/conformance\/server-parity\/changes\.sh >> "\$GITHUB_OUTPUT"$/m);
   assert.match(blocks['published-sdk-adapters'], /^ {4}needs: changes\n {4}if: \$\{\{ needs\.changes\.outputs\.run == 'true' \}\}$/m);
   const fixtureJobs = ids.filter(id => id !== 'changes' && id !== 'result');
   for (const id of fixtureJobs.filter(id => id !== 'published-sdk-adapters')) {
@@ -81,7 +83,8 @@ test('the fixture jobs run only through the classifier and the result waits for 
   const needs = [...result.matchAll(/^ {6}- ([a-z0-9-]+)$/gm)].map(match => match[1]);
   assert.deepEqual(needs.sort(), ['changes', ...fixtureJobs].sort());
   assert.match(result, /NEEDS: \$\{\{ toJSON\(needs\) \}\}/);
-  assert.match(result, /run: node scripts\/conformance\/server-parity\/aggregate\.mjs/);
+  assert.match(result, /run: bash scripts\/conformance\/server-parity\/aggregate\.sh$/m);
+  assert.match(result, /sparse-checkout: \|\n {12}scripts\/conformance\/server-parity\/aggregate\.sh\n {12}scripts\/conformance\/server-parity\/aggregate\.mjs\n/);
 });
 
 function runAggregate(needs) {
@@ -133,6 +136,14 @@ for (const [label, needs, reason] of [
   });
 }
 
+test('the workflow wrapper passes the result through, from the repository root', () => {
+  const run = needs => spawnSync('bash', [aggregateWrapper], {env: {...process.env, NEEDS: JSON.stringify(needs)}, encoding: 'utf8'});
+  assert.equal(run(fixture('success', 'true')).status, 0);
+  const failed = run({...fixture('success', 'true'), 'mysql-execution': {result: 'failure', outputs: {}}});
+  assert.equal(failed.status, 1);
+  assert.match(failed.stderr, /mysql-execution=failure/);
+});
+
 test('the result fails when the needs context cannot be read', () => {
   for (const text of ['', 'not json']) {
     const outcome = runAggregate(text);
@@ -152,6 +163,8 @@ function pullRequest(change) {
   git('init', '-q', '-b', 'main');
   mkdirSync(join(root, '.github/workflows'), {recursive: true});
   copyFileSync(workflowPath, join(root, workflowPath));
+  mkdirSync(join(root, dirname(classifierWrapper)), {recursive: true});
+  for (const file of [classifierWrapper, 'scripts/conformance/server-parity/changes.mjs']) copyFileSync(file, join(root, file));
   write('README.md', 'base\n');
   write('tests/Fixtures/ServerParity/case.json', '{}\n');
   git('add', '-A');
@@ -170,7 +183,8 @@ function pullRequest(change) {
 }
 
 function classify(root, env) {
-  const outcome = spawnSync('node', [classifier], {cwd: root, env: {...process.env, ...env}, encoding: 'utf8'});
+  // The workflow runs the wrapper from the repository root.
+  const outcome = spawnSync('bash', [classifierWrapper], {cwd: root, env: {...process.env, ...env}, encoding: 'utf8'});
   assert.equal(outcome.status, 0, outcome.stderr);
   return outcome.stdout.trim();
 }

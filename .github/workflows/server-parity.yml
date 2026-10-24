@@ -97,7 +97,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: node scripts/conformance/server-parity/changes.mjs >> "$GITHUB_OUTPUT"
+        run: bash scripts/conformance/server-parity/changes.sh >> "$GITHUB_OUTPUT"
 
   published-sdk-adapters:
     needs: changes
@@ -1870,10 +1870,12 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          sparse-checkout: scripts/conformance/server-parity/aggregate.mjs
+          sparse-checkout: |
+            scripts/conformance/server-parity/aggregate.sh
+            scripts/conformance/server-parity/aggregate.mjs
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - name: Require every fixture job to pass, or every one to be skipped for unchanged inputs
         env:
           NEEDS: ${{ toJSON(needs) }}
-        run: node scripts/conformance/server-parity/aggregate.mjs
+        run: bash scripts/conformance/server-parity/aggregate.sh
