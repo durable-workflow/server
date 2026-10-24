@@ -352,7 +352,7 @@ jobs:
   qualification:
     name: Feature source qualification
     needs: [preflight, feature]
-    if: ${{ always() }}
+    if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
 
