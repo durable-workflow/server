@@ -38,6 +38,7 @@ mod all_groups;
 mod backend;
 mod cancellation;
 mod cancellation_cascade;
+mod cancellation_scopes;
 mod child_summary;
 mod child_cancellation;
 mod children;
