@@ -33,30 +33,21 @@ export DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
 # not writer contention, so the PHP record runs with the maintenance loop
 # stopped, and the loop restarts right after it. The fixtures use no timers or
 # repair. The observer still never retries a poll refusal.
-maintenance="$RESOURCE_SCOPE-php-maintenance"
-schedule=parity-evidence/published-sdk-patch/maintenance-schedule.txt
-for target in php rust; do
-  if test "$target" = php; then url="$php_url"; else url="$native_url"; fi
-  if test "$target" = php && test "$backend" = sqlite; then
-    echo "before: $(docker inspect -f '{{.State.Status}}' "$maintenance")" > "$schedule"
-    grep -qx 'before: running' "$schedule"
-    docker stop --time 2 "$maintenance" > /dev/null
-    trap 'docker start "$maintenance" > /dev/null' EXIT
-    echo "during php record: $(docker inspect -f '{{.State.Status}}' "$maintenance")" >> "$schedule"
-    grep -qx 'during php record: exited' "$schedule"
-  fi
+. scripts/conformance/server-parity/published-sdk-patch/maintenance.sh
+record() {
   docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
     --network "$RESOURCE_SCOPE" --entrypoint node "${shared[@]}" "$image" \
-    scripts/conformance/server-parity.mjs record --mode http --url "$url" --target "$target" \
+    scripts/conformance/server-parity.mjs record --mode http --url "$1" --target "$2" \
     --prefix published-sdk-v1 --artifacts "$profile/artifacts.json" "${fixtures[@]}" \
-    --output "/evidence/published-sdk-patch/$target/record.json"
-  if test "$target" = php && test "$backend" = sqlite; then
-    docker start "$maintenance" > /dev/null
-    trap - EXIT
-    echo "after php record: $(docker inspect -f '{{.State.Status}}' "$maintenance")" >> "$schedule"
-    grep -qx 'after php record: running' "$schedule"
-  fi
-done
+    --output "/evidence/published-sdk-patch/$2/record.json"
+}
+if test "$backend" = sqlite; then
+  run_without_maintenance "$RESOURCE_SCOPE-php-maintenance" \
+    parity-evidence/published-sdk-patch/maintenance-schedule.txt -- record "$php_url" php
+else
+  record "$php_url" php
+fi
+record "$native_url" rust
 case "$backend" in
   mysql) embedded=(-e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=embedded_ref
     -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password) ;;
