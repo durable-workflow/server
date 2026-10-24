@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use DurableWorkflow\Client;
 use GuzzleHttp\Client as PrometheusMetricsHttp;
+use GuzzleHttp\HandlerStack;
 
 // The Prometheus summary of a fresh namespace before and after a known
 // sequence over raw HTTP: a worker with declared slots on the first queue; a
@@ -19,8 +20,12 @@ function finishHttpPrometheusMetrics(Client $admin, array $fixture, string $work
     $worker = $namespace.'-worker';
     $admin->createNamespace($namespace, 'prometheus metrics λ', 30);
     $token = getenv('DW_PARITY_TOKEN') ?: null;
+    // The SQLite reference shares its database with a one-second maintenance
+    // loop; retry its retryable lock-pressure refusals, as the other probes do.
+    $stack = HandlerStack::create();
+    $stack->push(LockPressurePollRetries::middleware(), 'lock_pressure_poll_retry');
     $http = new PrometheusMetricsHttp(['base_uri' => rtrim($url, '/').'/api/', 'http_errors' => false,
-        'connect_timeout' => 1, 'timeout' => 30]);
+        'connect_timeout' => 1, 'timeout' => 30, 'handler' => $stack]);
     $raw = static function (string $method, string $path, ?array $body = null, bool $worker = false) use ($http, $token, $namespace): array {
         $response = $http->request($method, $path, ['headers' => array_filter([
             'Authorization' => $token === null ? null : 'Bearer '.$token,
