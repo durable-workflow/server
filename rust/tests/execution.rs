@@ -87,6 +87,8 @@ mod rejected_updates;
 mod continue_messages;
 #[path = "execution/update_wait.rs"]
 mod update_wait;
+#[path = "execution/keyless_condition_waits.rs"]
+mod keyless_condition_waits;
 #[path = "execution/payload_limits.rs"]
 mod payload_limits;
 #[path = "execution/start_definition.rs"]
@@ -113,6 +115,8 @@ mod history_pages;
 mod declared_signals;
 #[path = "execution/worker_history_presentation.rs"]
 mod worker_history_presentation;
+#[path = "execution/message_streams.rs"]
+mod message_streams;
 #[path = "execution/poll_waits.rs"]
 mod poll_waits;
 #[path = "execution/child_cascade.rs"]
@@ -289,6 +293,9 @@ mod trace_carriers;
 
 #[path = "execution/activity_cancellation_ack.rs"]
 mod activity_cancellation_ack;
+
+#[path = "execution/route_coverage.rs"]
+mod route_coverage;
 
 enum TestDatabase {
     Sqlite(tempfile::TempDir),

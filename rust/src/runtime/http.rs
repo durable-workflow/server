@@ -120,6 +120,12 @@ pub fn router(runtime: Runtime) -> Router {
             post(repair_run),
         )
         .route("/api/workflows/{workflow_id}/debug", get(debug_current))
+        .route("/api/workflows/{workflow_id}/message-streams", get(list_message_streams))
+        .route("/api/workflows/{workflow_id}/message-streams/{stream_name}", get(show_message_stream))
+        .route(
+            "/api/workflows/{workflow_id}/message-streams/{stream_name}/messages",
+            post(append_message),
+        )
         .route(
             "/api/workflows/{workflow_id}/runs/{run_id}/debug",
             get(debug_run),
@@ -946,6 +952,7 @@ async fn cluster(
         "auth_composition_contract": auth_composition,
         "principal_attribution_contract": principal_attribution,
         "service_catalog_read_contract": service_catalog,
+        "message_streams_contract": super::message_streams::manifest(),
         "payload_codec": "avro", "qualified_for_php_takeover": false}),
     ))
 }
@@ -985,6 +992,39 @@ fn metadata(fields: &[(&str, Option<Value>)]) -> Value {
 
 fn present(body: &Value, field: &str) -> Option<Value> {
     body.get(field).filter(|value| !value.is_null()).cloned()
+}
+
+/// `POST /api/workflows/{workflow_id}/message-streams/{stream_name}/messages`.
+async fn append_message(
+    Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
+    Path((workflow_id, stream)): Path<(String, String)>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let normalized = super::laravel_rules::normalize(&body);
+    let context = request.context(&body, &workflow_id, "message_stream_append", metadata(&[
+        ("stream_name", Some(json!(stream))),
+        ("message_id", present(&normalized, "message_id")),
+        ("request_id", present(&normalized, "request_id")),
+    ]));
+    let (status, response) = runtime.append_message(&workflow_id, &stream, body, context).await?;
+    Ok((status, Json(response)))
+}
+
+/// `GET /api/workflows/{workflow_id}/message-streams`.
+async fn list_message_streams(
+    Extension(runtime): Extension<Runtime>,
+    Path(workflow_id): Path<String>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.message_streams(&workflow_id, None).await?))
+}
+
+/// `GET /api/workflows/{workflow_id}/message-streams/{stream_name}`.
+async fn show_message_stream(
+    Extension(runtime): Extension<Runtime>,
+    Path((workflow_id, stream)): Path<(String, String)>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.message_streams(&workflow_id, Some(&stream)).await?))
 }
 
 fn signal_context(request: &CommandRequest, body: &Value, workflow_id: &str, name: &str) -> Value {
@@ -1876,7 +1916,9 @@ async fn complete_workflow(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    // PHP's transport rules come before every guard, ownership included.
+    // PHP validates the message-stream fields first, then its transport
+    // rules, before every guard, ownership included.
+    super::message_streams::check_completion_fields(&body).map_err(worker_refusal)?;
     let body = super::completion_rules::checked(body).map_err(worker_refusal)?;
     if body["commands"].as_array().is_some_and(|commands| {
         commands
@@ -1899,6 +1941,16 @@ async fn complete_workflow(
                 "outcome":"rejected","recorded":false,"reason":"typed_search_attributes_unavailable",
                 "requested_version":request_protocol(&headers)?,"minimum_protocol_version":minimum,
                 "remediation":format!("Complete typed search-attribute updates only through server nodes advertising worker protocol {minimum} or newer.")}),
+        });
+    }
+    if !super::message_streams::Completion::of(&body).is_empty() && !protocol_at_least(&headers, 15)? {
+        let minimum = super::message_streams::MINIMUM_PROTOCOL_VERSION;
+        return Err(super::RuntimeError::Protocol {
+            status: StatusCode::CONFLICT,
+            response: json!({"task_id":task_id,"workflow_task_attempt":body["workflow_task_attempt"],
+                "outcome":"rejected","reason":"message_streams_unavailable",
+                "requested_version":request_protocol(&headers)?,"minimum_protocol_version":minimum,
+                "remediation":format!("Send the X-Durable-Workflow-Protocol-Version header with worker protocol {minimum} or newer.")}),
         });
     }
     let attempt = body["workflow_task_attempt"].clone();

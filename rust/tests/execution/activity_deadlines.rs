@@ -488,9 +488,14 @@ async fn heartbeat_renews_only_progress_deadline_and_cannot_resurrect_elapsed_au
     assert_eq!(after.0, initial.0, "Start-to-close deadline remains fixed");
     assert!(after.1 > initial.1, "Heartbeat deadline advances");
     assert_eq!(after.2, initial.2, "Lifecycle deadline remains fixed");
+    // Compare instants, not text: a lease on a whole second is written
+    // without a fraction ("...:26Z"), which sorts after "...:26.045Z".
+    let instant = |value: &Value| chrono::DateTime::parse_from_rfc3339(value.as_str().unwrap()).unwrap();
     assert!(
-        renewed.1["lease_expires_at"].as_str().unwrap()
-            > activity["lease_expires_at"].as_str().unwrap()
+        instant(&renewed.1["lease_expires_at"]) > instant(&activity["lease_expires_at"]),
+        "{} renews {}",
+        renewed.1["lease_expires_at"],
+        activity["lease_expires_at"]
     );
     let prefix = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
     database
