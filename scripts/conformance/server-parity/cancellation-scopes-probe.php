@@ -26,8 +26,9 @@ use GuzzleHttp\HandlerStack;
 // the capability, one polled on protocol 1.19.
 //
 // The observation is normalized here: identities become labels (named where
-// the probe knows them, else `{ulid:N}` by first appearance, case-insensitive,
-// since servers differ in ULID case), digests become `{sha256:N}`, the run
+// the probe knows them, else `{ulid:N}` by first appearance with object keys
+// in sorted order, case-insensitive, since servers differ in key order and
+// ULID case), digests become `{sha256:N}`, the run
 // request's two instants become named anchors and every other instant becomes
 // its format, `{time:Z<fraction digits>}`. Relations that depend on the clock
 // are recorded as measured facts, never as raw times.
@@ -452,8 +453,8 @@ function finishHttpCancellationScopes(Client $admin, array $fixture, string $wor
 
 /**
  * Replaces run-varying values with labels: known identities and instants by
- * name, other ULIDs and SHA-256 digests by first appearance, and other
- * instants by their format.
+ * name, other ULIDs and SHA-256 digests by first appearance (object keys
+ * in sorted order), and other instants by their format.
  *
  * @param array<string, string> $names
  */
@@ -471,6 +472,11 @@ function cancellationScopesNormalize(array $state, array $names): array
     $ulid = '[0-9A-HJKMNP-TV-Z]{26}';
     $walk = static function (mixed $value) use (&$walk, &$labels, $label, $ulid): mixed {
         if (is_array($value)) {
+            // Object keys are visited in sorted order, so labels do not
+            // depend on the key order a server answers in.
+            if (! array_is_list($value)) {
+                ksort($value, SORT_STRING);
+            }
             $out = [];
             foreach ($value as $key => $item) {
                 $out[$key] = $walk($item);
