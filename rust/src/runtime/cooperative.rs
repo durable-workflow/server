@@ -202,7 +202,7 @@ where
                 .filter(|span| (1..=PARALLEL_SPAN_LIMIT).contains(span) && sequence.checked_add(*span).is_some())
                 .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_cancellation_delivery"))?,
         };
-        if !matches!(call_kind, "timer" | "child" | "parallel" | "condition" | "signal")
+        if !matches!(call_kind, "timer" | "child" | "parallel" | "condition" | "signal" | "activity")
             || (call_kind != "parallel" && span != 1)
             || body.get("operation_sequence").is_some_and(|v| !v.is_null())
             || body
@@ -336,6 +336,14 @@ where
                         "operation_sequence_span":null,"reason":"cancellation_waiting_for_child","claim_released":true}));
                 }
             }
+        } else if call_kind == "activity" {
+            // `cancelOpenWaitAtSequence` with the default `try_cancel`
+            // policy: an open activity at the sequence is cancelled under the
+            // request. Native records no explicit activity cancellation
+            // policy, so it has no waiting or abandoning delivery.
+            if sequence < next {
+                Self::deliver_activity_cancellation(&mut tx, &run_id, request_id, sequence, now()).await?;
+            }
         } else if matches!(call_kind, "condition" | "signal") {
             if sequence < next {
                 Self::validate_wait_cancellation_boundary(&mut tx, &run_id, sequence, call_kind, request_sequence).await?;
@@ -411,6 +419,63 @@ where
     /// at its index, and a group whose members all resolved before the
     /// request is not eligible. Native cancels timer members only; a group
     /// with another kind of member keeps its earlier refusal.
+    /// `ActivityCancellation::record` for a cooperative request: the open
+    /// execution at `sequence`, its current attempt and that attempt's own
+    /// task are cancelled, and `ActivityCancelled` names the request. PHP
+    /// 2.11.1 picks the execution's first task here, which for a retried
+    /// activity is an earlier, closed one (Workflow #923); native cancels the
+    /// live attempt's task, so its worker can acknowledge the stop.
+    async fn deliver_activity_cancellation(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        request_id: &str,
+        sequence: i64,
+        at: DateTime<Utc>,
+    ) -> Result<()> {
+        let Some(activity) = Self::query("SELECT * FROM activity_executions WHERE workflow_run_id=$1 AND sequence=$2 AND status IN ('pending','running')")
+            .bind(run_id).bind(sequence).fetch_optional(&mut **tx).await?
+        else {
+            return Ok(());
+        };
+        let activity_id = DB::string(&activity, "id")?;
+        let attempt_id = DB::optional_string(&activity, "current_attempt_id")?;
+        Self::query("UPDATE activity_executions SET status='cancelled',closed_at=COALESCE(closed_at,$1) WHERE id=$2")
+            .bind(DB::bind_time(at)).bind(&activity_id).execute(&mut **tx).await?;
+        let mut attempt_snapshot = Value::Null;
+        let mut task_id = None;
+        if let Some(attempt_id) = &attempt_id {
+            Self::query("UPDATE activity_attempts SET status='cancelled',lease_expires_at=NULL,closed_at=COALESCE(closed_at,$1) WHERE id=$2 AND activity_execution_id=$3 AND workflow_run_id=$4")
+                .bind(DB::bind_time(at)).bind(attempt_id).bind(&activity_id).bind(run_id).execute(&mut **tx).await?;
+            let attempt = Self::query("SELECT * FROM activity_attempts WHERE id=$1 AND activity_execution_id=$2 AND workflow_run_id=$3")
+                .bind(attempt_id).bind(&activity_id).bind(run_id).fetch_one(&mut **tx).await?;
+            let live = DB::string(&attempt, "workflow_task_id")?;
+            // The task keeps its owner and attempt count, as PHP's does.
+            Self::query("UPDATE workflow_tasks SET status='cancelled',lease_expires_at=NULL,last_error=NULL WHERE id=$1 AND workflow_run_id=$2 AND status IN ('ready','leased')")
+                .bind(&live).bind(run_id).execute(&mut **tx).await?;
+            attempt_snapshot = json!({"id":attempt_id,"activity_execution_id":activity_id,"task_id":live,
+                "attempt_number":DB::number(&attempt,"attempt_number")?,"status":"cancelled",
+                "lease_owner":DB::optional_string(&attempt,"lease_owner")?,
+                "started_at":DB::optional_instant(&attempt,"started_at")?,"closed_at":DB::optional_instant(&attempt,"closed_at")?});
+            task_id = Some(live);
+        }
+        let cancelled = Self::query("SELECT * FROM activity_executions WHERE id=$1")
+            .bind(&activity_id).fetch_one(&mut **tx).await?;
+        let mut payload = Self::activity_payload(&cancelled)?;
+        payload["workflow_command_id"] = json!(request_id);
+        payload["activity_attempt_id"] = json!(attempt_id);
+        payload["attempt_number"] = json!(DB::number(&cancelled, "attempt_count")?);
+        payload["cancelled_at"] = json!(DB::optional_instant(&cancelled, "closed_at")?);
+        payload["activity_attempt"] = attempt_snapshot;
+        if let Some(task_id) = &task_id {
+            let task = Self::query("SELECT * FROM workflow_tasks WHERE id=$1").bind(task_id).fetch_one(&mut **tx).await?;
+            payload["task"] = Self::task_snapshot(&task)?;
+        }
+        // Recorded with the request's id, as the delivery itself is.
+        Self::append_by_command_id(tx, run_id, "ActivityCancelled", payload, task_id.as_deref(), request_id).await?;
+        tx.summary_changed(run_id);
+        Ok(())
+    }
+
     async fn parallel_timer_members(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
@@ -869,9 +934,9 @@ where
                 break;
             }
         }
-        let activities = Self::scalar("SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status IN ('pending','running')")
-            .bind(run_id).fetch_one(&mut *tx).await?;
-        if unsupported_child || activities != 0 {
+        // Open activities no longer block a request: the workflow delivers it
+        // to each activity it awaits (`call_kind: activity`), as PHP's does.
+        if unsupported_child {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "cooperative_cancellation_propagation_not_available",

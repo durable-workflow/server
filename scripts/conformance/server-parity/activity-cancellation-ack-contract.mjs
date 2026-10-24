@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 
 const MICROS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
-const ULID = /^[0-9a-z]{26}$/;
-const REQUEST = /^[0-9A-Z]{26}$/;
+// Identities are opaque ULIDs; their case differs between servers, as the
+// other contracts allow.
+const ULID = /^[0-9A-Za-z]{26}$/;
+const REQUEST = ULID;
 const ACKS = ['before_request', 'before_delivery', 'foreign_owner', 'unknown_attempt', 'unknown_task', 'task_mismatch',
   'other_namespace', 'protocol_1_19', 'protocol_missing', 'protocol_1_21', 'missing_fields', 'non_string_fields',
   'long_request_id', 'wrong_request_id', 'acknowledged', 'duplicate', 'legacy_ack', 'immediate_ack',

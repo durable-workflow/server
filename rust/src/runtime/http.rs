@@ -271,6 +271,10 @@ pub fn router(runtime: Runtime) -> Router {
             post(renew_activity_lease),
         )
         .route(
+            "/api/worker/activity-tasks/{task_id}/acknowledge-cancellation",
+            post(acknowledge_activity_cancellation),
+        )
+        .route(
             "/api/worker/activity-tasks/{task_id}/fail",
             post(fail_activity),
         )
@@ -751,8 +755,8 @@ fn worker_route(rest: &str) -> Option<Allowed> {
             | ["workflow-tasks" | "activity-tasks", "poll"]
             | ["query-tasks", "poll"]
             | ["query-tasks", _, "complete" | "fail" | "status"]
-            | ["workflow-tasks", _, "complete" | "fail" | "history" | "heartbeat"]
-            | ["activity-tasks", _, "complete" | "fail" | "heartbeat" | "status" | "renew-lease"]
+            | ["workflow-tasks", _, "complete" | "fail" | "history" | "heartbeat" | "deliver-cancellation"]
+            | ["activity-tasks", _, "complete" | "fail" | "heartbeat" | "status" | "renew-lease" | "acknowledge-cancellation"]
     )
     .then_some(Allowed::Any)
 }
@@ -2030,6 +2034,18 @@ async fn renew_activity_lease(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     runtime.renew_activity_lease(&task_id, body).await.map(Json)
+}
+
+async fn acknowledge_activity_cancellation(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    runtime
+        .acknowledge_activity_cancellation(&task_id, body, request_protocol(&headers)?)
+        .await
+        .map(Json)
 }
 
 async fn activity_status(

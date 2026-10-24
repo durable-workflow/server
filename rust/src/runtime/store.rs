@@ -1663,7 +1663,10 @@ where
                 self.cancellation_lease_expiry(&run)?
             };
             let leased_at = now();
-            if kind == "workflow" {
+            // PHP binds the immutable claim on every workflow and activity
+            // claim (`PollRequestLeaseBinding::bindClaimedTask`); cooperative
+            // delivery and the activity's stop acknowledgement read it back.
+            if matches!(kind, "workflow" | "activity") {
                 task_payload[super::cooperative::CLAIM_KEY] = json!({"registration_id":DB::number(&worker,"id")?,
                     "worker_id":worker_id,"namespace":self.namespace.as_ref(),"protocol_version":protocol_version,
                     "capabilities":DB::optional_document_row(&worker,"capabilities")?.unwrap_or(json!([])),
@@ -2848,6 +2851,9 @@ where
                 receipt["attempt_status"] = json!(DB::string(&attempt, "status")?);
                 receipt["task_status"] = json!(DB::string(&task, "status")?);
             }
+            // Every worker answer carries PHP's protocol fields.
+            receipt["protocol_version"] = json!(super::WORKER_PROTOCOL_VERSION);
+            receipt["server_capabilities"] = capabilities();
             return Err(super::RuntimeError::Protocol {
                 status: StatusCode::CONFLICT,
                 response: receipt,
@@ -3995,7 +4001,7 @@ pub(crate) fn capabilities() -> Value {
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
         "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,
         "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": true,
-        "activity_lease_renewal": true});
+        "activity_lease_renewal": true, "activity_cancellation_acknowledgement": true});
     value["runtime_external_payload_transport"] = super::payload_discovery::transport_manifest();
     value["supported_workflow_task_commands"]
         .as_array_mut()

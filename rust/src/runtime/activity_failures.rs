@@ -430,7 +430,8 @@ where
             return Err(super::RuntimeError::Protocol {
                 status: StatusCode::CONFLICT,
                 response: json!({"task_id":task_id,"activity_attempt_id":attempt_id,"outcome":reported,
-                    "recorded":false,"reason":"stale_attempt","next_task_id":null}),
+                    "recorded":false,"reason":"stale_attempt","next_task_id":null,
+                    "protocol_version":super::WORKER_PROTOCOL_VERSION,"server_capabilities":super::store::capabilities()}),
             });
         }
         Self::closed_run_outcome(&mut tx, &task, &body, reported).await?;

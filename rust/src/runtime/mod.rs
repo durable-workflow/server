@@ -24,6 +24,7 @@ macro_rules! store_methods {
 }
 
 mod active_summary;
+mod activity_cancellation_ack;
 mod activity_completion_uploads;
 mod activity_deadlines;
 mod activity_failures;
