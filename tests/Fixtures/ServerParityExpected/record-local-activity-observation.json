@@ -1,0 +1,3070 @@
+{
+  "applicable": true,
+  "namespace": "pr1-record-local-activity-rla",
+  "cluster_info": {
+    "local_activities": {
+      "schema": "durable-workflow.v2.local-activity.contract",
+      "version": 1,
+      "supported": true,
+      "worker_capability": "local_activities",
+      "minimum_worker_protocol_version": "1.18",
+      "command_type": "record_local_activity",
+      "command": {
+        "type": "record_local_activity",
+        "minimum_protocol_version": "1.18",
+        "required_fields": [
+          "activity_type",
+          "outcome",
+          "attempts"
+        ],
+        "attempt_reports": {
+          "field": "attempts",
+          "shape": "ordered_attempt_reports",
+          "required_fields": [
+            "attempt_number",
+            "outcome"
+          ],
+          "maximum": 100,
+          "required_from_protocol_version": "1.19",
+          "worker_attempt_identity": {
+            "report_field": "attempt_id",
+            "persistence_field": "worker_attempt_id",
+            "history_field": "worker_attempt_id",
+            "durable_field": "activity_attempt_id"
+          }
+        },
+        "heartbeat_reports": {
+          "field": "heartbeats",
+          "shape": "ordered_heartbeat_reports",
+          "required_fields": [
+            "elapsed_ms"
+          ],
+          "maximum_per_attempt": 1000,
+          "maximum_per_command": 1000,
+          "elapsed_ms_origin": "attempt_started_at",
+          "persisted_last_heartbeat_at": "attempt_started_at_plus_last_elapsed_ms"
+        },
+        "rolling_upgrade": {
+          "retained_protocol_version": "1.18",
+          "missing_attempts": "normalize_to_one_terminal_attempt_without_worker_identity_or_heartbeats",
+          "strict_shape_selected_by": "negotiated_worker_protocol_version",
+          "retained_nested_object_unknown_fields": "ignore",
+          "strict_nested_object_shape_from_protocol_version": "1.19"
+        }
+      },
+      "api": {
+        "functions": [
+          "Workflow\\V2\\localActivity"
+        ],
+        "workflow_facade": [
+          "Workflow\\V2\\Workflow::localActivity",
+          "Workflow\\V2\\Workflow::executeLocalActivity"
+        ],
+        "options": "Workflow\\V2\\Support\\LocalActivityOptions"
+      },
+      "execution": {
+        "mode": "local",
+        "same_process": true,
+        "ordinary_activity_task_created": false,
+        "history_events": [
+          "ActivityScheduled",
+          "ActivityStarted",
+          "ActivityHeartbeatRecorded",
+          "ActivityRetryScheduled",
+          "ActivityCompleted",
+          "ActivityFailed",
+          "ActivityTimedOut",
+          "ActivityCancelled"
+        ],
+        "history_marker": {
+          "execution_mode": "local",
+          "local_activity": true
+        }
+      },
+      "heartbeating": {
+        "lease": "workflow_task",
+        "automatic_points": [
+          "before_attempt_start",
+          "after_activity_heartbeat"
+        ],
+        "long_running_requirement": "activity_code_calls_heartbeat_before_the_workflow_task_lease_can_expire"
+      },
+      "cancellation": {
+        "preemption": "cooperative",
+        "observed_at": [
+          "heartbeat",
+          "timeout_enforcement",
+          "attempt_completion"
+        ],
+        "terminal_event": "ActivityCancelled"
+      },
+      "shutdown": {
+        "graceful": "worker_stops_claiming_new_workflow_tasks_and_allows_in_process_attempt_to_finish_or_heartbeat",
+        "crash": "workflow_task_lease_expires_and_task_repair_reclaims_the_workflow_task",
+        "cold_replay": "committed_terminal_event_is_replayed_or_started_attempt_without_terminal_event_schedules_local_retry"
+      },
+      "routing": {
+        "admission": "activity_class_must_resolve_in_the_workflow_worker_process",
+        "queue_bypassed": true,
+        "rejected_options": [
+          "connection",
+          "queue",
+          "worker_session",
+          "schedule_to_start_timeout"
+        ]
+      },
+      "retry": {
+        "new_attempt_when": [
+          "a local attempt starts",
+          "a retry workflow task replays after backoff",
+          "cold replay finds a previously started local attempt without a terminal event"
+        ],
+        "backoff": "durable_workflow_task_available_at",
+        "cold_replay_reason": "cold_replay"
+      },
+      "timeouts": {
+        "start_to_close_timeout": "one_local_attempt",
+        "schedule_to_close_timeout": "entire_local_execution_including_retries",
+        "heartbeat_timeout": "gap_between_recorded_local_activity_heartbeats",
+        "enforcement": "cooperative_at_heartbeat_attempt_start_and_attempt_completion_boundaries"
+      },
+      "visibility": {
+        "activity_execution_marker": "activity_options.execution_mode",
+        "history_marker": "payload.execution_mode",
+        "metrics_marker": "activities.local_*",
+        "history_export": "same_activity_event_payloads_with_execution_mode_local"
+      }
+    },
+    "record_local_activity_command": true,
+    "prepared_flags": {
+      "prepared_local_activities": "bool",
+      "prepared_local_activity_groups": "bool",
+      "prepared_local_activity_cancellation_policies": "ordered subset",
+      "agree": true
+    },
+    "cluster_capabilities_local_keys": []
+  },
+  "register_local": {
+    "status": 201,
+    "response": {
+      "registered": true,
+      "capabilities": [
+        "local_activities"
+      ],
+      "capability_manifest": {
+        "local_activities": {
+          "supported": true,
+          "minimum_protocol_version": "1.18",
+          "implementation": "record_local_activity"
+        },
+        "worker_sessions": {
+          "supported": false,
+          "minimum_protocol_version": "1.18",
+          "reason": "not_enabled_for_this_worker_registration"
+        },
+        "sticky_execution": {
+          "supported": false,
+          "minimum_protocol_version": "1.18",
+          "reason": "not_enabled_for_this_worker_registration"
+        }
+      },
+      "status": "active"
+    },
+    "advertised_as_cluster_info": true
+  },
+  "register_flat_only": {
+    "status": 409,
+    "response": {
+      "registered": false,
+      "reason": "worker_capability_manifest_mismatch",
+      "capability": "local_activities",
+      "requested_version": "1.20",
+      "minimum_protocol_version": "1.18",
+      "remediation": "Keep the structured supported flag and the flat routing capability in exact agreement."
+    }
+  },
+  "register_manifest_only": {
+    "status": 409,
+    "response": {
+      "registered": false,
+      "reason": "worker_capability_manifest_mismatch",
+      "capability": "local_activities",
+      "requested_version": "1.20",
+      "minimum_protocol_version": "1.18",
+      "remediation": "Keep the structured supported flag and the flat routing capability in exact agreement."
+    }
+  },
+  "refused_protocol_floor": {
+    "status": 409,
+    "response": {
+      "task_id": "task-1",
+      "workflow_task_attempt": 1,
+      "outcome": "rejected",
+      "recorded": false,
+      "reason": "portable_worker_affinity_protocol_floor_unavailable",
+      "capability": "local_activities",
+      "requested_version": "1.17",
+      "minimum_protocol_version": "1.18",
+      "remediation": "Use cold durable replay unless the registered worker manifest explicitly supports the required capability and exact cache identity."
+    }
+  },
+  "refused_wrong_owner": {
+    "status": 409,
+    "response": {
+      "task_id": "task-1",
+      "workflow_task_attempt": 1,
+      "error": "Workflow task lease is owned by another worker.",
+      "reason": "lease_owner_mismatch",
+      "lease_owner": "pr1-record-local-activity-rla-a"
+    }
+  },
+  "refused_wrong_owner_invalid_report": {
+    "status": 409,
+    "response": {
+      "task_id": "task-1",
+      "workflow_task_attempt": 1,
+      "error": "Workflow task lease is owned by another worker.",
+      "reason": "lease_owner_mismatch",
+      "lease_owner": "pr1-record-local-activity-rla-a"
+    }
+  },
+  "invalid_transport": {
+    "status": 422,
+    "response": {
+      "message": "The selected commands.0.outcome is invalid. (and 2 more errors)",
+      "reason": "validation_failed",
+      "errors": {
+        "commands.0.outcome": [
+          "The selected commands.0.outcome is invalid."
+        ],
+        "commands.0.attempts.0.attempt_number": [
+          "The commands.0.attempts.0.attempt_number field is required."
+        ],
+        "commands.0.attempts.0.outcome": [
+          "The selected commands.0.attempts.0.outcome is invalid."
+        ]
+      },
+      "validation_errors": {
+        "commands.0.outcome": [
+          "The selected commands.0.outcome is invalid."
+        ],
+        "commands.0.attempts.0.attempt_number": [
+          "The commands.0.attempts.0.attempt_number field is required."
+        ],
+        "commands.0.attempts.0.outcome": [
+          "The selected commands.0.attempts.0.outcome is invalid."
+        ]
+      }
+    }
+  },
+  "invalid_worker_session": {
+    "status": 422,
+    "response": {
+      "message": "worker_session is only supported for schedule_activity commands.",
+      "reason": "validation_failed",
+      "errors": {
+        "commands.0.worker_session": [
+          "worker_session is only supported for schedule_activity commands."
+        ]
+      },
+      "validation_errors": {
+        "commands.0.worker_session": [
+          "worker_session is only supported for schedule_activity commands."
+        ]
+      }
+    }
+  },
+  "invalid_cancellation_policy": {
+    "status": 422,
+    "response": {
+      "message": "cancellation_policy is only supported for start_child_workflow, schedule_activity or prepared local Activity commands.",
+      "reason": "validation_failed",
+      "errors": {
+        "commands.0.cancellation_policy": [
+          "cancellation_policy is only supported for start_child_workflow, schedule_activity or prepared local Activity commands."
+        ]
+      },
+      "validation_errors": {
+        "commands.0.cancellation_policy": [
+          "cancellation_policy is only supported for start_child_workflow, schedule_activity or prepared local Activity commands."
+        ]
+      }
+    }
+  },
+  "invalid_timeout_envelope": {
+    "status": 422,
+    "response": {
+      "message": "heartbeat_timeout cannot exceed start_to_close_timeout.",
+      "reason": "validation_failed",
+      "errors": {
+        "commands.0.heartbeat_timeout": [
+          "heartbeat_timeout cannot exceed start_to_close_timeout."
+        ]
+      },
+      "validation_errors": {
+        "commands.0.heartbeat_timeout": [
+          "heartbeat_timeout cannot exceed start_to_close_timeout."
+        ]
+      }
+    }
+  },
+  "invalid_field_scope": {
+    "status": 422,
+    "response": {
+      "message": "Workflow task command field [schedule_to_start_timeout] is not valid on a record_local_activity command. schedule_to_start_timeout limits queue wait before an activity attempt starts and only applies to a schedule_activity command.",
+      "reason": "validation_failed",
+      "errors": {
+        "commands.0.schedule_to_start_timeout": [
+          "Workflow task command field [schedule_to_start_timeout] is not valid on a record_local_activity command. schedule_to_start_timeout limits queue wait before an activity attempt starts and only applies to a schedule_activity command."
+        ]
+      },
+      "validation_errors": {
+        "commands.0.schedule_to_start_timeout": [
+          "Workflow task command field [schedule_to_start_timeout] is not valid on a record_local_activity command. schedule_to_start_timeout limits queue wait before an activity attempt starts and only applies to a schedule_activity command."
+        ]
+      }
+    }
+  },
+  "invalid_activity_type": {
+    "status": 422,
+    "response": {
+      "message": "Local activity records require a non-empty activity_type.",
+      "reason": "validation_failed",
+      "errors": {
+        "commands.0.activity_type": [
+          "Local activity records require a non-empty activity_type."
+        ]
+      },
+      "validation_errors": {
+        "commands.0.activity_type": [
+          "Local activity records require a non-empty activity_type."
+        ]
+      }
+    }
+  },
+  "invalid_outcome": {
+    "status": 422,
+    "response": {
+      "message": "Local activity outcome must be completed, failed, timed_out, or cancelled.",
+      "reason": "validation_failed",
+      "errors": {
+        "commands.0.outcome": [
+          "Local activity outcome must be completed, failed, timed_out, or cancelled."
+        ]
+      },
+      "validation_errors": {
+        "commands.0.outcome": [
+          "Local activity outcome must be completed, failed, timed_out, or cancelled."
+        ]
+      }
+    }
+  },
+  "invalid_report": {
+    "status": 422,
+    "response": {
+      "message": "Completed local activities cannot be marked non-retryable. (and 5 more errors)",
+      "reason": "validation_failed",
+      "errors": {
+        "commands.0.non_retryable": [
+          "Completed local activities cannot be marked non-retryable."
+        ],
+        "commands.0.attempts.0.extra": [
+          "Field [extra] is not supported in a local activity attempt report."
+        ],
+        "commands.0.attempts.0.attempt_number": [
+          "Local activity attempt_number must be the ordered one-based value 1."
+        ],
+        "commands.0.attempts.0.outcome": [
+          "The final local activity attempt outcome must match the command outcome."
+        ],
+        "commands.0.attempts.0.message": [
+          "Failed, timed out, and cancelled local activity attempts require a message."
+        ],
+        "commands.0.result": [
+          "Completed local activities require a result payload envelope."
+        ]
+      },
+      "validation_errors": {
+        "commands.0.non_retryable": [
+          "Completed local activities cannot be marked non-retryable."
+        ],
+        "commands.0.attempts.0.extra": [
+          "Field [extra] is not supported in a local activity attempt report."
+        ],
+        "commands.0.attempts.0.attempt_number": [
+          "Local activity attempt_number must be the ordered one-based value 1."
+        ],
+        "commands.0.attempts.0.outcome": [
+          "The final local activity attempt outcome must match the command outcome."
+        ],
+        "commands.0.attempts.0.message": [
+          "Failed, timed out, and cancelled local activity attempts require a message."
+        ],
+        "commands.0.result": [
+          "Completed local activities require a result payload envelope."
+        ]
+      }
+    }
+  },
+  "invalid_missing_attempts": {
+    "status": 422,
+    "response": {
+      "message": "Local activity attempts must be a non-empty ordered list.",
+      "reason": "validation_failed",
+      "errors": {
+        "commands.0.attempts": [
+          "Local activity attempts must be a non-empty ordered list."
+        ]
+      },
+      "validation_errors": {
+        "commands.0.attempts": [
+          "Local activity attempts must be a non-empty ordered list."
+        ]
+      }
+    }
+  },
+  "invalid_attempt_budget": {
+    "status": 422,
+    "response": {
+      "message": "Local activity report contains 2 attempts but retry_policy.max_attempts is 1.",
+      "reason": "validation_failed",
+      "errors": {
+        "commands.0.attempts": [
+          "Local activity report contains 2 attempts but retry_policy.max_attempts is 1."
+        ]
+      },
+      "validation_errors": {
+        "commands.0.attempts": [
+          "Local activity report contains 2 attempts but retry_policy.max_attempts is 1."
+        ]
+      }
+    }
+  },
+  "invalid_retry_policy": {
+    "status": 422,
+    "response": {
+      "message": "Field [jitter] is not supported in a local activity retry policy report. (and 2 more errors)",
+      "reason": "validation_failed",
+      "errors": {
+        "commands.0.retry_policy.jitter": [
+          "Field [jitter] is not supported in a local activity retry policy report."
+        ],
+        "commands.0.retry_policy.non_retryable_error_types": [
+          "Local activity retry policy non_retryable_error_types must not contain duplicates."
+        ],
+        "commands.0.retry_policy.max_attempts": [
+          "Local activity retry policy max_attempts must not exceed 100."
+        ]
+      },
+      "validation_errors": {
+        "commands.0.retry_policy.jitter": [
+          "Field [jitter] is not supported in a local activity retry policy report."
+        ],
+        "commands.0.retry_policy.non_retryable_error_types": [
+          "Local activity retry policy non_retryable_error_types must not contain duplicates."
+        ],
+        "commands.0.retry_policy.max_attempts": [
+          "Local activity retry policy max_attempts must not exceed 100."
+        ]
+      }
+    }
+  },
+  "invalid_retry_attempts": {
+    "status": 422,
+    "response": {
+      "message": "Only failed or timed_out local activity attempts may be followed by a retry. (and 8 more errors)",
+      "reason": "validation_failed",
+      "errors": {
+        "commands.0.attempts.0.outcome": [
+          "Only failed or timed_out local activity attempts may be followed by a retry."
+        ],
+        "commands.0.attempts.0.non_retryable": [
+          "A non-retryable local activity attempt cannot be followed by a retry."
+        ],
+        "commands.0.attempts.0.retry_reason": [
+          "A retried completed local activity attempt requires a compatible retry_reason."
+        ],
+        "commands.0.attempts.0.backoff_seconds": [
+          "A retried local activity attempt requires backoff_seconds."
+        ],
+        "commands.0.attempts.1.non_retryable": [
+          "A non-retryable local activity attempt cannot be followed by a retry."
+        ],
+        "commands.0.attempts.1.timeout_kind": [
+          "Only timed out local activity attempts may declare timeout_kind."
+        ],
+        "commands.0.attempts.1.retry_reason": [
+          "A retried failed local activity attempt requires a compatible retry_reason."
+        ],
+        "commands.0.attempts.2.attempt_id": [
+          "Local activity attempt_id must be unique within the reported sequence."
+        ],
+        "commands.0.attempts.2": [
+          "The terminal local activity attempt cannot declare retry_reason or backoff_seconds."
+        ]
+      },
+      "validation_errors": {
+        "commands.0.attempts.0.outcome": [
+          "Only failed or timed_out local activity attempts may be followed by a retry."
+        ],
+        "commands.0.attempts.0.non_retryable": [
+          "A non-retryable local activity attempt cannot be followed by a retry."
+        ],
+        "commands.0.attempts.0.retry_reason": [
+          "A retried completed local activity attempt requires a compatible retry_reason."
+        ],
+        "commands.0.attempts.0.backoff_seconds": [
+          "A retried local activity attempt requires backoff_seconds."
+        ],
+        "commands.0.attempts.1.non_retryable": [
+          "A non-retryable local activity attempt cannot be followed by a retry."
+        ],
+        "commands.0.attempts.1.timeout_kind": [
+          "Only timed out local activity attempts may declare timeout_kind."
+        ],
+        "commands.0.attempts.1.retry_reason": [
+          "A retried failed local activity attempt requires a compatible retry_reason."
+        ],
+        "commands.0.attempts.2.attempt_id": [
+          "Local activity attempt_id must be unique within the reported sequence."
+        ],
+        "commands.0.attempts.2": [
+          "The terminal local activity attempt cannot declare retry_reason or backoff_seconds."
+        ]
+      }
+    }
+  },
+  "reordered_attempts_report": {
+    "status": 422,
+    "response": {
+      "message": "Local activity attempts must be a non-empty ordered list.",
+      "reason": "validation_failed",
+      "errors": {
+        "commands.0.attempts": [
+          "Local activity attempts must be a non-empty ordered list."
+        ]
+      },
+      "validation_errors": {
+        "commands.0.attempts": [
+          "Local activity attempts must be a non-empty ordered list."
+        ]
+      }
+    }
+  },
+  "invalid_timed_out": {
+    "status": 422,
+    "response": {
+      "message": "The terminal local activity attempt non_retryable value must match the command outcome. (and 3 more errors)",
+      "reason": "validation_failed",
+      "errors": {
+        "commands.0.attempts.0.non_retryable": [
+          "The terminal local activity attempt non_retryable value must match the command outcome."
+        ],
+        "commands.0.attempts.0.timeout_kind": [
+          "Timed out local activity attempts require start_to_close, schedule_to_close, or heartbeat timeout_kind."
+        ],
+        "commands.0.timeout_kind": [
+          "Timed out local activities require a timeout_kind."
+        ],
+        "commands.0.message": [
+          "Failed, timed out, and cancelled local activities require a message."
+        ]
+      },
+      "validation_errors": {
+        "commands.0.attempts.0.non_retryable": [
+          "The terminal local activity attempt non_retryable value must match the command outcome."
+        ],
+        "commands.0.attempts.0.timeout_kind": [
+          "Timed out local activity attempts require start_to_close, schedule_to_close, or heartbeat timeout_kind."
+        ],
+        "commands.0.timeout_kind": [
+          "Timed out local activities require a timeout_kind."
+        ],
+        "commands.0.message": [
+          "Failed, timed out, and cancelled local activities require a message."
+        ]
+      }
+    }
+  },
+  "invalid_heartbeats": {
+    "status": 422,
+    "response": {
+      "message": "Local activity heartbeat elapsed_ms values must be ordered monotonically. (and 2 more errors)",
+      "reason": "validation_failed",
+      "errors": {
+        "commands.0.attempts.0.heartbeats.1.elapsed_ms": [
+          "Local activity heartbeat elapsed_ms values must be ordered monotonically."
+        ],
+        "commands.0.attempts.0.heartbeats.1.details": [
+          "Local activity heartbeat details must be an object when provided."
+        ],
+        "commands.0.attempts.0.heartbeats.2.note": [
+          "Field [note] is not supported in a local activity heartbeat report."
+        ]
+      },
+      "validation_errors": {
+        "commands.0.attempts.0.heartbeats.1.elapsed_ms": [
+          "Local activity heartbeat elapsed_ms values must be ordered monotonically."
+        ],
+        "commands.0.attempts.0.heartbeats.1.details": [
+          "Local activity heartbeat details must be an object when provided."
+        ],
+        "commands.0.attempts.0.heartbeats.2.note": [
+          "Field [note] is not supported in a local activity heartbeat report."
+        ]
+      }
+    }
+  },
+  "reordered_heartbeats_report": {
+    "status": 422,
+    "response": {
+      "message": "Local activity attempt heartbeats must be an ordered list.",
+      "reason": "validation_failed",
+      "errors": {
+        "commands.0.attempts.0.heartbeats": [
+          "Local activity attempt heartbeats must be an ordered list."
+        ]
+      },
+      "validation_errors": {
+        "commands.0.attempts.0.heartbeats": [
+          "Local activity attempt heartbeats must be an ordered list."
+        ]
+      }
+    }
+  },
+  "invalid_second_command": {
+    "status": 422,
+    "response": {
+      "message": "Local activity records require a non-empty activity_type.",
+      "reason": "validation_failed",
+      "errors": {
+        "commands.1.activity_type": [
+          "Local activity records require a non-empty activity_type."
+        ]
+      },
+      "validation_errors": {
+        "commands.1.activity_type": [
+          "Local activity records require a non-empty activity_type."
+        ]
+      }
+    }
+  },
+  "completed": {
+    "status": 200,
+    "response": {
+      "task_id": "task-1",
+      "workflow_task_attempt": 1,
+      "outcome": "completed",
+      "recorded": true,
+      "run_id": "run-1",
+      "run_status": "waiting",
+      "created_task_ids": [],
+      "reason": null
+    }
+  },
+  "completed_run": {
+    "event_types": [
+      "StartAccepted",
+      "WorkflowStarted",
+      "ActivityScheduled",
+      "ActivityStarted",
+      "ActivityHeartbeatRecorded",
+      "ActivityRetryScheduled",
+      "ActivityStarted",
+      "ActivityCompleted",
+      "SignalWaitOpened"
+    ],
+    "activity_events": [
+      {
+        "sequence": 3,
+        "event_type": "ActivityScheduled",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-1",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 1,
+          "workflow_task_id": "task-1",
+          "activity": {
+            "id": "execution-1",
+            "idempotency_key": "execution-1",
+            "sequence": 1,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "status": "pending",
+            "payload_codec": "avro",
+            "attempt_count": 0,
+            "retry_policy": {
+              "max_attempts": 2,
+              "backoff_seconds": [
+                1
+              ]
+            },
+            "queue": "pr1-record-local-activity-rla-a-queue",
+            "created_at": "{time}",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            }
+          },
+          "task": {
+            "id": "task-1",
+            "type": "workflow",
+            "status": "leased",
+            "available_at": "{time}",
+            "leased_at": "{time}",
+            "lease_owner": "pr1-record-local-activity-rla-a",
+            "lease_expires_at": "{time}",
+            "attempt_count": 1,
+            "repair_count": 0,
+            "connection": "sqlite",
+            "queue": "pr1-record-local-activity-rla-a-queue",
+            "last_dispatch_attempt_at": "{time}",
+            "last_dispatched_at": "{time}"
+          }
+        }
+      },
+      {
+        "sequence": 4,
+        "event_type": "ActivityStarted",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-1",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 1,
+          "workflow_task_id": "task-1",
+          "activity": {
+            "id": "execution-1",
+            "idempotency_key": "execution-1",
+            "sequence": 1,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-1:upper",
+            "status": "running",
+            "payload_codec": "avro",
+            "attempt_count": 1,
+            "retry_policy": {
+              "max_attempts": 2,
+              "backoff_seconds": [
+                1
+              ]
+            },
+            "queue": "pr1-record-local-activity-rla-a-queue",
+            "created_at": "{time}",
+            "started_at": "@-2700ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            }
+          },
+          "activity_attempt_id": "attempt-1:upper",
+          "worker_attempt_id": "w-1",
+          "attempt_number": 1,
+          "activity_attempt": {
+            "id": "attempt-1:upper",
+            "worker_attempt_id": "w-1",
+            "attempt_number": 1,
+            "status": "running",
+            "task_id": "task-1",
+            "lease_owner": "pr1-record-local-activity-rla-a",
+            "started_at": "@-2700ms"
+          },
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 5,
+        "event_type": "ActivityHeartbeatRecorded",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-1",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 1,
+          "workflow_task_id": "task-1",
+          "activity": {
+            "id": "execution-1",
+            "idempotency_key": "execution-1",
+            "sequence": 1,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-1:upper",
+            "status": "running",
+            "payload_codec": "avro",
+            "attempt_count": 1,
+            "retry_policy": {
+              "max_attempts": 2,
+              "backoff_seconds": [
+                1
+              ]
+            },
+            "queue": "pr1-record-local-activity-rla-a-queue",
+            "created_at": "{time}",
+            "started_at": "@-2700ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            },
+            "last_heartbeat_at": "@-2200ms"
+          },
+          "activity_attempt_id": "attempt-1:upper",
+          "worker_attempt_id": "w-1",
+          "attempt_number": 1,
+          "activity_attempt": {
+            "id": "attempt-1:upper",
+            "worker_attempt_id": "w-1",
+            "attempt_number": 1,
+            "status": "running",
+            "task_id": "task-1",
+            "lease_owner": "pr1-record-local-activity-rla-a",
+            "started_at": "@-2700ms",
+            "last_heartbeat_at": "@-2200ms"
+          },
+          "heartbeat_at": "@-2200ms",
+          "lease_expires_at": null,
+          "progress": {
+            "step": "one"
+          },
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 6,
+        "event_type": "ActivityRetryScheduled",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-1",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 1,
+          "workflow_task_id": "task-1",
+          "activity": {
+            "id": "execution-1",
+            "idempotency_key": "execution-1",
+            "sequence": 1,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-1:upper",
+            "status": "pending",
+            "payload_codec": "avro",
+            "attempt_count": 1,
+            "retry_policy": {
+              "max_attempts": 2,
+              "backoff_seconds": [
+                1
+              ]
+            },
+            "queue": "pr1-record-local-activity-rla-a-queue",
+            "created_at": "{time}",
+            "started_at": "@-2700ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            },
+            "last_heartbeat_at": "@-2200ms"
+          },
+          "activity_attempt_id": "attempt-1:upper",
+          "worker_attempt_id": "w-1",
+          "activity_attempt": {
+            "id": "attempt-1:upper",
+            "worker_attempt_id": "w-1",
+            "attempt_number": 1,
+            "status": "failed",
+            "task_id": "task-1",
+            "lease_owner": "pr1-record-local-activity-rla-a",
+            "started_at": "@-2700ms",
+            "last_heartbeat_at": "@-2200ms",
+            "closed_at": "@-1200ms"
+          },
+          "retry_after_attempt_id": "attempt-1:upper",
+          "retry_after_attempt": 1,
+          "message": "first λ",
+          "exception_type": "RuntimeException",
+          "retry_reason": "failure",
+          "retry_backoff_seconds": 1,
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 7,
+        "event_type": "ActivityStarted",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-1",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 1,
+          "workflow_task_id": "task-1",
+          "activity": {
+            "id": "execution-1",
+            "idempotency_key": "execution-1",
+            "sequence": 1,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-2:upper",
+            "status": "running",
+            "payload_codec": "avro",
+            "attempt_count": 2,
+            "retry_policy": {
+              "max_attempts": 2,
+              "backoff_seconds": [
+                1
+              ]
+            },
+            "queue": "pr1-record-local-activity-rla-a-queue",
+            "last_heartbeat_at": "@-2200ms",
+            "created_at": "{time}",
+            "started_at": "@-2700ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            }
+          },
+          "activity_attempt_id": "attempt-2:upper",
+          "worker_attempt_id": "w-2",
+          "attempt_number": 2,
+          "activity_attempt": {
+            "id": "attempt-2:upper",
+            "worker_attempt_id": "w-2",
+            "attempt_number": 2,
+            "status": "running",
+            "task_id": "task-1",
+            "lease_owner": "pr1-record-local-activity-rla-a",
+            "started_at": "@-200ms"
+          },
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 8,
+        "event_type": "ActivityCompleted",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-1",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 1,
+          "workflow_task_id": "task-1",
+          "activity": {
+            "id": "execution-1",
+            "idempotency_key": "execution-1",
+            "sequence": 1,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-2:upper",
+            "status": "completed",
+            "payload_codec": "avro",
+            "attempt_count": 2,
+            "retry_policy": {
+              "max_attempts": 2,
+              "backoff_seconds": [
+                1
+              ]
+            },
+            "queue": "pr1-record-local-activity-rla-a-queue",
+            "last_heartbeat_at": "@-2200ms",
+            "created_at": "{time}",
+            "started_at": "@-2700ms",
+            "closed_at": "@0ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            },
+            "result": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwoIZG9uZQ=="
+            }
+          },
+          "activity_attempt_id": "attempt-2:upper",
+          "worker_attempt_id": "w-2",
+          "attempt_number": 2,
+          "activity_attempt": {
+            "id": "attempt-2:upper",
+            "worker_attempt_id": "w-2",
+            "attempt_number": 2,
+            "status": "completed",
+            "task_id": "task-1",
+            "lease_owner": "pr1-record-local-activity-rla-a",
+            "started_at": "@-200ms",
+            "closed_at": "@0ms"
+          },
+          "result": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwoIZG9uZQ=="
+          },
+          "payload_codec": "avro",
+          "task": "(the first event's task)"
+        }
+      }
+    ],
+    "activities": [
+      {
+        "id": "execution-1",
+        "idempotency_key": "execution-1",
+        "sequence": 1,
+        "type": "parity.v1.local",
+        "class": "parity.v1.local",
+        "execution_mode": "local",
+        "local_activity": true,
+        "history_authority": "typed_history",
+        "diagnostic_only": false,
+        "history_event_types": [
+          "ActivityScheduled",
+          "ActivityStarted",
+          "ActivityHeartbeatRecorded",
+          "ActivityRetryScheduled",
+          "ActivityCompleted"
+        ],
+        "history_unsupported_reason": null,
+        "reused_from_run_id": null,
+        "reused_activity_execution_id": null,
+        "reused_recorded_at": null,
+        "row_status": null,
+        "parallel_group_kind": null,
+        "parallel_group_id": null,
+        "parallel_group_base_sequence": null,
+        "parallel_group_size": null,
+        "parallel_group_index": null,
+        "parallel_group_path": [],
+        "attempt_id": "attempt-2:upper",
+        "worker_attempt_id": "w-2",
+        "status": "completed",
+        "attempt_count": 2,
+        "retry_policy": {
+          "max_attempts": 2,
+          "backoff_seconds": [
+            1
+          ]
+        },
+        "connection": null,
+        "queue": "pr1-record-local-activity-rla-a-queue",
+        "last_heartbeat_at": "@-2200ms",
+        "last_heartbeat_progress": null,
+        "created_at": "{time}",
+        "started_at": "@-2700ms",
+        "closed_at": "@0ms",
+        "attempts": [
+          {
+            "id": "attempt-1:upper",
+            "worker_attempt_id": "w-1",
+            "attempt_number": 1,
+            "status": "failed",
+            "task_id": "task-1",
+            "lease_owner": "pr1-record-local-activity-rla-a",
+            "lease_expires_at": null,
+            "started_at": "@-2700ms",
+            "last_heartbeat_at": "@-2200ms",
+            "last_heartbeat_progress": null,
+            "closed_at": "@-1200ms",
+            "can_continue": false,
+            "cancel_requested": false,
+            "stop_reason": "attempt_closed",
+            "failure_reason": null
+          },
+          {
+            "id": "attempt-2:upper",
+            "worker_attempt_id": "w-2",
+            "attempt_number": 2,
+            "status": "completed",
+            "task_id": "task-1",
+            "lease_owner": "pr1-record-local-activity-rla-a",
+            "lease_expires_at": null,
+            "started_at": "@-200ms",
+            "last_heartbeat_at": null,
+            "last_heartbeat_progress": null,
+            "closed_at": "@0ms",
+            "can_continue": false,
+            "cancel_requested": false,
+            "stop_reason": "attempt_closed",
+            "failure_reason": null
+          }
+        ]
+      }
+    ],
+    "run": {
+      "status": "waiting",
+      "status_bucket": "running",
+      "is_terminal": false,
+      "closed_reason": null,
+      "wait_kind": "signal",
+      "wait_reason": "Waiting for signal resume"
+    },
+    "attempt_identity_order": [
+      "attempt-2:upper",
+      "attempt-1:upper"
+    ]
+  },
+  "failed": {
+    "status": 200,
+    "response": {
+      "task_id": "task-2",
+      "workflow_task_attempt": 1,
+      "outcome": "completed",
+      "recorded": true,
+      "run_id": "run-2",
+      "run_status": "completed",
+      "created_task_ids": [],
+      "reason": null
+    }
+  },
+  "failed_run": {
+    "event_types": [
+      "StartAccepted",
+      "WorkflowStarted",
+      "ActivityScheduled",
+      "ActivityStarted",
+      "ActivityHeartbeatRecorded",
+      "ActivityHeartbeatRecorded",
+      "ActivityHeartbeatRecorded",
+      "ActivityRetryScheduled",
+      "ActivityStarted",
+      "ActivityRetryScheduled",
+      "ActivityStarted",
+      "ActivityFailed",
+      "ActivityScheduled",
+      "ActivityStarted",
+      "ActivityTimedOut",
+      "WorkflowCompleted"
+    ],
+    "activity_events": [
+      {
+        "sequence": 3,
+        "event_type": "ActivityScheduled",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-2",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 1,
+          "workflow_task_id": "task-2",
+          "activity": {
+            "id": "execution-2",
+            "idempotency_key": "execution-2",
+            "sequence": 1,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "status": "pending",
+            "payload_codec": "avro",
+            "attempt_count": 0,
+            "retry_policy": {
+              "max_attempts": 3,
+              "backoff_seconds": [
+                2,
+                0
+              ],
+              "non_retryable_error_types": [
+                "App\\Errors\\Fatal"
+              ]
+            },
+            "queue": "pr1-record-local-activity-rla-b-queue",
+            "created_at": "{time}",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            }
+          },
+          "task": {
+            "id": "task-2",
+            "type": "workflow",
+            "status": "leased",
+            "available_at": "{time}",
+            "leased_at": "{time}",
+            "lease_owner": "pr1-record-local-activity-rla-b",
+            "lease_expires_at": "{time}",
+            "attempt_count": 1,
+            "repair_count": 0,
+            "connection": "sqlite",
+            "queue": "pr1-record-local-activity-rla-b-queue",
+            "last_dispatch_attempt_at": "{time}",
+            "last_dispatched_at": "{time}"
+          }
+        }
+      },
+      {
+        "sequence": 4,
+        "event_type": "ActivityStarted",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-2",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 1,
+          "workflow_task_id": "task-2",
+          "activity": {
+            "id": "execution-2",
+            "idempotency_key": "execution-2",
+            "sequence": 1,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-3:upper",
+            "status": "running",
+            "payload_codec": "avro",
+            "attempt_count": 1,
+            "retry_policy": {
+              "max_attempts": 3,
+              "backoff_seconds": [
+                2,
+                0
+              ],
+              "non_retryable_error_types": [
+                "App\\Errors\\Fatal"
+              ]
+            },
+            "queue": "pr1-record-local-activity-rla-b-queue",
+            "created_at": "{time}",
+            "started_at": "@-5040ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            }
+          },
+          "activity_attempt_id": "attempt-3:upper",
+          "worker_attempt_id": "b-1",
+          "attempt_number": 1,
+          "activity_attempt": {
+            "id": "attempt-3:upper",
+            "worker_attempt_id": "b-1",
+            "attempt_number": 1,
+            "status": "running",
+            "task_id": "task-2",
+            "lease_owner": "pr1-record-local-activity-rla-b",
+            "started_at": "@-5040ms"
+          },
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 5,
+        "event_type": "ActivityHeartbeatRecorded",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-2",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 1,
+          "workflow_task_id": "task-2",
+          "activity": {
+            "id": "execution-2",
+            "idempotency_key": "execution-2",
+            "sequence": 1,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-3:upper",
+            "status": "running",
+            "payload_codec": "avro",
+            "attempt_count": 1,
+            "retry_policy": {
+              "max_attempts": 3,
+              "backoff_seconds": [
+                2,
+                0
+              ],
+              "non_retryable_error_types": [
+                "App\\Errors\\Fatal"
+              ]
+            },
+            "queue": "pr1-record-local-activity-rla-b-queue",
+            "created_at": "{time}",
+            "started_at": "@-5040ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            },
+            "last_heartbeat_at": "@-4040ms"
+          },
+          "activity_attempt_id": "attempt-3:upper",
+          "worker_attempt_id": "b-1",
+          "attempt_number": 1,
+          "activity_attempt": {
+            "id": "attempt-3:upper",
+            "worker_attempt_id": "b-1",
+            "attempt_number": 1,
+            "status": "running",
+            "task_id": "task-2",
+            "lease_owner": "pr1-record-local-activity-rla-b",
+            "started_at": "@-5040ms",
+            "last_heartbeat_at": "@-4040ms"
+          },
+          "heartbeat_at": "@-4040ms",
+          "lease_expires_at": null,
+          "progress": [],
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 6,
+        "event_type": "ActivityHeartbeatRecorded",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-2",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 1,
+          "workflow_task_id": "task-2",
+          "activity": {
+            "id": "execution-2",
+            "idempotency_key": "execution-2",
+            "sequence": 1,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-3:upper",
+            "status": "running",
+            "payload_codec": "avro",
+            "attempt_count": 1,
+            "retry_policy": {
+              "max_attempts": 3,
+              "backoff_seconds": [
+                2,
+                0
+              ],
+              "non_retryable_error_types": [
+                "App\\Errors\\Fatal"
+              ]
+            },
+            "queue": "pr1-record-local-activity-rla-b-queue",
+            "created_at": "{time}",
+            "started_at": "@-5040ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            },
+            "last_heartbeat_at": "@-4040ms"
+          },
+          "activity_attempt_id": "attempt-3:upper",
+          "worker_attempt_id": "b-1",
+          "attempt_number": 1,
+          "activity_attempt": {
+            "id": "attempt-3:upper",
+            "worker_attempt_id": "b-1",
+            "attempt_number": 1,
+            "status": "running",
+            "task_id": "task-2",
+            "lease_owner": "pr1-record-local-activity-rla-b",
+            "started_at": "@-5040ms",
+            "last_heartbeat_at": "@-4040ms"
+          },
+          "heartbeat_at": "@-4040ms",
+          "lease_expires_at": null,
+          "progress": [],
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 7,
+        "event_type": "ActivityHeartbeatRecorded",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-2",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 1,
+          "workflow_task_id": "task-2",
+          "activity": {
+            "id": "execution-2",
+            "idempotency_key": "execution-2",
+            "sequence": 1,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-3:upper",
+            "status": "running",
+            "payload_codec": "avro",
+            "attempt_count": 1,
+            "retry_policy": {
+              "max_attempts": 3,
+              "backoff_seconds": [
+                2,
+                0
+              ],
+              "non_retryable_error_types": [
+                "App\\Errors\\Fatal"
+              ]
+            },
+            "queue": "pr1-record-local-activity-rla-b-queue",
+            "created_at": "{time}",
+            "started_at": "@-5040ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            },
+            "last_heartbeat_at": "@-2540ms"
+          },
+          "activity_attempt_id": "attempt-3:upper",
+          "worker_attempt_id": "b-1",
+          "attempt_number": 1,
+          "activity_attempt": {
+            "id": "attempt-3:upper",
+            "worker_attempt_id": "b-1",
+            "attempt_number": 1,
+            "status": "running",
+            "task_id": "task-2",
+            "lease_owner": "pr1-record-local-activity-rla-b",
+            "started_at": "@-5040ms",
+            "last_heartbeat_at": "@-2540ms"
+          },
+          "heartbeat_at": "@-2540ms",
+          "lease_expires_at": null,
+          "progress": {
+            "p": 2
+          },
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 8,
+        "event_type": "ActivityRetryScheduled",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-2",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 1,
+          "workflow_task_id": "task-2",
+          "activity": {
+            "id": "execution-2",
+            "idempotency_key": "execution-2",
+            "sequence": 1,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-3:upper",
+            "status": "pending",
+            "payload_codec": "avro",
+            "attempt_count": 1,
+            "retry_policy": {
+              "max_attempts": 3,
+              "backoff_seconds": [
+                2,
+                0
+              ],
+              "non_retryable_error_types": [
+                "App\\Errors\\Fatal"
+              ]
+            },
+            "queue": "pr1-record-local-activity-rla-b-queue",
+            "created_at": "{time}",
+            "started_at": "@-5040ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            },
+            "last_heartbeat_at": "@-2540ms"
+          },
+          "activity_attempt_id": "attempt-3:upper",
+          "worker_attempt_id": "b-1",
+          "activity_attempt": {
+            "id": "attempt-3:upper",
+            "worker_attempt_id": "b-1",
+            "attempt_number": 1,
+            "status": "failed",
+            "task_id": "task-2",
+            "lease_owner": "pr1-record-local-activity-rla-b",
+            "started_at": "@-5040ms",
+            "last_heartbeat_at": "@-2540ms",
+            "closed_at": "@-2040ms"
+          },
+          "retry_after_attempt_id": "attempt-3:upper",
+          "retry_after_attempt": 1,
+          "message": "slow",
+          "exception_type": null,
+          "retry_reason": "timeout",
+          "retry_backoff_seconds": 2,
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 9,
+        "event_type": "ActivityStarted",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-2",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 1,
+          "workflow_task_id": "task-2",
+          "activity": {
+            "id": "execution-2",
+            "idempotency_key": "execution-2",
+            "sequence": 1,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-4:upper",
+            "status": "running",
+            "payload_codec": "avro",
+            "attempt_count": 2,
+            "retry_policy": {
+              "max_attempts": 3,
+              "backoff_seconds": [
+                2,
+                0
+              ],
+              "non_retryable_error_types": [
+                "App\\Errors\\Fatal"
+              ]
+            },
+            "queue": "pr1-record-local-activity-rla-b-queue",
+            "last_heartbeat_at": "@-2540ms",
+            "created_at": "{time}",
+            "started_at": "@-5040ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            }
+          },
+          "activity_attempt_id": "attempt-4:upper",
+          "worker_attempt_id": "b-2",
+          "attempt_number": 2,
+          "activity_attempt": {
+            "id": "attempt-4:upper",
+            "worker_attempt_id": "b-2",
+            "attempt_number": 2,
+            "status": "running",
+            "task_id": "task-2",
+            "lease_owner": "pr1-record-local-activity-rla-b",
+            "started_at": "@-40ms"
+          },
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 10,
+        "event_type": "ActivityRetryScheduled",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-2",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 1,
+          "workflow_task_id": "task-2",
+          "activity": {
+            "id": "execution-2",
+            "idempotency_key": "execution-2",
+            "sequence": 1,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-4:upper",
+            "status": "pending",
+            "payload_codec": "avro",
+            "attempt_count": 2,
+            "retry_policy": {
+              "max_attempts": 3,
+              "backoff_seconds": [
+                2,
+                0
+              ],
+              "non_retryable_error_types": [
+                "App\\Errors\\Fatal"
+              ]
+            },
+            "queue": "pr1-record-local-activity-rla-b-queue",
+            "last_heartbeat_at": "@-2540ms",
+            "created_at": "{time}",
+            "started_at": "@-5040ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            }
+          },
+          "activity_attempt_id": "attempt-4:upper",
+          "worker_attempt_id": "b-2",
+          "activity_attempt": {
+            "id": "attempt-4:upper",
+            "worker_attempt_id": "b-2",
+            "attempt_number": 2,
+            "status": "failed",
+            "task_id": "task-2",
+            "lease_owner": "pr1-record-local-activity-rla-b",
+            "started_at": "@-40ms",
+            "closed_at": "@-40ms"
+          },
+          "retry_after_attempt_id": "attempt-4:upper",
+          "retry_after_attempt": 2,
+          "message": "flaky",
+          "exception_type": "RuntimeException",
+          "retry_reason": "failure",
+          "retry_backoff_seconds": 0,
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 11,
+        "event_type": "ActivityStarted",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-2",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 1,
+          "workflow_task_id": "task-2",
+          "activity": {
+            "id": "execution-2",
+            "idempotency_key": "execution-2",
+            "sequence": 1,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-5:upper",
+            "status": "running",
+            "payload_codec": "avro",
+            "attempt_count": 3,
+            "retry_policy": {
+              "max_attempts": 3,
+              "backoff_seconds": [
+                2,
+                0
+              ],
+              "non_retryable_error_types": [
+                "App\\Errors\\Fatal"
+              ]
+            },
+            "queue": "pr1-record-local-activity-rla-b-queue",
+            "last_heartbeat_at": "@-2540ms",
+            "created_at": "{time}",
+            "started_at": "@-5040ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            }
+          },
+          "activity_attempt_id": "attempt-5:upper",
+          "worker_attempt_id": "b-3",
+          "attempt_number": 3,
+          "activity_attempt": {
+            "id": "attempt-5:upper",
+            "worker_attempt_id": "b-3",
+            "attempt_number": 3,
+            "status": "running",
+            "task_id": "task-2",
+            "lease_owner": "pr1-record-local-activity-rla-b",
+            "started_at": "@-40ms"
+          },
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 12,
+        "event_type": "ActivityFailed",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-2",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 1,
+          "workflow_task_id": "task-2",
+          "activity": {
+            "id": "execution-2",
+            "idempotency_key": "execution-2",
+            "sequence": 1,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-5:upper",
+            "status": "failed",
+            "payload_codec": "avro",
+            "attempt_count": 3,
+            "retry_policy": {
+              "max_attempts": 3,
+              "backoff_seconds": [
+                2,
+                0
+              ],
+              "non_retryable_error_types": [
+                "App\\Errors\\Fatal"
+              ]
+            },
+            "queue": "pr1-record-local-activity-rla-b-queue",
+            "last_heartbeat_at": "@-2540ms",
+            "created_at": "{time}",
+            "started_at": "@-5040ms",
+            "closed_at": "@0ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            },
+            "exception": "wwHioz3/VYAiNwoOZ2F2ZSB1cA=="
+          },
+          "activity_attempt_id": "attempt-5:upper",
+          "worker_attempt_id": "b-3",
+          "attempt_number": 3,
+          "activity_attempt": {
+            "id": "attempt-5:upper",
+            "worker_attempt_id": "b-3",
+            "attempt_number": 3,
+            "status": "failed",
+            "task_id": "task-2",
+            "lease_owner": "pr1-record-local-activity-rla-b",
+            "started_at": "@-40ms",
+            "closed_at": "@0ms"
+          },
+          "failure_id": "failure-1",
+          "failure_category": "application",
+          "message": "gave up",
+          "exception_type": "App\\Errors\\Fatal",
+          "non_retryable": true,
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 13,
+        "event_type": "ActivityScheduled",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-3",
+          "activity_class": "parity.v1.local.slow",
+          "activity_type": "parity.v1.local.slow",
+          "sequence": 2,
+          "workflow_task_id": "task-2",
+          "activity": {
+            "id": "execution-3",
+            "idempotency_key": "execution-3",
+            "sequence": 2,
+            "type": "parity.v1.local.slow",
+            "class": "parity.v1.local.slow",
+            "execution_mode": "local",
+            "local_activity": true,
+            "status": "pending",
+            "payload_codec": "avro",
+            "attempt_count": 0,
+            "queue": "pr1-record-local-activity-rla-b-queue",
+            "created_at": "{time}",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            }
+          },
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 14,
+        "event_type": "ActivityStarted",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-3",
+          "activity_class": "parity.v1.local.slow",
+          "activity_type": "parity.v1.local.slow",
+          "sequence": 2,
+          "workflow_task_id": "task-2",
+          "activity": {
+            "id": "execution-3",
+            "idempotency_key": "execution-3",
+            "sequence": 2,
+            "type": "parity.v1.local.slow",
+            "class": "parity.v1.local.slow",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-6:upper",
+            "status": "running",
+            "payload_codec": "avro",
+            "attempt_count": 1,
+            "queue": "pr1-record-local-activity-rla-b-queue",
+            "created_at": "{time}",
+            "started_at": "@-30000ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            }
+          },
+          "activity_attempt_id": "attempt-6:upper",
+          "worker_attempt_id": null,
+          "attempt_number": 1,
+          "activity_attempt": {
+            "id": "attempt-6:upper",
+            "attempt_number": 1,
+            "status": "running",
+            "task_id": "task-2",
+            "lease_owner": "pr1-record-local-activity-rla-b",
+            "started_at": "@-30000ms"
+          },
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 15,
+        "event_type": "ActivityTimedOut",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-3",
+          "activity_class": "parity.v1.local.slow",
+          "activity_type": "parity.v1.local.slow",
+          "sequence": 2,
+          "workflow_task_id": "task-2",
+          "activity": {
+            "id": "execution-3",
+            "idempotency_key": "execution-3",
+            "sequence": 2,
+            "type": "parity.v1.local.slow",
+            "class": "parity.v1.local.slow",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-6:upper",
+            "status": "failed",
+            "payload_codec": "avro",
+            "attempt_count": 1,
+            "queue": "pr1-record-local-activity-rla-b-queue",
+            "created_at": "{time}",
+            "started_at": "@-30000ms",
+            "closed_at": "@0ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            },
+            "exception": "wwHioz3/VYAiNwoQZGVhZGxpbmU="
+          },
+          "activity_attempt_id": "attempt-6:upper",
+          "worker_attempt_id": null,
+          "attempt_number": 1,
+          "activity_attempt": {
+            "id": "attempt-6:upper",
+            "attempt_number": 1,
+            "status": "failed",
+            "task_id": "task-2",
+            "lease_owner": "pr1-record-local-activity-rla-b",
+            "started_at": "@-30000ms",
+            "closed_at": "@0ms"
+          },
+          "failure_id": "failure-2",
+          "failure_category": "timeout",
+          "timeout_kind": "schedule_to_close",
+          "message": "deadline",
+          "exception_class": null,
+          "task": "(the first event's task)"
+        }
+      }
+    ],
+    "activities": [
+      {
+        "id": "execution-2",
+        "idempotency_key": "execution-2",
+        "sequence": 1,
+        "type": "parity.v1.local",
+        "class": "parity.v1.local",
+        "execution_mode": "local",
+        "local_activity": true,
+        "history_authority": "typed_history",
+        "diagnostic_only": false,
+        "history_event_types": [
+          "ActivityScheduled",
+          "ActivityStarted",
+          "ActivityHeartbeatRecorded",
+          "ActivityRetryScheduled",
+          "ActivityFailed"
+        ],
+        "history_unsupported_reason": null,
+        "reused_from_run_id": null,
+        "reused_activity_execution_id": null,
+        "reused_recorded_at": null,
+        "row_status": null,
+        "parallel_group_kind": null,
+        "parallel_group_id": null,
+        "parallel_group_base_sequence": null,
+        "parallel_group_size": null,
+        "parallel_group_index": null,
+        "parallel_group_path": [],
+        "attempt_id": "attempt-5:upper",
+        "worker_attempt_id": "b-3",
+        "status": "failed",
+        "attempt_count": 3,
+        "retry_policy": {
+          "max_attempts": 3,
+          "backoff_seconds": [
+            2,
+            0
+          ],
+          "non_retryable_error_types": [
+            "App\\Errors\\Fatal"
+          ]
+        },
+        "connection": null,
+        "queue": "pr1-record-local-activity-rla-b-queue",
+        "last_heartbeat_at": "@-2540ms",
+        "last_heartbeat_progress": null,
+        "created_at": "{time}",
+        "started_at": "@-5040ms",
+        "closed_at": "@0ms",
+        "attempts": [
+          {
+            "id": "attempt-3:upper",
+            "worker_attempt_id": "b-1",
+            "attempt_number": 1,
+            "status": "failed",
+            "task_id": "task-2",
+            "lease_owner": "pr1-record-local-activity-rla-b",
+            "lease_expires_at": null,
+            "started_at": "@-5040ms",
+            "last_heartbeat_at": "@-2540ms",
+            "last_heartbeat_progress": null,
+            "closed_at": "@-2040ms",
+            "can_continue": false,
+            "cancel_requested": false,
+            "stop_reason": "attempt_closed",
+            "failure_reason": null
+          },
+          {
+            "id": "attempt-4:upper",
+            "worker_attempt_id": "b-2",
+            "attempt_number": 2,
+            "status": "failed",
+            "task_id": "task-2",
+            "lease_owner": "pr1-record-local-activity-rla-b",
+            "lease_expires_at": null,
+            "started_at": "@-40ms",
+            "last_heartbeat_at": null,
+            "last_heartbeat_progress": null,
+            "closed_at": "@-40ms",
+            "can_continue": false,
+            "cancel_requested": false,
+            "stop_reason": "attempt_closed",
+            "failure_reason": null
+          },
+          {
+            "id": "attempt-5:upper",
+            "worker_attempt_id": "b-3",
+            "attempt_number": 3,
+            "status": "failed",
+            "task_id": "task-2",
+            "lease_owner": "pr1-record-local-activity-rla-b",
+            "lease_expires_at": null,
+            "started_at": "@-40ms",
+            "last_heartbeat_at": null,
+            "last_heartbeat_progress": null,
+            "closed_at": "@0ms",
+            "can_continue": false,
+            "cancel_requested": false,
+            "stop_reason": "attempt_closed",
+            "failure_reason": null
+          }
+        ]
+      },
+      {
+        "id": "execution-3",
+        "idempotency_key": "execution-3",
+        "sequence": 2,
+        "type": "parity.v1.local.slow",
+        "class": "parity.v1.local.slow",
+        "execution_mode": "local",
+        "local_activity": true,
+        "history_authority": "typed_history",
+        "diagnostic_only": false,
+        "history_event_types": [
+          "ActivityScheduled",
+          "ActivityStarted",
+          "ActivityTimedOut"
+        ],
+        "history_unsupported_reason": null,
+        "reused_from_run_id": null,
+        "reused_activity_execution_id": null,
+        "reused_recorded_at": null,
+        "row_status": null,
+        "parallel_group_kind": null,
+        "parallel_group_id": null,
+        "parallel_group_base_sequence": null,
+        "parallel_group_size": null,
+        "parallel_group_index": null,
+        "parallel_group_path": [],
+        "attempt_id": "attempt-6:upper",
+        "worker_attempt_id": null,
+        "status": "failed",
+        "attempt_count": 1,
+        "retry_policy": null,
+        "connection": null,
+        "queue": "pr1-record-local-activity-rla-b-queue",
+        "last_heartbeat_at": null,
+        "last_heartbeat_progress": null,
+        "created_at": "{time}",
+        "started_at": "@-30000ms",
+        "closed_at": "@0ms",
+        "attempts": [
+          {
+            "id": "attempt-6:upper",
+            "worker_attempt_id": null,
+            "attempt_number": 1,
+            "status": "expired",
+            "task_id": "task-2",
+            "lease_owner": "pr1-record-local-activity-rla-b",
+            "lease_expires_at": null,
+            "started_at": "@-30000ms",
+            "last_heartbeat_at": null,
+            "last_heartbeat_progress": null,
+            "closed_at": "@0ms",
+            "can_continue": false,
+            "cancel_requested": false,
+            "stop_reason": "attempt_expired",
+            "failure_reason": null
+          }
+        ]
+      }
+    ],
+    "run": {
+      "status": "completed",
+      "status_bucket": "completed",
+      "is_terminal": true,
+      "closed_reason": "completed",
+      "wait_kind": null,
+      "wait_reason": null
+    },
+    "attempt_identity_order": [
+      "attempt-5:upper",
+      "attempt-4:upper",
+      "attempt-3:upper",
+      "attempt-6:upper"
+    ]
+  },
+  "protocol_1_18_missing_result": {
+    "status": 422,
+    "response": {
+      "message": "Completed local activities require a result payload envelope.",
+      "reason": "validation_failed",
+      "errors": {
+        "commands.0.result": [
+          "Completed local activities require a result payload envelope."
+        ]
+      },
+      "validation_errors": {
+        "commands.0.result": [
+          "Completed local activities require a result payload envelope."
+        ]
+      }
+    }
+  },
+  "protocol_1_18": {
+    "status": 200,
+    "response": {
+      "task_id": "task-3",
+      "workflow_task_attempt": 1,
+      "outcome": "completed",
+      "recorded": true,
+      "run_id": "run-3",
+      "run_status": "waiting",
+      "created_task_ids": [],
+      "reason": null
+    }
+  },
+  "protocol_1_18_run": {
+    "event_types": [
+      "StartAccepted",
+      "WorkflowStarted",
+      "ActivityScheduled",
+      "ActivityStarted",
+      "ActivityFailed",
+      "ActivityScheduled",
+      "ActivityStarted",
+      "ActivityTimedOut",
+      "ActivityScheduled",
+      "ActivityStarted",
+      "ActivityCancelled",
+      "ActivityScheduled",
+      "ActivityStarted",
+      "ActivityHeartbeatRecorded",
+      "ActivityCompleted",
+      "SignalWaitOpened"
+    ],
+    "activity_events": [
+      {
+        "sequence": 3,
+        "event_type": "ActivityScheduled",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-4",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 1,
+          "workflow_task_id": "task-3",
+          "activity": {
+            "id": "execution-4",
+            "idempotency_key": "execution-4",
+            "sequence": 1,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "status": "pending",
+            "payload_codec": "avro",
+            "attempt_count": 0,
+            "queue": "pr1-record-local-activity-rla-c-queue",
+            "created_at": "{time}",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            }
+          },
+          "task": {
+            "id": "task-3",
+            "type": "workflow",
+            "status": "leased",
+            "available_at": "{time}",
+            "leased_at": "{time}",
+            "lease_owner": "pr1-record-local-activity-rla-c",
+            "lease_expires_at": "{time}",
+            "attempt_count": 1,
+            "repair_count": 0,
+            "connection": "sqlite",
+            "queue": "pr1-record-local-activity-rla-c-queue",
+            "last_dispatch_attempt_at": "{time}",
+            "last_dispatched_at": "{time}"
+          }
+        }
+      },
+      {
+        "sequence": 4,
+        "event_type": "ActivityStarted",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-4",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 1,
+          "workflow_task_id": "task-3",
+          "activity": {
+            "id": "execution-4",
+            "idempotency_key": "execution-4",
+            "sequence": 1,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-7:upper",
+            "status": "running",
+            "payload_codec": "avro",
+            "attempt_count": 1,
+            "queue": "pr1-record-local-activity-rla-c-queue",
+            "created_at": "{time}",
+            "started_at": "@0ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            }
+          },
+          "activity_attempt_id": "attempt-7:upper",
+          "worker_attempt_id": null,
+          "attempt_number": 1,
+          "activity_attempt": {
+            "id": "attempt-7:upper",
+            "attempt_number": 1,
+            "status": "running",
+            "task_id": "task-3",
+            "lease_owner": "pr1-record-local-activity-rla-c",
+            "started_at": "@0ms"
+          },
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 5,
+        "event_type": "ActivityFailed",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-4",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 1,
+          "workflow_task_id": "task-3",
+          "activity": {
+            "id": "execution-4",
+            "idempotency_key": "execution-4",
+            "sequence": 1,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-7:upper",
+            "status": "failed",
+            "payload_codec": "avro",
+            "attempt_count": 1,
+            "queue": "pr1-record-local-activity-rla-c-queue",
+            "created_at": "{time}",
+            "started_at": "@0ms",
+            "closed_at": "@0ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            },
+            "exception": "wwHioz3/VYAiNwoWbm8gYXR0ZW1wdHM="
+          },
+          "activity_attempt_id": "attempt-7:upper",
+          "worker_attempt_id": null,
+          "attempt_number": 1,
+          "activity_attempt": {
+            "id": "attempt-7:upper",
+            "attempt_number": 1,
+            "status": "failed",
+            "task_id": "task-3",
+            "lease_owner": "pr1-record-local-activity-rla-c",
+            "started_at": "@0ms",
+            "closed_at": "@0ms"
+          },
+          "failure_id": "failure-3",
+          "failure_category": "application",
+          "message": "no attempts",
+          "exception_type": "RuntimeException",
+          "non_retryable": false,
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 6,
+        "event_type": "ActivityScheduled",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-5",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 2,
+          "workflow_task_id": "task-3",
+          "activity": {
+            "id": "execution-5",
+            "idempotency_key": "execution-5",
+            "sequence": 2,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "status": "pending",
+            "payload_codec": "avro",
+            "attempt_count": 0,
+            "queue": "pr1-record-local-activity-rla-c-queue",
+            "created_at": "{time}",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            }
+          },
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 7,
+        "event_type": "ActivityStarted",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-5",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 2,
+          "workflow_task_id": "task-3",
+          "activity": {
+            "id": "execution-5",
+            "idempotency_key": "execution-5",
+            "sequence": 2,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-8:upper",
+            "status": "running",
+            "payload_codec": "avro",
+            "attempt_count": 1,
+            "queue": "pr1-record-local-activity-rla-c-queue",
+            "created_at": "{time}",
+            "started_at": "@0ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            }
+          },
+          "activity_attempt_id": "attempt-8:upper",
+          "worker_attempt_id": null,
+          "attempt_number": 1,
+          "activity_attempt": {
+            "id": "attempt-8:upper",
+            "attempt_number": 1,
+            "status": "running",
+            "task_id": "task-3",
+            "lease_owner": "pr1-record-local-activity-rla-c",
+            "started_at": "@0ms"
+          },
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 8,
+        "event_type": "ActivityTimedOut",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-5",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 2,
+          "workflow_task_id": "task-3",
+          "activity": {
+            "id": "execution-5",
+            "idempotency_key": "execution-5",
+            "sequence": 2,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-8:upper",
+            "status": "failed",
+            "payload_codec": "avro",
+            "attempt_count": 1,
+            "queue": "pr1-record-local-activity-rla-c-queue",
+            "created_at": "{time}",
+            "started_at": "@0ms",
+            "closed_at": "@0ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            },
+            "exception": "wwHioz3/VYAiNwoWbm8gYXR0ZW1wdHM="
+          },
+          "activity_attempt_id": "attempt-8:upper",
+          "worker_attempt_id": null,
+          "attempt_number": 1,
+          "activity_attempt": {
+            "id": "attempt-8:upper",
+            "attempt_number": 1,
+            "status": "failed",
+            "task_id": "task-3",
+            "lease_owner": "pr1-record-local-activity-rla-c",
+            "started_at": "@0ms",
+            "closed_at": "@0ms"
+          },
+          "failure_id": "failure-4",
+          "failure_category": "timeout",
+          "timeout_kind": "heartbeat",
+          "message": "no attempts",
+          "exception_class": null,
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 9,
+        "event_type": "ActivityScheduled",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-6",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 3,
+          "workflow_task_id": "task-3",
+          "activity": {
+            "id": "execution-6",
+            "idempotency_key": "execution-6",
+            "sequence": 3,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "status": "pending",
+            "payload_codec": "avro",
+            "attempt_count": 0,
+            "queue": "pr1-record-local-activity-rla-c-queue",
+            "created_at": "{time}",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            }
+          },
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 10,
+        "event_type": "ActivityStarted",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-6",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 3,
+          "workflow_task_id": "task-3",
+          "activity": {
+            "id": "execution-6",
+            "idempotency_key": "execution-6",
+            "sequence": 3,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-9:upper",
+            "status": "running",
+            "payload_codec": "avro",
+            "attempt_count": 1,
+            "queue": "pr1-record-local-activity-rla-c-queue",
+            "created_at": "{time}",
+            "started_at": "@0ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            }
+          },
+          "activity_attempt_id": "attempt-9:upper",
+          "worker_attempt_id": null,
+          "attempt_number": 1,
+          "activity_attempt": {
+            "id": "attempt-9:upper",
+            "attempt_number": 1,
+            "status": "running",
+            "task_id": "task-3",
+            "lease_owner": "pr1-record-local-activity-rla-c",
+            "started_at": "@0ms"
+          },
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 11,
+        "event_type": "ActivityCancelled",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-6",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 3,
+          "workflow_task_id": "task-3",
+          "activity": {
+            "id": "execution-6",
+            "idempotency_key": "execution-6",
+            "sequence": 3,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-9:upper",
+            "status": "cancelled",
+            "payload_codec": "avro",
+            "attempt_count": 1,
+            "queue": "pr1-record-local-activity-rla-c-queue",
+            "created_at": "{time}",
+            "started_at": "@0ms",
+            "closed_at": "@0ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            },
+            "exception": "wwHioz3/VYAiNwoWbm8gYXR0ZW1wdHM="
+          },
+          "activity_attempt_id": "attempt-9:upper",
+          "worker_attempt_id": null,
+          "attempt_number": 1,
+          "activity_attempt": {
+            "id": "attempt-9:upper",
+            "attempt_number": 1,
+            "status": "cancelled",
+            "task_id": "task-3",
+            "lease_owner": "pr1-record-local-activity-rla-c",
+            "started_at": "@0ms",
+            "closed_at": "@0ms"
+          },
+          "cancelled_at": "@0ms",
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 12,
+        "event_type": "ActivityScheduled",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-7",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 4,
+          "workflow_task_id": "task-3",
+          "activity": {
+            "id": "execution-7",
+            "idempotency_key": "execution-7",
+            "sequence": 4,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "status": "pending",
+            "payload_codec": "avro",
+            "attempt_count": 0,
+            "retry_policy": {
+              "max_attempts": 1
+            },
+            "queue": "pr1-record-local-activity-rla-c-queue",
+            "created_at": "{time}",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            }
+          },
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 13,
+        "event_type": "ActivityStarted",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-7",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 4,
+          "workflow_task_id": "task-3",
+          "activity": {
+            "id": "execution-7",
+            "idempotency_key": "execution-7",
+            "sequence": 4,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-10:upper",
+            "status": "running",
+            "payload_codec": "avro",
+            "attempt_count": 1,
+            "retry_policy": {
+              "max_attempts": 1
+            },
+            "queue": "pr1-record-local-activity-rla-c-queue",
+            "created_at": "{time}",
+            "started_at": "@-5ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            }
+          },
+          "activity_attempt_id": "attempt-10:upper",
+          "worker_attempt_id": null,
+          "attempt_number": 1,
+          "activity_attempt": {
+            "id": "attempt-10:upper",
+            "attempt_number": 1,
+            "status": "running",
+            "task_id": "task-3",
+            "lease_owner": "pr1-record-local-activity-rla-c",
+            "started_at": "@-5ms"
+          },
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 14,
+        "event_type": "ActivityHeartbeatRecorded",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-7",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 4,
+          "workflow_task_id": "task-3",
+          "activity": {
+            "id": "execution-7",
+            "idempotency_key": "execution-7",
+            "sequence": 4,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-10:upper",
+            "status": "running",
+            "payload_codec": "avro",
+            "attempt_count": 1,
+            "retry_policy": {
+              "max_attempts": 1
+            },
+            "queue": "pr1-record-local-activity-rla-c-queue",
+            "created_at": "{time}",
+            "started_at": "@-5ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            },
+            "last_heartbeat_at": "@0ms"
+          },
+          "activity_attempt_id": "attempt-10:upper",
+          "worker_attempt_id": null,
+          "attempt_number": 1,
+          "activity_attempt": {
+            "id": "attempt-10:upper",
+            "attempt_number": 1,
+            "status": "running",
+            "task_id": "task-3",
+            "lease_owner": "pr1-record-local-activity-rla-c",
+            "started_at": "@-5ms",
+            "last_heartbeat_at": "@0ms"
+          },
+          "heartbeat_at": "@0ms",
+          "lease_expires_at": null,
+          "task": "(the first event's task)"
+        }
+      },
+      {
+        "sequence": 15,
+        "event_type": "ActivityCompleted",
+        "timestamp": "{time}",
+        "principal": null,
+        "payload": {
+          "execution_mode": "local",
+          "local_activity": true,
+          "activity_execution_id": "execution-7",
+          "activity_class": "parity.v1.local",
+          "activity_type": "parity.v1.local",
+          "sequence": 4,
+          "workflow_task_id": "task-3",
+          "activity": {
+            "id": "execution-7",
+            "idempotency_key": "execution-7",
+            "sequence": 4,
+            "type": "parity.v1.local",
+            "class": "parity.v1.local",
+            "execution_mode": "local",
+            "local_activity": true,
+            "attempt_id": "attempt-10:upper",
+            "status": "completed",
+            "payload_codec": "avro",
+            "attempt_count": 1,
+            "retry_policy": {
+              "max_attempts": 1
+            },
+            "queue": "pr1-record-local-activity-rla-c-queue",
+            "last_heartbeat_at": "@0ms",
+            "created_at": "{time}",
+            "started_at": "@-5ms",
+            "closed_at": "@0ms",
+            "arguments": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            },
+            "result": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwoIZG9uZQ=="
+            }
+          },
+          "activity_attempt_id": "attempt-10:upper",
+          "worker_attempt_id": null,
+          "attempt_number": 1,
+          "activity_attempt": {
+            "id": "attempt-10:upper",
+            "attempt_number": 1,
+            "status": "completed",
+            "task_id": "task-3",
+            "lease_owner": "pr1-record-local-activity-rla-c",
+            "started_at": "@-5ms",
+            "last_heartbeat_at": "@0ms",
+            "closed_at": "@0ms"
+          },
+          "result": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwoIZG9uZQ=="
+          },
+          "payload_codec": "avro",
+          "task": "(the first event's task)"
+        }
+      }
+    ],
+    "activities": [
+      {
+        "id": "execution-4",
+        "idempotency_key": "execution-4",
+        "sequence": 1,
+        "type": "parity.v1.local",
+        "class": "parity.v1.local",
+        "execution_mode": "local",
+        "local_activity": true,
+        "history_authority": "typed_history",
+        "diagnostic_only": false,
+        "history_event_types": [
+          "ActivityScheduled",
+          "ActivityStarted",
+          "ActivityFailed"
+        ],
+        "history_unsupported_reason": null,
+        "reused_from_run_id": null,
+        "reused_activity_execution_id": null,
+        "reused_recorded_at": null,
+        "row_status": null,
+        "parallel_group_kind": null,
+        "parallel_group_id": null,
+        "parallel_group_base_sequence": null,
+        "parallel_group_size": null,
+        "parallel_group_index": null,
+        "parallel_group_path": [],
+        "attempt_id": "attempt-7:upper",
+        "worker_attempt_id": null,
+        "status": "failed",
+        "attempt_count": 1,
+        "retry_policy": null,
+        "connection": null,
+        "queue": "pr1-record-local-activity-rla-c-queue",
+        "last_heartbeat_at": null,
+        "last_heartbeat_progress": null,
+        "created_at": "{time}",
+        "started_at": "@0ms",
+        "closed_at": "@0ms",
+        "attempts": [
+          {
+            "id": "attempt-7:upper",
+            "worker_attempt_id": null,
+            "attempt_number": 1,
+            "status": "failed",
+            "task_id": "task-3",
+            "lease_owner": "pr1-record-local-activity-rla-c",
+            "lease_expires_at": null,
+            "started_at": "@0ms",
+            "last_heartbeat_at": null,
+            "last_heartbeat_progress": null,
+            "closed_at": "@0ms",
+            "can_continue": false,
+            "cancel_requested": false,
+            "stop_reason": "attempt_closed",
+            "failure_reason": null
+          }
+        ]
+      },
+      {
+        "id": "execution-5",
+        "idempotency_key": "execution-5",
+        "sequence": 2,
+        "type": "parity.v1.local",
+        "class": "parity.v1.local",
+        "execution_mode": "local",
+        "local_activity": true,
+        "history_authority": "typed_history",
+        "diagnostic_only": false,
+        "history_event_types": [
+          "ActivityScheduled",
+          "ActivityStarted",
+          "ActivityTimedOut"
+        ],
+        "history_unsupported_reason": null,
+        "reused_from_run_id": null,
+        "reused_activity_execution_id": null,
+        "reused_recorded_at": null,
+        "row_status": null,
+        "parallel_group_kind": null,
+        "parallel_group_id": null,
+        "parallel_group_base_sequence": null,
+        "parallel_group_size": null,
+        "parallel_group_index": null,
+        "parallel_group_path": [],
+        "attempt_id": "attempt-8:upper",
+        "worker_attempt_id": null,
+        "status": "failed",
+        "attempt_count": 1,
+        "retry_policy": null,
+        "connection": null,
+        "queue": "pr1-record-local-activity-rla-c-queue",
+        "last_heartbeat_at": null,
+        "last_heartbeat_progress": null,
+        "created_at": "{time}",
+        "started_at": "@0ms",
+        "closed_at": "@0ms",
+        "attempts": [
+          {
+            "id": "attempt-8:upper",
+            "worker_attempt_id": null,
+            "attempt_number": 1,
+            "status": "expired",
+            "task_id": "task-3",
+            "lease_owner": "pr1-record-local-activity-rla-c",
+            "lease_expires_at": null,
+            "started_at": "@0ms",
+            "last_heartbeat_at": null,
+            "last_heartbeat_progress": null,
+            "closed_at": "@0ms",
+            "can_continue": false,
+            "cancel_requested": false,
+            "stop_reason": "attempt_expired",
+            "failure_reason": null
+          }
+        ]
+      },
+      {
+        "id": "execution-6",
+        "idempotency_key": "execution-6",
+        "sequence": 3,
+        "type": "parity.v1.local",
+        "class": "parity.v1.local",
+        "execution_mode": "local",
+        "local_activity": true,
+        "history_authority": "typed_history",
+        "diagnostic_only": false,
+        "history_event_types": [
+          "ActivityScheduled",
+          "ActivityStarted",
+          "ActivityCancelled"
+        ],
+        "history_unsupported_reason": null,
+        "reused_from_run_id": null,
+        "reused_activity_execution_id": null,
+        "reused_recorded_at": null,
+        "row_status": null,
+        "parallel_group_kind": null,
+        "parallel_group_id": null,
+        "parallel_group_base_sequence": null,
+        "parallel_group_size": null,
+        "parallel_group_index": null,
+        "parallel_group_path": [],
+        "attempt_id": "attempt-9:upper",
+        "worker_attempt_id": null,
+        "status": "cancelled",
+        "attempt_count": 1,
+        "retry_policy": null,
+        "connection": null,
+        "queue": "pr1-record-local-activity-rla-c-queue",
+        "last_heartbeat_at": null,
+        "last_heartbeat_progress": null,
+        "created_at": "{time}",
+        "started_at": "@0ms",
+        "closed_at": "@0ms",
+        "attempts": [
+          {
+            "id": "attempt-9:upper",
+            "worker_attempt_id": null,
+            "attempt_number": 1,
+            "status": "cancelled",
+            "task_id": "task-3",
+            "lease_owner": "pr1-record-local-activity-rla-c",
+            "lease_expires_at": null,
+            "started_at": "@0ms",
+            "last_heartbeat_at": null,
+            "last_heartbeat_progress": null,
+            "closed_at": "@0ms",
+            "can_continue": false,
+            "cancel_requested": true,
+            "stop_reason": "attempt_cancelled",
+            "failure_reason": null
+          }
+        ]
+      },
+      {
+        "id": "execution-7",
+        "idempotency_key": "execution-7",
+        "sequence": 4,
+        "type": "parity.v1.local",
+        "class": "parity.v1.local",
+        "execution_mode": "local",
+        "local_activity": true,
+        "history_authority": "typed_history",
+        "diagnostic_only": false,
+        "history_event_types": [
+          "ActivityScheduled",
+          "ActivityStarted",
+          "ActivityHeartbeatRecorded",
+          "ActivityCompleted"
+        ],
+        "history_unsupported_reason": null,
+        "reused_from_run_id": null,
+        "reused_activity_execution_id": null,
+        "reused_recorded_at": null,
+        "row_status": null,
+        "parallel_group_kind": null,
+        "parallel_group_id": null,
+        "parallel_group_base_sequence": null,
+        "parallel_group_size": null,
+        "parallel_group_index": null,
+        "parallel_group_path": [],
+        "attempt_id": "attempt-10:upper",
+        "worker_attempt_id": null,
+        "status": "completed",
+        "attempt_count": 1,
+        "retry_policy": {
+          "max_attempts": 1
+        },
+        "connection": null,
+        "queue": "pr1-record-local-activity-rla-c-queue",
+        "last_heartbeat_at": "@0ms",
+        "last_heartbeat_progress": null,
+        "created_at": "{time}",
+        "started_at": "@-5ms",
+        "closed_at": "@0ms",
+        "attempts": [
+          {
+            "id": "attempt-10:upper",
+            "worker_attempt_id": null,
+            "attempt_number": 1,
+            "status": "completed",
+            "task_id": "task-3",
+            "lease_owner": "pr1-record-local-activity-rla-c",
+            "lease_expires_at": null,
+            "started_at": "@-5ms",
+            "last_heartbeat_at": "@0ms",
+            "last_heartbeat_progress": null,
+            "closed_at": "@0ms",
+            "can_continue": false,
+            "cancel_requested": false,
+            "stop_reason": "attempt_closed",
+            "failure_reason": null
+          }
+        ]
+      }
+    ],
+    "run": {
+      "status": "waiting",
+      "status_bucket": "running",
+      "is_terminal": false,
+      "closed_reason": null,
+      "wait_kind": "signal",
+      "wait_reason": "Waiting for signal resume"
+    },
+    "attempt_identity_order": [
+      "attempt-7:upper",
+      "attempt-8:upper",
+      "attempt-9:upper",
+      "attempt-10:upper"
+    ]
+  },
+  "reordered_valid_report": {
+    "status": 422,
+    "response": {
+      "message": "Local activity attempts must be a non-empty ordered list.",
+      "reason": "validation_failed",
+      "errors": {
+        "commands.0.attempts": [
+          "Local activity attempts must be a non-empty ordered list."
+        ]
+      },
+      "validation_errors": {
+        "commands.0.attempts": [
+          "Local activity attempts must be a non-empty ordered list."
+        ]
+      }
+    }
+  },
+  "refused_capability": {
+    "status": 409,
+    "response": {
+      "task_id": "task-5",
+      "workflow_task_attempt": 1,
+      "outcome": "rejected",
+      "recorded": false,
+      "reason": "worker_capability_not_supported",
+      "capability": "local_activities",
+      "requested_version": "1.20",
+      "minimum_protocol_version": "1.18",
+      "remediation": "Use cold durable replay unless the registered worker manifest explicitly supports the required capability and exact cache identity."
+    }
+  },
+  "refused_capability_below_floor": {
+    "status": 409,
+    "response": {
+      "task_id": "task-5",
+      "workflow_task_attempt": 1,
+      "outcome": "rejected",
+      "recorded": false,
+      "reason": "portable_worker_affinity_protocol_floor_unavailable",
+      "capability": "local_activities",
+      "requested_version": "1.17",
+      "minimum_protocol_version": "1.18",
+      "remediation": "Use cold durable replay unless the registered worker manifest explicitly supports the required capability and exact cache identity."
+    }
+  },
+  "released_without_local": 200
+}
