@@ -4520,6 +4520,16 @@ class WorkerController
                 $validated['task_queue'],
                 $exception,
             );
+        } catch (\Throwable $exception) {
+            if (! BackendLockPressure::is($exception)) {
+                throw $exception;
+            }
+
+            return BackendLockPressure::workerPollResponse(
+                'update_validation_task',
+                $namespace,
+                $validated['task_queue'],
+            );
         }
 
         return WorkerProtocol::json([
