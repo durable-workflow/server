@@ -8,6 +8,8 @@
 //! for `DW_UPDATE_VALIDATION_LEASE_TIMEOUT` seconds and approves or rejects it.
 //! Every outcome stays on the task row, so a retry with the same `request_id`
 //! and arguments gets the same answer.
+use super::transaction::Transaction;
+use super::workflow_poll_requests::WorkflowPollRequest;
 use super::{Result, backend::Backend, refuse, store::{Store, id, now}, text, wire};
 use axum::http::StatusCode;
 use serde_json::{Map, Value, json};
@@ -485,18 +487,28 @@ where
     /// to it for the lease timeout.
     pub(super) async fn claim_update_validation(&self, worker_id: &str, task_queue: &str) -> Result<Option<String>> {
         let mut tx = self.begin().await?;
+        let claimed = self.claim_update_validation_in(&mut tx, worker_id, task_queue).await?;
+        tx.commit().await?;
+        Ok(claimed.map(|claim| claim.task_id))
+    }
+
+    /// `claim` inside the caller's transaction, which commits it.
+    async fn claim_update_validation_in(
+        &self,
+        tx: &mut Transaction<'_, DB>,
+        worker_id: &str,
+        task_queue: &str,
+    ) -> Result<Option<ValidationClaim>> {
         let Some(worker) = Self::query("SELECT * FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2")
             .bind(worker_id)
             .bind(self.namespace.as_ref())
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut **tx)
             .await?
         else {
-            tx.commit().await?;
             return Ok(None);
         };
         let worker = self.registration(&worker)?;
         if !worker.fresh || !worker.capable {
-            tx.commit().await?;
             return Ok(None);
         }
         let at = now();
@@ -504,7 +516,7 @@ where
             .bind(self.namespace.as_ref())
             .bind(task_queue)
             .bind(DB::bind_time(at))
-            .fetch_all(&mut *tx)
+            .fetch_all(&mut **tx)
             .await?;
         for task in tasks {
             let compatibility = DB::optional_string(&task, "compatibility")?;
@@ -516,16 +528,15 @@ where
             }
             let task_id = DB::string(&task, "id")?;
             let attempt = DB::number(&task, "attempt_count")?.saturating_add(1);
+            let expires = at + chrono::Duration::seconds(timeouts().1);
             Self::query("UPDATE workflow_update_validation_tasks SET status='leased',attempt_count=$1,lease_owner=$2,lease_expires_at=$3,updated_at=$4 WHERE id=$5")
                 .bind(attempt).bind(&worker.worker_id)
-                .bind(DB::bind_time(at + chrono::Duration::seconds(timeouts().1)))
+                .bind(DB::bind_time(expires))
                 .bind(DB::bind_time(at)).bind(&task_id)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await?;
-            tx.commit().await?;
-            return Ok(Some(task_id));
+            return Ok(Some(ValidationClaim { task_id, attempt, expires }));
         }
-        tx.commit().await?;
         Ok(None)
     }
 
@@ -770,6 +781,19 @@ pub(super) fn task_kinds(body: &Value) -> Result<Vec<&'static str>> {
     Ok(requested)
 }
 
+/// What one multiplexed probe found: a duplicate's answer, or a new lease.
+enum Probe {
+    Replayed(Value),
+    Leased(Leased),
+}
+
+/// A validation lease: the task, its attempt and when the lease ends.
+struct ValidationClaim {
+    task_id: String,
+    attempt: i64,
+    expires: chrono::DateTime<chrono::Utc>,
+}
+
 /// What a multiplexed poll leased.
 pub(super) enum Leased {
     /// A workflow poll's answer, leased or not.
@@ -833,10 +857,11 @@ where
     pub(super) async fn multiplexed_poll(
         &self,
         body: &Value,
-        kinds: &[&str],
+        kinds: &[&'static str],
         protocol_version: &str,
         pages: super::history_pages::HistoryPages,
         timeout: u64,
+        default_wait: u64,
     ) -> Result<Leased> {
         let worker_id = text(body, "worker_id")?;
         let types = self.validation_poller(worker_id, text(body, "task_queue")?).await?;
@@ -846,7 +871,7 @@ where
         if !self.worker_validates(worker_id).await? {
             return Err(not_advertised());
         }
-        self.poll_task_kinds(body, kinds, protocol_version, pages, timeout).await
+        self.poll_task_kinds(body, kinds, protocol_version, pages, timeout, default_wait).await
     }
 
     /// Whether a claimable validation task waits on this queue.
@@ -879,90 +904,153 @@ where
         }
     }
 
-    /// `WorkflowTaskKindSelector`'s cursor: which kind this queue tries first.
-    async fn first_task_kind(&self, task_queue: &str) -> Result<String> {
-        Ok(Self::query("SELECT next_task_kind FROM workflow_task_poll_cursors WHERE namespace=$1 AND task_queue=$2")
+    /// `WorkflowTaskKindSelector`'s cursor: which kind this queue tries
+    /// first. A missing cursor starts at `update_validation`; the row stays
+    /// locked to the end of the probe, so concurrent probes take turns.
+    async fn lock_task_kind_cursor(&self, tx: &mut Transaction<'_, DB>, task_queue: &str) -> Result<String> {
+        let at = now();
+        Self::query(DB::TASK_KIND_CURSOR_LOCK)
             .bind(self.namespace.as_ref())
             .bind(task_queue)
-            .fetch_optional(&self.pool)
-            .await?
-            .map(|row| DB::string(&row, "next_task_kind"))
-            .transpose()?
-            .unwrap_or_else(|| "update_validation".into()))
+            .bind(DB::bind_time(at))
+            .bind(DB::bind_time(at))
+            .execute(&mut **tx)
+            .await?;
+        let cursor = Self::query("SELECT next_task_kind FROM workflow_task_poll_cursors WHERE namespace=$1 AND task_queue=$2")
+            .bind(self.namespace.as_ref())
+            .bind(task_queue)
+            .fetch_one(&mut **tx)
+            .await?;
+        DB::string(&cursor, "next_task_kind")
     }
 
     /// After a lease, the queue tries the other kind first.
-    async fn turn_task_kind(&self, task_queue: &str, leased: &str) -> Result<()> {
+    async fn turn_task_kind(&self, tx: &mut Transaction<'_, DB>, task_queue: &str, leased: &str) -> Result<()> {
         let next = if leased == "workflow" { "update_validation" } else { "workflow" };
-        let at = now();
-        let mut tx = self.begin().await?;
-        // MySQL counts only changed rows, so look before writing.
-        let cursor = Self::query("SELECT next_task_kind FROM workflow_task_poll_cursors WHERE namespace=$1 AND task_queue=$2")
-            .bind(self.namespace.as_ref()).bind(task_queue)
-            .fetch_optional(&mut *tx)
+        Self::query("UPDATE workflow_task_poll_cursors SET next_task_kind=$1,updated_at=$2 WHERE namespace=$3 AND task_queue=$4")
+            .bind(next).bind(DB::bind_time(now())).bind(self.namespace.as_ref()).bind(task_queue)
+            .execute(&mut **tx)
             .await?;
-        if cursor.is_some() {
-            Self::query("UPDATE workflow_task_poll_cursors SET next_task_kind=$1,updated_at=$2 WHERE namespace=$3 AND task_queue=$4")
-                .bind(next).bind(DB::bind_time(at)).bind(self.namespace.as_ref()).bind(task_queue)
-                .execute(&mut *tx)
-                .await?;
-        } else {
-            Self::query("INSERT INTO workflow_task_poll_cursors(namespace,task_queue,next_task_kind,created_at,updated_at) VALUES ($1,$2,$3,$4,$5)")
-                .bind(self.namespace.as_ref()).bind(task_queue).bind(next).bind(DB::bind_time(at)).bind(DB::bind_time(at))
-                .execute(&mut *tx)
-                .await?;
-        }
-        tx.commit().await?;
         Ok(())
     }
 
-    /// `WorkflowTaskPoller` with both kinds requested: the queue's cursor
-    /// picks the kind tried first, and a lease turns it to the other kind.
-    /// When neither kind has work, the workflow poll's answer stands.
+    /// A replayed answer as the route delivers it: a validation lease is
+    /// rebuilt from its task, any other answer is returned as cached.
+    fn replayed(mut answer: Value, encoding: Option<&'static str>) -> Result<Leased> {
+        if answer["task"]["task_kind"] == "update_validation" {
+            return Ok(Leased::Validation(text(&answer["task"], "update_validation_task_id")?.to_owned()));
+        }
+        if answer["task"].is_object() {
+            super::history_pages::compress(&mut answer["task"], encoding)?;
+        }
+        answer["server_capabilities"] = super::store::capabilities();
+        Ok(Leased::Workflow(answer))
+    }
+
+    /// `WorkflowTaskPoller` with validation tasks requested. A request ID
+    /// binds to the normalized kind set and replays its deliverable answer
+    /// first. Each probe then runs `WorkflowTaskKindSelector` as one
+    /// transaction: replay a duplicate's answer, lock the queue's cursor,
+    /// claim the kind it names first and then the other, turn the cursor
+    /// after a lease, and record the answer under the request ID. When
+    /// neither kind has work, the workflow poll's answer stands.
     pub(super) async fn poll_task_kinds(
         &self,
         body: &Value,
-        kinds: &[&str],
+        kinds: &[&'static str],
         protocol_version: &str,
         pages: super::history_pages::HistoryPages,
         timeout: u64,
+        default_wait: u64,
     ) -> Result<Leased> {
         let worker_id = text(body, "worker_id")?.to_owned();
         let task_queue = text(body, "task_queue")?.to_owned();
+        let encoding = super::history_pages::requested(body)?;
+        let page = pages.poll(super::history_pages::requested_size(body)?, encoding);
+        let request = match super::workflow_poll_requests::request_id(body) {
+            Some(id) => Some(self.workflow_poll_request(&worker_id, &task_queue, id, default_wait, kinds).await?),
+            None => None,
+        };
+        if let Some(request) = &request
+            && let Some(answer) = self.replay_workflow_poll(request, &worker_id, &task_queue).await?
+        {
+            return Self::replayed(answer, encoding);
+        }
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
-        let mut probe = body.clone();
-        probe["timeout_seconds"] = json!(0);
         let mut pace = super::poll_readiness::ReadPace::new();
         loop {
             let wake = self.wake.notified();
-            let first = self.first_task_kind(&task_queue).await?;
-            let mut order: Vec<&str> = kinds.to_vec();
-            order.sort_by_key(|kind| *kind != first);
-            let mut workflow = None;
-            for kind in order {
-                if kind == "workflow" {
-                    let answer = self.poll_with_pages(probe.clone(), "workflow", protocol_version, pages, 0).await?;
-                    if !answer["task"].is_null() {
-                        if kinds.len() > 1 {
-                            self.turn_task_kind(&task_queue, "workflow").await?;
-                        }
-                        return Ok(Leased::Workflow(answer));
-                    }
-                    workflow = Some(answer);
-                } else if let Some(task_id) = self.claim_update_validation(&worker_id, &task_queue).await? {
-                    if kinds.len() > 1 {
-                        self.turn_task_kind(&task_queue, "update_validation").await?;
-                    }
-                    return Ok(Leased::Validation(task_id));
+            match self.probe_task_kinds(body, kinds, protocol_version, page, request.as_ref()).await? {
+                Some(Probe::Replayed(answer)) => return Self::replayed(answer, encoding),
+                Some(Probe::Leased(Leased::Workflow(mut answer))) => {
+                    super::history_pages::compress(&mut answer["task"], encoding)?;
+                    return Ok(Leased::Workflow(answer));
                 }
+                Some(Probe::Leased(validation)) => return Ok(validation),
+                None => {}
             }
             if tokio::time::Instant::now() >= deadline {
-                return Ok(Leased::Workflow(workflow.unwrap_or_else(|| {
-                    json!({"task":null,"poll_status":"empty","server_capabilities":super::store::capabilities()})
-                })));
+                if let Some(request) = &request {
+                    self.remember_empty_workflow_poll(request, "empty").await?;
+                }
+                return Ok(Leased::Workflow(json!({"task":null,"poll_status":"empty","server_capabilities":super::store::capabilities()})));
             }
             pace.wait(wake, deadline).await;
         }
+    }
+
+    /// One probe of every requested kind, as one transaction.
+    async fn probe_task_kinds(
+        &self,
+        body: &Value,
+        kinds: &[&'static str],
+        protocol_version: &str,
+        page: Option<i64>,
+        request: Option<&WorkflowPollRequest>,
+    ) -> Result<Option<Probe>> {
+        let worker_id = text(body, "worker_id")?;
+        let task_queue = text(body, "task_queue")?;
+        let mut tx = self.begin().await?;
+        // A concurrent duplicate may have leased since this poll began: the
+        // binding row, locked first, makes it wait for that one's answer.
+        if let Some(request) = request {
+            Self::bind_workflow_poll(&mut tx, request).await?;
+            if let Some(answer) = self.deliverable_workflow_poll(&mut tx, request, worker_id, task_queue).await?
+                && answer["task"].is_object()
+            {
+                tx.commit().await?;
+                return Ok(Some(Probe::Replayed(answer)));
+            }
+        }
+        let multiplexed = kinds.len() > 1;
+        let first = if multiplexed { self.lock_task_kind_cursor(&mut tx, task_queue).await? } else { kinds[0].to_owned() };
+        let mut order = kinds.to_vec();
+        order.sort_by_key(|kind| *kind != first);
+        for kind in order {
+            let leased = if kind == "workflow" {
+                self.claim_in(&mut tx, body, "workflow", protocol_version, page, request).await?.map(|task| {
+                    Leased::Workflow(json!({"task":task,"poll_status":"leased","server_capabilities":super::store::capabilities()}))
+                })
+            } else if let Some(claim) = self.claim_update_validation_in(&mut tx, worker_id, task_queue).await? {
+                if let Some(request) = request {
+                    let delivered = json!({"task_kind":"update_validation","update_validation_task_id":claim.task_id,
+                        "update_validation_attempt":claim.attempt,"lease_expires_at":super::cooperative::timestamp(claim.expires)});
+                    Self::remember_workflow_poll(&mut tx, request, &json!({"task":delivered,"poll_status":"leased"})).await?;
+                }
+                Some(Leased::Validation(claim.task_id))
+            } else {
+                None
+            };
+            if let Some(leased) = leased {
+                if multiplexed {
+                    self.turn_task_kind(&mut tx, task_queue, kind).await?;
+                }
+                tx.commit().await?;
+                return Ok(Some(Probe::Leased(leased)));
+            }
+        }
+        tx.commit().await?;
+        Ok(None)
     }
 }
 

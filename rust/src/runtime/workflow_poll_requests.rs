@@ -1,30 +1,35 @@
 //! Workflow-task poll request idempotency, as published PHP keeps it
 //! (`WorkflowTaskPollRequestStore` with `PollRequestLeaseBinding`). A request
-//! ID replays its last answer while that answer is still deliverable: an
-//! empty or queue-changed poll for the pending window, a lease for as long as
-//! its task stays leased to the worker at the same attempt, with the task's
-//! current lease. Once a leased task is no longer deliverable, the ID polls
-//! afresh. PHP never refuses a retry as expired.
+//! ID binds to its normalized task-kind set: the same ID with another set is
+//! refused with `poll_request_task_kinds_conflict`. It replays its last answer
+//! while that answer is still deliverable: an empty or queue-changed poll for
+//! the pending window, a workflow lease for as long as its task stays leased
+//! to the worker at the same attempt, with the task's current lease, and a
+//! validation lease while it stays leased at the same attempt. Once a lease is
+//! no longer deliverable, the ID polls afresh. PHP never refuses a retry as
+//! expired.
 use super::transaction::Transaction;
-use super::{Result, store::now};
+use super::{Result, RuntimeError, store::now};
+use axum::http::StatusCode;
+use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 // Distinct from the query poll prefix, so each sweep sees only its own rows.
 const PREFIX: &str = "dw-native-workflow-poll:";
-/// The task kinds a workflow poll binds its request ID to.
-const WORKFLOW_KINDS: [&str; 1] = ["workflow"];
 
 pub(super) struct WorkflowPollKeys {
     binding: String,
     result: String,
 }
 
-/// A workflow poll's request ID, its keys and its pending window.
+/// A workflow poll's request ID, its keys, its pending window and the
+/// normalized task-kind set it binds to.
 pub(super) struct WorkflowPollRequest {
     pub(super) id: String,
     pub(super) keys: WorkflowPollKeys,
     pub(super) pending_ttl: i64,
+    pub(super) kinds: Vec<&'static str>,
 }
 
 /// The request ID with surrounding space removed, as Laravel's TrimStrings
@@ -43,14 +48,60 @@ pub(super) fn pending_ttl(default_wait: u64) -> i64 {
     (i64::try_from(default_wait).unwrap_or(60) + 5).max(5)
 }
 
+/// `normalizeTaskKinds`: the distinct kinds in string order, so either order
+/// of a multiplexed request is one set.
+pub(super) fn normalized(kinds: &[&'static str]) -> Vec<&'static str> {
+    let mut kinds = kinds.to_vec();
+    kinds.sort_unstable();
+    kinds.dedup();
+    kinds
+}
+
+/// `resultTtl`: an answer holding a live lease is kept until five seconds
+/// after the lease ends, up to an hour; any other answer for the pending
+/// window, up to a minute. The binding is rewritten with the same expiry.
+fn result_ttl(response: &Value, pending_ttl: i64) -> i64 {
+    let lease = response["task"]["lease_expires_at"]
+        .as_str()
+        .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
+        .map(|at| at.with_timezone(&Utc));
+    match lease {
+        Some(expires) if expires > now() => ((expires - now()).num_seconds() + 5).clamp(5, 3600),
+        _ => pending_ttl.clamp(5, 60),
+    }
+}
+
+/// The kind a cached answer delivered; native workflow answers name none.
+fn task_kind(response: &Value) -> &str {
+    response["task"]["task_kind"].as_str().unwrap_or("workflow")
+}
+
+/// The 409 for an ID already bound to another task-kind set.
+fn kinds_conflict(request: &WorkflowPollRequest, bound: Value) -> RuntimeError {
+    RuntimeError::Protocol {
+        status: StatusCode::CONFLICT,
+        response: json!({"task":null,"poll_status":"conflict","reason":"poll_request_task_kinds_conflict",
+            "error":"Poll request ID is already bound to a different task-kind set.","poll_request_id":request.id,
+            "requested_task_kinds":request.kinds,"bound_task_kinds":bound}),
+    }
+}
+
 fn epoch() -> i64 {
     now().timestamp()
 }
 
 store_methods! {
     /// Keys cover namespace, queue, the registration's build ID, the worker
-    /// and the request ID, as PHP's cache keys do.
-    pub(super) async fn workflow_poll_keys(&self, worker_id: &str, queue: &str, request_id: &str) -> Result<WorkflowPollKeys> {
+    /// and the request ID, as PHP's cache keys do; the kind set is the
+    /// binding's value, not part of the key.
+    pub(super) async fn workflow_poll_request(
+        &self,
+        worker_id: &str,
+        queue: &str,
+        id: String,
+        default_wait: u64,
+        kinds: &[&'static str],
+    ) -> Result<WorkflowPollRequest> {
         let build = Self::query("SELECT build_id FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
             .bind(self.namespace.as_ref())
             .bind(worker_id)
@@ -62,50 +113,92 @@ store_methods! {
             .filter(|build| !build.is_empty());
         // MySQL and MariaDB keys are varchar(64): keep 128 bits of the digest.
         let key = |kind: &str| {
-            let material = json!([kind, self.namespace.as_ref(), queue, build, worker_id, request_id]);
+            let material = json!([kind, self.namespace.as_ref(), queue, build, worker_id, id]);
             let digest: String = Sha256::digest(material.to_string().as_bytes())[..16]
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
                 .collect();
             format!("{PREFIX}{digest}")
         };
-        Ok(WorkflowPollKeys { binding: key("binding"), result: key("result") })
+        let keys = WorkflowPollKeys { binding: key("binding"), result: key("result") };
+        Ok(WorkflowPollRequest { keys, pending_ttl: pending_ttl(default_wait), kinds: normalized(kinds), id })
     }
 
-    /// At the start of a poll: bind the request ID and replay its answer if
-    /// that answer is still deliverable. A stale lease is forgotten, and the
-    /// caller polls afresh under the same ID.
+    /// At the start of a poll: bind the request ID to its kind set, then
+    /// replay its answer if that answer is still deliverable. A stale lease
+    /// is forgotten, and the caller polls afresh under the same ID.
     pub(super) async fn replay_workflow_poll(
         &self,
-        keys: &WorkflowPollKeys,
+        request: &WorkflowPollRequest,
         worker_id: &str,
         queue: &str,
-        pending_ttl: i64,
     ) -> Result<Option<Value>> {
         let mut tx = self.begin().await?;
         Self::sweep_workflow_poll_rows(&mut tx).await?;
-        if Self::workflow_poll_row(&mut tx, &keys.binding).await?.is_none() {
-            Self::put_workflow_poll_row(&mut tx, &keys.binding, &json!({"task_kinds": WORKFLOW_KINDS}), pending_ttl).await?;
-        }
-        let replay = Self::deliverable_workflow_poll(&mut tx, keys, worker_id, queue).await?;
+        Self::bind_workflow_poll(&mut tx, request).await?;
+        let replay = self.deliverable_workflow_poll(&mut tx, request, worker_id, queue).await?;
         tx.commit().await?;
         Ok(replay)
     }
 
-    /// The cached answer if its task can still be delivered, with the task's
-    /// current lease, attempt and owner; a stale answer is deleted.
+    /// `bindTaskKinds`: a live binding to another set refuses the poll; an
+    /// absent or expired one is written for the pending window. The binding
+    /// row stays locked to the end of the transaction, so a duplicate's
+    /// claim waits and then sees this one's answer.
+    pub(super) async fn bind_workflow_poll(tx: &mut Transaction<'_, DB>, request: &WorkflowPollRequest) -> Result<()> {
+        let binding = json!({"task_kinds": request.kinds});
+        Self::query(DB::QUERY_CACHE_LOCK)
+            .bind(&request.keys.binding)
+            .bind(binding.to_string())
+            .bind(epoch() + request.pending_ttl)
+            .execute(&mut **tx)
+            .await?;
+        match Self::workflow_poll_row(tx, &request.keys.binding).await? {
+            Some(bound) if bound["task_kinds"] != binding["task_kinds"] => Err(kinds_conflict(request, bound["task_kinds"].clone())),
+            Some(_) => Ok(()),
+            None => Self::put_workflow_poll_row(tx, &request.keys.binding, &binding, request.pending_ttl).await,
+        }
+    }
+
+    /// The cached answer if its task can still be delivered; a stale answer
+    /// is deleted. A workflow lease shows the task's current lease, as PHP
+    /// rebuilds it; a validation lease replays as it was delivered. An
+    /// answer of a kind this request did not ask for is not replayed.
     pub(super) async fn deliverable_workflow_poll(
+        &self,
         tx: &mut Transaction<'_, DB>,
-        keys: &WorkflowPollKeys,
+        request: &WorkflowPollRequest,
         worker_id: &str,
         queue: &str,
     ) -> Result<Option<Value>> {
-        let Some(mut result) = Self::workflow_poll_row(tx, &keys.result).await? else {
+        let Some(mut result) = Self::workflow_poll_row(tx, &request.keys.result).await? else {
             return Ok(None);
         };
-        let Some(task_id) = result["task"]["task_id"].as_str().map(str::to_owned) else {
+        if !result["task"].is_object() {
             // An empty or queue-changed answer stays as it was.
             return Ok(Some(result));
+        }
+        if !request.kinds.contains(&task_kind(&result)) {
+            return Ok(None);
+        }
+        let deliverable = if task_kind(&result) == "update_validation" {
+            self.validation_deliverable(tx, &result["task"], worker_id, queue).await?
+        } else {
+            Self::workflow_lease_deliverable(tx, &mut result["task"], worker_id, queue).await?
+        };
+        if deliverable {
+            return Ok(Some(result));
+        }
+        Self::query(DB::QUERY_CACHE_DELETE).bind(&request.keys.result).execute(&mut **tx).await?;
+        Ok(None)
+    }
+
+    /// `cachedTaskStillDeliverable` for a workflow task: leased on this
+    /// queue to this worker at the delivered attempt, with a live lease,
+    /// which the replay then shows.
+    async fn workflow_lease_deliverable(tx: &mut Transaction<'_, DB>, task: &mut Value, worker_id: &str, queue: &str) -> Result<bool> {
+        let Some(task_id) = task["task_id"].as_str().map(str::to_owned) else {
+            return Ok(false);
         };
         let row = Self::query("SELECT status,queue,lease_owner,lease_expires_at,attempt_count FROM workflow_tasks WHERE id=$1 AND task_type='workflow'")
             .bind(&task_id)
@@ -115,28 +208,48 @@ store_methods! {
             && DB::string(&row, "status")? == "leased"
             && DB::optional_string(&row, "queue")?.as_deref() == Some(queue)
             && DB::optional_string(&row, "lease_owner")?.as_deref() == Some(worker_id)
-            && result["task"]["workflow_task_attempt"].as_i64() == Some(DB::number(&row, "attempt_count")?)
+            && task["workflow_task_attempt"].as_i64() == Some(DB::number(&row, "attempt_count")?)
             && let Some(expires) = DB::optional_instant(&row, "lease_expires_at")?.filter(|expires| *expires > now())
         {
-            result["task"]["lease_expires_at"] = json!(super::cooperative::timestamp(expires));
-            return Ok(Some(result));
+            task["lease_expires_at"] = json!(super::cooperative::timestamp(expires));
+            return Ok(true);
         }
-        Self::query(DB::QUERY_CACHE_DELETE).bind(&keys.result).execute(&mut **tx).await?;
-        Ok(None)
+        Ok(false)
     }
 
-    /// Remember a poll's answer under its request ID. A lease is kept while
-    /// its task can be delivered (the row decides); any other answer for the
-    /// pending window, capped at a minute, as PHP's result TTL is.
-    pub(super) async fn remember_workflow_poll(
-        tx: &mut Transaction<'_, DB>,
-        keys: &WorkflowPollKeys,
-        response: &Value,
-        pending_ttl: i64,
-    ) -> Result<()> {
-        let ttl = if response["task"].is_object() { 3600 } else { pending_ttl.clamp(5, 60) };
-        Self::put_workflow_poll_row(tx, &keys.binding, &json!({"task_kinds": WORKFLOW_KINDS}), ttl).await?;
-        Self::put_workflow_poll_row(tx, &keys.result, response, ttl).await
+    /// The broker's `cachedTaskStillDeliverable`: the validation task is in
+    /// this namespace and queue, leased to this worker with a live lease, at
+    /// the delivered attempt.
+    async fn validation_deliverable(&self, tx: &mut Transaction<'_, DB>, task: &Value, worker_id: &str, queue: &str) -> Result<bool> {
+        let Some(task_id) = task["update_validation_task_id"].as_str() else {
+            return Ok(false);
+        };
+        let row = Self::query("SELECT status,lease_owner,lease_expires_at,attempt_count FROM workflow_update_validation_tasks WHERE id=$1 AND namespace=$2 AND task_queue=$3")
+            .bind(task_id)
+            .bind(self.namespace.as_ref())
+            .bind(queue)
+            .fetch_optional(&mut **tx)
+            .await?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let attempt_count = DB::number(&row, "attempt_count")?;
+        let attempt = task.get("update_validation_attempt").and_then(Value::as_i64);
+        Ok(DB::string(&row, "status")? == "leased"
+            && DB::optional_string(&row, "lease_owner")?.as_deref() == Some(worker_id)
+            && DB::optional_instant(&row, "lease_expires_at")?.is_some_and(|expires| expires > now())
+            && attempt.is_none_or(|attempt| attempt == attempt_count))
+    }
+
+    /// Remember a poll's answer under its request ID, and rewrite the
+    /// binding with PHP's result expiry. A workflow lease's answer is kept
+    /// while its task can be delivered (the row decides), as PHP's lease
+    /// binding replays for the whole live lease.
+    pub(super) async fn remember_workflow_poll(tx: &mut Transaction<'_, DB>, request: &WorkflowPollRequest, response: &Value) -> Result<()> {
+        let ttl = result_ttl(response, request.pending_ttl);
+        Self::put_workflow_poll_row(tx, &request.keys.binding, &json!({"task_kinds": request.kinds}), ttl).await?;
+        let kept = if response["task"].is_object() && task_kind(response) == "workflow" { 3600 } else { ttl };
+        Self::put_workflow_poll_row(tx, &request.keys.result, response, kept).await
     }
 
     /// Whether a concurrent duplicate already left an answer to replay.
@@ -148,9 +261,10 @@ store_methods! {
     }
 
     /// Remember an answer that leased nothing, in its own transaction.
-    pub(super) async fn remember_empty_workflow_poll(&self, keys: &WorkflowPollKeys, poll_status: &str, pending_ttl: i64) -> Result<()> {
+    pub(super) async fn remember_empty_workflow_poll(&self, request: &WorkflowPollRequest, poll_status: &str) -> Result<()> {
         let mut tx = self.begin().await?;
-        Self::remember_workflow_poll(&mut tx, keys, &json!({"task": null, "poll_status": poll_status}), pending_ttl).await?;
+        Self::bind_workflow_poll(&mut tx, request).await?;
+        Self::remember_workflow_poll(&mut tx, request, &json!({"task": null, "poll_status": poll_status})).await?;
         tx.commit().await
     }
 
@@ -183,5 +297,27 @@ store_methods! {
             Self::query(DB::QUERY_CACHE_DELETE).bind(DB::string(&row, "key")?).execute(&mut **tx).await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn either_order_of_a_multiplexed_request_is_one_set() {
+        assert_eq!(normalized(&["workflow", "update_validation"]), ["update_validation", "workflow"]);
+        assert_eq!(normalized(&["update_validation", "workflow"]), ["update_validation", "workflow"]);
+        assert_eq!(normalized(&["workflow"]), ["workflow"]);
+    }
+
+    #[test]
+    fn a_live_lease_keeps_its_answer_until_five_seconds_after_it_ends() {
+        let lease = |seconds: i64| json!({"task":{"lease_expires_at":super::super::cooperative::timestamp(now() + chrono::Duration::seconds(seconds))}});
+        assert!((64..=65).contains(&result_ttl(&lease(60), 35)));
+        assert_eq!(result_ttl(&lease(7200), 35), 3600);
+        assert_eq!(result_ttl(&lease(-1), 35), 35);
+        assert_eq!(result_ttl(&json!({"task":null}), 35), 35);
+        assert_eq!(result_ttl(&json!({"task":null}), 95), 60);
     }
 }

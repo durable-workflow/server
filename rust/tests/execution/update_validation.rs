@@ -308,3 +308,200 @@ async fn expired_validation_leases_are_claimed_again() {
     assert_eq!(kinds, vec![json!("update_validation"), json!("workflow")]);
     assert_eq!(pending.await.unwrap().0, StatusCode::ACCEPTED);
 }
+
+// Poll request IDs with validation tasks (`WorkflowTaskPollRequestStore` and
+// `WorkflowTaskKindSelector`), as recorded against published 2.11.1.
+
+async fn poll_kinds(app: &Router, worker: &str, queue: &str, request_id: Option<&str>, kinds: Option<Value>) -> (StatusCode, Value) {
+    let mut body = json!({"worker_id":worker,"task_queue":queue,"timeout_seconds":1});
+    if let Some(id) = request_id {
+        body["poll_request_id"] = json!(id);
+    }
+    if let Some(kinds) = kinds {
+        body["task_kinds"] = kinds;
+    }
+    request(app, "POST", "/api/worker/workflow-tasks/poll", body).await
+}
+
+/// A delivery's kind, task and attempt.
+fn delivery(body: &Value) -> (Value, Value, Value) {
+    let task = &body["task"];
+    let validation = task["task_kind"] == "update_validation";
+    let (id, attempt) = if validation { ("update_validation_task_id", "update_validation_attempt") } else { ("task_id", "workflow_task_attempt") };
+    (task["task_kind"].clone(), task[id].clone(), task[attempt].clone())
+}
+
+/// A 409 for an ID bound to another kind set, field by field.
+fn assert_kinds_conflict(status: StatusCode, body: &Value, id: &str, requested: Value, bound: Value) {
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let expected = json!({"task":null,"poll_status":"conflict","reason":"poll_request_task_kinds_conflict",
+        "error":"Poll request ID is already bound to a different task-kind set.","poll_request_id":id,
+        "requested_task_kinds":requested,"bound_task_kinds":bound});
+    for (key, value) in expected.as_object().unwrap() {
+        assert_eq!(&body[key], value, "{key}: {body}");
+    }
+}
+
+async fn start_on(app: &Router, workflow: &str, queue: &str) {
+    let (status, started) = request(app, "POST", "/api/workflows", json!({"workflow_id":workflow,"workflow_type":"echo",
+        "task_queue":queue,"input":envelope(Payload::Array(vec![]))})).await;
+    assert_eq!(status, StatusCode::CREATED, "{started}");
+}
+
+#[tokio::test]
+async fn poll_request_ids_bind_their_normalized_kind_set() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    validating_worker(&app, "pr", "q-pr", Some(json!(["approve_me"])), true).await;
+    waiting_run(&app, "pr-run", "q-pr", "pr").await;
+    let pending = send_update(&app, "pr-run", "approve_me", update_body(21, Some("pr1")));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let both = || Some(json!(["workflow", "update_validation"]));
+
+    // A fresh cursor tries validation first.
+    let (status, first) = poll_kinds(&app, "pr", "q-pr", Some("pr-x"), both()).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let leased = delivery(&first);
+    assert_eq!((leased.0.clone(), leased.2.clone()), (json!("update_validation"), json!(1)), "{first}");
+    let task_id = leased.1.as_str().unwrap().to_owned();
+    // Either order, padded or not, is the same ID and set: the same delivery.
+    for (id, kinds) in [("pr-x", json!(["update_validation", "workflow"])), (" pr-x ", json!(["workflow", "update_validation"]))] {
+        let (status, replay) = poll_kinds(&app, "pr", "q-pr", Some(id), Some(kinds)).await;
+        assert_eq!((status, delivery(&replay)), (StatusCode::OK, leased.clone()), "{id}: {replay}");
+    }
+    // Another set is refused, and the lease stays held.
+    for kinds in [json!(["workflow"]), json!(["update_validation"])] {
+        let (status, refused) = poll_kinds(&app, "pr", "q-pr", Some("pr-x"), Some(kinds.clone())).await;
+        assert_kinds_conflict(status, &refused, "pr-x", kinds, json!(["update_validation", "workflow"]));
+    }
+    // Once the lease expires the ID polls afresh: the same task, attempt 2,
+    // which it then replays.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    for _ in 0..2 {
+        let (status, again) = poll_kinds(&app, "pr", "q-pr", Some("pr-x"), both()).await;
+        assert_eq!((status, delivery(&again)), (StatusCode::OK, (json!("update_validation"), json!(task_id), json!(2))), "{again}");
+    }
+    let approved = complete(&app, &task_id, "approve", json!({"lease_owner":"pr","update_validation_attempt":2})).await;
+    assert_eq!(approved.0, StatusCode::OK, "{}", approved.1);
+    assert_eq!(pending.await.unwrap().0, StatusCode::ACCEPTED);
+
+    // A default ID binds to the workflow kind alone.
+    let (status, default) = poll_kinds(&app, "pr", "q-pr", Some("pr-z"), None).await;
+    assert_eq!(status, StatusCode::OK, "{default}");
+    let workflow = delivery(&default);
+    assert_eq!((workflow.0.clone(), workflow.2.clone()), (json!("workflow"), json!(1)), "{default}");
+    let (status, refused) = poll_kinds(&app, "pr", "q-pr", Some("pr-z"), Some(json!(["update_validation", "workflow"]))).await;
+    assert_kinds_conflict(status, &refused, "pr-z", json!(["update_validation", "workflow"]), json!(["workflow"]));
+    for kinds in [None, Some(json!(["workflow"]))] {
+        let (status, replay) = poll_kinds(&app, "pr", "q-pr", Some("pr-z"), kinds).await;
+        assert_eq!((status, delivery(&replay)), (StatusCode::OK, workflow.clone()), "{replay}");
+    }
+}
+
+#[tokio::test]
+async fn a_completed_validation_delivery_polls_afresh_under_its_id() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    validating_worker(&app, "fresh", "q-fresh", Some(json!(["approve_me"])), true).await;
+    waiting_run(&app, "fresh-run", "q-fresh", "fresh").await;
+    let pending = send_update(&app, "fresh-run", "approve_me", update_body(5, Some("f1")));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let both = || Some(json!(["update_validation", "workflow"]));
+    let (_, first) = poll_kinds(&app, "fresh", "q-fresh", Some("fresh-id"), both()).await;
+    let (kind, task, attempt) = delivery(&first);
+    assert_eq!((kind, attempt), (json!("update_validation"), json!(1)), "{first}");
+    let approved = complete(&app, task.as_str().unwrap(), "approve", json!({"lease_owner":"fresh","update_validation_attempt":1})).await;
+    assert_eq!(approved.0, StatusCode::OK, "{}", approved.1);
+    assert_eq!(pending.await.unwrap().0, StatusCode::ACCEPTED);
+    // The approval is no longer deliverable: the same ID leases the update's
+    // workflow task (the cursor turned to workflow), then replays it.
+    let (status, next) = poll_kinds(&app, "fresh", "q-fresh", Some("fresh-id"), both()).await;
+    assert_eq!(status, StatusCode::OK, "{next}");
+    let workflow = delivery(&next);
+    assert_eq!((workflow.0.clone(), workflow.2.clone()), (json!("workflow"), json!(1)), "{next}");
+    let (_, replay) = poll_kinds(&app, "fresh", "q-fresh", Some("fresh-id"), both()).await;
+    assert_eq!(delivery(&replay), workflow, "{replay}");
+    // With nothing else ready, a fresh ID answers empty and replays empty.
+    for _ in 0..2 {
+        let (status, empty) = poll_kinds(&app, "fresh", "q-fresh", Some("empty-id"), both()).await;
+        assert_eq!((status, empty["poll_status"].clone(), empty["task"].clone()), (StatusCode::OK, json!("empty"), Value::Null), "{empty}");
+    }
+}
+
+// Concurrent polls with one ID share one delivery; the queue's cursor turns
+// once per lease, so a new ID leases the other kind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_duplicates_share_one_delivery_and_one_cursor_turn() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    validating_worker(&app, "dup", "q-dup", Some(json!(["approve_me"])), true).await;
+    waiting_run(&app, "dup-run", "q-dup", "dup").await;
+    let pending = send_update(&app, "dup-run", "approve_me", update_body(3, Some("d1")));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    start_on(&app, "dup-other", "q-dup").await;
+    let polls: Vec<_> = [json!(["workflow", "update_validation"]), json!(["update_validation", "workflow"]), json!(["workflow", "update_validation"])]
+        .into_iter()
+        .map(|kinds| {
+            let app = app.clone();
+            tokio::spawn(async move { poll_kinds(&app, "dup", "q-dup", Some("same"), Some(kinds)).await })
+        })
+        .collect();
+    let mut deliveries = vec![];
+    for poll in polls {
+        let (status, body) = poll.await.unwrap();
+        assert_eq!(status, StatusCode::OK, "{body}");
+        deliveries.push(delivery(&body));
+    }
+    assert!(deliveries.iter().all(|one| *one == deliveries[0]), "{deliveries:?}");
+    assert_eq!(deliveries[0].0, json!("update_validation"), "a fresh cursor tries validation first");
+    let (_, other) = poll_kinds(&app, "dup", "q-dup", Some("other"), Some(json!(["workflow", "update_validation"]))).await;
+    assert_eq!(delivery(&other).0, json!("workflow"), "{other}");
+    let (_, empty) = poll_kinds(&app, "dup", "q-dup", Some("last"), Some(json!(["workflow", "update_validation"]))).await;
+    assert_eq!(empty["poll_status"], "empty", "{empty}");
+    let id = deliveries[0].1.as_str().unwrap();
+    assert_eq!(complete(&app, id, "approve", json!({"lease_owner":"dup","update_validation_attempt":1})).await.0, StatusCode::OK);
+    assert_eq!(pending.await.unwrap().0, StatusCode::ACCEPTED);
+}
+
+// Concurrent probes take turns on the cursor: with two tasks of each kind
+// ready, two simultaneous polls lease one of each kind, never two of one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_probes_alternate_kinds_without_losing_a_turn() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    for round in 0..4 {
+        let (worker, queue) = (format!("alt-{round}"), format!("q-alt-{round}"));
+        validating_worker(&app, &worker, &queue, Some(json!(["approve_me"])), true).await;
+        let mut pending = vec![];
+        for run in 0..2 {
+            let workflow = format!("alt-{round}-run-{run}");
+            waiting_run(&app, &workflow, &queue, &worker).await;
+            pending.push(send_update(&app, &workflow, "approve_me", update_body(run, Some("v"))));
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        for run in 0..2 {
+            start_on(&app, &format!("alt-{round}-ready-{run}"), &queue).await;
+        }
+        let polls: Vec<_> = ["one", "two"]
+            .into_iter()
+            .map(|id| {
+                let (app, worker, queue) = (app.clone(), worker.clone(), queue.clone());
+                tokio::spawn(async move { poll_kinds(&app, &worker, &queue, Some(id), Some(json!(["update_validation", "workflow"]))).await })
+            })
+            .collect();
+        let mut kinds = vec![];
+        for poll in polls {
+            let (status, body) = poll.await.unwrap();
+            assert_eq!(status, StatusCode::OK, "{body}");
+            kinds.push(body["task"]["task_kind"].as_str().unwrap().to_owned());
+        }
+        kinds.sort();
+        assert_eq!(kinds, ["update_validation", "workflow"], "round {round}");
+        // The cursor turned twice: validation comes first again.
+        let (_, next) = poll_kinds(&app, &worker, &queue, None, Some(json!(["workflow", "update_validation"]))).await;
+        assert_eq!(next["task"]["task_kind"], "update_validation", "round {round}: {next}");
+        for update in pending {
+            update.abort();
+        }
+    }
+}

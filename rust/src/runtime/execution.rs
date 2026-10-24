@@ -999,9 +999,9 @@ impl Runtime {
                 .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_poll_timeout"))?,
         };
         let leased = match &*self.storage {
-            Storage::Sqlite(store) => store.multiplexed_poll(&body, &kinds, protocol_version, pages, timeout).await?,
-            Storage::Postgres(store) => store.multiplexed_poll(&body, &kinds, protocol_version, pages, timeout).await?,
-            Storage::MySql(store) => store.multiplexed_poll(&body, &kinds, protocol_version, pages, timeout).await?,
+            Storage::Sqlite(store) => store.multiplexed_poll(&body, &kinds, protocol_version, pages, timeout, wait).await?,
+            Storage::Postgres(store) => store.multiplexed_poll(&body, &kinds, protocol_version, pages, timeout, wait).await?,
+            Storage::MySql(store) => store.multiplexed_poll(&body, &kinds, protocol_version, pages, timeout, wait).await?,
         };
         match leased {
             super::update_validation::Leased::Workflow(answer) => Ok(mark(answer)),
