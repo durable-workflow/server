@@ -311,7 +311,9 @@ where
         Ok(
             json!({"task_id":task_id,"activity_attempt_id":attempt_id,"lease_owner":body["lease_owner"],
             "cancel_requested":false,"can_continue":true,"reason":null,"run_closed_reason":null,"run_closed_at":null,
-            "heartbeat_recorded":true,"lease_expires_at":expires,"last_heartbeat_at":at,"worker_session":null,
+            // PHP formats each time in UTC with microseconds, as status reads do.
+            "heartbeat_recorded":true,"lease_expires_at":super::cooperative::timestamp(expires),
+            "last_heartbeat_at":super::cooperative::timestamp(at),"worker_session":null,
             "protocol_version":protocol,"server_capabilities":super::store::capabilities()}),
         )
     }
