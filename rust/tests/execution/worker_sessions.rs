@@ -104,3 +104,64 @@ async fn worker_sessions_refuse_old_protocols_and_bad_requests() {
     let (status, missing) = request(&app, "GET", "/api/worker-sessions/none", Value::Null).await;
     assert_eq!((status, missing["reason"].clone()), (StatusCode::NOT_FOUND, json!("worker_session_not_found")));
 }
+
+async fn session_worker(app: &Router, worker: &str, capabilities: Value) {
+    let manifest = json!({"local_activities":{"supported":false,"minimum_protocol_version":"1.18"},
+        "sticky_execution":{"supported":false,"minimum_protocol_version":"1.18"},
+        "worker_sessions":{"supported":capabilities.as_array().unwrap().iter().any(|item| item == "worker_sessions"),"minimum_protocol_version":"1.18"}});
+    let (status, answer) = request(app, "POST", "/api/worker/register", json!({"worker_id":worker,"task_queue":"test","runtime":"php",
+        "supported_workflow_types":["echo"],"supported_activity_types":["act"],"capabilities":capabilities,"capability_manifest":manifest})).await;
+    assert_eq!(status, StatusCode::CREATED, "{answer}");
+}
+
+fn bound(session: Value) -> Value {
+    json!({"type":"schedule_activity","activity_type":"act","arguments":envelope(Payload::Array(vec![])),"worker_session":session})
+}
+
+// Session-bound activities (worker-session-activities fixture): lazily
+// created on the first admitted claim, held against other workers, bounded
+// by the session's activity limit, and renewed by the activity heartbeat.
+#[tokio::test]
+async fn session_bound_activities_are_admitted_held_limited_and_renewed() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    session_worker(&app, "author", json!(["worker_sessions"])).await;
+    session_worker(&app, "gpu-a", json!(["worker_sessions", "gpu"])).await;
+    session_worker(&app, "gpu-b", json!(["worker_sessions", "gpu"])).await;
+    start(&app, "session-run").await;
+    let task = poll(&app, "author", "workflow").await;
+    let session = json!({"session_id":"lazy","requirements":["gpu"],"lease_seconds":90,"max_concurrent_activities":1});
+    let (status, done) = finish_task(&app, &task, json!([bound(session.clone()), bound(session)])).await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    let (status, _) = request(&app, "GET", "/api/worker-sessions/lazy", Value::Null).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "no session before the first claim");
+
+    let first = poll(&app, "gpu-a", "activity").await;
+    assert_eq!((first["worker_session"]["session_id"].clone(), first["worker_session"]["lease_owner"].clone()),
+        (json!("lazy"), json!("gpu-a")), "{first}");
+    // The session holds one activity: neither worker gets the second.
+    assert!(poll(&app, "gpu-a", "activity").await.is_null());
+    assert!(poll(&app, "gpu-b", "activity").await.is_null());
+    let (status, shown) = request(&app, "GET", "/api/worker-sessions/lazy", Value::Null).await;
+    assert_eq!((status, shown["session"]["active_activity_count"].clone()), (StatusCode::OK, json!(1)), "{shown}");
+
+    // The heartbeat renews the session by the command's lease.
+    let own = json!({"activity_attempt_id":first["activity_attempt_id"],"lease_owner":"gpu-a"});
+    let path = format!("/api/worker/activity-tasks/{}", first["task_id"].as_str().unwrap());
+    let (status, beat) = request(&app, "POST", &format!("{path}/heartbeat"), own.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{beat}");
+    let lease = |value: &Value| chrono::DateTime::parse_from_rfc3339(value.as_str().unwrap()).unwrap().timestamp();
+    assert_eq!(lease(&beat["worker_session"]["lease_expires_at"]) - lease(&beat["worker_session"]["last_heartbeat_at"]), 90, "{beat}");
+
+    // Once the holder closes the session, the heartbeat is refused and the
+    // attempt still completes; the second activity is then claimable again.
+    let (status, _) = request(&app, "DELETE", "/api/worker/sessions/lazy", json!({"worker_id":"gpu-a"})).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, refused) = request(&app, "POST", &format!("{path}/heartbeat"), own.clone()).await;
+    assert_eq!((status, refused["worker_session_renewal"]["reason"].clone()), (StatusCode::CONFLICT, json!("session_not_active")), "{refused}");
+    let (status, observed) = request_protocol(&app, "POST", &format!("{path}/status"), own.clone(), "1.20").await;
+    assert_eq!((status, observed["reason"].clone()), (StatusCode::OK, json!("worker_session_unavailable")), "{observed}");
+    let mut completion = own.clone();
+    completion["result"] = envelope(Payload::Null);
+    assert_eq!(request(&app, "POST", &format!("{path}/complete"), completion).await.0, StatusCode::OK);
+}

@@ -92,6 +92,28 @@ store_methods! {
                 Some(task) => DB::optional_string(task, "lease_owner")?.as_deref() == Some(owner),
                 None => false,
             };
+        // `heartbeatForAttempt`: a session-bound attempt renews its session
+        // before its own lease; a refused renewal renews nothing.
+        let mut worker_session = Value::Null;
+        let session = match &rows.activity {
+            Some(activity) => DB::optional_document_row(activity, "activity_options")?
+                .and_then(|options| super::worker_sessions::CommandSession::from_snapshot(&options["worker_session"])),
+            None => None,
+        };
+        if leased_by_owner && let Some(session) = &session {
+            match self.renew_session_for_attempt(&mut tx, session, owner).await? {
+                Ok(snapshot) => worker_session = snapshot,
+                Err((status, snapshot, renewal)) => {
+                    let mut response = observed;
+                    response["lease_renewed"] = json!(false);
+                    response["can_continue"] = json!(false);
+                    response["reason"] = renewal["reason"].clone();
+                    response["worker_session"] = snapshot;
+                    response["worker_session_renewal"] = renewal;
+                    return Err(worker(status, response));
+                }
+            }
+        }
         let at = now();
         let mut status = if leased_by_owner {
             let task = rows.task.as_ref().expect("task checked above");
@@ -118,7 +140,7 @@ store_methods! {
         status["lease_renewed"] = status["can_continue"].clone();
         status["server_time"] = json!(micros(at));
         status["task_id"] = json!(task_id);
-        status["worker_session"] = Value::Null;
+        status["worker_session"] = worker_session;
         let code = outcome_status(status["reason"].as_str());
         if code != StatusCode::OK {
             return Err(worker(code, status));

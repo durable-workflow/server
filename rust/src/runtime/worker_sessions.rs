@@ -36,6 +36,38 @@ fn wire(at: Option<DateTime<Utc>>) -> Value {
     at.map_or(Value::Null, |at| json!(super::cooperative::timestamp(at)))
 }
 
+/// `server_capabilities.worker_sessions`: the published contract
+/// (`WorkerProtocolVersion::workerSessionSemantics`) and its support.
+pub(super) fn capability() -> Value {
+    json!({"feature":"worker_sessions","contract_version":"1.0","minimum_protocol_version":"1.8","command_field":"worker_session",
+        "activity_options_field":"worker_session","verbs":["create","heartbeat","close"],
+        "lifecycle":{"creation":"lazy_create_on_first_admitted_activity_or_explicit_worker_create","renewal":"activity_heartbeat_or_explicit_session_heartbeat",
+            "close":"explicit_holder_close","lease_expiry":"session_expires_when_lease_is_not_renewed",
+            "ttl_expiry":"absolute_session_ttl_is_terminal_for_that_session_id"},
+        "ownership":"single_worker_lease_owner",
+        "lease":{"scope":"namespace_session_id","owner":"registered_worker_id","activity_attempt_leases_remain_independent":true},
+        "admission":{"queue_routing_first":true,"requires_registered_worker":true,"requires_capabilities":true,"create_if_missing_default":true,
+            "allow_reacquire_after_failure_default":true},
+        "rollout_safety":{"minimum_protocol_version":"1.8","mixed_server_rollout_fenced_by_protocol_version":true,
+            "servers_below_minimum_must_reject_worker_session_commands":true,"servers_below_minimum_must_not_claim_worker_session_activity_tasks":true},
+        "limits":{"max_concurrent_worker_sessions":"worker_registration","max_concurrent_activities":"session"},
+        "default_max_concurrent_activities":1,
+        "renewal":{"activity_heartbeat_renews_session":true,"explicit_session_heartbeat":true},
+        "failure_detection":["lease_expiry","registered_worker_heartbeat_staleness"],
+        "holder_loss":{"in_flight_activities_keep_at_least_once_attempt_semantics":true,"replacement_worker_must_reacquire_session":true,
+            "process_local_state_must_be_rebuilt_after_reacquire":true},
+        "cancellation":{"workflow_cancellation_observed_through_activity_heartbeat":true,"session_lease_does_not_override_activity_cancel_requested":true,
+            "planned_shutdown_should_close_sessions":true},
+        "routing":["queue","connection","requirements"],
+        "visibility":["active","closed","expired","failed","orphaned"],
+        "statuses":["active","closed","expired","failed","orphaned"],
+        "terminal_statuses":["closed"],
+        "terminal_conditions":["explicit_close","ttl_expired","allow_reacquire_after_failure_false"],
+        "authoring_guidance":["use_for_process_local_state_gpu_memory_or_filesystem_affinity","prefer_ordinary_queued_activities_for_independent_steps",
+            "prefer_one_larger_activity_for_atomic_side_effects"],
+        "supported":true})
+}
+
 /// `rejectWorkerSessionsUnavailable`: worker sessions need protocol 1.8.
 pub(super) fn sessions_gate(protocol: &str) -> Result<()> {
     let version = protocol.split_once('.').and_then(|(major, minor)| {
@@ -173,6 +205,143 @@ impl Options {
     }
 }
 
+/// A `schedule_activity` command's `worker_session`, as the command
+/// normalizer leaves it and `WorkerSessionOptions::toSnapshot` stores it in
+/// the activity's options: omitted values stay null.
+pub(super) struct CommandSession {
+    pub(super) session_id: String,
+    pub(super) connection: Option<String>,
+    pub(super) queue: Option<String>,
+    requirements: Vec<String>,
+    lease_seconds: Option<i64>,
+    ttl_seconds: Option<i64>,
+    max_concurrent_activities: Option<i64>,
+    create_if_missing: bool,
+    allow_reacquire_after_failure: bool,
+}
+
+impl CommandSession {
+    pub(super) fn snapshot(&self) -> Value {
+        json!({"session_id":self.session_id,"connection":self.connection,"queue":self.queue,"requirements":self.requirements,
+            "lease_seconds":self.lease_seconds,"ttl_seconds":self.ttl_seconds,"max_concurrent_activities":self.max_concurrent_activities,
+            "create_if_missing":self.create_if_missing,"allow_reacquire_after_failure":self.allow_reacquire_after_failure})
+    }
+
+    /// The stored snapshot, from an activity's options.
+    pub(super) fn from_snapshot(value: &Value) -> Option<Self> {
+        let mut requirements: Vec<String> = Vec::new();
+        for item in value["requirements"].as_array().into_iter().flatten() {
+            if let Some(text) = string_value(item)
+                && !requirements.contains(&text)
+            {
+                requirements.push(text);
+            }
+        }
+        Some(Self {
+            session_id: string_value(&value["session_id"])?,
+            connection: string_value(&value["connection"]),
+            queue: string_value(&value["queue"]),
+            requirements,
+            lease_seconds: value["lease_seconds"].as_i64().filter(|value| *value > 0),
+            ttl_seconds: value["ttl_seconds"].as_i64().filter(|value| *value > 0),
+            max_concurrent_activities: value["max_concurrent_activities"].as_i64().filter(|value| *value > 0),
+            create_if_missing: value["create_if_missing"].as_bool().unwrap_or(true),
+            allow_reacquire_after_failure: value["allow_reacquire_after_failure"].as_bool().unwrap_or(true),
+        })
+    }
+
+    /// `normalizeOptions` with the activity's queue and connection as the
+    /// fallbacks.
+    fn options(&self, queue: Option<&str>, connection: Option<&str>) -> Options {
+        Options {
+            session_id: self.session_id.clone(),
+            connection: self.connection.clone().or_else(|| connection.map(str::to_owned)),
+            queue: self.queue.clone().or_else(|| queue.map(str::to_owned)),
+            requirements: self.requirements.clone(),
+            lease_seconds: self.lease_seconds.unwrap_or(DEFAULT_LEASE_SECONDS),
+            ttl_seconds: self.ttl_seconds.unwrap_or(DEFAULT_TTL_SECONDS),
+            max_concurrent_activities: self.max_concurrent_activities.unwrap_or(DEFAULT_MAX_CONCURRENT_ACTIVITIES),
+            create_if_missing: self.create_if_missing,
+            allow_reacquire_after_failure: self.allow_reacquire_after_failure,
+        }
+    }
+
+    /// `workerCanSatisfySession`: the claiming worker's protocol, task queue
+    /// and capabilities.
+    pub(super) fn claimable_by(&self, protocol: &str, worker_queue: &str, activity_queue: &str, capabilities: &[String]) -> bool {
+        sessions_gate(protocol).is_ok()
+            && self.queue.as_deref().unwrap_or(activity_queue) == worker_queue
+            && self.requirements.iter().all(|requirement| capabilities.contains(requirement))
+    }
+
+    /// The lease an activity heartbeat renews the session by.
+    pub(super) fn heartbeat_lease(&self) -> i64 {
+        self.lease_seconds.unwrap_or(DEFAULT_LEASE_SECONDS)
+    }
+}
+
+/// A validated command's `worker_session`, when it names a session.
+pub(super) fn command_session(command: &Value) -> Option<CommandSession> {
+    let raw = command.get("worker_session").filter(|value| value.is_object())?;
+    CommandSession::from_snapshot(raw)
+}
+
+/// The command normalizer's `worker_session` checks, with its messages.
+fn normalizer_errors(index: usize, command: &Value) -> Vec<(String, Vec<String>)> {
+    let Some(raw) = command.get("worker_session").filter(|value| !value.is_null()) else {
+        return Vec::new();
+    };
+    let at = |field: &str| format!("commands.{index}.worker_session{field}");
+    let Some(raw) = raw.as_object() else {
+        return vec![(at(""), vec!["Workflow task command field [worker_session] must be an object when provided.".into()])];
+    };
+    if raw.get("session_id").and_then(Value::as_str).is_none_or(|id| id.trim().is_empty()) {
+        return vec![(at(".session_id"), vec!["Worker session commands require a non-empty session_id.".into()])];
+    }
+    let mut errors = Vec::new();
+    for field in ["connection", "queue"] {
+        if let Some(value) = raw.get(field).filter(|value| !value.is_null())
+            && value.as_str().is_none_or(|text| text.trim().is_empty())
+        {
+            errors.push((at(&format!(".{field}")), vec![format!("Worker session field [{field}] must be a non-empty string when provided.")]));
+        }
+    }
+    for field in ["lease_seconds", "ttl_seconds", "max_concurrent_activities"] {
+        if let Some(value) = raw.get(field).filter(|value| !value.is_null())
+            && value.as_i64().is_none_or(|value| value < 1)
+        {
+            errors.push((at(&format!(".{field}")), vec![format!("Worker session field [{field}] must be a positive integer when provided.")]));
+        }
+    }
+    for field in ["create_if_missing", "allow_reacquire_after_failure"] {
+        if let Some(value) = raw.get(field).filter(|value| !value.is_null())
+            && !value.is_boolean()
+        {
+            errors.push((at(&format!(".{field}")), vec![format!("Worker session field [{field}] must be boolean when provided.")]));
+        }
+    }
+    if let Some(requirements) = raw.get("requirements").filter(|value| !value.is_null()) {
+        match requirements.as_array() {
+            None => errors.push((at(".requirements"), vec!["Worker session requirements must be a list of non-empty strings.".into()])),
+            Some(items) => {
+                for (position, item) in items.iter().enumerate() {
+                    if item.as_str().is_none_or(|text| text.trim().is_empty()) {
+                        errors.push((at(&format!(".requirements.{position}")), vec!["Worker session requirements must be non-empty strings.".into()]));
+                    }
+                }
+            }
+        }
+    }
+    errors
+}
+
+/// A protocol version as `major.minor`.
+fn version(protocol: Option<&str>) -> Option<(u64, u64)> {
+    let (major, minor) = protocol?.split_once('.')?;
+    let digits = |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
+    (digits(major) && digits(minor)).then(|| Some((major.parse().ok()?, minor.parse().ok()?))).flatten()
+}
+
 /// A session row.
 struct Session {
     id: i64,
@@ -220,6 +389,25 @@ fn with_session(session: Value) -> Map<String, Value> {
     Map::from_iter([("session".to_owned(), session)])
 }
 
+/// The compact form a task or status carries (`activitySessionPayload`):
+/// the normalized options with the row's lease, without null values.
+fn compact(options: &Options, session: Option<&Session>) -> Value {
+    let mut fields = json!({"session_id":options.session_id,"connection":options.connection,"queue":options.queue,
+        "requirements":options.requirements,"lease_seconds":options.lease_seconds,"ttl_seconds":options.ttl_seconds,
+        "max_concurrent_activities":options.max_concurrent_activities,"create_if_missing":options.create_if_missing,
+        "allow_reacquire_after_failure":options.allow_reacquire_after_failure});
+    if let Some(session) = session {
+        fields["status"] = json!(session.status);
+        fields["lease_owner"] = json!(session.lease_owner);
+        fields["lease_expires_at"] = wire(session.lease_expires_at);
+        fields["ttl_expires_at"] = wire(session.ttl_expires_at);
+    }
+    if let Some(map) = fields.as_object_mut() {
+        map.retain(|_, value| !value.is_null());
+    }
+    fields
+}
+
 store_methods! {
     /// `POST /api/worker/sessions`.
     pub(crate) async fn create_worker_session(&self, body: Value, protocol: &str) -> Result<Answer> {
@@ -251,7 +439,7 @@ store_methods! {
             .collect();
         let limit = DB::optional_number(&worker, "max_concurrent_worker_sessions")?.unwrap_or(10);
         let mut tx = self.begin().await?;
-        let answer = self.acquire(&mut tx, &worker_id, &task_queue, &capabilities, limit, &options).await?;
+        let answer = self.acquire(&mut tx, &worker_id, &task_queue, &capabilities, limit, &options, None).await?;
         tx.commit().await?;
         Ok(answer)
     }
@@ -265,6 +453,7 @@ store_methods! {
         capabilities: &[String],
         limit: i64,
         options: &Options,
+        activity_task: Option<&str>,
     ) -> Result<Answer> {
         if options.queue.as_deref().is_some_and(|queue| queue != task_queue) {
             return Ok(failure("session_queue_mismatch", "Worker session queue does not match the worker's task queue.",
@@ -302,6 +491,15 @@ store_methods! {
                 let snapshot = self.snapshot(tx, &session).await?;
                 return Ok(failure("session_owned_by_another_worker", "Worker session is currently leased by another worker.",
                     StatusCode::CONFLICT, with_session(snapshot)));
+            }
+            // An activity claim also respects the session's activity limit.
+            if let Some(task) = activity_task {
+                let running = self.running_session_activities(tx, &session, task).await?;
+                if running >= session.max_concurrent_activities.max(1) {
+                    let snapshot = self.snapshot(tx, &session).await?;
+                    return Ok(failure("session_activity_limit_exceeded", "Worker session has reached max_concurrent_activities.",
+                        StatusCode::CONFLICT, with_session(snapshot)));
+                }
             }
             self.renew(tx, &mut session, options, worker_id).await?;
             return Ok(success("reused", self.snapshot(tx, &session).await?, StatusCode::OK));
@@ -359,6 +557,163 @@ store_methods! {
         session.allow_reacquire_after_failure = options.allow_reacquire_after_failure;
         session.last_heartbeat_at = Some(at);
         self.save(tx, session).await
+    }
+
+    /// `activeActivityCount`: the owner's running, unexpired attempts of
+    /// activities bound to this session, other than one task.
+    async fn running_session_activities(&self, tx: &mut Transaction<'_, DB>, session: &Session, except_task: &str) -> Result<i64> {
+        let Some(owner) = session.lease_owner.as_deref() else {
+            return Ok(0);
+        };
+        Ok(Self::scalar(DB::SESSION_RUNNING_ATTEMPTS).bind(self.namespace.as_ref()).bind(DB::bind_time(now())).bind(owner)
+            .bind(session.session_id.as_str()).bind(except_task).fetch_one(&mut **tx).await?)
+    }
+
+    /// `guardWorkerSessionCommandsAvailable`, then
+    /// `guardPortableWorkerAffinityCompletion`, then the command normalizer's
+    /// `worker_session` checks, in PHP's order.
+    pub(super) async fn guard_worker_session_commands(
+        &self,
+        tx: &mut Transaction<'_, DB>,
+        task: &DB::Row,
+        task_id: &str,
+        body: &Value,
+        protocol: Option<&str>,
+        commands: &[Value],
+    ) -> Result<()> {
+        if !commands.iter().any(|command| command.get("worker_session").is_some_and(|value| !value.is_null())) {
+            return Ok(());
+        }
+        let attempt = body["workflow_task_attempt"].clone();
+        let version = version(protocol);
+        if version.is_none_or(|version| version < MINIMUM_PROTOCOL) {
+            return Err(RuntimeError::Protocol { status: StatusCode::CONFLICT,
+                response: json!({"task_id":task_id,"workflow_task_attempt":attempt,"outcome":"rejected","recorded":false,
+                    "reason":"worker_sessions_unavailable","error":"Worker-session activity commands require worker protocol 1.8 or newer.",
+                    "requested_version":protocol,"minimum_protocol_version":"1.8",
+                    "remediation":"Complete worker-session workflow tasks through a server node advertising worker protocol 1.8 or newer."}) });
+        }
+        let rejection = |reason: &str| RuntimeError::Protocol { status: StatusCode::CONFLICT,
+            response: json!({"task_id":task_id,"workflow_task_attempt":attempt,"outcome":"rejected","recorded":false,"reason":reason,
+                "capability":"worker_sessions","requested_version":protocol,"minimum_protocol_version":"1.18",
+                "remediation":"Use cold durable replay unless the registered worker manifest explicitly supports the required capability and exact cache identity."}) };
+        if version.is_none_or(|version| version < (1, 18)) {
+            return Err(rejection("portable_worker_affinity_protocol_floor_unavailable"));
+        }
+        let owner = DB::optional_string(task, "lease_owner")?.unwrap_or_default();
+        let worker = Self::query("SELECT capabilities,capability_manifest FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
+            .bind(self.namespace.as_ref()).bind(&owner).fetch_optional(&mut **tx).await?;
+        let capable = match &worker {
+            Some(row) => {
+                let flat = DB::optional_document_row(row, "capabilities")?
+                    .and_then(|capabilities| capabilities.as_array().map(|items| items.iter().any(|item| item == "worker_sessions")))
+                    .unwrap_or(false);
+                let manifest = DB::optional_document_row(row, "capability_manifest")?
+                    .is_some_and(|manifest| manifest["worker_sessions"]["supported"] == json!(true));
+                flat && manifest
+            }
+            None => false,
+        };
+        if !capable {
+            return Err(rejection("worker_capability_not_supported"));
+        }
+        let errors: Vec<_> = commands.iter().enumerate().flat_map(|(index, command)| normalizer_errors(index, command)).collect();
+        failure_messages(errors).map_or(Ok(()), Err)
+    }
+
+    /// `admitActivity` inside a claim: acquire or reuse the activity's
+    /// session for the claiming worker, within its activity limit. Answers
+    /// the compact form, or `None` when the session refuses the claim.
+    pub(super) async fn admit_session_activity(
+        &self,
+        tx: &mut Transaction<'_, DB>,
+        worker: &DB::Row,
+        session: &CommandSession,
+        activity_queue: &str,
+        activity_connection: Option<&str>,
+        task_id: &str,
+    ) -> Result<Option<Value>> {
+        let worker_id = DB::string(worker, "worker_id")?;
+        let task_queue = DB::string(worker, "task_queue")?;
+        let capabilities: Vec<String> = DB::optional_document_row(worker, "capabilities")?
+            .as_ref()
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|value| value.as_str().map(str::to_owned))
+            .collect();
+        let limit = DB::optional_number(worker, "max_concurrent_worker_sessions")?.unwrap_or(10);
+        let options = session.options(Some(activity_queue), activity_connection);
+        let answer = self.acquire(tx, &worker_id, &task_queue, &capabilities, limit, &options, Some(task_id)).await?;
+        if answer.body["admitted"] != json!(true) {
+            return Ok(None);
+        }
+        let row = self.locked_session(tx, &options.session_id).await?;
+        Ok(Some(compact(&options, row.as_ref())))
+    }
+
+    /// `heartbeatForAttempt`: an activity heartbeat or lease renewal renews
+    /// its session by the command's lease. Answers the full snapshot, or the
+    /// refusal's status, its snapshot (if any) and the renewal's failure.
+    pub(super) async fn renew_session_for_attempt(
+        &self,
+        tx: &mut Transaction<'_, DB>,
+        session: &CommandSession,
+        lease_owner: &str,
+    ) -> Result<std::result::Result<Value, (StatusCode, Value, Value)>> {
+        let Some(mut row) = self.locked_session(tx, &session.session_id).await? else {
+            return Ok(Err((StatusCode::NOT_FOUND, Value::Null,
+                json!({"admitted":false,"reason":"session_not_found","error":"Worker session was not found."}))));
+        };
+        if row.status != "active" {
+            let snapshot = self.snapshot(tx, &row).await?;
+            return Ok(Err((StatusCode::CONFLICT, snapshot,
+                json!({"admitted":false,"reason":"session_not_active","error":"Worker session is not active."}))));
+        }
+        if row.lease_owner.as_deref() != Some(lease_owner) {
+            let snapshot = self.snapshot(tx, &row).await?;
+            return Ok(Err((StatusCode::CONFLICT, snapshot,
+                json!({"admitted":false,"reason":"session_owner_mismatch","error":"Worker session lease is owned by another worker."}))));
+        }
+        let at = second(now());
+        row.lease_expires_at = Some(at + chrono::Duration::seconds(session.heartbeat_lease().max(1)));
+        row.last_heartbeat_at = Some(at);
+        row.failure_reason = None;
+        self.save(tx, &row).await?;
+        Ok(Ok(self.snapshot(tx, &row).await?))
+    }
+
+    /// The compact form an attempt's status carries, read without a
+    /// refresh, and whether the session still lets the attempt continue.
+    pub(super) async fn session_for_status(
+        &self,
+        tx: &mut Transaction<'_, DB>,
+        session: &CommandSession,
+        activity_queue: &str,
+        activity_connection: Option<&str>,
+        lease_owner: &str,
+    ) -> Result<(Value, bool)> {
+        let row = Self::query(SESSION_BY_ID).bind(self.namespace.as_ref()).bind(session.session_id.as_str()).fetch_optional(&mut **tx).await?;
+        let row = row.as_ref().map(Self::session).transpose()?;
+        let at = now();
+        let usable = row.as_ref().is_some_and(|row| row.status == "active" && row.lease_owner.as_deref() == Some(lease_owner)
+            && row.lease_expires_at.is_some_and(|lease| lease > at) && row.ttl_expires_at.is_some_and(|ttl| ttl > at));
+        Ok((compact(&session.options(Some(activity_queue), activity_connection), row.as_ref()), usable))
+    }
+
+    /// `metrics`: the namespace's sessions by status, after a refresh.
+    pub(crate) async fn worker_session_metrics(&self) -> Result<Value> {
+        self.refresh_namespace_sessions().await?;
+        let rows = Self::query("SELECT status FROM workflow_worker_sessions WHERE namespace=$1").bind(self.namespace.as_ref()).fetch_all(&self.pool).await?;
+        let mut metrics = json!({"total":0,"active":0,"closed":0,"expired":0,"failed":0,"orphaned":0});
+        for row in rows {
+            let status = DB::string(&row, "status")?;
+            metrics["total"] = json!(metrics["total"].as_i64().unwrap_or(0) + 1);
+            if let Some(count) = metrics.get_mut(status.as_str()) {
+                *count = json!(count.as_i64().unwrap_or(0) + 1);
+            }
+        }
+        Ok(metrics)
     }
 
     /// `POST /api/worker/sessions/{sessionId}/heartbeat`.
@@ -570,7 +925,7 @@ store_methods! {
             "lease_expires_at":wire(session.lease_expires_at),"ttl_expires_at":wire(session.ttl_expires_at),"closed_at":wire(session.closed_at),
             "failure_reason":session.failure_reason,"lease_seconds":session.lease_seconds,"ttl_seconds":session.ttl_seconds,
             "max_concurrent_activities":session.max_concurrent_activities,"create_if_missing":session.create_if_missing,
-            "allow_reacquire_after_failure":session.allow_reacquire_after_failure,"active_activity_count":0,
+            "allow_reacquire_after_failure":session.allow_reacquire_after_failure,"active_activity_count":self.running_session_activities(tx, session, "").await?,
             "last_heartbeat_at":wire(session.last_heartbeat_at),"created_at":wire(session.created_at),"updated_at":wire(session.updated_at)}))
     }
 }
