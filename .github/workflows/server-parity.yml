@@ -313,13 +313,18 @@ jobs:
   mysql-execution:
     needs: published-sdk-adapters
     runs-on: ubuntu-latest
-    # Corrected marker/range/clock coverage expands the job, and the fixture step
-    # runs every later profile before failing; scenario budgets stay fixed.
-    # MySQL runs take 75 to 85 minutes; PostgreSQL's jobs take about 60.
-    timeout-minutes: 105
+    # Each part takes about 20 to 35 minutes; the fixture step runs every
+    # later profile before failing, and scenario budgets stay fixed.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
+      # Each database runs in three parts on separate runners: the native
+      # database suites and TLS checks, the shared corpus with its profiles and
+      # restart cases, and the separate cohorts. Every part bootstraps the
+      # same database and native build; no part depends on another.
       matrix:
+        label: [mysql-8.0, existing-php-mysql-matrix, mariadb-10.11]
+        part: [native-tests, corpus, cohorts]
         include:
           - label: mysql-8.0
             image: mirror.gcr.io/library/mysql@sha256:62fb722c78b24245ddff1796a0fcee4a49cc5b87e0aaaf20c92d1da9e0a2497b
@@ -334,6 +339,7 @@ jobs:
             # Both expanded originals exhausted the 512 MiB DB fixture ceiling.
             memory: 1g
     env:
+      DW_PARITY_PART: ${{ matrix.part }}
       RESOURCE_SCOPE: dw-mysql-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.label }}
       MYSQL_IMAGE: ${{ matrix.image }}
       DB_MEMORY: ${{ matrix.memory }}
@@ -447,13 +453,13 @@ jobs:
             "$layout" artisan server:bootstrap --force > parity-evidence/published-bootstrap.txt
           # Compiling the library tests with two jobs peaks near 4.2 GB; a 4 GB limit OOM-killed rustc (exit 101).
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --cpus=2 --memory=6g --memory-swap=6g \
-            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
+            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 -e DW_PARITY_PART \
             -e DW_TEST_MYSQL_URL=mysql://root:parity-disposable-password@parity-mysql:3306/php_ref \
             -e DW_EXECUTION_MYSQL_URL=mysql://root:parity-disposable-password@parity-mysql:3306/php_ref \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
             -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
             mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 -c \
-            'cargo test --locked --offline --lib runtime::mysql:: -- --ignored --skip runtime::mysql::tests::bootstrap_child --nocapture --test-threads=2 > /evidence/mysql-tests.txt && cargo test --locked --offline --test execution -- --nocapture --test-threads=2 > /evidence/mysql-execution-tests.txt && cargo build --locked --offline'
+            'if [ "$DW_PARITY_PART" = native-tests ]; then cargo test --locked --offline --lib runtime::mysql:: -- --ignored --skip runtime::mysql::tests::bootstrap_child --nocapture --test-threads=2 > /evidence/mysql-tests.txt && cargo test --locked --offline --test execution -- --nocapture --test-threads=2 > /evidence/mysql-execution-tests.txt; fi && cargo build --locked --offline'
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
@@ -476,6 +482,7 @@ jobs:
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
             "$image" artisan server:bootstrap --force > parity-evidence/published-upgrade-bootstrap.txt
       - name: Compare three runtimes, recover killed native nodes and refuse published PHP takeover
+        if: ${{ matrix.part == 'corpus' }}
         id: prepare_runtime_comparison
         run: |
           set -euo pipefail
@@ -671,16 +678,45 @@ jobs:
           # check has run, so one difference cannot hide the rest.
           test "$native_record_status" -eq 0
           test "$compare_status" -eq 0
+      - name: Start the shared native node the cohorts use
+        id: prepare_cohorts
+        if: ${{ matrix.part == 'cohorts' }}
+        run: |
+          set -euo pipefail
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
+          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
+            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+            install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
+          docker run -d --name "$RESOURCE_SCOPE-native-b" --network "$RESOURCE_SCOPE" --network-alias=parity-native-b \
+            --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
+            -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token -e DW_BIND_ADDRESS=0.0.0.0:8080 \
+            -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
+            -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD/rust-target:/target:ro" --tmpfs /state --entrypoint /target/debug/durable-workflow-server \
+            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+              -fsS http://parity-native-b:8080/api/ready > parity-evidence/cohort-native-readiness.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
       - name: Compare separate configured role-token cohort
+        if: ${{ matrix.part == 'cohorts' }}
         run: bash scripts/conformance/server-parity/role-profile.sh mysql
       - name: Back up, take over and resume a separate published PHP upgrade source
+        if: ${{ matrix.part == 'cohorts' }}
         timeout-minutes: 8
         run: bash scripts/conformance/server-parity/upgrade-source-profile.sh mysql
       - name: Retire upgrade source cohort
-        if: always()
+        if: ${{ always() && matrix.part == 'cohorts' }}
         timeout-minutes: 3
         run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh mysql
       - name: Back up, take over and resume a published PHP 2.9.7 upgrade source
+        if: ${{ matrix.part == 'cohorts' }}
         timeout-minutes: 8
         env:
           DW_PARITY_UPGRADE_LABEL: php297
@@ -688,7 +724,7 @@ jobs:
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:30c34c5f3256a812fbccbe505a068309b58b0c14d01ffff0465d88604cb36d50
         run: bash scripts/conformance/server-parity/upgrade-source-profile.sh mysql
       - name: Retire PHP 2.9.7 upgrade source cohort
-        if: always()
+        if: ${{ always() && matrix.part == 'cohorts' }}
         timeout-minutes: 3
         env:
           DW_PARITY_UPGRADE_LABEL: php297
@@ -696,35 +732,36 @@ jobs:
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:30c34c5f3256a812fbccbe505a068309b58b0c14d01ffff0465d88604cb36d50
         run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh mysql
       - name: Compare corrected markers, ranges, clocks and activity expiry
-        if: ${{ !cancelled() && steps.prepare_runtime_comparison.outcome == 'success' }}
-        # The preceding process-loss case deliberately kills native-a.
+        if: ${{ !cancelled() && matrix.part == 'cohorts' && steps.prepare_cohorts.outcome == 'success' }}
+        # The cohorts' own native node; the corpus part kills its native-a.
         run: bash scripts/conformance/server-parity/corrected-marker-shared-profile.sh mysql http://parity-native-b:8080
       - name: Retire corrected cohort resources
-        if: always()
+        if: ${{ always() && matrix.part == 'cohorts' }}
         run: bash scripts/conformance/server-parity/corrected-marker-cleanup.sh mysql
       - name: Compare installed local external payload consumers
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.part == 'cohorts' }}
         timeout-minutes: 10
         run: bash scripts/conformance/server-parity/external-consumer-profile.sh mysql
       - name: Retire local external consumer resources
-        if: always()
+        if: ${{ always() && matrix.part == 'cohorts' }}
         timeout-minutes: 5
         run: bash scripts/conformance/server-parity/external-consumer-cleanup.sh mysql
       - name: Compare published query deadlines and installed Worker authority
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.part == 'cohorts' }}
         timeout-minutes: 10
         run: bash scripts/conformance/server-parity/query-authority-cohort.sh mysql
       - name: Retire query authority resources
-        if: always()
+        if: ${{ always() && matrix.part == 'cohorts' }}
         timeout-minutes: 5
         run: bash scripts/conformance/server-parity/query-authority-cleanup.sh mysql
       - name: Compare pinned PHP, embedded and native worker-fencing source cohort
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.part == 'cohorts' }}
         run: bash scripts/conformance/server-parity/worker-fencing-profile.sh mysql
       - name: Compare SDK temporary database pressure with declared fault limits
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.part == 'cohorts' }}
         run: bash scripts/conformance/server-parity/worker-fencing-profile.sh mysql pressure
       - name: Verify TLS certificate trust and hostname checks
+        if: ${{ matrix.part == 'native-tests' }}
         run: |
           set -euo pipefail
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
@@ -813,26 +850,32 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: mysql-execution-${{ matrix.label }}
+          name: mysql-execution-${{ matrix.label }}-${{ matrix.part }}
           path: parity-summary
           retention-days: 1
 
   postgres-storage:
     needs: published-sdk-adapters
     runs-on: ubuntu-latest
-    # Corrected marker/range/clock coverage expands the job, and the fixture step
-    # runs every later profile before failing; scenario budgets stay fixed.
-    # MySQL runs take 75 to 85 minutes; PostgreSQL's jobs take about 60.
-    timeout-minutes: 105
+    # Each part takes about 20 to 35 minutes; the fixture step runs every
+    # later profile before failing, and scenario budgets stay fixed.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
+      # Each database runs in three parts on separate runners: the native
+      # database suites and TLS checks, the shared corpus with its profiles and
+      # restart cases, and the separate cohorts. Every part bootstraps the
+      # same database and native build; no part depends on another.
       matrix:
+        label: [existing-php-matrix, postgres-17]
+        part: [native-tests, corpus, cohorts]
         include:
           - label: existing-php-matrix
             image: mirror.gcr.io/library/postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
           - label: postgres-17
             image: mirror.gcr.io/library/postgres@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826
     env:
+      DW_PARITY_PART: ${{ matrix.part }}
       RESOURCE_SCOPE: dw-pg-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.label }}
       POSTGRES_IMAGE: ${{ matrix.image }}
     steps:
@@ -920,13 +963,13 @@ jobs:
             "$layout" artisan server:bootstrap --force > parity-evidence/published-bootstrap.txt
           # Compiling the library tests with two jobs peaks near 4.2 GB; a 4 GB limit OOM-killed rustc (exit 101).
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --cpus=2 --memory=6g --memory-swap=6g \
-            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
+            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 -e DW_PARITY_PART \
             -e DW_TEST_POSTGRES_URL=postgres://parity:parity-disposable-password@parity-pg:5432/php_ref \
             -e DW_EXECUTION_POSTGRES_URL=postgres://parity:parity-disposable-password@parity-pg:5432/php_ref \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
             -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
             mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 -c \
-            'cargo test --locked --offline --lib runtime::postgres::tests::qualification_ -- --ignored --nocapture > /evidence/postgres-tests.txt && cargo test --locked --offline --test execution -- --nocapture > /evidence/postgres-execution-tests.txt && cargo build --locked --offline'
+            'if [ "$DW_PARITY_PART" = native-tests ]; then cargo test --locked --offline --lib runtime::postgres::tests::qualification_ -- --ignored --nocapture > /evidence/postgres-tests.txt && cargo test --locked --offline --test execution -- --nocapture > /evidence/postgres-execution-tests.txt; fi && cargo build --locked --offline'
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
@@ -949,6 +992,7 @@ jobs:
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
             "$image" artisan server:bootstrap --force > parity-evidence/published-upgrade-bootstrap.txt
       - name: Compare three runtimes, recover killed native nodes and refuse published PHP takeover
+        if: ${{ matrix.part == 'corpus' }}
         id: prepare_runtime_comparison
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
@@ -1145,18 +1189,47 @@ jobs:
           # check has run, so one difference cannot hide the rest.
           test "$native_record_status" -eq 0
           test "$compare_status" -eq 0
+      - name: Start the shared native node the cohorts use
+        id: prepare_cohorts
+        if: ${{ matrix.part == 'cohorts' }}
+        run: |
+          set -euo pipefail
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
+          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
+            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+            install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
+          docker run -d --name "$RESOURCE_SCOPE-native-b" --network "$RESOURCE_SCOPE" --network-alias=parity-native-b \
+            --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
+            -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token -e DW_BIND_ADDRESS=0.0.0.0:8080 \
+            -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
+            -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD/rust-target:/target:ro" --tmpfs /state --entrypoint /target/debug/durable-workflow-server \
+            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+              -fsS http://parity-native-b:8080/api/ready > parity-evidence/cohort-native-readiness.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
       - name: Compare separate configured role-token cohort
+        if: ${{ matrix.part == 'cohorts' }}
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: bash scripts/conformance/server-parity/role-profile.sh pgsql
       - name: Back up, take over and resume a separate published PHP upgrade source
+        if: ${{ matrix.part == 'cohorts' }}
         timeout-minutes: 8
         run: bash scripts/conformance/server-parity/upgrade-source-profile.sh pgsql
       - name: Retire upgrade source cohort
-        if: always()
+        if: ${{ always() && matrix.part == 'cohorts' }}
         timeout-minutes: 3
         run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh pgsql
       - name: Back up, take over and resume a published PHP 2.9.7 upgrade source
+        if: ${{ matrix.part == 'cohorts' }}
         timeout-minutes: 8
         env:
           DW_PARITY_UPGRADE_LABEL: php297
@@ -1164,7 +1237,7 @@ jobs:
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:30c34c5f3256a812fbccbe505a068309b58b0c14d01ffff0465d88604cb36d50
         run: bash scripts/conformance/server-parity/upgrade-source-profile.sh pgsql
       - name: Retire PHP 2.9.7 upgrade source cohort
-        if: always()
+        if: ${{ always() && matrix.part == 'cohorts' }}
         timeout-minutes: 3
         env:
           DW_PARITY_UPGRADE_LABEL: php297
@@ -1172,51 +1245,52 @@ jobs:
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:30c34c5f3256a812fbccbe505a068309b58b0c14d01ffff0465d88604cb36d50
         run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh pgsql
       - name: Compare corrected markers, ranges, clocks and activity expiry
-        if: ${{ !cancelled() && steps.prepare_runtime_comparison.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.part == 'cohorts' && steps.prepare_cohorts.outcome == 'success' }}
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
-        # The preceding process-loss case deliberately kills native-a.
+        # The cohorts' own native node; the corpus part kills its native-a.
         run: bash scripts/conformance/server-parity/corrected-marker-shared-profile.sh pgsql http://parity-native-b:8080
       - name: Retire corrected cohort resources
-        if: always()
+        if: ${{ always() && matrix.part == 'cohorts' }}
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: bash scripts/conformance/server-parity/corrected-marker-cleanup.sh pgsql
       - name: Compare installed local external payload consumers
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.part == 'cohorts' }}
         timeout-minutes: 10
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: bash scripts/conformance/server-parity/external-consumer-profile.sh pgsql
       - name: Retire local external consumer resources
-        if: always()
+        if: ${{ always() && matrix.part == 'cohorts' }}
         timeout-minutes: 5
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: bash scripts/conformance/server-parity/external-consumer-cleanup.sh pgsql
       - name: Compare published query deadlines and installed Worker authority
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.part == 'cohorts' }}
         timeout-minutes: 10
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: bash scripts/conformance/server-parity/query-authority-cohort.sh pgsql
       - name: Retire query authority resources
-        if: always()
+        if: ${{ always() && matrix.part == 'cohorts' }}
         timeout-minutes: 5
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: bash scripts/conformance/server-parity/query-authority-cleanup.sh pgsql
       - name: Compare pinned PHP, embedded and native worker-fencing source cohort
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.part == 'cohorts' }}
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: bash scripts/conformance/server-parity/worker-fencing-profile.sh pgsql
       - name: Compare SDK temporary database pressure with declared fault limits
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.part == 'cohorts' }}
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: bash scripts/conformance/server-parity/worker-fencing-profile.sh pgsql pressure
       - name: Verify TLS certificate trust and hostname checks
+        if: ${{ matrix.part == 'native-tests' }}
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: |
@@ -1331,17 +1405,26 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: postgres-storage-${{ matrix.label }}
+          name: postgres-storage-${{ matrix.label }}-${{ matrix.part }}
           path: parity-summary
           retention-days: 1
 
   execution-and-codec:
     needs: published-sdk-adapters
     runs-on: ubuntu-latest
-    # Corrected marker/range/clock coverage expands the job, and the fixture step
-    # runs every later profile before failing; scenario budgets stay fixed.
-    # MySQL runs take 75 to 85 minutes; PostgreSQL's jobs take about 60.
-    timeout-minutes: 105
+    # Each part takes about 20 to 35 minutes; the fixture step runs every
+    # later profile before failing, and scenario budgets stay fixed.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      # Three parts on separate runners: the native suites and codec, the
+      # shared corpus with its profiles and restart cases, and the separate
+      # cohorts. Every part builds the same native server; no part depends on
+      # another.
+      matrix:
+        part: [native-tests, corpus, cohorts]
+    env:
+      DW_PARITY_PART: ${{ matrix.part }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Fetch this run's published SDK adapters
@@ -1385,7 +1468,18 @@ jobs:
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -w /source/rust \
             mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
             cargo fetch --locked
+      - name: Build the native server
+        if: ${{ matrix.part != 'native-tests' }}
+        run: |
+          set -euo pipefail
+          mkdir -p cargo-home rust-target parity-evidence
+          docker run --rm --user="$(id -u):$(id -g)" --cpus=2 --memory=6g --memory-swap=6g \
+            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
+            -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" -w /source/rust \
+            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            cargo build --locked --offline
       - name: Execute official Rust codec and cross-decode with published PHP
+        if: ${{ matrix.part == 'native-tests' }}
         run: |
           set -euo pipefail
           # Failed Rust tests are printed from their evidence files into this step's log.
@@ -1415,6 +1509,7 @@ jobs:
             cargo run --locked --offline --example codec-fixtures -- \
             ../tests/Fixtures/ServerParity/Codec/v1.json /evidence/php-codec.json > parity-evidence/cross-decode.json
       - name: Execute and compare Rust, published PHP and embedded fixtures
+        if: ${{ matrix.part == 'corpus' }}
         id: prepare_runtime_comparison
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
@@ -1610,22 +1705,56 @@ jobs:
           # check has run, so one difference cannot hide the rest.
           test "$native_record_status" -eq 0
           test "$compare_status" -eq 0
+      - name: Start the shared native node the cohorts use
+        id: prepare_cohorts
+        if: ${{ matrix.part == 'cohorts' }}
+        env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: |
+          set -euo pipefail
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
+          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
+            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+            install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
+          mkdir -p parity-state parity-evidence
+          chmod 0777 parity-state parity-evidence
+          docker network create "$RESOURCE_SCOPE"
+          docker run -d --name "$RESOURCE_SCOPE-recovered" --network "$RESOURCE_SCOPE" --network-alias=parity-recovered \
+            --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
+            -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token \
+            -e DB_DATABASE=/state/rust.sqlite -e DW_BIND_ADDRESS=0.0.0.0:8080 \
+            -v "$PWD/rust-target:/target:ro" -v "$PWD/parity-state:/state" \
+            --entrypoint /target/debug/durable-workflow-server \
+            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+              -fsS http://parity-recovered:8080/api/ready > parity-evidence/cohort-native-readiness.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
       - name: Compare separate configured role-token cohort
+        if: ${{ matrix.part == 'cohorts' }}
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/conformance/server-parity/role-profile.sh sqlite
       - name: Back up, take over and resume a separate published PHP upgrade source
+        if: ${{ matrix.part == 'cohorts' }}
         timeout-minutes: 8
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/conformance/server-parity/upgrade-source-profile.sh sqlite
       - name: Retire upgrade source cohort
-        if: always()
+        if: ${{ always() && matrix.part == 'cohorts' }}
         timeout-minutes: 3
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh sqlite
       - name: Back up, take over and resume a published PHP 2.9.7 upgrade source
+        if: ${{ matrix.part == 'cohorts' }}
         timeout-minutes: 8
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
@@ -1634,7 +1763,7 @@ jobs:
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:30c34c5f3256a812fbccbe505a068309b58b0c14d01ffff0465d88604cb36d50
         run: bash scripts/conformance/server-parity/upgrade-source-profile.sh sqlite
       - name: Retire PHP 2.9.7 upgrade source cohort
-        if: always()
+        if: ${{ always() && matrix.part == 'cohorts' }}
         timeout-minutes: 3
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
@@ -1643,46 +1772,46 @@ jobs:
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:30c34c5f3256a812fbccbe505a068309b58b0c14d01ffff0465d88604cb36d50
         run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh sqlite
       - name: Compare corrected markers, ranges, clocks and activity expiry
-        if: ${{ !cancelled() && steps.prepare_runtime_comparison.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.part == 'cohorts' && steps.prepare_cohorts.outcome == 'success' }}
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/conformance/server-parity/corrected-marker-shared-profile.sh sqlite http://parity-recovered:8080
       - name: Retire corrected cohort resources
-        if: always()
+        if: ${{ always() && matrix.part == 'cohorts' }}
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/conformance/server-parity/corrected-marker-cleanup.sh sqlite
       - name: Compare installed local external payload consumers
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.part == 'cohorts' }}
         timeout-minutes: 10
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/conformance/server-parity/external-consumer-profile.sh sqlite
       - name: Retire local external consumer resources
-        if: always()
+        if: ${{ always() && matrix.part == 'cohorts' }}
         timeout-minutes: 5
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/conformance/server-parity/external-consumer-cleanup.sh sqlite
       - name: Compare published query deadlines and installed Worker authority
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.part == 'cohorts' }}
         timeout-minutes: 10
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/conformance/server-parity/query-authority-cohort.sh sqlite
       - name: Retire query authority resources
-        if: always()
+        if: ${{ always() && matrix.part == 'cohorts' }}
         timeout-minutes: 5
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/conformance/server-parity/query-authority-cleanup.sh sqlite
       - name: Compare pinned PHP, embedded and native worker-fencing source cohort
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.part == 'cohorts' }}
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/conformance/server-parity/worker-fencing-profile.sh sqlite
       - name: Compare SDK temporary database pressure with declared fault limits
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.part == 'cohorts' }}
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/conformance/server-parity/worker-fencing-profile.sh sqlite pressure
@@ -1742,7 +1871,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: shared-server-fixtures
+          name: shared-server-fixtures-${{ matrix.part }}
           path: parity-summary
           retention-days: 1
           if-no-files-found: error
