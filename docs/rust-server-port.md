@@ -14,7 +14,7 @@ qualify a later tree.
 
 ## Current state
 
-Updated October 22, 2026.
+Updated October 23, 2026.
 
 - **Merged since October 20.**
   - **Backup-first takeover** on SQLite, PostgreSQL and MySQL/MariaDB:
@@ -54,45 +54,55 @@ Updated October 22, 2026.
       fingerprints and all-of barriers;
     - cooperative waits, child cancellation and parent-close policies,
       continue-as-new messages, history pages, declared signals and build IDs.
+  - **The reference moved to published Server 2.11.1**
+    ([#679](https://github.com/durable-workflow/server/pull/679)), with
+    activity lease renewal ([#680](https://github.com/durable-workflow/server/pull/680))
+    and the service catalog reads ([#681](https://github.com/durable-workflow/server/pull/681)).
+  - **The October 23 trains.**
+    [#675](https://github.com/durable-workflow/server/pull/675) covered
+    definition routing, worker admission, poll waits and the schedule probe;
+    [#678](https://github.com/durable-workflow/server/pull/678), namespace
+    delete; [#676](https://github.com/durable-workflow/server/pull/676),
+    PHP's health read during its own repair.
+    [#696](https://github.com/durable-workflow/server/pull/696) covered
+    command batches, named-namespace commands, completion checks, external
+    inputs, the operator surface (system metrics, Prometheus, repair and
+    payload cleanup passes), activity leases, deployments, priority and
+    fairness, standalone activities, archive and redrive.
   - **GHSA-6q48-6c7w-9gw2 trust remediation.**
     [#671](https://github.com/durable-workflow/server/pull/671) moves the Rust
     locks to the fixed webpki roots.
     [#672](https://github.com/durable-workflow/server/pull/672) pins the image's
     TLS toolchains and checks every trust store.
 - **Open.**
-  - [#675](https://github.com/durable-workflow/server/pull/675): train of
-    [#667](https://github.com/durable-workflow/server/pull/667) (definition
-    routing), [#669](https://github.com/durable-workflow/server/pull/669) (poll
-    waits), [#670](https://github.com/durable-workflow/server/pull/670) (worker
-    admission) and [#674](https://github.com/durable-workflow/server/pull/674)
-    (schedule fixture probe).
-  - [#676](https://github.com/durable-workflow/server/pull/676): accept
-    published PHP's health read during or after its own task repair.
+  - [#707](https://github.com/durable-workflow/server/pull/707): cluster info
+    payload discovery, takeover storage refusal and the operator dashboard by
+    workflow type.
+  - [#708](https://github.com/durable-workflow/server/pull/708): accept
+    published PHP's operator metrics read across its redispatch steps.
   - [#673](https://github.com/durable-workflow/server/pull/673): pip, Composer
     and Cargo trust in CI and conformance, in Security review.
     [#677](https://github.com/durable-workflow/server/issues/677) owns the
     remaining clients, with an explicit non-completion boundary.
-- **Shared Server fixtures on main.** Embedded passes. Native differs on two
-  fixtures:
-  - **`signals-before-worker`:** native records `SignalRejected` after a
-    terminal event.
-  - **`worker-listing`:** native reports `_worker_protocol_version` in
-    `process_metrics`.
+- **Shared Server fixtures.** Native, embedded and published PHP 2.11.1 are
+  compared on SQLite, MySQL 8.0, MariaDB 10.11 and PostgreSQL 17. The known
+  failures come from timing races inside the published PHP reference, not
+  from native:
+  - `activity-deadline-receipts` (fixed by #696);
+  - `operator-metrics` at `waiting_after_redispatch` (#708).
 
-  In both, native follows published Server 2.10.0 while the fixtures still
-  expect the frozen 2.5.14 reference. Separately, the published PHP reference
-  sometimes differs from itself on `operator-metrics` (postgres-17) because of
-  its own repair window, which #676 handles. Moving the reference needs a
-  recorded contract decision, not an edited expectation.
-- **Parity surface.** Native serves 97 of published PHP's 175 API routes. That
-  count compares `php artisan route:list --path=api` on this tree with the
-  native router. The missing routes are listed below.
+  Each was a recorded contract decision; no expectation was edited to make
+  native pass.
+- **Parity surface.** Native serves 125 of published PHP 2.11.1's 174 API
+  routes. That count compares PHP's `route:list` table
+  (`rust/src/runtime/php-routes.v2.11.1.json`) with the native router. The
+  49 missing routes are listed below, by family.
 - **Next action.**
-  1. Verify the Rust suites on #675 and #676, then merge them.
-  2. Record the reference decision for Server 2.10.0 and re-record the affected
-     fixtures from that published release, so main's Shared Server fixtures run
-     green.
-  3. Port the missing families below.
+  1. Land #707 and #708.
+  2. Port message streams, which all three published SDKs declare from
+     worker protocol 1.15. Native refuses a worker that asks for them,
+     with `message_streams_unavailable`.
+  3. Port the remaining worker protocol families below.
 
   Packaging the native binary into the server image remains an open gate.
 
@@ -601,7 +611,9 @@ October 21, operator metrics and health:
   - PHP's maintenance loop redispatches an overdue ready task, after which
     PHP reports it repaired, not overdue. Native runs no repair loop, so the
     task stays overdue until a worker claims it. The fixture accepts either
-    PHP state.
+    PHP state. Since October 23 it also accepts PHP's reads that straddle
+    the redispatch, provided they never go backwards; see
+    [the redispatch-states checkpoint](rust-server-port-checkpoints/2026-10-23-operator-metrics-redispatch-states.md).
   - The operator dashboards, capacity evidence, and the repair, retention,
     activity-timeout and payload-cleanup pass endpoints remain.
 
