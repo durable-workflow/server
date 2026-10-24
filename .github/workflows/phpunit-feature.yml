@@ -72,6 +72,9 @@ jobs:
       - name: Require safe PHP image build context
         run: node --test tests/Unit/PhpImageContextTest.mjs
 
+      - name: Run the required checks for merge queue groups
+        run: node --test tests/Unit/MergeGroupTriggersTest.mjs
+
       - name: Validate embedded Workflow package authority
         run: php scripts/ci/test-workflow-package-authority.php
 
