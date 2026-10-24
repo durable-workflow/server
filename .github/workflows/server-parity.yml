@@ -114,6 +114,13 @@ on:
       - rust/**
   workflow_dispatch:
 
+# A newer push to the same pull request supersedes the run in progress, so a
+# replaced head does not keep holding the organization's shared runners.
+# Manual dispatches always finish.
+concurrency:
+  group: shared-server-fixtures-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
