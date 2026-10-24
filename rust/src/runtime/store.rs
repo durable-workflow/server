@@ -1162,11 +1162,10 @@ where
         let wait = open.clone().filter(|wait| {
             wait.get("signal_name").is_none() || (wait["signal_name"] == name && wait["signal_wait_id"] == wait_id)
         });
-        if wait.is_none()
-            && !Self::declared_signals(tx, run_id)
-                .await?
-                .is_some_and(|names| names.contains(&name))
-        {
+        let declared = Self::declared_signals(tx, run_id)
+            .await?
+            .is_some_and(|names| names.contains(&name));
+        if wait.is_none() && !declared {
             let reason = if open.is_some() { "signal_wait_mismatch" } else { "signal_wait_not_open" };
             return Err(refuse(StatusCode::CONFLICT, reason));
         }
@@ -1194,8 +1193,13 @@ where
             .bind(&command_id)
             .execute(&mut **tx)
             .await?;
+        // PHP's `applySignal` takes a sequence only from the signal's own
+        // wait, so a declared signal applied under a condition wait keeps no
+        // workflow sequence. Only an undeclared signal takes the condition
+        // wait's (`markConditionWaitSignalConsumed`).
+        let record_sequence = if direct || !declared { sequence } else { None };
         Self::query("UPDATE workflow_signal_records SET status='applied',workflow_sequence=$1,applied_at=$2,closed_at=$3 WHERE id=$4")
-            .bind(DB::optional_integer(sequence)).bind(DB::bind_time(applied_at)).bind(DB::bind_time(applied_at)).bind(signal_id).execute(&mut **tx).await?;
+            .bind(DB::optional_integer(record_sequence)).bind(DB::bind_time(applied_at)).bind(DB::bind_time(applied_at)).bind(signal_id).execute(&mut **tx).await?;
         let run = Self::query(
             "SELECT workflow_instance_id,message_cursor_position FROM workflow_runs WHERE id=$1",
         )
