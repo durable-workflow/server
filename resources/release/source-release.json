@@ -4,6 +4,6 @@
     "version": "2.11.3"
   },
   "helm_chart": {
-    "version": "0.3.2"
+    "version": "0.3.3"
   }
 }

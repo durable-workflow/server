@@ -5,7 +5,7 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/UPGRADING.md alongside the chart.
-version: 0.3.2
+version: 0.3.3
 # The immutable Durable Workflow Server identity this chart release packages.
 # The onboarding default in values.yaml and appVersion are generated from the
 # checked-in source release record.
@@ -35,6 +35,8 @@ annotations:
   artifacthub.io/category: integration-delivery
   # Free-form changelog for the current chart release shown by Artifact Hub.
   artifacthub.io/changes: |
+    - kind: fixed
+      description: Include canonical failure storage, retention recovery and rejected-outcome history readers.
     - kind: changed
       description: Package Server 2.11 with capability-gated activity lease maintenance and configurable lease duration.
     - kind: added
