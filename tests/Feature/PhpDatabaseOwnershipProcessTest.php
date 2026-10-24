@@ -138,6 +138,16 @@ final class PhpDatabaseOwnershipProcessTest extends TestCase
         $process = $this->probe('wipe-other');
         self::assertSame(1, $process->getExitCode());
         self::assertStringContainsString('php_database_refused', $process->getErrorOutput());
+        if (posix_geteuid() === 0) {
+            // Reach the schema marker guard with the HTTP identity's normal
+            // access, rather than refusing this root-only fixture directory.
+            $httpUser = posix_getpwnam('www-data');
+            self::assertIsArray($httpUser);
+            self::assertTrue(chown($this->directory, $httpUser['uid']));
+            self::assertTrue(chown($path, $httpUser['uid']));
+            $this->environment['APACHE_RUN_USER'] = 'www-data';
+            $this->environment['APACHE_RUN_GROUP'] = 'www-data';
+        }
         $entrypoint = new Process(['sh', 'docker/entrypoint.sh', 'true'], dirname(__DIR__, 2), $this->environment, timeout: 30);
         $entrypoint->run();
         self::assertSame(1, $entrypoint->getExitCode());
