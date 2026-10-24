@@ -130,6 +130,7 @@ mod terminal_updates;
 mod timer_summary;
 mod transaction;
 mod update_summary;
+mod update_validation;
 mod updates;
 pub mod upgrade;
 mod visibility;
