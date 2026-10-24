@@ -1510,11 +1510,11 @@ where
                 Ok(None)
             };
             let claimed = match claimed {
+                // A fenced poll records stale_worker_registration like any
+                // other no-task answer: a live lease a duplicate committed
+                // under the same request ID replays instead.
                 Err(error) if super::worker_poll_fence::is_stale_claim(&error) => {
-                    if let Some(request) = &poll_request {
-                        self.remember_empty_workflow_poll(request, super::worker_poll_fence::STALE).await?;
-                    }
-                    return Ok(super::worker_poll_fence::stale_answer());
+                    return self.no_task_answer(&body, poll_request.as_ref(), super::worker_poll_fence::STALE, encoding).await;
                 }
                 other => other?,
             };

@@ -997,8 +997,10 @@ where
             };
             match probed {
                 Some(Probe::Stale) => {
-                    if let Some(request) = &request {
-                        self.remember_empty_workflow_poll(request, super::worker_poll_fence::STALE).await?;
+                    if let Some(request) = &request
+                        && let Some(lease) = self.remember_empty_workflow_poll(request, &worker_id, &task_queue, super::worker_poll_fence::STALE).await?
+                    {
+                        return Self::replayed(lease, encoding);
                     }
                     return Ok(Leased::Workflow(super::worker_poll_fence::stale_answer()));
                 }
