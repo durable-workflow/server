@@ -13,6 +13,17 @@ final class WorkerSessionRegistry
 {
     private const DEFAULT_LEASE_SECONDS = 120;
 
+    /**
+     * Portable maxima, the same in native (Server #740). A heartbeat renews
+     * the lease, so a longer lease only delays holder-loss detection; thirty
+     * days of TTL keeps ttl_expires_at representable in a MySQL TIMESTAMP.
+     */
+    public const MAX_LEASE_SECONDS = 86400;
+
+    public const MAX_TTL_SECONDS = 2592000;
+
+    public const MAX_CONCURRENT_ACTIVITIES = 1000;
+
     private const DEFAULT_TTL_SECONDS = 1800;
 
     private const DEFAULT_MAX_CONCURRENT_ACTIVITIES = 1;
@@ -63,9 +74,11 @@ final class WorkerSessionRegistry
         string $namespace,
         WorkerRegistration $worker,
         array $options,
+        ?string $registrationToken = null,
     ): array {
-        return DB::transaction(function () use ($namespace, $worker, $options): array {
-            return $this->acquireLocked($namespace, $worker, $options, null);
+        return DB::transaction(function () use ($namespace, $worker, $options, $registrationToken): array {
+            return $this->staleRegistration($namespace, $worker->worker_id, $registrationToken)
+                ?? $this->acquireLocked($namespace, $worker, $options, null);
         });
     }
 
@@ -87,9 +100,18 @@ final class WorkerSessionRegistry
     /**
      * @return array<string, mixed>
      */
-    public function heartbeat(string $namespace, string $workerId, string $sessionId, ?int $leaseSeconds = null): array
-    {
-        return DB::transaction(function () use ($namespace, $workerId, $sessionId, $leaseSeconds): array {
+    public function heartbeat(
+        string $namespace,
+        string $workerId,
+        string $sessionId,
+        ?int $leaseSeconds = null,
+        ?string $registrationToken = null,
+    ): array {
+        return DB::transaction(function () use ($namespace, $workerId, $sessionId, $leaseSeconds, $registrationToken): array {
+            if ($stale = $this->staleRegistration($namespace, $workerId, $registrationToken)) {
+                return $stale;
+            }
+
             /** @var WorkerSessionLease|null $session */
             $session = WorkerSessionLease::query()
                 ->where('namespace', $namespace)
@@ -176,9 +198,13 @@ final class WorkerSessionRegistry
     /**
      * @return array<string, mixed>
      */
-    public function close(string $namespace, string $workerId, string $sessionId): array
+    public function close(string $namespace, string $workerId, string $sessionId, ?string $registrationToken = null): array
     {
-        return DB::transaction(function () use ($namespace, $workerId, $sessionId): array {
+        return DB::transaction(function () use ($namespace, $workerId, $sessionId, $registrationToken): array {
+            if ($stale = $this->staleRegistration($namespace, $workerId, $registrationToken)) {
+                return $stale;
+            }
+
             /** @var WorkerSessionLease|null $session */
             $session = WorkerSessionLease::query()
                 ->where('namespace', $namespace)
@@ -374,6 +400,7 @@ final class WorkerSessionRegistry
                 'requirements' => $options['requirements'],
                 'status' => WorkerSessionLease::STATUS_ACTIVE,
                 'lease_owner' => $worker->worker_id,
+                'lease_owner_incarnation' => $this->incarnation($worker),
                 'lease_expires_at' => $now->copy()->addSeconds($options['lease_seconds']),
                 'ttl_expires_at' => $now->copy()->addSeconds($options['ttl_seconds']),
                 'lease_seconds' => $options['lease_seconds'],
@@ -404,7 +431,7 @@ final class WorkerSessionRegistry
                 }
             }
 
-            $session = $this->renewHeldSession($session, $options, $worker->worker_id);
+            $session = $this->renewHeldSession($session, $options, $worker);
 
             return $this->success($session, 'reused', $activityTaskId);
         }
@@ -441,7 +468,7 @@ final class WorkerSessionRegistry
             return $limit;
         }
 
-        $session = $this->renewHeldSession($session, $options, $worker->worker_id);
+        $session = $this->renewHeldSession($session, $options, $worker);
 
         return $this->success($session, 'reacquired', $activityTaskId);
     }
@@ -452,11 +479,12 @@ final class WorkerSessionRegistry
     private function renewHeldSession(
         WorkerSessionLease $session,
         array $options,
-        string $workerId,
+        WorkerRegistration $worker,
     ): WorkerSessionLease {
         $now = now();
+        $workerId = $worker->worker_id;
 
-        $session->forceFill(array_filter([
+        $session->forceFill([...array_filter([
             'connection' => $options['connection'],
             'queue' => $options['queue'],
             'requirements' => $options['requirements'],
@@ -471,7 +499,10 @@ final class WorkerSessionRegistry
             'create_if_missing' => $options['create_if_missing'],
             'allow_reacquire_after_failure' => $options['allow_reacquire_after_failure'],
             'last_heartbeat_at' => $now,
-        ], static fn (mixed $value): bool => $value !== null))->save();
+        ], static fn (mixed $value): bool => $value !== null),
+            // Set even when null: the holder is now this registration.
+            'lease_owner_incarnation' => $this->incarnation($worker),
+        ])->save();
 
         return $session;
     }
@@ -506,10 +537,11 @@ final class WorkerSessionRegistry
             return $session;
         }
 
-        if ($session->lease_owner !== null && $this->workerIsStale($session->namespace, $session->lease_owner)) {
+        $holderLoss = $session->lease_owner === null ? null : $this->holderLoss($session);
+        if ($holderLoss !== null) {
             $session->forceFill([
                 'status' => WorkerSessionLease::STATUS_ORPHANED,
-                'failure_reason' => 'worker_heartbeat_stale',
+                'failure_reason' => $holderLoss,
             ])->save();
         }
 
@@ -686,6 +718,64 @@ final class WorkerSessionRegistry
         }
 
         return (int) $query->count();
+    }
+
+    /**
+     * Why the holder no longer holds an active session: its registration is
+     * gone or silent, or the worker ID re-registered since it acquired the
+     * session. A replacement process must reacquire and rebuild its
+     * process-local state, so it never inherits the session as reused.
+     */
+    private function holderLoss(WorkerSessionLease $session): ?string
+    {
+        if ($this->workerIsStale($session->namespace, (string) $session->lease_owner)) {
+            return 'worker_heartbeat_stale';
+        }
+
+        $worker = WorkerRegistration::query()
+            ->where('namespace', $session->namespace)
+            ->where('worker_id', $session->lease_owner)
+            ->first();
+
+        return $worker instanceof WorkerRegistration && $this->incarnation($worker) === $session->lease_owner_incarnation
+            ? null : 'worker_registration_replaced';
+    }
+
+    /**
+     * The digest a session keeps of its holder's registration, as the
+     * cooperative claim does, so the deregistration credential itself is
+     * never stored on the session.
+     */
+    private function incarnation(WorkerRegistration $worker): ?string
+    {
+        return is_string($worker->registration_token) ? hash('sha256', $worker->registration_token) : null;
+    }
+
+    /**
+     * A registration token the request sends must be the worker's current
+     * one. Without it, a stale process and its same-ID replacement are
+     * indistinguishable once the replacement has reacquired.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function staleRegistration(string $namespace, string $workerId, ?string $registrationToken): ?array
+    {
+        if ($registrationToken === null) {
+            return null;
+        }
+
+        $current = WorkerRegistration::query()
+            ->where('namespace', $namespace)
+            ->where('worker_id', $workerId)
+            ->value('registration_token');
+
+        return is_string($current) && hash_equals($current, $registrationToken)
+            ? null
+            : $this->failure(
+                'stale_worker_registration',
+                'The registration token is not the worker\'s current registration. Register again and reacquire the session.',
+                409,
+            );
     }
 
     private function workerIsStale(string $namespace, string $workerId): bool

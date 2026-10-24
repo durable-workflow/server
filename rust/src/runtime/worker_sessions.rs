@@ -15,8 +15,17 @@ use super::{Result, RuntimeError, store::now};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value, json};
+use std::collections::HashSet;
+use std::hash::Hash;
 
 const DEFAULT_LEASE_SECONDS: i64 = 120;
+/// Portable session maxima, the same in PHP and native (Server #740). A lease
+/// is renewed by heartbeats, so a longer one only delays holder-loss
+/// detection. Thirty days of TTL keeps `ttl_expires_at` representable in a
+/// MySQL `TIMESTAMP` for years, and every value fits PostgreSQL's `integer`.
+pub(super) const MAX_LEASE_SECONDS: i64 = 86_400;
+pub(super) const MAX_TTL_SECONDS: i64 = 2_592_000;
+pub(super) const MAX_CONCURRENT_ACTIVITIES: i64 = 1_000;
 const DEFAULT_TTL_SECONDS: i64 = 1800;
 const DEFAULT_MAX_CONCURRENT_ACTIVITIES: i64 = 1;
 const MINIMUM_PROTOCOL: (u64, u64) = (1, 8);
@@ -26,10 +35,24 @@ const SESSIONS_TO_REFRESH: &str = "SELECT session_id FROM workflow_worker_sessio
 const SESSIONS_LISTED: &str = "SELECT id,session_id,connection,queue,requirements,status,lease_owner,lease_expires_at,ttl_expires_at,closed_at,failure_reason,lease_seconds,ttl_seconds,max_concurrent_activities,CASE WHEN create_if_missing THEN 1 ELSE 0 END AS create_if_missing_flag,CASE WHEN allow_reacquire_after_failure THEN 1 ELSE 0 END AS allow_reacquire_flag,last_heartbeat_at,created_at,updated_at FROM workflow_worker_sessions WHERE namespace=$1 ORDER BY updated_at DESC,session_id ASC";
 const HELD_SESSIONS: &str = "SELECT COUNT(*) FROM workflow_worker_sessions WHERE namespace=$1 AND lease_owner=$2 AND status='active' AND (lease_expires_at IS NULL OR lease_expires_at>$3) AND session_id<>$4";
 const HOLDER: &str = "SELECT task_queue,status,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2";
+/// The worker's current registration token, as the poll fence reads it.
+const CURRENT_TOKEN: &str = "SELECT token FROM dw_worker_registration_incarnations WHERE namespace=$1 AND worker_id=$2 AND status='active' ORDER BY created_at DESC LIMIT 1";
+/// The registration incarnation that acquired or last renewed a session.
+const SESSION_HOLDER: &str = "SELECT incarnation FROM dw_worker_session_holders WHERE namespace=$1 AND session_id=$2";
 
 /// A session time: PHP keeps whole seconds.
 fn second(at: DateTime<Utc>) -> DateTime<Utc> {
     DateTime::from_timestamp(at.timestamp(), 0).expect("whole-second timestamp")
+}
+
+/// `at` plus a session's seconds. Validation bounds request values, so this
+/// fails only for a stored value no current server accepts; that answers an
+/// error instead of panicking inside a durable transition.
+fn after(at: DateTime<Utc>, seconds: i64) -> Result<DateTime<Utc>> {
+    chrono::Duration::try_seconds(seconds)
+        .and_then(|span| at.checked_add_signed(span))
+        .ok_or_else(|| RuntimeError::Protocol { status: StatusCode::UNPROCESSABLE_ENTITY,
+            response: json!({"error":"Worker session duration is out of range.","reason":"invalid_worker_session"}) })
 }
 
 fn wire(at: Option<DateTime<Utc>>) -> Value {
@@ -99,15 +122,16 @@ fn validate(body: &Value, create: bool) -> Result<Value> {
             ("requirements", &[Nullable, Array][..]),
         ]);
     }
-    rules.push(("lease_seconds", &[Nullable, Integer, Min(1)]));
+    rules.push(("lease_seconds", &[Nullable, Integer, Min(1), Max(MAX_LEASE_SECONDS)]));
     if create {
         rules.extend([
-            ("ttl_seconds", &[Nullable, Integer, Min(1)][..]),
-            ("max_concurrent_activities", &[Nullable, Integer, Min(1)][..]),
+            ("ttl_seconds", &[Nullable, Integer, Min(1), Max(MAX_TTL_SECONDS)][..]),
+            ("max_concurrent_activities", &[Nullable, Integer, Min(1), Max(MAX_CONCURRENT_ACTIVITIES)][..]),
             ("create_if_missing", &[Nullable, Boolean][..]),
             ("allow_reacquire_after_failure", &[Nullable, Boolean][..]),
         ]);
     }
+    rules.push(("registration_token", REGISTRATION_TOKEN_RULES));
     let mut errors = rule_errors(&body, &rules, |_, _| None);
     // `requirements.*`: each a string of at most 255 characters, reported
     // after `requirements` itself.
@@ -164,8 +188,50 @@ fn bool_value(value: &Value, default: bool) -> bool {
     }
 }
 
+/// The token registration returns (`bin2hex(random_bytes(16))`).
+fn registration_token_format(text: &str) -> bool {
+    text.len() == 32 && text.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// An optional `registration_token` on create, heartbeat and close.
+const REGISTRATION_TOKEN_RULES: &[Rule] = &[Rule::Nullable, Rule::String, Rule::Pattern(registration_token_format)];
+
+/// The digest a session keeps of its holder's registration, as PHP keeps
+/// `hash('sha256', token)`, so the deregistration credential itself is never
+/// stored with the session.
+pub(super) fn incarnation_digest(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(token.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Equal tokens, compared without an early exit (`hash_equals`).
+fn same_token(left: &str, right: &str) -> bool {
+    left.len() == right.len() && left.bytes().zip(right.bytes()).fold(0, |differs, (a, b)| differs | (a ^ b)) == 0
+}
+
 fn string_value(value: &Value) -> Option<String> {
     value.as_str().map(str::trim).filter(|text| !text.is_empty()).map(str::to_owned)
+}
+
+/// Each item once, in order of first occurrence (`array_unique`). The seen
+/// index is a hash set, so a request-sized list stays linear even while a
+/// durable transition holds the server-wide lock.
+fn first_occurrences<T: Hash + Eq + Clone>(items: impl IntoIterator<Item = T>) -> Vec<T> {
+    let mut seen = HashSet::new();
+    items.into_iter().filter(|item| seen.insert(item.clone())).collect()
+}
+
+/// The required items missing from `available`, in required order, looked up
+/// in a set built once (`array_flip`), not by scanning `available` per item.
+fn missing_from<'a, T: Hash + Eq>(required: &'a [T], available: &[T]) -> Vec<&'a T> {
+    let available: HashSet<&T> = available.iter().collect();
+    required.iter().filter(|item| !available.contains(item)).collect()
+}
+
+/// A `requirements` list as `normalizeOptions` and the stored snapshot read
+/// it: trimmed, non-empty strings, each once.
+fn requirement_list(value: &Value) -> Vec<String> {
+    first_occurrences(value.as_array().into_iter().flatten().filter_map(string_value))
 }
 
 /// `normalizeOptions`.
@@ -183,14 +249,7 @@ struct Options {
 
 impl Options {
     fn from(body: &Value, fallback_queue: Option<String>) -> Option<Self> {
-        let mut requirements: Vec<String> = Vec::new();
-        for item in body["requirements"].as_array().into_iter().flatten() {
-            if let Some(text) = string_value(item)
-                && !requirements.contains(&text)
-            {
-                requirements.push(text);
-            }
-        }
+        let requirements = requirement_list(&body["requirements"]);
         Some(Self {
             session_id: string_value(&body["session_id"])?,
             connection: string_value(&body["connection"]),
@@ -229,14 +288,7 @@ impl CommandSession {
 
     /// The stored snapshot, from an activity's options.
     pub(super) fn from_snapshot(value: &Value) -> Option<Self> {
-        let mut requirements: Vec<String> = Vec::new();
-        for item in value["requirements"].as_array().into_iter().flatten() {
-            if let Some(text) = string_value(item)
-                && !requirements.contains(&text)
-            {
-                requirements.push(text);
-            }
-        }
+        let requirements = requirement_list(&value["requirements"]);
         Some(Self {
             session_id: string_value(&value["session_id"])?,
             connection: string_value(&value["connection"]),
@@ -271,7 +323,7 @@ impl CommandSession {
     pub(super) fn claimable_by(&self, protocol: &str, worker_queue: &str, activity_queue: &str, capabilities: &[String]) -> bool {
         sessions_gate(protocol).is_ok()
             && self.queue.as_deref().unwrap_or(activity_queue) == worker_queue
-            && self.requirements.iter().all(|requirement| capabilities.contains(requirement))
+            && missing_from(&self.requirements, capabilities).is_empty()
     }
 
     /// The lease an activity heartbeat renews the session by.
@@ -439,7 +491,10 @@ store_methods! {
             .collect();
         let limit = DB::optional_number(&worker, "max_concurrent_worker_sessions")?.unwrap_or(10);
         let mut tx = self.begin().await?;
-        let answer = self.acquire(&mut tx, &worker_id, &task_queue, &capabilities, limit, &options, None).await?;
+        let answer = match self.stale_registration(&mut tx, &worker_id, body["registration_token"].as_str()).await? {
+            Some(stale) => stale,
+            None => self.acquire(&mut tx, &worker_id, &task_queue, &capabilities, limit, &options, None).await?,
+        };
         tx.commit().await?;
         Ok(answer)
     }
@@ -460,7 +515,7 @@ store_methods! {
                 StatusCode::CONFLICT, Map::new()));
         }
         // Requirements are checked before the session is looked up.
-        let missing: Vec<&String> = options.requirements.iter().filter(|requirement| !capabilities.contains(requirement)).collect();
+        let missing = missing_from(&options.requirements, capabilities);
         if !missing.is_empty() {
             return Ok(failure("session_requirements_not_met", "Worker does not advertise every worker-session requirement.",
                 StatusCode::CONFLICT, Map::from_iter([("missing_requirements".to_owned(), json!(missing))])));
@@ -477,12 +532,13 @@ store_methods! {
             Self::query("INSERT INTO workflow_worker_sessions(namespace,session_id,connection,queue,requirements,status,lease_owner,lease_expires_at,ttl_expires_at,lease_seconds,ttl_seconds,max_concurrent_activities,create_if_missing,allow_reacquire_after_failure,last_heartbeat_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,'active',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)")
                 .bind(self.namespace.as_ref()).bind(&options.session_id).bind(options.connection.as_deref()).bind(options.queue.as_deref())
                 .bind(DB::document(&json!(options.requirements))).bind(worker_id)
-                .bind(DB::bind_time(at + chrono::Duration::seconds(options.lease_seconds)))
-                .bind(DB::bind_time(at + chrono::Duration::seconds(options.ttl_seconds)))
+                .bind(DB::bind_time(after(at, options.lease_seconds)?))
+                .bind(DB::bind_time(after(at, options.ttl_seconds)?))
                 .bind(options.lease_seconds).bind(options.ttl_seconds).bind(options.max_concurrent_activities)
                 .bind(DB::optional_flag(Some(options.create_if_missing))).bind(DB::optional_flag(Some(options.allow_reacquire_after_failure)))
                 .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(DB::bind_time(at))
                 .execute(&mut **tx).await?;
+            self.record_holder(tx, &options.session_id, worker_id).await?;
             let created = self.locked_session(tx, &options.session_id).await?.expect("the inserted session");
             return Ok(success("created", self.snapshot(tx, &created).await?, StatusCode::CREATED));
         };
@@ -547,7 +603,7 @@ store_methods! {
         session.requirements.clone_from(&options.requirements);
         session.status = "active".into();
         session.lease_owner = Some(worker_id.to_owned());
-        session.lease_expires_at = Some(at + chrono::Duration::seconds(options.lease_seconds));
+        session.lease_expires_at = Some(after(at, options.lease_seconds)?);
         session.closed_at = None;
         session.failure_reason = None;
         session.lease_seconds = options.lease_seconds;
@@ -556,7 +612,9 @@ store_methods! {
         session.create_if_missing = options.create_if_missing;
         session.allow_reacquire_after_failure = options.allow_reacquire_after_failure;
         session.last_heartbeat_at = Some(at);
-        self.save(tx, session).await
+        self.save(tx, session).await?;
+        // The renewing registration now holds the session.
+        self.record_holder(tx, &session.session_id, worker_id).await
     }
 
     /// `activeActivityCount`: the owner's running, unexpired attempts of
@@ -676,7 +734,7 @@ store_methods! {
                 json!({"admitted":false,"reason":"session_owner_mismatch","error":"Worker session lease is owned by another worker."}))));
         }
         let at = second(now());
-        row.lease_expires_at = Some(at + chrono::Duration::seconds(session.heartbeat_lease().max(1)));
+        row.lease_expires_at = Some(after(at, session.heartbeat_lease().max(1))?);
         row.last_heartbeat_at = Some(at);
         row.failure_reason = None;
         self.save(tx, &row).await?;
@@ -722,6 +780,10 @@ store_methods! {
         let body = validate(&body, false)?;
         let worker_id = body["worker_id"].as_str().unwrap_or_default();
         let mut tx = self.begin().await?;
+        if let Some(stale) = self.stale_registration(&mut tx, worker_id, body["registration_token"].as_str()).await? {
+            tx.commit().await?;
+            return Ok(stale);
+        }
         let Some(mut session) = self.locked_session(&mut tx, session_id).await? else {
             tx.commit().await?;
             return Ok(failure("session_not_found", "Worker session was not found.", StatusCode::NOT_FOUND, Map::new()));
@@ -734,7 +796,7 @@ store_methods! {
         } else {
             let at = second(now());
             let lease = super::laravel_validation::integer(&body["lease_seconds"]).unwrap_or(session.lease_seconds).max(1);
-            session.lease_expires_at = Some(at + chrono::Duration::seconds(lease));
+            session.lease_expires_at = Some(after(at, lease)?);
             session.last_heartbeat_at = Some(at);
             session.failure_reason = None;
             self.save(&mut tx, &session).await?;
@@ -750,6 +812,10 @@ store_methods! {
         let body = validate(&body, false)?;
         let worker_id = body["worker_id"].as_str().unwrap_or_default();
         let mut tx = self.begin().await?;
+        if let Some(stale) = self.stale_registration(&mut tx, worker_id, body["registration_token"].as_str()).await? {
+            tx.commit().await?;
+            return Ok(stale);
+        }
         let Some(mut session) = self.locked_session(&mut tx, session_id).await? else {
             tx.commit().await?;
             return Ok(failure("session_not_found", "Worker session was not found.", StatusCode::NOT_FOUND, Map::new()));
@@ -836,10 +902,8 @@ store_methods! {
             None
         } else if session.lease_expires_at.is_some_and(|lease| lease <= at) {
             Some(("expired", "lease_expired"))
-        } else if self.holder_stale(tx, session.lease_owner.as_deref()).await? {
-            Some(("orphaned", "worker_heartbeat_stale"))
         } else {
-            None
+            self.holder_loss(tx, &session).await?.map(|reason| ("orphaned", reason))
         };
         if let Some((status, reason)) = change {
             session.status = status.into();
@@ -847,6 +911,59 @@ store_methods! {
             self.save(tx, &session).await?;
         }
         Ok(Some(session))
+    }
+
+    /// Why an active session's holder no longer holds it: its registration
+    /// is gone or silent, or the worker ID registered again since it acquired
+    /// or renewed the session. A replacement process must reacquire it and
+    /// rebuild its process-local state, so it never inherits it as reused.
+    async fn holder_loss(&self, tx: &mut Transaction<'_, DB>, session: &Session) -> Result<Option<&'static str>> {
+        if self.holder_stale(tx, session.lease_owner.as_deref()).await? {
+            return Ok(Some("worker_heartbeat_stale"));
+        }
+        let current = self.current_incarnation(tx, session.lease_owner.as_deref().unwrap_or_default()).await?;
+        let holder = Self::query(SESSION_HOLDER).bind(self.namespace.as_ref()).bind(&session.session_id)
+            .fetch_optional(&mut **tx).await?
+            .map(|row| DB::string(&row, "incarnation"))
+            .transpose()?;
+        Ok((current != holder).then_some("worker_registration_replaced"))
+    }
+
+    async fn current_token(&self, tx: &mut Transaction<'_, DB>, worker_id: &str) -> Result<Option<String>> {
+        Self::query(CURRENT_TOKEN).bind(self.namespace.as_ref()).bind(worker_id).fetch_optional(&mut **tx).await?
+            .map(|row| DB::string(&row, "token"))
+            .transpose()
+    }
+
+    async fn current_incarnation(&self, tx: &mut Transaction<'_, DB>, worker_id: &str) -> Result<Option<String>> {
+        Ok(self.current_token(tx, worker_id).await?.as_deref().map(incarnation_digest))
+    }
+
+    /// Records the worker's current registration as the session's holder. A
+    /// registration without a token, such as one kept from a PHP takeover,
+    /// records none.
+    async fn record_holder(&self, tx: &mut Transaction<'_, DB>, session_id: &str, worker_id: &str) -> Result<()> {
+        Self::query("DELETE FROM dw_worker_session_holders WHERE namespace=$1 AND session_id=$2")
+            .bind(self.namespace.as_ref()).bind(session_id).execute(&mut **tx).await?;
+        if let Some(incarnation) = self.current_incarnation(tx, worker_id).await? {
+            Self::query("INSERT INTO dw_worker_session_holders(namespace,session_id,incarnation,updated_at) VALUES ($1,$2,$3,$4)")
+                .bind(self.namespace.as_ref()).bind(session_id).bind(incarnation).bind(DB::bind_time(now()))
+                .execute(&mut **tx).await?;
+        }
+        Ok(())
+    }
+
+    /// A registration token the request sent must be the worker's current
+    /// one. Without it, a stale process and its same-ID replacement are
+    /// indistinguishable once the replacement has reacquired.
+    async fn stale_registration(&self, tx: &mut Transaction<'_, DB>, worker_id: &str, token: Option<&str>) -> Result<Option<Answer>> {
+        let Some(token) = token else {
+            return Ok(None);
+        };
+        let current = self.current_token(tx, worker_id).await?;
+        Ok((!current.is_some_and(|current| same_token(&current, token))).then(|| failure("stale_worker_registration",
+            "The registration token is not the worker's current registration. Register again and reacquire the session.",
+            StatusCode::CONFLICT, Map::new())))
     }
 
     /// `holderIsStale`: no registration, no heartbeat, or a heartbeat older
@@ -953,5 +1070,69 @@ mod tests {
         let options = Options::from(&json!({"session_id":"s","requirements":["gpu",null,"gpu","tpu"]}), Some("q".into())).unwrap();
         assert_eq!(options.requirements, ["gpu", "tpu"]);
         assert_eq!((options.queue.as_deref(), options.lease_seconds, options.ttl_seconds), (Some("q"), 120, 1800));
+    }
+
+    /// A string whose equality checks are counted, so the tests below fail
+    /// on a quadratic scan rather than on a timing threshold.
+    #[derive(Clone, Hash)]
+    struct Counted(String);
+
+    thread_local! {
+        static COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    impl Counted {
+        fn eq_count() -> usize {
+            COMPARISONS.with(std::cell::Cell::get)
+        }
+    }
+
+    impl PartialEq for Counted {
+        fn eq(&self, other: &Self) -> bool {
+            COMPARISONS.with(|count| count.set(count.get() + 1));
+            self.0 == other.0
+        }
+    }
+
+    impl Eq for Counted {}
+
+    /// Distinct near-limit strings with a shared 248-character prefix, as a
+    /// 2 MiB request can carry about 8,000 of them.
+    fn near_limit(count: usize) -> Vec<Counted> {
+        let prefix = "r".repeat(248);
+        (0..count).map(|index| Counted(format!("{prefix}{index:07}"))).collect()
+    }
+
+    #[test]
+    fn requirement_lists_stay_linear_at_the_request_limit() {
+        let distinct = near_limit(8_000);
+        let mut doubled = distinct.clone();
+        doubled.extend(distinct.iter().rev().cloned());
+        let before = Counted::eq_count();
+        let unique = first_occurrences(doubled);
+        assert_eq!(unique.len(), 8_000);
+        assert!(unique.iter().zip(&distinct).all(|(left, right)| left.0 == right.0), "first occurrence order");
+        let missing = missing_from(&unique, &distinct);
+        assert!(missing.is_empty());
+        let mut partial = distinct.clone();
+        partial.truncate(4_000);
+        assert_eq!(missing_from(&unique, &partial).len(), 4_000);
+        // A Vec scan would compare about n^2/2 = 32 million times.
+        assert!(Counted::eq_count() - before < 64_000, "{} comparisons", Counted::eq_count() - before);
+    }
+
+    #[test]
+    fn near_limit_requirements_normalize_in_order() {
+        let items: Vec<Value> = near_limit(8_000).into_iter().map(|item| json!(item.0)).collect();
+        let mut body = json!({"session_id":"s"});
+        body["requirements"] = Value::Array(items.iter().chain(items.iter()).cloned().collect());
+        let options = Options::from(&body, None).unwrap();
+        assert_eq!(options.requirements.len(), 8_000);
+        assert_eq!(options.requirements.first().map(String::as_str), items[0].as_str());
+        let stored = CommandSession::from_snapshot(&json!({"session_id":"s","requirements":body["requirements"]})).unwrap();
+        assert_eq!(stored.requirements, options.requirements);
+        let capabilities = options.requirements.clone();
+        assert!(stored.claimable_by("1.20", "q", "q", &capabilities));
+        assert!(!stored.claimable_by("1.20", "q", "q", &capabilities[1..]));
     }
 }

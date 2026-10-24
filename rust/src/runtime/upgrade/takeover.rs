@@ -469,6 +469,21 @@ where
             .execute(&mut *tx)
             .await?;
     }
+    // Each active session stays with the registration that holds it now, so a
+    // takeover does not orphan sessions whose workers keep running. A resumed
+    // takeover skips sessions it already seeded.
+    let held = query::<DB>("SELECT s.namespace,s.session_id,i.token FROM workflow_worker_sessions s JOIN dw_worker_registration_incarnations i ON i.namespace=s.namespace AND i.worker_id=s.lease_owner AND i.status='active' WHERE s.status='active' AND NOT EXISTS (SELECT 1 FROM dw_worker_session_holders h WHERE h.namespace=s.namespace AND h.session_id=s.session_id) ORDER BY s.namespace,s.session_id")
+        .fetch_all(&mut *tx)
+        .await?;
+    for row in &held {
+        query::<DB>("INSERT INTO dw_worker_session_holders(namespace,session_id,incarnation,updated_at) VALUES ($1,$2,$3,$4)")
+            .bind(DB::string(row, "namespace")?)
+            .bind(DB::string(row, "session_id")?)
+            .bind(super::super::worker_sessions::incarnation_digest(&DB::string(row, "token")?))
+            .bind(DB::bind_time(now))
+            .execute(&mut *tx)
+            .await?;
+    }
     Ok((copied, missing.len()))
 }
 

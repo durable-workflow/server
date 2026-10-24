@@ -165,3 +165,158 @@ async fn session_bound_activities_are_admitted_held_limited_and_renewed() {
     completion["result"] = envelope(Payload::Null);
     assert_eq!(request(&app, "POST", &format!("{path}/complete"), completion).await.0, StatusCode::OK);
 }
+
+// Session numbers have portable maxima, the same in PHP (Server #740). One
+// above a maximum, and i64::MAX, are refused with 422 before any arithmetic
+// or write, on the create and heartbeat routes and in a schedule_activity
+// command; the maxima themselves are accepted.
+#[tokio::test]
+async fn session_numbers_are_bounded_on_every_path() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    worker(&app, "bounded", json!(["gpu"]), None).await;
+    let maxima = [("lease_seconds", 86_400_i64), ("ttl_seconds", 2_592_000), ("max_concurrent_activities", 1_000)];
+    let message = |field: &str, maximum: i64| json!(format!("The {} field must not be greater than {maximum}.", field.replace('_', " ")));
+    for (field, maximum) in maxima {
+        for value in [maximum + 1, i64::MAX] {
+            let mut body = json!({"worker_id":"bounded","session_id":format!("too-large-{field}")});
+            body[field] = json!(value);
+            let (status, refused) = create(&app, body).await;
+            assert_eq!((status, refused["errors"][field][0].clone()), (StatusCode::UNPROCESSABLE_ENTITY, message(field, maximum)), "{refused}");
+        }
+    }
+    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_worker_sessions").await, 0, "refused creates record nothing");
+
+    let mut at_maxima = json!({"worker_id":"bounded","session_id":"at-maxima"});
+    for (field, maximum) in maxima {
+        at_maxima[field] = json!(maximum);
+    }
+    let (status, created) = create(&app, at_maxima).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!((created["session"]["lease_seconds"].clone(), created["session"]["ttl_seconds"].clone(),
+        created["session"]["max_concurrent_activities"].clone()), (json!(86_400), json!(2_592_000), json!(1_000)), "{created}");
+    let lease = || async {
+        request(&app, "GET", "/api/worker-sessions/at-maxima", Value::Null).await.1["session"]["lease_expires_at"].clone()
+    };
+    let before = lease().await;
+    for value in [86_401, i64::MAX] {
+        let (status, refused) = request(&app, "POST", "/api/worker/sessions/at-maxima/heartbeat",
+            json!({"worker_id":"bounded","lease_seconds":value})).await;
+        assert_eq!((status, refused["errors"]["lease_seconds"][0].clone()), (StatusCode::UNPROCESSABLE_ENTITY,
+            message("lease_seconds", 86_400)), "{refused}");
+    }
+    assert_eq!(lease().await, before, "a refused heartbeat renews nothing");
+    let (status, beat) = request(&app, "POST", "/api/worker/sessions/at-maxima/heartbeat",
+        json!({"worker_id":"bounded","lease_seconds":86_400})).await;
+    assert_eq!((status, beat["outcome"].clone()), (StatusCode::OK, json!("heartbeat_recorded")), "{beat}");
+
+    session_worker(&app, "author", json!(["worker_sessions"])).await;
+    start(&app, "bounded-run").await;
+    let task = poll(&app, "author", "workflow").await;
+    for (field, maximum) in maxima {
+        let mut session = json!({"session_id":"command-maxima"});
+        session[field] = json!(i64::MAX);
+        let (status, refused) = finish_task(&app, &task, json!([bound(session)])).await;
+        let key = format!("commands.0.worker_session.{field}");
+        assert_eq!((status, refused["errors"][&key][0].clone()), (StatusCode::UNPROCESSABLE_ENTITY,
+            json!(format!("The {key} field must not be greater than {maximum}."))), "{refused}");
+    }
+    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM activity_executions").await, 0, "refused commands schedule nothing");
+}
+
+async fn register_holder(app: &Router, worker: &str, queue: &str) -> String {
+    let manifest = json!({"local_activities":{"supported":false,"minimum_protocol_version":"1.18"},
+        "sticky_execution":{"supported":false,"minimum_protocol_version":"1.18"},
+        "worker_sessions":{"supported":true,"minimum_protocol_version":"1.18"}});
+    let (status, answer) = request(app, "POST", "/api/worker/register", json!({"worker_id":worker,"task_queue":queue,"runtime":"php",
+        "supported_workflow_types":["echo"],"supported_activity_types":["act"],"capabilities":["worker_sessions","gpu"],
+        "capability_manifest":manifest})).await;
+    assert_eq!(status, StatusCode::CREATED, "{answer}");
+    answer["registration_token"].as_str().expect("a registration token").to_owned()
+}
+
+// A same-ID re-registration orphans the sessions the previous registration
+// held (Server #740): the replacement reacquires, never reuses, and a request
+// that sends the replaced registration's token is refused without changing
+// anything. A worker heartbeat keeps the registration, so its holder reuses.
+#[tokio::test]
+async fn a_same_id_replacement_reacquires_the_session_and_fences_the_old_process() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let create = |token: Option<&str>| {
+        let mut body = json!({"worker_id":"gpu-worker","session_id":"gpu-state","requirements":["gpu"]});
+        if let Some(token) = token {
+            body["registration_token"] = json!(token);
+        }
+        create(&app, body)
+    };
+    let heartbeat = |token: Option<&str>| {
+        let mut body = json!({"worker_id":"gpu-worker"});
+        if let Some(token) = token {
+            body["registration_token"] = json!(token);
+        }
+        request(&app, "POST", "/api/worker/sessions/gpu-state/heartbeat", body)
+    };
+
+    let first = register_holder(&app, "gpu-worker", "sessions").await;
+    let (status, created) = create(Some(&first)).await;
+    assert_eq!((status, created["outcome"].clone()), (StatusCode::CREATED, json!("created")), "{created}");
+    let (status, beat) = request(&app, "POST", "/api/worker/heartbeat", json!({"worker_id":"gpu-worker"})).await;
+    assert_eq!(status, StatusCode::OK, "{beat}");
+    let (status, reused) = create(None).await;
+    assert_eq!((status, reused["outcome"].clone()), (StatusCode::OK, json!("reused")), "{reused}");
+
+    let second = register_holder(&app, "gpu-worker", "sessions").await;
+    assert_ne!(first, second);
+    let (status, orphaned) = heartbeat(None).await;
+    assert_eq!((status, orphaned["reason"].clone(), orphaned["session"]["status"].clone(), orphaned["session"]["failure_reason"].clone()),
+        (StatusCode::CONFLICT, json!("session_not_active"), json!("orphaned"), json!("worker_registration_replaced")), "{orphaned}");
+    for refused in [heartbeat(Some(&first)).await, create(Some(&first)).await] {
+        assert_eq!((refused.0, refused.1["reason"].clone()), (StatusCode::CONFLICT, json!("stale_worker_registration")), "{}", refused.1);
+    }
+    let (status, reacquired) = create(Some(&second)).await;
+    assert_eq!((status, reacquired["outcome"].clone(), reacquired["session"]["status"].clone()),
+        (StatusCode::OK, json!("reacquired"), json!("active")), "{reacquired}");
+    let (status, stale) = heartbeat(Some(&first)).await;
+    assert_eq!((status, stale["reason"].clone()), (StatusCode::CONFLICT, json!("stale_worker_registration")), "{stale}");
+    for current in [heartbeat(Some(&second)).await, heartbeat(None).await] {
+        assert_eq!((current.0, current.1["outcome"].clone()), (StatusCode::OK, json!("heartbeat_recorded")), "{}", current.1);
+    }
+    let (status, refused) = request(&app, "DELETE", "/api/worker/sessions/gpu-state",
+        json!({"worker_id":"gpu-worker","registration_token":first})).await;
+    assert_eq!((status, refused["reason"].clone()), (StatusCode::CONFLICT, json!("stale_worker_registration")), "{refused}");
+    let (status, invalid) = request(&app, "DELETE", "/api/worker/sessions/gpu-state",
+        json!({"worker_id":"gpu-worker","registration_token":"not-a-token"})).await;
+    assert_eq!((status, invalid["errors"]["registration_token"][0].clone()),
+        (StatusCode::UNPROCESSABLE_ENTITY, json!("The registration token field format is invalid.")), "{invalid}");
+    let (status, closed) = request(&app, "DELETE", "/api/worker/sessions/gpu-state",
+        json!({"worker_id":"gpu-worker","registration_token":second})).await;
+    assert_eq!((status, closed["outcome"].clone()), (StatusCode::OK, json!("closed")), "{closed}");
+}
+
+// A session-bound activity claim by the replacement takes the orphaned
+// session through reacquisition, so the claim names the replacement's
+// registration as the holder.
+#[tokio::test]
+async fn a_same_id_replacement_reacquires_a_session_through_an_activity_claim() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register_holder(&app, "gpu-worker", "test").await;
+    let (status, created) = create(&app, json!({"worker_id":"gpu-worker","session_id":"gpu-claim","requirements":["gpu"]})).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    start(&app, "replacement-run").await;
+    let task = poll(&app, "gpu-worker", "workflow").await;
+    let (status, done) = finish_task(&app, &task, json!([bound(json!({"session_id":"gpu-claim","requirements":["gpu"]}))])).await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+
+    register_holder(&app, "gpu-worker", "test").await;
+    let (status, shown) = request(&app, "GET", "/api/worker-sessions/gpu-claim", Value::Null).await;
+    assert_eq!((status, shown["session"]["status"].clone(), shown["session"]["failure_reason"].clone()),
+        (StatusCode::OK, json!("orphaned"), json!("worker_registration_replaced")), "{shown}");
+    let claimed = poll(&app, "gpu-worker", "activity").await;
+    assert_eq!((claimed["worker_session"]["session_id"].clone(), claimed["worker_session"]["lease_owner"].clone()),
+        (json!("gpu-claim"), json!("gpu-worker")), "{claimed}");
+    let (status, shown) = request(&app, "GET", "/api/worker-sessions/gpu-claim", Value::Null).await;
+    assert_eq!((status, shown["session"]["status"].clone(), shown["session"]["failure_reason"].clone()),
+        (StatusCode::OK, json!("active"), Value::Null), "{shown}");
+}

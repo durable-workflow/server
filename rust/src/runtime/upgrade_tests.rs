@@ -25,12 +25,15 @@ async fn php_layout() -> (tempfile::TempDir, String) {
     sqlx::raw_sql(concat!(
         include_str!("../../migrations/sqlite/0003_full_schema.sql"),
         "\n",
-        include_str!("../../migrations/sqlite/0004_worker_incarnations.sql")
+        include_str!("../../migrations/sqlite/0004_worker_incarnations.sql"),
+        "\n",
+        include_str!("../../migrations/sqlite/0005_worker_session_holders.sql")
     ))
     .execute(&mut connection)
     .await
     .unwrap();
     for table in [
+        "dw_worker_session_holders",
         "dw_worker_registration_incarnations",
         "dw_task_completions",
         "dw_poll_receipts",

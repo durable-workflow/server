@@ -9,6 +9,7 @@ use App\Models\WorkerSessionLease;
 use App\Support\ActivityTaskPollRequestStore;
 use App\Support\ServerPollingCache;
 use App\Support\WorkerProtocol;
+use App\Support\WorkerSessionRegistry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Mockery\MockInterface;
@@ -748,17 +749,21 @@ class WorkerSessionProtocolTest extends TestCase
             ->assertJsonPath('task.worker_session.session_id', 'gpu-heartbeat-renewal')
             ->assertJsonPath('task.worker_session.lease_owner', 'gpu-heartbeat-renewal-worker');
 
-        $this->registerWorkerThroughProtocol(
+        $otherToken = $this->registerWorkerThroughProtocol(
             workerId: 'gpu-heartbeat-renewal-other-worker',
             taskQueue: 'gpu-activities',
             supportedActivityTypes: ['tests.external-greeting-activity'],
             capabilities: ['gpu:nvidia-l4'],
         );
 
+        // Hand the session to the other worker's current registration.
         WorkerSessionLease::query()
             ->where('namespace', 'default')
             ->where('session_id', 'gpu-heartbeat-renewal')
-            ->update(['lease_owner' => 'gpu-heartbeat-renewal-other-worker']);
+            ->update([
+                'lease_owner' => 'gpu-heartbeat-renewal-other-worker',
+                'lease_owner_incarnation' => hash('sha256', (string) $otherToken),
+            ]);
 
         $taskId = (string) $activityPoll->json('task.task_id');
         $attemptId = (string) $activityPoll->json('task.activity_attempt_id');
@@ -1020,6 +1025,187 @@ class WorkerSessionProtocolTest extends TestCase
      * @param  list<string>  $supportedActivityTypes
      * @param  list<string>  $capabilities
      */
+    public function test_session_numbers_have_portable_maxima_on_every_path(): void
+    {
+        Queue::fake();
+        $this->registerWorkerThroughProtocol(
+            workerId: 'bounded-worker',
+            taskQueue: 'gpu-activities',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+            capabilities: ['gpu:nvidia-l4'],
+        );
+        $maxima = [
+            'lease_seconds' => WorkerSessionRegistry::MAX_LEASE_SECONDS,
+            'ttl_seconds' => WorkerSessionRegistry::MAX_TTL_SECONDS,
+            'max_concurrent_activities' => WorkerSessionRegistry::MAX_CONCURRENT_ACTIVITIES,
+        ];
+        $this->assertSame([86400, 2592000, 1000], array_values($maxima));
+
+        foreach ($maxima as $field => $maximum) {
+            foreach ([$maximum + 1, PHP_INT_MAX] as $value) {
+                $this->postJson('/api/worker/sessions', [
+                    'worker_id' => 'bounded-worker', 'session_id' => "too-large-{$field}", $field => $value,
+                ], $this->workerHeaders())
+                    ->assertStatus(422)
+                    ->assertJsonPath("errors.{$field}.0", sprintf(
+                        'The %s field must not be greater than %d.', str_replace('_', ' ', $field), $maximum,
+                    ));
+            }
+        }
+        $this->assertSame(0, WorkerSessionLease::query()->count(), 'refused creates record nothing');
+
+        $this->postJson('/api/worker/sessions', ['worker_id' => 'bounded-worker', 'session_id' => 'at-maxima', ...$maxima],
+            $this->workerHeaders())
+            ->assertCreated()
+            ->assertJsonPath('session.lease_seconds', 86400)
+            ->assertJsonPath('session.ttl_seconds', 2592000)
+            ->assertJsonPath('session.max_concurrent_activities', 1000);
+        $leaseExpiresAt = WorkerSessionLease::query()->where('session_id', 'at-maxima')->value('lease_expires_at');
+
+        foreach ([86401, PHP_INT_MAX] as $value) {
+            $this->postJson('/api/worker/sessions/at-maxima/heartbeat', ['worker_id' => 'bounded-worker', 'lease_seconds' => $value],
+                $this->workerHeaders())
+                ->assertStatus(422)
+                ->assertJsonPath('errors.lease_seconds.0', 'The lease seconds field must not be greater than 86400.');
+        }
+        $this->assertEquals($leaseExpiresAt, WorkerSessionLease::query()->where('session_id', 'at-maxima')->value('lease_expires_at'),
+            'a refused heartbeat renews nothing');
+        $this->postJson('/api/worker/sessions/at-maxima/heartbeat', ['worker_id' => 'bounded-worker', 'lease_seconds' => 86400],
+            $this->workerHeaders())
+            ->assertOk()
+            ->assertJsonPath('outcome', 'heartbeat_recorded');
+
+        $this->configureWorkflowTypes(['tests.external-greeting-workflow' => ExternalGreetingWorkflow::class]);
+        $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-session-maxima', 'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'gpu-activities', 'input' => ['Ada'],
+        ], $this->apiHeaders())->assertCreated();
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', ['worker_id' => 'bounded-worker', 'task_queue' => 'gpu-activities'],
+            $this->workerHeaders());
+        $poll->assertOk();
+        foreach ($maxima as $field => $maximum) {
+            $errors = $this->postJson(sprintf('/api/worker/workflow-tasks/%s/complete', $poll->json('task.task_id')), [
+                'lease_owner' => $poll->json('task.lease_owner'),
+                'workflow_task_attempt' => $poll->json('task.workflow_task_attempt'),
+                'commands' => [[
+                    'type' => 'schedule_activity',
+                    'activity_type' => 'tests.external-greeting-activity',
+                    'arguments' => Serializer::serializeWithCodec((string) config('workflows.serializer'), ['Ada']),
+                    'worker_session' => ['session_id' => 'command-maxima', $field => PHP_INT_MAX],
+                ]],
+            ], $this->workerHeaders())
+                ->assertStatus(422)
+                ->json('errors');
+            $this->assertSame(
+                sprintf('The commands.0.worker_session.%s field must not be greater than %d.', $field, $maximum),
+                $errors["commands.0.worker_session.{$field}"][0] ?? null,
+                json_encode($errors),
+            );
+        }
+        $this->assertSame(0, ActivityExecution::query()->count(), 'refused commands schedule nothing');
+    }
+
+    public function test_a_same_id_replacement_reacquires_the_session_and_fences_the_old_process(): void
+    {
+        $register = fn (): ?string => $this->registerWorkerThroughProtocol(
+            workerId: 'gpu-worker',
+            taskQueue: 'gpu-activities',
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+            capabilities: ['gpu:nvidia-l4'],
+        );
+        $holder = static fn (): ?string => WorkerSessionLease::query()->where('session_id', 'gpu-state')->value('lease_owner_incarnation');
+        $create = fn (?string $token = null) => $this->postJson('/api/worker/sessions', array_filter([
+            'worker_id' => 'gpu-worker', 'session_id' => 'gpu-state', 'requirements' => ['gpu:nvidia-l4'], 'registration_token' => $token,
+        ]), $this->workerHeaders());
+        $heartbeat = fn (?string $token = null) => $this->postJson('/api/worker/sessions/gpu-state/heartbeat',
+            array_filter(['worker_id' => 'gpu-worker', 'registration_token' => $token]), $this->workerHeaders());
+
+        $first = $register();
+        $this->assertIsString($first);
+        $create($first)->assertCreated()->assertJsonPath('outcome', 'created');
+        $this->assertSame(hash('sha256', $first), $holder(), 'the session keeps a digest, never the token');
+
+        // A worker heartbeat keeps the registration, so the holder reuses it.
+        $this->postJson('/api/worker/heartbeat', ['worker_id' => 'gpu-worker'], $this->workerHeaders())->assertOk();
+        $create()->assertOk()->assertJsonPath('outcome', 'reused');
+
+        // A same-ID re-registration rotates the token: the session is orphaned.
+        $second = $register();
+        $this->assertIsString($second);
+        $this->assertNotSame($first, $second);
+        $heartbeat()
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'session_not_active')
+            ->assertJsonPath('session.status', 'orphaned')
+            ->assertJsonPath('session.failure_reason', 'worker_registration_replaced');
+        $heartbeat($first)->assertStatus(409)->assertJsonPath('reason', 'stale_worker_registration');
+        $create($first)->assertStatus(409)->assertJsonPath('reason', 'stale_worker_registration');
+        $this->assertSame(hash('sha256', $first), $holder(), 'a stale token changes nothing');
+
+        // The replacement reacquires, never reuses, and becomes the holder.
+        $create($second)->assertOk()->assertJsonPath('outcome', 'reacquired')->assertJsonPath('session.status', 'active');
+        $this->assertSame(hash('sha256', $second), $holder());
+        $heartbeat($first)->assertStatus(409)->assertJsonPath('reason', 'stale_worker_registration');
+        $heartbeat($second)->assertOk()->assertJsonPath('outcome', 'heartbeat_recorded');
+        $heartbeat()->assertOk()->assertJsonPath('outcome', 'heartbeat_recorded');
+        $this->deleteJson('/api/worker/sessions/gpu-state', ['worker_id' => 'gpu-worker', 'registration_token' => $first],
+            $this->workerHeaders())->assertStatus(409)->assertJsonPath('reason', 'stale_worker_registration');
+        $this->deleteJson('/api/worker/sessions/gpu-state', ['worker_id' => 'gpu-worker', 'registration_token' => $second],
+            $this->workerHeaders())->assertOk()->assertJsonPath('outcome', 'closed');
+    }
+
+    public function test_a_same_id_replacement_reacquires_a_session_through_an_activity_claim(): void
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes(['tests.external-greeting-workflow' => ExternalGreetingWorkflow::class]);
+        $register = fn (): ?string => $this->registerWorkerThroughProtocol(
+            workerId: 'gpu-worker',
+            taskQueue: 'gpu-activities',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+            capabilities: ['gpu:nvidia-l4'],
+        );
+        $first = $register();
+        $this->postJson('/api/worker/sessions', ['worker_id' => 'gpu-worker', 'session_id' => 'gpu-claim', 'requirements' => ['gpu:nvidia-l4']],
+            $this->workerHeaders())->assertCreated();
+        $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-session-replacement', 'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'gpu-activities', 'input' => ['Ada'],
+        ], $this->apiHeaders())->assertCreated();
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', ['worker_id' => 'gpu-worker', 'task_queue' => 'gpu-activities'],
+            $this->workerHeaders());
+        $this->postJson(sprintf('/api/worker/workflow-tasks/%s/complete', $poll->json('task.task_id')), [
+            'lease_owner' => $poll->json('task.lease_owner'),
+            'workflow_task_attempt' => $poll->json('task.workflow_task_attempt'),
+            'commands' => [[
+                'type' => 'schedule_activity',
+                'activity_type' => 'tests.external-greeting-activity',
+                'arguments' => Serializer::serializeWithCodec((string) config('workflows.serializer'), ['Ada']),
+                'worker_session' => ['session_id' => 'gpu-claim', 'requirements' => ['gpu:nvidia-l4']],
+            ]],
+        ], $this->workerHeaders())->assertOk();
+
+        $second = $register();
+        $this->assertNotSame($first, $second);
+        $this->getJson('/api/worker-sessions/gpu-claim', $this->apiHeaders())
+            ->assertOk()
+            ->assertJsonPath('session.status', 'orphaned')
+            ->assertJsonPath('session.failure_reason', 'worker_registration_replaced');
+        $this->postJson('/api/worker/activity-tasks/poll', ['worker_id' => 'gpu-worker', 'task_queue' => 'gpu-activities'],
+            $this->workerHeaders())
+            ->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.worker_session.session_id', 'gpu-claim')
+            ->assertJsonPath('task.worker_session.lease_owner', 'gpu-worker');
+        $this->assertSame(hash('sha256', (string) $second),
+            WorkerSessionLease::query()->where('session_id', 'gpu-claim')->value('lease_owner_incarnation'));
+        // Published PHP keeps the old failure reason on a reacquired session
+        // (Server #737), so only the status is asserted here.
+        $this->getJson('/api/worker-sessions/gpu-claim', $this->apiHeaders())
+            ->assertOk()
+            ->assertJsonPath('session.status', 'active');
+    }
+
     private function registerWorkerThroughProtocol(
         string $workerId,
         string $taskQueue,
@@ -1028,7 +1214,7 @@ class WorkerSessionProtocolTest extends TestCase
         array $capabilities = [],
         int $maxConcurrentWorkerSessions = 10,
         ?string $protocolVersion = null,
-    ): void {
+    ): ?string {
         $requestedProtocol = $protocolVersion ?? WorkerProtocol::VERSION;
         $workerSupportsSessions = version_compare(
             $requestedProtocol,
@@ -1061,10 +1247,11 @@ class WorkerSessionProtocolTest extends TestCase
             );
         }
 
-        $this->postJson('/api/worker/register', $registration, $protocolVersion === null
+        return $this->postJson('/api/worker/register', $registration, $protocolVersion === null
             ? $this->workerHeaders()
             : $this->workerProtocolHeaders($protocolVersion))
-            ->assertCreated();
+            ->assertCreated()
+            ->json('registration_token');
     }
 
     /**
