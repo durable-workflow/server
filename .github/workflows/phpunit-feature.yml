@@ -112,10 +112,13 @@ jobs:
       - name: Prove corpus policy guards cannot be weakened
         run: python scripts/ci/test-regression-corpus-policy.py
 
+  # !cancelled() still runs these jobs when a needed job failed, so the
+  # required checks report that failure instead of being skipped, and lets a
+  # superseded pull request run be cancelled (always() is never cancelled).
   feature:
     name: PHPUnit feature suite
     needs: action-policy
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -344,7 +347,7 @@ jobs:
   qualification:
     name: Feature source qualification
     needs: [preflight, feature]
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
 
