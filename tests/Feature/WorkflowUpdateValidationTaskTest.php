@@ -55,6 +55,7 @@ class WorkflowUpdateValidationTaskTest extends TestCase
             $first = $this->postJson($path, $acceptance, $headers)->assertOk()
                 ->assertJsonPath('task.update_validation_task_id', $task->id)->assertJsonPath('task.update_validation_attempt', 1);
             $this->travel(3)->seconds();
+            $this->worker($workerId)->forceFill(['last_heartbeat_at' => now()])->save();
             $this->postJson($path, $acceptance, $headers)->assertOk()
                 ->assertJsonPath('task.update_validation_task_id', $first->json('task.update_validation_task_id'))
                 ->assertJsonPath('task.update_validation_attempt', 1);
@@ -123,7 +124,7 @@ class WorkflowUpdateValidationTaskTest extends TestCase
         $offer = $this->postJson($path, $body, $headers)->assertOk();
         $advanced = false;
         DB::listen(function ($query) use (&$advanced): void {
-            if (! $advanced && str_starts_with($query->sql, 'update "workflow_update_validation_tasks"')
+            if (! $advanced && str_starts_with(str_replace(['"', '`'], '', $query->sql), 'update workflow_update_validation_tasks')
                 && in_array('leased', $query->bindings, true)) {
                 $advanced = true;
                 $this->travel(3)->seconds();

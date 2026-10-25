@@ -59,6 +59,8 @@ class WorkerTaskDeliveryTest extends TestCase
         $this->assertSame(1, (int) $task->fresh()->attempt_count);
         $counts = [ActivityAttempt::query()->count(), WorkflowHistoryEvent::query()->count()];
         $this->travel(3)->seconds();
+        WorkerRegistration::query()->where('worker_id', 'offer-worker')->firstOrFail()
+            ->forceFill(['last_heartbeat_at' => now()])->save();
         $replay = $this->withHeaders($this->headers())->postJson($this->path($kind), $body)->assertOk();
         foreach (['task_id', 'lease_owner', 'workflow_task_attempt', 'activity_attempt_id', 'attempt_number'] as $key) {
             $this->assertSame($first->json('task.'.$key), $replay->json('task.'.$key));
@@ -159,7 +161,7 @@ class WorkerTaskDeliveryTest extends TestCase
         $counts = [ActivityAttempt::query()->count(), WorkflowHistoryEvent::query()->count()];
         $advanced = false;
         DB::listen(function ($query) use (&$advanced): void {
-            if (! $advanced && str_starts_with($query->sql, 'update "workflow_tasks"') && in_array('leased', $query->bindings, true)) {
+            if (! $advanced && str_starts_with(str_replace(['"', '`'], '', $query->sql), 'update workflow_tasks') && in_array('leased', $query->bindings, true)) {
                 $advanced = true;
                 $this->travel(3)->seconds();
             }
@@ -208,6 +210,52 @@ class WorkerTaskDeliveryTest extends TestCase
         }
         $this->assertSame(TaskStatus::Ready, $task->fresh()->status);
         $this->assertSame(0, (int) $task->fresh()->attempt_count);
+    }
+
+    #[DataProvider('routingChanges')]
+    public function test_routing_changes_still_fence_an_offer_with_the_same_registration_token(string $kind, array $change): void
+    {
+        $task = $this->queuedTask($kind);
+        $worker = $this->actor($task->queue);
+        $offer = $this->offer($kind, $task->queue);
+        $worker->forceFill($change)->save();
+        $this->withHeaders($this->headers())->postJson($this->path($kind),
+            $this->body($task->queue) + ['task_offer_token' => $offer['token']])
+            ->assertConflict()->assertJsonPath('reason', 'worker_registration_lost_authority');
+        $this->assertSame(TaskStatus::Ready, $task->fresh()->status);
+        $this->assertSame(0, (int) $task->fresh()->attempt_count);
+    }
+
+    public static function routingChanges(): array
+    {
+        return [
+            'workflow-build' => ['workflow', ['build_id' => 'changed-build']],
+            'activity-build' => ['activity', ['build_id' => 'changed-build']],
+            'workflow-process' => ['workflow', ['process_metrics' => ['process_id' => 9876]]],
+            'activity-process' => ['activity', ['process_metrics' => ['process_id' => 9876]]],
+        ];
+    }
+
+    #[DataProvider('kinds')]
+    public function test_a_routine_heartbeat_during_acceptance_does_not_replace_the_incarnation(string $kind): void
+    {
+        $task = $this->queuedTask($kind);
+        $worker = $this->actor($task->queue);
+        $offer = $this->offer($kind, $task->queue);
+        $advanced = false;
+        DB::listen(function ($query) use (&$advanced, $worker): void {
+            if (! $advanced && str_contains($query->sql, 'select')
+                && str_contains(str_replace(['"', '`'], '', $query->sql), 'workflow_tasks')) {
+                $advanced = true;
+                $this->travel(1)->seconds();
+                $worker->forceFill(['last_heartbeat_at' => now()])->save();
+            }
+        });
+        $this->withHeaders($this->headers())->postJson($this->path($kind),
+            $this->body($task->queue) + ['task_offer_token' => $offer['token']])
+            ->assertOk()->assertJsonPath('task.task_id', $task->id);
+        $this->assertTrue($advanced);
+        $this->assertSame(1, (int) $task->fresh()->attempt_count);
     }
 
     private function queuedTask(string $kind): WorkflowTask

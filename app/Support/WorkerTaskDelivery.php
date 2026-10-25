@@ -4,10 +4,7 @@ namespace App\Support;
 
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowUpdateValidationTask;
-use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Crypt;
-use JsonException;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
@@ -68,7 +65,7 @@ final class WorkerTaskDelivery
         }
         $snapshot = CooperativeCancellationPolicy::workerSnapshot($worker, WorkerProtocol::requestVersion($request));
         $route = $request->path();
-        $offer = $token === null ? null : self::decode($token);
+        $offer = $token === null ? null : TaskDeliveryOffer::decode($token);
         $taskKinds = str_contains($route, '/workflow-tasks/')
             ? WorkflowTaskPollRequestStore::normalizeTaskKinds($request->input('task_kinds', ['workflow']) ?? ['workflow'])
             : [];
@@ -113,13 +110,13 @@ final class WorkerTaskDelivery
             'poll_request_id' => $this->pollRequestId, 'route' => $this->route, 'task_kinds' => $this->taskKinds,
             'worker' => $this->worker, 'task_id' => $taskId, 'task_kind' => $kind,
             'offered_attempt' => $attempt, 'fingerprint' => $fingerprint, 'candidate' => $candidate,
-            'expires_at_ms' => now()->getTimestampMs() + $this->acceptanceMilliseconds(),
+            'expires_at_ms' => now()->getTimestampMs() + TaskDeliveryOffer::acceptanceMilliseconds(),
         ];
-        $data['delivery_id'] = $this->deliveryId($data);
+        $data['delivery_id'] = TaskDeliveryOffer::identifier($data);
 
         return ['delivery_offer' => [
             'schema' => self::SCHEMA, 'task_id' => $taskId, 'task_kind' => $kind,
-            'token' => Crypt::encryptString(json_encode($data, JSON_THROW_ON_ERROR)),
+            'token' => TaskDeliveryOffer::encode($data),
             'expires_at_ms' => $data['expires_at_ms'],
         ]];
     }
@@ -166,7 +163,7 @@ final class WorkerTaskDelivery
         if (! hash_equals($data['fingerprint'], $fingerprint)) {
             throw new TaskDeliveryOfferRejected('task_offer_changed');
         }
-        $this->assertUnexpired($data);
+        TaskDeliveryOffer::assertUnexpired($data);
     }
 
     public function lockWorker(): void
@@ -197,7 +194,7 @@ final class WorkerTaskDelivery
         if ($this->offer === null) {
             throw new TaskDeliveryOfferRejected('task_offer_mismatch');
         }
-        $this->assertUnexpired($this->offer);
+        TaskDeliveryOffer::assertUnexpired($this->offer);
 
         return [
             'schema' => self::SCHEMA, 'delivery_id' => $this->offer['delivery_id'],
@@ -212,7 +209,7 @@ final class WorkerTaskDelivery
         if ($this->offer === null) {
             throw new TaskDeliveryOfferRejected('task_offer_mismatch');
         }
-        $this->assertUnexpired($this->offer);
+        TaskDeliveryOffer::assertUnexpired($this->offer);
     }
 
     public function assertReceipt(mixed $receipt, string $taskId, int $attempt): void
@@ -236,7 +233,7 @@ final class WorkerTaskDelivery
         if ($data === null) {
             throw new TaskDeliveryOfferRejected('task_offer_mismatch');
         }
-        $this->assertUnexpired($data);
+        TaskDeliveryOffer::assertUnexpired($data);
         $task = NamespaceWorkflowScope::taskQuery($this->namespace)->whereKey($taskId)->lockForUpdate()->first();
         if (! $task instanceof WorkflowTask || $task->id !== $data['task_id']
             || $task->status !== TaskStatus::Leased || $task->lease_owner !== $this->worker['worker_id']
@@ -263,25 +260,6 @@ final class WorkerTaskDelivery
         $this->assertReceipt($receipt, $taskId, (int) $task->attempt_count);
     }
 
-    private static function decode(mixed $token): array
-    {
-        try {
-            $data = is_string($token) && strlen($token) <= 8192
-                ? json_decode(Crypt::decryptString($token), true, flags: JSON_THROW_ON_ERROR) : null;
-        } catch (DecryptException|JsonException) {
-            $data = null;
-        }
-        if (! is_array($data) || ($data['schema'] ?? null) !== self::SCHEMA
-            || ! is_string($data['task_id'] ?? null) || ! is_string($data['task_kind'] ?? null)
-            || ! is_array($data['worker'] ?? null) || ! is_array($data['candidate'] ?? null)
-            || ! is_int($data['offered_attempt'] ?? null) || ! is_int($data['expires_at_ms'] ?? null)
-            || ! is_string($data['fingerprint'] ?? null) || ! is_string($data['delivery_id'] ?? null)) {
-            throw new TaskDeliveryOfferRejected('task_offer_invalid');
-        }
-
-        return $data;
-    }
-
     private function assertContext(array $data): void
     {
         foreach (['namespace' => $this->namespace, 'queue' => $this->queue, 'poll_request_id' => $this->pollRequestId, 'route' => $this->route, 'task_kinds' => $this->taskKinds] as $key => $expected) {
@@ -291,7 +269,7 @@ final class WorkerTaskDelivery
         }
         if (($data['worker']['registration_incarnation'] ?? null) !== $this->worker['registration_incarnation']
             || ($data['worker']['registration_id'] ?? null) !== $this->worker['registration_id']
-            || ! hash_equals($data['delivery_id'], $this->deliveryId($data))) {
+            || ! hash_equals($data['delivery_id'], TaskDeliveryOffer::identifier($data))) {
             throw new TaskDeliveryOfferRejected('worker_registration_lost_authority');
         }
     }
@@ -301,8 +279,17 @@ final class WorkerTaskDelivery
         $current = WorkerRegistration::query()->where('namespace', $this->namespace)
             ->whereKey($this->worker['registration_id'])->lockForUpdate()->first();
         if (! $current instanceof WorkerRegistration || ! is_string($current->registration_token)
-            || hash('sha256', $current->registration_token) !== $this->worker['registration_incarnation']
-            || ! WorkerPollFence::isCurrentForUpdate($data['worker'])) {
+            || hash('sha256', $current->registration_token) !== $this->worker['registration_incarnation']) {
+            throw new TaskDeliveryOfferRejected('worker_registration_lost_authority');
+        }
+        // This contract requires the exact registration credential, unlike a
+        // legacy poll. Routine heartbeat timestamps do not replace that
+        // incarnation. Preserve the original routing/process identity checks.
+        $currentFence = WorkerPollFence::snapshot($current);
+        $expected = $data['worker'];
+        $expected['updated_at'] = $currentFence['updated_at'];
+        $expected['last_heartbeat_at'] = $currentFence['last_heartbeat_at'];
+        if (! WorkerPollFence::isCurrentForUpdate($expected)) {
             throw new TaskDeliveryOfferRejected('worker_registration_lost_authority');
         }
     }
@@ -318,27 +305,5 @@ final class WorkerTaskDelivery
             $task->queue, $task->compatibility, $task->available_at?->toJSON(),
             $run?->workflow_type, $executionId, $activityType,
         ], JSON_THROW_ON_ERROR));
-    }
-
-    private function deliveryId(array $data): string
-    {
-        return hash('sha256', json_encode([
-            $data['schema'], $data['namespace'], $data['queue'], $data['route'], $data['poll_request_id'],
-            $data['task_kinds'],
-            $data['worker']['registration_id'], $data['worker']['registration_incarnation'],
-            $data['task_id'], $data['task_kind'], $data['offered_attempt'], $data['fingerprint'],
-        ], JSON_THROW_ON_ERROR));
-    }
-
-    private function assertUnexpired(array $data): void
-    {
-        if (now()->getTimestampMs() >= $data['expires_at_ms']) {
-            throw new TaskDeliveryOfferRejected('task_offer_expired');
-        }
-    }
-
-    private function acceptanceMilliseconds(): int
-    {
-        return max(1000, min(10000, (int) config('server.polling.task_offer_accept_seconds', 2) * 1000));
     }
 }

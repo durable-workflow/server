@@ -529,7 +529,8 @@ final class WorkflowTaskPoller
             ): ?array {
                 app(StoragePressure::class)->requireNewWork();
 
-                if (! WorkerPollFence::isCurrent($workerPollFence)) {
+                $delivery?->lockWorker();
+                if ($delivery === null && ! WorkerPollFence::isCurrent($workerPollFence)) {
                     $resolvedResult = [
                         'task' => null,
                         'poll_status' => 'stale_worker_registration',
@@ -1109,7 +1110,8 @@ final class WorkflowTaskPoller
                 $runId,
                 $delivery,
             ): array {
-                if ($workerPollFence !== [] && ! WorkerPollFence::isCurrentForUpdate($workerPollFence)) {
+                $delivery?->lockWorker();
+                if ($delivery === null && $workerPollFence !== [] && ! WorkerPollFence::isCurrentForUpdate($workerPollFence)) {
                     return ['claimed' => false, 'reason' => 'stale_worker_registration'];
                 }
 

@@ -487,7 +487,8 @@ final class ActivityTaskPoller
             ): ?array {
                 app(StoragePressure::class)->requireNewWork();
 
-                if (! WorkerPollFence::isCurrent($workerPollFence)) {
+                $delivery?->lockWorker();
+                if ($delivery === null && ! WorkerPollFence::isCurrent($workerPollFence)) {
                     $resolvedResult = [
                         'task' => null,
                         'poll_status' => 'stale_worker_registration',
@@ -926,7 +927,8 @@ final class ActivityTaskPoller
                     $buildId,
                     $delivery,
                 ): ?array {
-                    if ($workerPollFence !== [] && ! WorkerPollFence::isCurrentForUpdate($workerPollFence)) {
+                    $delivery?->lockWorker();
+                    if ($delivery === null && $workerPollFence !== [] && ! WorkerPollFence::isCurrentForUpdate($workerPollFence)) {
                         throw new ActivityTaskClaimRolledBack;
                     }
 

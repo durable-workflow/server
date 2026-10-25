@@ -101,6 +101,8 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         // Replay is sourced from the original domain record even if an index
         // write or response was lost after the accepted record committed.
         app(ServerPollingCache::class)->store()->forget('server:workflow-query-task:leased:'.sha1('default|python-queries|delivery-worker'));
+        WorkerRegistration::query()->where('worker_id', 'delivery-worker')->firstOrFail()
+            ->forceFill(['last_heartbeat_at' => now()])->save();
         $this->postJson($path, $acceptance, $headers)->assertOk()
             ->assertJsonPath('task.query_task_id', $first->json('task.query_task_id'))
             ->assertJsonPath('task.query_task_attempt', 1);

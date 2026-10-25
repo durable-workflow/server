@@ -19,13 +19,17 @@ return new class extends Migration
 
     public function down(): void
     {
-        Schema::table('workflow_tasks', function (Blueprint $table): void {
-            $table->dropIndex(['delivery_poll_key']);
-            $table->dropColumn('delivery_poll_key');
-        });
-        Schema::table('workflow_update_validation_tasks', function (Blueprint $table): void {
-            $table->dropIndex(['delivery_poll_key']);
-            $table->dropColumn(['delivery_poll_key', 'delivery_receipt']);
-        });
+        if (Schema::hasTable('workflow_tasks')) {
+            Schema::table('workflow_tasks', function (Blueprint $table): void {
+                $table->dropIndex(['delivery_poll_key']);
+                $table->dropColumn('delivery_poll_key');
+            });
+        }
+        if (Schema::hasTable('workflow_update_validation_tasks')) {
+            Schema::table('workflow_update_validation_tasks', function (Blueprint $table): void {
+                $table->dropIndex(['delivery_poll_key']);
+                $table->dropColumn(['delivery_poll_key', 'delivery_receipt']);
+            });
+        }
     }
 };

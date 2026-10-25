@@ -4274,7 +4274,17 @@ class WorkerController
             'query_task_id' => $poll['task']['query_task_id'] ?? null,
         ];
 
-        if ($poll['poll_status'] === 'empty') {
+        $this->logQueryPollResponse($pollContext);
+
+        return WorkerProtocol::json([
+            'task' => WorkflowObservabilityPoll::filterOptionalDelivered($poll['task']),
+            'poll_status' => $poll['poll_status'],
+        ]);
+    }
+
+    private function logQueryPollResponse(array $pollContext): void
+    {
+        if ($pollContext['poll_status'] === 'empty') {
             if (config('app.debug')) {
                 Log::debug('worker_query_poll_response_ready', $pollContext);
             }
@@ -4282,10 +4292,6 @@ class WorkerController
             Log::info('worker_query_poll_response_ready', $pollContext);
         }
 
-        return WorkerProtocol::json([
-            'task' => WorkflowObservabilityPoll::filterOptionalDelivered($poll['task']),
-            'poll_status' => $poll['poll_status'],
-        ]);
     }
 
     public function queryTaskStatus(Request $request, string $queryTaskId): JsonResponse
