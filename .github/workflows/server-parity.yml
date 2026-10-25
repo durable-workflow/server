@@ -318,6 +318,9 @@ jobs:
           if-no-files-found: warn
 
   mysql-execution:
+    # Named explicitly so the added native-tests-b combinations read like the
+    # others instead of listing every matrix value.
+    name: mysql-execution (${{ matrix.label }}, ${{ matrix.part }})
     needs: published-sdk-adapters
     runs-on: ubuntu-latest
     # Each part takes about 20 to 35 minutes; the fixture step runs every
