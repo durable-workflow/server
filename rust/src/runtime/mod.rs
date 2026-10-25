@@ -65,6 +65,7 @@ mod laravel_validation;
 mod local_activities;
 mod memo_json;
 mod memo_limits;
+mod history_meter;
 mod standalone_activities;
 mod archive;
 mod command_payloads;

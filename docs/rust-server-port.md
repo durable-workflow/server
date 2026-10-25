@@ -226,6 +226,31 @@ contract fixture before its correction.
   batch size, and still caps parallel groups at 100 members and a run at 64
   updates over its lifetime. #612 tracks the rest
   ([checkpoint](rust-server-port-checkpoints/2026-10-23-structural-limits.md)).
+- **Completion budget, ahead of published PHP.** Native applies Phase A of
+  [Workflow #930](https://github.com/durable-workflow/workflow/issues/930)
+  ([Workflow #934](https://github.com/durable-workflow/workflow/pull/934)),
+  which published 2.11.1 does not have yet:
+  - `record_local_activity` caps `duration_ms` and heartbeat `elapsed_ms` at
+    7 days and `backoff_seconds` at 1 day, each with PHP's field error. The walk
+    back from completion is overflow-checked, and it is refused with
+    `local_activity_timestamp_out_of_range` before it reaches
+    1970-01-01T00:00:01Z.
+  - After a run's deadline close, which is never metered, a completion whose
+    local activities' exact events and rows exceed
+    `DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE` or `_ROWS` (other commands count one
+    event) is refused with `completion_budget_exceeded`.
+  - The rest of the completion runs under a meter. Each history event charges
+    one event, its bytes as `HistoryBudget` measures them (against
+    `_BYTES`) and two rows, and each local activity row is charged before it
+    is written. A refusal answers `history_transaction_limit_exceeded`, writes
+    nothing and leaves the task's lease as it was. A tripped meter also refuses
+    the commit.
+  - Native never stores an external payload object while applying a
+    completion: workers upload objects first, and a completion only claims
+    their references. Native also dispatches no lifecycle events. So #934's
+    staging and event deferral have no native counterpart.
+  - The structural-limit snapshot in operator metrics stays as published
+    2.11.1 reports it until the PHP Server takes the Workflow release.
 - **Environment settings.** Of PHP's 166 contract settings, native honors
   43 and ignores 57 that change nothing it serves. It refuses to start on a
   non-default value of the other 66

@@ -31,6 +31,11 @@ const ATTEMPT_REPORTS_PROTOCOL_VERSION: &str = "1.19";
 const MAX_ATTEMPTS: i64 = 100;
 const MAX_HEARTBEATS_PER_ATTEMPT: usize = 1000;
 const MAX_HEARTBEATS: usize = 1000;
+/// `WorkflowCommandNormalizer::MAX_LOCAL_ACTIVITY_DURATION_MS` (Workflow
+/// #930): the longest attempt `duration_ms` or heartbeat `elapsed_ms`.
+pub(super) const MAX_DURATION_MS: i64 = 604_800_000;
+/// `MAX_LOCAL_ACTIVITY_BACKOFF_SECONDS`: the longest attempt backoff.
+pub(super) const MAX_BACKOFF_SECONDS: i64 = 86_400;
 const OUTCOMES: [&str; 4] = ["completed", "failed", "timed_out", "cancelled"];
 const TIMEOUT_KINDS: [&str; 3] = ["start_to_close", "schedule_to_close", "heartbeat"];
 const RETRY_POLICY_FIELDS: [&str; 3] = ["max_attempts", "backoff_seconds", "non_retryable_error_types"];
@@ -388,6 +393,10 @@ fn heartbeats(value: Option<&Value>, attempt_path: &str, strict: bool, errors: &
             errors.set(format!("{path}.elapsed_ms"), "Local activity heartbeat elapsed_ms must be a non-negative integer.");
             continue;
         };
+        if elapsed > MAX_DURATION_MS {
+            errors.set(format!("{path}.elapsed_ms"), format!("Local activity heartbeat elapsed_ms must not exceed {MAX_DURATION_MS}."));
+            continue;
+        }
         if elapsed < last {
             errors.set(format!("{path}.elapsed_ms"), "Local activity heartbeat elapsed_ms values must be ordered monotonically.");
         }
@@ -497,6 +506,10 @@ fn attempts(command: &Value, outcome: &str, terminal_non_retryable: Option<bool>
         let duration = match fields.get("duration_ms") {
             None => None,
             Some(value) => match value.as_i64().filter(|duration| *duration >= 0) {
+                Some(duration) if duration > MAX_DURATION_MS => {
+                    errors.set(format!("{path}.duration_ms"), format!("Local activity attempt duration_ms must not exceed {MAX_DURATION_MS}."));
+                    None
+                }
                 Some(duration) => Some(duration),
                 None => {
                     errors.set(format!("{path}.duration_ms"), "Local activity attempt duration_ms must be a non-negative integer.");
@@ -538,6 +551,11 @@ fn attempts(command: &Value, outcome: &str, terminal_non_retryable: Option<bool>
         let backoff = match fields.get("backoff_seconds") {
             None => None,
             Some(value) => match value.as_i64().filter(|seconds| *seconds >= 0) {
+                Some(seconds) if seconds > MAX_BACKOFF_SECONDS => {
+                    errors.set(format!("{path}.backoff_seconds"),
+                        format!("Local activity attempt backoff_seconds must not exceed {MAX_BACKOFF_SECONDS}."));
+                    None
+                }
                 Some(seconds) => Some(seconds),
                 None => {
                     errors.set(format!("{path}.backoff_seconds"), "Local activity attempt backoff_seconds must be a non-negative integer.");
@@ -551,8 +569,12 @@ fn attempts(command: &Value, outcome: &str, terminal_non_retryable: Option<bool>
                 errors.set(format!("{path}.retry_reason"),
                     format!("A retried {attempt_outcome} local activity attempt requires a compatible retry_reason."));
             }
+            // A given value keeps its own refusal (Workflow #930).
             match backoff {
-                None => errors.set(format!("{path}.backoff_seconds"), "A retried local activity attempt requires backoff_seconds."),
+                None if !fields.contains_key("backoff_seconds") => {
+                    errors.set(format!("{path}.backoff_seconds"), "A retried local activity attempt requires backoff_seconds.");
+                }
+                None => {}
                 Some(seconds) if schedule.get(position).is_some_and(|scheduled| *scheduled != seconds) => errors.set(
                     format!("{path}.backoff_seconds"), "Local activity attempt backoff_seconds must match retry_policy.backoff_seconds."),
                 Some(_) => {}
@@ -682,6 +704,11 @@ pub(super) struct Record {
 }
 
 impl Record {
+    /// The exact history events and rows this record writes (Workflow #930).
+    pub(super) fn budget(&self) -> (usize, usize) {
+        super::history_meter::local_activity_budget(&self.attempts, matches!(self.outcome.as_str(), "failed" | "timed_out"))
+    }
+
     /// The message the execution's exception carries, when it has one.
     pub(super) fn exception_message(&self) -> Option<String> {
         (self.outcome != "completed").then(|| self.message.clone().unwrap_or_else(|| "Local activity failed.".to_owned()))
@@ -809,6 +836,47 @@ fn milliseconds(value: Option<&Value>) -> i64 {
     value.and_then(Value::as_i64).unwrap_or(0)
 }
 
+/// The earliest timestamp every supported column type stores (MySQL
+/// TIMESTAMP's 1970-01-01T00:00:01Z), in Unix milliseconds.
+const EARLIEST_STORED_TIMESTAMP_MS: i64 = 1000;
+
+/// How far a report walks back from completion: each attempt's span (its
+/// duration or last heartbeat, whichever is later) and, before the next
+/// attempt, its backoff. None if the sum overflows.
+fn backdated_ms(attempts: &[Value]) -> Option<i64> {
+    let mut total: i64 = 0;
+    for (position, report) in attempts.iter().enumerate() {
+        let beats = report["heartbeats"].as_array().map_or(&[][..], Vec::as_slice);
+        let span = milliseconds(beats.last().and_then(|beat| beat.get("elapsed_ms")))
+            .max(milliseconds(report.get("duration_ms")));
+        let backoff = if position + 1 < attempts.len() {
+            milliseconds(report.get("backoff_seconds")).checked_mul(1000)?
+        } else {
+            0
+        };
+        total = total.checked_add(span)?.checked_add(backoff)?;
+    }
+    Some(total)
+}
+
+/// Whether the walk's earliest timestamp, `backdated` before `at_ms`, is
+/// one every supported column type stores.
+fn storable(at_ms: i64, backdated: i64) -> bool {
+    at_ms.checked_sub(backdated).is_some_and(|earliest| earliest >= EARLIEST_STORED_TIMESTAMP_MS)
+}
+
+/// Checked timestamp arithmetic: the bounds above make these infallible, and
+/// a failure is refused rather than unwound.
+fn checked_sub(at: DateTime<Utc>, delta: Option<Duration>) -> Result<DateTime<Utc>> {
+    delta.and_then(|delta| at.checked_sub_signed(delta))
+        .ok_or_else(|| refuse(StatusCode::CONFLICT, "local_activity_timestamp_out_of_range"))
+}
+
+fn checked_add(at: DateTime<Utc>, delta: Option<Duration>) -> Result<DateTime<Utc>> {
+    delta.and_then(|delta| at.checked_add_signed(delta))
+        .ok_or_else(|| refuse(StatusCode::CONFLICT, "local_activity_timestamp_out_of_range"))
+}
+
 /// One reported attempt with the times the bridge gives it.
 struct Attempt<'a> {
     report: &'a Value,
@@ -904,6 +972,13 @@ store_methods! {
         Ok(())
     }
 
+
+    /// `local_activity_timestamp_out_of_range`, in the completion's response.
+    fn timestamp_out_of_range(tx: &Transaction<'_, DB>) -> RuntimeError {
+        const REASON: &str = "local_activity_timestamp_out_of_range";
+        tx.meter.as_ref().map_or_else(|| refuse(StatusCode::CONFLICT, REASON), |meter| meter.refused_with(REASON))
+    }
+
     /// `applyRecordLocalActivity`: the execution, its attempts with times
     /// walked back from now, and the history PHP writes for them.
     #[allow(clippy::too_many_arguments)]
@@ -916,6 +991,12 @@ store_methods! {
             .or(DB::optional_string(run, "payload_codec")?.filter(|codec| !codec.is_empty()))
             .unwrap_or_else(|| "avro".to_owned());
         let at = now();
+        // Workflow #930: the normalizer bounds every timing field; the walk's
+        // total is also checked, and its earliest timestamp must be one every
+        // supported column type stores, before anything is written.
+        if !backdated_ms(&record.attempts).is_some_and(|backdated| storable(at.timestamp_millis(), backdated)) {
+            return Err(Self::timestamp_out_of_range(tx));
+        }
         // Reports carry durations, not times: walk back from the close so
         // each attempt ends before the next one's declared backoff. Identities
         // are made last attempt first, as PHP makes them, and are uppercase.
@@ -926,15 +1007,19 @@ store_methods! {
             let beats = report["heartbeats"].as_array().map_or(&[][..], Vec::as_slice);
             let last_elapsed = milliseconds(beats.last().and_then(|beat| beat.get("elapsed_ms")));
             let duration = milliseconds(report.get("duration_ms"));
-            let started_at = closed_at - Duration::milliseconds(last_elapsed.max(duration));
-            let last_heartbeat_at = (!beats.is_empty()).then(|| started_at + Duration::milliseconds(last_elapsed));
+            let started_at = checked_sub(closed_at, Duration::try_milliseconds(last_elapsed.max(duration)))?;
+            let last_heartbeat_at = if beats.is_empty() {
+                None
+            } else {
+                Some(checked_add(started_at, Duration::try_milliseconds(last_elapsed))?)
+            };
             if let Some(beat) = last_heartbeat_at && latest_heartbeat.is_none_or(|latest| beat > latest) {
                 latest_heartbeat = Some(beat);
             }
             attempts.push(Attempt { report, id: id().to_uppercase(), started_at, last_heartbeat_at, closed_at });
             if position > 0 {
                 let backoff = milliseconds(record.attempts[position - 1].get("backoff_seconds"));
-                closed_at = started_at - Duration::seconds(backoff);
+                closed_at = checked_sub(started_at, Duration::try_seconds(backoff))?;
             }
         }
         attempts.reverse();
@@ -955,6 +1040,7 @@ store_methods! {
         let connection = DB::optional_string(run, "connection")?;
         let queue = DB::optional_string(run, "queue")?;
         let started_at = attempts[0].started_at;
+        tx.charge_rows(1)?;
         Self::query("INSERT INTO activity_executions(id,workflow_run_id,sequence,activity_class,activity_type,status,payload_codec,arguments,result,exception,connection,queue,attempt_count,current_attempt_id,retry_policy,activity_options,started_at,closed_at,last_heartbeat_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)")
             .bind(&execution_id).bind(&run_id).bind(sequence).bind(&record.activity_type).bind(&record.activity_type).bind(status)
             .bind(&codec).bind(record.arguments.as_deref()).bind(record.result.as_deref()).bind(exception)
@@ -999,6 +1085,7 @@ store_methods! {
         let mut emitted: Option<DateTime<Utc>> = None;
         for (position, attempt) in attempts.iter().enumerate() {
             let worker_attempt_id = attempt.report.get("attempt_id").and_then(Value::as_str);
+            tx.charge_rows(1)?;
             Self::query("INSERT INTO activity_attempts(id,workflow_run_id,activity_execution_id,workflow_task_id,worker_attempt_id,attempt_number,status,lease_owner,started_at,last_heartbeat_at,lease_expires_at,closed_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULL,$11,$12,$13)")
                 .bind(&attempt.id).bind(&run_id).bind(&execution_id).bind(&task_id).bind(worker_attempt_id)
                 .bind(attempt.number()).bind(attempt.status()).bind(lease_owner.as_deref()).bind(DB::bind_time(attempt.started_at))
@@ -1023,7 +1110,7 @@ store_methods! {
                 "attempt_number": attempt.number(), "activity_attempt": running_attempt});
             Self::append(tx, &run_id, "ActivityStarted", event(running_activity.clone(), started.clone()), Some(&task_id), None).await?;
             for heartbeat in attempt.heartbeats() {
-                let heartbeat_at = attempt.started_at + Duration::milliseconds(milliseconds(heartbeat.get("elapsed_ms")));
+                let heartbeat_at = checked_add(attempt.started_at, Duration::try_milliseconds(milliseconds(heartbeat.get("elapsed_ms"))))?;
                 if emitted.is_none_or(|latest| heartbeat_at > latest) {
                     emitted = Some(heartbeat_at);
                 }
@@ -1083,6 +1170,7 @@ store_methods! {
                 let class = record.exception_type.clone()
                     .unwrap_or_else(|| if timed_out { TIMEOUT_EXCEPTION } else { "RuntimeException" }.to_owned());
                 let non_retryable = record.non_retryable.unwrap_or(false);
+                tx.charge_rows(1)?;
                 Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,non_retryable,handled,exception_class,message,file,line,trace_preview,created_at,updated_at) VALUES ($1,$2,'activity_execution',$3,$4,$5,CASE WHEN $6='true' THEN TRUE ELSE FALSE END,FALSE,$7,$8,'',0,'',$9,$10)")
                     .bind(&failure_id).bind(&run_id).bind(&execution_id).bind(if timed_out { "timeout" } else { "activity" })
                     .bind(if timed_out { "timeout" } else { "activity" }).bind(if non_retryable { "true" } else { "false" })
@@ -1125,6 +1213,71 @@ mod tests {
             command[key] = value.clone();
         }
         command
+    }
+
+    #[test]
+    fn each_timing_field_admits_its_maximum_and_refuses_one_more() {
+        let cases = [
+            ("commands.0.attempts.0.duration_ms", "Local activity attempt duration_ms must not exceed 604800000."),
+            ("commands.0.attempts.0.heartbeats.0.elapsed_ms", "Local activity heartbeat elapsed_ms must not exceed 604800000."),
+            ("commands.0.attempts.0.backoff_seconds", "Local activity attempt backoff_seconds must not exceed 86400."),
+        ];
+        let report = |duration: i64, elapsed: i64, backoff: i64| record(json!({"retry_policy": {"max_attempts": 2},
+            "attempts": [
+                {"attempt_number": 1, "outcome": "failed", "message": "retry", "retry_reason": "failure",
+                    "duration_ms": duration, "backoff_seconds": backoff, "heartbeats": [{"elapsed_ms": elapsed}]},
+                {"attempt_number": 2, "outcome": "completed", "duration_ms": 25}]}));
+        assert!(normalize(&[report(MAX_DURATION_MS, MAX_DURATION_MS, MAX_BACKOFF_SECONDS)], Some("1.20")).is_ok());
+        for over in [1, i64::MAX] {
+            for (index, (field, message)) in cases.iter().enumerate() {
+                let bump = |value: i64, own: usize| if index == own { value.saturating_add(over) } else { value };
+                let response = refusal(json!([report(bump(MAX_DURATION_MS, 0), bump(MAX_DURATION_MS, 1),
+                    bump(MAX_BACKOFF_SECONDS, 2))]), "1.20");
+                let fields: Vec<&String> = response["errors"].as_object().unwrap().keys().collect();
+                assert_eq!(fields, [field], "{response}");
+                assert_eq!(response["errors"][field], json!([message]), "{response}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_retried_attempt_needs_backoff_seconds_only_when_absent() {
+        let response = refusal(json!([record(json!({"retry_policy": {"max_attempts": 2}, "attempts": [
+            {"attempt_number": 1, "outcome": "failed", "message": "retry", "retry_reason": "failure"},
+            {"attempt_number": 2, "outcome": "completed"}]}))]), "1.20");
+        assert_eq!(response["errors"]["commands.0.attempts.0.backoff_seconds"],
+            json!(["A retried local activity attempt requires backoff_seconds."]));
+        let response = refusal(json!([record(json!({"retry_policy": {"max_attempts": 2}, "attempts": [
+            {"attempt_number": 1, "outcome": "failed", "message": "retry", "retry_reason": "failure", "backoff_seconds": 86_401},
+            {"attempt_number": 2, "outcome": "completed"}]}))]), "1.20");
+        assert_eq!(response["errors"]["commands.0.attempts.0.backoff_seconds"],
+            json!(["Local activity attempt backoff_seconds must not exceed 86400."]));
+    }
+
+    #[test]
+    fn the_walk_is_checked_and_must_stay_storable() {
+        let attempt = |duration: i64, elapsed: Option<i64>, backoff: i64| {
+            let mut attempt = json!({"duration_ms": duration, "backoff_seconds": backoff});
+            if let Some(elapsed) = elapsed {
+                attempt["heartbeats"] = json!([{"elapsed_ms": elapsed}]);
+            }
+            attempt
+        };
+        // A span is the later of the duration and the last heartbeat; the
+        // last attempt's backoff does not count.
+        assert_eq!(backdated_ms(&[attempt(1_000, Some(5_000), 2), attempt(3_000, None, 9)]), Some(5_000 + 2_000 + 3_000));
+        // The longest report: 100 seven-day attempts and 99 one-day backoffs.
+        let longest: Vec<Value> = (0..100).map(|_| attempt(MAX_DURATION_MS, Some(MAX_DURATION_MS), MAX_BACKOFF_SECONDS)).collect();
+        assert_eq!(backdated_ms(&longest), Some(100 * MAX_DURATION_MS + 99 * MAX_BACKOFF_SECONDS * 1_000));
+        // Arithmetic past i64 fails closed.
+        assert_eq!(backdated_ms(&[attempt(i64::MAX, None, 0), attempt(1, None, 0)]), None);
+        assert_eq!(backdated_ms(&[attempt(0, None, i64::MAX), attempt(0, None, 0)]), None);
+        // The earliest storable instant is 1970-01-01T00:00:01Z.
+        let one_day = 86_400_000;
+        assert!(storable(one_day, one_day - EARLIEST_STORED_TIMESTAMP_MS));
+        assert!(!storable(one_day, one_day - EARLIEST_STORED_TIMESTAMP_MS + 1));
+        assert!(!storable(one_day, 2 * one_day));
+        assert!(!storable(i64::MIN + 1, 2));
     }
 
     #[test]

@@ -11,6 +11,7 @@ async fn limited(database: &TestDatabase, signals: usize, updates: usize, payloa
         pending_signals: Some(signals),
         pending_updates: Some(updates),
         payload_bytes: Some(payload),
+        ..StructuralLimits::default()
     };
     let runtime = database.open().await.unwrap().with_structural_limits(limits);
     (runtime.clone(), router(runtime))

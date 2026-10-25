@@ -2697,6 +2697,30 @@ where
             self.wake.notify_waiters();
             return Err(super::RuntimeError::Protocol { status: StatusCode::CONFLICT, response });
         }
+        // Workflow #930: the deadline close above is never metered. Before
+        // the worker's first write, its local activities' exact events and
+        // rows (other commands at one event) must fit the limits; then the
+        // rest of the completion runs under the history meter.
+        let (mut events, mut rows) = (0usize, 0usize);
+        for index in 0..commands.len() {
+            let (command_events, command_rows) = match local.get(&index) {
+                Some(record) => record.budget(),
+                None => (super::history_meter::MIN_COMMAND_HISTORY_EVENTS, 2 * super::history_meter::MIN_COMMAND_HISTORY_EVENTS),
+            };
+            events = events.saturating_add(command_events);
+            rows = rows.saturating_add(command_rows);
+        }
+        if limits.history_events.is_some_and(|limit| limit > 0 && events > limit)
+            || limits.history_rows.is_some_and(|limit| limit > 0 && rows > limit)
+        {
+            return Err(super::RuntimeError::Protocol {
+                status: StatusCode::CONFLICT,
+                response: json!({"task_id": task_id, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed",
+                    "recorded": false, "run_id": run_id, "run_status": null, "created_task_ids": [],
+                    "reason": "completion_budget_exceeded"}),
+            });
+        }
+        tx.meter = Some(super::history_meter::Meter::new(&limits, task_id, &body["workflow_task_attempt"]));
         let task_payload = DB::document_row(&task, "payload")?;
         if Self::cancellation_request(&run)?.is_some()
             && commands.iter().any(|command| {
@@ -3818,6 +3842,8 @@ where
         {
             payload["command"] = snapshot;
         }
+        // A metered completion (Workflow #930) charges the event as stored.
+        tx.charge_event(event_type, &payload)?;
         Self::query("INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,workflow_task_id,workflow_command_id,recorded_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
         .bind(id()).bind(run_id).bind(sequence).bind(event_type).bind(DB::document(&payload)).bind(task_id).bind(command_id).bind(DB::bind_time(recorded_at)).execute(&mut **tx).await?;
         Self::project_activity_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;

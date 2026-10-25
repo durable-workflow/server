@@ -10,6 +10,8 @@ pub(super) struct Transaction<'a, DB: Backend> {
     inner: sqlx::Transaction<'a, DB>,
     summaries: BTreeSet<String>,
     pub(super) history_budget: super::history_budget::Config,
+    /// A workflow task completion's history meter (Workflow #930).
+    pub(super) meter: Option<super::history_meter::Meter>,
 }
 
 impl<'a, DB: Backend> Transaction<'a, DB> {
@@ -21,11 +23,28 @@ impl<'a, DB: Backend> Transaction<'a, DB> {
             inner,
             summaries: BTreeSet::new(),
             history_budget,
+            meter: None,
         }
     }
 
     pub(super) fn summary_changed(&mut self, run_id: &str) {
         self.summaries.insert(run_id.to_owned());
+    }
+
+    /// Rows the next statement will write, charged to a metered completion.
+    pub(super) fn charge_rows(&mut self, rows: usize) -> Result<()> {
+        match self.meter.as_mut() {
+            Some(meter) => meter.charge_rows(rows),
+            None => Ok(()),
+        }
+    }
+
+    /// One history event about to be stored, charged to a metered completion.
+    pub(super) fn charge_event(&mut self, event_type: &str, payload: &serde_json::Value) -> Result<()> {
+        match self.meter.as_mut() {
+            Some(meter) => meter.charge_event(event_type, payload),
+            None => Ok(()),
+        }
     }
 
     pub(super) async fn rollback(self) -> Result<()> {
@@ -60,6 +79,11 @@ where
     usize: ColumnIndex<DB::Row>,
 {
     pub(super) async fn commit(mut self) -> Result<()> {
+        // A completion whose meter refused cannot commit, even if a caller
+        // swallowed the refusal; dropping the transaction rolls it back.
+        if let Some(refusal) = self.meter.as_ref().and_then(super::history_meter::Meter::tripped) {
+            return Err(refusal);
+        }
         for run_id in std::mem::take(&mut self.summaries) {
             Store::<DB>::order_open_waits(&mut self, &run_id).await?;
             Store::<DB>::project_run_summary(&mut self, &run_id).await?;
