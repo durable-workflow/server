@@ -25,12 +25,15 @@ async fn php_layout() -> (tempfile::TempDir, String) {
     sqlx::raw_sql(concat!(
         include_str!("../../migrations/sqlite/0003_full_schema.sql"),
         "\n",
-        include_str!("../../migrations/sqlite/0004_worker_incarnations.sql")
+        include_str!("../../migrations/sqlite/0004_worker_incarnations.sql"),
+        "\n",
+        include_str!("../../migrations/sqlite/0005_worker_session_holders.sql")
     ))
     .execute(&mut connection)
     .await
     .unwrap();
     for table in [
+        "dw_worker_session_holders",
         "dw_worker_registration_incarnations",
         "dw_task_completions",
         "dw_poll_receipts",
@@ -944,7 +947,7 @@ async fn takeover_converts_a_php_297_database_that_native_then_opens() {
         .fetch_one(&mut connection)
         .await
         .unwrap();
-    assert_eq!(marker, ("rust-development".to_owned(), 4));
+    assert_eq!(marker, ("rust-development".to_owned(), super::super::schema::VERSION));
     connection.close().await.unwrap();
 }
 
