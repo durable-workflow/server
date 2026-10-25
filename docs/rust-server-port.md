@@ -82,13 +82,13 @@ Updated October 24, 2026.
     ([#737](https://github.com/durable-workflow/server/issues/737)).
 
   No expectation is edited to make native pass.
-- **Parity surface.** Native serves 126 of the 175 API route methods in
-  published 2.11.1's route table. An execution test sends each one through
-  the native router, and the ones still answering
-  `501 rust_capability_not_implemented` must match
+- **Parity surface.** Native serves 132 of the 175 API route methods in
+  published 2.11.1's route table, with message streams, activity
+  cancellation acknowledgement and embedded v2 and Waterline v1 workflow
+  import. An
+  execution test sends each one through the native router, and the ones
+  still answering `501 rust_capability_not_implemented` must match
   [`unserved-php-routes.v2.11.1.txt`](../rust/tests/fixtures/unserved-php-routes.v2.11.1.txt).
-  The work in review serves 12 more: message streams (3), update validation
-  (3), worker sessions (5) and activity cancellation acknowledgement (1).
 - **Next action.** Land the items above in order, keep porting the unserved
   routes fixture first, and package the native binary into the server image.
 
