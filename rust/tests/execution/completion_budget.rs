@@ -160,7 +160,8 @@ async fn stored_history(database: &TestDatabase, run_id: &str) -> Vec<(String, S
     text_rows(database,
         &format!("SELECT event_type, payload FROM workflow_history_events WHERE workflow_run_id='{run_id}' ORDER BY sequence"),
         &format!("SELECT event_type, payload::text FROM workflow_history_events WHERE workflow_run_id='{run_id}' ORDER BY sequence"),
-        &format!("SELECT event_type, CAST(payload AS CHAR) FROM workflow_history_events WHERE workflow_run_id='{run_id}' ORDER BY sequence")).await
+        &format!("SELECT event_type, CAST(payload AS CHAR) FROM workflow_history_events \
+            FORCE INDEX (workflow_history_events_workflow_run_id_sequence_unique) WHERE workflow_run_id='{run_id}' ORDER BY sequence")).await
 }
 
 /// The bytes the meter charges for stored events: each event's type and
