@@ -154,10 +154,32 @@ run_in_published_server_container() {
     runner_args+=(--keep-run-root)
   fi
 
+  # Composer inside the published image trusts only the pinned Composer
+  # image's CA store and an empty directory (GHSA-6q48-6c7w-9gw2), whichever
+  # copy of this runner the image holds. The digest fixes that store's
+  # content; composer_trust_test.py checks it, and so does blocked_roots.py
+  # when this runner sits in a checkout.
+  local trust_dir="$result_dir/.composer-trust"
+  mkdir -p "$trust_dir/no-ca-directory"
+  docker run --rm --network none --entrypoint cat \
+    composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \
+    /etc/ssl/certs/ca-certificates.crt > "$trust_dir/ca.pem"
+  if [[ ! -s "$trust_dir/ca.pem" ]]; then
+    printf '%s\n' 'could not read the pinned Composer CA store' >&2
+    return 2
+  fi
+  if [[ -f "$script_dir/../ci/blocked_roots.py" ]]; then
+    python3 -I "$script_dir/../ci/blocked_roots.py" "$trust_dir/ca.pem" >&2 || return 2
+  fi
+  chmod 0555 "$trust_dir/no-ca-directory"
+
   docker run --rm \
     --user "$host_user" \
     --entrypoint bash \
     -v "$result_dir:/result" \
+    -v "$result_dir/.composer-trust:/composer-trust:ro" \
+    -e COMPOSER_CAFILE=/composer-trust/ca.pem \
+    -e COMPOSER_CAPATH=/composer-trust/no-ca-directory \
     "${docker_env[@]}" \
     "$server_image" \
     /app/scripts/conformance/activities-published-artifacts.sh \
@@ -231,13 +253,14 @@ prepare_focused_python_sdk() {
   local distribution
   mkdir -p "$distribution_dir"
   if python3 -m venv "$venv" >/dev/null 2>"$install_log" \
-    && "$venv/bin/python" -m pip download --disable-pip-version-check --no-deps \
+    && sh "$script_dir/../ci/bootstrap-patched-pip.sh" "$venv/bin/python" >>"$install_log" 2>&1 \
+    && "$venv/bin/python" -I -m pip download --disable-pip-version-check --no-deps \
       --dest "$distribution_dir" "durable-workflow==${DW_PYTHON_SDK_VERSION}" >>"$install_log" 2>&1 \
     && python3 "$script_dir/distribution_identities.py" record-unique \
       "$distribution_identity_file" sdk-python "$DW_PYTHON_SDK_VERSION" "$distribution_dir" '*' \
       >>"$install_log" 2>&1 \
     && distribution="$(find "$distribution_dir" -maxdepth 1 -type f -print -quit)" \
-    && "$venv/bin/python" -m pip install --disable-pip-version-check --no-input "$distribution" >>"$install_log" 2>&1; then
+    && "$venv/bin/python" -I -m pip install --disable-pip-version-check --no-input "$distribution" >>"$install_log" 2>&1; then
     export DW_ACTIVITIES_PYTHON_BIN="$venv/bin/python"
     return 0
   fi
@@ -364,6 +387,7 @@ prepare_published_php_activity_artifacts() {
 
   if ! (
     cd "$project_dir"
+    sh "$script_dir/../ci/composer-trust-guard.sh" &&
     COMPOSER_HOME="$run_root/composer-home" \
     COMPOSER_CACHE_DIR="$composer_cache" \
     composer install --no-interaction --no-progress --prefer-dist --no-scripts
