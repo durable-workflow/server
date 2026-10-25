@@ -84,8 +84,18 @@ final class WorkerSessionRegistry
         ?string $registrationToken = null,
     ): array {
         return DB::transaction(function () use ($namespace, $worker, $options, $registrationToken): array {
-            return $this->staleRegistration($namespace, $worker->worker_id, $registrationToken)
-                ?? $this->acquireLocked($namespace, $worker, $options, null);
+            // Admit against the registration as it is now, locked, not as the
+            // controller read it before the transaction.
+            $current = $this->lockedRegistration($namespace, $worker->worker_id);
+            if ($stale = $this->staleRegistration($current, $registrationToken)) {
+                return $stale;
+            }
+            if (! $current instanceof WorkerRegistration) {
+                return $this->failure('worker_not_registered', 'Worker must be registered before creating a worker session.', 412,
+                    ['worker_id' => $worker->worker_id]);
+            }
+
+            return $this->acquireLocked($namespace, $current, $options, null);
         });
     }
 
@@ -115,7 +125,7 @@ final class WorkerSessionRegistry
         ?string $registrationToken = null,
     ): array {
         return DB::transaction(function () use ($namespace, $workerId, $sessionId, $leaseSeconds, $registrationToken): array {
-            if ($stale = $this->staleRegistration($namespace, $workerId, $registrationToken)) {
+            if ($stale = $this->staleRegistration($this->lockedRegistration($namespace, $workerId), $registrationToken)) {
                 return $stale;
             }
 
@@ -208,7 +218,7 @@ final class WorkerSessionRegistry
     public function close(string $namespace, string $workerId, string $sessionId, ?string $registrationToken = null): array
     {
         return DB::transaction(function () use ($namespace, $workerId, $sessionId, $registrationToken): array {
-            if ($stale = $this->staleRegistration($namespace, $workerId, $registrationToken)) {
+            if ($stale = $this->staleRegistration($this->lockedRegistration($namespace, $workerId), $registrationToken)) {
                 return $stale;
             }
 
@@ -759,6 +769,33 @@ final class WorkerSessionRegistry
     }
 
     /**
+     * The worker's current registration, locked until the session request
+     * commits. A same-ID re-registration locks this row before it rotates the
+     * token, so the request either finishes before the rotation or sees it;
+     * it never checks one incarnation and writes for the next. SQLite ignores
+     * FOR UPDATE, so its writer lock is taken first, before any read, as
+     * ExternalPayloadBackupHold does.
+     */
+    private function lockedRegistration(string $namespace, string $workerId): ?WorkerRegistration
+    {
+        if (DB::getDriverName() === 'sqlite') {
+            DB::table((new WorkerRegistration)->getTable())
+                ->where('namespace', $namespace)
+                ->where('worker_id', $workerId)
+                ->update(['worker_id' => $workerId]);
+        }
+
+        /** @var WorkerRegistration|null $current */
+        $current = WorkerRegistration::query()
+            ->where('namespace', $namespace)
+            ->where('worker_id', $workerId)
+            ->lockForUpdate()
+            ->first();
+
+        return $current;
+    }
+
+    /**
      * A registration token the request sends must be the worker's current
      * one. Without a token, a stale process and its same-ID replacement are
      * indistinguishable once the replacement has reacquired, so a worker
@@ -769,14 +806,8 @@ final class WorkerSessionRegistry
      *
      * @return array<string, mixed>|null
      */
-    private function staleRegistration(string $namespace, string $workerId, ?string $registrationToken): ?array
+    private function staleRegistration(?WorkerRegistration $current, ?string $registrationToken): ?array
     {
-        /** @var WorkerRegistration|null $current */
-        $current = WorkerRegistration::query()
-            ->where('namespace', $namespace)
-            ->where('worker_id', $workerId)
-            ->first(['registration_token', 'capabilities']);
-
         if ($registrationToken === null) {
             return $current instanceof WorkerRegistration
                 && in_array(self::REGISTRATION_TOKEN_CAPABILITY, $current->capabilities ?? [], true)

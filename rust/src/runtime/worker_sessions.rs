@@ -36,6 +36,8 @@ const SESSIONS_LISTED: &str = "SELECT id,session_id,connection,queue,requirement
 const HELD_SESSIONS: &str = "SELECT COUNT(*) FROM workflow_worker_sessions WHERE namespace=$1 AND lease_owner=$2 AND status='active' AND (lease_expires_at IS NULL OR lease_expires_at>$3) AND session_id<>$4";
 const HOLDER: &str = "SELECT task_queue,status,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2";
 /// The worker's current registration token, as the poll fence reads it.
+/// The registration terms a worker session is admitted against.
+const SESSION_REGISTRATION: &str = "SELECT task_queue,capabilities,max_concurrent_worker_sessions FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2";
 /// The capabilities the worker's current registration declared.
 const REGISTRATION_CAPABILITIES: &str = "SELECT capabilities FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2";
 /// `WorkerSessionRegistry::REGISTRATION_TOKEN_CAPABILITY`: a worker that
@@ -472,7 +474,7 @@ store_methods! {
         sessions_gate(protocol)?;
         let body = validate(&body, true)?;
         let worker_id = body["worker_id"].as_str().unwrap_or_default().to_owned();
-        let Some(worker) = Self::query("SELECT task_queue,capabilities,max_concurrent_worker_sessions FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
+        let Some(worker) = Self::query(SESSION_REGISTRATION)
             .bind(self.namespace.as_ref()).bind(&worker_id).fetch_optional(&self.pool).await?
         else {
             return Err(RuntimeError::Protocol { status: StatusCode::PRECONDITION_FAILED,
@@ -488,18 +490,30 @@ store_methods! {
             return Err(RuntimeError::Protocol { status: StatusCode::UNPROCESSABLE_ENTITY,
                 response: json!({"error":"Worker session requires a non-empty session_id.","reason":"invalid_worker_session"}) });
         };
-        let capabilities: Vec<String> = DB::optional_document_row(&worker, "capabilities")?
-            .as_ref()
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|value| value.as_str().map(str::to_owned))
-            .collect();
-        let limit = DB::optional_number(&worker, "max_concurrent_worker_sessions")?.unwrap_or(10);
         let mut tx = self.begin().await?;
+        // Admit against the registration as it is inside the transaction, not
+        // as it was read above, as PHP's createOrReacquire does under its row
+        // lock; begin() serializes this with every re-registration.
+        let current = Self::query(SESSION_REGISTRATION)
+            .bind(self.namespace.as_ref()).bind(&worker_id).fetch_optional(&mut *tx).await?;
         let answer = match self.stale_registration(&mut tx, &worker_id, body["registration_token"].as_str()).await? {
             Some(stale) => stale,
-            None => self.acquire(&mut tx, &worker_id, &task_queue, &capabilities, limit, &options, None).await?,
+            None => match current {
+                None => failure("worker_not_registered", "Worker must be registered before creating a worker session.",
+                    StatusCode::PRECONDITION_FAILED, Map::from_iter([("worker_id".to_owned(), json!(worker_id))])),
+                Some(current) => {
+                    let capabilities: Vec<String> = DB::optional_document_row(&current, "capabilities")?
+                        .as_ref()
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|value| value.as_str().map(str::to_owned))
+                        .collect();
+                    let limit = DB::optional_number(&current, "max_concurrent_worker_sessions")?.unwrap_or(10);
+                    let queue = DB::string(&current, "task_queue")?;
+                    self.acquire(&mut tx, &worker_id, &queue, &capabilities, limit, &options, None).await?
+                }
+            },
         };
         tx.commit().await?;
         Ok(answer)
