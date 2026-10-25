@@ -18,6 +18,7 @@ use App\Support\QueryTaskQueueFullException;
 use App\Support\RuntimeExternalPayloadRegistry;
 use App\Support\ServerPollingCache;
 use App\Support\WorkerProtocol;
+use App\Support\WorkerTaskDelivery;
 use App\Support\WorkflowQueryTaskBroker;
 use Illuminate\Cache\ArrayStore;
 use Illuminate\Cache\Repository as CacheRepository;
@@ -75,6 +76,58 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $this->assertSame('2026-10-14T22:00:00.123456Z', $task['query_admitted_at'] ?? null);
         $this->assertSame('2026-10-14T22:00:30.123456Z', $task['query_deadline_at'] ?? null);
         $this->assertSame('2026-10-14T22:03:00.123456Z', $task['receipt_expires_at'] ?? null);
+    }
+
+    public function test_query_offer_leaves_authority_pending_and_acceptance_replays_after_reply_loss(): void
+    {
+        Queue::fake();
+        $run = $this->startRemoteWorkflow('query-delivery');
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+        $this->registerPythonWorker('delivery-worker', 'python-queries', ['python.queryable'], ['query_tasks', WorkerTaskDelivery::CAPABILITY]);
+        WorkerRegistration::query()->where('worker_id', 'delivery-worker')->firstOrFail()
+            ->forceFill(['registration_token' => str_repeat('a', 32)])->save();
+        $headers = $this->workerHeaders() + [WorkerTaskDelivery::HEADER => WorkerTaskDelivery::VERSION];
+        $body = ['worker_id' => 'delivery-worker', 'task_queue' => 'python-queries', 'timeout_seconds' => 0,
+            'poll_request_id' => 'delivery-poll', 'registration_token' => str_repeat('a', 32)];
+        $path = '/api/worker/query-tasks/offers';
+        $before = $broker->task($task['query_task_id']);
+        $offer = $this->postJson($path, $body, $headers)->assertOk()->assertJsonPath('poll_status', 'offered');
+        $this->assertSame($before, $broker->task($task['query_task_id']));
+        $acceptance = $body + ['task_offer_token' => $offer->json('task_offer.token')];
+        $first = $this->postJson($path, $acceptance, $headers)->assertOk()
+            ->assertJsonPath('task.query_task_id', $task['query_task_id'])->assertJsonPath('task.query_task_attempt', 1);
+        $this->travel(3)->seconds();
+        // Replay is sourced from the original domain record even if an index
+        // write or response was lost after the accepted record committed.
+        app(ServerPollingCache::class)->store()->forget('server:workflow-query-task:leased:'.sha1('default|python-queries|delivery-worker'));
+        $this->postJson($path, $acceptance, $headers)->assertOk()
+            ->assertJsonPath('task.query_task_id', $first->json('task.query_task_id'))
+            ->assertJsonPath('task.query_task_attempt', 1);
+        $this->assertSame(1, $broker->task($task['query_task_id'])['attempt_count']);
+        $this->assertSame($task['query_deadline_at'], $broker->task($task['query_task_id'])['query_deadline_at']);
+    }
+
+    public function test_unaccepted_query_offer_does_not_block_a_peer(): void
+    {
+        Queue::fake();
+        $run = $this->startRemoteWorkflow('query-delivery-peer');
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+        $this->registerPythonWorker('delivery-worker', 'python-queries', ['python.queryable'], ['query_tasks', WorkerTaskDelivery::CAPABILITY]);
+        WorkerRegistration::query()->where('worker_id', 'delivery-worker')->firstOrFail()
+            ->forceFill(['registration_token' => str_repeat('a', 32)])->save();
+        $headers = $this->workerHeaders() + [WorkerTaskDelivery::HEADER => WorkerTaskDelivery::VERSION];
+        $body = ['worker_id' => 'delivery-worker', 'task_queue' => 'python-queries', 'timeout_seconds' => 0,
+            'poll_request_id' => 'delivery-poll', 'registration_token' => str_repeat('a', 32)];
+        $offer = $this->postJson('/api/worker/query-tasks/offers', $body, $headers)->assertOk();
+        $this->registerPythonWorker('peer', 'python-queries', ['python.queryable']);
+        $this->postJson('/api/worker/query-tasks/poll', ['worker_id' => 'peer', 'task_queue' => 'python-queries', 'timeout_seconds' => 0], $this->workerHeaders())
+            ->assertOk()->assertJsonPath('task.query_task_id', $task['query_task_id']);
+        $before = $broker->task($task['query_task_id']);
+        $this->postJson('/api/worker/query-tasks/offers', $body + ['task_offer_token' => $offer->json('task_offer.token')], $headers)
+            ->assertConflict();
+        $this->assertSame($before, $broker->task($task['query_task_id']));
     }
 
     public function test_late_query_claim_keeps_original_deadline_despite_configuration_change(): void

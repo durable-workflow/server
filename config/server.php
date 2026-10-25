@@ -246,6 +246,8 @@ return [
     */
 
     'polling' => [
+        // Offers start no lease. A worker must accept within this short budget.
+        'task_offer_accept_seconds' => 2,
         'timeout' => (int) EnvAuditor::env(
             'DW_WORKER_POLL_TIMEOUT',
             'WORKFLOW_SERVER_WORKER_POLL_TIMEOUT',

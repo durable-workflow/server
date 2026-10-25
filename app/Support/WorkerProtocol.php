@@ -510,6 +510,17 @@ class WorkerProtocol
             'query_task_poll_request_idempotency' => true,
             'query_task_authority' => true,
             'query_task_timeouts' => self::queryTaskTimeouts(),
+            'task_delivery' => [
+                'schema' => WorkerTaskDelivery::SCHEMA,
+                'supported' => true,
+                'minimum_protocol_version' => '1.20',
+                'worker_capability' => WorkerTaskDelivery::CAPABILITY,
+                'header' => WorkerTaskDelivery::HEADER,
+                'version' => WorkerTaskDelivery::VERSION,
+                'endpoint_suffix' => '/offers',
+                'acceptance_timeout_seconds' => max(1, min(10, (int) config('server.polling.task_offer_accept_seconds', 2))),
+                'unaccepted_offer_reserves_task' => false,
+            ],
             'update_validation_tasks' => true,
             'synchronous_update_validation' => [
                 'supported' => true,

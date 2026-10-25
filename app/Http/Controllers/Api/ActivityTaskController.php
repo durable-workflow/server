@@ -23,6 +23,7 @@ use App\Support\WorkerPollBackpressure;
 use App\Support\WorkerProtocol;
 use App\Support\WorkerProtocolMutationRetrier;
 use App\Support\WorkerSessionRegistry;
+use App\Support\WorkerTaskDelivery;
 use App\Support\WorkflowObservabilityPoll;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
@@ -133,6 +134,7 @@ class ActivityTaskController
                 ),
                 timeoutSeconds: $timeoutSeconds,
                 protocolVersion: WorkerProtocol::requestVersion($request),
+                delivery: WorkerTaskDelivery::forRequest($request, $worker, $namespace, $validated['task_queue'], $validated['poll_request_id'] ?? null),
             );
         } catch (\Throwable $exception) {
             if ($exception instanceof InvalidArgumentException
@@ -163,6 +165,9 @@ class ActivityTaskController
             }
 
             throw $exception;
+        }
+        if (is_array($poll['task']['delivery_offer'] ?? null)) {
+            return WorkerProtocol::json(['task' => null, 'task_offer' => $poll['task']['delivery_offer'], 'poll_status' => 'offered']);
         }
         $claim = $poll['task'] ?? null;
 

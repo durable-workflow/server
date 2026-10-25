@@ -42,6 +42,7 @@ use App\Support\WorkerPollBackpressure;
 use App\Support\WorkerPollFence;
 use App\Support\WorkerProtocol;
 use App\Support\WorkerProtocolMutationRetrier;
+use App\Support\WorkerTaskDelivery;
 use App\Support\WorkerTerminalEventAttribution;
 use App\Support\WorkflowHistoryPageToken;
 use App\Support\WorkflowMetadataCapabilityPolicy;
@@ -1391,6 +1392,7 @@ class WorkerController
                 ),
                 timeoutSeconds: $timeoutSeconds,
                 taskKinds: $taskKinds,
+                delivery: WorkerTaskDelivery::forRequest($request, $worker, $namespace, $validated['task_queue'], $validated['poll_request_id'] ?? null),
             );
         } catch (\Throwable $exception) {
             if ($exception instanceof \InvalidArgumentException
@@ -1448,6 +1450,9 @@ class WorkerController
             throw $exception;
         }
 
+        if (is_array($poll['task']['delivery_offer'] ?? null)) {
+            return WorkerProtocol::json(['task' => null, 'task_offer' => $poll['task']['delivery_offer'], 'poll_status' => 'offered']);
+        }
         $task = $this->formatTaskHistoryPagination($poll['task'] ?? null);
 
         // PHP SDKs before 2.2.0 reject the valid StartAccepted prefix when
@@ -4223,6 +4228,7 @@ class WorkerController
                 $worker,
                 $validated['poll_request_id'] ?? null,
                 $timeoutSeconds,
+                WorkerTaskDelivery::forRequest($request, $worker, $namespace, $validated['task_queue'], $validated['poll_request_id'] ?? null),
             );
         } catch (QueryTaskQueueUnavailableException $exception) {
             return WorkerProtocol::json([
@@ -4253,6 +4259,10 @@ class WorkerController
             }
 
             throw $exception;
+        }
+
+        if (isset($poll['task']['delivery_offer'])) {
+            return WorkerProtocol::json(['task' => null, 'task_offer' => $poll['task']['delivery_offer'], 'poll_status' => 'offered']);
         }
 
         $pollContext = [
@@ -4477,6 +4487,7 @@ class WorkerController
         $validated = $request->validate([
             'worker_id' => ['required', 'string'],
             'task_queue' => ['required', 'string'],
+            'poll_request_id' => ['nullable', 'string', 'max:255'],
             'timeout_seconds' => [
                 'nullable',
                 'integer',
@@ -4512,6 +4523,7 @@ class WorkerController
                 $namespace,
                 $worker,
                 isset($validated['timeout_seconds']) ? (int) $validated['timeout_seconds'] : null,
+                WorkerTaskDelivery::forRequest($request, $worker, $namespace, $validated['task_queue'], $validated['poll_request_id'] ?? null),
             );
         } catch (LongPollCapacityExhaustedException $exception) {
             return WorkerPollBackpressure::response(
@@ -4530,6 +4542,10 @@ class WorkerController
                 $namespace,
                 $validated['task_queue'],
             );
+        }
+
+        if (isset($poll['task']['delivery_offer'])) {
+            return WorkerProtocol::json(['task' => null, 'task_offer' => $poll['task']['delivery_offer'], 'poll_status' => 'offered']);
         }
 
         return WorkerProtocol::json($poll);

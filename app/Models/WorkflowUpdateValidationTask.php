@@ -37,6 +37,7 @@ final class WorkflowUpdateValidationTask extends Model
             'attempt_count' => 'integer',
             'command_context' => 'array',
             'validation_errors' => 'array',
+            'delivery_receipt' => 'array',
             'lease_expires_at' => 'datetime',
             'approved_at' => 'datetime',
             'rejected_at' => 'datetime',

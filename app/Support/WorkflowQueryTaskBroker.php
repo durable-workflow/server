@@ -544,6 +544,7 @@ final class WorkflowQueryTaskBroker
         WorkerRegistration $worker,
         ?string $pollRequestId = null,
         ?int $timeoutSeconds = null,
+        ?WorkerTaskDelivery $delivery = null,
     ): array {
         $pollRequestId = $this->stringValue($pollRequestId);
         $taskQueue = (string) $worker->task_queue;
@@ -564,6 +565,15 @@ final class WorkflowQueryTaskBroker
             ? hash('sha256', $worker->registration_token) : null;
 
         $this->rememberQueryTaskPollingWorker($namespace, $taskQueue, $worker->worker_id, $timeoutSeconds);
+
+        if ($delivery !== null) {
+            return $this->pollResultFromValue($this->performPoll(
+                $namespace, $taskQueue, $worker->worker_id, $supportedWorkflowTypes,
+                $workflowDefinitionFingerprints, $buildId, $pollRequestId,
+                $delivery->accepting() ? 0 : $this->queryPollTimeoutSeconds($timeoutSeconds),
+                $workerPollFence, $crossKindWake, $delivery,
+            ));
+        }
 
         if ($pollRequestId !== null) {
             $this->pollRequests->markCurrentIfFresh($namespace, $taskQueue, $buildId, $worker->worker_id, $pollRequestId);
@@ -745,6 +755,9 @@ final class WorkflowQueryTaskBroker
      */
     private function pollResultFromValue(?array $task): array
     {
+        if (isset($task['delivery_offer'])) {
+            return ['task' => $task, 'poll_status' => 'offered'];
+        }
         if (is_array($task) && ! array_key_exists('query_task_id', $task)) {
             return [
                 'task' => null,
@@ -872,11 +885,12 @@ final class WorkflowQueryTaskBroker
         ?int $timeoutSeconds = null,
         array $workerPollFence = [],
         bool $crossKindWake = false,
+        ?WorkerTaskDelivery $delivery = null,
     ): ?array {
         $workflowBlockStatus = null;
 
         $result = $this->longPoller->until(
-            function () use ($namespace, $taskQueue, $leaseOwner, $supportedWorkflowTypes, $workflowDefinitionFingerprints, $buildId, $pollRequestId, $workerPollFence, &$workflowBlockStatus): ?array {
+            function () use ($namespace, $taskQueue, $leaseOwner, $supportedWorkflowTypes, $workflowDefinitionFingerprints, $buildId, $pollRequestId, $workerPollFence, $delivery, &$workflowBlockStatus): ?array {
                 app(StoragePressure::class)->requireNewWork();
 
                 if ($workerPollFence !== [] && ! WorkerPollFence::isCurrent($workerPollFence)) {
@@ -884,14 +898,16 @@ final class WorkflowQueryTaskBroker
                 }
 
                 if (
-                    $pollRequestId !== null
+                    $delivery === null && $pollRequestId !== null
                     && ! $this->pollRequests->isCurrent($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId)
                 ) {
                     return ['poll_status' => 'superseded'];
                 }
 
                 if ($pollRequestId !== null) {
-                    $activeLease = $this->activeLeasedTaskForPoller(
+                    $offeredId = $delivery?->offeredTaskId('query');
+                    $offeredTask = $offeredId === null ? null : $this->task($offeredId);
+                    $activeLease = ($offeredTask['status'] ?? null) === 'leased' ? $offeredTask : $this->activeLeasedTaskForPoller(
                         $namespace,
                         $taskQueue,
                         $leaseOwner,
@@ -902,6 +918,10 @@ final class WorkflowQueryTaskBroker
                     );
 
                     if (is_array($activeLease)) {
+                        if ($delivery !== null) {
+                            $this->assertQueryDelivery($delivery, $activeLease, $namespace, $taskQueue, $leaseOwner);
+                        }
+
                         return $this->queryTaskPayload($activeLease);
                     }
                 }
@@ -932,6 +952,7 @@ final class WorkflowQueryTaskBroker
                     $buildId,
                     $pollRequestId,
                     $workerPollFence,
+                    $delivery,
                 );
             },
             static fn (?array $task): bool => $task !== null,
@@ -1689,6 +1710,7 @@ final class WorkflowQueryTaskBroker
         ?string $buildId = null,
         ?string $pollRequestId = null,
         array $workerPollFence = [],
+        ?WorkerTaskDelivery $delivery = null,
     ): ?array {
         $task = $this->withQueueLock(
             $namespace,
@@ -1703,10 +1725,11 @@ final class WorkflowQueryTaskBroker
                 $pollRequestId,
                 $workerPollFence,
                 $lock,
+                $delivery,
             )),
         );
 
-        if (in_array($task['poll_status'] ?? null, ['superseded', 'stale_worker_registration'], true)) {
+        if (isset($task['delivery_offer']) || in_array($task['poll_status'] ?? null, ['superseded', 'stale_worker_registration'], true)) {
             return $task;
         }
 
@@ -1793,11 +1816,30 @@ final class WorkflowQueryTaskBroker
         ?string $pollRequestId = null,
         array $workerPollFence = [],
         ?LockContract $queueLock = null,
+        ?WorkerTaskDelivery $delivery = null,
     ): ?array {
+        if ($delivery !== null) {
+            $delivery->lockWorker();
+            $offeredId = $delivery->offeredTaskId('query');
+            $offeredTask = $offeredId === null ? null : $this->task($offeredId);
+            $accepted = ($offeredTask['status'] ?? null) === 'leased' ? $offeredTask : $this->activeLeasedTaskForPoller(
+                $namespace, $taskQueue, $leaseOwner, $supportedWorkflowTypes, $workflowDefinitionFingerprints, $buildId, $pollRequestId,
+            );
+            if (is_array($accepted)) {
+                $this->assertQueryDelivery($delivery, $accepted, $namespace, $taskQueue, $leaseOwner);
+
+                return $accepted;
+            }
+        }
         $ids = $this->pendingTaskIds($namespace, $taskQueue);
         $remaining = [];
 
         foreach ($ids as $queryTaskId) {
+            if ($delivery?->accepting() && $delivery->offeredTaskId('query') !== $queryTaskId) {
+                $remaining[] = $queryTaskId;
+
+                continue;
+            }
             $task = $this->task($queryTaskId);
 
             if (! is_array($task) || ($task['status'] ?? null) !== 'pending') {
@@ -1821,7 +1863,7 @@ final class WorkflowQueryTaskBroker
             }
 
             if (
-                $pollRequestId !== null
+                $delivery === null && $pollRequestId !== null
                 && ! $this->pollRequests->isCurrent($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId)
             ) {
                 return ['poll_status' => 'superseded'];
@@ -1844,6 +1886,13 @@ final class WorkflowQueryTaskBroker
 
             $deadline = $this->originalDeadline($task);
             $this->assertQueueLockOwned($namespace, $taskQueue, $queueLock);
+            if ($delivery !== null) {
+                $fingerprint = $this->deliveryFingerprint($task);
+                if (! $delivery->accepting()) {
+                    return $delivery->issue($queryTaskId, 'query', (int) ($task['attempt_count'] ?? 0), $fingerprint);
+                }
+                $delivery->assertAcceptance($queryTaskId, 'query', (int) ($task['attempt_count'] ?? 0), $fingerprint);
+            }
             $leaseExpiresAt = now()->addSeconds($this->leaseTtlSeconds())->min($deadline);
             if (! $this->store()->add($this->leaseKey($queryTaskId), $leaseOwner, $leaseExpiresAt)) {
                 $remaining[] = $queryTaskId;
@@ -1859,6 +1908,15 @@ final class WorkflowQueryTaskBroker
             $task['attempt_count'] = $attempt;
             $task['leased_at'] = now()->toJSON();
             $task['poll_request_id'] = $pollRequestId;
+
+            if ($delivery !== null) {
+                try {
+                    $task[WorkerTaskDelivery::RECEIPT_KEY] = $delivery->acceptedReceipt($attempt);
+                } catch (TaskDeliveryOfferRejected $exception) {
+                    $this->store()->forget($this->leaseKey($queryTaskId));
+                    throw $exception;
+                }
+            }
 
             $this->putTask($task);
             $this->appendLeasedTask($namespace, $taskQueue, $leaseOwner, $queryTaskId);
@@ -1877,6 +1935,29 @@ final class WorkflowQueryTaskBroker
         $this->storePendingTaskIds($namespace, $taskQueue, $remaining);
 
         return null;
+    }
+
+    private function assertQueryDelivery(WorkerTaskDelivery $delivery, array $task, string $namespace, string $taskQueue, string $leaseOwner): void
+    {
+        if (($task['namespace'] ?? null) !== $namespace || ($task['task_queue'] ?? null) !== $taskQueue
+            || ($task['lease_owner'] ?? null) !== $leaseOwner || ($task['status'] ?? null) !== 'leased'
+            || ! $this->timestamp($task['lease_expires_at'] ?? null)?->isFuture()
+            || $this->deadlineRefusal($task) !== null) {
+            throw new TaskDeliveryOfferRejected('task_offer_lost_authority');
+        }
+        $delivery->assertReceipt($task[WorkerTaskDelivery::RECEIPT_KEY] ?? null,
+            $task['query_task_id'], (int) ($task['attempt_count'] ?? 0));
+    }
+
+    private function deliveryFingerprint(array $task): string
+    {
+        foreach (['status', 'attempt_count', 'lease_owner', 'lease_expires_at', 'registration_incarnation',
+            'leased_at', 'poll_request_id', WorkerTaskDelivery::RECEIPT_KEY] as $key) {
+            unset($task[$key]);
+        }
+        ksort($task);
+
+        return hash('sha256', json_encode($task, JSON_THROW_ON_ERROR));
     }
 
     /**
