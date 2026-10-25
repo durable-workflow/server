@@ -28,6 +28,10 @@
         "CREATE TABLE `dw_worker_registration_incarnations` (\n  `token` char(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,\n  `namespace` varchar(255) NOT NULL,\n  `worker_id` varchar(255) NOT NULL,\n  `status` varchar(32) NOT NULL,\n  `recovered_workflow_task_count` bigint(20) DEFAULT NULL,\n  `finished_at` datetime(6) DEFAULT NULL,\n  `created_at` datetime(6) NOT NULL,\n  `updated_at` datetime(6) NOT NULL,\n  PRIMARY KEY (`token`),\n  KEY `dw_worker_incarnation_authority` (`namespace`,`worker_id`,`status`),\n  KEY `dw_worker_incarnation_retention` (`status`,`finished_at`),\n  CONSTRAINT `dw_worker_incarnation_state` CHECK (`status` = 'active' and `finished_at` is null and `recovered_workflow_task_count` is null or `status` = 'superseded' and `finished_at` is not null and `recovered_workflow_task_count` is null or `status` = 'deregistered' and `finished_at` is not null and `recovered_workflow_task_count` is not null and `recovered_workflow_task_count` >= 0)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
     ],
     [
+        "dw_worker_session_holders",
+        "CREATE TABLE `dw_worker_session_holders` (\n  `namespace` varchar(128) NOT NULL,\n  `session_id` varchar(255) NOT NULL,\n  `incarnation` char(64) COLLATE ascii_bin NOT NULL,\n  `updated_at` datetime(6) NOT NULL,\n  PRIMARY KEY (`namespace`,`session_id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    ],
+    [
         "failed_jobs",
         "CREATE TABLE `failed_jobs` (\n  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,\n  `uuid` varchar(255) NOT NULL,\n  `connection` text NOT NULL,\n  `queue` text NOT NULL,\n  `payload` longtext NOT NULL,\n  `exception` longtext NOT NULL,\n  `failed_at` timestamp NOT NULL DEFAULT current_timestamp(),\n  PRIMARY KEY (`id`),\n  UNIQUE KEY `failed_jobs_uuid_unique` (`uuid`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
     ],
