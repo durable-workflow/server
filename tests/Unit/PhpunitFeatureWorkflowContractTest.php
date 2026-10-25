@@ -106,7 +106,7 @@ class PhpunitFeatureWorkflowContractTest extends TestCase
         $this->assertSame(0, $checkout['with']['fetch-depth'] ?? null);
         $this->assertFalse($checkout['with']['persist-credentials'] ?? null);
         $this->assertSame(
-            '${{ github.event_name == \'pull_request\' && github.event.pull_request.base.sha || github.event_name == \'push\' && github.event.before || inputs.corpus_base_ref }}',
+            '${{ github.event_name == \'pull_request\' && github.event.pull_request.base.sha || github.event_name == \'merge_group\' && github.event.merge_group.base_sha || github.event_name == \'push\' && github.event.before || inputs.corpus_base_ref }}',
             $execution['env']['CORPUS_BASE_REF'] ?? null,
         );
         $this->assertArrayNotHasKey('if', $execution);
