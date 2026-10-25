@@ -107,6 +107,7 @@ mod task_queue_build_ids;
 mod task_queues;
 mod query_route;
 mod run_describe;
+mod waterline_import;
 mod workflow_import;
 mod workflow_streams;
 mod schedule_list;

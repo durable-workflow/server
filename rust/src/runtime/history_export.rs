@@ -64,6 +64,7 @@ pub(super) const RUN: &[(&str, Column)] = &[
     ("queue", Text), ("last_history_sequence", Int), ("started_at", Time), ("closed_at", Time), ("archived_at", Time),
     ("archive_command_id", Text), ("archive_reason", Text), ("last_progress_at", Time), ("updated_at", Time),
     ("current_run_id", Text), ("instance_business_key", Text), ("instance_visibility_labels", Json), ("continuations", Int),
+    ("import_source", Text), ("imported_at", Time), ("import_dedupe_key", Text),
 ];
 pub(super) const RUN_SQL: &str = "SELECT r.*,i.current_run_id,i.business_key AS instance_business_key,i.visibility_labels AS instance_visibility_labels,(SELECT COUNT(*) FROM workflow_links l WHERE l.child_workflow_instance_id=r.workflow_instance_id AND l.link_type='continue_as_new') AS continuations FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE i.id=$1 AND r.id=$2 AND r.namespace=$3";
 pub(super) const SUMMARY: &[(&str, Column)] = &[
@@ -602,10 +603,11 @@ fn codec_schemas() -> Value {
 }
 
 /// `withIntegrity`: SHA-256, and HMAC-SHA-256 when a key is configured, over
-/// the bundle's canonical JSON. Native objects keep their keys sorted, so
-/// compact serialization is the recursive-ksort canonical form.
+/// the bundle's canonical JSON as PHP encodes it: maps key-sorted, lists in
+/// order, slashes unescaped, zero fractions kept, and non-ASCII text escaped,
+/// so PHP's importer verifies a native export.
 fn integrity(bundle: &Value, signing: Option<&Signing>) -> Value {
-    let canonical = serde_json::to_string(bundle).expect("JSON values serialize");
+    let canonical = canonical_json(bundle);
     let checksum = hex(&Sha256::digest(canonical.as_bytes()));
     let signature = signing.map(|signing| {
         let mut mac = Hmac::<Sha256>::new_from_slice(signing.key.as_bytes()).expect("HMAC takes any key length");
@@ -615,6 +617,26 @@ fn integrity(bundle: &Value, signing: Option<&Signing>) -> Value {
     json!({"canonicalization": "json-recursive-ksort-v1", "checksum_algorithm": "sha256", "checksum": checksum,
         "signature_algorithm": signing.map(|_| "hmac-sha256"), "signature": signature,
         "key_id": signing.and_then(|signing| signing.key_id.clone())})
+}
+
+/// `BundleIntegrityVerifier::canonicalJson` of a bundle.
+pub(super) fn canonical_json(bundle: &Value) -> String {
+    let text = serde_json::to_vec(bundle).expect("JSON values serialize");
+    super::php_value::decode(&text).expect("serialized JSON decodes").canonical().encode(super::php_value::CANONICAL)
+}
+
+/// `LegacyV1Projection::metadataForRun` from the export's own rows.
+fn projection_metadata(rows: &Rows) -> Value {
+    let migration = rows.events.first().map(|event| event["payload"]["migration_projection"].clone()).unwrap_or(Value::Null);
+    json!({
+        "origin": migration["origin"],
+        "identity": migration["identity"],
+        "task_queue_context": migration["task_queue_context"],
+        "unsupported_fields": migration["unsupported_fields"].as_array().cloned().unwrap_or_default(),
+        "projection": {"schema": super::waterline_import::SCHEMA, "version": super::waterline_import::VERSION,
+            "read_only": true, "execution_owner": "v1", "imported_at": rows.run["imported_at"],
+            "dedupe_key": rows.run["import_dedupe_key"]},
+    })
 }
 
 /// `HistoryExport::forRun`.
@@ -652,6 +674,11 @@ pub(super) fn bundle(rows: &Rows, exported_at: &str, signing: Option<&Signing>) 
         "codec_schemas": codec_schemas(),
     });
     bundle["payload_manifest"] = manifest(&bundle);
+    // `decorateHistoryExport`: a Waterline v1 projection carries its
+    // provenance, and the integrity block covers it.
+    if run["import_source"] == super::waterline_import::IMPORT_SOURCE {
+        bundle["migration_projection"] = projection_metadata(rows);
+    }
     bundle["integrity"] = integrity(&bundle, signing);
     bundle
 }
@@ -684,11 +711,18 @@ mod tests {
         let signed = bundle(&rows, "now", Some(&signing));
         let mut unsigned = signed.clone();
         unsigned.as_object_mut().unwrap().remove("integrity");
-        let canonical = serde_json::to_string(&unsigned).unwrap();
+        let canonical = canonical_json(&unsigned);
         assert_eq!(signed["integrity"]["checksum"], hex(&Sha256::digest(canonical.as_bytes())));
         assert_eq!(signed["integrity"]["signature_algorithm"], "hmac-sha256");
         assert_eq!(signed["integrity"]["key_id"], "v1");
         assert_eq!(signed["dedupe_key"], "r:2:t");
         assert_eq!(signed["history_complete"], true);
+    }
+
+    #[test]
+    fn canonical_json_matches_php() {
+        // PHP printed {"a":[2,1],"b":1.0,"k":"\u03bb/x"} for this value with
+        // JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION after ksort.
+        assert_eq!(canonical_json(&json!({"k": "λ/x", "b": 1.0, "a": [2, 1]})), r#"{"a":[2,1],"b":1.0,"k":"\u03bb/x"}"#);
     }
 }
