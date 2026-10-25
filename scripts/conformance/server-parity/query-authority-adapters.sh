@@ -19,7 +19,7 @@ cp "$cargo_target/debug/server-parity-query-authority-client" "$output/rust-clie
 cp scripts/conformance/server-parity/query-authority/rust/Cargo.lock "$output/Cargo.lock"
 docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=512m --memory-swap=512m \
   -v "$PWD:/source:ro" -v "$PWD/$output:/adapters" "$python_image" \
-  python -m pip install --disable-pip-version-check --no-cache-dir --no-compile --only-binary=:all: --require-hashes \
+  sh /source/scripts/ci/patched-pip.sh install --disable-pip-version-check --no-cache-dir --no-compile --only-binary=:all: --require-hashes \
   --target /adapters/python --report /adapters/python-install.json \
   -r /source/scripts/conformance/server-parity/query-authority/requirements.txt >"$output/python-install.txt" 2>&1
 docker run --rm -i --user="$(id -u):$(id -g)" --network=none --cpus=1 --memory=256m --memory-swap=256m \

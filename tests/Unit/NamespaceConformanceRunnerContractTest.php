@@ -142,8 +142,8 @@ class NamespaceConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('"durable-workflow/waterline:${waterline_version}@beta"', $source);
         $this->assertStringContainsString('"durable-workflow/workflow:${workflow_php_version}@beta"', $source);
         $this->assertStringContainsString('"durable-workflow/sdk:${sdk_php_version}@beta"', $source);
-        $this->assertStringContainsString('composer:2 php artisan migrate --force', $source);
-        $this->assertStringContainsString('composer:2 php artisan waterline:namespace-conformance', $source);
+        $this->assertStringContainsString('composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan migrate --force', $source);
+        $this->assertStringContainsString('composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan waterline:namespace-conformance', $source);
         $this->assertStringContainsString('--output /result/waterline-namespace-result.json', $source);
         $this->assertStringContainsString('DW_NAMESPACES_WATERLINE_RESULT="$waterline_result_path"', $source);
         $this->assertStringContainsString('"required": True', $source);

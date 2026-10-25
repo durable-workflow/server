@@ -21,7 +21,7 @@ cp "${vcs_sources[0]}" sdk-direction-adapters/rust-sdk-vcs.json
 docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=512m --memory-swap=512m \
   -v "$PWD:/source:ro" -v "$PWD/sdk-direction-adapters:/adapters" \
   mirror.gcr.io/library/python@sha256:bf44cdfcb76cd3b41e879bc058fc37ec5872002ccfde7fcb765e218cde0cd79c \
-  python -m pip install --disable-pip-version-check --no-cache-dir --no-compile --only-binary=:all: --require-hashes \
+  sh /source/scripts/ci/patched-pip.sh install --disable-pip-version-check --no-cache-dir --no-compile --only-binary=:all: --require-hashes \
   --target /adapters/python-packages --report /adapters/python-install-report.json \
   -r "/source/$adapter/requirements.txt" > sdk-direction-adapters/python-install.txt 2>&1
 image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' "$profile/artifacts.json")

@@ -60,7 +60,8 @@ const STALE_WORKER_ID = `heartbeat-${CELL}-stale-${SUFFIX}`;
 const FRESH_WORKER_ID = `heartbeat-${CELL}-fresh-${SUFFIX}`;
 const WORKFLOW_TYPE = `conformance.heartbeat.${CELL}`;
 const TOKEN = env('DW_HEARTBEATS_AUTH_TOKEN') || 'dev-token';
-const PHP_IMAGE = env('DW_HEARTBEATS_PHP_IMAGE') || 'composer:2';
+// The pinned image's CA store is checked (GHSA-6q48-6c7w-9gw2).
+const PHP_IMAGE = 'composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee';
 const PYTHON_IMAGE = env('DW_HEARTBEATS_PYTHON_IMAGE') || 'python:3.12-slim';
 const RUST_IMAGE = env('DW_HEARTBEATS_RUST_IMAGE') || 'rust:1.86.0-slim-bookworm';
 const SERVER_VERSION = env('DW_SERVER_VERSION');
@@ -1404,6 +1405,11 @@ function pythonRuntimeArgs() {
   ];
 }
 
+// pip runs from the patched, bundle-only bootstrap (GHSA-6q48-6c7w-9gw2).
+function patchedPipArgs() {
+  return ['-v', `${path.join(REPO_ROOT, 'scripts', 'ci')}:/dw-ci:ro`];
+}
+
 function installPythonPackage() {
   if (!commandExists('docker')) throw new Error('docker is required to install the pinned public Python package');
   writePythonProject();
@@ -1415,8 +1421,9 @@ function installPythonPackage() {
   run('docker', [
     'run', '--rm',
     ...pythonRuntimeArgs(),
+    ...patchedPipArgs(),
     PYTHON_IMAGE,
-    'python', '-m', 'pip', 'download', '--disable-pip-version-check', '--no-deps',
+    'sh', '/dw-ci/patched-pip.sh', 'download', '--disable-pip-version-check', '--no-deps',
     '--dest', '/app/distributions',
     `durable-workflow==${SDK_PYTHON_VERSION}`,
   ], { timeout: 600_000 });
@@ -1429,8 +1436,9 @@ function installPythonPackage() {
   run('docker', [
     'run', '--rm',
     ...pythonRuntimeArgs(),
+    ...patchedPipArgs(),
     PYTHON_IMAGE,
-    'python', '-m', 'pip', 'install', '--disable-pip-version-check', '--no-cache-dir',
+    'sh', '/dw-ci/patched-pip.sh', 'install', '--disable-pip-version-check', '--no-cache-dir',
     '--target', '/app/site-packages',
     `/app/distributions/${distribution}`,
   ], { timeout: 600_000 });

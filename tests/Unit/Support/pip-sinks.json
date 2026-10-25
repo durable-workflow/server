@@ -1,0 +1,529 @@
+{
+  "schema": "durable-workflow.server.pip-sinks/v2",
+  "advisory": "GHSA-6q48-6c7w-9gw2",
+  "rule": "Every place pip can make a request is listed here with how it is confined. A new or changed sink fails tests/Unit/Support/patched_pip_test.py until it is confined and recorded.",
+  "sinks": [
+    {
+      "path": ".github/workflows/helm-chart-checks.yml",
+      "line": "python -I -m pip install --only-binary :all: PyYAML==6.0.2",
+      "count": 1,
+      "confinement": "Central bootstrap-patched-pip earlier in the job; this step's env sets PIP_USE_DEPRECATED=legacy-certs, so pip uses only the bundle the action checked. `-I` keeps a checked-out `pip` package from shadowing the installed client.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust",
+          "distance": 8
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/helm-chart-checks.yml",
+      "line": "uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust",
+      "count": 2,
+      "confinement": "The central clean-trust action (Security-accepted .github #239): installs the hash-pinned pip 26.2.2, checks its bundle and exports it, with an empty SSL_CERT_DIR, as PIP_CERT and SSL_CERT_FILE to later steps.",
+      "guards": [
+        {
+          "type": "accepted-action",
+          "line": null,
+          "distance": null
+        },
+        {
+          "type": "accepted-action",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/helm-chart-checks.yml",
+      "line": "uses: helm/chart-testing-action@6ec842c01de15ebb84c8627d2744a0c2f2755c9f  # v2.8.0",
+      "count": 1,
+      "confinement": "The action installs yamllint/yamale with its own venv pip; its step env sets PIP_CERT to the bootstrapped pip's checked bundle and PIP_USE_DEPRECATED=legacy-certs.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust",
+          "distance": 8
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/phpunit-feature.yml",
+      "line": "run: python -m pip install PyYAML==6.0.2",
+      "count": 1,
+      "confinement": "The clean-trust action at the preflight's reviewed step exports the checked bundle as PIP_CERT and SSL_CERT_FILE with an empty SSL_CERT_DIR, so pip and its truststore see only that bundle.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust",
+          "distance": 2
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/phpunit-feature.yml",
+      "line": "uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust",
+      "count": 1,
+      "confinement": "The central clean-trust action (Security-accepted .github #239): installs the hash-pinned pip 26.2.2, checks its bundle and exports it, with an empty SSL_CERT_DIR, as PIP_CERT and SSL_CERT_FILE to later steps. At the policy's reviewed preflight step.",
+      "guards": [
+        {
+          "type": "accepted-action",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/server-perf.yml",
+      "line": "python3 -I -m pip install --require-hashes --only-binary :all: --no-deps \\",
+      "count": 1,
+      "confinement": "Central bootstrap earlier in the job, then PIP_CERT (checked bundle) and PIP_USE_DEPRECATED=legacy-certs are set for the job. `-I` keeps a checked-out `pip` package from shadowing the installed client. The lock hashes every pinned file; --require-hashes, --only-binary :all: and --no-deps install only those files.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust",
+          "distance": 28
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/server-perf.yml",
+      "line": "uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust",
+      "count": 1,
+      "confinement": "The central clean-trust action (Security-accepted .github #239): installs the hash-pinned pip 26.2.2, checks its bundle and exports it, with an empty SSL_CERT_DIR, as PIP_CERT and SSL_CERT_FILE to later steps.",
+      "guards": [
+        {
+          "type": "accepted-action",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/capacity/v1/README.md",
+      "line": "/tmp/capacity-venv/bin/python -I -m pip install --require-hashes --only-binary :all: --no-deps \\",
+      "count": 1,
+      "confinement": "Documentation; the instructions bootstrap /tmp/capacity-venv first. The lock hashes every pinned file; --require-hashes, --only-binary :all: and --no-deps install only those files. Runs as python -I, so a checked-out pip cannot shadow the client.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "sh scripts/ci/bootstrap-patched-pip.sh /tmp/capacity-venv/bin/python",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/capacity/v1/topologies/local-docker/compose.json",
+      "line": "\"command\": [\"sh\", \"-ec\", \"/usr/local/bin/python3 -m venv /tmp/capacity-venv; sh /dw-ci/bootstrap-patched-pip.sh /tmp/capacity-venv/bin/python; python3 -I -m pip install --disable-pip-version-check --no-cache-dir --require-hashes --only-binary :all: --no-deps -r requirements.lock; test \\\"$(python3 -c 'import importlib.metadata; print(importlib.metadata.version(\\\"durable-workflow\\\"))')\\\" = 2.0.1; touch /tmp/capacity-adapter-ready; exec tail -f /dev/null\"],",
+      "count": 1,
+      "confinement": "sh -e: bootstrap-patched-pip.sh on /tmp/capacity-venv, then that venv (first on PATH) installs. The lock hashes every pinned file; --require-hashes, --only-binary :all: and --no-deps install only those files. Runs as python -I, so a checked-out pip cannot shadow the client.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "\"command\": [\"sh\", \"-ec\", \"/usr/local/bin/python3 -m venv /tmp/capacity-venv; sh /dw-ci/bootstrap-patched-pip.sh /tmp/capacity-venv/bin/python; python3 -I -m pip install --disable-pip-version-check --no-cache-dir --require-hashes --only-binary :all: --no-deps -r requirements.lock; test \\\"$(python3 -c 'import importlib.metadata; print(importlib.metadata.version(\\\"durable-workflow\\\"))')\\\" = 2.0.1; touch /tmp/capacity-adapter-ready; exec tail -f /dev/null\"],",
+          "distance": 0
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/bootstrap-patched-pip.sh",
+      "line": "\"$python\" -I -m pip --isolated --disable-pip-version-check install --no-deps --upgrade --quiet --no-cache-dir \\",
+      "count": 1,
+      "confinement": "The bootstrap itself: installs the hash-pinned pip wheel, so the download is verified by hash. `-I` keeps a checked-out `pip` package from shadowing the installed client.",
+      "guards": [
+        {
+          "type": "pinned-wheel",
+          "line": "\"pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70\"",
+          "distance": -1
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/bootstrap-patched-pip.sh",
+      "line": "# networked pip install, refuses a pip whose CA bundle still trusts a root",
+      "count": 1,
+      "confinement": "Comment.",
+      "guards": [
+        {
+          "type": "comment",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/patched-pip.sh",
+      "line": "\"$work/pip/bin/python\" -I -m pip \"$@\" || status=$?",
+      "count": 1,
+      "confinement": "The wrapper: runs pip from a venv it has just bootstrapped (set -e). Runs as python -I, so a checked-out pip cannot shadow the client.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "sh \"$here/bootstrap-patched-pip.sh\" \"$work/pip/bin/python\" >&2",
+          "distance": 2
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/activities-published-artifacts.sh",
+      "line": "&& \"$venv/bin/python\" -I -m pip download --disable-pip-version-check --no-deps \\",
+      "count": 1,
+      "confinement": "Runs only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter (&& chain). Runs as python -I, so a checked-out pip cannot shadow the client.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "&& sh \"$script_dir/../ci/bootstrap-patched-pip.sh\" \"$venv/bin/python\" >>\"$install_log\" 2>&1 \\",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/activities-published-artifacts.sh",
+      "line": "&& \"$venv/bin/python\" -I -m pip install --disable-pip-version-check --no-input \"$distribution\" >>\"$install_log\" 2>&1; then",
+      "count": 1,
+      "confinement": "Runs only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter (&& chain). Runs as python -I, so a checked-out pip cannot shadow the client.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "&& sh \"$script_dir/../ci/bootstrap-patched-pip.sh\" \"$venv/bin/python\" >>\"$install_log\" 2>&1 \\",
+          "distance": 7
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/child-workflows-install-probe.py",
+      "line": "install_command = [str(python_bin), \"-I\", \"-m\", \"pip\", \"install\", \"--disable-pip-version-check\", \"--no-input\", f\"durable-workflow=={python_version}\"]",
+      "count": 1,
+      "confinement": "Runs only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter (bootstrap_code == 0). Runs as python -I, so a checked-out pip cannot shadow the client.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "bootstrap_code, bootstrap_output = run(bootstrap_command) if create_code == 0 else (1, create_output)",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/child-workflows-published-artifacts.sh",
+      "line": "&& \"$venv/bin/python\" -I -m pip install --disable-pip-version-check --no-input \"durable-workflow==${DW_PYTHON_SDK_VERSION}\" >>\"$install_log\" 2>&1; then",
+      "count": 1,
+      "confinement": "Runs only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter (&& chain). Runs as python -I, so a checked-out pip cannot shadow the client.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "&& sh \"$script_dir/../ci/bootstrap-patched-pip.sh\" \"$venv/bin/python\" >>\"$install_log\" 2>&1 \\",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/namespaces-published-artifacts.sh",
+      "line": "if ! \"$run_root/.venv/bin/python\" -I -m pip install \"durable-workflow==$python_sdk_version\" > \"$result_dir/python-sdk-install.log\" 2>&1; then",
+      "count": 1,
+      "confinement": "Runs only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter (explicit check, then blocked_result). Runs as python -I, so a checked-out pip cannot shadow the client.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "if ! sh \"$script_dir/../ci/bootstrap-patched-pip.sh\" \"$run_root/.venv/bin/python\" > \"$result_dir/python-pip-upgrade.log\" 2>&1; then",
+          "distance": 4
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/nexus-published-artifacts.sh",
+      "line": "`python -m venv /tmp/dw-python && sh /work/dw-ci/bootstrap-patched-pip.sh /tmp/dw-python/bin/python >/tmp/dw-python-pip.log 2>&1 && . /tmp/dw-python/bin/activate && pip install --no-cache-dir durable-workflow==${JSON.stringify(versions['sdk-python']).slice(1, -1)} >/tmp/dw-python-pip.log 2>&1 && python /work/nexus-python-sdk-service.py`,",
+      "count": 1,
+      "confinement": "Runs only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter /tmp/dw-python in the Python service (&& chain).",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "`python -m venv /tmp/dw-python && sh /work/dw-ci/bootstrap-patched-pip.sh /tmp/dw-python/bin/python >/tmp/dw-python-pip.log 2>&1 && . /tmp/dw-python/bin/activate && pip install --no-cache-dir durable-workflow==${JSON.stringify(versions['sdk-python']).slice(1, -1)} >/tmp/dw-python-pip.log 2>&1 && python /work/nexus-python-sdk-service.py`,",
+          "distance": 0
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/principal-attribution-published-artifacts.sh",
+      "line": "\"-m\",",
+      "count": 1,
+      "confinement": "Runs only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter (runner_blocked otherwise).",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "code, output = run(bootstrap_command, timeout=180)",
+          "distance": 7
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/python-published-artifacts.sh",
+      "line": "python -I -m pip download --no-deps --dest \"$run_root/python-distributions\" \\",
+      "count": 1,
+      "confinement": "Runs only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter (the activated .venv; fail_blocked otherwise). Runs as python -I, so a checked-out pip cannot shadow the client.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "sh \"$script_dir/../ci/bootstrap-patched-pip.sh\" \"$run_root/.venv/bin/python\" > \"$result_dir/pip-upgrade.log\" 2>&1 \\",
+          "distance": 3
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/python-published-artifacts.sh",
+      "line": "python -I -m pip install \"$python_distribution\" > \"$result_dir/python-sdk-install.log\" 2>&1 \\",
+      "count": 1,
+      "confinement": "Runs only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter (the activated .venv; fail_blocked otherwise). Runs as python -I, so a checked-out pip cannot shadow the client.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "sh \"$script_dir/../ci/bootstrap-patched-pip.sh\" \"$run_root/.venv/bin/python\" > \"$result_dir/pip-upgrade.log\" 2>&1 \\",
+          "distance": 11
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/replay-published-artifacts.sh",
+      "line": "python -I -m pip download --no-deps --dest \"$run_root/python-distributions\" \\",
+      "count": 1,
+      "confinement": "Runs only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter (the activated python-venv; no request when it failed). Runs as python -I, so a checked-out pip cannot shadow the client.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "sh \"$script_dir/../ci/bootstrap-patched-pip.sh\" \"$run_root/python-venv/bin/python\" > \"$result_dir/python-pip-upgrade.log\" 2>&1",
+          "distance": 5
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/replay-published-artifacts.sh",
+      "line": "python -I -m pip install \"$python_distribution\" > \"$result_dir/python-install.log\" 2>&1",
+      "count": 1,
+      "confinement": "Runs only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter (the activated python-venv; no request when it failed). Runs as python -I, so a checked-out pip cannot shadow the client.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "sh \"$script_dir/../ci/bootstrap-patched-pip.sh\" \"$run_root/python-venv/bin/python\" > \"$result_dir/python-pip-upgrade.log\" 2>&1",
+          "distance": 19
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/sagas-published-artifacts.sh",
+      "line": "python -I -m pip install \"durable-workflow==$python_version\" httpx",
+      "count": 1,
+      "confinement": "Runs only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter (the activated .venv; set -e). Runs as python -I, so a checked-out pip cannot shadow the client.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "sh \"$script_dir/../ci/bootstrap-patched-pip.sh\" \"$run_root/.venv/bin/python\"",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/schedules-published-artifacts.mjs",
+      "line": "['-I', '-m', 'pip', 'install', `durable-workflow==${pythonVersion}`],",
+      "count": 2,
+      "confinement": "Runs only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter (execLogged throws otherwise). Runs as python -I, so a checked-out pip cannot shadow the client.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "await execLogged('sh', [PATCHED_PIP_BOOTSTRAP, pythonBin], path.join(resultDir, 'schedules-python-lifecycle-pip-upgrade.log'));",
+          "distance": 3
+        },
+        {
+          "type": "bootstrap",
+          "line": "await execLogged('sh', [PATCHED_PIP_BOOTSTRAP, pythonBin], path.join(resultDir, 'schedules-cross-language-python-pip-upgrade.log'));",
+          "distance": 3
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/server-parity/published-sdk-patch/identity.mjs",
+      "line": "assert.ok(installed, 'published Python SDK in the actual pip install report');",
+      "count": 1,
+      "confinement": "Assertion text about pip's install report; not a command.",
+      "guards": [
+        {
+          "type": "assertion-message",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/signals-queries-published-artifacts.sh",
+      "line": "\"-m\",",
+      "count": 1,
+      "confinement": "Runs only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter (raises otherwise).",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "pip = run_command([\"sh\", str(bootstrap), str(python_bin)], log_file=log_file, timeout=180)",
+          "distance": 10
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/signals-queries-published-artifacts.sh",
+      "line": "[str(python_bin), \"-I\", \"-m\", \"pip\", \"install\", str(distribution)],",
+      "count": 1,
+      "confinement": "Runs only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter (raises otherwise). Runs as python -I, so a checked-out pip cannot shadow the client.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "pip = run_command([\"sh\", str(bootstrap), str(python_bin)], log_file=log_file, timeout=180)",
+          "distance": 26
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/skew-published-artifacts.sh",
+      "line": "&& \"$run_root/.venv/bin/python\" -I -m pip install \"durable-workflow==${DW_PYTHON_SDK_VERSION}\" >>\"$result_dir/python-install.log\" 2>&1; then",
+      "count": 1,
+      "confinement": "Runs only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter (&& chain). Runs as python -I, so a checked-out pip cannot shadow the client.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "&& sh \"$script_dir/../ci/bootstrap-patched-pip.sh\" \"$run_root/.venv/bin/python\" >>\"$result_dir/python-install.log\" 2>&1 \\",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/worker-versioning-mixed.Dockerfile",
+      "line": "&& pip install --no-cache-dir --report /opt/python/install-report.json \"durable-workflow==${PYTHON_SDK_VERSION}\"",
+      "count": 1,
+      "confinement": "Same RUN && chain bootstraps /opt/python (first on PATH) before this install.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "&& sh /opt/dw-ci/bootstrap-patched-pip.sh /opt/python/venv/bin/python \\",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/worker-versioning-published-workers.mjs",
+      "line": "command: `python3 -I -m pip install durable-workflow==${pythonVersion}`,",
+      "count": 3,
+      "confinement": "Evidence receipt text; not executed. Runs as python -I, so a checked-out pip cannot shadow the client.",
+      "guards": [
+        {
+          "type": "evidence-record",
+          "line": null,
+          "distance": null
+        },
+        {
+          "type": "evidence-record",
+          "line": null,
+          "distance": null
+        },
+        {
+          "type": "evidence-record",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/worker-versioning-published-workers.mjs",
+      "line": "runRequired(pythonBin, ['-I', '-m', 'pip', 'install', `durable-workflow==${pythonVersion}`], {",
+      "count": 1,
+      "confinement": "Runs only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter (runRequired throws otherwise). Runs as python -I, so a checked-out pip cannot shadow the client.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "runRequired('sh', [PATCHED_PIP_BOOTSTRAP, pythonBin], { logPath: installLog, append: true });",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/workflow-lifecycle-published-artifacts.sh",
+      "line": "|| ! \"$python_bin\" -I -m pip install --disable-pip-version-check --no-input \"durable-workflow==${sdk_version}\" >>\"$result_dir/python-sdk-lifecycle-pip-install.log\" 2>&1; then",
+      "count": 1,
+      "confinement": "Runs only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter (short-circuits otherwise). Runs as python -I, so a checked-out pip cannot shadow the client.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "if ! sh \"$script_dir/../ci/bootstrap-patched-pip.sh\" \"$python_bin\" >\"$result_dir/python-sdk-lifecycle-pip-install.log\" 2>&1 \\",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/workflow-updates-published-artifacts.sh",
+      "line": "if ! \"$venv_python\" -I -m pip --version > \"$result_dir/python-sdk-pip-version.log\" 2>&1; then",
+      "count": 1,
+      "confinement": "Local version query; no request. Runs as python -I, so a checked-out pip cannot shadow the client.",
+      "guards": [
+        {
+          "type": "version-query",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/workflow-updates-published-artifacts.sh",
+      "line": "if ! PIP_CONFIG_FILE=/dev/null \"$venv_python\" -I -m pip --isolated install \\",
+      "count": 1,
+      "confinement": "Runs only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter (explicit check); --isolated, so it passes --use-deprecated=legacy-certs itself. Runs as python -I, so a checked-out pip cannot shadow the client.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "if ! sh \"$script_dir/../ci/bootstrap-patched-pip.sh\" \"$venv_python\" >> \"$result_dir/python-sdk-pip-version.log\" 2>&1; then",
+          "distance": 7
+        }
+      ]
+    },
+    {
+      "path": "scripts/perf/run-namespace-isolation.sh",
+      "line": "\"$VENV/bin/pip\" install --quiet --disable-pip-version-check \"durable-workflow==$SDK_VERSION\"",
+      "count": 1,
+      "confinement": "Runs only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter $VENV (set -e).",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "sh \"$ROOT_DIR/scripts/ci/bootstrap-patched-pip.sh\" \"$VENV/bin/python\"",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "tests/Fixtures/UpdateRequestKeyConsumer/compose.yml",
+      "line": "/opt/venv/bin/pip install --index-url https://pypi.org/simple --no-cache-dir --quiet durable-workflow==2.6.1",
+      "count": 1,
+      "confinement": "Runs only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter /opt/venv (sh -e).",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "sh /dw-ci/bootstrap-patched-pip.sh /opt/venv/bin/python",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "tests/Integration/StorageAdmission/sdk/Dockerfile",
+      "line": "&& /sdk/venv/bin/pip install --no-cache-dir \"durable-workflow==${PYTHON_SDK_VERSION}\"",
+      "count": 1,
+      "confinement": "Runs only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter /sdk/venv (RUN && chain).",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "&& sh /sdk/ci/bootstrap-patched-pip.sh /sdk/venv/bin/python \\",
+          "distance": 1
+        }
+      ]
+    }
+  ],
+  "isolation_exceptions": [
+    {
+      "path": ".github/workflows/phpunit-feature.yml",
+      "line": "run: python -m pip install PyYAML==6.0.2",
+      "owner": "durable-workflow/.github central qualification policy",
+      "reason": "The central policy admits only this exact action-policy preflight install. General is asked (cloud#438 19131108) to admit python -I -m pip; adopt it here when it does."
+    }
+  ]
+}
