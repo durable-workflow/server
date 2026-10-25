@@ -11,8 +11,9 @@ import {spawnSync} from 'node:child_process';
 const root = resolve('.');
 
 // Records follow OUTCOMES, one "<target><attempt>=<outcome>" per record
-// (default pass): fail-locked fails after PHP logs the lock error, fail fails
-// without it. `docker logs` reports the lock only after a fail-locked record.
+// (default pass). fail fails without a lock error; fail-locked fails after PHP
+// logs one during the record; fail-lockbefore and fail-lockafter fail with
+// one logged 5 s before or after it. `docker logs` honors --since and --until.
 const fakeDocker = `#!/usr/bin/env bash
 set -u
 dir=$(cd "$(dirname "$0")/.." && pwd)
@@ -23,10 +24,18 @@ case "$1" in
   start) echo running > "$dir/state" ;;
   logs)
     test "\${!#}" = dw-parity-7-2-sqlite-server || exit 3
-    echo "172.18.0.4 - - POST /api/worker/update-validation-tasks/poll 200"
-    if test -e "$dir/locked"; then
-      echo "[2026-10-25 11:12:54] production.ERROR: SQLSTATE[HY000]: General error: 5 database is locked"
-    fi ;;
+    since=0 until=99999999999999999999
+    while (($# > 1)); do
+      case "$1" in
+        --since) since=$(date -d "$2" +%s%N); shift ;;
+        --until) until=$(date -d "$2" +%s%N); shift ;;
+      esac
+      shift
+    done
+    touch "$dir/serverlog"
+    while read -r at line; do
+      if ((at >= since && at <= until)); then echo "$line"; fi
+    done < "$dir/serverlog" ;;
   run)
     command= target= output= prefix=
     while (($#)); do
@@ -47,15 +56,17 @@ case "$1" in
       if test "\${entry%%=*}" = "$target$attempt"; then outcome=\${entry#*=}; fi
     done
     file="$dir/parity-evidence/\${output##*/}"
-    rm -f "$dir/locked"
+    lock="production.ERROR: SQLSTATE[HY000]: General error: 5 database is locked"
+    echo "$(date +%s%N) 172.18.0.4 - - POST /api/worker/update-validation-tasks/poll 200" >> "$dir/serverlog"
     case "$outcome" in
-      pass) echo '{"outcome":"pass"}' > "$file" ;;
-      fail-locked | fail)
-        echo '{"outcome":"product-fail"}' > "$file"
-        echo "== update-validation (product-fail): update validation lost_approve" > "\${file%.json}.failure-excerpt.txt"
-        if test "$outcome" = fail-locked; then touch "$dir/locked"; fi
-        exit 1 ;;
-    esac ;;
+      pass) echo '{"outcome":"pass"}' > "$file"; exit 0 ;;
+      fail-locked) echo "$(date +%s%N) $lock" >> "$dir/serverlog" ;;
+      fail-lockbefore) echo "$(( $(date +%s%N) - 5000000000 )) $lock" >> "$dir/serverlog" ;;
+      fail-lockafter) echo "$(( $(date +%s%N) + 5000000000 )) $lock" >> "$dir/serverlog" ;;
+    esac
+    echo '{"outcome":"product-fail"}' > "$file"
+    echo "== update-validation (product-fail): update validation lost_approve" > "\${file%.json}.failure-excerpt.txt"
+    exit 1 ;;
   *) exit 2 ;;
 esac
 `;
@@ -114,14 +125,17 @@ test('a PHP record that lost a write to the SQLite lock runs once more, and ever
   assert.equal(result.state, 'running');
 });
 
-test('a PHP failure without the lock error fails at once', () => {
-  const result = run('php1=fail');
-  assert.equal(result.status, 1);
-  assert.deepEqual(result.records, ['php parity-v1']);
-  assert.doesNotMatch(result.stdout, /::warning/);
-  assert.equal(result.evidence('update-validation-php.attempt-1.locked.txt'), false);
-  assert.match(result.read('update-validation-php.failure-excerpt.txt'), /lost_approve/);
-  assert.equal(result.state, 'running');
+test('a PHP failure without the lock error during the record fails at once', () => {
+  // No lock error at all, or one PHP logged only before or after the record.
+  for (const outcome of ['fail', 'fail-lockbefore', 'fail-lockafter']) {
+    const result = run(`php1=${outcome}`);
+    assert.equal(result.status, 1, outcome);
+    assert.deepEqual(result.records, ['php parity-v1'], outcome);
+    assert.doesNotMatch(result.stdout, /::warning/, outcome);
+    assert.equal(result.evidence('update-validation-php.attempt-1.locked.txt'), false, outcome);
+    assert.match(result.read('update-validation-php.failure-excerpt.txt'), /lost_approve/, outcome);
+    assert.equal(result.state, 'running', outcome);
+  }
 });
 
 test('a PHP retry that fails again fails the record', () => {

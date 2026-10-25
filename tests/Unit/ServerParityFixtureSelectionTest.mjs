@@ -83,7 +83,8 @@ test('the separate record stops maintenance for the PHP record only and compares
     'run_without_maintenance parity-evidence/update-validation-maintenance-schedule.txt -- php_record',
     'run_without_maintenance parity-evidence/update-validation-maintenance-schedule-retry.txt -- php_record',
   ]);
-  assert.match(script, /^php_record\(\) \{\n  php_status=0\n  http_record "\$php_url" php \|\| php_status=\$\?\n\}$/m);
+  assert.match(script, /^php_record\(\) \{\n  php_status=0\n  record_started=\$\(date -u \+%Y-%m-%dT%H:%M:%S\.%NZ\)\n  http_record "\$php_url" php \|\| php_status=\$\?\n  record_finished=\$\(date -u \+%Y-%m-%dT%H:%M:%S\.%NZ\)\n\}$/m);
+  assert.match(script, /docker logs --since "\$record_started" --until "\$record_finished" "\$RESOURCE_SCOPE-server"/);
   assert.match(script, /^http_record "\$native_url" rust$/m);
   assert.match(script, /--mode embedded --application-root \/app --target embedded --output \/evidence\/update-validation-embedded\.json --fixture "\$fixture"/);
   assert.match(script, /update-validation-php\.json \/evidence\/update-validation-rust\.json \/evidence\/update-validation-embedded\.json \\\n\s+--fixture "\$fixture"/);

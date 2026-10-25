@@ -43,18 +43,20 @@ http_record() {
 }
 
 # run_without_maintenance runs its command under errexit's exemption, so the
-# command keeps the record's status instead of returning it.
+# command keeps the record's status instead of returning it. The record's own
+# start and end bound the PHP log lines that can justify a retry.
 php_status=0
 php_record() {
   php_status=0
+  record_started=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
   http_record "$php_url" php || php_status=$?
+  record_finished=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
 }
 
-started=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
 run_without_maintenance parity-evidence/update-validation-maintenance-schedule.txt -- php_record
 if ((php_status != 0)); then
   locked=parity-evidence/update-validation-php.attempt-1.locked.txt
-  { docker logs --since "$started" "$RESOURCE_SCOPE-server" 2>&1 || true; } \
+  { docker logs --since "$record_started" --until "$record_finished" "$RESOURCE_SCOPE-server" 2>&1 || true; } \
     | grep -m 5 'database is locked' | cut -c 1-400 > "$locked" || true
   if [[ ! -s "$locked" ]]; then
     rm -f "$locked"
