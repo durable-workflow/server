@@ -1,7 +1,7 @@
 # Worker poll progress transport
 
 Development status: this transport is not in a published Server image or SDK.
-Task-delivery recovery, task-queue diagnostics and SDK integration remain part
+Task-delivery recovery and first-party SDK integration remain part
 of [Server #526](https://github.com/durable-workflow/server/issues/526).
 
 ## Negotiation
@@ -67,6 +67,20 @@ another response. Authoritative task-delivery confirmation and recovery remain
 separate work: qualification must cover exact namespace, task, owner, attempt
 and poll-request identity, successful replay and concurrent response loss.
 Wait-slot or cache hints do not authorize task revocation.
+
+## Queue diagnostics
+
+Task-queue list and detail responses include `poll_transport`. A recent early
+disconnect produces a warning with its poll kind, observed duration, configured
+wait and observation time, and sets `repair.needs_attention` with the same
+warning in `repair.transport_warnings`. This identifies an observed disconnect;
+it does not establish that a proxy caused it or that a task was delivered.
+
+The observation store keeps only the latest cutoff per namespace and queue for
+15 minutes under `server:worker-poll-diagnostic:`. There is no per-request,
+worker or task index. A cache outage reports `status: unavailable` rather than
+claiming that no disconnect occurred. An available store without a retained
+observation reports `no_recent_observation`. Neither state changes task leases.
 
 ## Qualification
 

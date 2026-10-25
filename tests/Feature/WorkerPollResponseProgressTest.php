@@ -118,7 +118,11 @@ class WorkerPollResponseProgressTest extends TestCase
     public function test_disconnect_unwinds_the_exact_wait_and_records_observed_and_configured_time(): void
     {
         $this->simulateDisconnect();
-        Log::spy();
+        Log::shouldReceive('warning')->once()->andReturnUsing(static function (): void {
+            $slot = app(LongPollWaitSlotStore::class)->tryAcquire(1, 'diagnostic-observer');
+            self::assertNotNull($slot, 'Diagnostic I/O must run after the abandoned wait releases its slot.');
+            $slot->release();
+        });
         $poller = $this->poller(static function (): void {
             self::fail('A disconnected wait must unwind before the next probe.');
         });

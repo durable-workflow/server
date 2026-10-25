@@ -29,7 +29,7 @@ class LongPollResponseProgress
 
     public function __construct(private readonly Request $request)
     {
-        $this->startedAt = microtime(true);
+        $this->startedAt = hrtime(true) / 1_000_000_000;
     }
 
     public static function current(): ?self
@@ -52,12 +52,12 @@ class LongPollResponseProgress
     public function checkpoint(): void
     {
         if ($this->fiber === null || Fiber::getCurrent() !== $this->fiber
-            || microtime(true) - $this->lastProgressAt < 1) {
+            || hrtime(true) / 1_000_000_000 - $this->lastProgressAt < 1) {
             return;
         }
 
         $this->waitSeconds ??= max(0, (int) $this->request->input('timeout_seconds', config('server.polling.timeout', 30)));
-        $this->lastProgressAt = microtime(true);
+        $this->lastProgressAt = hrtime(true) / 1_000_000_000;
         Fiber::suspend();
     }
 
@@ -85,8 +85,14 @@ class LongPollResponseProgress
                 $this->flushOutput();
 
                 if ($this->clientDisconnected()) {
-                    $this->recordAbandonment();
-                    $this->fiber->throw(new PollClientDisconnected);
+                    $observedSeconds = hrtime(true) / 1_000_000_000 - $this->startedAt;
+                    try {
+                        $this->fiber->throw(new PollClientDisconnected);
+                    } finally {
+                        // Logging and optional cache I/O follow exact wait
+                        // cleanup, so a slow observer cannot retain capacity.
+                        $this->recordAbandonment($observedSeconds);
+                    }
 
                     return;
                 }
@@ -144,19 +150,27 @@ class LongPollResponseProgress
         ], 500);
     }
 
-    private function recordAbandonment(): void
+    private function recordAbandonment(?float $observedSeconds = null): void
     {
         if ($this->abandonmentRecorded || $this->waitSeconds === null) {
             return;
         }
 
         $this->abandonmentRecorded = true;
+        $observedSeconds ??= hrtime(true) / 1_000_000_000 - $this->startedAt;
         logger()->warning('Worker long-poll client disconnected before its response was delivered.', [
             'namespace' => $this->request->attributes->get('namespace'),
             'task_queue' => $this->request->input('task_queue'),
-            'observed_seconds' => round(microtime(true) - $this->startedAt, 3),
+            'observed_seconds' => round($observedSeconds, 3),
             'configured_wait_seconds' => $this->waitSeconds,
         ]);
+        app(WorkerPollDiagnostics::class)->recordDisconnect(
+            (string) $this->request->attributes->get('namespace'),
+            (string) $this->request->input('task_queue'),
+            basename(dirname($this->request->path())),
+            $observedSeconds,
+            $this->waitSeconds,
+        );
     }
 
     protected function clientDisconnected(): bool
