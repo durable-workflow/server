@@ -850,6 +850,24 @@ impl Runtime {
     }
 
     delegate!(run_in_namespace(workflow_id: &str, run_id: &str) -> Result<bool>);
+    delegate!(stream_run(workflow_id: &str, run_id: &str) -> Result<Option<bool>>);
+    delegate!(list_workflow_streams(run_id: &str) -> Result<Vec<Value>>);
+    delegate!(show_workflow_stream(run_id: &str, name: &str) -> Result<Option<Value>>);
+    delegate!(append_workflow_stream(
+        workflow_id: &str,
+        run_id: &str,
+        name: &str,
+        items: Vec<super::workflow_streams::StreamItem>,
+        max_pending: i64,
+    ) -> Result<super::workflow_streams::Appended>);
+    delegate!(read_workflow_stream(run_id: &str, name: &str, from: i64, max_items: i64)
+        -> Result<Option<super::workflow_streams::Window>>);
+    delegate!(close_workflow_stream(
+        run_id: &str,
+        name: &str,
+        error_reason: Option<String>,
+        retention_seconds: Option<i64>,
+    ) -> Result<Option<Value>>);
     pub(crate) async fn run_diagnostics(
         &self,
         workflow_id: &str,

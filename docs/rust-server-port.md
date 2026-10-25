@@ -82,9 +82,10 @@ Updated October 24, 2026.
     ([#737](https://github.com/durable-workflow/server/issues/737)).
 
   No expectation is edited to make native pass.
-- **Parity surface.** Native serves 133 of the 175 API route methods in
-  published 2.11.1's route table, with message streams, update validation
-  and activity cancellation acknowledgement. An execution test sends each
+- **Parity surface.** Native serves 135 of the 175 API route methods in
+  published 2.11.1's route table, with message streams, durable workflow
+  stream writes, update validation and activity cancellation
+  acknowledgement. An execution test sends each
   one through the native router, and the ones still answering
   `501 rust_capability_not_implemented` must match
   [`unserved-php-routes.v2.11.1.txt`](../rust/tests/fixtures/unserved-php-routes.v2.11.1.txt).
@@ -153,7 +154,6 @@ any other unknown path or method answers PHP's own 404 or 405
     ([checkpoint](rust-server-port-checkpoints/2026-10-23-message-streams.md)),
     except external payload references as input, stream retention cleanup
     and takeover of PHP data with streams.
-  - Durable workflow stream items and close.
   - Service endpoints. (The service catalog reads from Server 2.11 are served:
     native never holds catalog rows, so every list is PHP's empty page and every
     identity its not-found answer; the `service-catalog` fixture checks 37 cases.)
@@ -858,12 +858,20 @@ October 21, Waterline reads:
 - **Task queues.** `GET /api/task-queues` and `GET /api/task-queues/{name}`
   follow PHP's `TaskQueueController`: pollers, stats, current leases, repair
   candidates, recent task flow, activity attempt states and admission.
-- **Durable streams.** The run's stream list, stream description and item
-  reads answer as PHP does, including the name pattern, the `from`,
-  `max_items` and `wait_seconds` rules and the refusal bodies. Native runs
-  never produce durable streams, and takeover refuses a database that holds
-  any, so every list is empty. Producer appends and closes are not
-  implemented.
+- **Durable streams.** The run's stream list, stream description, item
+  reads, appends and closes answer as PHP does, with the
+  `workflow-stream-writes` fixture recorded from published 2.11.1: offsets
+  from 0, idempotent retries, the pending-items cap with its partial commit,
+  bounded waits, final closes, whole-second times and every refusal body.
+  A continued run keeps its streams, as in PHP. Native differs in three
+  places, documented in `rust/src/runtime/workflow_streams.rs`:
+  - a batch whose items hold no item fields gets 400, not PHP's 500;
+  - a read at the head never clears the count of a later append;
+  - a runtime external payload reference object in `payload_reference`
+    gets 501.
+  Still missing: the workflow-side `workflow_stream` command, so cluster
+  info does not advertise `workflow_streams_contract`, and takeover still
+  refuses a PHP database that holds streams.
 - **Last progress.** Runs record `last_progress_at` when they start, as PHP
   does at start and child start.
 - **Deliberate differences.**
