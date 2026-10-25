@@ -548,6 +548,7 @@ const UNLISTED: &[Setting] = &[
 /// their legacy names warn as the contract's do.
 pub const NATIVE_HONORED: &[Setting] = &[
     Setting { name: "DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES", legacy: Some("WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_BYTES"), disposition: Honored },
+    Setting { name: "DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS", legacy: Some("WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_ROWS"), disposition: Honored },
 ];
 
 /// Every `vars` entry of `config/dw-contract.php`, with its contract legacy name.
@@ -1086,7 +1087,7 @@ mod tests {
     fn the_history_transaction_limits_are_honored_settings() {
         let honored = |name: &str| SETTINGS.iter().chain(NATIVE_HONORED).find(|setting| setting.name == name)
             .is_some_and(|setting| matches!(setting.disposition, Honored));
-        for name in ["DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE", "DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES"] {
+        for name in ["DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE", "DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES", "DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS"] {
             assert!(honored(name), "{name}");
         }
         // NATIVE_HONORED names are outside PHP's contract and listed once.
@@ -1095,15 +1096,17 @@ mod tests {
             assert!(!SETTINGS.iter().any(|listed| listed.name == setting.name));
         }
         // Strict mode starts with each primary name set.
-        let mut primary = environment(&[("DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE", "123"), ("DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES", "4567")]);
+        let mut primary = environment(&[("DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE", "123"), ("DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES", "4567"),
+            ("DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS", "89")]);
         primary.insert("DW_ENV_AUDIT_STRICT".into(), "1".into());
         let report = audit(&primary);
         assert_eq!((report.warnings.as_slice(), report.refusal()), (&[] as &[String], None));
         // A legacy name warns as deprecated, naming its primary, and nothing else.
         let report = audit(&environment(&[("WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_SIZE", "123"),
-            ("WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_BYTES", "4567")]));
+            ("WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_BYTES", "4567"), ("WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_ROWS", "89")]));
         assert_eq!(report.warnings, [
             "Legacy env var WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_BYTES is still honored but deprecated — rename to DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES.",
+            "Legacy env var WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_ROWS is still honored but deprecated — rename to DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS.",
             "Legacy env var WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_SIZE is still honored but deprecated — rename to DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE.",
         ]);
         assert_eq!(report.refusal(), None);
