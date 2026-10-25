@@ -146,9 +146,6 @@ any other unknown path or method answers PHP's own 404 or 405
     `update-validation` fixture. Native does not replay a validation task by
     `poll_request_id` or bind a request id to its task kinds; see
     `docs/rust-server-port-checkpoints/2026-10-23-update-validation.md`.)
-- **Run operations.**
-  - Waterline v1 import. (Embedded v2 import is served:
-    `POST /api/workflows/import/embedded-v2`.)
 - **Other families.**
   - Message streams are served
     ([checkpoint](rust-server-port-checkpoints/2026-10-23-message-streams.md)),
