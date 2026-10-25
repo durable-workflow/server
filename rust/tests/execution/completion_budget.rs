@@ -15,7 +15,8 @@ async fn local_worker(app: &Router) {
     let (status, body) = request_protocol(app, "POST", "/api/worker/register", json!({"worker_id": "local",
         "task_queue": "test", "runtime": "python", "supported_workflow_types": ["echo"], "supported_activity_types": [],
         "capabilities": ["local_activities"]}), "1.20").await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
+    // A second runtime on the same database registers the worker again.
+    assert!(status == StatusCode::CREATED || status == StatusCode::OK, "{status}: {body}");
 }
 
 async fn complete(app: &Router, task: &Value, commands: Value) -> (StatusCode, Value) {
@@ -126,4 +127,148 @@ async fn a_run_past_its_deadline_closes_before_the_budget_is_checked() {
     let (status, described) = request(&app, "GET", "/api/workflows/budget-deadline", Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{described}");
     assert_eq!((&described["status"], &described["closed_reason"]), (&json!("failed"), &json!("timed_out")));
+}
+
+// The acceptance matrix: each limit admits its exact value and refuses one
+// more, on every backend, and a refusal changes no durable row and leaves
+// the lease, which then completes a smaller task.
+
+/// A completed local activity with a large valid argument and `heartbeats`
+/// heartbeats with details.
+fn large(heartbeats: i64) -> Value {
+    let mut command = local(heartbeats);
+    command["arguments"] = envelope(Payload::Array(vec![Payload::String("argument ".repeat(30_000))]));
+    command
+}
+
+fn leak(sql: String) -> &'static str {
+    Box::leak(sql.into_boxed_str())
+}
+
+/// The rows of a two-column text query, written for each backend.
+async fn texts(database: &TestDatabase, sqlite: &str, postgres: &str, mysql: &str) -> Vec<(String, String)> {
+    match database {
+        TestDatabase::Sqlite(dir) => {
+            let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", dir.path().join("runtime.sqlite").display())).await.unwrap();
+            let rows = sqlx::query_as(sqlx::AssertSqlSafe(sqlite.to_owned())).fetch_all(&pool).await.unwrap();
+            pool.close().await;
+            rows
+        }
+        TestDatabase::Postgres { options, .. } => {
+            let pool = sqlx::postgres::PgPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap();
+            let rows = sqlx::query_as(sqlx::AssertSqlSafe(postgres.to_owned())).fetch_all(&pool).await.unwrap();
+            pool.close().await;
+            rows
+        }
+        TestDatabase::MySql { options, .. } => {
+            let pool = sqlx::mysql::MySqlPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap();
+            let rows = sqlx::query_as(sqlx::AssertSqlSafe(mysql.to_owned())).fetch_all(&pool).await.unwrap();
+            pool.close().await;
+            rows
+        }
+    }
+}
+
+/// Every table's row count, and the state of every task and run.
+async fn durable_state(database: &TestDatabase) -> (Vec<(String, i64)>, Vec<(String, String)>, Vec<(String, String)>) {
+    let tables = texts(database,
+        "SELECT name, name FROM sqlite_master WHERE type='table' ORDER BY name",
+        "SELECT table_name::text, table_name::text FROM information_schema.tables WHERE table_schema='public' ORDER BY 1",
+        "SELECT CAST(table_name AS CHAR), CAST(table_name AS CHAR) FROM information_schema.tables WHERE table_schema=DATABASE() ORDER BY 1").await;
+    let mut counts = Vec::new();
+    for (table, _) in tables {
+        counts.push((table.clone(), task_retry::rows(database, leak(format!("SELECT COUNT(*) FROM {table}"))).await));
+    }
+    let tasks = texts(database,
+        "SELECT id, status || '|' || COALESCE(lease_owner, '') || '|' || COALESCE(lease_expires_at, '') || '|' || attempt_count FROM workflow_tasks ORDER BY id",
+        "SELECT id, status || '|' || COALESCE(lease_owner, '') || '|' || COALESCE(lease_expires_at::text, '') || '|' || attempt_count::text FROM workflow_tasks ORDER BY id",
+        "SELECT id, CONCAT(status, '|', COALESCE(lease_owner, ''), '|', COALESCE(CAST(lease_expires_at AS CHAR), ''), '|', attempt_count) FROM workflow_tasks ORDER BY id").await;
+    let runs = texts(database,
+        "SELECT id, status || '|' || last_history_sequence || '|' || COALESCE(updated_at, '') FROM workflow_runs ORDER BY id",
+        "SELECT id, status || '|' || last_history_sequence::text || '|' || COALESCE(updated_at::text, '') FROM workflow_runs ORDER BY id",
+        "SELECT id, CONCAT(status, '|', last_history_sequence, '|', COALESCE(CAST(updated_at AS CHAR), '')) FROM workflow_runs ORDER BY id").await;
+    (counts, tasks, runs)
+}
+
+/// The stored history of a run, in order: each event's type and payload.
+async fn stored_history(database: &TestDatabase, run_id: &str) -> Vec<(String, String)> {
+    texts(database,
+        &format!("SELECT event_type, payload FROM workflow_history_events WHERE workflow_run_id='{run_id}' ORDER BY sequence"),
+        &format!("SELECT event_type, payload::text FROM workflow_history_events WHERE workflow_run_id='{run_id}' ORDER BY sequence"),
+        &format!("SELECT event_type, CAST(payload AS CHAR) FROM workflow_history_events WHERE workflow_run_id='{run_id}' ORDER BY sequence")).await
+}
+
+/// The bytes the meter charges for stored events: each event's type and
+/// the compact JSON of its payload (none of these hold U+2028 or U+2029).
+fn charged_bytes(events: &[(String, String)]) -> usize {
+    events.iter().map(|(event_type, payload)| {
+        let payload: Value = serde_json::from_str(payload).unwrap();
+        event_type.len() + serde_json::to_string(&payload).unwrap().len()
+    }).sum()
+}
+
+/// The exact limit admits `commands`; one less refuses them with `reason`
+/// before anything is written, and the same lease then completes a wait.
+async fn admits_exactly(database: &TestDatabase, tag: &str, exact: StructuralLimits, short: StructuralLimits,
+    commands: Value, reason: &str) {
+    let app = budgeted(database, exact).await;
+    local_worker(&app).await;
+    start(&app, &format!("{tag}-exact")).await;
+    let task = poll(&app, "local", "workflow").await;
+    let (status, body) = complete(&app, &task, commands.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{tag} at its exact limit: {body}");
+
+    let app = budgeted(database, short).await;
+    start(&app, &format!("{tag}-short")).await;
+    let task = poll(&app, "local", "workflow").await;
+    let before = durable_state(database).await;
+    let (status, body) = complete(&app, &task, commands).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{tag} one over: {body}");
+    assert_eq!(body["reason"], reason, "{tag}: {body}");
+    assert_eq!(durable_state(database).await, before, "{tag}: a refusal changed durable state");
+    let (status, body) = complete(&app, &task, json!([wait()])).await;
+    assert_eq!(status, StatusCode::OK, "{tag}: the lease after a refusal: {body}");
+}
+
+fn only(events: Option<usize>, bytes: Option<usize>, rows: Option<usize>) -> StructuralLimits {
+    StructuralLimits { history_events: events, history_bytes: bytes, history_rows: rows, ..StructuralLimits::default() }
+}
+
+#[tokio::test]
+async fn the_event_limit_admits_its_exact_value_and_refuses_one_more() {
+    let database = TestDatabase::new().await;
+    // Scheduled, started, three heartbeats and completed, and the wait: 7.
+    admits_exactly(&database, "events", only(Some(7), None, None), only(Some(6), None, None),
+        json!([local(3), wait()]), "completion_budget_exceeded").await;
+}
+
+#[tokio::test]
+async fn the_row_limit_admits_its_exact_value_and_refuses_one_more() {
+    let database = TestDatabase::new().await;
+    // Three events (six rows), the execution and the attempt, and the wait's
+    // event (two rows): ten.
+    admits_exactly(&database, "rows", only(None, None, Some(10)), only(None, None, Some(9)),
+        json!([local(0), wait()]), "completion_budget_exceeded").await;
+}
+
+#[tokio::test]
+async fn the_byte_limit_admits_its_exact_value_and_refuses_one_more() {
+    let database = TestDatabase::new().await;
+    let commands = json!([large(20), wait()]);
+    // Measure the completion as stored, the way the meter charges it.
+    let probe = budgeted(&database, only(None, None, None)).await;
+    local_worker(&probe).await;
+    let run = start(&probe, "bytes-probe").await;
+    let run_id = run["run_id"].as_str().unwrap().to_owned();
+    let task = poll(&probe, "local", "workflow").await;
+    let before = stored_history(&database, &run_id).await;
+    let (status, body) = complete(&probe, &task, commands.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let after = stored_history(&database, &run_id).await;
+    let bytes = charged_bytes(&after[before.len()..]);
+    // The large argument and heartbeats make this a multi-megabyte budget.
+    assert!(bytes > 1_000_000, "{bytes}");
+
+    admits_exactly(&database, "bytes", only(None, Some(bytes), None), only(None, Some(bytes - 1), None),
+        commands, "history_transaction_limit_exceeded").await;
 }
