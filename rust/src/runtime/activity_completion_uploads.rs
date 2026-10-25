@@ -13,6 +13,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
+/// Distinct completion upload slots one activity lease may reserve.
+pub(super) const MAX_SLOTS_PER_LEASE: usize = 128;
+
 #[derive(Clone)]
 pub(crate) struct Context {
     value: Value,
@@ -128,6 +131,10 @@ impl Context {
             owner: identifier(&value["lease_owner"])?,
             value,
         })
+    }
+    /// The task, attempt and lease owner this context names.
+    pub(super) fn lease_identity(&self) -> (&str, &str, &str) {
+        (&self.task, &self.attempt, &self.owner)
     }
     fn scope(&self, namespace: &str) -> String {
         identity(&json!([
@@ -313,7 +320,7 @@ where
             .values()
             .try_fold(0_u64, |sum, size| sum.checked_add(size.as_u64()?))
             .ok_or_else(unavailable)?;
-        if recorded.is_none() && slots_map.len() >= 128
+        if recorded.is_none() && slots_map.len() >= MAX_SLOTS_PER_LEASE
             || !objects_map.contains_key(&expected.sha256)
                 && expected.size_bytes as u64 > max_bytes.saturating_sub(total)
         {

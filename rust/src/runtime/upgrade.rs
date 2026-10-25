@@ -4,6 +4,7 @@ pub mod fingerprint;
 pub mod takeover;
 mod payload_scan;
 mod schedule_scan;
+mod storage_scan;
 pub mod queue;
 pub mod queue_binding;
 mod queue_scan;
@@ -104,6 +105,7 @@ pub(super) fn native_relation(name: &str) -> bool {
             | "dw_poll_receipts"
             | "dw_query_cache"
             | "dw_worker_registration_incarnations"
+            | "dw_worker_session_holders"
     )
 }
 
@@ -119,6 +121,7 @@ pub(super) fn native_object(name: &str) -> bool {
                 | "dw_worker_registration_incarnations_pkey"
                 | "dw_worker_incarnation_authority"
                 | "dw_worker_incarnation_retention"
+                | "dw_worker_session_holders_pkey"
         )
 }
 
@@ -198,6 +201,7 @@ fn report(
     queue_inspection: Option<Value>,
     payload_inspection: Option<Value>,
     schedule_inspection: Value,
+    storage_inspection: Value,
 ) -> Result<Value> {
     let digest = Sha256::digest(serde_json::to_vec(catalog)?)
         .iter()
@@ -226,6 +230,10 @@ fn report(
         report["status"] = json!("unqualified");
     }
     report["schedule_inspection"] = schedule_inspection;
+    if storage_inspection["unsupported"] != 0 {
+        report["status"] = json!("unqualified");
+    }
+    report["storage_inspection"] = storage_inspection;
     Ok(report)
 }
 
@@ -399,6 +407,7 @@ pub(super) async fn sqlite_inventory(
         None
     };
     let schedule_inspection = schedule_scan::inspect::<sqlx::Sqlite>(&mut *tx).await?;
+    let storage_inspection = storage_scan::inspect::<sqlx::Sqlite>(&mut *tx).await?;
     report(
         "sqlite",
         &catalog,
@@ -407,6 +416,7 @@ pub(super) async fn sqlite_inventory(
         queue_inspection,
         payload_inspection,
         schedule_inspection,
+        storage_inspection,
     )
 }
 
@@ -670,6 +680,7 @@ pub(super) async fn mysql_inventory(
         None
     };
     let schedule_inspection = schedule_scan::inspect::<sqlx::MySql>(&mut *tx).await?;
+    let storage_inspection = storage_scan::inspect::<sqlx::MySql>(&mut *tx).await?;
     // MySQL's metadata is not an MVCC snapshot. Refuse a changed visible
     // catalog rather than joining counts to a different schema.
     if mysql_source_catalog(&mut *tx, fenced).await?.0 != catalog {
@@ -686,6 +697,7 @@ pub(super) async fn mysql_inventory(
         queue_inspection,
         payload_inspection,
         schedule_inspection,
+        storage_inspection,
     )
 }
 
@@ -753,6 +765,7 @@ pub(super) async fn postgres_inventory(
         None
     };
     let schedule_inspection = schedule_scan::inspect::<sqlx::Postgres>(&mut *tx).await?;
+    let storage_inspection = storage_scan::inspect::<sqlx::Postgres>(&mut *tx).await?;
     report(
         "pgsql",
         &catalog,
@@ -761,6 +774,7 @@ pub(super) async fn postgres_inventory(
         queue_inspection,
         payload_inspection,
         schedule_inspection,
+        storage_inspection,
     )
 }
 

@@ -234,22 +234,27 @@ async fn every_authored_deadline_fences_outcomes_and_resolves_once() {
                 json!({"lease_owner":activity["lease_owner"],"activity_attempt_id":activity["activity_attempt_id"],
                     "result":envelope(Payload::Long(-1))})).await;
             assert_eq!(late.0, StatusCode::CONFLICT, "{field}: {}", late.1);
+            let mut receipt = late.1.clone();
+            assert!(receipt.as_object_mut().unwrap().remove("server_capabilities").is_some(), "{field}: worker protocol fields");
             assert_eq!(
-                late.1,
+                receipt,
                 json!({"task_id":activity["task_id"],"activity_attempt_id":activity["activity_attempt_id"],
                     "outcome":"completed","recorded":false,"reason":"stale_attempt","next_task_id":null,
                     "lease_owner":activity["lease_owner"],"activity_status":"failed","attempt_status":"failed",
-                    "task_status":"cancelled"}),
+                    "task_status":"cancelled","protocol_version":"1.20"}),
                 "{field}"
             );
             let late = request(&app, "POST", &path("fail"),
                 json!({"lease_owner":activity["lease_owner"],"activity_attempt_id":activity["activity_attempt_id"],
                     "failure":{"type":"RuntimeException","message":"late","code":0}})).await;
             assert_eq!(late.0, StatusCode::CONFLICT, "{field}: {}", late.1);
+            let mut receipt = late.1.clone();
+            assert!(receipt.as_object_mut().unwrap().remove("server_capabilities").is_some(), "{field}: worker protocol fields");
             assert_eq!(
-                late.1,
+                receipt,
                 json!({"task_id":activity["task_id"],"activity_attempt_id":activity["activity_attempt_id"],
-                    "outcome":"failed","recorded":false,"reason":"stale_attempt","next_task_id":null}),
+                    "outcome":"failed","recorded":false,"reason":"stale_attempt","next_task_id":null,
+                    "protocol_version":"1.20"}),
                 "{field}"
             );
         }
@@ -314,7 +319,8 @@ async fn timeout_retry_preserves_full_snapshot_and_global_deadline_across_restar
     let mut scheduled = command("start_to_close_timeout", 2);
     scheduled["schedule_to_close_timeout"] = json!(30);
     scheduled["schedule_to_start_timeout"] = json!(10);
-    scheduled["heartbeat_timeout"] = json!(5);
+    // PHP refuses a heartbeat timeout longer than start_to_close.
+    scheduled["heartbeat_timeout"] = json!(1);
     assert_eq!(
         finish_task(&app, &workflow, json!([scheduled])).await.0,
         StatusCode::OK
@@ -482,9 +488,14 @@ async fn heartbeat_renews_only_progress_deadline_and_cannot_resurrect_elapsed_au
     assert_eq!(after.0, initial.0, "Start-to-close deadline remains fixed");
     assert!(after.1 > initial.1, "Heartbeat deadline advances");
     assert_eq!(after.2, initial.2, "Lifecycle deadline remains fixed");
+    // Compare instants, not text: a lease on a whole second is written
+    // without a fraction ("...:26Z"), which sorts after "...:26.045Z".
+    let instant = |value: &Value| chrono::DateTime::parse_from_rfc3339(value.as_str().unwrap()).unwrap();
     assert!(
-        renewed.1["lease_expires_at"].as_str().unwrap()
-            > activity["lease_expires_at"].as_str().unwrap()
+        instant(&renewed.1["lease_expires_at"]) > instant(&activity["lease_expires_at"]),
+        "{} renews {}",
+        renewed.1["lease_expires_at"],
+        activity["lease_expires_at"]
     );
     let prefix = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
     database

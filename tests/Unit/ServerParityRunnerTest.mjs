@@ -888,3 +888,26 @@ for (const [name, corrupt] of [
     assert.throws(() => checkObservation(updateFixture, raw, 'test-one-activity'));
   });
 }
+
+// Raw-HTTP probes in the corpus process poll the published PHP SQLite
+// reference while its maintenance loop runs. A poll it refuses with the
+// documented 503 backend_lock_pressure reply hands out no task and asks the
+// worker to retry, so each probe that polls must retry exactly that refusal
+// (lock-pressure-middleware.php) rather than record it as the case's answer.
+test('corpus probes that poll over their own HTTP client retry documented lock-pressure refusals', () => {
+  const directory = new URL('../../scripts/conformance/server-parity/', import.meta.url);
+  const probe = readFileSync(new URL('probe.php', directory), 'utf8');
+  const required = [...probe.matchAll(/require __DIR__\.'\/([a-z0-9-]+\.php)';/g)].map(match => match[1]);
+  const pollers = required.filter(name => {
+    const source = readFileSync(new URL(name, directory), 'utf8');
+    return /new \w+Http\(\[/.test(source) && source.includes('tasks/poll');
+  });
+  assert.ok(pollers.includes('prometheus-metrics-probe.php') && pollers.includes('activity-lease-renewal-probe.php'), pollers.join(', '));
+  for (const name of pollers) {
+    const source = readFileSync(new URL(name, directory), 'utf8');
+    assert.match(source, /\$stack->push\(LockPressurePollRetries::middleware\(\), 'lock_pressure_poll_retry'\);/, name);
+    for (const construction of source.matchAll(/new \w+Http\(\[[^;]*\]\);/gs)) {
+      assert.match(construction[0], /'handler' => \$stack/, `${name}: ${construction[0]}`);
+    }
+  }
+});

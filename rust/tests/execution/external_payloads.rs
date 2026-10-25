@@ -1,4 +1,8 @@
 use super::*;
+#[path = "external_payloads/cleanup.rs"]
+mod cleanup;
+#[path = "external_payloads/commands.rs"]
+mod commands;
 #[path = "external_payloads/completion_uploads.rs"]
 mod completion_uploads;
 use axum::{body::Bytes, http::HeaderMap};
@@ -125,7 +129,11 @@ async fn json_request(
 }
 
 async fn unclaimed(database: &TestDatabase) -> i64 {
-    let query = "SELECT COUNT(*) FROM runtime_external_payloads WHERE retained_at IS NULL AND expires_at IS NOT NULL";
+    count(database, "SELECT COUNT(*) FROM runtime_external_payloads WHERE retained_at IS NULL AND expires_at IS NOT NULL").await
+}
+
+/// One integer the database answers.
+async fn count(database: &TestDatabase, query: impl sqlx::SqlSafeStr) -> i64 {
     match database {
         TestDatabase::Sqlite(dir) => {
             let pool = sqlx::SqlitePool::connect(&format!(
@@ -463,8 +471,10 @@ async fn external_workflow_completion_fences_before_retention_and_keeps_opaque_r
             .1,
         before
     );
+    // PHP ignores an unknown field but refuses a timer delay on a
+    // complete_workflow command.
     let mut unsupported = body.clone();
-    unsupported["commands"][0]["unknown"] = json!(true);
+    unsupported["commands"][0]["delay_seconds"] = json!(1);
     assert_eq!(
         json_request(&app, "POST", &path, "worker-token", unsupported)
             .await
@@ -637,12 +647,21 @@ async fn external_activity_result_retains_only_after_live_authority_and_survives
                 StatusCode::CONFLICT
             );
             assert_eq!(unclaimed(&database).await, 1);
-            assert_eq!(
-                json_request(&app, "GET", &history_path, "operator-token", Value::Null)
-                    .await
-                    .1,
-                before
-            );
+            // The refused completion publishes nothing. The only later event
+            // is the scheduler settling the expired lease, as PHP's repair
+            // loop does.
+            let after = json_request(&app, "GET", &history_path, "operator-token", Value::Null)
+                .await
+                .1;
+            let (before, after) = (before["events"].as_array().unwrap(), after["events"].as_array().unwrap());
+            assert_eq!(after[..before.len()], before[..], "{after:?}");
+            for event in &after[before.len()..] {
+                assert_eq!(
+                    (event["event_type"].as_str(), event["payload"]["failure_reason"].as_str()),
+                    (Some("ActivityFailed"), Some("lease_expired")),
+                    "{event}"
+                );
+            }
             runtime.close().await;
         } else {
             // Fail after retention and activity-row changes, at history publication.

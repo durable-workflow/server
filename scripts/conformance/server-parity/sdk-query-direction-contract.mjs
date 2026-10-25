@@ -35,6 +35,15 @@ const one = (requests, predicate, message) => {
   assert.equal(selected.length, 1, message);
   return selected[0];
 };
+// A wrong status names the request and its observer transport flags, never
+// payload bytes. Status 0 means no upstream status arrived, and the flags say
+// whether the client closed first or the upstream connection failed.
+function wireStatus(item, expected, label) {
+  if (item.status === expected) return;
+  const {method, path, status, client_cancelled, transport_error, request_body_complete, upstream_request_started} = item;
+  assert.fail(`${label}: expected HTTP ${expected}, observed ${status} for ${method} ${path} `
+    + JSON.stringify({client_cancelled, transport_error, request_body_complete, upstream_request_started}));
+}
 function unchanged(before, after, message) {
   assert.deepEqual(after, before, message);
 }
@@ -144,7 +153,7 @@ export function checkSdkQueryDirection(fixture, observation, workflowId) {
       assert(!phase.requests.some(item => item.method === 'POST' && item.path === '/api/workflows'));
       const wire = one(phase.requests, item => item.method === 'POST'
         && item.path === '/api/workflows/' + workflowId + '/signal/payload', 'one actual signal stimulus');
-      assert.equal(wire.status, 202);
+      wireStatus(wire, 202, phase.phase + ' signal');
       assert.equal(wire.response.run_id, observation.run_id);
       assert.equal(wire.response.workflow_id, workflowId);
       assert.equal(wire.response.outcome, 'signal_received');
@@ -165,7 +174,7 @@ export function checkSdkQueryDirection(fixture, observation, workflowId) {
       unchangedDurableSnapshot(phase.snapshot_before, direction.phases[index - 1].snapshot, 'same acknowledged author snapshot');
       const wire = one(phase.requests, item => item.method === 'POST'
         && item.path === '/api/workflows/' + workflowId + '/query/state', 'one normal instance-scoped query');
-      assert.equal(wire.status, 200);
+      wireStatus(wire, 200, phase.phase + ' query');
       assert.equal(wire.response.workflow_id, workflowId);
       assert.equal(wire.response.run_id, observation.run_id);
       assert.equal(wire.response.query_name, 'state');
@@ -188,7 +197,7 @@ export function checkSdkQueryDirection(fixture, observation, workflowId) {
       const claim = one(author.requests, item => item.path === '/api/worker/query-tasks/poll'
         && item.response?.task, 'one actual query worker claim');
       const task = claim.response.task;
-      assert.equal(claim.method, 'POST'); assert.equal(claim.status, 200);
+      assert.equal(claim.method, 'POST'); wireStatus(claim, 200, author.phase + ' query claim');
       assert.equal(claim.request.task_queue, spec.task_queue);
       assert.equal(task.workflow_id, workflowId); assert.equal(task.run_id, observation.run_id);
       assert.equal(task.workflow_type, fixture.workflow_type); assert.equal(task.query_name, 'state');
@@ -211,7 +220,7 @@ export function checkSdkQueryDirection(fixture, observation, workflowId) {
       if (wire.request.input) assert.equal(frame(wire.request.input), frame(task.query_arguments));
       const complete = one(author.requests, item => item.method === 'POST'
         && item.path === '/api/worker/query-tasks/' + task.query_task_id + '/complete', 'actual original query completion');
-      assert.equal(complete.status, 200);
+      wireStatus(complete, 200, author.phase + ' query completion');
       assert.equal(complete.request.lease_owner, task.lease_owner);
       assert.equal(complete.request.query_task_attempt, task.query_task_attempt);
       assert.equal(complete.response.query_task_id, task.query_task_id);
@@ -232,7 +241,7 @@ export function checkSdkQueryDirection(fixture, observation, workflowId) {
     if (language === 'php') assert.equal(phase.query_completions, 1);
     const register = one(phase.requests, item => item.method === 'POST'
       && item.path === '/api/worker/register', 'one ordinary worker registration');
-    assert.equal(register.status, 201); assert.equal(register.response.registered, true);
+    wireStatus(register, 201, phase.phase + ' registration'); assert.equal(register.response.registered, true);
     assert.equal(register.request.worker_id, phase.worker_id);
     assert.equal(register.request.task_queue, spec.task_queue);
     assert.deepEqual(register.request.supported_workflow_types, [fixture.workflow_type]);
@@ -241,7 +250,7 @@ export function checkSdkQueryDirection(fixture, observation, workflowId) {
     const claim = one(phase.requests, item => item.path === '/api/worker/workflow-tasks/poll'
       && item.response?.task, 'one original workflow claim per cold author');
     const task = claim.response.task;
-    assert.equal(claim.status, 200);
+    wireStatus(claim, 200, phase.phase + ' workflow claim');
     for (const key of ['workflow_id', 'run_id', 'workflow_type', 'task_queue']) assert.equal(task[key], observation[key]);
     assert.equal(task.workflow_task_attempt, 1); nonempty(task.task_id); nonempty(task.lease_owner);
     checkWorkerHistory(task.history_events);
@@ -251,7 +260,7 @@ export function checkSdkQueryDirection(fixture, observation, workflowId) {
     assert.deepEqual(history(task.history_events), history(observation.events.slice(0, [2, 4, 9][turn])));
     const complete = one(phase.requests, item => item.method === 'POST'
       && item.path === '/api/worker/workflow-tasks/' + task.task_id + '/complete', 'original fenced workflow completion');
-    assert.equal(complete.status, 200); assert.equal(complete.response.recorded, true);
+    wireStatus(complete, 200, phase.phase + ' workflow completion'); assert.equal(complete.response.recorded, true);
     assert.equal(complete.response.task_id, task.task_id); assert.equal(complete.response.run_id, observation.run_id);
     assert.equal(complete.request.lease_owner, task.lease_owner);
     assert.equal(complete.request.workflow_task_attempt, task.workflow_task_attempt);
@@ -264,7 +273,7 @@ export function checkSdkQueryDirection(fixture, observation, workflowId) {
     if (turn === 0) {
       const start = one(phase.requests, item => item.method === 'POST'
         && item.path === '/api/workflows', 'one real observer start');
-      assert.equal(start.status, 201);
+      wireStatus(start, 201, phase.phase + ' start');
       assert.equal(start.request.workflow_id, workflowId); assert.equal(start.response.run_id, observation.run_id);
       assert(phase.requests.indexOf(register) < phase.requests.indexOf(start));
       assert(phase.requests.indexOf(start) < phase.requests.indexOf(claim), 'original first claim after successful start receipt');

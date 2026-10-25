@@ -13,6 +13,8 @@ pub(super) enum Operation<'a> {
     History,
     Cancel,
     Terminate,
+    Archive,
+    Redrive,
     Repair,
     Debug,
     Update(&'a str),
@@ -28,6 +30,13 @@ impl Operation<'_> {
         run_id: Option<&str>,
     ) -> super::RuntimeError {
         let (status, mut body) = match error {
+            // A typed external payload error gets the route's envelope once,
+            // from the guard.
+            super::RuntimeError::Protocol { ref response, .. }
+                if response["schema"] == super::external_transport::TYPED_SCHEMA =>
+            {
+                return error;
+            }
             super::RuntimeError::Refused { status, reason }
                 if status == axum::http::StatusCode::NOT_FOUND
                     && matches!(reason, "instance_not_found" | "run_not_found") =>
@@ -108,6 +117,8 @@ impl Operation<'_> {
             Self::History => ("history", &["workflow_id", "run_id"], &["next_page_token"]),
             Self::Cancel => ("cancel", &["workflow_id"], &["outcome"]),
             Self::Terminate => ("terminate", &["workflow_id"], &["outcome"]),
+            Self::Archive => ("archive", &["workflow_id"], &["outcome"]),
+            Self::Redrive => ("redrive", &["workflow_id", "continued_from_run_id"], &["run_id", "resume_step_sequence", "outcome"]),
             Self::Repair => ("repair", &["workflow_id"], &["outcome"]),
             Self::Debug => ("debug_workflow", &["workflow_id"], &["run_id", "diagnostic_status"]),
             Self::Update(_) => (
@@ -133,7 +144,10 @@ impl Operation<'_> {
                 "required_fields":required, "success_fields":success}});
         if let Some((fields, reasons)) = self.rejection_contract() {
             metadata["contract"]["rejection_fields"] = words(fields);
-            metadata["contract"]["rejection_reasons"] = words(reasons);
+            // PHP's redrive contract names no rejection reasons.
+            if !reasons.is_empty() {
+                metadata["contract"]["rejection_reasons"] = words(reasons);
+            }
         }
         match self {
             Self::Update(name) => {
@@ -253,7 +267,8 @@ impl Operation<'_> {
                 "workflow_id run_id reason message retryable error_id exception",
                 "control_plane_internal_error",
             ),
-            Self::Cancel | Self::Terminate | Self::Repair => {
+            Self::Redrive => ("workflow_id continued_from_run_id run_id reason message", ""),
+            Self::Cancel | Self::Terminate | Self::Archive | Self::Repair => {
                 ("workflow_id run_id reason message remediation", "v1_projection_read_only")
             }
             Self::Update(_) => (
@@ -297,13 +312,16 @@ fn words(list: &str) -> Value {
 }
 
 pub(super) async fn admission_response(request: Request, mut body: Value) -> Value {
-    let segments: Vec<_> = request
-        .uri()
-        .path()
-        .trim_start_matches('/')
-        .split('/')
-        .collect();
+    let path = request.uri().path().to_owned();
+    let segments: Vec<_> = path.trim_start_matches('/').split('/').collect();
     let operation = match (request.method().as_str(), segments.as_slice()) {
+        ("POST", ["api", "workflows"]) => Operation::Start,
+        ("POST", ["api", "workflows", _, "signal", name])
+        | ("POST", ["api", "workflows", _, "runs", _, "signal", name]) => Operation::Signal(name),
+        ("POST", ["api", "workflows", _, "update", name])
+        | ("POST", ["api", "workflows", _, "runs", _, "update", name]) => Operation::Update(name),
+        ("POST", ["api", "workflows", _, "query", name])
+        | ("POST", ["api", "workflows", _, "runs", _, "query", name]) => Operation::Query(name),
         ("GET", ["api", "workflows"]) => Operation::List,
         ("GET", ["api", "workflows", _]) => Operation::Describe,
         ("GET", ["api", "workflows", _, "runs"]) => Operation::ListRuns,
@@ -315,6 +333,9 @@ pub(super) async fn admission_response(request: Request, mut body: Value) -> Val
         | ("POST", ["api", "workflows", _, "runs", _, "cancel"]) => Operation::Cancel,
         ("POST", ["api", "workflows", _, "terminate"])
         | ("POST", ["api", "workflows", _, "runs", _, "terminate"]) => Operation::Terminate,
+        ("POST", ["api", "workflows", _, "runs", _, "redrive"]) => Operation::Redrive,
+        ("POST", ["api", "workflows", _, "archive"])
+        | ("POST", ["api", "workflows", _, "runs", _, "archive"]) => Operation::Archive,
         ("POST", ["api", "workflows", _, "repair"])
         | ("POST", ["api", "workflows", _, "runs", _, "repair"]) => Operation::Repair,
         ("GET", ["api", "workflows", _, "debug"])

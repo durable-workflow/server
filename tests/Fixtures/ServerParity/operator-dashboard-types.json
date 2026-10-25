@@ -1,0 +1,177 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "operator-dashboard-types",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "dashboard types λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "dashboard types λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "operator_dashboard_types": {
+    "workflow_types": [
+      "parity.v1.dash_orders",
+      "parity.v1.dash_billing"
+    ],
+    "starts": [
+      "parity.v1.dash_orders",
+      "parity.v1.dash_orders",
+      "parity.v1.dash_billing"
+    ],
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "dashboard_keys": [
+      "exceptions_past_hour",
+      "failed_flows_past_week",
+      "fleet_overview",
+      "fleet_trends_series",
+      "flows",
+      "flows_past_hour",
+      "flows_per_minute",
+      "max_duration_workflow",
+      "max_exceptions_workflow",
+      "max_wait_time_workflow",
+      "needs_attention",
+      "operator_metrics",
+      "operator_metrics_scope",
+      "time_windows",
+      "workflow_scope",
+      "workflow_type_health"
+    ],
+    "trend_hours": 169,
+    "cases": {
+      "orders": {
+        "types": [
+          "parity.v1.dash_orders"
+        ],
+        "flows": 2,
+        "health": [
+          [
+            "parity.v1.dash_orders",
+            2
+          ]
+        ],
+        "max_wait": "parity.v1.dash_orders"
+      },
+      "billing_and_missing": {
+        "types": [
+          "parity.v1.dash_billing",
+          "parity.v1.dash_missing"
+        ],
+        "flows": 1,
+        "health": [
+          [
+            "parity.v1.dash_billing",
+            1
+          ]
+        ],
+        "max_wait": "parity.v1.dash_billing"
+      },
+      "none": {
+        "types": [],
+        "flows": 0,
+        "health": [],
+        "max_wait": null
+      },
+      "repeated": {
+        "types": [
+          "parity.v1.dash_orders",
+          "parity.v1.dash_orders"
+        ],
+        "flows": 2,
+        "health": [
+          [
+            "parity.v1.dash_orders",
+            2
+          ]
+        ],
+        "max_wait": "parity.v1.dash_orders"
+      },
+      "both": {
+        "types": [
+          "parity.v1.dash_billing",
+          "parity.v1.dash_orders"
+        ],
+        "flows": 3,
+        "health": [
+          [
+            "parity.v1.dash_orders",
+            2
+          ],
+          [
+            "parity.v1.dash_billing",
+            1
+          ]
+        ],
+        "max_wait": "parity.v1.dash_orders"
+      },
+      "upper": {
+        "types": [
+          "PARITY.V1.DASH_ORDERS"
+        ],
+        "collation": {
+          "matched": {
+            "flows": 2,
+            "health": [
+              [
+                "parity.v1.dash_orders",
+                2
+              ]
+            ],
+            "max_wait": "parity.v1.dash_orders"
+          },
+          "unmatched": {
+            "flows": 0,
+            "health": [],
+            "max_wait": null
+          }
+        }
+      }
+    },
+    "refusals": {
+      "missing": {
+        "query": null,
+        "message": "The workflow types field is required."
+      },
+      "object": {
+        "query": "{\"a\":\"b\"}",
+        "message": "Provide a JSON list of workflow types with at most 4096 encoded bytes."
+      },
+      "blank_item": {
+        "query": "[\"\"]",
+        "message": "Workflow types must be nonempty strings of at most 255 characters."
+      },
+      "number_item": {
+        "query": "[1]",
+        "message": "Workflow types must be nonempty strings of at most 255 characters."
+      },
+      "not_json": {
+        "query": "nope",
+        "message": "The workflow types field must be a valid JSON string."
+      }
+    }
+  },
+  "contract": "GET /api/system/operator-dashboard/bounded/workflow-types (published Server 2.11.1, SystemController::workflowTypeOperatorDashboard with Workflow OperatorDashboardSummary::snapshot) answers the bounded dashboard with every run figure narrowed to the listed workflow types: totals, the last hour, the past week's failures and exceptions, the longest wait, duration and exception runs, the fleet overview and trends, workflow type health and the run-based attention alerts. workflow_scope echoes the list as given, duplicates included, with all_workflow_types false; an empty list matches no runs. The operator metrics keep the whole namespace (operator_metrics_scope.workflow_types is null). In a fresh namespace with two runs of one type and one of another, the counts are exact. The comparison uses the database's own text comparison, as PHP's whereIn does: an upper-cased type matches on MySQL and MariaDB collations and not on SQLite or PostgreSQL, and both servers must agree. Invalid lists are refused with PHP's 422 messages. Embedded applications have no HTTP dashboard."
+}

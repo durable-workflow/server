@@ -43,7 +43,7 @@ where
     async fn observe_activity(&self, task_id: &str, body: Value, protocol: &str) -> Result<Value> {
         let mut tx = self.begin_read().await?;
         let (response, _) = self
-            .activity_observation(&mut tx, task_id, body, protocol)
+            .activity_observation(&mut tx, task_id, body, protocol, true)
             .await?;
         tx.commit().await?;
         Ok(response)
@@ -55,6 +55,7 @@ where
         task_id: &str,
         body: Value,
         protocol: &str,
+        check_session: bool,
     ) -> Result<(Value, bool)> {
         reject_fields(&body, &["activity_attempt_id", "lease_owner"])?;
         let attempt_id = text(&body, "activity_attempt_id")?;
@@ -127,13 +128,39 @@ where
         } else {
             (true, false, None)
         };
+        // A session-bound attempt shows its session's compact form, read
+        // without a refresh; on status, a session that is no longer the
+        // holder's live lease stops an attempt that could otherwise continue.
+        let session = DB::optional_document_row(&activity, "activity_options")?
+            .and_then(|options| super::worker_sessions::CommandSession::from_snapshot(&options["worker_session"]));
+        let (worker_session, can_continue, reason) = match &session {
+            Some(session) => {
+                let queue = DB::optional_string(&activity, "queue")?.unwrap_or_default();
+                let connection = DB::optional_string(&activity, "connection")?;
+                let (view, usable) = self.session_for_status(tx, session, &queue, connection.as_deref(), owner).await?;
+                if check_session && can_continue && !usable {
+                    (view, false, Some("worker_session_unavailable"))
+                } else {
+                    (view, can_continue, reason)
+                }
+            }
+            None => (Value::Null, can_continue, reason),
+        };
         // Observation preserves the existing lease and never records progress.
-        let response = json!({"task_id":task_id,"activity_attempt_id":attempt_id,"lease_owner":owner,
+        let mut response = json!({"task_id":task_id,"activity_attempt_id":attempt_id,"lease_owner":owner,
             "can_continue":can_continue,"cancel_requested":cancel_requested,"reason":reason,"heartbeat_recorded":false,
-            "lease_expires_at":expires,"last_heartbeat_at":DB::optional_instant(&attempt,"last_heartbeat_at")?.or(DB::optional_instant(&activity,"last_heartbeat_at")?),
-            "run_status":run_status,"run_closed_reason":DB::optional_string(&run,"closed_reason")?,"run_closed_at":DB::optional_instant(&run,"closed_at")?,
+            // PHP formats each time in UTC with microseconds.
+            "lease_expires_at":expires.map(super::cooperative::timestamp),
+            "last_heartbeat_at":DB::optional_instant(&attempt,"last_heartbeat_at")?.or(DB::optional_instant(&activity,"last_heartbeat_at")?).map(super::cooperative::timestamp),
+            "run_status":run_status,"run_closed_reason":DB::optional_string(&run,"closed_reason")?,"run_closed_at":DB::optional_instant(&run,"closed_at")?.map(super::cooperative::timestamp),
             "activity_status":activity_status,"attempt_status":attempt_status,"task_status":task_status,
-            "deadlines":super::activity_deadlines::deadlines_view::<DB>(&activity)?,"worker_session":null,"protocol_version":protocol,"server_capabilities":super::store::capabilities()});
+            "deadlines":super::activity_deadlines::deadlines_view::<DB>(&activity)?,"worker_session":worker_session,"protocol_version":protocol,"server_capabilities":super::store::capabilities()});
+        // A cooperative request that reached this attempt shows its receipt.
+        if cancel_requested
+            && let Some(receipt) = Self::activity_cancellation_receipt(tx, &run, &DB::string(&activity, "id")?, attempt_id).await?
+        {
+            response["cancellation_acknowledgement"] = receipt;
+        }
         Ok((response, Self::cancellation_request(&run)?.is_none()))
     }
 
@@ -183,6 +210,7 @@ where
                 task_id,
                 json!({"activity_attempt_id":attempt_id,"lease_owner":text(&body,"lease_owner")?}),
                 protocol,
+                false,
             )
             .await
             .map_err(|error| match error {
@@ -192,12 +220,16 @@ where
                 } => refuse(StatusCode::CONFLICT, "stale_attempt"),
                 other => other,
             })?;
-        if ordinary && observed["can_continue"] == false && observed["cancel_requested"] == false {
-            // Published PHP returns a structured refusal for ordinary expired
-            // or closed authority. This read never records progress or renews
-            // a lease; a concurrently closed attempt remains fenced.
+        // Published PHP answers with this structured refusal for ordinary
+        // expired authority, for any closed run, whose activity is told it
+        // was cancelled, and for an attempt a cooperative cancellation
+        // reached. This read never records progress or renews a lease; a
+        // concurrently closed attempt remains fenced.
+        let closed = !observed["run_closed_reason"].is_null();
+        let delivered = observed["cancel_requested"] == true && observed["reason"] == "attempt_closed";
+        if observed["can_continue"] == false && (closed || delivered || ordinary && observed["cancel_requested"] == false) {
             let response = json!({"task_id":task_id,"activity_attempt_id":attempt_id,"lease_owner":body["lease_owner"],
-                "cancel_requested":false,"can_continue":false,"reason":observed["reason"],
+                "cancel_requested":observed["cancel_requested"],"can_continue":false,"reason":observed["reason"],
                 "run_closed_reason":observed["run_closed_reason"],"run_closed_at":observed["run_closed_at"],
                 "heartbeat_recorded":false,"lease_expires_at":observed["lease_expires_at"],
                 "last_heartbeat_at":observed["last_heartbeat_at"],"worker_session":observed["worker_session"],
@@ -241,6 +273,25 @@ where
             return Err(refuse(StatusCode::CONFLICT, "stale_attempt"));
         }
         super::activity_deadlines::fence::<DB>(&activity)?;
+        // `heartbeatForAttempt`: a session-bound attempt renews its session
+        // by the command's lease first. A refused renewal records nothing.
+        let mut worker_session = Value::Null;
+        if let Some(session) = DB::optional_document_row(&activity, "activity_options")?
+            .and_then(|options| super::worker_sessions::CommandSession::from_snapshot(&options["worker_session"]))
+        {
+            match self.renew_session_for_attempt(&mut tx, &session, text(&body, "lease_owner")?).await? {
+                Ok(snapshot) => worker_session = snapshot,
+                Err((status, snapshot, renewal)) => {
+                    return Err(super::RuntimeError::Protocol { status,
+                        response: json!({"task_id":task_id,"activity_attempt_id":attempt_id,"lease_owner":body["lease_owner"],
+                            "cancel_requested":observed["cancel_requested"],"can_continue":false,"reason":renewal["reason"],
+                            "run_closed_reason":observed["run_closed_reason"],"run_closed_at":observed["run_closed_at"],
+                            "heartbeat_recorded":false,"lease_expires_at":observed["lease_expires_at"],
+                            "last_heartbeat_at":observed["last_heartbeat_at"],"error":renewal["error"],"worker_session":snapshot,
+                            "worker_session_renewal":renewal,"protocol_version":protocol,"server_capabilities":super::store::capabilities()}) });
+                }
+            }
+        }
         let at = now();
         let expires = if Self::cancellation_request(&run)?.is_none() {
             at + chrono::Duration::seconds(self.activity_task_lease_seconds)
@@ -298,7 +349,11 @@ where
         tx.commit().await?;
         Ok(
             json!({"task_id":task_id,"activity_attempt_id":attempt_id,"lease_owner":body["lease_owner"],
-            "heartbeat_recorded":true,"last_heartbeat_at":at,"lease_expires_at":expires,"cancel_requested":false,"can_continue":true}),
+            "cancel_requested":false,"can_continue":true,"reason":null,"run_closed_reason":null,"run_closed_at":null,
+            // PHP formats each time in UTC with microseconds, as status reads do.
+            "heartbeat_recorded":true,"lease_expires_at":super::cooperative::timestamp(expires),
+            "last_heartbeat_at":super::cooperative::timestamp(at),"worker_session":worker_session,
+            "protocol_version":protocol,"server_capabilities":super::store::capabilities()}),
         )
     }
 }

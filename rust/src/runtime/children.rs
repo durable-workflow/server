@@ -129,17 +129,8 @@ where
             return Ok(ChildParentResume::New);
         }
         if Self::cancellation_request(parent)?.is_none() {
-            // An update task does not replay the root workflow, so the
-            // resolution gets its own resume task, as activity and timer
-            // resolutions do. Published PHP reuses the open task instead.
-            for task in &tasks {
-                if DB::document_row(task, "payload")?["workflow_update_id"]
-                    .as_str()
-                    .is_none()
-                {
-                    return Err(refuse(StatusCode::CONFLICT, "child_parent_task_conflict"));
-                }
-            }
+            // The resolution gets its own resume task, as activity and timer
+            // resolutions do. Published PHP reuses an open task instead.
             return Ok(ChildParentResume::New);
         }
         if tasks.len() > 1000 {
@@ -200,10 +191,13 @@ where
         Ok(consistent.then_some((parent_close, cancellation)))
     }
 
+    /// `externalCommandContract`: the type's contract from the most recently
+    /// heartbeated active worker, in the start's cohort when it has one.
     pub(super) async fn attach_workflow_contract(
         tx: &mut Transaction<'_, DB>,
         queue: &str,
         workflow_type: &str,
+        cohort: Option<&super::start_definition::Cohort>,
         started: &mut Value,
     ) -> Result<()> {
         let instance = Self::query("SELECT namespace FROM workflow_instances WHERE id=$1")
@@ -211,9 +205,13 @@ where
             .fetch_one(&mut **tx)
             .await?;
         let namespace = DB::string(&instance, "namespace")?;
-        let workers = Self::query("SELECT supported_workflow_types,workflow_command_contracts FROM workflow_worker_registrations WHERE task_queue=$1 AND status='active' AND workflow_command_contracts IS NOT NULL AND last_heartbeat_at>$2 AND namespace=$3 ORDER BY id DESC LIMIT 100")
+        let workers = Self::query("SELECT build_id,supported_workflow_types,workflow_command_contracts FROM workflow_worker_registrations WHERE task_queue=$1 AND status='active' AND workflow_command_contracts IS NOT NULL AND last_heartbeat_at>$2 AND namespace=$3 ORDER BY last_heartbeat_at DESC,id DESC LIMIT 100")
             .bind(queue).bind(DB::bind_time(now() - chrono::Duration::seconds(60))).bind(&namespace).fetch_all(&mut **tx).await?;
         for worker in workers {
+            let build = DB::optional_string(&worker, "build_id")?;
+            if cohort.is_some_and(|cohort| !cohort.admits(build.as_deref())) {
+                continue;
+            }
             if DB::document_row(&worker, "supported_workflow_types")?
                 .as_array()
                 .is_some_and(|types| types.iter().any(|value| value == workflow_type))
@@ -256,28 +254,12 @@ where
         task_id: &str,
         command: &Value,
         sequence: i64,
-    ) -> Result<()> {
+    ) -> Result<String> {
         let parent_run = DB::string(parent, "id")?;
         let parent_instance = DB::string(parent, "workflow_instance_id")?;
-        // This first slice permits one outstanding authored child. A replayed
-        // completion is handled by the enclosing immutable task receipt.
-        for sql in [
-            "SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','terminated','failed')",
-            "SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status!='completed'",
-            "SELECT COUNT(*) FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending'",
-        ] {
-            if Self::scalar(sql)
-                .bind(&parent_run)
-                .fetch_one(&mut **tx)
-                .await?
-                != 0
-            {
-                return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
-            }
-        }
-        if Self::open_wait(tx, &parent_run).await?.is_some() {
-            return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
-        }
+        // Published PHP starts a child whatever else the parent has open:
+        // activities, timers, waits and other children. A replayed completion
+        // is handled by the enclosing immutable task receipt.
         let workflow_type = text(command, "workflow_type")?;
         let queue = command
             .get("queue")
@@ -292,12 +274,15 @@ where
         // A child lives in its parent's namespace (ChildWorkflowNamespaceProjection).
         let namespace = DB::optional_string(parent, "namespace")?;
         let started_at = now();
+        // `ChildCallService`: a child keeps its parent's build pin. A child of
+        // an unpinned parent is unpinned too (checked against published 2.11.1).
+        let compatibility = DB::optional_string(parent, "compatibility")?.filter(|build| !build.trim().is_empty());
         // PHP children without explicit timeout options have nullable budgets
         // and deadlines. Do not invent parent defaults for these runs.
         Self::query("INSERT INTO workflow_instances(id,namespace,workflow_type,workflow_class,current_run_id,run_count,started_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,1,$6,$7,$8)")
             .bind(&child_instance).bind(namespace.as_deref()).bind(workflow_type).bind(workflow_type).bind(&child_run).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
-        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,namespace,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,started_at,created_at,updated_at,last_progress_at) VALUES ($1,$2,$3,$4,$5,1,'pending','avro',$6,$7,$8,$9,$10,$11)")
-            .bind(&child_run).bind(&child_instance).bind(namespace.as_deref()).bind(workflow_type).bind(workflow_type).bind(&arguments).bind(&queue).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
+        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,namespace,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,started_at,created_at,updated_at,last_progress_at,compatibility) VALUES ($1,$2,$3,$4,$5,1,'pending','avro',$6,$7,$8,$9,$10,$11,$12)")
+            .bind(&child_run).bind(&child_instance).bind(namespace.as_deref()).bind(workflow_type).bind(workflow_type).bind(&arguments).bind(&queue).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(compatibility.as_deref()).execute(&mut **tx).await?;
         Self::query("INSERT INTO workflow_child_calls(parent_workflow_run_id,parent_workflow_instance_id,sequence,child_workflow_type,child_workflow_class,resolved_child_instance_id,resolved_child_run_id,parent_close_policy,cancellation_propagation,queue,status,scheduled_at,started_at,arguments,metadata,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,($9<>'abandon'),$10,'started',$11,$12,$13,$14,$15,$16)")
             .bind(&parent_run).bind(&parent_instance).bind(sequence).bind(workflow_type).bind(workflow_type).bind(&child_instance).bind(&child_run).bind(&policies.parent_close).bind(&policies.cancellation).bind(&queue).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at))
             .bind(DB::document(&json!({"payload":arguments}))).bind(DB::document(&json!({"child_call_id":call,"attempt_count":1,"cancellation_policy":policies.cancellation}))).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
@@ -333,14 +318,14 @@ where
         )
         .await?;
         let mut child_started = json!({"workflow_class":workflow_type,"workflow_type":workflow_type,"workflow_instance_id":child_instance,"workflow_run_id":child_run,"parent_workflow_instance_id":parent_instance,"parent_workflow_run_id":parent_run,"parent_sequence":sequence,"workflow_link_id":call,"child_call_id":call,"retry_policy":null,"timeout_policy":null,"execution_timeout_seconds":null,"run_timeout_seconds":null,"execution_deadline_at":null,"run_deadline_at":null});
-        Self::attach_workflow_contract(tx, &queue, workflow_type, &mut child_started).await?;
+        Self::attach_workflow_contract(tx, &queue, workflow_type, None, &mut child_started).await?;
         Self::append(tx, &child_run, "WorkflowStarted", child_started, None, None).await?;
-        Self::create_task(tx, &child_run, &queue, "workflow", json!({})).await?;
+        let child_task = Self::create_task(tx, &child_run, &queue, "workflow", json!({})).await?;
         Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1")
             .bind(&parent_run)
             .execute(&mut **tx)
             .await?;
-        Ok(())
+        Ok(child_task)
     }
 
     pub(super) async fn complete_child(
@@ -363,7 +348,7 @@ where
             .bind(&child_run).fetch_one(&mut **tx).await?;
         let original = DB::document_row(&started, "payload")?;
         let links = Self::query("SELECT * FROM workflow_links WHERE child_workflow_run_id=$1 AND link_type='child_workflow' LIMIT 2").bind(&child_run).fetch_all(&mut **tx).await?;
-        if links.is_empty() && original.get("parent_workflow_run_id").is_none() {
+        if links.is_empty() && original["parent_workflow_run_id"].is_null() {
             return Ok(());
         }
         if links.is_empty() {
@@ -378,12 +363,21 @@ where
         let link = &links[0];
         let parent_run = DB::string(link, "parent_workflow_run_id")?;
         let sequence = DB::number(link, "sequence")?;
-        let call_id = DB::string(link, "id")?;
+        let link_id = DB::string(link, "id")?;
+        // A child that continued as new keeps its first call: its started
+        // event names the continue-as-new link and the original call, and the
+        // parent's link to it is a new one (`applyContinueAsNew`).
+        let continued = original["continued_from_run_id"].is_string();
+        let call_id = if continued {
+            original["child_call_id"].as_str().map(str::to_owned).ok_or_else(|| refuse(StatusCode::CONFLICT, "child_call_mismatch"))?
+        } else {
+            link_id.clone()
+        };
         if original["parent_workflow_run_id"] != parent_run
             || original["parent_workflow_instance_id"]
                 != DB::string(link, "parent_workflow_instance_id")?
             || original["parent_sequence"] != sequence
-            || original["workflow_link_id"] != call_id
+            || (!continued && original["workflow_link_id"] != call_id)
             || original["child_call_id"] != call_id
             || original["workflow_instance_id"] != DB::string(child, "workflow_instance_id")?
             || original["workflow_run_id"] != child_run
@@ -400,7 +394,9 @@ where
             || DB::optional_string(call, "resolved_child_instance_id")?.as_deref()
                 != Some(&DB::string(child, "workflow_instance_id")?)
             || DB::document_row(call, "metadata")?["child_call_id"] != call_id
-            || DB::string(call, "child_workflow_type")? != DB::string(child, "workflow_type")?
+            // A continued child may run a new workflow type; the call keeps
+            // the type it started with, as PHP's does.
+            || (!continued && DB::string(call, "child_workflow_type")? != DB::string(child, "workflow_type")?)
             || DB::string(link, "child_workflow_instance_id")?
                 != DB::string(child, "workflow_instance_id")?
             || DB::string(call, "parent_workflow_instance_id")?
@@ -439,7 +435,7 @@ where
             return Ok(());
         }
         let parent_resume = Self::child_parent_resume(tx, &parent).await?;
-        let mut payload = json!({"sequence":sequence,"workflow_link_id":call_id,"child_call_id":call_id,"child_workflow_instance_id":DB::string(child,"workflow_instance_id")?,"child_workflow_run_id":child_run,"child_workflow_class":DB::string(child,"workflow_class")?,"child_workflow_type":DB::string(child,"workflow_type")?,"child_run_number":DB::number(child,"run_number")?,"child_status":status,"closed_reason":status,"closed_at":closed_at});
+        let mut payload = json!({"sequence":sequence,"workflow_link_id":link_id,"child_call_id":call_id,"child_workflow_instance_id":DB::string(child,"workflow_instance_id")?,"child_workflow_run_id":child_run,"child_workflow_class":DB::string(child,"workflow_class")?,"child_workflow_type":DB::string(child,"workflow_type")?,"child_run_number":DB::number(child,"run_number")?,"child_status":status,"closed_reason":status,"closed_at":closed_at});
         match resolution {
             ChildResolution::Completed(output) => {
                 payload["output"] = wire(output);

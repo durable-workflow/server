@@ -15,14 +15,83 @@ pub(super) struct PreparedControlArguments {
     pub(super) value: String,
     pub(super) command: String,
 }
+/// The events PHP's Workflow package records with the task model in hand,
+/// which therefore carry the task's snapshot.
+const TASK_SNAPSHOT_EVENTS: &[&str] = &[
+    "ActivityCompleted",
+    "ActivityFailed",
+    "ActivityHeartbeatRecorded",
+    "ActivityRetryScheduled",
+    "ActivityScheduled",
+    "ActivityStarted",
+    "ActivityTimedOut",
+    "ChildRunStarted",
+    "ChildWorkflowScheduled",
+    "ConditionWaitOpened",
+    "ConditionWaitSatisfied",
+    "ConditionWaitTimedOut",
+    "FailureHandled",
+    "MemoUpserted",
+    "MessageCursorAdvanced",
+    "SearchAttributesUpserted",
+    "SelectionOperationCancelled",
+    "SideEffectRecorded",
+    "SignalApplied",
+    "SignalWaitOpened",
+    "TimerFired",
+    "TimerScheduled",
+    "VersionMarkerRecorded",
+    "WorkflowCompleted",
+    "WorkflowContinuedAsNew",
+    "WorkflowFailed",
+    "WorkflowTimedOut",
+];
+/// Describe's command journal. Each backend passes its exact, case-sensitive
+/// test for native's stored-reference prefix
+/// (`external_resolution::STORED_PREFIX`) over the column that holds a
+/// command's input: a signal's in its signal record (`s.arguments`), a start's
+/// in the command row (`c.payload`). Other commands keep no stored reference.
+/// Only a stored reference is read; inline payloads are not.
+macro_rules! run_commands_sql {
+    ($signal:literal, $start:literal) => {
+        concat!(
+            "SELECT c.id,c.command_sequence,c.command_type,c.target_scope,c.requested_workflow_run_id,c.resolved_workflow_run_id,c.source,c.status,c.outcome,c.rejection_reason,c.workflow_type,c.workflow_class,c.accepted_at,c.applied_at,c.rejected_at,c.context,s.signal_name,CASE WHEN c.command_type='signal' AND ",
+            $signal,
+            " THEN s.arguments WHEN c.command_type='start' AND ",
+            $start,
+            " THEN c.payload END AS stored_payload FROM workflow_commands c LEFT JOIN workflow_signal_records s ON s.workflow_command_id=c.id WHERE c.workflow_run_id=$1 AND c.workflow_instance_id=$2 ORDER BY c.command_sequence,c.created_at,c.id"
+        )
+    };
+}
+pub(super) use run_commands_sql;
+/// One signal command's identity and sequences in its run, as both the
+/// public signal route and the runtime's message-stream deliveries write it.
+pub(super) struct SignalWrite<'a> {
+    pub(super) workflow_id: &'a str,
+    pub(super) run_id: &'a str,
+    pub(super) workflow_type: &'a str,
+    pub(super) name: &'a str,
+    pub(super) command_id: &'a str,
+    pub(super) signal_id: &'a str,
+    pub(super) command_sequence: i64,
+    pub(super) message_sequence: i64,
+    pub(super) context: &'a Value,
+}
 /// The runtime-owned message-stream delivery signal (`WorkflowStub::MESSAGE_STREAM_RUNTIME_SIGNAL`).
-const MESSAGE_STREAM_SIGNAL: &str = "__durable_workflow_message_stream";
-pub(super) const TASK_CANDIDATES_SQL: &str = "SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) ORDER BY t.priority,t.available_at,t.id LIMIT 100";
+const MESSAGE_STREAM_SIGNAL: &str = super::message_streams::INTERNAL_SIGNAL;
+pub(super) const TASK_CANDIDATES_SQL: &str = "SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ORDER BY t.priority,t.available_at,t.id LIMIT 100";
 /// `nextEligibleSignal`: a run's received signals in PHP's order: command
 /// sequence (unsequenced last), receipt time, then id.
 const RECEIVED_SIGNALS: &str = "SELECT id,signal_name,signal_wait_id,command_sequence FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received' AND closed_at IS NULL ORDER BY CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END,command_sequence,received_at,id LIMIT 100";
 pub(super) const POLL_RECEIPT_CLEANUP_SQL: &str = "DELETE FROM dw_poll_receipts WHERE expires_at<=$1 AND task_id IN (SELECT id FROM workflow_tasks WHERE status!='leased' OR lease_expires_at<=$2)";
 pub(super) const WORKER_REGISTRATION_SQL: &str = "INSERT INTO workflow_worker_registrations(namespace,worker_id,task_queue,runtime,sdk_version,build_id,supported_workflow_types,supported_activity_types,capabilities,capability_manifest,last_heartbeat_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(worker_id,namespace) DO UPDATE SET task_queue=excluded.task_queue,runtime=excluded.runtime,sdk_version=excluded.sdk_version,build_id=excluded.build_id,supported_workflow_types=excluded.supported_workflow_types,supported_activity_types=excluded.supported_activity_types,capabilities=excluded.capabilities,capability_manifest=excluded.capability_manifest,last_heartbeat_at=excluded.last_heartbeat_at,updated_at=excluded.updated_at";
+/// A registration's build id as the pollers compare it: trimmed, and none
+/// when blank. A task pinned to a build goes only to that build's workers.
+pub(super) fn worker_build<DB: Backend>(row: &DB::Row) -> Result<Option<String>> {
+    Ok(DB::optional_string(row, "build_id")?
+        .map(|build| build.trim().to_owned())
+        .filter(|build| !build.is_empty()))
+}
 pub(super) struct Store<DB: Backend> {
     pub(super) pool: Pool<DB>,
     pub(super) wake: Arc<Notify>,
@@ -39,6 +108,9 @@ pub(super) struct Store<DB: Backend> {
     pub(super) search_attribute_limit: i64,
     /// When a silent registration stops counting (`server.workers.stale_after_seconds`).
     pub(super) worker_stale_after_seconds: i64,
+    /// When this server last ran a task repair pass, shared by its namespaces
+    /// as PHP shares its loop throttle key.
+    pub(super) repair_pass_at: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
 /// The `closed_reason` a terminal history event gives its run, or `None` for
 /// an event that does not close the run.
@@ -68,6 +140,61 @@ pub(super) fn id() -> String {
         .generate()
         .unwrap_or_else(|_| Ulid::new())
         .to_string()
+}
+
+/// The distinct, non-empty signal IDs a history page's `SignalReceived`
+/// events name: the only signal records its hydration reads.
+fn page_signal_ids(events: &[Value]) -> std::collections::BTreeSet<String> {
+    events
+        .iter()
+        .filter(|event| event["event_type"] == "SignalReceived")
+        .filter_map(|event| event["payload"]["signal_id"].as_str())
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+#[cfg(test)]
+#[test]
+fn a_history_page_reads_only_its_own_signal_records() {
+    let signal = |id: &str| json!({"event_type":"SignalReceived","payload":{"signal_id":id}});
+    let page = [signal("b"), signal("a"), signal("a"), signal(""), json!({"event_type":"TimerFired","payload":{"signal_id":"c"}}),
+        json!({"event_type":"SignalReceived","payload":{}})];
+    assert_eq!(page_signal_ids(&page).into_iter().collect::<Vec<_>>(), ["a", "b"]);
+    // One event, one record, however many signals the run holds.
+    assert_eq!(page_signal_ids(&[signal("only")]).len(), 1);
+    assert!(page_signal_ids(&[]).is_empty());
+}
+
+// Hydration never reads a record the page does not name. The run's other
+// record holds a sequence that cannot be decoded (SQLite keeps the text in
+// an integer column), so a run-wide read fails where a page-scoped one
+// succeeds; a same-ID record of another run stays fenced out.
+#[cfg(test)]
+#[tokio::test]
+async fn signal_hydration_reads_no_record_outside_the_page() {
+    use sqlx::Connection;
+    let mut connection = sqlx::SqliteConnection::connect("sqlite::memory:").await.unwrap();
+    sqlx::query("CREATE TABLE workflow_signal_records (id TEXT, workflow_run_id TEXT, workflow_sequence INTEGER)")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    for (id, run, sequence) in [("page", "run", "7"), ("unrelated", "run", "not-a-sequence"), ("fenced", "other", "9")] {
+        sqlx::query("INSERT INTO workflow_signal_records VALUES ($1, $2, $3)")
+            .bind(id)
+            .bind(run)
+            .bind(sequence)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+    }
+    let mut events = vec![
+        json!({"event_type":"SignalReceived","payload":{"signal_id":"page"}}),
+        json!({"event_type":"SignalReceived","payload":{"signal_id":"fenced"}}),
+    ];
+    Store::<sqlx::Sqlite>::with_signal_sequences(&mut connection, "run", &mut events).await.unwrap();
+    assert_eq!(events[0]["payload"]["workflow_sequence"], 7, "{events:?}");
+    assert!(events[1]["payload"].get("workflow_sequence").is_none(), "{events:?}");
 }
 
 #[cfg(test)]
@@ -118,6 +245,7 @@ where
             update_wait_seconds: 10,
             search_attribute_limit: 100,
             worker_stale_after_seconds: 30,
+            repair_pass_at: Arc::default(),
         }
     }
     pub(super) fn in_namespace(&self, namespace: &str) -> Self {
@@ -133,6 +261,7 @@ where
             update_wait_seconds: self.update_wait_seconds,
             search_attribute_limit: self.search_attribute_limit,
             worker_stale_after_seconds: self.worker_stale_after_seconds,
+            repair_pass_at: self.repair_pass_at.clone(),
         }
     }
     pub(super) async fn database_live(&self) -> bool {
@@ -199,6 +328,26 @@ where
             self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
                 .await?;
         }
+        // `TaskQueueRoutingGate`: a queue whose live workers all drain takes
+        // no new start. A workflow id reserved in another namespace is
+        // refused for that first.
+        let request = super::start_request::validate(&body)?;
+        let reserved = match &request.workflow_id {
+            Some(workflow_id) => Self::query("SELECT namespace FROM workflow_instances WHERE id=$1")
+                .bind(workflow_id.as_str()).fetch_optional(&mut *tx).await?
+                .map(|instance| DB::optional_string(&instance, "namespace")).transpose()?.flatten()
+                .is_some_and(|reserved| reserved != self.namespace.as_ref()),
+            None => false,
+        };
+        if !reserved && let Some(block) = Self::routing_block(&mut tx, &self.namespace, &request.task_queue, self.worker_stale_after_seconds).await? {
+            let mut response = json!({"workflow_id":request.workflow_id,"command_status":"rejected","command_source":"control_plane",
+                "outcome":"rejected_task_queue_draining","reason":"task_queue_draining","rejection_reason":"task_queue_draining",
+                "message":format!("Task queue [{}] is draining and cannot accept new workflow starts until an active worker cohort is available.", request.task_queue),
+                "workflow_type":request.workflow_type,"task_queue":request.task_queue});
+            response.as_object_mut().expect("object").extend(block);
+            response.as_object_mut().expect("object").retain(|_, value| !value.is_null());
+            return Err(super::RuntimeError::Protocol { status: StatusCode::CONFLICT, response });
+        }
         let started = Self::start_in(
             &mut tx,
             &body,
@@ -256,6 +405,14 @@ where
         let run_id = id();
         let command_id = id();
         let started_at = now();
+        // `WorkflowStartVersionPin::resolveForStart`: the run is pinned to its
+        // cohort's build, and records the definition that cohort agrees on.
+        let workers = Self::start_workers(tx, namespace, queue, stale_after).await?;
+        let cohort = match Self::promoted_cohort(tx, namespace, queue).await? {
+            Some(cohort) => Some(cohort),
+            None => super::start_definition::resolve(&workers, workflow_type),
+        };
+        let pin = cohort.as_ref().and_then(|cohort| cohort.pin().map(str::to_owned));
         // DefaultWorkflowControlPlane::start: each deadline follows its own
         // timeout, and a run without timeouts has no deadline.
         let execution_deadline = execution_timeout.map(|seconds| started_at + chrono::Duration::seconds(seconds));
@@ -271,12 +428,12 @@ where
             .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(namespace)
             .bind(DB::optional_document(&authored_memo)).bind(request.business_key.as_deref()).execute(&mut **tx).await?;
         // PHP records the start as the run's first progress.
-        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at,namespace,last_progress_at,business_key,priority,fairness_key,fairness_weight) VALUES ($1,$2,$3,$4,1,'pending','avro',$5,$6,NULLIF($7,0),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)")
+        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at,namespace,last_progress_at,business_key,priority,fairness_key,fairness_weight,compatibility) VALUES ($1,$2,$3,$4,1,'pending','avro',$5,$6,NULLIF($7,0),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)")
             .bind(&run_id).bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(&arguments)
             .bind(queue).bind(run_timeout.unwrap_or(0)).bind(DB::optional_time(execution_deadline)).bind(DB::optional_time(run_deadline))
             .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(namespace)
             .bind(DB::bind_time(started_at)).bind(request.business_key.as_deref()).bind(request.priority)
-            .bind(request.fairness_key.as_deref()).bind(request.fairness_weight).execute(&mut **tx).await?;
+            .bind(request.fairness_key.as_deref()).bind(request.fairness_weight).bind(pin.as_deref()).execute(&mut **tx).await?;
         if let Some(memo) = memo {
             for (key, value) in memo {
                 Self::query(DB::MEMO_INITIAL_INSERT)
@@ -321,16 +478,20 @@ where
         started["run_timeout_seconds"] = json!(run_timeout);
         started["execution_deadline_at"] = json!(execution_deadline);
         started["run_deadline_at"] = json!(run_deadline);
-        if let Some(fingerprint) = Self::start_definition_fingerprint(tx, namespace, queue, workflow_type, stale_after).await? {
+        if let Some(fingerprint) = cohort.as_ref().and_then(|cohort| super::start_definition::fingerprint_for(&workers, workflow_type, cohort)) {
             started["workflow_definition_fingerprint"] = json!(fingerprint);
             started["workflow_definition_fingerprint_source"] = json!("worker");
         }
+        started["compatibility"] = json!(pin);
         // PHP filters null fields out of the started payload, then adds the
         // declared contract.
         if let Some(fields) = started.as_object_mut() {
             fields.retain(|_, value| !value.is_null());
         }
-        Self::attach_workflow_contract(tx, queue, workflow_type, &mut started).await?;
+        // PHP enriches the start with a contract only from its cohort.
+        if let Some(cohort) = &cohort {
+            Self::attach_workflow_contract(tx, queue, workflow_type, Some(cohort), &mut started).await?;
+        }
         Self::append(
             tx,
             &run_id,
@@ -352,13 +513,12 @@ where
     /// `WorkflowStartVersionPin::definitionFingerprintForCohort` over the
     /// queue's active registrations: unexpired or never heartbeated, and
     /// not draining or deregistered.
-    async fn start_definition_fingerprint(
+    pub(super) async fn start_workers(
         tx: &mut Transaction<'_, DB>,
         namespace: &str,
         queue: &str,
-        workflow_type: &str,
         stale_after: i64,
-    ) -> Result<Option<String>> {
+    ) -> Result<Vec<super::start_definition::CohortWorker>> {
         let cutoff = now() - chrono::Duration::seconds(stale_after.max(1));
         let rows = Self::query("SELECT build_id,supported_workflow_types,workflow_definition_fingerprints,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND task_queue=$2 AND (last_heartbeat_at IS NULL OR last_heartbeat_at>=$3) AND (status IS NULL OR status='active')")
             .bind(namespace).bind(queue).bind(DB::bind_time(cutoff)).fetch_all(&mut **tx).await?;
@@ -371,7 +531,7 @@ where
                 heartbeated: DB::optional_instant(row, "last_heartbeat_at")?.is_some(),
             });
         }
-        Ok(super::start_definition::fingerprint(&workers, workflow_type))
+        Ok(workers)
     }
 
     /// `DefaultWorkflowControlPlane::start` for an instance that already has
@@ -479,18 +639,30 @@ where
         // refused signals which intentionally have no workflow history event.
         // Select metadata only: large customer payloads are never decoded or
         // copied merely to display the command's target and admission result.
-        let command_rows = Self::query("SELECT c.id,c.command_sequence,c.command_type,c.target_scope,c.requested_workflow_run_id,c.resolved_workflow_run_id,c.source,c.status,c.outcome,c.rejection_reason,c.workflow_type,c.workflow_class,c.accepted_at,c.applied_at,c.rejected_at,c.context,s.signal_name FROM workflow_commands c LEFT JOIN workflow_signal_records s ON s.workflow_command_id=c.id WHERE c.workflow_run_id=$1 AND c.workflow_instance_id=$2 ORDER BY c.command_sequence,c.created_at,c.id")
+        // Only a stored external reference is read, to tell whether its preview
+        // is omitted; inline payloads stay unread.
+        let command_rows = Self::query(DB::RUN_COMMANDS_SQL)
             .bind(DB::string(&row, "id")?).bind(workflow_id).fetch_all(&self.pool).await?;
         let mut commands = Vec::with_capacity(command_rows.len());
         for command in command_rows {
+            // `oversizedPayloadPreview` over the stored reference's envelope;
+            // an omitted preview also omits the target name, as PHP does.
+            let omitted = DB::optional_string(&command, "stored_payload")?
+                .as_deref()
+                .and_then(super::external_resolution::stored_envelope)
+                .is_some_and(|envelope| super::run_describe::oversized(&envelope));
+            let target_name = DB::optional_string(&command, "signal_name")?.filter(|_| !omitted);
             let mut public = json!({"id":DB::string(&command,"id")?,"sequence":DB::optional_number(&command,"command_sequence")?,
                 "type":DB::string(&command,"command_type")?,"target_scope":DB::string(&command,"target_scope")?,
                 "requested_run_id":DB::optional_string(&command,"requested_workflow_run_id")?,
                 "resolved_run_id":DB::optional_string(&command,"resolved_workflow_run_id")?,
-                "target_name":DB::optional_string(&command,"signal_name")?,"source":DB::string(&command,"source")?,
+                "target_name":target_name,"source":DB::string(&command,"source")?,
                 "status":DB::string(&command,"status")?,"outcome":DB::optional_string(&command,"outcome")?,
                 "reason":DB::optional_string(&command,"rejection_reason")?,"rejection_reason":DB::optional_string(&command,"rejection_reason")?,
-                "workflow_type":DB::optional_string(&command,"workflow_type")?,"workflow_class":DB::optional_string(&command,"workflow_class")?,
+                // `WorkflowCommand::record` keeps the run's class on each command.
+                "workflow_type":DB::optional_string(&command,"workflow_type")?,
+                "workflow_class":DB::optional_string(&command,"workflow_class")?.or(DB::optional_string(&row,"workflow_class")?),
+                "payload_preview_omitted":omitted,
                 "accepted_at":DB::optional_instant(&command,"accepted_at")?,"applied_at":DB::optional_instant(&command,"applied_at")?,
                 "rejected_at":DB::optional_instant(&command,"rejected_at")?});
             let fields = public.as_object_mut().expect("command object");
@@ -501,7 +673,8 @@ where
             commands.push(public);
         }
         let current = DB::optional_string(&row,"current_run_id")?.as_deref() == Some(DB::string(&row,"id")?.as_str());
-        let input_envelope = wire(&DB::string(&row,"arguments")?);
+        // A standalone activity's host run may have no input.
+        let input_envelope = DB::optional_string(&row,"arguments")?.map(|arguments| wire(&arguments)).unwrap_or(Value::Null);
         let output_envelope = output.as_deref().map(wire);
         let mut described =
             json!({"workflow_id": workflow_id, "run_id": DB::string(&row,"id")?, "workflow_type": DB::string(&row,"workflow_type")?,
@@ -563,6 +736,8 @@ where
         mut prepared: PreparedControlArguments,
         transition_codec: Arc<Semaphore>,
         context: Option<Value>,
+        limits: super::memo_limits::StructuralLimits,
+        external: Option<&super::external_resolution::PreparedExternal>,
     ) -> Result<Value> {
         // The authenticated request's context; a direct call records only
         // the request id and signal name.
@@ -584,6 +759,11 @@ where
             ));
         }
         let mut tx = self.begin().await?;
+        // The referenced object now belongs to the signal; a refusal rolls
+        // the claim back with everything else.
+        if let Some(prepared) = external {
+            self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri).await?;
+        }
         let instance = Self::query("SELECT current_run_id,last_message_sequence FROM workflow_instances WHERE id=$1 AND namespace=$2")
             .bind(workflow_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?.ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
         let current_run = DB::string(&instance, "current_run_id")?;
@@ -632,17 +812,17 @@ where
             .as_array()
             .is_some_and(|contracts| contracts.iter().any(|contract| contract["name"] == name));
         let mut validation_errors = json!([]);
-        let rejection = if !active {
+        let mut rejection = if !active {
             Some((
                 StatusCode::CONFLICT,
                 "run_not_active",
-                "rejected_not_active",
+                Some("rejected_not_active"),
             ))
         } else if !declared && durable {
             Some((
                 StatusCode::NOT_FOUND,
                 "unknown_signal",
-                "rejected_unknown_signal",
+                Some("rejected_unknown_signal"),
             ))
         } else if !has_parameters {
             None
@@ -657,12 +837,29 @@ where
                     Some((
                         StatusCode::UNPROCESSABLE_ENTITY,
                         "invalid_signal_arguments",
-                        "rejected_invalid_arguments",
+                        Some("rejected_invalid_arguments"),
                     ))
                 }
                 Err(error) => return Err(error),
             }
         };
+        // `guardPendingSignals`, then `rejectOversizedSignal`: an admissible
+        // signal over a structural ceiling is refused durably, without an
+        // outcome or history.
+        let mut exceeded = None;
+        if rejection.is_none() {
+            if limits.pending_signals.is_some() {
+                let pending = Self::scalar("SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received'")
+                    .bind(&current_run).fetch_one(&mut *tx).await?;
+                exceeded = super::memo_limits::Exceeded::pending_signals(limits.pending_signals, pending);
+            }
+            if exceeded.is_none() {
+                exceeded = super::memo_limits::Exceeded::payload(limits.payload_bytes, &prepared.arguments);
+            }
+            if exceeded.is_some() {
+                rejection = Some((StatusCode::CONFLICT, "structural_limit_exceeded", None));
+            }
+        }
         let command_id = id();
         let signal_id = id();
         let command_sequence = DB::number(&run, "last_command_sequence")?
@@ -689,34 +886,31 @@ where
                     "declared_signals":names,"signal_admission":"handler_not_declared","reason":reason,
                     "message":format!("Workflow signal [{name}] is unknown for workflow type [{workflow_type}]: the durable command contract does not declare that handler. Command contract source [durable_history], declared signals [{labels}].")});
             }
+            // An oversized signal keeps no arguments: its command carries the
+            // limit instead, and its signal row the limit's message.
+            let (mut row_arguments, mut row_errors) = (prepared.arguments.clone(), validation_errors.clone());
+            let mut command_values = prepared.values.clone();
+            let mut command_errors = validation_errors.clone();
+            let mut command_diagnostics = diagnostics.clone();
+            if let Some(exceeded) = exceeded.as_ref().filter(|exceeded| exceeded.kind == "payload_size") {
+                command_values = vec![];
+                command_errors = json!({"arguments":[exceeded.message]});
+                command_diagnostics = exceeded.fields();
+                row_arguments = super::queries::empty_arguments(transition_codec.clone()).await?;
+                row_errors = command_errors.clone();
+            }
             prepared.command = prepare_rejected_command(
                 transition_codec,
                 name.to_owned(),
-                prepared.values.clone(),
-                validation_errors.clone(),
-                diagnostics.clone(),
+                command_values,
+                command_errors,
+                command_diagnostics,
                 "signal_codec_unavailable",
             )
             .await?;
-            let rejected_at = now();
-            Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,source,status,outcome,workflow_type,payload_codec,payload,rejection_reason,command_sequence,message_sequence,rejected_at,context) VALUES ($1,$2,$3,$4,'signal','control_plane','rejected',$5,$6,'avro',$7,$8,$9,$10,$11,$12)")
-                .bind(&command_id).bind(workflow_id).bind(&current_run).bind(&current_run).bind(outcome).bind(&workflow_type)
-                .bind(&prepared.command).bind(reason).bind(command_sequence).bind(message_sequence).bind(DB::bind_time(rejected_at))
-                .bind(DB::document(&context)).execute(&mut *tx).await?;
-            Self::query("INSERT INTO workflow_signal_records(id,workflow_command_id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,signal_name,status,outcome,command_sequence,payload_codec,arguments,validation_errors,rejection_reason,rejected_at,closed_at) VALUES ($1,$2,$3,$4,$5,$6,'rejected',$7,$8,'avro',$9,$10,$11,$12,$13)")
-                .bind(&signal_id).bind(&command_id).bind(workflow_id).bind(&current_run).bind(&current_run).bind(name)
-                .bind(outcome).bind(command_sequence).bind(&prepared.arguments).bind(DB::document(&validation_errors)).bind(reason)
-                .bind(DB::bind_time(rejected_at)).bind(DB::bind_time(rejected_at)).execute(&mut *tx).await?;
-            Self::query("UPDATE workflow_runs SET last_command_sequence=$1 WHERE id=$2")
-                .bind(command_sequence)
-                .bind(&current_run)
-                .execute(&mut *tx)
-                .await?;
-            Self::query("UPDATE workflow_instances SET last_message_sequence=$1 WHERE id=$2")
-                .bind(message_sequence)
-                .bind(workflow_id)
-                .execute(&mut *tx)
-                .await?;
+            let write = SignalWrite { workflow_id, run_id: &current_run, workflow_type: &workflow_type, name,
+                command_id: &command_id, signal_id: &signal_id, command_sequence, message_sequence, context: &context };
+            Self::record_rejected_signal(&mut tx, &write, outcome, reason, &prepared.command, &row_arguments, &row_errors).await?;
             tx.commit().await?;
             let mut response = json!({"workflow_id":workflow_id,"run_id":current_run,"resolved_run_id":current_run,
                 "requested_run_id":null,"signal_name":name,"command_id":command_id,"command_sequence":command_sequence,
@@ -731,40 +925,88 @@ where
             // signal wait reservation or notification is added here.
             return Err(super::RuntimeError::Protocol { status, response });
         }
-        let wait = Self::open_wait(&mut tx, &current_run).await?;
-        let mut wait_id = format!("signal-command:{command_id}");
-        if let Some(wait) = wait.as_ref().filter(|wait| wait["signal_name"] == name) {
+        let workflow_type = DB::string(&run, "workflow_type")?;
+        let write = SignalWrite { workflow_id, run_id: &current_run, workflow_type: &workflow_type, name,
+            command_id: &command_id, signal_id: &signal_id, command_sequence, message_sequence, context: &context };
+        Self::record_accepted_signal(&mut tx, &write, &prepared.command, &prepared.arguments, &DB::string(&run, "queue")?).await?;
+        tx.commit().await?;
+        self.wake.notify_waiters();
+        Ok(
+            json!({"workflow_id":workflow_id,"run_id":current_run,"resolved_run_id":current_run,"requested_run_id":null,"signal_name":name,"command_id":command_id,"command_sequence":command_sequence,"workflow_type":DB::string(&run, "workflow_type")?,"command_status":"accepted","command_source":"control_plane","target_scope":"instance","outcome":"signal_received","reason":null,"rejection_reason":null,"validation_errors":[]}),
+        )
+    }
+
+    /// A refused signal's durable admission record: its rejected command,
+    /// its rejected signal row and the advanced sequences. No history, task
+    /// or wait reservation is added.
+    pub(super) async fn record_rejected_signal(
+        tx: &mut Transaction<'_, DB>,
+        write: &SignalWrite<'_>,
+        outcome: Option<&str>,
+        reason: &str,
+        command: &str,
+        arguments: &str,
+        errors: &Value,
+    ) -> Result<()> {
+        let rejected_at = now();
+        Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,source,status,outcome,workflow_type,payload_codec,payload,rejection_reason,command_sequence,message_sequence,rejected_at,context) VALUES ($1,$2,$3,$4,'signal','control_plane','rejected',$5,$6,'avro',$7,$8,$9,$10,$11,$12)")
+            .bind(write.command_id).bind(write.workflow_id).bind(write.run_id).bind(write.run_id).bind(outcome).bind(write.workflow_type)
+            .bind(command).bind(reason).bind(write.command_sequence).bind(write.message_sequence).bind(DB::bind_time(rejected_at))
+            .bind(DB::document(write.context)).execute(&mut **tx).await?;
+        Self::query("INSERT INTO workflow_signal_records(id,workflow_command_id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,signal_name,status,outcome,command_sequence,payload_codec,arguments,validation_errors,rejection_reason,rejected_at,closed_at) VALUES ($1,$2,$3,$4,$5,$6,'rejected',$7,$8,'avro',$9,$10,$11,$12,$13)")
+            .bind(write.signal_id).bind(write.command_id).bind(write.workflow_id).bind(write.run_id).bind(write.run_id).bind(write.name)
+            .bind(outcome).bind(write.command_sequence).bind(arguments).bind(DB::document(errors)).bind(reason)
+            .bind(DB::bind_time(rejected_at)).bind(DB::bind_time(rejected_at)).execute(&mut **tx).await?;
+        Self::advance_signal_sequences(tx, write).await
+    }
+
+    /// `recordAcceptedSignalCommand`, `recordAcceptedSignal` and
+    /// `recordSignalReceivedHistory`: the accepted command, the received
+    /// signal reserving an open wait for its name, the advanced sequences,
+    /// `SignalReceived`, then the run's next message task if none is open.
+    pub(super) async fn record_accepted_signal(
+        tx: &mut Transaction<'_, DB>,
+        write: &SignalWrite<'_>,
+        command: &str,
+        arguments: &str,
+        queue: &str,
+    ) -> Result<()> {
+        let wait = Self::open_wait(tx, write.run_id).await?;
+        let mut wait_id = format!("signal-command:{}", write.command_id);
+        if let Some(wait) = wait.as_ref().filter(|wait| wait["signal_name"] == write.name) {
             let reserved = Self::scalar("SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND signal_wait_id=$2 AND status='received'")
-                .bind(&current_run).bind(text(wait, "signal_wait_id")?).fetch_one(&mut *tx).await?;
+                .bind(write.run_id).bind(text(wait, "signal_wait_id")?).fetch_one(&mut **tx).await?;
             if reserved == 0 {
                 wait_id = text(wait, "signal_wait_id")?.to_owned();
             }
         }
         let accepted_at = now();
         Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,source,status,outcome,workflow_type,payload_codec,payload,command_sequence,message_sequence,accepted_at,context) VALUES ($1,$2,$3,$4,'signal','control_plane','accepted','signal_received',$5,'avro',$6,$7,$8,$9,$10)")
-            .bind(&command_id).bind(workflow_id).bind(&current_run).bind(&current_run).bind(DB::string(&run, "workflow_type")?)
-            .bind(&prepared.command).bind(command_sequence).bind(message_sequence).bind(DB::bind_time(accepted_at))
-            .bind(DB::document(&context)).execute(&mut *tx).await?;
+            .bind(write.command_id).bind(write.workflow_id).bind(write.run_id).bind(write.run_id).bind(write.workflow_type)
+            .bind(command).bind(write.command_sequence).bind(write.message_sequence).bind(DB::bind_time(accepted_at))
+            .bind(DB::document(write.context)).execute(&mut **tx).await?;
         Self::query("INSERT INTO workflow_signal_records(id,workflow_command_id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,signal_name,signal_wait_id,status,outcome,command_sequence,payload_codec,arguments,received_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'received','signal_received',$8,'avro',$9,$10)")
-            .bind(&signal_id).bind(&command_id).bind(workflow_id).bind(&current_run).bind(&current_run).bind(name).bind(&wait_id)
-            .bind(command_sequence).bind(&prepared.arguments).bind(DB::bind_time(accepted_at)).execute(&mut *tx).await?;
+            .bind(write.signal_id).bind(write.command_id).bind(write.workflow_id).bind(write.run_id).bind(write.run_id).bind(write.name).bind(&wait_id)
+            .bind(write.command_sequence).bind(arguments).bind(DB::bind_time(accepted_at)).execute(&mut **tx).await?;
+        Self::advance_signal_sequences(tx, write).await?;
+        Self::append(tx, write.run_id, "SignalReceived", json!({"workflow_command_id":write.command_id,"signal_id":write.signal_id,
+            "workflow_instance_id":write.workflow_id,"workflow_run_id":write.run_id,"signal_name":write.name,"signal_wait_id":wait_id,
+            "arguments":wire(arguments),"payload_codec":"avro"}), None, Some(write.command_id)).await?;
+        Self::enqueue_next_message(tx, write.run_id, queue).await
+    }
+
+    async fn advance_signal_sequences(tx: &mut Transaction<'_, DB>, write: &SignalWrite<'_>) -> Result<()> {
         Self::query("UPDATE workflow_runs SET last_command_sequence=$1 WHERE id=$2")
-            .bind(command_sequence)
-            .bind(&current_run)
-            .execute(&mut *tx)
+            .bind(write.command_sequence)
+            .bind(write.run_id)
+            .execute(&mut **tx)
             .await?;
         Self::query("UPDATE workflow_instances SET last_message_sequence=$1 WHERE id=$2")
-            .bind(message_sequence)
-            .bind(workflow_id)
-            .execute(&mut *tx)
+            .bind(write.message_sequence)
+            .bind(write.workflow_id)
+            .execute(&mut **tx)
             .await?;
-        Self::append(&mut tx, &current_run, "SignalReceived", json!({"workflow_command_id":command_id,"signal_id":signal_id,"workflow_instance_id":workflow_id,"workflow_run_id":current_run,"signal_name":name,"signal_wait_id":wait_id,"arguments":wire(&prepared.arguments),"payload_codec":"avro"}), None, Some(&command_id)).await?;
-        Self::enqueue_next_message(&mut tx, &current_run, &DB::string(&run, "queue")?).await?;
-        tx.commit().await?;
-        self.wake.notify_waiters();
-        Ok(
-            json!({"workflow_id":workflow_id,"run_id":current_run,"resolved_run_id":current_run,"requested_run_id":null,"signal_name":name,"command_id":command_id,"command_sequence":command_sequence,"workflow_type":DB::string(&run, "workflow_type")?,"command_status":"accepted","command_source":"control_plane","target_scope":"instance","outcome":"signal_received","reason":null,"rejection_reason":null,"validation_errors":[]}),
-        )
+        Ok(())
     }
 
     pub(super) async fn authored_sequence(
@@ -802,14 +1044,28 @@ where
         let children = Self::query("SELECT sequence FROM workflow_child_calls WHERE parent_workflow_run_id=$1 ORDER BY sequence DESC LIMIT 1")
             .bind(run_id).fetch_optional(&mut **tx).await?.map(|row| DB::number(&row,"sequence")).transpose()?.unwrap_or(0);
         let run =
-            Self::query("SELECT cancellation_delivery_sequence FROM workflow_runs WHERE id=$1")
+            Self::query("SELECT cancellation_delivery_sequence,run_number FROM workflow_runs WHERE id=$1")
                 .bind(run_id)
                 .fetch_one(&mut **tx)
                 .await?;
+        // A redriven run replays the activities before its resume step from
+        // reused completions, which have no execution rows.
+        let mut reused = 0;
+        if DB::number(&run, "run_number")? > 1 {
+            let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
+                .bind(run_id).fetch_optional(&mut **tx).await?;
+            if let Some(started) = started {
+                let payload = DB::document_row(&started, "payload")?;
+                if payload["recovery_kind"] == "redrive" {
+                    reused = payload["resume_step_sequence"].as_i64().unwrap_or(1) - 1;
+                }
+            }
+        }
         Ok(activities
             .max(timers)
             .max(wait_sequence)
             .max(children)
+            .max(reused)
             .max(DB::optional_number(&run, "cancellation_delivery_sequence")?.unwrap_or(0)))
     }
 
@@ -948,6 +1204,17 @@ where
         run_id: &str,
         queue: &str,
     ) -> Result<()> {
+        Self::next_message_task(tx, run_id, queue).await.map(drop)
+    }
+
+    /// `PendingMessageTask::createForRun`: the run's next update or signal
+    /// task, when it is open, has no open workflow task and holds a message
+    /// that can advance it. The created task's id.
+    pub(super) async fn next_message_task(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        queue: &str,
+    ) -> Result<Option<String>> {
         let status = Self::query("SELECT status FROM workflow_runs WHERE id=$1")
             .bind(run_id)
             .fetch_one(&mut **tx)
@@ -956,12 +1223,12 @@ where
             DB::string(&status, "status")?.as_str(),
             "pending" | "running" | "waiting"
         ) {
-            return Ok(());
+            return Ok(None);
         }
         let open = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased')")
             .bind(run_id).fetch_one(&mut **tx).await?;
         if open != 0 {
-            return Ok(());
+            return Ok(None);
         }
         // `nextReadyUpdate`: the earliest accepted update, unless an earlier
         // signal is still unapplied. That signal then goes first.
@@ -979,7 +1246,7 @@ where
             .await?
             .is_none()
         {
-            Self::create_update_task(
+            let task_id = Self::create_update_task(
                 tx,
                 run_id,
                 queue,
@@ -987,7 +1254,7 @@ where
                 &DB::string(&update, "workflow_command_id")?,
             )
             .await?;
-            return Ok(());
+            return Ok(Some(task_id));
         }
         let (wait, condition_open, declared) = Self::signal_delivery(tx, run_id).await?;
         let signals = Self::query(RECEIVED_SIGNALS).bind(run_id).fetch_all(&mut **tx).await?;
@@ -997,10 +1264,10 @@ where
             if !Self::signal_can_advance(wait.as_ref(), condition_open, declared.as_deref(), &name, &signal_wait_id) {
                 continue;
             }
-            Self::create_task(tx, run_id, queue, "workflow", json!({"resume_source_kind":"workflow_signal","workflow_signal_id":DB::string(&signal,"id")?,"signal_name":name,"signal_wait_id":signal_wait_id})).await?;
-            break;
+            let task_id = Self::create_task(tx, run_id, queue, "workflow", json!({"resume_source_kind":"workflow_signal","workflow_signal_id":DB::string(&signal,"id")?,"signal_name":name,"signal_wait_id":signal_wait_id})).await?;
+            return Ok(Some(task_id));
         }
-        Ok(())
+        Ok(None)
     }
 
     async fn apply_task_signal(
@@ -1029,15 +1296,20 @@ where
         let wait = open.clone().filter(|wait| {
             wait.get("signal_name").is_none() || (wait["signal_name"] == name && wait["signal_wait_id"] == wait_id)
         });
-        if wait.is_none()
-            && !Self::declared_signals(tx, run_id)
-                .await?
-                .is_some_and(|names| names.contains(&name))
-        {
+        let declared = Self::declared_signals(tx, run_id)
+            .await?
+            .is_some_and(|names| names.contains(&name));
+        if wait.is_none() && !declared {
             let reason = if open.is_some() { "signal_wait_mismatch" } else { "signal_wait_not_open" };
             return Err(refuse(StatusCode::CONFLICT, reason));
         }
         let direct = wait.as_ref().is_some_and(|wait| wait.get("signal_name").is_some());
+        // `recordAppliedSignalForSignalResume` applies a signal its open
+        // signal wait matches, or one the durable contract declares, with
+        // `SignalApplied`. Otherwise `markConditionWaitSignalConsumed`: the
+        // open condition wait consumes it at the wait's sequence, without
+        // that event (an undeclared or runtime-reserved signal).
+        let applies = direct || declared;
         let condition_timer = match &wait {
             Some(wait) if !direct => Self::condition_timer(tx, run_id, wait).await?,
             _ => None,
@@ -1061,8 +1333,13 @@ where
             .bind(&command_id)
             .execute(&mut **tx)
             .await?;
+        // PHP's `applySignal` takes a sequence only from the signal's own
+        // wait, so a declared signal applied under a condition wait keeps no
+        // workflow sequence. Only an undeclared signal takes the condition
+        // wait's (`markConditionWaitSignalConsumed`).
+        let record_sequence = if direct || !declared { sequence } else { None };
         Self::query("UPDATE workflow_signal_records SET status='applied',workflow_sequence=$1,applied_at=$2,closed_at=$3 WHERE id=$4")
-            .bind(DB::optional_integer(sequence)).bind(DB::bind_time(applied_at)).bind(DB::bind_time(applied_at)).bind(signal_id).execute(&mut **tx).await?;
+            .bind(DB::optional_integer(record_sequence)).bind(DB::bind_time(applied_at)).bind(DB::bind_time(applied_at)).bind(signal_id).execute(&mut **tx).await?;
         let run = Self::query(
             "SELECT workflow_instance_id,message_cursor_position FROM workflow_runs WHERE id=$1",
         )
@@ -1082,7 +1359,7 @@ where
             .bind(run_id)
             .execute(&mut **tx)
             .await?;
-        Self::append(tx, run_id, "MessageCursorAdvanced", json!({"stream_key":format!("instance:{}",DB::string(&run,"workflow_instance_id")?),"previous_position":previous,"new_position":position}), Some(task_id), None).await?;
+        Self::append(tx, run_id, "MessageCursorAdvanced", json!({"stream_key":format!("instance:{}",DB::string(&run,"workflow_instance_id")?),"previous_position":previous,"new_position":position,"task":Self::task_snapshot(task)?}), Some(task_id), None).await?;
         if let Some(wait) = wait.as_ref().filter(|_| direct) {
             Self::cancel_wait_timeout(tx, run_id, wait, task_id, applied_at).await?;
         }
@@ -1090,15 +1367,17 @@ where
         if direct {
             applied["sequence"] = json!(sequence);
         }
-        Self::append(
-            tx,
-            run_id,
-            "SignalApplied",
-            applied,
-            Some(task_id),
-            Some(&command_id),
-        )
-        .await?;
+        if applies {
+            Self::append(
+                tx,
+                run_id,
+                "SignalApplied",
+                applied,
+                Some(task_id),
+                Some(&command_id),
+            )
+            .await?;
+        }
         if !direct
             && let Some(mut satisfied) = wait
             && !condition_timer.as_ref().is_some_and(|(_, fired)| *fired)
@@ -1212,8 +1491,9 @@ where
             .bind(DB::bind_time(now()))
             .execute(&mut *tx)
             .await?;
-        Self::query("UPDATE workflow_worker_registrations SET status='active',workflow_command_contracts=$1 WHERE worker_id=$2 AND namespace=$3")
-            .bind(DB::document(&contracts)).bind(worker_id).bind(self.namespace.as_ref()).execute(&mut *tx).await?;
+        let status = Self::registration_status(&mut tx, self.namespace.as_ref(), queue, body["build_id"].as_str()).await?;
+        Self::query("UPDATE workflow_worker_registrations SET status=$1,workflow_command_contracts=$2 WHERE worker_id=$3 AND namespace=$4")
+            .bind(status).bind(DB::document(&contracts)).bind(worker_id).bind(self.namespace.as_ref()).execute(&mut *tx).await?;
         Self::record_registration(
             &mut tx,
             self.namespace.as_ref(),
@@ -1228,7 +1508,7 @@ where
         Ok(
             json!({"worker_id": worker_id, "registration_token":token, "registered": true, "namespace": self.namespace.as_ref(), "task_queue": queue,
             "runtime": body["runtime"], "build_id": body["build_id"], "heartbeat_interval_seconds": config.worker_heartbeat_interval_seconds,
-            "status": "active", "capabilities": body["capabilities"], "capability_manifest": body["capability_manifest"]}),
+            "status": status, "capabilities": body["capabilities"], "capability_manifest": body["capability_manifest"]}),
         )
     }
 
@@ -1245,6 +1525,7 @@ where
             return Err(refuse(StatusCode::NOT_FOUND, "worker_not_found"));
         }
         self.retire_incarnation(&mut tx, worker_id).await?;
+        Self::revoke_worker_activity_leases(&mut tx, self.namespace.as_ref(), worker_id).await?;
         // Revocation expires the existing fence; later polling creates a new
         // attempt before work can be accepted from another worker.
         let recovered = DB::affected(Self::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE lease_owner=$2 AND namespace=$3 AND status='leased' AND task_type='workflow'")
@@ -1279,8 +1560,7 @@ where
         pages: super::history_pages::HistoryPages,
         default_wait: u64,
     ) -> Result<Value> {
-        text(&body, "worker_id")?;
-        text(&body, "task_queue")?;
+        self.refuse_draining_worker(text(&body, "worker_id")?, text(&body, "task_queue")?).await?;
         // Laravel's `nullable|integer|min:0|max:60` bounds a requested wait;
         // the configured default is not capped.
         let timeout = match body.get("timeout_seconds") {
@@ -1298,6 +1578,34 @@ where
             None
         };
         let page = pages.poll(requested, encoding);
+        // `WorkerPollFence`: the poll belongs to the registration it is
+        // admitted under. One that is not fresh is answered at once,
+        // uncached, before any replay.
+        let fence = match self.admit_worker_poll(text(&body, "worker_id")?, text(&body, "task_queue")?).await? {
+            super::worker_poll_fence::PollAdmission::Stale => return Ok(super::worker_poll_fence::stale_answer()),
+            super::worker_poll_fence::PollAdmission::Fenced(fence) => Some(fence),
+            super::worker_poll_fence::PollAdmission::Unregistered => None,
+        };
+        // A workflow poll's request ID replays its last deliverable answer,
+        // after the registration checks that come first in PHP.
+        let poll_request = match (kind, super::workflow_poll_requests::request_id(&body)) {
+            ("workflow", Some(id)) => {
+                let worker_id = text(&body, "worker_id")?;
+                let queue = text(&body, "task_queue")?;
+                let registration = Self::query("SELECT task_queue FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2")
+                    .bind(worker_id).bind(self.namespace.as_ref()).fetch_optional(&self.pool).await?
+                    .ok_or_else(|| refuse(StatusCode::CONFLICT, "worker_not_registered"))?;
+                if DB::string(&registration, "task_queue")? != queue {
+                    return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
+                }
+                let request = self.workflow_poll_request(worker_id, queue, id, default_wait, &["workflow"]).await?;
+                if let Some(replay) = self.replay_workflow_poll(&request, worker_id, queue).await? {
+                    return replayed_poll(replay, encoding);
+                }
+                Some(request)
+            }
+            _ => None,
+        };
         let mut cross_kind = if timeout > 0 {
             self.poll_wake_snapshot(&body, kind).await?
         } else {
@@ -1309,12 +1617,33 @@ where
         // something to claim or refuse.
         let mut first = true;
         let mut pace = super::poll_readiness::ReadPace::new();
+        let worker_id = text(&body, "worker_id")?;
         loop {
             // Register the notification before probing.
             let wake = self.wake.notified();
-            if (std::mem::take(&mut first) || self.task_poll_ready(&body, kind).await?)
-                && let Some(mut task) = self.claim(&body, kind, protocol_version, page).await?
-            {
+            // A replaced or silent registration ends the held poll, before
+            // every probe and inside the claim.
+            let current = match &fence {
+                Some(fence) => self.worker_poll_fence_holds(fence, worker_id).await?,
+                None => true,
+            };
+            let claimed = if !current {
+                Err(super::worker_poll_fence::stale_claim())
+            } else if std::mem::take(&mut first) || self.task_poll_ready(&body, kind, poll_request.as_ref()).await? {
+                self.claim(&body, kind, protocol_version, page, poll_request.as_ref(), fence.as_ref()).await
+            } else {
+                Ok(None)
+            };
+            let claimed = match claimed {
+                // A fenced poll records stale_worker_registration like any
+                // other no-task answer: a live lease a duplicate committed
+                // under the same request ID replays instead.
+                Err(error) if super::worker_poll_fence::is_stale_claim(&error) => {
+                    return self.no_task_answer(&body, poll_request.as_ref(), super::worker_poll_fence::STALE, encoding).await;
+                }
+                other => other?,
+            };
+            if let Some(mut task) = claimed {
                 // Compressed after the claim commits; a replayed receipt keeps
                 // the plain events and takes this request's encoding.
                 super::history_pages::compress(&mut task, encoding)?;
@@ -1323,42 +1652,71 @@ where
                 );
             }
             if tokio::time::Instant::now() >= deadline {
-                return Ok(
-                    json!({"task": null, "poll_status": "empty", "server_capabilities": capabilities()}),
-                );
+                return self.no_task_answer(&body, poll_request.as_ref(), "empty", encoding).await;
             }
             if self
                 .poll_queue_changed(&body, kind, &mut cross_kind)
                 .await?
                 && tokio::time::Instant::now() < deadline
             {
-                return Ok(
-                    json!({"task":null,"poll_status":"task_queue_changed","server_capabilities":capabilities()}),
-                );
+                return self.no_task_answer(&body, poll_request.as_ref(), "task_queue_changed", encoding).await;
+            }
+            #[cfg(debug_assertions)]
+            if let Some(request) = &poll_request {
+                super::poll_pauses::stop_at(&request.id, super::poll_pauses::PollPoint::Waiting).await;
             }
             pace.wait(wake, deadline).await;
         }
     }
 
+    /// A poll's answer when it leased nothing. Under a request ID, a
+    /// duplicate's lease committed after this poll's last probe replays
+    /// instead, as a retry with that ID would see it.
+    async fn no_task_answer(
+        &self,
+        body: &Value,
+        poll_request: Option<&super::workflow_poll_requests::WorkflowPollRequest>,
+        poll_status: &str,
+        encoding: Option<&'static str>,
+    ) -> Result<Value> {
+        if let Some(request) = poll_request
+            && let Some(lease) = self.remember_empty_workflow_poll(request, text(body, "worker_id")?, text(body, "task_queue")?, poll_status).await?
+        {
+            return replayed_poll(lease, encoding);
+        }
+        Ok(json!({"task": null, "poll_status": poll_status, "server_capabilities": capabilities()}))
+    }
+
     /// Whether a held workflow or activity poll should claim again.
-    async fn task_poll_ready(&self, body: &Value, kind: &str) -> Result<bool> {
+    async fn task_poll_ready(
+        &self,
+        body: &Value,
+        kind: &str,
+        poll_request: Option<&super::workflow_poll_requests::WorkflowPollRequest>,
+    ) -> Result<bool> {
         let worker_id = text(body, "worker_id")?;
         let queue = text(body, "task_queue")?;
         // The claim refuses a removed or moved registration.
         let registration = Self::query(
-            "SELECT task_queue FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2",
+            "SELECT task_queue,build_id FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2",
         )
         .bind(worker_id)
         .bind(self.namespace.as_ref())
         .fetch_optional(&self.pool)
         .await?;
-        match registration {
-            Some(row) if DB::string(&row, "task_queue")? == queue => {}
+        let build = match registration {
+            Some(row) if DB::string(&row, "task_queue")? == queue => worker_build::<DB>(&row)?,
             _ => return Ok(true),
+        };
+        // A concurrent poll with the same request ID may have answered
+        // already; the claim replays that answer.
+        if let Some(request) = poll_request
+            && self.workflow_poll_answered(&request.keys).await?
+        {
+            return Ok(true);
         }
-        // A concurrent poll with the same request ID may have claimed already;
-        // the claim replays its receipt.
-        if let Some(request_id) = body.get("poll_request_id").and_then(Value::as_str)
+        if kind != "workflow"
+            && let Some(request_id) = body.get("poll_request_id").and_then(Value::as_str)
             && Self::query("SELECT task_id FROM dw_poll_receipts WHERE worker_id=$1 AND kind=$2 AND request_id=$3 AND namespace=$4")
                 .bind(worker_id).bind(kind).bind(request_id).bind(self.namespace.as_ref())
                 .fetch_optional(&self.pool).await?.is_some()
@@ -1372,6 +1730,7 @@ where
             .bind(kind)
             .bind(DB::bind_time(at))
             .bind(DB::bind_time(at))
+            .bind(build.as_deref())
             .fetch_optional(&self.pool)
             .await?
             .is_some())
@@ -1383,16 +1742,40 @@ where
         kind: &str,
         protocol_version: &str,
         page: Option<i64>,
+        poll_request: Option<&super::workflow_poll_requests::WorkflowPollRequest>,
+        fence: Option<&super::worker_poll_fence::WorkerPollFence>,
+    ) -> Result<Option<Value>> {
+        let mut tx = self.begin().await?;
+        if let Some(fence) = fence
+            && !self.worker_poll_fence_holds_in(&mut tx, fence, text(body, "worker_id")?).await?
+        {
+            return Err(super::worker_poll_fence::stale_claim());
+        }
+        let claimed = self.claim_in(&mut tx, body, kind, protocol_version, page, poll_request).await?;
+        tx.commit().await?;
+        Ok(claimed)
+    }
+
+    /// One claim inside the caller's transaction, which commits it: a
+    /// multiplexed probe claims, turns the queue's cursor and records the
+    /// poll request's answer as one unit.
+    pub(super) async fn claim_in(
+        &self,
+        tx: &mut super::transaction::Transaction<'_, DB>,
+        body: &Value,
+        kind: &str,
+        protocol_version: &str,
+        page: Option<i64>,
+        poll_request: Option<&super::workflow_poll_requests::WorkflowPollRequest>,
     ) -> Result<Option<Value>> {
         let worker_id = text(body, "worker_id")?;
         let queue = text(body, "task_queue")?;
-        let mut tx = self.begin().await?;
         let worker = Self::query(
             "SELECT * FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2",
         )
         .bind(worker_id)
         .bind(self.namespace.as_ref())
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?
         .ok_or_else(|| refuse(StatusCode::CONFLICT, "worker_not_registered"))?;
         if DB::string(&worker, "task_queue")? != queue {
@@ -1401,15 +1784,30 @@ where
         Self::query(DB::POLL_RECEIPT_CLEANUP_SQL)
             .bind(DB::bind_time(now()))
             .bind(DB::bind_time(now()))
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
-        let request_id = body
-            .get("poll_request_id")
-            .map(|_| text(body, "poll_request_id"))
-            .transpose()?;
+        // A concurrent duplicate may have leased since this poll began: the
+        // binding row, locked here, makes it wait for that one's answer. Only
+        // a workflow answer replays as a workflow claim; a multiplexed probe
+        // replays a validation answer itself before claiming.
+        if let Some(request) = poll_request {
+            Self::bind_workflow_poll(tx, request).await?;
+            if let Some(answer) = self.deliverable_workflow_lease(tx, request, worker_id, queue).await?
+                && answer["task"]["task_kind"] != "update_validation"
+            {
+                return Ok(Some(answer["task"].clone()));
+            }
+        }
+        // Activity polls keep their receipts; workflow polls use the answer
+        // above.
+        let request_id = if kind == "workflow" {
+            None
+        } else {
+            body.get("poll_request_id").map(|_| text(body, "poll_request_id")).transpose()?
+        };
         if let Some(request_id) = request_id
             && let Some(receipt) = Self::query("SELECT p.*,t.status,t.attempt_count,t.lease_owner,t.lease_expires_at FROM dw_poll_receipts p JOIN workflow_tasks t ON t.id=p.task_id WHERE p.worker_id=$1 AND p.kind=$2 AND p.request_id=$3 AND p.namespace=$4")
-                .bind(worker_id).bind(kind).bind(request_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await? {
+                .bind(worker_id).bind(kind).bind(request_id).bind(self.namespace.as_ref()).fetch_optional(&mut **tx).await? {
                 if DB::string(&receipt,"status")? == "leased" && DB::number(&receipt,"attempt")? == DB::number(&receipt,"attempt_count")?
                     && DB::optional_string(&receipt,"lease_owner")?.as_deref() == Some(worker_id)
                     && DB::optional_instant(&receipt,"lease_expires_at")?.is_some_and(|expires| expires > now()) {
@@ -1425,13 +1823,15 @@ where
                 "supported_activity_types"
             },
         )?;
+        let build = worker_build::<DB>(&worker)?;
         let candidates = Self::query(DB::TASK_CANDIDATES_SQL)
             .bind(self.namespace.as_ref())
             .bind(queue)
             .bind(kind)
             .bind(DB::bind_time(now()))
             .bind(DB::bind_time(now()))
-            .fetch_all(&mut *tx)
+            .bind(build.as_deref())
+            .fetch_all(&mut **tx)
             .await?;
         for task in candidates {
             // Unsupported stored timestamp shapes fail before leasing work.
@@ -1449,7 +1849,7 @@ where
                 })
             {
                 let memo_history = Self::scalar("SELECT COUNT(*) FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='MemoUpserted'")
-                    .bind(&run_id).fetch_one(&mut *tx).await?;
+                    .bind(&run_id).fetch_one(&mut **tx).await?;
                 if memo_history > 0 {
                     continue;
                 }
@@ -1464,7 +1864,7 @@ where
                 })
             {
                 let typed_history = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SearchAttributesUpserted' ORDER BY sequence LIMIT 1001")
-                    .bind(&run_id).fetch_all(&mut *tx).await?;
+                    .bind(&run_id).fetch_all(&mut **tx).await?;
                 let mut typed = false;
                 for event in &typed_history {
                     typed |= DB::document_row(event, "payload")?.get("attribute_types").is_some();
@@ -1475,7 +1875,7 @@ where
             }
             let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
                 .bind(&run_id)
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut **tx)
                 .await?;
             let cancellation = Self::cancellation_request(&run)?;
             if cancellation.is_some()
@@ -1498,8 +1898,8 @@ where
                 let required = DB::optional_string(&task, "compatibility")?
                     .map(|build| build.trim().to_owned())
                     .filter(|build| !build.is_empty());
-                let context = Self::definition_context(&mut tx, &run, Some(queue), required).await?;
-                if !self.definition_allows(&mut tx, &run, &worker, &context).await?.0 {
+                let context = Self::definition_context(tx, &run, Some(queue), required).await?;
+                if !self.definition_allows(tx, &run, &worker, &context).await?.0 {
                     continue;
                 }
             }
@@ -1507,7 +1907,7 @@ where
                 && let Some(update_id) = task_payload["workflow_update_id"].as_str()
             {
                 let update = Self::query("SELECT update_name FROM workflow_updates WHERE id=$1 AND workflow_run_id=$2 AND status='accepted'")
-                    .bind(update_id).bind(&run_id).fetch_optional(&mut *tx).await?;
+                    .bind(update_id).bind(&run_id).fetch_optional(&mut **tx).await?;
                 let Some(update) = update else {
                     continue;
                 };
@@ -1524,7 +1924,7 @@ where
                 Self::query("SELECT * FROM activity_executions WHERE id=$1 AND workflow_run_id=$2")
                     .bind(text(&payload, "activity_execution_id")?)
                     .bind(&run_id)
-                    .fetch_optional(&mut *tx)
+                    .fetch_optional(&mut **tx)
                     .await?
             } else {
                 None
@@ -1550,7 +1950,46 @@ where
             {
                 continue;
             }
+            // `workerCanSatisfySession`: a session-bound activity goes only to
+            // a worker on protocol 1.8 or newer, on the session's queue, with
+            // every requirement among its capabilities.
+            let session = match activity.as_ref() {
+                Some(activity) => DB::optional_document_row(activity, "activity_options")?
+                    .and_then(|options| super::worker_sessions::CommandSession::from_snapshot(&options["worker_session"])),
+                None => None,
+            };
+            let activity_queue = match activity.as_ref() {
+                Some(activity) => DB::optional_string(activity, "queue")?.unwrap_or_else(|| queue.to_owned()),
+                None => queue.to_owned(),
+            };
+            if let Some(session) = &session {
+                let capabilities: Vec<String> = DB::optional_document_row(&worker, "capabilities")?
+                    .as_ref()
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|value| value.as_str().map(str::to_owned))
+                    .collect();
+                if !session.claimable_by(protocol_version, &DB::string(&worker, "task_queue")?, &activity_queue, &capabilities) {
+                    continue;
+                }
+            }
             let task_id = DB::string(&task, "id")?;
+            // `admitActivity`: the session admits the claim or the claim is
+            // rolled back, so a held or full session leaves the task ready.
+            let session_view = match &session {
+                Some(session) => {
+                    let connection = match activity.as_ref() {
+                        Some(activity) => DB::optional_string(activity, "connection")?,
+                        None => None,
+                    };
+                    match self.admit_session_activity(tx, &worker, session, &activity_queue, connection.as_deref(), &task_id).await? {
+                        Some(view) => Some(view),
+                        None => continue,
+                    }
+                }
+                None => None,
+            };
             let attempt = DB::number(&task, "attempt_count")?
                 .checked_add(1)
                 .ok_or_else(|| refuse(StatusCode::CONFLICT, "task_attempt_exhausted"))?;
@@ -1560,7 +1999,24 @@ where
                 self.cancellation_lease_expiry(&run)?
             };
             let leased_at = now();
-            if kind == "workflow" {
+            // `PollRequestLeaseBinding::bindClaimedTask`: a workflow claim
+            // records its poll request ID, or clears an older one.
+            if kind == "workflow"
+                && let Some(map) = task_payload.as_object_mut()
+            {
+                match poll_request {
+                    Some(request) => {
+                        map.insert("_server_poll_request_id".into(), json!(request.id));
+                    }
+                    None => {
+                        map.remove("_server_poll_request_id");
+                    }
+                }
+            }
+            // PHP binds the immutable claim on every workflow and activity
+            // claim (`PollRequestLeaseBinding::bindClaimedTask`); cooperative
+            // delivery and the activity's stop acknowledgement read it back.
+            if matches!(kind, "workflow" | "activity") {
                 task_payload[super::cooperative::CLAIM_KEY] = json!({"registration_id":DB::number(&worker,"id")?,
                     "worker_id":worker_id,"namespace":self.namespace.as_ref(),"protocol_version":protocol_version,
                     "capabilities":DB::optional_document_row(&worker,"capabilities")?.unwrap_or(json!([])),
@@ -1569,11 +2025,11 @@ where
             }
             Self::query("UPDATE workflow_tasks SET status='leased',lease_owner=$1,lease_expires_at=$2,attempt_count=$3,leased_at=$4,payload=$5 WHERE id=$6")
                 .bind(worker_id).bind(DB::bind_time(expires)).bind(attempt).bind(DB::bind_time(leased_at))
-                .bind(DB::document(&task_payload)).bind(&task_id).execute(&mut *tx).await?;
+                .bind(DB::document(&task_payload)).bind(&task_id).execute(&mut **tx).await?;
             // A lease is worker authority, not an authored lifecycle commit.
             if kind == "workflow" {
                 Self::query("UPDATE workflow_run_waits SET task_status='leased',updated_at=$1 WHERE workflow_run_id=$2 AND task_id=$3 AND ((kind='child' AND status IN ('resolved','cancelled')) OR (kind='update' AND status='open'))")
-                    .bind(DB::bind_time(leased_at)).bind(&run_id).bind(&task_id).execute(&mut *tx).await?;
+                    .bind(DB::bind_time(leased_at)).bind(&run_id).bind(&task_id).execute(&mut **tx).await?;
             }
             tx.summary_changed(&run_id);
             // Published PHP keeps the admitted run pending until commands
@@ -1581,7 +2037,7 @@ where
             let mut claim = json!({"task_id": task_id, "workflow_id": DB::string(&run,"workflow_instance_id")?,
                 "run_id": run_id, "workflow_instance_id": DB::string(&run,"workflow_instance_id")?, "workflow_run_id": run_id,
                 "workflow_type": DB::string(&run,"workflow_type")?, "namespace": self.namespace.as_ref(), "payload_codec": "avro",
-                "queue": queue, "task_queue": queue, "lease_owner": worker_id, "lease_expires_at": expires});
+                "queue": queue, "task_queue": queue, "lease_owner": worker_id, "lease_expires_at": super::cooperative::timestamp(expires)});
             if let Some(activity) = activity {
                 let activity_id = DB::string(&activity, "id")?;
                 let policy =
@@ -1590,19 +2046,19 @@ where
                 let attempt_id = id();
                 let started_at = now();
                 Self::query("UPDATE activity_attempts SET status='expired',lease_expires_at=NULL,closed_at=$1 WHERE activity_execution_id=$2 AND status='running'")
-                    .bind(DB::bind_time(started_at)).bind(&activity_id).execute(&mut *tx).await?;
+                    .bind(DB::bind_time(started_at)).bind(&activity_id).execute(&mut **tx).await?;
                 Self::query("INSERT INTO activity_attempts(id,activity_execution_id,workflow_run_id,workflow_task_id,attempt_number,status,lease_owner,lease_expires_at,started_at) VALUES ($1,$2,$3,$4,$5,'running',$6,$7,$8)")
                     .bind(&attempt_id).bind(&activity_id).bind(&run_id).bind(&task_id).bind(attempt)
-                    .bind(worker_id).bind(DB::bind_time(expires)).bind(DB::bind_time(started_at)).execute(&mut *tx).await?;
+                    .bind(worker_id).bind(DB::bind_time(expires)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
                 Self::query("UPDATE activity_executions SET status='running',attempt_count=$1,current_attempt_id=$2,started_at=$3,last_heartbeat_at=NULL,close_deadline_at=$4,heartbeat_deadline_at=$5 WHERE id=$6")
                     .bind(attempt).bind(&attempt_id).bind(DB::bind_time(started_at))
                     .bind(DB::optional_time(super::activity_deadlines::deadline(&policy, "start_to_close_timeout", started_at)?))
                     .bind(DB::optional_time(super::activity_deadlines::deadline(&policy, "heartbeat_timeout", started_at)?)).bind(&activity_id)
-                    .execute(&mut *tx)
+                    .execute(&mut **tx)
                     .await?;
                 let activity = Self::query("SELECT * FROM activity_executions WHERE id=$1")
                     .bind(&activity_id)
-                    .fetch_one(&mut *tx)
+                    .fetch_one(&mut **tx)
                     .await?;
                 let mut payload = Self::activity_payload(&activity)?;
                 payload["activity_attempt_id"] = json!(attempt_id);
@@ -1610,9 +2066,10 @@ where
                 payload["task"] = json!({"id":task_id,"type":"activity","status":"leased",
                     "repair_count":DB::number(&task,"repair_count")?,
                     "available_at":DB::optional_instant(&task,"available_at")?,"leased_at":leased_at,
-                    "lease_owner":worker_id,"lease_expires_at":expires,"attempt_count":attempt,"queue":queue});
+                    "lease_owner":worker_id,"lease_expires_at":expires,"attempt_count":attempt,"queue":queue,
+                    "connection":DB::PHP_CONNECTION});
                 Self::append_at(
-                    &mut tx,
+                    tx,
                     &run_id,
                     "ActivityStarted",
                     payload,
@@ -1626,7 +2083,13 @@ where
                 claim["attempt_number"] = json!(attempt);
                 claim["activity_type"] = json!(type_name);
                 claim["idempotency_key"] = json!(activity_id);
-                claim["arguments"] = wire(&DB::string(&activity, "arguments")?);
+                if let Some(view) = session_view.clone() {
+                    claim["worker_session"] = view;
+                }
+                // A standalone activity started without input has none.
+                if let Some(arguments) = DB::optional_string(&activity, "arguments")? {
+                    claim["arguments"] = wire(&arguments);
+                }
                 claim["retry_policy"] =
                     DB::optional_document_row(&activity, "retry_policy")?.unwrap_or(Value::Null);
                 // PHP omits the field when the activity has no deadline.
@@ -1641,6 +2104,9 @@ where
                     claim["workflow_update_id"] = json!(update_id);
                 }
                 claim["sticky_replay_mode"] = json!("cold_replay");
+                claim["compatibility"] = json!(DB::optional_string(&task, "compatibility")?
+                    .filter(|build| !build.trim().is_empty())
+                    .or(DB::optional_string(&run, "compatibility")?.filter(|build| !build.trim().is_empty())));
                 if let Some(cancellation) = cancellation {
                     claim["cancellation_request"] = cancellation;
                 }
@@ -1678,7 +2144,7 @@ where
                     let signal = Self::query("SELECT arguments,workflow_command_id FROM workflow_signal_records WHERE id=$1 AND workflow_run_id=$2")
                         .bind(signal_id)
                         .bind(&run_id)
-                        .fetch_optional(&mut *tx)
+                        .fetch_optional(&mut **tx)
                         .await?;
                     if let Some(signal) = signal {
                         if let Some(arguments) =
@@ -1693,12 +2159,13 @@ where
                         }
                     }
                 }
-                let (events, next) = match page {
-                    Some(size) => Self::history_page_connection(&mut tx, &run_id, 0, size).await?,
-                    None => (Self::whole_history(&mut tx, &run_id).await?, None),
+                let (mut events, next) = match page {
+                    Some(size) => Self::history_page_connection(&mut **tx, &run_id, 0, size).await?,
+                    None => (Self::whole_history(&mut **tx, &run_id).await?, None),
                 };
+                Self::with_signal_sequences(&mut **tx, &run_id, &mut events).await?;
                 let budget = Self::workflow_history_budget(
-                    &mut tx,
+                    tx,
                     &run_id,
                     DB::number(&run, "last_history_sequence")?,
                 )
@@ -1709,12 +2176,13 @@ where
             }
             if let Some(request_id) = request_id {
                 Self::query("INSERT INTO dw_poll_receipts(worker_id,kind,request_id,task_id,attempt,response,expires_at,namespace) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
-                    .bind(worker_id).bind(kind).bind(request_id).bind(&task_id).bind(attempt).bind(DB::document(&claim)).bind(DB::bind_time(after(120))).bind(self.namespace.as_ref()).execute(&mut *tx).await?;
+                    .bind(worker_id).bind(kind).bind(request_id).bind(&task_id).bind(attempt).bind(DB::document(&claim)).bind(DB::bind_time(after(120))).bind(self.namespace.as_ref()).execute(&mut **tx).await?;
             }
-            tx.commit().await?;
+            if let Some(request) = poll_request {
+                Self::remember_workflow_poll(tx, request, &json!({"task": claim, "poll_status": "leased"})).await?;
+            }
             return Ok(Some(claim));
         }
-        tx.commit().await?;
         Ok(None)
     }
 
@@ -1734,8 +2202,10 @@ where
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
+        // PHP's heartbeat also reports the run's and the task's status.
         let mut response = json!({"task_id": task_id, "workflow_task_attempt": body["workflow_task_attempt"],
-            "lease_owner": body["lease_owner"], "lease_expires_at": expires, "renewed": true});
+            "lease_owner": body["lease_owner"], "lease_expires_at": super::cooperative::timestamp(expires), "renewed": true,
+            "run_status": DB::string(&run, "status")?, "task_status": "leased", "reason": null});
         if let Some(cancellation) = Self::cancellation_request(&run)? {
             response["cancellation_request"] = cancellation;
         }
@@ -1758,7 +2228,8 @@ where
         }
         Self::workflow_task_guard(&mut tx, &task, &body).await?;
         let run_id = DB::string(&task, "workflow_run_id")?;
-        let (events, next) = Self::history_page_connection(&mut tx, &run_id, after, size).await?;
+        let (mut events, next) = Self::history_page_connection(&mut tx, &run_id, after, size).await?;
+        Self::with_signal_sequences(&mut tx, &run_id, &mut events).await?;
         let run = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
             .bind(&run_id)
             .fetch_one(&mut *tx)
@@ -1848,12 +2319,8 @@ where
         // replay block, without a retry, until an operator repairs the run.
         let range_blocked =
             range_blocked || (!waiting && super::task_failures::blocks_replay(&body["failure"]));
-        if !waiting && self.namespace.as_ref() != "default" {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "development_workflow_task_retry_namespace_unqualified",
-            ));
-        }
+        // The task is read within the request's namespace, and its retry
+        // copies the run's namespace.
         let mut tx = self.begin().await?;
         let task = self.task_row(&mut tx, task_id).await?;
         if DB::string(&task, "task_type")? != "workflow" {
@@ -2003,7 +2470,9 @@ where
         external: super::external_resolution::PreparedCommands,
         worker: Option<super::runtime_credentials::Principal>,
         protocol: Option<&str>,
+        limits: super::memo_limits::StructuralLimits,
     ) -> Result<Value> {
+        let transition_codec_for_streams = transition_codec.clone();
         let commands = body["commands"]
             .as_array()
             .filter(|c| !c.is_empty() && c.len() <= 100)
@@ -2012,36 +2481,21 @@ where
         // Validate the entire batch before mutation. Unknown commands and
         // options cannot be silently accepted as unsupported durable effects.
         for (index, command) in commands.iter().enumerate() {
+            // The command normalizer's field scopes and value rules, with
+            // PHP's messages, before native's own refusals.
+            super::completion_rules::normalizer_checks(index, command)?;
             let command_type = text(command, "type")?;
-            if self.namespace.as_ref() != "default"
-                && !matches!(
-                    command_type,
-                    "complete_workflow" | "fail_workflow" | "schedule_activity" | "start_timer" | "start_child_workflow"
-                )
-                && !(commands.len() == 1
-                    && matches!(command_type, "open_condition_wait" | "open_signal_wait"))
-            {
-                return Err(refuse(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "development_namespace_command_unqualified",
-                ));
-            }
             match command_type {
                 "fail_workflow" => {
                     super::workflow_failures::validate(command)?;
                 }
-                "complete_workflow" if index + 1 == commands.len() => {
+                "complete_workflow" => {
                     reject_fields(command, &["type", "result"])?;
                     if !external.contains_key(&index) {
                         envelope(command, "result")?;
                     }
                 }
-                "continue_as_new"
-                    if index + 1 == commands.len()
-                        && commands[..index]
-                            .iter()
-                            .all(|prior| matches!(prior["type"].as_str(), Some("upsert_memo" | "upsert_search_attributes"))) =>
-                {
+                "continue_as_new" => {
                     super::continuations::validate(command)?;
                 }
                 "schedule_activity" => {
@@ -2051,7 +2505,9 @@ where
                             "type",
                             "activity_type",
                             "arguments",
+                            "connection",
                             "queue",
+                            "worker_session",
                             "retry_policy",
                             "start_to_close_timeout",
                             "schedule_to_start_timeout",
@@ -2065,7 +2521,7 @@ where
                     }
                     super::activity_failures::retry_policy(command)?;
                 }
-                "start_child_workflow" if commands.len() == 1 => {
+                "start_child_workflow" => {
                     super::children::validate_child(command)?;
                 }
                 "start_timer" => {
@@ -2111,29 +2567,21 @@ where
                     {
                         return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"));
                     }
-                    text(command, "condition_key")?;
+                    // `normalizeOpenConditionWaitCommand`: the key and the
+                    // definition fingerprint are optional strings, of any form.
                     super::wait_timeouts::timeout_for(command, "invalid_condition_timeout")?;
-                    let fingerprint = text(command, "condition_definition_fingerprint")?;
-                    if !fingerprint.strip_prefix("sha256:").is_some_and(|hash| {
-                        hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-                    }) {
-                        return Err(refuse(
-                            StatusCode::UNPROCESSABLE_ENTITY,
-                            "invalid_condition_fingerprint",
-                        ));
-                    }
                 }
                 "open_signal_wait" => {
                     reject_fields(command, &["type", "signal_name", "timeout_seconds"])?;
                     text(command, "signal_name")?;
                     super::wait_timeouts::timeout(command)?;
                 }
-                "complete_update" if commands.len() == 1 => {
+                "complete_update" => {
                     reject_fields(command, &["type", "update_id", "result"])?;
                     text(command, "update_id")?;
                     envelope(command, "result")?;
                 }
-                "fail_update" if commands.len() == 1 => {
+                "fail_update" => {
                     super::updates::update_failure(command)?;
                 }
                 _ => {
@@ -2165,18 +2613,36 @@ where
                 .bind(&run_id)
                 .fetch_one(&mut *tx)
                 .await?;
+            let created = DB::optional_document_row(&task, "receipt")?
+                .and_then(|receipt| receipt.get(COMPLETION_RECEIPT).map(|receipt| receipt["created_task_ids"].clone()))
+                .unwrap_or_else(|| json!([]));
             return Ok(
                 json!({"task_id": task_id, "run_id": run_id, "run_status": DB::string(&current,"status")?, "workflow_task_attempt": body["workflow_task_attempt"],
-                "outcome": "completed", "recorded": false, "reason": "already_completed"}),
+                "outcome": "completed", "recorded": false, "reason": "already_completed", "created_task_ids": created}),
             );
         }
         Self::workflow_task_guard(&mut tx, &task, &body).await?;
+        self.guard_worker_session_commands(&mut tx, &task, task_id, &body, protocol, commands).await?;
+        // PHP guards worker-session commands before validating streams.
+        // `MessageStreamService::validateCompletion`, before anything changes.
+        let streams = super::message_streams::Completion::of(&body);
+        let stream_instance = Self::query("SELECT workflow_instance_id FROM workflow_runs WHERE id=$1")
+            .bind(DB::string(&task, "workflow_run_id")?)
+            .fetch_one(&mut *tx)
+            .await?;
+        let stream_instance = DB::string(&stream_instance, "workflow_instance_id")?;
+        if !streams.is_empty() {
+            self.validate_stream_completion(&mut tx, &stream_instance, &DB::string(&task, "workflow_run_id")?, &streams)
+                .await?;
+        }
         // `childCancellationPolicyGuard`: a child that requests cancellation
         // on parent close, or propagates the parent's cancellation, needs a
         // cooperative worker's claim and a protocol 1.20 request.
-        if let Some(command) = commands.iter().find(|command| command["type"] == "start_child_workflow")
-            && super::children::policies(command)?.cooperative()
-        {
+        let mut cooperative_child = false;
+        for command in commands.iter().filter(|command| command["type"] == "start_child_workflow") {
+            cooperative_child |= super::children::policies(command)?.cooperative();
+        }
+        if cooperative_child {
             let mut unavailable = Vec::new();
             if !protocol
                 .and_then(|version| version.strip_prefix("1."))
@@ -2198,6 +2664,11 @@ where
                         "remediation": "Use a runtime with child cancellation policies and a claim from a cooperative worker on protocol 1.20 or newer."}),
                 });
             }
+        }
+        // `parseCommands`: at most one terminal command, anywhere in the
+        // batch. It applies after every other command.
+        if commands.iter().filter(|command| is_terminal(command)).count() > 1 {
+            return Err(refuse(StatusCode::CONFLICT, "invalid_commands"));
         }
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
@@ -2239,31 +2710,20 @@ where
                 "development_selection_cancellation_unqualified",
             ));
         }
-        let update_id = task_payload["workflow_update_id"].as_str();
-        if commands.iter().any(|command| {
-            matches!(
-                command["type"].as_str(),
-                Some("complete_update" | "fail_update")
-            )
-        }) != update_id.is_some()
-            || update_id.is_some_and(|update_id| {
-                commands.len() != 1
-                    || if commands[0]["type"] == "fail_update" {
-                        super::updates::update_failure(&commands[0])
-                            .map_or(true, |failure| failure.update_id != update_id)
-                    } else {
-                        commands[0]["update_id"] != update_id
-                    }
-            })
-        {
-            return Err(refuse(StatusCode::CONFLICT, "update_task_mismatch"));
-        }
+        Self::validate_update_commands(&mut tx, &run_id, &task, commands).await?;
         let mut sequence = Self::authored_sequence(&mut tx, &run_id).await?;
+        // The tasks this batch's commands create, in order, as PHP reports them.
+        let mut created = Vec::new();
         Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec).await?;
-        for (index, command) in commands.iter().enumerate() {
+        // Published parseCommands applies every other command first, whatever
+        // the terminal command's position in the batch.
+        let order = (0..commands.len())
+            .filter(|index| !is_terminal(&commands[*index]))
+            .chain((0..commands.len()).filter(|index| is_terminal(&commands[*index])));
+        for index in order {
+            let command = &commands[index];
             if command["type"] == "fail_workflow" {
-                // Published parseCommands applies every nonterminal command
-                // first, regardless of the terminal command's batch position.
+                // Applied after the loop.
                 continue;
             } else if matches!(
                 command["type"].as_str(),
@@ -2277,12 +2737,11 @@ where
                 {
                     Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1").bind(&run_id).execute(&mut *tx).await?;
                 } else {
-                    self.continue_run(&mut tx, &run, &task, command, sequence)
-                        .await?;
+                    created.push(self.continue_run(&mut tx, &run, &task, command, sequence).await?);
                 }
             } else if command["type"] == "start_child_workflow" {
                 sequence += 1;
-                Self::start_child(&mut tx, &run, task_id, command, sequence).await?;
+                created.push(Self::start_child(&mut tx, &run, task_id, command, sequence).await?);
             } else if command["type"] == "record_side_effect" {
                 // `applyRecordSideEffect`: one authored sequence and its result.
                 sequence += 1;
@@ -2316,11 +2775,16 @@ where
                 let metadata = super::selections::metadata(command, "activity")?;
                 super::selections::check_sequence(&metadata, sequence)?;
                 let activity_id = id();
-                let queue = command
-                    .get("queue")
-                    .map_or(Ok(DB::string(&run, "queue")?), |_| {
-                        text(command, "queue").map(str::to_owned)
-                    })?;
+                // A session-bound activity without its own queue or
+                // connection takes the session's (`applyWorkerSessionRouting`).
+                let session = super::worker_sessions::command_session(command);
+                let queue = match command.get("queue").filter(|queue| !queue.is_null()) {
+                    Some(_) => text(command, "queue")?.to_owned(),
+                    None => session.as_ref().and_then(|session| session.queue.clone()).map_or_else(|| DB::string(&run, "queue"), Ok)?,
+                };
+                let connection = command["connection"].as_str().map(str::trim).filter(|connection| !connection.is_empty()).map(str::to_owned)
+                    .or_else(|| session.as_ref().and_then(|session| session.connection.clone()));
+                let activity_options = session.as_ref().map(|session| json!({"worker_session": session.snapshot()}));
                 let activity_type = text(command, "activity_type")?;
                 let arguments = match external.get(&index) {
                     Some(prepared) => {
@@ -2345,11 +2809,12 @@ where
                 // The preserved SQL schema defaults this counter to one.
                 // Published authored scheduling explicitly starts at zero;
                 // only the original worker claim consumes its first attempt.
-                Self::query("INSERT INTO activity_executions(id,workflow_run_id,sequence,activity_type,activity_class,status,attempt_count,payload_codec,arguments,queue,retry_policy,parallel_group_path,schedule_deadline_at,schedule_to_close_deadline_at) VALUES ($1,$2,$3,$4,$5,'pending',0,'avro',$6,$7,$8,$9,$10,$11)")
+                Self::query("INSERT INTO activity_executions(id,workflow_run_id,sequence,activity_type,activity_class,status,attempt_count,payload_codec,arguments,queue,retry_policy,parallel_group_path,schedule_deadline_at,schedule_to_close_deadline_at,connection,activity_options) VALUES ($1,$2,$3,$4,$5,'pending',0,'avro',$6,$7,$8,$9,$10,$11,$12,$13)")
                     .bind(&activity_id).bind(&run_id).bind(sequence).bind(activity_type).bind(activity_type)
                     .bind(&arguments).bind(&queue).bind(policy.as_ref().map(DB::document))
                     .bind(DB::optional_document(&metadata["parallel_group_path"]))
-                    .bind(DB::optional_time(schedule_deadline)).bind(DB::optional_time(lifecycle_deadline)).execute(&mut *tx).await?;
+                    .bind(DB::optional_time(schedule_deadline)).bind(DB::optional_time(lifecycle_deadline))
+                    .bind(connection.as_deref()).bind(activity_options.as_ref().map(DB::document)).execute(&mut *tx).await?;
                 let activity = Self::query("SELECT * FROM activity_executions WHERE id=$1")
                     .bind(&activity_id)
                     .fetch_one(&mut *tx)
@@ -2367,14 +2832,18 @@ where
                     Some(recorded_at),
                 )
                 .await?;
-                let activity_task = Self::create_task(
+                // PHP publishes only timer tasks a completion creates, so this
+                // activity task waits for a poller undispatched.
+                let activity_task = Self::create_task_dispatched(
                     &mut tx,
                     &run_id,
                     &queue,
                     "activity",
                     json!({"activity_execution_id": activity_id}),
+                    false,
                 )
                 .await?;
+                created.push(activity_task.clone());
                 Self::create_activity_wait(
                     &mut tx,
                     &run_id,
@@ -2398,8 +2867,7 @@ where
                 Self::query("INSERT INTO workflow_run_timers(id,workflow_run_id,sequence,status,delay_seconds,fire_at) VALUES ($1,$2,$3,'pending',$4,$5)")
                     .bind(&timer_id).bind(&run_id).bind(sequence).bind(delay).bind(DB::bind_time(fire_at)).execute(&mut *tx).await?;
                 let mut timer_payload = json!({"timer_id":timer_id,"sequence":sequence,"delay_seconds":delay,"fire_at":fire_at,
-                    "task":{"id":task_id,"type":"workflow","status":"leased","lease_owner":DB::optional_string(&task,"lease_owner")?,
-                        "lease_expires_at":DB::optional_instant(&task,"lease_expires_at")?,"attempt_count":DB::number(&task,"attempt_count")?}});
+                    "task":Self::task_snapshot(&task)?});
                 super::selections::merge(&mut timer_payload, &metadata);
                 Self::append_at(
                     &mut tx,
@@ -2421,6 +2889,7 @@ where
                     timer_task_payload,
                 )
                 .await?;
+                created.push(timer_task.clone());
                 Self::query("UPDATE workflow_tasks SET available_at=$1 WHERE id=$2")
                     .bind(DB::bind_time(fire_at))
                     .bind(&timer_task)
@@ -2463,6 +2932,18 @@ where
                         .as_object_mut()
                         .unwrap()
                         .remove("condition_wait_occurrence_id");
+                }
+                // `normalizeOptionalString`: PHP trims the condition's key and
+                // definition fingerprint and drops them when empty.
+                if !direct {
+                    for field in ["condition_key", "condition_definition_fingerprint"] {
+                        match payload[field].as_str().map(str::trim).filter(|value| !value.is_empty()) {
+                            Some(value) => payload[field] = json!(value),
+                            None => {
+                                payload.as_object_mut().unwrap().remove(field);
+                            }
+                        }
+                    }
                 }
                 let pending_wait_id = if direct {
                     let pending = Self::query("SELECT signal_wait_id FROM workflow_signal_records WHERE workflow_run_id=$1 AND signal_name=$2 AND status='received' ORDER BY command_sequence,id LIMIT 1")
@@ -2563,10 +3044,20 @@ where
             .bind(task_id)
             .execute(&mut *tx)
             .await?;
-        Self::record_completion(&mut tx, task_id, &body).await?;
         Self::resume_undelivered_cancellation(&mut tx, &run_id, &DB::string(&run, "queue")?)
             .await?;
-        Self::enqueue_next_message(&mut tx, &run_id, &DB::string(&run, "queue")?).await?;
+        // PHP reports the run's next message task with the tasks the
+        // commands created.
+        if let Some(next) = Self::next_message_task(&mut tx, &run_id, &DB::string(&run, "queue")?).await? {
+            created.push(next);
+        }
+        Self::record_completion(&mut tx, task_id, &json!({COMPLETION_RECEIPT: {"request": body, "created_task_ids": created}})).await?;
+        // PHP's executor leaves every run a completed task did not close
+        // waiting, even when the task recorded only markers or side effects.
+        Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1 AND status IN ('pending','running')")
+            .bind(&run_id)
+            .execute(&mut *tx)
+            .await?;
         let current = Self::query("SELECT status FROM workflow_runs WHERE id=$1")
             .bind(&run_id)
             .fetch_one(&mut *tx)
@@ -2575,11 +3066,17 @@ where
         if let Some(worker) = &worker {
             Self::attribute_worker_terminal(&mut tx, &run_id, task_id, worker).await?;
         }
+        // `MessageStreamService::recordCompletion`: only a continued run
+        // changes the instance's current run, which then receives the streams.
+        if !streams.is_empty() || commands.iter().any(|command| command["type"] == "continue_as_new") {
+            self.record_stream_completion(&mut tx, &stream_instance, &run_id, task_id, &streams, transition_codec_for_streams, limits)
+                .await?;
+        }
         tx.summary_changed(&run_id);
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(
-            json!({"task_id": task_id, "run_id": run_id, "run_status": run_status, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed", "recorded": true, "reason": null}),
+            json!({"task_id": task_id, "run_id": run_id, "run_status": run_status, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed", "recorded": true, "reason": null, "created_task_ids": created}),
         )
     }
 
@@ -2745,6 +3242,9 @@ where
                 receipt["attempt_status"] = json!(DB::string(&attempt, "status")?);
                 receipt["task_status"] = json!(DB::string(&task, "status")?);
             }
+            // Every worker answer carries PHP's protocol fields.
+            receipt["protocol_version"] = json!(super::WORKER_PROTOCOL_VERSION);
+            receipt["server_capabilities"] = capabilities();
             return Err(super::RuntimeError::Protocol {
                 status: StatusCode::CONFLICT,
                 response: receipt,
@@ -2786,10 +3286,12 @@ where
         payload["activity_attempt_id"] = json!(attempt_id);
         payload["attempt_number"] = json!(DB::number(&attempt, "attempt_number")?);
         payload["result"] = wire(&result);
+        payload["payload_codec"] = json!("avro");
         payload["task"] = json!({"id":task_id,"type":"activity","status":"leased",
             "repair_count":DB::number(&task,"repair_count")?,
             "available_at":DB::optional_instant(&task,"available_at")?,"leased_at":DB::optional_instant(&task,"leased_at")?,
-            "lease_owner":DB::optional_string(&task,"lease_owner")?,"attempt_count":DB::number(&task,"attempt_count")?});
+            "lease_owner":DB::optional_string(&task,"lease_owner")?,"lease_expires_at":DB::optional_instant(&task,"lease_expires_at")?,
+            "attempt_count":DB::number(&task,"attempt_count")?,"queue":DB::string(&task,"queue")?,"connection":DB::PHP_CONNECTION});
         Self::append(
             &mut tx,
             &run_id,
@@ -2818,15 +3320,21 @@ where
             .execute(&mut *tx)
             .await?;
         Self::record_completion(&mut tx, task_id, &body).await?;
-        let next_task_id = Self::selection_resume(
-            &mut tx,
-            &run_id,
-            &DB::string(&run, "queue")?,
-            json!({"activity_execution_id": activity_id}),
-            &metadata,
-            true,
-        )
-        .await?;
+        // A standalone activity's host run closes with its result.
+        let closed = Self::close_standalone_host(&mut tx, &run_id, super::standalone_activities::HostClose::Completed { output: &result }).await?;
+        let next_task_id = if closed {
+            None
+        } else {
+            Self::selection_resume(
+                &mut tx,
+                &run_id,
+                &DB::string(&run, "queue")?,
+                json!({"activity_execution_id": activity_id}),
+                &metadata,
+                true,
+            )
+            .await?
+        };
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(
@@ -2837,6 +3345,8 @@ where
         // Expired root authority wins before any ordinary due timer fires.
         self.expire_cooperative_deadlines().await?;
         self.expire_activity_deadlines().await?;
+        // An activity task whose lease expired is settled, not re-claimed.
+        self.expire_activity_leases().await?;
         // New timers use the canonical PHP timestamp shape on SQLite and typed
         // UTC values elsewhere. Existing PHP data still cannot be adopted.
         // The read probe avoids acquiring the transition lock when idle.
@@ -2907,6 +3417,15 @@ where
                 json!({"timer_id":timer_id})
             };
             super::selections::merge(&mut payload, &metadata);
+            // `RunTimerTask`: the timer task is leased to itself while its
+            // timer fires, so `TimerFired` carries the leased task.
+            Self::query("UPDATE workflow_tasks SET status='leased',leased_at=$1,lease_owner=$2,lease_expires_at=$3,attempt_count=attempt_count+1 WHERE id=$4")
+                .bind(DB::bind_time(fired_at))
+                .bind(&task_id)
+                .bind(DB::bind_time(fired_at + chrono::Duration::seconds(self.workflow_task_lease_seconds)))
+                .bind(&task_id)
+                .execute(&mut *tx)
+                .await?;
             Self::append(
                 &mut tx,
                 &run_id,
@@ -2930,7 +3449,7 @@ where
                 .bind(&timer_id)
                 .execute(&mut *tx)
                 .await?;
-            Self::query("UPDATE workflow_tasks SET status='completed' WHERE id=$1")
+            Self::query("UPDATE workflow_tasks SET status='completed',lease_expires_at=NULL WHERE id=$1")
                 .bind(&task_id)
                 .execute(&mut *tx)
                 .await?;
@@ -2987,6 +3506,10 @@ where
         // receipt. A later completion must refuse it, not decode SQL NULL.
         let receipt = DB::optional_document_row(task, "receipt")?
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "task_not_leased"))?;
+        let receipt = match receipt.get(COMPLETION_RECEIPT) {
+            Some(stored) => stored["request"].clone(),
+            None => receipt,
+        };
         if receipt == *body {
             return Ok(true);
         }
@@ -3159,21 +3682,35 @@ where
         kind: &str,
         payload: Value,
     ) -> Result<String> {
+        Self::create_task_dispatched(tx, run_id, queue, kind, payload, true).await
+    }
+
+    /// A new ready task. As PHP in poll mode, a task it dispatches is stamped
+    /// dispatched when created; one it leaves to pollers is not.
+    pub(super) async fn create_task_dispatched(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        queue: &str,
+        kind: &str,
+        payload: Value,
+        dispatched: bool,
+    ) -> Result<String> {
         tx.summary_changed(run_id);
         let task_id = id();
         // A task carries its run's priority and fairness tags, as in PHP.
-        let run = Self::query("SELECT namespace,priority,fairness_key,fairness_weight FROM workflow_runs WHERE id=$1")
+        let run = Self::query("SELECT namespace,priority,fairness_key,fairness_weight,compatibility FROM workflow_runs WHERE id=$1")
             .bind(run_id)
             .fetch_one(&mut **tx)
             .await?;
         let namespace = DB::string(&run, "namespace")?;
-        // As PHP in poll mode, a task is dispatched to pollers when it is created.
         let created = now();
+        let dispatched_at = dispatched.then_some(created);
         let fairness_key = DB::optional_string(&run, "fairness_key")?;
-        Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,payload,queue,available_at,namespace,created_at,updated_at,last_dispatched_at,last_dispatch_attempt_at,priority,fairness_key,fairness_weight) VALUES ($1,$2,$3,'ready',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
+        Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,payload,queue,available_at,namespace,created_at,updated_at,last_dispatched_at,last_dispatch_attempt_at,priority,fairness_key,fairness_weight,compatibility) VALUES ($1,$2,$3,'ready',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
         .bind(&task_id).bind(run_id).bind(kind).bind(DB::document(&payload)).bind(queue).bind(DB::bind_time(created)).bind(&namespace)
-        .bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::bind_time(created))
+        .bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::optional_time(dispatched_at)).bind(DB::optional_time(dispatched_at))
         .bind(DB::number(&run, "priority")?).bind(fairness_key.as_deref()).bind(DB::number(&run, "fairness_weight")?)
+        .bind(DB::optional_string(&run, "compatibility")?.as_deref())
         .execute(&mut **tx).await?;
         Ok(task_id)
     }
@@ -3189,7 +3726,7 @@ where
         Self::append_at(tx, run_id, event_type, payload, task_id, command_id, None).await
     }
 
-    async fn append_at(
+    pub(super) async fn append_at(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
         event_type: &str,
@@ -3241,9 +3778,22 @@ where
             .execute(&mut **tx)
             .await?;
         let recorded_at = recorded_at.unwrap_or_else(now);
-        // `WorkflowHistoryEvent::record`: an event recorded with a command
-        // carries that command's snapshot.
         let mut payload = payload;
+        // `WorkflowHistoryEvent::record`: an event PHP records with its task
+        // model carries that task's snapshot.
+        if let Some(task_id) = task_id
+            && TASK_SNAPSHOT_EVENTS.contains(&event_type)
+            && payload.as_object().is_some_and(|fields| !fields.contains_key("task"))
+            && let Some(task) = Self::query("SELECT * FROM workflow_tasks WHERE id=$1 AND workflow_run_id=$2")
+                .bind(task_id)
+                .bind(run_id)
+                .fetch_optional(&mut **tx)
+                .await?
+        {
+            // Only the run's own task: another run's is never copied.
+            payload["task"] = Self::task_snapshot(&task)?;
+        }
+        // An event recorded with a command carries that command's snapshot.
         if let Some(command_id) = command_id.filter(|_| command_snapshot)
             && payload.as_object().is_some_and(|fields| !fields.contains_key("command"))
             && let Some(snapshot) = Self::command_snapshot(tx, command_id).await?
@@ -3379,7 +3929,7 @@ where
         "activity": {"id":DB::string(activity,"id")?,"idempotency_key":DB::string(activity,"id")?,
             "sequence":DB::number(activity,"sequence")?,"type":DB::string(activity,"activity_type")?,
             "class":DB::string(activity,"activity_class")?,"local_activity":false,
-            "activity_type": DB::string(activity,"activity_type")?, "arguments": wire(&DB::string(activity,"arguments")?),
+            "activity_type": DB::string(activity,"activity_type")?, "arguments": DB::optional_string(activity,"arguments")?.map(|arguments| wire(&arguments)),
             "retry_policy":DB::optional_document_row(activity,"retry_policy")?,
             "status":DB::string(activity,"status")?,"attempt_count":DB::number(activity,"attempt_count")?,
             "closed_at":DB::optional_instant(activity,"closed_at")?,
@@ -3397,6 +3947,9 @@ where
             if let Some(value) = DB::optional_instant(activity, field)? {
                 payload["activity"][field] = json!(value);
             }
+        }
+        if payload["activity"]["arguments"].is_null() {
+            payload["activity"].as_object_mut().unwrap().remove("arguments");
         }
         if payload["activity"]["retry_policy"].is_null() {
             // A legacy absent snapshot stays absent in its durable history.
@@ -3438,6 +3991,40 @@ where
 
     /// A poll's whole history, read in bounded pages: published PHP sends
     /// every event unless the worker asks for pages.
+    /// `WorkflowTaskPoller::historyEventsWithSignalArgumentEnvelopes`: the
+    /// history a worker reads shows a consumed signal's workflow sequence on
+    /// its `SignalReceived`, from the signal's record. The run's own history
+    /// route shows the events as recorded.
+    async fn with_signal_sequences(connection: &mut DB::Connection, run_id: &str, events: &mut [Value]) -> Result<()> {
+        if !events.iter().any(|event| event["event_type"] == "SignalReceived") {
+            return Ok(());
+        }
+        // Only this page's signals, as PHP's `whereIn('id', $signalIds)` does:
+        // the work stays bounded by the page, not by the run's signal count,
+        // and the run fence keeps another run's record out.
+        let ids = page_signal_ids(events);
+        let mut sequences = std::collections::HashMap::new();
+        for id in ids {
+            if let Some(row) = Self::query("SELECT workflow_sequence FROM workflow_signal_records WHERE id=$1 AND workflow_run_id=$2 AND workflow_sequence IS NOT NULL")
+                .bind(id.as_str())
+                .bind(run_id)
+                .fetch_optional(&mut *connection)
+                .await?
+            {
+                sequences.insert(id, DB::number(&row, "workflow_sequence")?);
+            }
+        }
+        for event in events.iter_mut().filter(|event| event["event_type"] == "SignalReceived") {
+            let sequence = event["payload"]["signal_id"].as_str().and_then(|id| sequences.get(id)).copied();
+            if let (Some(sequence), Some(payload)) = (sequence, event["payload"].as_object_mut()) {
+                if payload.get("workflow_sequence").is_none_or(Value::is_null) {
+                    payload.insert("workflow_sequence".into(), json!(sequence));
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn whole_history(connection: &mut DB::Connection, run_id: &str) -> Result<Vec<Value>> {
         let mut events = Vec::new();
         let mut after = 0;
@@ -3579,7 +4166,7 @@ pub(super) async fn prepare_rejected_command(
         // Only small server-authored diagnostics cross this conversion.
         // Original customer arguments remain official decoded Values, so a
         // JSON projection cannot round an int64 or turn bytes into strings.
-        // A number has no exact diagnostic form, so it is refused.
+        // Only an int64, such as a structural limit, is an exact number.
         fn diagnostic(value: Value) -> Option<Payload> {
             Some(match value {
                 Value::Null => Payload::Null,
@@ -3594,7 +4181,7 @@ pub(super) async fn prepare_rejected_command(
                         .map(|(key, value)| Some((key, diagnostic(value)?)))
                         .collect::<Option<_>>()?,
                 ),
-                Value::Number(_) => return None,
+                Value::Number(number) => Payload::Long(number.as_i64()?),
             })
         }
         let unavailable = || refuse(StatusCode::SERVICE_UNAVAILABLE, unavailable);
@@ -3735,6 +4322,19 @@ pub(super) fn validate_arguments(
     Ok(())
 }
 
+/// A workflow task completion's stored receipt: its request and the tasks it
+/// created, so a repeat answers as the original did. Older receipts, and
+/// activity receipts, are the bare request.
+const COMPLETION_RECEIPT: &str = "workflow_task_completion";
+
+/// PHP's `TERMINAL_TYPES`: the commands that close the run.
+fn is_terminal(command: &Value) -> bool {
+    matches!(
+        command["type"].as_str(),
+        Some("complete_workflow" | "fail_workflow" | "continue_as_new")
+    )
+}
+
 fn timer_deadline(command: &Value) -> Result<DateTime<Utc>> {
     command["delay_seconds"]
         .as_i64()
@@ -3789,11 +4389,16 @@ fn version_marker_payload(command: &Value) -> Result<Value> {
     let version = integer("version")?;
     let min = integer("min_supported")?;
     let max = integer("max_supported")?;
-    if change_id.is_empty() || min > max || version < min || version > max {
+    if change_id.is_empty() {
         return Err(refuse(
             StatusCode::UNPROCESSABLE_ENTITY,
             "invalid_version_marker",
         ));
+    }
+    // PHP's bridge refuses a version outside its supported range with 409
+    // `invalid_commands`, recording nothing.
+    if min > max || version < min || version > max {
+        return Err(refuse(StatusCode::CONFLICT, "invalid_commands"));
     }
     Ok(json!({"change_id":change_id,"version":version,"min_supported":min,"max_supported":max}))
 }
@@ -3811,13 +4416,26 @@ pub(super) fn reject_fields(body: &Value, allowed: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// A replayed answer as a workflow poll delivers it: a lease takes this
+/// request's history encoding.
+pub(super) fn replayed_poll(mut replay: Value, encoding: Option<&'static str>) -> Result<Value> {
+    if replay["task"].is_object() {
+        super::history_pages::compress(&mut replay["task"], encoding)?;
+    }
+    replay["server_capabilities"] = capabilities();
+    Ok(replay)
+}
+
 pub(crate) fn capabilities() -> Value {
     let mut value = json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "record_side_effect", "complete_workflow", "fail_workflow", "continue_as_new", "complete_update", "fail_update"],
         "worker_deregistration_fencing":{"schema":"durable-workflow.v2.worker-deregistration.v1","supported":true,"receipt_retention_seconds":600,"endpoint":"/worker/registrations/{workerId}/deregister"},
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
-        "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,
+        "worker_sessions": super::worker_sessions::capability(), "worker_session_verbs": ["create", "heartbeat", "close"],
+        "sticky_execution": false, "local_activities": false, "message_streams": super::message_streams::worker_capability(),
+        "update_validation_tasks": true, "synchronous_update_validation": super::update_validation::capability(),
         "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": true,
-        "activity_lease_renewal": true});
+        "activity_lease_renewal": true, "activity_cancellation_acknowledgement": true});
+    value["runtime_external_payload_transport"] = super::payload_discovery::transport_manifest();
     value["supported_workflow_task_commands"]
         .as_array_mut()
         .expect("commands")
@@ -3845,3 +4463,7 @@ pub(crate) fn capabilities() -> Value {
     }
     value
 }
+
+#[cfg(test)]
+#[path = "store_record_tests.rs"]
+mod record_tests;

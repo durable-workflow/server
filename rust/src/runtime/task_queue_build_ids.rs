@@ -4,12 +4,9 @@
 //! registrations grouped by trimmed build id, with each build id's pending
 //! workflow tasks.
 //!
-//! Native keeps no build-id rollouts. Takeover refuses a database that holds
-//! any, and native never writes one. So every build id reads as PHP reads one
-//! without a rollout row: drain intent `active`, no drain, promote or rollback
-//! time, and not selected for new starts, since
-//! `WorkerBuildIdNewStartSelector::selectedKeyFromRollouts` selects nothing
-//! from no rollouts.
+//! Each build id carries its rollout row's drain intent and times, and
+//! whether new starts are pinned to it. A rollout without workers or pending
+//! tasks still gets a row.
 use super::{
     Result,
     backend::Backend,
@@ -125,11 +122,11 @@ impl Cohort {
         }
     }
 
-    /// `buildIdRolloutStatus` for a build id without a rollout.
-    fn rollout_status(&self) -> &'static str {
+    /// `buildIdRolloutStatus`.
+    fn rollout_status(&self, intent_draining: bool) -> &'static str {
         if self.active > 0 {
-            if self.draining > 0 { "active_with_draining" } else { "active" }
-        } else if self.draining > 0 {
+            if intent_draining || self.draining > 0 { "active_with_draining" } else { "active" }
+        } else if self.draining > 0 || intent_draining {
             "draining"
         } else if self.stale > 0 {
             "stale_only"
@@ -328,18 +325,34 @@ where
         let stale_after = config.worker_stale_after_seconds.max(1);
         let mut cohorts = self.build_id_cohorts(queue, now(), stale_after).await?;
         let pending = self.pending_workflow_tasks(queue).await?;
-        // A build id with pending workflow tasks and no worker still gets a row.
+        let mut tx = self.begin().await?;
+        let rollouts = Self::rollouts(&mut tx, self.namespace.as_ref(), queue).await?;
+        tx.commit().await?;
+        let selected = super::deployments::selected_key(&rollouts).map(str::to_owned);
+        // A build id with pending workflow tasks and no worker still gets a
+        // row; one with a rollout gets its row from the rollout below.
         for (key, counts) in &pending {
             let group = if key.is_empty() { UNVERSIONED } else { key.as_str() };
-            if !cohorts.iter().any(|cohort| cohort.key == group) {
+            if !cohorts.iter().any(|cohort| cohort.key == group) && !rollouts.iter().any(|rollout| &rollout.key == key) {
                 cohorts.push(Cohort::new(group.to_owned(), counts.build_id.clone()));
+            }
+        }
+        let grouped: Vec<String> = cohorts.iter().map(|cohort| cohort.key.clone()).collect();
+        // A rollout no worker or pending task names is a row of its own.
+        for rollout in &rollouts {
+            let group = if rollout.key.is_empty() { UNVERSIONED } else { rollout.key.as_str() };
+            if !grouped.iter().any(|key| key == group) {
+                let build = (!rollout.key.is_empty()).then(|| rollout.key.clone());
+                cohorts.push(Cohort::new(group.to_owned(), build));
             }
         }
         let mut entries: Vec<(i64, String, Value)> = cohorts
             .into_iter()
             .map(|cohort| {
-                let status = cohort.rollout_status();
                 let rollout_key = cohort.build_id.as_deref().unwrap_or("");
+                let rollout = rollouts.iter().find(|rollout| rollout.key == rollout_key);
+                let intent = rollout.map_or("active", |rollout| rollout.drain_intent.as_str());
+                let status = cohort.rollout_status(intent == super::deployments::DRAINING);
                 let empty = Pending::empty(cohort.build_id.clone());
                 let counts = pending
                     .iter()
@@ -348,8 +361,11 @@ where
                 let (fingerprint_count, conflicts) = cohort.fingerprint_summary();
                 let last_heartbeat = json_time(cohort.last_heartbeat);
                 let order = last_heartbeat.as_str().unwrap_or("").to_owned();
-                let entry = json!({"build_id":cohort.build_id,"rollout_status":status,"drain_intent":"active",
-                    "drained_at":null,"promoted_at":null,"rolled_back_at":null,"new_start_selected":false,
+                let entry = json!({"build_id":cohort.build_id,"rollout_status":status,"drain_intent":intent,
+                    "drained_at":super::deployments::zulu(rollout.and_then(|rollout| rollout.drained_at)),
+                    "promoted_at":super::deployments::zulu(rollout.and_then(|rollout| rollout.promoted_at)),
+                    "rolled_back_at":super::deployments::zulu(rollout.and_then(|rollout| rollout.rolled_back_at)),
+                    "new_start_selected":selected.as_deref() == Some(rollout_key),
                     "active_worker_count":cohort.active,"draining_worker_count":cohort.draining,
                     "stale_worker_count":cohort.stale,"total_worker_count":cohort.total,
                     "runtimes":php_sorted_keys(cohort.runtimes),"sdk_versions":php_sorted_keys(cohort.sdk_versions),

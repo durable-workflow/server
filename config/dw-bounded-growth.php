@@ -5,7 +5,6 @@ use App\Support\ActivityRuntimeResultGate;
 use App\Support\ActivityTaskPollRequestStore;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\LongPollSignalStore;
-use App\Support\LongPollWaitSlotStore;
 use App\Support\NamespaceDurableStateQuota;
 use App\Support\NamespaceRequestAdmission;
 use App\Support\ProjectionDriftMetrics;
@@ -17,6 +16,7 @@ use App\Support\SharedServiceBoundaryPolicy;
 use App\Support\TaskQueueAdmission;
 use App\Support\WorkerCompatibilityHeartbeatRecorder;
 use App\Support\WorkerPollClaimGate;
+use App\Support\WorkerPollDiagnostics;
 use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowTaskFailureMetrics;
 use App\Support\WorkflowTaskPoller;
@@ -56,6 +56,15 @@ return [
     ],
 
     'cache_keys' => [
+        'worker_poll_diagnostics' => [
+            'owner' => WorkerPollDiagnostics::class,
+            'prefix' => 'server:worker-poll-diagnostic:',
+            'dimensions' => ['namespace', 'task_queue'],
+            'ttl' => 'WorkerPollDiagnostics::RETENTION_SECONDS, 900 seconds from the latest observed early disconnect.',
+            'bound' => 'One fixed-size last-observation value per namespace and task queue touched within the TTL window. No request, worker, task or attempt index is retained.',
+            'admission' => 'Only an observed negotiated poll disconnect before its configured wait writes a value; subsequent observations overwrite that queue value.',
+            'eviction' => 'Cache TTL without a sweeper. Diagnostic values never grant or revoke task authority.',
+        ],
         'polling_cache_availability_probe' => [
             'owner' => ServerPollingCache::class,
             'prefix' => 'server:polling-cache:',
@@ -135,21 +144,6 @@ return [
             'bound' => 'At most one pending key and one short replay-result key per idempotent query worker poll request in the TTL window, plus one current-marker key per namespace/task_queue/build_id/worker.',
             'admission' => 'Cache add elects a single query poll leader for each idempotent request. Leased query-task records retain the claiming request id; concurrent poll ids cannot replay that attempt and newer poll ids supersede older leaders before they can lease query work.',
             'eviction' => 'Pending keys are removed when a leader publishes a result; all pending, current-marker, and result keys also expire by TTL.',
-        ],
-
-        'long_poll_wait_slots' => [
-            'owner' => LongPollWaitSlotStore::class,
-            'prefix' => 'server:long-poll-wait-slot:',
-            'dimensions' => [
-                'server_id_hash',
-                'pool',
-                'optional_namespace_hash',
-                'slot_index',
-            ],
-            'ttl' => 'server.polling.timeout + 5 seconds, with a runtime minimum of 1 second.',
-            'bound' => 'At most server.polling.max_concurrent_waits workflow/activity wait keys per server node when set; otherwise PHP_CLI_SERVER_WORKERS minus the configured or derived HTTP and query-task reserves. Optional per-namespace worker and query-task caps add at most one namespace key for each held global slot, and each effective namespace cap is clamped to its global pool cap.',
-            'admission' => 'Empty workflow, activity, and query-task worker long-poll waits must acquire a global slot before sleeping and, when configured, a namespace slot. Namespace caps prevent one namespace from occupying the whole pool and fail closed if shared cache authority is unavailable. Query-task polls use a separate pool, and pending tasks are claimed before a poll needs an idle wait slot.',
-            'eviction' => 'Slots are released when the poll returns; TTL clears stale holders after process death.',
         ],
 
         'sqlite_worker_poll_claim_gate' => [

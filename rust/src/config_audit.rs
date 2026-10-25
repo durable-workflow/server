@@ -224,6 +224,21 @@ where
     .map_or(10, |value| value.int().max(1))
 }
 
+/// `server.update_validation`: how long an update request waits for its
+/// validator (`timeout`, at least 0, 10 when unset) and how long a worker's
+/// claim on a validation task lasts (`lease_timeout`, at least 1, 5 when
+/// unset). The broker casts each with `(int)`.
+pub fn update_validation_timeouts<F>(lookup: F) -> (i64, i64)
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let read = |name, legacy, default: i64| effective(&lookup, name, Some(legacy)).map_or(default, |value: PhpValue| value.int());
+    (
+        read("DW_UPDATE_VALIDATION_TIMEOUT", "WORKFLOW_SERVER_UPDATE_VALIDATION_TIMEOUT", 10).max(0),
+        read("DW_UPDATE_VALIDATION_LEASE_TIMEOUT", "WORKFLOW_SERVER_UPDATE_VALIDATION_LEASE_TIMEOUT", 5).max(1),
+    )
+}
+
 /// `server.worker_protocol.history_page_size_default` and `_max`: `(int)`
 /// casts of the settings, 500 and 1000 when unset. The Workflow package's
 /// bridge then keeps every page between 1 and 1000 events.
@@ -237,6 +252,44 @@ where
         read("DW_HISTORY_PAGE_SIZE_MAX", "WORKFLOW_SERVER_HISTORY_PAGE_SIZE_MAX", 1000),
     )
 }
+
+/// The raw value PHP's `EnvAuditor::jsonObject` reads: the `DW_*` name
+/// whenever it is set, even to an invalid value, else the legacy name.
+/// Laravel's `env()` conversions do not apply.
+fn selected<'a, F>(lookup: &F, name: &'a str, legacy: Option<&'a str>) -> Option<(String, &'a str)>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    lookup(name)
+        .map(|raw| (raw, name))
+        .or_else(|| legacy.and_then(|legacy| lookup(legacy).map(|raw| (raw, legacy))))
+}
+
+/// How a refusal names the variable it read.
+fn read_from(name: &str, source: &str) -> String {
+    if source == name { name.to_owned() } else { format!("{name} (read from {source})") }
+}
+
+/// `EnvAuditor::jsonObject` (Server #705): a policy map is unset, or raw text
+/// that decodes to a JSON object. Malformed JSON, `null`, booleans, numbers,
+/// strings and lists are refused instead of becoming an empty policy, so a
+/// mistyped cap cannot silently disappear. The refusal never repeats the value.
+pub fn json_object<F>(lookup: F, name: &str, legacy: Option<&str>) -> Result<serde_json::Map<String, serde_json::Value>, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let Some((raw, source)) = selected(&lookup, name, legacy) else {
+        return Ok(serde_json::Map::new());
+    };
+    match serde_json::from_str(&raw) {
+        Ok(serde_json::Value::Object(policy)) => Ok(policy),
+        _ => Err(format!("{} must contain a valid JSON object", read_from(name, source))),
+    }
+}
+
+/// Policy maps native honors. Each must still be unset or a JSON object.
+const HONORED_JSON_OBJECTS: &[(&str, &str)] =
+    &[("DW_EXTERNAL_PAYLOAD_NAMESPACE_OVERRIDES", "WORKFLOW_SERVER_EXTERNAL_PAYLOAD_NAMESPACE_OVERRIDES")];
 
 /// What a refused setting must be for native to start.
 #[derive(Clone, Copy, Debug)]
@@ -256,6 +309,9 @@ pub enum Rule {
     /// `json_decode` gives nothing. Strict settings also refuse invalid JSON,
     /// which PHP either rejects or cannot have meant.
     EmptyJson { strict: bool },
+    /// A policy map read by `EnvAuditor::jsonObject`: unset or a JSON object
+    /// (see [`json_object`]), and empty, since native has no such policy.
+    EmptyObject,
     /// The `(int)` cast equals PHP's default.
     Int(i64),
     /// `filter_var(..., FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? default`
@@ -287,6 +343,9 @@ impl Rule {
                 Ok(decoded) => !php_truthy(&decoded),
                 Err(_) => !strict,
             },
+            Self::EmptyObject => {
+                matches!(serde_json::from_str(text), Ok(serde_json::Value::Object(policy)) if policy.is_empty())
+            }
             Self::Int(expected) => value.int() == expected,
             Self::FilterBool(default) => value.filter_bool().unwrap_or(default) == default,
             Self::CastBool(default) => value.cast_bool() == default,
@@ -308,7 +367,7 @@ impl Rule {
             Self::AnyCase(value) => format!("unset or `{value}`"),
             Self::Empty => "unset or empty".into(),
             Self::NoPositiveInt => "unset, empty or not a positive number".into(),
-            Self::EmptyJson { .. } => "unset or `{}`".into(),
+            Self::EmptyJson { .. } | Self::EmptyObject => "unset or `{}`".into(),
             Self::Int(value) => format!("unset or `{value}`"),
             Self::FilterBool(value) | Self::CastBool(value) => format!("unset or {value}"),
             Self::DatabaseConnection => "unset, empty or the DB_CONNECTION name".into(),
@@ -380,6 +439,17 @@ pub fn audit(environment: &BTreeMap<String, String>) -> Report {
         let Disposition::Refused(rule, reason) = setting.disposition else {
             continue;
         };
+        if let Rule::EmptyObject = rule {
+            match json_object(lookup, setting.name, setting.legacy) {
+                Err(message) => report.refusals.push(message),
+                Ok(policy) if !policy.is_empty() => {
+                    let source = selected(&lookup, setting.name, setting.legacy).map_or(setting.name, |(_, source)| source);
+                    report.refusals.push(format!("{} must be {}: {reason}", read_from(setting.name, source), rule.expectation()));
+                }
+                Ok(_) => {}
+            }
+            continue;
+        }
         let read = |name: &'static str| lookup(name).map(|raw| (PhpValue::from_env(&raw), name));
         let primary = read(setting.name).filter(|(value, _)| *value != PhpValue::Null);
         let Some((value, source)) = primary.or_else(|| setting.legacy.and_then(read)) else {
@@ -394,6 +464,11 @@ pub fn audit(environment: &BTreeMap<String, String>) -> Report {
     }
     if let Err(message) = activity_task_lease_seconds(lookup) {
         report.refusals.push(message.into());
+    }
+    for (name, legacy) in HONORED_JSON_OBJECTS {
+        if let Err(message) = json_object(lookup, name, Some(legacy)) {
+            report.refusals.push(message);
+        }
     }
     let unknown: Vec<&str> = environment
         .keys()
@@ -447,7 +522,7 @@ const NEXUS: &str = "native cannot apply a changed Nexus operation limit";
 const PROVENANCE: &str = "native does not publish package provenance";
 const BOUNDARY: &str = "native has no service boundary policy";
 const V1: &str = "native does not run Workflow 1 workflows";
-const COMPATIBILITY: &str = "native does not route work by worker compatibility markers";
+const COMPATIBILITY: &str = "native pins runs to registered worker build ids only; it has no server-wide compatibility markers";
 const PINNING: &str = "native always pins runs to their recorded workflow definition";
 const STRUCTURAL: &str = "native cannot apply a changed structural limit";
 const REPAIR: &str = "native cannot apply changed task repair timing";
@@ -458,7 +533,7 @@ const STORAGE_CONNECTION: &str = "native keeps workflow tables on its one databa
 const LEGACY_SCHEDULE_TIMEZONE: &str = "native does not convert pre-UTC schedule timestamps";
 
 use Disposition::{Honored, Ignored, Refused};
-use Rule::{AnyCase, CastBool, DatabaseConnection, Empty, EmptyJson, Exact, FilterBool, Int, NoPositiveInt, NotAnyCase, NotIn};
+use Rule::{AnyCase, CastBool, DatabaseConnection, Empty, EmptyJson, EmptyObject, Exact, FilterBool, Int, NoPositiveInt, NotAnyCase, NotIn};
 
 /// Settings PHP reads that its contract does not list. PHP's audit warns about
 /// them as unknown names; native also refuses values it cannot honor.
@@ -519,8 +594,8 @@ pub const SETTINGS: &[Setting] = &[
     Setting { name: "DW_MAX_NEXUS_OPERATIONS_PER_CALLER", legacy: Some("WORKFLOW_MAX_NEXUS_OPERATIONS_PER_CALLER"), disposition: Refused(Int(200), NEXUS) },
     Setting { name: "DW_MAX_OPERATION_NAME_LENGTH", legacy: Some("WORKFLOW_MAX_OPERATION_NAME_LENGTH"), disposition: Refused(Int(256), NEXUS) },
     Setting { name: "DW_MAX_PAYLOAD_BYTES", legacy: Some("WORKFLOW_MAX_PAYLOAD_BYTES"), disposition: Honored },
-    Setting { name: "DW_MAX_PENDING_ACTIVITIES", legacy: Some("WORKFLOW_MAX_PENDING_ACTIVITIES"), disposition: Ignored },
-    Setting { name: "DW_MAX_PENDING_CHILDREN", legacy: Some("WORKFLOW_MAX_PENDING_CHILDREN"), disposition: Ignored },
+    Setting { name: "DW_MAX_PENDING_ACTIVITIES", legacy: Some("WORKFLOW_MAX_PENDING_ACTIVITIES"), disposition: Honored },
+    Setting { name: "DW_MAX_PENDING_CHILDREN", legacy: Some("WORKFLOW_MAX_PENDING_CHILDREN"), disposition: Honored },
     Setting { name: "DW_MAX_SEARCH_ATTRIBUTES", legacy: Some("WORKFLOW_MAX_SEARCH_ATTRIBUTES"), disposition: Honored },
     Setting { name: "DW_MAX_SEARCH_ATTRIBUTE_KEY_LENGTH", legacy: Some("WORKFLOW_MAX_SEARCH_ATTRIBUTE_KEY_LENGTH"), disposition: Honored },
     Setting { name: "DW_MAX_SEARCH_ATTRIBUTE_VALUE_BYTES", legacy: Some("WORKFLOW_MAX_SEARCH_ATTRIBUTE_VALUE_BYTES"), disposition: Honored },
@@ -530,10 +605,10 @@ pub const SETTINGS: &[Setting] = &[
     Setting { name: "DW_METRICS_PROMETHEUS_WORKFLOW_SERIES_LIMIT", legacy: Some("WORKFLOW_SERVER_METRICS_PROMETHEUS_WORKFLOW_SERIES_LIMIT"), disposition: Refused(Int(100), METRICS) },
     Setting { name: "DW_METRICS_WORKFLOW_TASK_FAILURE_TYPE_LIMIT", legacy: Some("WORKFLOW_SERVER_METRICS_WORKFLOW_TASK_FAILURE_TYPE_LIMIT"), disposition: Refused(Int(20), METRICS) },
     Setting { name: "DW_MODE", legacy: Some("WORKFLOW_SERVER_MODE"), disposition: Refused(Exact(&["service"]), TOPOLOGY) },
-    Setting { name: "DW_NAMESPACE_ADMISSION_OVERRIDES", legacy: Some("WORKFLOW_SERVER_NAMESPACE_ADMISSION_OVERRIDES"), disposition: Refused(EmptyJson { strict: false }, NAMESPACE_ADMISSION) },
-    Setting { name: "DW_NAMESPACE_DURABLE_HARD_LIMITS", legacy: Some("WORKFLOW_SERVER_NAMESPACE_DURABLE_HARD_LIMITS"), disposition: Refused(EmptyJson { strict: true }, DURABLE_LIMITS) },
-    Setting { name: "DW_NAMESPACE_DURABLE_LIMITS", legacy: Some("WORKFLOW_SERVER_NAMESPACE_DURABLE_LIMITS"), disposition: Refused(EmptyJson { strict: true }, DURABLE_LIMITS) },
-    Setting { name: "DW_NAMESPACE_DURABLE_OVERRIDES", legacy: Some("WORKFLOW_SERVER_NAMESPACE_DURABLE_OVERRIDES"), disposition: Refused(EmptyJson { strict: true }, DURABLE_LIMITS) },
+    Setting { name: "DW_NAMESPACE_ADMISSION_OVERRIDES", legacy: Some("WORKFLOW_SERVER_NAMESPACE_ADMISSION_OVERRIDES"), disposition: Refused(EmptyObject, NAMESPACE_ADMISSION) },
+    Setting { name: "DW_NAMESPACE_DURABLE_HARD_LIMITS", legacy: Some("WORKFLOW_SERVER_NAMESPACE_DURABLE_HARD_LIMITS"), disposition: Refused(EmptyObject, DURABLE_LIMITS) },
+    Setting { name: "DW_NAMESPACE_DURABLE_LIMITS", legacy: Some("WORKFLOW_SERVER_NAMESPACE_DURABLE_LIMITS"), disposition: Refused(EmptyObject, DURABLE_LIMITS) },
+    Setting { name: "DW_NAMESPACE_DURABLE_OVERRIDES", legacy: Some("WORKFLOW_SERVER_NAMESPACE_DURABLE_OVERRIDES"), disposition: Refused(EmptyObject, DURABLE_LIMITS) },
     Setting { name: "DW_NAMESPACE_HARD_MAX_CONCURRENT_REQUESTS", legacy: Some("WORKFLOW_SERVER_NAMESPACE_HARD_MAX_CONCURRENT_REQUESTS"), disposition: Refused(Empty, NAMESPACE_ADMISSION) },
     Setting { name: "DW_NAMESPACE_HARD_MAX_REQUESTS_PER_MINUTE", legacy: Some("WORKFLOW_SERVER_NAMESPACE_HARD_MAX_REQUESTS_PER_MINUTE"), disposition: Refused(Empty, NAMESPACE_ADMISSION) },
     Setting { name: "DW_NAMESPACE_MAX_CONCURRENT_REQUESTS", legacy: Some("WORKFLOW_SERVER_NAMESPACE_MAX_CONCURRENT_REQUESTS"), disposition: Refused(Empty, NAMESPACE_ADMISSION) },
@@ -554,7 +629,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting { name: "DW_QUERY_TASK_TTL_SECONDS", legacy: Some("WORKFLOW_SERVER_QUERY_TASK_TTL_SECONDS"), disposition: Honored },
     Setting { name: "DW_RUNTIME_CREDENTIALS_ENABLED", legacy: Some("WORKFLOW_SERVER_RUNTIME_CREDENTIALS_ENABLED"), disposition: Honored },
     Setting { name: "DW_SERIALIZER", legacy: Some("WORKFLOW_SERIALIZER"), disposition: Refused(Exact(&["", "avro"]), SERIALIZER) },
-    Setting { name: "DW_SERVER_ID", legacy: Some("WORKFLOW_SERVER_ID"), disposition: Ignored },
+    Setting { name: "DW_SERVER_ID", legacy: Some("WORKFLOW_SERVER_ID"), disposition: Honored },
     Setting { name: "DW_SERVER_KEY", legacy: None, disposition: Honored },
     Setting { name: "DW_SERVER_PROCESS_CLASS", legacy: Some("WORKFLOW_SERVER_PROCESS_CLASS"), disposition: Refused(NotIn(&["scheduler_node", "worker_node"]), TOPOLOGY) },
     Setting { name: "DW_SERVER_TOPOLOGY_SHAPE", legacy: Some("WORKFLOW_SERVER_TOPOLOGY_SHAPE"), disposition: Refused(NotIn(&["embedded", "split_control_execution"]), TOPOLOGY) },
@@ -573,10 +648,10 @@ pub const SETTINGS: &[Setting] = &[
     Setting { name: "DW_STORAGE_ADMISSION_MAX_AGE_SECONDS", legacy: None, disposition: Ignored },
     Setting { name: "DW_STORAGE_ADMISSION_SOURCE", legacy: None, disposition: Refused(Empty, STORAGE_ADMISSION) },
     Setting { name: "DW_TASK_DISPATCH_MODE", legacy: Some("WORKFLOW_V2_TASK_DISPATCH_MODE"), disposition: Refused(Exact(&["poll"]), POLL_DISPATCH) },
-    Setting { name: "DW_TASK_QUEUE_ADMISSION_OVERRIDES", legacy: Some("WORKFLOW_SERVER_TASK_QUEUE_ADMISSION_OVERRIDES"), disposition: Refused(EmptyJson { strict: false }, TASK_ADMISSION) },
+    Setting { name: "DW_TASK_QUEUE_ADMISSION_OVERRIDES", legacy: Some("WORKFLOW_SERVER_TASK_QUEUE_ADMISSION_OVERRIDES"), disposition: Refused(EmptyObject, TASK_ADMISSION) },
     Setting { name: "DW_TRUST_FORWARDED_ATTRIBUTION_HEADERS", legacy: Some("WORKFLOW_SERVER_TRUST_FORWARDED_ATTRIBUTION_HEADERS"), disposition: Refused(FilterBool(false), FORWARDED) },
-    Setting { name: "DW_UPDATE_VALIDATION_LEASE_TIMEOUT", legacy: Some("WORKFLOW_SERVER_UPDATE_VALIDATION_LEASE_TIMEOUT"), disposition: Ignored },
-    Setting { name: "DW_UPDATE_VALIDATION_TIMEOUT", legacy: Some("WORKFLOW_SERVER_UPDATE_VALIDATION_TIMEOUT"), disposition: Ignored },
+    Setting { name: "DW_UPDATE_VALIDATION_LEASE_TIMEOUT", legacy: Some("WORKFLOW_SERVER_UPDATE_VALIDATION_LEASE_TIMEOUT"), disposition: Honored },
+    Setting { name: "DW_UPDATE_VALIDATION_TIMEOUT", legacy: Some("WORKFLOW_SERVER_UPDATE_VALIDATION_TIMEOUT"), disposition: Honored },
     Setting { name: "DW_V1_ENABLED", legacy: Some("WORKFLOW_V1_ENABLED"), disposition: Refused(CastBool(false), V1) },
     Setting { name: "DW_V2_CACHE_VALIDATION_MODE", legacy: Some("WORKFLOW_V2_CACHE_VALIDATION_MODE"), disposition: Ignored },
     Setting { name: "DW_V2_COMPATIBILITY_HEARTBEAT_TTL", legacy: Some("WORKFLOW_V2_COMPATIBILITY_HEARTBEAT_TTL"), disposition: Refused(Int(30), COMPATIBILITY) },
@@ -591,12 +666,12 @@ pub const SETTINGS: &[Setting] = &[
     Setting { name: "DW_V2_LIMIT_COMMAND_BATCH_SIZE", legacy: Some("WORKFLOW_V2_LIMIT_COMMAND_BATCH_SIZE"), disposition: Refused(Int(1000), STRUCTURAL) },
     Setting { name: "DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE", legacy: Some("WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_SIZE"), disposition: Ignored },
     Setting { name: "DW_V2_LIMIT_MEMO_SIZE_BYTES", legacy: Some("WORKFLOW_V2_LIMIT_MEMO_SIZE_BYTES"), disposition: Honored },
-    Setting { name: "DW_V2_LIMIT_PAYLOAD_SIZE_BYTES", legacy: Some("WORKFLOW_V2_LIMIT_PAYLOAD_SIZE_BYTES"), disposition: Refused(Int(2097152), STRUCTURAL) },
+    Setting { name: "DW_V2_LIMIT_PAYLOAD_SIZE_BYTES", legacy: Some("WORKFLOW_V2_LIMIT_PAYLOAD_SIZE_BYTES"), disposition: Honored },
     Setting { name: "DW_V2_LIMIT_PENDING_ACTIVITIES", legacy: Some("WORKFLOW_V2_LIMIT_PENDING_ACTIVITIES"), disposition: Refused(Int(2000), STRUCTURAL) },
     Setting { name: "DW_V2_LIMIT_PENDING_CHILDREN", legacy: Some("WORKFLOW_V2_LIMIT_PENDING_CHILDREN"), disposition: Ignored },
-    Setting { name: "DW_V2_LIMIT_PENDING_SIGNALS", legacy: Some("WORKFLOW_V2_LIMIT_PENDING_SIGNALS"), disposition: Refused(Int(5000), STRUCTURAL) },
+    Setting { name: "DW_V2_LIMIT_PENDING_SIGNALS", legacy: Some("WORKFLOW_V2_LIMIT_PENDING_SIGNALS"), disposition: Honored },
     Setting { name: "DW_V2_LIMIT_PENDING_TIMERS", legacy: Some("WORKFLOW_V2_LIMIT_PENDING_TIMERS"), disposition: Ignored },
-    Setting { name: "DW_V2_LIMIT_PENDING_UPDATES", legacy: Some("WORKFLOW_V2_LIMIT_PENDING_UPDATES"), disposition: Refused(Int(500), STRUCTURAL) },
+    Setting { name: "DW_V2_LIMIT_PENDING_UPDATES", legacy: Some("WORKFLOW_V2_LIMIT_PENDING_UPDATES"), disposition: Honored },
     Setting { name: "DW_V2_LIMIT_SEARCH_ATTRIBUTE_SIZE_BYTES", legacy: Some("WORKFLOW_V2_LIMIT_SEARCH_ATTRIBUTE_SIZE_BYTES"), disposition: Ignored },
     Setting { name: "DW_V2_LIMIT_WARNING_THRESHOLD_PERCENT", legacy: Some("WORKFLOW_V2_LIMIT_WARNING_THRESHOLD_PERCENT"), disposition: Ignored },
     Setting { name: "DW_V2_MATCHING_ROLE_QUEUE_WAKE", legacy: Some("WORKFLOW_V2_MATCHING_ROLE_QUEUE_WAKE"), disposition: Ignored },
@@ -809,6 +884,18 @@ mod tests {
     }
 
     #[test]
+    fn update_validation_timeouts_are_read_like_the_broker() {
+        let read = |values: &[(&str, &str)]| {
+            let environment = environment(values);
+            update_validation_timeouts(|key| environment.get(key).cloned())
+        };
+        assert_eq!(read(&[]), (10, 5));
+        assert_eq!(read(&[("DW_UPDATE_VALIDATION_TIMEOUT", "3"), ("DW_UPDATE_VALIDATION_LEASE_TIMEOUT", "2")]), (3, 2));
+        assert_eq!(read(&[("WORKFLOW_SERVER_UPDATE_VALIDATION_TIMEOUT", "4")]), (4, 5));
+        assert_eq!(read(&[("DW_UPDATE_VALIDATION_TIMEOUT", "-1"), ("DW_UPDATE_VALIDATION_LEASE_TIMEOUT", "0")]), (0, 1));
+    }
+
+    #[test]
     fn update_wait_is_read_like_the_package() {
         let read = |values: &[(&str, &str)]| {
             let environment = environment(values);
@@ -875,13 +962,15 @@ mod tests {
             &[("DW_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_QUEUE", "0")],
             &[("DW_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_QUEUE", "true")],
             &[("DW_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_QUEUE", "none")],
-            &[("DW_TASK_QUEUE_ADMISSION_OVERRIDES", "not json")],
-            &[("DW_TASK_QUEUE_ADMISSION_OVERRIDES", "[]")],
+            &[("DW_TASK_QUEUE_ADMISSION_OVERRIDES", "{}")],
+            &[("DW_TASK_QUEUE_ADMISSION_OVERRIDES", " \n{ } ")],
+            &[("WORKFLOW_SERVER_NAMESPACE_ADMISSION_OVERRIDES", "{}")],
+            &[("DW_EXTERNAL_PAYLOAD_NAMESPACE_OVERRIDES", "{\"billing\":{\"max_bytes\":5}}")],
             &[("DW_V2_FLEET_VALIDATION_MODE", "warn")],
             &[("DW_V2_PIN_TO_RECORDED_FINGERPRINT", "no")],
             &[("DW_SERIALIZER", "")],
             &[("DW_STORAGE_CONNECTION", "pgsql"), ("DB_CONNECTION", "pgsql")],
-            // Ignored settings take any value.
+            // Ignored and reported settings take any value.
             &[("DW_MAX_PENDING_ACTIVITIES", "10"), ("DW_COMPRESSION_ENABLED", "false")],
         ];
         for values in accepted {
@@ -924,6 +1013,57 @@ mod tests {
             assert_eq!(refusals.len(), 1, "{values:?}: {refusals:?}");
             assert!(refusals[0].starts_with(expected) || refusals[0].ends_with(expected), "{values:?}: {}", refusals[0]);
         }
+    }
+
+    #[test]
+    fn policy_maps_must_be_json_objects_like_php_705() {
+        // The six maps PHP reads with `EnvAuditor::jsonObject`.
+        let maps = [
+            ("DW_TASK_QUEUE_ADMISSION_OVERRIDES", "WORKFLOW_SERVER_TASK_QUEUE_ADMISSION_OVERRIDES"),
+            ("DW_NAMESPACE_ADMISSION_OVERRIDES", "WORKFLOW_SERVER_NAMESPACE_ADMISSION_OVERRIDES"),
+            ("DW_NAMESPACE_DURABLE_LIMITS", "WORKFLOW_SERVER_NAMESPACE_DURABLE_LIMITS"),
+            ("DW_NAMESPACE_DURABLE_HARD_LIMITS", "WORKFLOW_SERVER_NAMESPACE_DURABLE_HARD_LIMITS"),
+            ("DW_NAMESPACE_DURABLE_OVERRIDES", "WORKFLOW_SERVER_NAMESPACE_DURABLE_OVERRIDES"),
+            ("DW_EXTERNAL_PAYLOAD_NAMESPACE_OVERRIDES", "WORKFLOW_SERVER_EXTERNAL_PAYLOAD_NAMESPACE_OVERRIDES"),
+        ];
+        let invalid = [
+            "", " ", "not json", "{", "{\"cap\":1", "null", "(null)", "empty", "true", "false", "0", "1", "[]",
+            "[{\"cap\":1}]", "\"{}\"", "'{}'", "\"text\"",
+        ];
+        for (name, legacy) in maps {
+            for value in ["{}", " \n\t{}\r\n"] {
+                assert_eq!(refusals(&[(name, value)]), Vec::<String>::new(), "{name}={value:?}");
+                assert_eq!(refusals(&[(legacy, value)]), Vec::<String>::new(), "{legacy}={value:?}");
+            }
+            for value in invalid {
+                assert_eq!(refusals(&[(name, value)]), [format!("{name} must contain a valid JSON object")], "{name}={value:?}");
+                assert_eq!(
+                    refusals(&[(legacy, value)]),
+                    [format!("{name} (read from {legacy}) must contain a valid JSON object")],
+                    "{legacy}={value:?}"
+                );
+                // A set DW name wins even when it is invalid and the legacy
+                // value is valid.
+                assert_eq!(refusals(&[(name, value), (legacy, "{}")]).len(), 1, "{name}={value:?}");
+            }
+            // A valid DW name hides an invalid legacy value.
+            assert_eq!(refusals(&[(name, "{}"), (legacy, "not json")]), Vec::<String>::new(), "{name}");
+        }
+        // Native honors the external payload overrides; it refuses the other
+        // five unless they are empty, as before.
+        let policy = "{\"billing\":{\"max_bytes\":5}}";
+        for (name, legacy) in &maps[..5] {
+            assert_eq!(refusals(&[(name, policy)]).len(), 1, "{name}");
+            assert!(refusals(&[(legacy, policy)])[0].starts_with(&format!("{name} (read from {legacy}) must be unset or `{{}}`")));
+        }
+        assert_eq!(refusals(&[(maps[5].0, policy)]), Vec::<String>::new());
+        assert_eq!(
+            json_object(|_| Some(policy.to_owned()), maps[5].0, Some(maps[5].1)).unwrap()["billing"]["max_bytes"],
+            5
+        );
+        // The refusal never repeats the value.
+        let secret = "{\"secret-tenant-value\":";
+        assert!(refusals(&[(maps[5].0, secret)]).iter().all(|refusal| !refusal.contains("secret-tenant-value")));
     }
 
     #[test]

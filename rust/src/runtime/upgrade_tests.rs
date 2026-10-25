@@ -25,12 +25,15 @@ async fn php_layout() -> (tempfile::TempDir, String) {
     sqlx::raw_sql(concat!(
         include_str!("../../migrations/sqlite/0003_full_schema.sql"),
         "\n",
-        include_str!("../../migrations/sqlite/0004_worker_incarnations.sql")
+        include_str!("../../migrations/sqlite/0004_worker_incarnations.sql"),
+        "\n",
+        include_str!("../../migrations/sqlite/0005_worker_session_holders.sql")
     ))
     .execute(&mut connection)
     .await
     .unwrap();
     for table in [
+        "dw_worker_session_holders",
         "dw_worker_registration_incarnations",
         "dw_task_completions",
         "dw_poll_receipts",
@@ -298,6 +301,7 @@ async fn inspection_preserves_source_bytes_reports_counts_and_never_grants_takeo
         inspected["schedule_inspection"],
         serde_json::json!({"schedules":0,"unsupported":0,"reasons":{}})
     );
+    assert_eq!(inspected["storage_inspection"]["unsupported"], 0);
     assert_eq!(inspected["catalog_sha256"].as_str().unwrap().len(), 64);
     for flag in [
         "source_mutated",
@@ -943,7 +947,7 @@ async fn takeover_converts_a_php_297_database_that_native_then_opens() {
         .fetch_one(&mut connection)
         .await
         .unwrap();
-    assert_eq!(marker, ("rust-development".to_owned(), 4));
+    assert_eq!(marker, ("rust-development".to_owned(), super::super::schema::VERSION));
     connection.close().await.unwrap();
 }
 
@@ -1070,6 +1074,12 @@ async fn takeover_refusals_leave_the_php_database_unchanged() {
             "INSERT INTO workflow_messages(workflow_instance_id,direction,channel,stream_key,sequence) VALUES ('w','inbound','c','k',1)",
             "upgrade_source_message_streams_unsupported",
         ),
+        // A namespace whose uploads would all be refused: native serves
+        // only the local driver.
+        (
+            "INSERT INTO workflow_namespaces(name,status,external_payload_storage) VALUES ('payments','active','{\"driver\":\"s3\",\"config\":{\"bucket\":\"b\"}}')",
+            "upgrade_source_external_payload_storage_unsupported",
+        ),
         // Schedules native would describe without their search attributes,
         // or start outside their Laravel queue routing.
         (
@@ -1182,6 +1192,32 @@ async fn prepare_leaves_a_rollback_journal_source_byte_identical() {
     assert_eq!(report["previous_journal_mode"], "delete", "{report}");
     assert_eq!(report["source_mutated"], false);
     assert_eq!(std::fs::read(&path).unwrap(), original);
+}
+
+#[tokio::test]
+async fn inspection_counts_namespace_storage_native_cannot_serve_without_naming_it() {
+    let (_directory, path) = php297_layout().await;
+    for statement in [
+        "INSERT INTO workflow_namespaces(name,status,external_payload_storage) VALUES ('private-payments','active','{\"driver\":\"s3\",\"config\":{\"bucket\":\"private-bucket\"}}')",
+        "INSERT INTO workflow_namespaces(name,status,external_payload_storage) VALUES ('archive','active','{\"driver\":\"gcs\",\"enabled\":false}')",
+        "INSERT INTO workflow_namespaces(name,status,external_payload_storage) VALUES ('uploads','active','{\"driver\":\"local\",\"threshold_bytes\":16}')",
+        "INSERT INTO workflow_namespaces(name,status) VALUES ('plain','active')",
+    ] {
+        mutate(&path, statement).await;
+    }
+    let before = std::fs::read(&path).unwrap();
+    let inspected = inspect_sqlite(&path).await.unwrap();
+    assert_eq!(inspected["status"], "unqualified");
+    // Only the enabled S3 policy: a disabled policy and the local driver
+    // serve the same uploads under native as under PHP.
+    assert_eq!(
+        inspected["storage_inspection"],
+        serde_json::json!({"namespaces":inspected["table_rows"]["workflow_namespaces"],"unsupported":1,
+            "reasons":{"external_payload_storage_driver_unsupported":1}})
+    );
+    let text = inspected.to_string();
+    assert!(!text.contains("private-payments") && !text.contains("private-bucket"));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
 }
 
 #[tokio::test]

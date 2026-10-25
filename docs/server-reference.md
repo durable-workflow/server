@@ -62,6 +62,31 @@ curl -X POST http://localhost:8080/api/worker/register \
 Use Redis or another shared cache backend for multi-node deployments. The file
 cache default is intentionally scoped to the one-container SQLite quickstart.
 
+#### SQLite mount identity
+
+Mount the SQLite database's parent directory so the HTTP process can write both
+the database and its journal files. For a custom `DB_DATABASE`, the nearest
+existing parent must also allow that identity to create any missing directories.
+
+Root startup delegates database creation and permission checks to
+`APACHE_RUN_USER` and `APACHE_RUN_GROUP` (both default to `www-data`). Names and
+Apache's numeric `#UID` / `#GID` form are supported. Nonroot startup uses its
+current UID/GID; keep bootstrap, HTTP and other SQLite roles aligned. The image
+resolves identities at runtime rather than assuming a host UID.
+
+New files honor the caller's umask. Existing database bytes, ownership and modes
+are preserved. An incompatible file or parent fails startup with the required
+UID/GID and a mount-permission explanation, before configuration caching or
+migrations. Correct the mount's intended permissions before retrying; startup
+does not repair an existing operator-owned file's permissions.
+
+Images affected by [#706](https://github.com/durable-workflow/server/issues/706)
+can instead create a fresh custom file as root and fail on the first HTTP write.
+Use an image containing that fix or align all roles to the actual HTTP identity.
+This database contract is separate from
+[read-only root filesystem support](https://github.com/durable-workflow/server/issues/694),
+which also requires writable Laravel and Apache runtime paths.
+
 ### Official Image + Compose
 
 Use this path when you want a source-free multi-container stack backed by MySQL
@@ -1438,6 +1463,8 @@ The production image defaults to `DB_CONNECTION=sqlite`,
 services. The entrypoint creates the SQLite file when a fresh volume is mounted.
 `server-bootstrap` creates the database queue schema, and the queue-worker
 process shown above consumes the persisted timer jobs.
+For custom paths and existing operator databases, follow the
+[SQLite mount identity contract](#sqlite-mount-identity).
 SQLite uses WAL journal mode and a 5000 ms busy timeout by default. The server
 also serializes SQLite worker poll claim probes through the polling cache so
 concurrent PHP/Python workers in the single-container quickstart do not race the
@@ -1447,7 +1474,7 @@ multi-worker deployments should use MySQL/PostgreSQL with Redis.
 
 The standalone server image also reserves Apache request-worker capacity for
 health and control-plane routes. Empty workflow and activity worker long-polls
-acquire a short-lived wait slot before sleeping; once the node-local slot cap
+acquire a process-owned wait slot before sleeping; once the node-local slot cap
 is reached, additional idle polls receive `Retry-After: 1` instead of entering
 a tight empty-poll loop or holding another PHP server worker for the full poll
 timeout. Published Python, Rust, PHP, and other supported workers receive a
@@ -1466,6 +1493,18 @@ before any wait slot or backpressure response is required. Size
 the Apache request pool and the two explicit long-poll caps for expected
 concurrent workflow, activity, and query workers when building a larger
 standalone deployment.
+
+Wait-slot limits are per API node. Every API node must keep its own unique
+`DW_SERVER_ID` and a writable `DW_POLLING_CACHE_PATH`, including deployments
+using Redis or database polling caches. One local admission lock enforces the
+global and optional namespace caps together; a held file descriptor owns each
+wait on a local filesystem supporting advisory locks. All request processes
+on that node must share this directory. Normal request cleanup or process death
+releases capacity without
+waiting for a cache TTL, and one node cannot release another node's live waits.
+Unavailable local lock storage refuses an idle wait rather than exceeding its
+configured limits. Immediate task claims still happen before wait admission;
+a wait slot does not grant a task lease.
 
 Across Compose, plain Docker, and Kubernetes, the supported bootstrap contract
 is the same: run the image's `server-bootstrap` command once before starting the
@@ -1741,6 +1780,16 @@ fine; renames require a major bump with the old name alias-honored for
 one major. Set `DW_ENV_AUDIT_STRICT=1` to fail container boot when the
 audit finds drift.
 
+Admission policy values must be JSON objects. The queue admission, namespace
+request, namespace durable-state and external-payload namespace maps reject
+malformed JSON, arrays, scalars and explicit `null` during configuration loading
+and `config:cache`, regardless of `DW_ENV_AUDIT_STRICT`. An omitted setting or
+`{}` retains its empty-map default. A supplied `DW_*` value takes precedence
+over its legacy alias even when it is invalid; an invalid primary does not
+silently select the legacy policy. The error names the selected variable
+without printing its value. Correct that variable, rebuild cached configuration
+and restart every role that uses it.
+
 #### Environment variable reference
 
 The full table below is generated from `config/dw-contract.php` and lists
@@ -1779,7 +1828,7 @@ every operator-facing variable the server honors.
 | `DW_WORKER_POLL_TIMEOUT` | `30` | Seconds the server holds a poll open. |
 | `DW_WORKER_POLL_INTERVAL_MS` | `1000` | Internal scan interval during an open poll. |
 | `DW_WORKER_POLL_SIGNAL_CHECK_INTERVAL_MS` | `100` | Wake-signal check interval during an open poll. |
-| `DW_POLLING_CACHE_PATH` | `storage/.../server-polling/<APP_ENV>` | Directory for worker-poll coordination state. |
+| `DW_POLLING_CACHE_PATH` | `storage/.../server-polling/<APP_ENV>` | Writable local coordination and wait-lock directory, also required with Redis or database polling caches. |
 | `DW_WAKE_SIGNAL_TTL_SECONDS` | `max(DW_WORKER_POLL_TIMEOUT + 5, 60)` | TTL for per-queue wake signals. |
 | `DW_WORKER_LONG_POLL_MAX_CONCURRENT` | (unset; derived for PHP CLI server) | Optional cap for concurrent held workflow/activity worker long-poll waits on this server node. Query-task polls use a separate wait budget so live workflow queries are not starved by idle workflow/activity waits. |
 | `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` | `2` | PHP CLI server workers reserved for health and control-plane requests when deriving the workflow/activity long-poll wait cap. |
@@ -1893,6 +1942,10 @@ The image's default command runs Apache with mod_php, two prefork request
 processes ready at startup, up to four idle spare processes, and a maximum of
 24 concurrent request processes. Keeping the eager and idle pools small leaves
 memory for Laravel requests while retaining burst capacity.
+HTTP keep-alive is disabled in this prefork configuration. Each completed
+response releases its connection instead of reserving a PHP process between
+requests. Clients reconnect for their next request; an active long poll still
+holds its connection until its normal response or deadline.
 A workflow query may hold one process while it waits for a worker response;
 worker heartbeats, query-task polls, completions, and control-plane requests
 continue to enter Laravel through other processes.

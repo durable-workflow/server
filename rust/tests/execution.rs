@@ -87,10 +87,16 @@ mod rejected_updates;
 mod continue_messages;
 #[path = "execution/update_wait.rs"]
 mod update_wait;
+#[path = "execution/update_validation.rs"]
+mod update_validation;
+#[path = "execution/keyless_condition_waits.rs"]
+mod keyless_condition_waits;
 #[path = "execution/payload_limits.rs"]
 mod payload_limits;
 #[path = "execution/start_definition.rs"]
 mod start_definition;
+#[path = "execution/payload_discovery.rs"]
+mod payload_discovery;
 #[path = "execution/signal_rejection.rs"]
 mod signal_rejection;
 #[path = "execution/cooperative_waits.rs"]
@@ -109,6 +115,10 @@ mod parent_close_policies;
 mod history_pages;
 #[path = "execution/declared_signals.rs"]
 mod declared_signals;
+#[path = "execution/worker_history_presentation.rs"]
+mod worker_history_presentation;
+#[path = "execution/message_streams.rs"]
+mod message_streams;
 #[path = "execution/poll_waits.rs"]
 mod poll_waits;
 #[path = "execution/child_cascade.rs"]
@@ -133,6 +143,12 @@ mod version_markers;
 #[path = "execution/activity_lease_renewal.rs"]
 mod activity_lease_renewal;
 
+#[path = "execution/system_metrics.rs"]
+mod system_metrics;
+
+#[path = "execution/prometheus_metrics.rs"]
+mod prometheus_metrics;
+
 #[path = "execution/activity_deadlines.rs"]
 mod activity_deadlines;
 
@@ -152,6 +168,32 @@ mod workflow_repair;
 mod history_retention;
 #[path = "execution/repair_status.rs"]
 mod repair_status;
+#[path = "execution/repair_pass.rs"]
+mod repair_pass;
+#[path = "execution/activity_lease_expiry.rs"]
+mod activity_lease_expiry;
+#[path = "execution/structural_limits.rs"]
+mod structural_limits;
+#[path = "execution/standalone_activities.rs"]
+mod standalone_activities;
+#[path = "execution/archive.rs"]
+mod archive;
+#[path = "execution/redrive.rs"]
+mod redrive;
+#[path = "execution/build_pins.rs"]
+mod build_pins;
+#[path = "execution/deployments.rs"]
+mod deployments;
+#[path = "execution/priority_fairness.rs"]
+mod priority_fairness;
+#[path = "execution/completion_rules.rs"]
+mod completion_rules;
+#[path = "execution/command_batches.rs"]
+mod command_batches;
+#[path = "execution/update_routing.rs"]
+mod update_routing;
+#[path = "execution/command_payloads.rs"]
+mod command_payloads;
 #[path = "execution/activity_timeout_pass.rs"]
 mod activity_timeout_pass;
 #[path = "execution/start_request.rs"]
@@ -250,6 +292,20 @@ mod external_payloads;
 
 #[path = "execution/trace_carriers.rs"]
 mod trace_carriers;
+
+#[path = "execution/workflow_poll_requests.rs"]
+mod workflow_poll_requests;
+
+#[path = "execution/worker_poll_fence.rs"]
+mod worker_poll_fence;
+#[path = "execution/activity_cancellation_ack.rs"]
+mod activity_cancellation_ack;
+
+#[path = "execution/route_coverage.rs"]
+mod route_coverage;
+
+#[path = "execution/worker_sessions.rs"]
+mod worker_sessions;
 
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
@@ -1364,6 +1420,10 @@ async fn child_lease_expiry_and_fresh_pool_recovery_preserve_original_parent_res
         .unwrap_or_default()
         + std::time::Duration::from_millis(100);
     tokio::time::sleep(delay).await;
+    // The lease outlasts the 30-second stale window; a registration that has
+    // not heartbeated since cannot poll (`WorkerPollFence::isFresh`).
+    let (status, body) = request(&app, "POST", "/api/worker/heartbeat", json!({"worker_id":"replacement"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         finish_task(&app, &old, commands.clone()).await.0,
         StatusCode::CONFLICT
@@ -1888,32 +1948,21 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
             StatusCode::CONFLICT
         );
     }
+    // Published PHP's `validateUpdateCommands` refuses another update in a
+    // task that carries its own.
     let mut wrong_update = original.clone();
     wrong_update["commands"][0]["update_id"] = json!("another-update");
-    assert_eq!(
-        request(&a, "POST", &complete_path, wrong_update).await.1["reason"],
-        "update_task_mismatch"
-    );
+    let refused = request(&a, "POST", &complete_path, wrong_update).await;
+    assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
+    assert_eq!(refused.1["reason"], "invalid_commands", "{}", refused.1);
+    assert_eq!(refused.1["recorded"], false, "{}", refused.1);
+    // Published PHP refuses an undecodable result before it applies the
+    // update, naming the field.
     let mut malformed = original.clone();
     malformed["commands"][0]["result"]["blob"] = json!("not-avro");
-    assert_eq!(
-        request(&a, "POST", &complete_path, malformed).await.1["reason"],
-        "invalid_update_result"
-    );
-    assert_eq!(
-        request(
-            &a,
-            "POST",
-            &complete_path,
-            completion(
-                &old,
-                json!([{"type":"complete_workflow","result":envelope(Payload::Null)}])
-            )
-        )
-        .await
-        .1["reason"],
-        "update_task_mismatch"
-    );
+    let refused = request(&a, "POST", &complete_path, malformed).await.1;
+    assert_eq!(refused["reason"], "validation_failed", "{refused}");
+    assert!(refused["errors"]["commands.0.result.blob"].is_array(), "{refused}");
     assert_eq!(
         request(&a, "GET", &history_path, Value::Null).await.1,
         before
@@ -2328,7 +2377,7 @@ async fn failed_updates_preserve_terminal_identity_and_parent_continuation_after
 }
 
 #[tokio::test]
-async fn updates_bound_durable_inventory_and_preserve_accepted_work_after_wait_timeout() {
+async fn updates_have_no_lifetime_cap_and_preserve_accepted_work_after_wait_timeout() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
@@ -2373,15 +2422,6 @@ async fn updates_bound_durable_inventory_and_preserve_accepted_work_after_wait_t
             .count(),
         64
     );
-    let over_budget = request(&app, "POST", path, json!({
-        "input":envelope(Payload::Array(vec![Payload::Long(65)])),"wait_for":"accepted","request_id":"over-budget"
-    })).await;
-    assert_eq!(over_budget.0, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(over_budget.1["reason"], "update_inventory_exceeds_budget");
-    assert_eq!(
-        request(&app, "GET", &history_path, Value::Null).await.1,
-        before
-    );
     let duplicate = request(&app, "POST", path, json!({
         "input":envelope(Payload::Array(vec![Payload::Long(999)])),"request_id":"bounded:0","wait_for":"completed"
     })).await;
@@ -2391,6 +2431,13 @@ async fn updates_bound_durable_inventory_and_preserve_accepted_work_after_wait_t
         request(&app, "GET", &history_path, Value::Null).await.1,
         before
     );
+    // Published PHP bounds only pending updates (DW_V2_LIMIT_PENDING_UPDATES),
+    // not how many a run receives over its life.
+    let more = request(&app, "POST", path, json!({
+        "input":envelope(Payload::Array(vec![Payload::Long(65)])),"wait_for":"accepted","request_id":"beyond-64"
+    })).await;
+    assert_eq!(more.0, StatusCode::ACCEPTED, "{}", more.1);
+    assert_eq!(more.1["update_status"], "accepted", "{}", more.1);
     runtime.close().await;
     database.remove().await;
 }
@@ -4434,14 +4481,15 @@ async fn reported_activity_failure_commits_one_persistent_retry_and_fences_old_o
     let workflow = poll(&app_a, "worker", "workflow").await;
     let arguments = envelope(Payload::Array(vec![Payload::Long(9007199254740993)]));
     let policy = json!({"max_attempts":2,"backoff_seconds":[1],"non_retryable_error_types":[]});
+    // A digit string such as "2" is an integer to PHP, and PHP ignores an
+    // unknown retry policy key. A backoff too large for a timestamp is
+    // native's own refusal; PHP accepts it.
     for invalid in [
         json!({"max_attempts":0}),
-        json!({"max_attempts":"2"}),
         json!({"max_attempts":1.5}),
         json!({"max_attempts":2,"backoff_seconds":[-1]}),
         json!({"max_attempts":2,"backoff_seconds":[i64::MAX]}),
         json!({"max_attempts":2,"non_retryable_error_types":[17]}),
-        json!({"max_attempts":2,"unsupported":true}),
     ] {
         let refused = finish_task(&app_a,&workflow,json!([{"type":"schedule_activity","activity_type":"retry-activity","arguments":arguments,"retry_policy":invalid}])).await;
         assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", refused.1);
@@ -4509,10 +4557,12 @@ async fn reported_activity_failure_commits_one_persistent_retry_and_fences_old_o
     conflicting["failure"]["message"] = json!("different");
     let refused = request(&app_b, "POST", &fail_path, conflicting).await;
     assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
+    let mut receipt = refused.1.clone();
+    assert!(receipt.as_object_mut().unwrap().remove("server_capabilities").is_some(), "worker protocol fields");
     assert_eq!(
-        refused.1,
+        receipt,
         json!({"task_id":first["task_id"],"activity_attempt_id":first["activity_attempt_id"],
-            "outcome":"failed","recorded":false,"reason":"stale_attempt","next_task_id":null})
+            "outcome":"failed","recorded":false,"reason":"stale_attempt","next_task_id":null,"protocol_version":"1.20"})
     );
     let old_complete_path = format!(
         "/api/worker/activity-tasks/{}/complete",
@@ -4558,11 +4608,14 @@ async fn reported_activity_failure_commits_one_persistent_retry_and_fences_old_o
     // stale receipt PHP returns to that attempt's owner.
     let refused = request(&app_b, "POST", &old_complete_path, old_complete.clone()).await;
     assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
+    let mut receipt = refused.1.clone();
+    assert!(receipt.as_object_mut().unwrap().remove("server_capabilities").is_some(), "worker protocol fields");
     assert_eq!(
-        refused.1,
+        receipt,
         json!({"task_id":first["task_id"],"activity_attempt_id":first["activity_attempt_id"],
             "outcome":"completed","recorded":false,"reason":"stale_attempt","next_task_id":null,
-            "lease_owner":"worker","activity_status":"running","attempt_status":"failed","task_status":"completed"})
+            "lease_owner":"worker","activity_status":"running","attempt_status":"failed","task_status":"completed",
+            "protocol_version":"1.20"})
     );
     assert_eq!(
         request(&app_b, "POST", &old_complete_path, old_complete)
@@ -4652,11 +4705,13 @@ async fn terminal_activity_failures_resume_once_and_preserve_original_failure() 
             false,
             true,
         ),
+        // Laravel's TrimStrings removes the padding before PHP reads the
+        // policy, so the padded type still matches.
         (
             json!({"max_attempts":2,"backoff_seconds":[0],"non_retryable_error_types":["\u{2003}RuntimeException\u{2003}"]}),
-            2,
+            1,
             false,
-            false,
+            true,
         ),
         (
             json!({"max_attempts":3,"backoff_seconds":[1],"non_retryable_error_types":[]}),
@@ -4904,12 +4959,18 @@ async fn activity_commit_wakes_replay_and_stale_activity_attempt_is_refused() {
         StatusCode::UNPROCESSABLE_ENTITY
     );
     assert!(poll(&app, "worker", "activity").await.is_null());
-    for delay in [
-        json!(-1),
-        json!(1.5),
-        json!("1"),
-        Value::Null,
-        json!(i64::MAX),
+    // Published PHP 2.11.1's answers: its transport rules, then its command
+    // normalizer. A delay too large for a timestamp is native's own refusal;
+    // PHP wraps it into the past and fires the timer at once.
+    let normalizer = "Start timer commands require a non-negative integer delay_seconds.";
+    for (delay, reason, message) in [
+        (json!(-1), "validation_failed", Some("The commands.1.delay_seconds field must be at least 0.")),
+        (json!(1.5), "validation_failed", Some("The commands.1.delay_seconds field must be an integer.")),
+        (json!("05"), "validation_failed", Some("The commands.1.delay_seconds field must be an integer.")),
+        (Value::Null, "validation_failed", Some(normalizer)),
+        (json!(true), "validation_failed", Some(normalizer)),
+        (json!("+5"), "validation_failed", Some(normalizer)),
+        (json!(i64::MAX), "invalid_timer_delay", None),
     ] {
         let outcome = request(
             &app,
@@ -4922,7 +4983,10 @@ async fn activity_commit_wakes_replay_and_stale_activity_attempt_is_refused() {
         )
         .await;
         assert_eq!(outcome.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", outcome.1);
-        assert_eq!(outcome.1["reason"], "invalid_timer_delay");
+        assert_eq!(outcome.1["reason"], reason, "{}", outcome.1);
+        if let Some(message) = message {
+            assert_eq!(outcome.1["errors"]["commands.1.delay_seconds"], json!([message]), "{}", outcome.1);
+        }
         assert!(poll(&app, "worker", "activity").await.is_null());
     }
     assert_eq!(

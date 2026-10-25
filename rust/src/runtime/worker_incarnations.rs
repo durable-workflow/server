@@ -223,6 +223,7 @@ where
         }
         Self::query("UPDATE workflow_worker_registrations SET status='superseded' WHERE namespace=$1 AND worker_id=$2")
             .bind(self.namespace.as_ref()).bind(worker_id).execute(&mut *tx).await?;
+        Self::revoke_worker_activity_leases(&mut tx, self.namespace.as_ref(), worker_id).await?;
         let tasks = Self::query("SELECT * FROM workflow_tasks WHERE namespace=$1 AND lease_owner=$2 AND task_type='workflow' AND status='leased' ORDER BY available_at,id")
             .bind(self.namespace.as_ref()).bind(worker_id).fetch_all(&mut *tx).await?;
         let recovered = i64::try_from(tasks.len())
@@ -338,18 +339,25 @@ where
             "status":DB::string(task,"status")?,"attempt_count":DB::number(task,"attempt_count")?,
             "repair_count":DB::number(task,"repair_count")?,"queue":DB::string(task,"queue")?,
             "connection":DB::PHP_CONNECTION});
+        // `WorkflowHistoryEvent::taskSnapshot` keeps every field that is set.
         for field in [
             "available_at",
             "leased_at",
             "lease_expires_at",
+            "last_dispatch_attempt_at",
+            "last_dispatched_at",
+            "last_claim_failed_at",
             "repair_available_at",
         ] {
+            // PHP's snapshot times are UTC with microseconds.
             if let Some(value) = DB::optional_instant(task, field)? {
-                snapshot[field] = json!(value);
+                snapshot[field] = json!(super::query_authority::wire(value));
             }
         }
-        if let Some(owner) = DB::optional_string(task, "lease_owner")? {
-            snapshot["lease_owner"] = json!(owner);
+        for field in ["lease_owner", "compatibility", "last_dispatch_error", "last_claim_error"] {
+            if let Some(value) = DB::optional_string(task, field)? {
+                snapshot[field] = json!(value);
+            }
         }
         Ok(snapshot)
     }

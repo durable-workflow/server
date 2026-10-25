@@ -168,7 +168,11 @@ impl<'de> Deserialize<'de> for InputJson {
                     key == "codec"
                         && super::input_envelope::codec_refusal(&super::start_request::normalized(value.clone())).is_some()
                 });
-                Ok(InputJson(if refused_codec || super::start_request::envelope_keys(&keys) {
+                // PHP's transport middleware sees any input object naming an
+                // external reference before the controller takes its values,
+                // and refuses one that is not exactly codec and reference.
+                let external = keys.iter().any(|key| matches!(*key, "external_payload" | "external_storage"));
+                Ok(InputJson(if refused_codec || external || super::start_request::envelope_keys(&keys) {
                     Value::Object(entries.into_iter().collect())
                 } else {
                     Value::Array(entries.into_iter().map(|(_, value)| value).collect())

@@ -16,8 +16,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
 
-const MAX_UPDATES_PER_RUN: i64 = 64;
-
 /// What `rejectUpdateCommand` records for one refused update.
 struct UpdateRejection<'a, R> {
     workflow_id: &'a str,
@@ -28,8 +26,48 @@ struct UpdateRejection<'a, R> {
     request_id: Option<&'a str>,
     context: Option<Value>,
     reason: &'static str,
-    outcome: &'static str,
+    outcome: Option<&'static str>,
     validation_errors: Value,
+    /// A structural ceiling keeps no arguments and records its limit.
+    exceeded: Option<super::memo_limits::Exceeded>,
+    /// A validated update's rejection keeps its validation task's id.
+    update_id: Option<String>,
+}
+
+/// A validator's approval of one update on one run.
+struct Approval {
+    task_id: String,
+    run_id: String,
+    input_hash: String,
+}
+
+/// The request's own `wait_timeout_seconds`, as PHP echoes it.
+fn request_body_timeout(body: &Value) -> Value {
+    body.get("wait_timeout_seconds").cloned().unwrap_or(Value::Null)
+}
+
+/// A validation answer as the control plane sends it: the requester and the
+/// update contract, with the wait the request asked for.
+fn validation_response(mut body: Value, wait_for: &str, context: Option<&Value>, name: &str) -> Value {
+    if body.get("wait_for").is_none() {
+        body["wait_for"] = json!(wait_for);
+    }
+    if let Some(principal) = context.and_then(principal) {
+        body["principal"] = principal;
+    }
+    super::control_plane::Operation::Update(name).response(body)
+}
+
+/// `principalPayload`: the requester's non-empty type, id and label.
+fn principal(context: &Value) -> Option<Value> {
+    let principal: serde_json::Map<String, Value> = ["type", "id", "label"]
+        .iter()
+        .filter_map(|field| {
+            context["principal"][*field].as_str().filter(|value| !value.trim().is_empty())
+                .map(|value| ((*field).to_owned(), json!(value)))
+        })
+        .collect();
+    (!principal.is_empty()).then_some(Value::Object(principal))
 }
 
 /// `DefaultWorkflowControlPlane::updateStatus` for a rejected update.
@@ -108,7 +146,7 @@ fn update_argument_errors(contract: &Value, name: &str, values: &[crate::codec::
     }
     Value::Object(errors)
 }
-const UPDATE_ROW: &str = "SELECT u.*,c.workflow_type,c.message_sequence FROM workflow_updates u JOIN workflow_commands c ON c.id=u.workflow_command_id WHERE u.id=$1";
+const UPDATE_ROW: &str = "SELECT u.*,c.workflow_type,c.message_sequence,c.context AS command_context FROM workflow_updates u JOIN workflow_commands c ON c.id=u.workflow_command_id WHERE u.id=$1";
 
 #[derive(Clone, Copy)]
 enum UpdateLookup {
@@ -294,6 +332,7 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn update_workflow(
         &self,
         workflow_id: &str,
@@ -303,6 +342,28 @@ where
         prepared: PreparedControlArguments,
         context: Option<Value>,
         codec: Arc<Semaphore>,
+        limits: super::memo_limits::StructuralLimits,
+        external: Option<&super::external_resolution::PreparedExternal>,
+    ) -> Result<(StatusCode, Value)> {
+        self.admit_update(workflow_id, selected_run, name, body, prepared, context, codec, limits, external, None)
+            .await
+    }
+
+    /// One update admission. A validator's approval admits the update under
+    /// the validation task's id, once its run is still the current run.
+    #[allow(clippy::too_many_arguments)]
+    async fn admit_update(
+        &self,
+        workflow_id: &str,
+        selected_run: Option<&str>,
+        name: &str,
+        body: Value,
+        prepared: PreparedControlArguments,
+        context: Option<Value>,
+        codec: Arc<Semaphore>,
+        limits: super::memo_limits::StructuralLimits,
+        external: Option<&super::external_resolution::PreparedExternal>,
+        approval: Option<Approval>,
     ) -> Result<(StatusCode, Value)> {
         // PHP's update_name column holds 255 bytes, one fewer than its
         // validation allows; native refuses what it cannot store.
@@ -330,8 +391,13 @@ where
             .begin()
             .await
             .map_err(|error| at_update_lookup(error, UpdateLookup::AdmissionOwnership))?;
-        let instance = Self::query("SELECT current_run_id,last_message_sequence FROM workflow_instances WHERE id=$1 AND namespace='default'")
-            .bind(workflow_id).fetch_optional(&mut *tx).await?
+        // The referenced object now belongs to the update; a refusal rolls
+        // the claim back with everything else.
+        if let Some(prepared) = external {
+            self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri).await?;
+        }
+        let instance = Self::query("SELECT current_run_id,last_message_sequence FROM workflow_instances WHERE id=$1 AND namespace=$2")
+            .bind(workflow_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
         let run_id = DB::string(&instance, "current_run_id")?;
         if selected_run.is_some_and(|selected| selected != run_id) {
@@ -339,6 +405,13 @@ where
                 StatusCode::CONFLICT,
                 "historical_run_command_rejected",
             ));
+        }
+        if let Some(approval) = &approval
+            && approval.run_id != run_id
+        {
+            let (status, failure) = super::update_validation::stale_failure(workflow_id, &approval.run_id, name, &approval.task_id,
+                "The workflow advanced to a different run before validation could be committed.");
+            return Ok((status, validation_response(failure, wait_for, context.as_ref(), name)));
         }
         let existing = if let Some(request_id) = request_id {
             Self::query("SELECT u.id,u.update_name,u.workflow_run_id FROM workflow_updates u JOIN workflow_commands c ON c.id=u.workflow_command_id WHERE c.workflow_instance_id=$1 AND c.command_type='update' AND c.request_id=$2")
@@ -379,23 +452,98 @@ where
                 .bind(&run_id).fetch_one(&mut *tx).await
                 .map_err(|error| at_update_lookup(error.into(), UpdateLookup::StartContract))?;
             let contract = DB::document_row(&started, "payload")?;
+            let declared = contract["declared_updates"]
+                .as_array()
+                .is_some_and(|names| names.iter().any(|value| value == name));
+            if let Some(approval) = &approval
+                && (!active || !declared || !Self::approved_validation(&mut tx, &approval.task_id, &run_id, &approval.input_hash).await?)
+            {
+                let message = if active && declared {
+                    "The validator approval no longer matches this update admission attempt."
+                } else {
+                    "The validated update could not be committed to the current workflow run."
+                };
+                let (status, failure) = super::update_validation::stale_failure(workflow_id, &run_id, name, &approval.task_id, message);
+                return Ok((status, validation_response(failure, wait_for, context.as_ref(), name)));
+            }
+            // `ValidatedExternalWorkflowUpdateAdmission::preAdmissionValidation`:
+            // a live run's declared update on a durable contract checks its
+            // validator declaration before anything is recorded.
+            if active && declared && approval.is_none() && super::update_validation::durable_contract(&contract) {
+                let Some(validators) = contract.get("declared_update_validators") else {
+                    let failure = super::update_validation::admission_failure(workflow_id, &run_id, name,
+                        "update_validator_contract_missing",
+                        "The durable workflow contract does not state whether this update has a validator.", false, None);
+                    return Ok((StatusCode::CONFLICT, validation_response(failure, wait_for, context.as_ref(), name)));
+                };
+                if super::query_route::strings(validators).iter().any(|validator| validator == name) {
+                    match validate_arguments(&contract, "declared_update_contracts", name, &prepared.values,
+                        "unsupported_update_contract", "invalid_update_arguments")
+                    {
+                        Ok(()) => {}
+                        Err(super::RuntimeError::Refused { reason: "invalid_update_arguments", .. }) => {
+                            let failure = super::update_validation::admission_failure(workflow_id, &run_id, name,
+                                "invalid_update_arguments", &format!("Workflow update [{name}] argument validation failed."),
+                                false, Some(update_argument_errors(&contract, name, &prepared.values)));
+                            return Ok((StatusCode::UNPROCESSABLE_ENTITY, validation_response(failure, wait_for, context.as_ref(), name)));
+                        }
+                        Err(error) => return Err(error),
+                    }
+                    let Some(request_id) = request_id else {
+                        let failure = super::update_validation::admission_failure(workflow_id, &run_id, name,
+                            "update_validation_request_id_required",
+                            "Updates with declared validators require request_id so validation and application remain idempotent across retries.",
+                            true, None);
+                        return Ok((StatusCode::UNPROCESSABLE_ENTITY, validation_response(failure, wait_for, context.as_ref(), name)));
+                    };
+                    // The caller waits for the validator without a transaction.
+                    drop(tx);
+                    let queue = DB::optional_string(&run, "queue")?.filter(|queue| !queue.trim().is_empty());
+                    let compatibility = DB::optional_string(&run, "compatibility")?.filter(|build| !build.is_empty());
+                    let fingerprint = super::query_route::trimmed(contract["workflow_definition_fingerprint"].as_str());
+                    let workflow_type = DB::string(&run, "workflow_type")?;
+                    let request = super::update_validation::ValidationRequest {
+                        workflow_id,
+                        run_id: &run_id,
+                        workflow_type: &workflow_type,
+                        task_queue: queue.as_deref().unwrap_or("default"),
+                        compatibility: compatibility.as_deref(),
+                        fingerprint,
+                        name,
+                        request_id,
+                        arguments: &prepared.arguments,
+                        context: context.as_ref(),
+                    };
+                    return match self.validate_update(&request).await? {
+                        super::update_validation::Validation::Approved { task_id, input_hash } => {
+                            let mut context = context.clone();
+                            if let Some(context) = context.as_mut().filter(|context| context["server"]["metadata"].is_object()) {
+                                context["server"]["metadata"]["update_validation_task_id"] = json!(task_id);
+                                context["server"]["metadata"]["update_validation_input_hash"] = json!(input_hash);
+                            }
+                            let approval = Approval { task_id, run_id: run_id.clone(), input_hash };
+                            Box::pin(self.admit_update(workflow_id, selected_run, name, body, prepared, context, codec,
+                                limits, external, Some(approval)))
+                                .await
+                        }
+                        super::update_validation::Validation::Rejected { failure, validation_errors } => {
+                            let timeout = super::laravel_validation::integer(&request_body_timeout(&body));
+                            self.record_validator_rejection(workflow_id, &run_id, name, &prepared, request_id,
+                                context.clone(), codec, failure, validation_errors, wait_for, timeout)
+                                .await
+                        }
+                        super::update_validation::Validation::Failed(status, failure) => {
+                            Ok((status, validation_response(failure, wait_for, context.as_ref(), name)))
+                        }
+                    };
+                }
+            }
             // `WorkflowStub::submitUpdate`'s order: a closed run, an unknown
             // update, then invalid arguments. Each records a rejection.
-            let rejection = if !active {
-                Some(("run_not_active", "rejected_not_active", json!([])))
-            } else if !contract["declared_updates"]
-                .as_array()
-                .is_some_and(|names| names.iter().any(|value| value == name))
-            {
-                Some(("unknown_update", "rejected_unknown_update", json!([])))
-            } else if contract["declared_update_validators"]
-                .as_array()
-                .is_some_and(|names| names.iter().any(|value| value == name))
-            {
-                return Err(refuse(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "update_validation_not_implemented",
-                ));
+            let mut rejection = if !active {
+                Some(("run_not_active", Some("rejected_not_active"), json!([])))
+            } else if !declared {
+                Some(("unknown_update", Some("rejected_unknown_update"), json!([])))
             } else {
                 match validate_arguments(
                     &contract,
@@ -411,16 +559,34 @@ where
                         ..
                     }) => Some((
                         "invalid_update_arguments",
-                        "rejected_invalid_arguments",
+                        Some("rejected_invalid_arguments"),
                         update_argument_errors(&contract, name, &prepared.values),
                     )),
                     Err(error) => return Err(error),
                 }
             };
+            // `guardPendingUpdates`, then `guardPayloadSize` on the
+            // serialized arguments: an admissible update over a structural
+            // ceiling is rejected durably with the limit's message.
+            let mut exceeded = None;
+            if rejection.is_none() {
+                if limits.pending_updates.is_some() {
+                    let pending = Self::scalar("SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id=$1 AND status='accepted'")
+                        .bind(&run_id).fetch_one(&mut *tx).await
+                        .map_err(|error| at_update_lookup(error.into(), UpdateLookup::Inventory))?;
+                    exceeded = super::memo_limits::Exceeded::pending_updates(limits.pending_updates, pending);
+                }
+                if exceeded.is_none() {
+                    exceeded = super::memo_limits::Exceeded::payload(limits.payload_bytes, &prepared.arguments);
+                }
+                if let Some(exceeded) = &exceeded {
+                    rejection = Some(("structural_limit_exceeded", None, json!({"arguments":[exceeded.message]})));
+                }
+            }
             if let Some((reason, outcome, validation_errors)) = rejection {
                 let update_id = Self::reject_update(
                     &mut tx,
-                    codec,
+                    codec.clone(),
                     UpdateRejection {
                         workflow_id,
                         instance: &instance,
@@ -432,6 +598,8 @@ where
                         reason,
                         outcome,
                         validation_errors,
+                        exceeded,
+                        update_id: approval.as_ref().map(|approval| approval.task_id.clone()),
                     },
                 )
                 .await?;
@@ -442,15 +610,16 @@ where
                     .await
                     .map_err(|error| at_update_lookup(error.into(), UpdateLookup::ReceiptRead))?;
                 return Ok((
-                    rejection_status(outcome),
+                    rejection_status(outcome.unwrap_or_default()),
                     // A rejected completion wait reports the timeout it
                     // would have used, as `attemptUpdateWithArguments` does.
-                    Self::update_result(
+                    self.rejected_result(
+                        codec,
                         &update,
                         wait_for,
-                        false,
                         (wait_for == "completed").then_some(timeout.unwrap_or(self.update_wait_seconds)),
-                    )?,
+                    )
+                    .await?,
                 ));
             }
             // Published PHP admits an update whenever its run is active. It is
@@ -461,20 +630,10 @@ where
             let open_tasks = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased')")
                 .bind(&run_id).fetch_one(&mut *tx).await
                 .map_err(|error| at_update_lookup(error.into(), UpdateLookup::Inventory))?;
-            let count =
-                Self::scalar("SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id=$1")
-                    .bind(&run_id)
-                    .fetch_one(&mut *tx)
-                    .await
-                    .map_err(|error| at_update_lookup(error.into(), UpdateLookup::Inventory))?;
-            if count >= MAX_UPDATES_PER_RUN {
-                return Err(refuse(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "update_inventory_exceeds_budget",
-                ));
-            }
             let command_id = id();
-            let update_id = id();
+            // `WorkflowUpdateValidationObserver`: an approved update keeps
+            // its validation task's id.
+            let update_id = approval.as_ref().map_or_else(id, |approval| approval.task_id.clone());
             let command_sequence = DB::number(&run, "last_command_sequence")?
                 .checked_add(1)
                 .ok_or_else(|| refuse(StatusCode::CONFLICT, "command_sequence_exhausted"))?;
@@ -503,14 +662,18 @@ where
                 Some(command) => (json!(DB::string(command, "id")?), json!(DB::number(command, "command_sequence")?)),
                 None => (Value::Null, Value::Null),
             };
-            Self::append(&mut tx, &run_id, "UpdateAccepted", json!({
+            let mut accepted = json!({
                 "workflow_command_id":command_id,"update_id":update_id,"workflow_instance_id":workflow_id,
                 "workflow_run_id":run_id,"update_name":name,"arguments":wire(&prepared.arguments),
                 "ordering_state":if blocking.is_some() {"queued"} else {"ready"},
                 "queued_behind_command_id":queued_id,"queued_behind_command_sequence":queued_sequence,
                 "queued_behind_command_type":if blocking.is_some() {json!("signal")} else {Value::Null},
-                "request_id":request_id
-            }), None, Some(&command_id)).await
+            });
+            // PHP adds the request id only when the request named one.
+            if let Some(request_id) = request_id {
+                accepted["request_id"] = json!(request_id);
+            }
+            Self::append(&mut tx, &run_id, "UpdateAccepted", accepted, None, Some(&command_id)).await
                 .map_err(|error| at_update_lookup(error, UpdateLookup::HistoryAppend))?;
             // A ready update is delivered now when the run has no open
             // workflow task. Otherwise the open task's completion delivers
@@ -545,7 +708,7 @@ where
                 let outcome = DB::optional_string(&update, "outcome")?;
                 return Ok((
                     rejection_status(outcome.as_deref().unwrap_or_default()),
-                    Self::update_result(&update, wait_for, false, reported)?,
+                    self.rejected_result(codec.clone(), &update, wait_for, reported).await?,
                 ));
             }
             let timed_out = wait_for == "completed"
@@ -568,6 +731,82 @@ where
         }
     }
 
+    /// `recordValidatorRejection`: the validator's refusal, recorded as a
+    /// rejected command and update under the validation task's id.
+    #[allow(clippy::too_many_arguments)]
+    async fn record_validator_rejection(
+        &self,
+        workflow_id: &str,
+        run_id: &str,
+        name: &str,
+        prepared: &PreparedControlArguments,
+        request_id: &str,
+        context: Option<Value>,
+        codec: Arc<Semaphore>,
+        mut failure: Value,
+        validation_errors: Value,
+        wait_for: &str,
+        timeout: Option<i64>,
+    ) -> Result<(StatusCode, Value)> {
+        let task_id = failure["update_id"].as_str().unwrap_or_default().to_owned();
+        let mut tx = self.begin().await?;
+        let instance = Self::query("SELECT current_run_id,last_message_sequence FROM workflow_instances WHERE id=$1 AND namespace=$2")
+            .bind(workflow_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?;
+        let Some(instance) = instance.filter(|instance| DB::string(instance, "current_run_id").ok().as_deref() == Some(run_id)) else {
+            let (status, failure) = super::update_validation::stale_failure(workflow_id, run_id, name, &task_id,
+                "The workflow run changed before the validator rejection could be recorded.");
+            return Ok((status, validation_response(failure, wait_for, context.as_ref(), name)));
+        };
+        let recorded = Self::query("SELECT workflow_command_id FROM workflow_updates WHERE id=$1")
+            .bind(&task_id).fetch_optional(&mut *tx).await?;
+        let command_id = match recorded {
+            Some(recorded) => DB::string(&recorded, "workflow_command_id")?,
+            None => {
+                let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1").bind(run_id).fetch_one(&mut *tx).await?;
+                Self::reject_update(
+                    &mut tx,
+                    codec,
+                    UpdateRejection {
+                        workflow_id,
+                        instance: &instance,
+                        run: &run,
+                        name,
+                        prepared,
+                        request_id: Some(request_id),
+                        context: context.clone(),
+                        reason: super::update_validation::VALIDATOR_REJECTED,
+                        outcome: Some("rejected_invalid_arguments"),
+                        validation_errors,
+                        exceeded: None,
+                        update_id: Some(task_id.clone()),
+                    },
+                )
+                .await?;
+                let recorded = Self::query("SELECT workflow_command_id FROM workflow_updates WHERE id=$1")
+                    .bind(&task_id).fetch_one(&mut *tx).await?;
+                DB::string(&recorded, "workflow_command_id")?
+            }
+        };
+        tx.commit().await?;
+        // `rejectionResponse`: the validator's failure with the rejection
+        // receipt's fields.
+        for (field, value) in [
+            ("accepted", json!(false)),
+            ("command_id", json!(command_id)),
+            ("command_status", json!("rejected")),
+            ("outcome", json!("rejected_invalid_arguments")),
+            ("update_id", json!(task_id)),
+            ("update_status", json!("rejected")),
+            ("rejection_reason", json!(super::update_validation::VALIDATOR_REJECTED)),
+            ("wait_for", json!(wait_for)),
+            ("wait_timed_out", json!(false)),
+            ("wait_timeout_seconds", json!(timeout)),
+        ] {
+            failure[field] = value;
+        }
+        Ok((StatusCode::UNPROCESSABLE_ENTITY, validation_response(failure, wait_for, context.as_ref(), name)))
+    }
+
     /// `WorkflowStub::rejectUpdateCommand`: a rejected command and update,
     /// and an `UpdateRejected` event on the run. Nothing is delivered.
     async fn reject_update(
@@ -586,19 +825,29 @@ where
             reason,
             outcome,
             validation_errors,
+            exceeded,
+            update_id,
         } = rejection;
         let run_id = DB::string(run, "id")?;
+        let (values, diagnostics, arguments) = match &exceeded {
+            Some(exceeded) => (
+                vec![],
+                exceeded.fields(),
+                super::queries::empty_arguments(codec.clone()).await?,
+            ),
+            None => (prepared.values.clone(), json!({}), prepared.arguments.clone()),
+        };
         let payload = super::store::prepare_rejected_command(
             codec,
             name.to_owned(),
-            prepared.values.clone(),
+            values,
             validation_errors.clone(),
-            json!({}),
+            diagnostics,
             "update_codec_unavailable",
         )
         .await?;
         let command_id = id();
-        let update_id = id();
+        let update_id = update_id.unwrap_or_else(id);
         let command_sequence = DB::number(run, "last_command_sequence")?
             .checked_add(1)
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "command_sequence_exhausted"))?;
@@ -613,7 +862,7 @@ where
             .bind(DB::document(&context)).bind(request_id).execute(&mut **tx).await?;
         Self::query("INSERT INTO workflow_updates(id,workflow_command_id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,update_name,status,outcome,command_sequence,payload_codec,arguments,validation_errors,rejection_reason,rejected_at,closed_at) VALUES ($1,$2,$3,$4,$5,$6,'rejected',$7,$8,'avro',$9,$10,$11,$12,$13)")
             .bind(&update_id).bind(&command_id).bind(workflow_id).bind(&run_id).bind(&run_id).bind(name).bind(outcome)
-            .bind(command_sequence).bind(&prepared.arguments).bind(DB::document(&validation_errors)).bind(reason)
+            .bind(command_sequence).bind(&arguments).bind(DB::document(&validation_errors)).bind(reason)
             .bind(DB::bind_time(rejected_at)).bind(DB::bind_time(rejected_at)).execute(&mut **tx).await?;
         Self::query("UPDATE workflow_runs SET last_command_sequence=$1 WHERE id=$2")
             .bind(command_sequence)
@@ -628,7 +877,7 @@ where
         // PHP drops null and empty fields from this event.
         let mut event = json!({"workflow_command_id":command_id,"update_id":update_id,
             "workflow_instance_id":workflow_id,"workflow_run_id":run_id,"update_name":name,
-            "arguments":wire(&prepared.arguments)});
+            "arguments":wire(&arguments)});
         if validation_errors.as_object().is_some_and(|errors| !errors.is_empty()) {
             event["validation_errors"] = validation_errors;
         }
@@ -636,6 +885,49 @@ where
             .await
             .map_err(|error| at_update_lookup(error, UpdateLookup::HistoryAppend))?;
         Ok(update_id)
+    }
+
+    /// A rejected update's answer. A structural rejection also reports its
+    /// command's limit fields, as PHP's update result does.
+    async fn rejected_result(
+        &self,
+        codec: Arc<Semaphore>,
+        update: &DB::Row,
+        wait_for: &str,
+        timeout: Option<i64>,
+    ) -> Result<Value> {
+        let mut result = Self::update_result(update, wait_for, false, timeout)?;
+        if DB::optional_string(update, "rejection_reason")?.as_deref() != Some("structural_limit_exceeded") {
+            return Ok(result);
+        }
+        let command = Self::query("SELECT payload FROM workflow_commands WHERE id=$1")
+            .bind(DB::string(update, "workflow_command_id")?)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|error| at_update_lookup(error.into(), UpdateLookup::ReceiptRead))?;
+        let payload = DB::string(&command, "payload")?;
+        let unavailable = || refuse(StatusCode::SERVICE_UNAVAILABLE, "update_codec_unavailable");
+        let permit = codec.acquire_owned().await.map_err(|_| unavailable())?;
+        let fields = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            use crate::codec::Value as Payload;
+            let Ok(Payload::Map(command)) = crate::codec::ValueCodec::new().and_then(|codec| codec.decode(&payload)) else {
+                return Err(unavailable());
+            };
+            let mut fields = serde_json::Map::new();
+            for key in ["structural_limit_kind", "structural_limit_value", "structural_limit_configured"] {
+                match command.get(key) {
+                    Some(Payload::String(value)) => fields.insert(key.into(), json!(value)),
+                    Some(Payload::Long(value)) => fields.insert(key.into(), json!(value)),
+                    _ => None,
+                };
+            }
+            Ok(fields)
+        })
+        .await
+        .map_err(|_| unavailable())??;
+        result.as_object_mut().expect("update result").extend(fields);
+        Ok(result)
     }
 
     fn update_result(
@@ -671,8 +963,8 @@ where
         let validation_errors = DB::optional_document_row(update, "validation_errors")?
             .filter(|errors| !errors.is_null())
             .unwrap_or_else(|| json!([]));
-        let response = json!({
-            "accepted":!rejected,"workflow_id":DB::string(update,"workflow_instance_id")?,"run_id":DB::string(update,"workflow_run_id")?,
+        let mut response = json!({
+            "workflow_id":DB::string(update,"workflow_instance_id")?,"run_id":DB::string(update,"workflow_run_id")?,
             "resolved_run_id":DB::string(update,"resolved_workflow_run_id")?,"requested_run_id":null,"target_scope":"instance",
             "workflow_type":DB::string(update,"workflow_type")?,"command_id":DB::string(update,"workflow_command_id")?,
             "command_sequence":DB::number(update,"command_sequence")?,"command_status":if rejected {"rejected"} else {"accepted"},"command_source":"control_plane",
@@ -683,8 +975,19 @@ where
             "accepted_at":DB::optional_instant(update,"accepted_at")?,"applied_at":DB::optional_instant(update,"applied_at")?,
             "closed_at":DB::optional_instant(update,"closed_at")?,"reason":if rejected {json!(rejection_reason)} else {Value::Null},
             "rejection_reason":rejection_reason,"validation_errors":validation_errors,
-            "wait_for":wait_for,"wait_timed_out":timed_out,"wait_timeout_seconds":timeout
+            "wait_for":wait_for,"wait_timed_out":timed_out,"wait_timeout_seconds":timeout,
+            "rejected_at":DB::optional_instant(update,"rejected_at")?
         });
+        // `ControlPlaneResultMapper` drops `accepted` and puts it back only
+        // when it is false.
+        if rejected {
+            response["accepted"] = json!(false);
+        }
+        // The requester recorded on the command, as `principalPayload`.
+        let context = DB::optional_document_row(update, "command_context")?.unwrap_or(Value::Null);
+        if let Some(principal) = principal(&context) {
+            response["principal"] = principal;
+        }
         let name = response["update_name"].as_str().unwrap_or_default().to_owned();
         Ok(super::control_plane::Operation::Update(&name).response(response))
     }
@@ -871,6 +1174,47 @@ where
             Self::append(tx, &run_id, "MessageCursorAdvanced", json!({
                 "stream_key":format!("instance:{workflow_id}"),"previous_position":previous,"new_position":message_sequence
             }), Some(&task_id), None).await?;
+        }
+        Ok(())
+    }
+
+    /// `validateUpdateCommands`: each update command in a completion names a
+    /// different update accepted on this run, the task's own update when the
+    /// task carries one, with no earlier signal still to apply. A task may
+    /// complete its update together with other commands, or leave it for a
+    /// later task, and any task may complete an accepted update.
+    pub(super) async fn validate_update_commands(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        task: &DB::Row,
+        commands: &[Value],
+    ) -> Result<()> {
+        let payload = DB::document_row(task, "payload")?;
+        let own = payload["workflow_update_id"].as_str().filter(|id| !id.is_empty());
+        let carried = payload["workflow_command_id"].as_str().filter(|id| !id.is_empty());
+        let invalid = || refuse(StatusCode::CONFLICT, "invalid_commands");
+        let mut seen = std::collections::BTreeSet::new();
+        for command in commands
+            .iter()
+            .filter(|command| matches!(command["type"].as_str(), Some("complete_update" | "fail_update")))
+        {
+            let update_id = command["update_id"].as_str().filter(|id| !id.is_empty()).ok_or_else(invalid)?;
+            if !seen.insert(update_id) || own.is_some_and(|own| own != update_id) {
+                return Err(invalid());
+            }
+            let update = Self::query("SELECT status,command_sequence FROM workflow_updates WHERE id=$1 AND workflow_run_id=$2")
+                .bind(update_id)
+                .bind(run_id)
+                .fetch_optional(&mut **tx)
+                .await?
+                .ok_or_else(invalid)?;
+            if DB::string(&update, "status")? != "accepted"
+                || Self::blocking_signal(tx, run_id, DB::optional_number(&update, "command_sequence")?, carried)
+                    .await?
+                    .is_some()
+            {
+                return Err(invalid());
+            }
         }
         Ok(())
     }

@@ -64,6 +64,7 @@ RUN chmod 0755 /usr/local/lib/server-trust/verify-trust.sh \
     python3 \
     python3-venv \
     unzip \
+    util-linux \
     && dpkg -i /usr/src/server-brotli-deb/libbrotli1_*.deb \
     && rm -rf /usr/src/server-brotli-deb \
     && ln -s /usr/local/lib/server-brotli/verify-brotli.sh /usr/local/bin/server-verify-brotli \

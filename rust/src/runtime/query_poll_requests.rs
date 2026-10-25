@@ -2,7 +2,10 @@
 //! (`QueryTaskPollRequestStore`). A retry of a poll request gets the answer the
 //! original got, a duplicate still in flight waits for that answer, and a newer
 //! request from the same worker ends an older one that is still waiting.
-use super::*;
+use super::{
+    Backend, ColumnIndex, Decode, Duration, Encode, Executor, IntoArguments, QueryTaskConfig, Result, Store,
+    Transaction, Type, Value, authority, json, key, now, poll_result, text,
+};
 use sha2::{Digest, Sha256};
 
 // Distinct from the query task prefix, so query scans never see these rows.
@@ -283,6 +286,7 @@ where
         body: &Value,
         config: &QueryTaskConfig,
         proof: &str,
+        fence: Option<&crate::runtime::worker_poll_fence::WorkerPollFence>,
         timeout: u64,
         deadline: tokio::time::Instant,
         keys: &PollKeys,
@@ -292,7 +296,11 @@ where
         for _ in 0..3 {
             let current =
                 Self::query_worker_proof(&self.pool, self.namespace.as_ref(), owner, config).await?;
-            if current.as_deref() != Some(proof) {
+            let fenced = match fence {
+                Some(fence) => !self.worker_poll_fence_holds(fence, owner).await?,
+                None => false,
+            };
+            if current.as_deref() != Some(proof) || fenced {
                 return Ok(poll_result(None, "stale_worker_registration"));
             }
             if let Some(cached) = self.cached_query_poll(keys, body, proof, config).await? {
@@ -300,7 +308,7 @@ where
             }
             if self.try_start_query_poll(keys, config).await? {
                 let outcome = self
-                    .wait_for_query(body, config, proof, timeout, deadline, Some(keys))
+                    .wait_for_query(body, config, proof, fence, timeout, deadline, Some(keys))
                     .await;
                 match &outcome {
                     Ok(response) => self.remember_query_poll(keys, response, config).await?,

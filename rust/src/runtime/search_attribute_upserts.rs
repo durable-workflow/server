@@ -41,8 +41,8 @@ pub(super) fn canonical_type(kind: &str) -> Option<&'static str> {
 /// `server.limits.max_search_attribute_key_length` (bytes, default 128) and
 /// `max_search_attribute_value_bytes` (default 2048), read like PHP's config.
 pub(super) struct Limits {
-    key_length: i64,
-    value_bytes: i64,
+    pub(super) key_length: i64,
+    pub(super) value_bytes: i64,
 }
 
 impl Limits {
@@ -607,7 +607,10 @@ where
     ) -> Result<()> {
         let run_id = DB::string(run, "id")?;
         let task_id = DB::string(task, "id")?;
-        if command.get("attribute_types").is_some() {
+        // PHP fills in each upsert's registered types before its second
+        // capability check, so any upsert with attributes needs the capability
+        // (`validateWorkflowTaskSearchAttributeCommands`).
+        if command.get("attribute_types").is_some() || command["attributes"].is_object() || command["attributes"].is_array() {
             let worker_id = DB::optional_string(task, "lease_owner")?
                 .ok_or_else(|| refuse(StatusCode::CONFLICT, "task_not_leased"))?;
             let worker = Self::query("SELECT capabilities FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")

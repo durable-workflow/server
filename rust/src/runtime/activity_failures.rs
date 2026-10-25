@@ -302,6 +302,33 @@ pub(super) fn snapshot_failure(stored: &Value) -> Value {
     snapshot
 }
 
+/// `ActivityOutcomeRecorder`: a result over the payload ceiling fails its
+/// activity with PHP's structural-limit exception instead.
+pub(super) async fn structural_failure(
+    exceeded: &super::memo_limits::Exceeded,
+    semaphore: Arc<Semaphore>,
+) -> Result<(Value, String)> {
+    let failure = json!({"class":"Workflow\\V2\\Exceptions\\StructuralLimitExceededException",
+        "message":exceeded.message,"code":0});
+    let stored = failure.clone();
+    let permit = semaphore
+        .acquire_owned()
+        .await
+        .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "failure_codec_unavailable"))?;
+    let blob = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        super::memos::from_json(stored)
+            .and_then(|value| {
+                crate::codec::ValueCodec::new()
+                    .and_then(|codec| codec.encode(&value))
+                    .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "failure_codec_unavailable"))
+            })
+    })
+    .await
+    .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "failure_codec_unavailable"))??;
+    Ok((failure, blob))
+}
+
 /// Validates a reported failure like published PHP and returns its
 /// normalized form with the Avro blob stored on the execution.
 pub(super) async fn prepare_failure(
@@ -374,7 +401,10 @@ where
         body: Value,
         failure: Value,
         blob: String,
+        limit: Option<super::memo_limits::Exceeded>,
     ) -> Result<Value> {
+        // An oversized result is still answered as the completion it was.
+        let reported = if limit.is_some() { "completed" } else { "failed" };
         let attempt_id = text(&body, "activity_attempt_id")?;
         let mut tx = self.begin().await?;
         let task = self.task_row(&mut tx, task_id).await?;
@@ -384,7 +414,7 @@ where
         Self::cancelled_activity_outcome(&mut tx, &task, &body).await?;
         if Self::duplicate_receipt(&task, &body)? {
             return Ok(
-                json!({"task_id":task_id,"activity_attempt_id":attempt_id,"outcome":"failed","recorded":false,"reason":"already_completed"}),
+                json!({"task_id":task_id,"activity_attempt_id":attempt_id,"outcome":reported,"recorded":false,"reason":"already_completed"}),
             );
         }
         let attempt =
@@ -399,11 +429,12 @@ where
         if DB::string(&attempt, "status")? != "running" || count != DB::number(&task, "attempt_count")? {
             return Err(super::RuntimeError::Protocol {
                 status: StatusCode::CONFLICT,
-                response: json!({"task_id":task_id,"activity_attempt_id":attempt_id,"outcome":"failed",
-                    "recorded":false,"reason":"stale_attempt","next_task_id":null}),
+                response: json!({"task_id":task_id,"activity_attempt_id":attempt_id,"outcome":reported,
+                    "recorded":false,"reason":"stale_attempt","next_task_id":null,
+                    "protocol_version":super::WORKER_PROTOCOL_VERSION,"server_capabilities":super::store::capabilities()}),
             });
         }
-        Self::closed_run_outcome(&mut tx, &task, &body, "failed").await?;
+        Self::closed_run_outcome(&mut tx, &task, &body, reported).await?;
         Self::fence(&task, &body)?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         Self::active_run(&mut tx, &run_id).await?;
@@ -445,7 +476,8 @@ where
         // report's flag in its payload; the derived terminal classification
         // also accounts for the immutable execution policy.
         // `isNonRetryableFailure` matches the reported class or type.
-        let non_retryable = failure["non_retryable"] == true
+        let non_retryable = limit.is_some()
+            || failure["non_retryable"] == true
             || policy["non_retryable_error_types"].as_array().is_some_and(|types| {
                 types.contains(&failure["class"]) || types.contains(&failure["type"])
             });
@@ -480,9 +512,10 @@ where
             Self::query("UPDATE activity_executions SET status='failed',exception=$1,last_heartbeat_at=NULL,closed_at=$2 WHERE id=$3")
                 .bind(blob).bind(DB::bind_time(closed_at)).bind(&activity_id).execute(&mut *tx).await?;
             let failure_id = super::store::id();
-            Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,exception_class,message,non_retryable,handled,file,line,created_at,updated_at) VALUES ($1,$2,'activity_execution',$3,'activity','activity',$4,$5,CASE WHEN $6='true' THEN TRUE ELSE FALSE END,FALSE,'external-worker',0,$7,$8)")
-                .bind(&failure_id).bind(&run_id).bind(&activity_id).bind(failure["class"].as_str().unwrap_or("RuntimeException"))
-                .bind(failure["message"].as_str().unwrap()).bind(if non_retryable {"true"} else {"false"})
+            let (category, file) = if limit.is_some() { ("structural_limit", "") } else { ("activity", "external-worker") };
+            Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,exception_class,message,non_retryable,handled,file,line,created_at,updated_at) VALUES ($1,$2,'activity_execution',$3,'activity',$4,$5,$6,CASE WHEN $7='true' THEN TRUE ELSE FALSE END,FALSE,$8,0,$9,$10)")
+                .bind(&failure_id).bind(&run_id).bind(&activity_id).bind(category).bind(failure["class"].as_str().unwrap_or("RuntimeException"))
+                .bind(failure["message"].as_str().unwrap()).bind(if non_retryable {"true"} else {"false"}).bind(file)
                 .bind(DB::bind_time(closed_at)).bind(DB::bind_time(closed_at)).execute(&mut *tx).await?;
             let updated = Self::query("SELECT * FROM activity_executions WHERE id=$1")
                 .bind(&activity_id)
@@ -492,7 +525,7 @@ where
             payload["activity_attempt_id"] = json!(attempt_id);
             payload["attempt_number"] = json!(count);
             payload["failure_id"] = json!(failure_id);
-            payload["failure_category"] = json!("activity");
+            payload["failure_category"] = json!(category);
             payload["non_retryable"] = json!(non_retryable);
             payload["exception_type"] = failure["type"].clone();
             payload["exception_class"] = failure["class"].clone();
@@ -500,9 +533,18 @@ where
             payload["code"] = failure["code"].clone();
             payload["exception"] = presented_failure(&failure);
             payload["activity"]["exception"] = snapshot_failure(&failure);
+            if let Some(limit) = &limit {
+                // PHP's own exception payload, with the limit beside it.
+                payload["exception"] = json!({"message":limit.message,"code":0});
+                payload["activity"]["exception"] = payload["exception"].clone();
+                payload.as_object_mut().unwrap().extend(limit.fields().as_object().unwrap().clone());
+            }
             payload["task"] = json!({"id":task_id,"type":"activity","status":"leased",
                 "available_at":DB::optional_instant(&task,"available_at")?,"leased_at":DB::optional_instant(&task,"leased_at")?,
-                "lease_owner":DB::optional_string(&task,"lease_owner")?,"attempt_count":count});
+                "lease_owner":DB::optional_string(&task,"lease_owner")?,"lease_expires_at":DB::optional_instant(&task,"lease_expires_at")?,
+                "attempt_count":count,"repair_count":DB::number(&task,"repair_count")?,"queue":DB::string(&task,"queue")?,
+                "connection":DB::PHP_CONNECTION});
+            let failed_event = payload.clone();
             Self::append(
                 &mut tx,
                 &run_id,
@@ -513,19 +555,27 @@ where
             )
             .await?;
             let run = Self::active_run(&mut tx, &run_id).await?;
-            let next = Self::selection_resume(
-                &mut tx,
-                &run_id,
-                &DB::string(&run, "queue")?,
-                json!({"activity_execution_id":activity_id}),
-                &metadata,
-                false,
-            )
-            .await?;
+            let host = super::standalone_activities::HostClose::Failed {
+                payload: super::standalone_activities::failed_payload(&failed_event, &activity_id),
+                closed_reason: "failed",
+            };
+            let next = if Self::close_standalone_host(&mut tx, &run_id, host).await? {
+                None
+            } else {
+                Self::selection_resume(
+                    &mut tx,
+                    &run_id,
+                    &DB::string(&run, "queue")?,
+                    json!({"activity_execution_id":activity_id}),
+                    &metadata,
+                    false,
+                )
+                .await?
+            };
             tx.commit().await?;
             self.wake.notify_waiters();
             return Ok(
-                json!({"task_id":task_id,"activity_attempt_id":attempt_id,"outcome":"failed","recorded":true,"reason":null,"next_task_id":next}),
+                json!({"task_id":task_id,"activity_attempt_id":attempt_id,"outcome":reported,"recorded":true,"reason":null,"next_task_id":next}),
             );
         }
         Self::query("UPDATE activity_executions SET status='pending',exception=$1,last_heartbeat_at=NULL,close_deadline_at=NULL,heartbeat_deadline_at=NULL,schedule_deadline_at=$2 WHERE id=$3")

@@ -31,8 +31,12 @@ fn max_payload_bytes() -> i64 {
 }
 
 /// `oversizedPayloadPreview`: an external payload larger than the limit.
-fn oversized(envelope: &Value) -> bool {
-    envelope["external_storage"]["size_bytes"].as_i64().is_some_and(|size| size > max_payload_bytes())
+/// PHP's stored envelope names its reference `external_storage`; native's
+/// names it `external_payload`.
+pub(super) fn oversized(envelope: &Value) -> bool {
+    ["external_storage", "external_payload"]
+        .iter()
+        .any(|key| envelope[key]["size_bytes"].as_i64().is_some_and(|size| size > max_payload_bytes()))
 }
 
 /// Carbon's `toIso8601String()`, which PHP's run description uses.
@@ -264,6 +268,10 @@ where
         fields.insert("business_key".into(), json!(DB::optional_string(run, "business_key")?));
         fields.insert("resume_step_sequence".into(), json!(started["resume_step_sequence"].as_i64()));
         fields.insert("recovery_kind".into(), json!(started["recovery_kind"].as_str()));
+        // A redriven run continues its failed source, as its start records.
+        if started["recovery_kind"] == "redrive" && started["continued_from_run_id"].is_string() {
+            fields.insert("continued_from_run_id".into(), started["continued_from_run_id"].clone());
+        }
         fields.insert("compatibility".into(), json!(compatibility));
         fields.insert("compatibility_status".into(), json!(if supported { "compatible" } else { "no_compatible_worker" }));
         fields.insert("compatibility_supported_in_fleet".into(), json!(supported));
@@ -311,6 +319,8 @@ mod tests {
         assert!(oversized(&json!({"external_storage":{"size_bytes":2 * 1024 * 1024 + 1}})));
         assert!(!oversized(&json!({"external_storage":{"size_bytes":2 * 1024 * 1024}})));
         assert!(!oversized(&json!({"codec":"avro","blob":"AA=="})));
+        assert!(oversized(&json!({"codec":"avro","external_payload":{"size_bytes":2 * 1024 * 1024 + 1}})));
+        assert!(!oversized(&json!({"codec":"avro","external_payload":{"size_bytes":2 * 1024 * 1024}})));
         assert_eq!(without_empty(json!({"a":null,"b":[],"c":{},"d":0})), json!({"c":{},"d":0}));
         let time = DateTime::parse_from_rfc3339("2026-10-21T07:38:51.123Z").unwrap().with_timezone(&Utc);
         assert_eq!(iso8601(Some(time)), json!("2026-10-21T07:38:51+00:00"));

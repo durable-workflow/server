@@ -1,5 +1,10 @@
 # Server Bounded-Growth Policy
 
+The `worker_poll_diagnostics` surface uses `server:worker-poll-diagnostic:` with one
+last-observation value per namespace and task queue. Each value expires after
+15 minutes; later observations overwrite it. There are no request, worker or
+task indexes, and the observation is not task authority.
+
 The server owns a few cache-backed coordination surfaces, SQL recovery scans,
 JSON metric surfaces, conformance evidence fields, and the perf harness metrics
 that can be remote-written during soaks.
@@ -62,7 +67,6 @@ marked run without recreating its deleted summary. Check `/api/system/health`,
 | `workflow_task_poll_requests` | `server:workflow-task-poll-request:` | `App\Support\WorkflowTaskPollRequestStore` | One pending key and one short replay-result key per idempotent worker poll request. |
 | `activity_task_poll_requests` | `server:activity-task-poll-request:` | `App\Support\ActivityTaskPollRequestStore` | One pending key and one short replay-result key per idempotent activity worker poll request. |
 | `query_task_poll_requests` | `server:query-task-poll-request:` | `App\Support\QueryTaskPollRequestStore` | One pending key and one short replay-result key per idempotent query worker poll request, plus one expiring current-marker key per worker/queue scope. |
-| `long_poll_wait_slots` | `server:long-poll-wait-slot:` | `App\Support\LongPollWaitSlotStore` | One global held-wait slot per admitted empty worker poll plus one namespace slot when namespace isolation is configured; both are bounded by the per-node pool cap. |
 | `sqlite_worker_poll_claim_gate` | `server:sqlite-worker-poll-claim:` | `App\Support\WorkerPollClaimGate` | One short-lived singleton lock key guards SQLite worker poll claim probes when the polling cache store supports locks. |
 | `workflow_query_tasks` | `server:workflow-query-task:` | `App\Support\WorkflowQueryTaskBroker` | Pending query tasks are capped per `(namespace, task_queue)` by `server.query_tasks.max_pending_per_queue`, default 1024 and hard-clamped to 10000. Query-poller markers add at most one expiring key per `(namespace, task_queue, worker_id)` that has polled the query-task endpoint during the marker TTL window. Same-worker leased-task indexes add at most one expiring list key per `(namespace, task_queue, lease_owner)`; an active lease is replayed only to its original poll request. |
 | `task_queue_admission_locks` | `server:task-queue-admission:` | `App\Support\TaskQueueAdmission` | One short-lived lock key per capped `(namespace, task_queue, task_kind)` under concurrent workflow/activity poll admission. |
@@ -75,6 +79,20 @@ marked run without recreating its deleted summary. Check `/api/system/health`,
 | `history_retention_inline` | `server:history-retention-inline:` | `App\Support\HistoryRetentionEnforcer` | One short-lived throttle key per namespace receiving worker heartbeats; the elected heartbeat prunes at most one expired run. |
 | `worker_compatibility_heartbeat` | `server:worker-compatibility-heartbeat:` | `App\Support\WorkerCompatibilityHeartbeatRecorder` | One expiring throttle key per recently heartbeating namespace/worker elects a single compatibility-fleet refresh across standalone HTTP processes during each TTL/3 write interval, then drains without an index. |
 | `readiness_probe` | `server:readiness:` | `App\Support\ServerReadiness` | One temporary probe key per readiness check; deleted immediately and also protected by a 10-second TTL. |
+
+Long-poll wait slots use local files instead of cache keys. Under
+`DW_POLLING_CACHE_PATH/wait-slots/<server-id-hash>`, each worker/query-task pool
+has one admission mutex and one exclusively locked file per held wait. A single
+admission checks both the global and namespace caps; namespaces are metadata
+on the same slot, so new namespace names do not create separate collections.
+Admissions reuse an idle file and retire additional idle files. After admission,
+each pool retains at most its active wait files plus one reusable idle file and
+the mutex. Request cleanup and process death release the locks immediately;
+the next admission reuses or removes their files. Every API node requires its
+own unique `DW_SERVER_ID` and writable local lock storage even with a shared
+Redis/database cache. The old `server:long-poll-wait-slot:` cache keys are no
+longer created; entries left by an older node drain by their original TTL and
+are never deleted on behalf of other live replicas.
 
 `workflow_query_tasks` covers the query task, queue, lease, queue-lock,
 query-poller marker, and same-worker leased-task index keys under

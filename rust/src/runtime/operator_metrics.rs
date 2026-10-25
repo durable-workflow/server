@@ -25,7 +25,7 @@ use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 pub(super) const REDISPATCH_AFTER_SECONDS: i64 = 3;
 
 /// Laravel binds a bare timestamp as `Y-m-d H:i:s`.
-fn whole_second(at: DateTime<Utc>) -> DateTime<Utc> {
+pub(super) fn whole_second(at: DateTime<Utc>) -> DateTime<Utc> {
     at.with_nanosecond(0).unwrap_or(at)
 }
 
@@ -64,6 +64,45 @@ macro_rules! summaries {
         )
     };
 }
+
+/// A dashboard query without and with `summaryQuery`'s workflow type filter.
+/// The filtered form adds `$column IN (...)` over the type list, bound once as
+/// a JSON array at `$n`, the last position. MySQL compares through the
+/// column's collation, as PHP's `whereIn` does.
+struct TypedSql {
+    all: &'static str,
+    sqlite: &'static str,
+    postgres: &'static str,
+    mysql: &'static str,
+}
+
+impl TypedSql {
+    fn pick<DB: sqlx::Database>(&self, typed: bool) -> &'static str {
+        match (typed, DB::NAME) {
+            (false, _) => self.all,
+            (true, "PostgreSQL") => self.postgres,
+            (true, "MySQL") => self.mysql,
+            (true, _) => self.sqlite,
+        }
+    }
+}
+
+macro_rules! by_type {
+    // A head built by another macro comes in brackets: `[summaries!("...")]`.
+    ([$($head:tt)+], $column:literal, $n:literal, $tail:literal) => {
+        TypedSql {
+            all: concat!($($head)+, $tail),
+            sqlite: concat!($($head)+, " AND ", $column, " IN (SELECT value FROM json_each(", $n, "))", $tail),
+            postgres: concat!($($head)+, " AND ", $column, " IN (SELECT jsonb_array_elements_text(CAST(", $n, " AS jsonb)))", $tail),
+            mysql: concat!($($head)+, " AND ", $column, " IN (SELECT jt.t FROM JSON_TABLE(", $n,
+                ",'$[*]' COLUMNS(t VARCHAR(255) COLLATE utf8mb4_unicode_ci PATH '$')) jt)", $tail),
+        }
+    };
+    ($head:literal, $column:literal, $n:literal, $tail:literal) => {
+        by_type!([$head], $column, $n, $tail)
+    };
+}
+
 // PHP's task predicates. $2 is the bound "now".
 macro_rules! ready_due {
     () => {
@@ -232,7 +271,7 @@ where
             "schedules": self.schedule_metrics(now).await?,
             "workers": self.worker_metrics().await?,
             "backend": backend_capabilities(now, DB::PHP_CONNECTION),
-            "structural_limits": structural_limits(DB::PHP_CONNECTION),
+            "structural_limits": structural_limits(DB::PHP_CONNECTION, &config.structural, self.memo_size_limit),
             "update_wait": {"completion_timeout_seconds": 10, "poll_interval_milliseconds": 50},
             "repair_policy": repair_policy(),
             "matching_role": matching_role(config),
@@ -244,8 +283,7 @@ where
     /// server adds.
     pub(super) async fn operator_metrics(&self, config: &MetricsConfig) -> Result<Value> {
         let mut metrics = self.operator_metrics_snapshot(config).await?;
-        metrics["worker_sessions"] =
-            json!({"total": 0, "active": 0, "closed": 0, "expired": 0, "failed": 0, "orphaned": 0});
+        metrics["worker_sessions"] = self.worker_session_metrics().await?;
         metrics["capacity_evidence"] =
             json!({"available": false, "reason": "native_capacity_evidence_unavailable"});
         metrics["runtime_external_payload_cleanup"] =
@@ -253,9 +291,16 @@ where
         Ok(json!({"namespace": self.namespace.as_ref(), "operator_metrics": metrics}))
     }
 
-    /// `SystemController::dashboardResponse` for the whole namespace. The
-    /// bounded dashboard skips PHP's history audits.
-    pub(super) async fn operator_dashboard(&self, config: &MetricsConfig, bounded: bool) -> Result<Value> {
+    /// `SystemController::dashboardResponse`. The bounded dashboard skips
+    /// PHP's history audits. `types` is `workflowTypeDashboardSummary`'s
+    /// workflow type filter, always on the bounded dashboard. It narrows the
+    /// run figures; the operator metrics keep the whole namespace.
+    pub(super) async fn operator_dashboard(
+        &self,
+        config: &MetricsConfig,
+        bounded: bool,
+        types: Option<&[String]>,
+    ) -> Result<Value> {
         let now = now();
         let mut metrics = self.operator_metrics_snapshot(config).await?;
         if bounded {
@@ -263,34 +308,46 @@ where
             metrics["capacity_evidence"] =
                 json!({"available": false, "reason": "native_capacity_evidence_unavailable"});
         }
-        metrics["worker_sessions"] =
-            json!({"total": 0, "active": 0, "closed": 0, "expired": 0, "failed": 0, "orphaned": 0});
+        metrics["worker_sessions"] = self.worker_session_metrics().await?;
         metrics["runtime_external_payload_cleanup"] = self.external_payload_cleanup_metrics(config).await?;
+        let filter = types.map(|types| Value::from(types.to_vec()).to_string());
+        let filter = filter.as_deref();
         let hour = now - Duration::hours(1);
         let day = now - Duration::days(1);
         let week = now - Duration::weeks(1);
-        let flows_past_hour = self.tally(summaries!("(sort_timestamp>=$2 OR (sort_timestamp IS NULL AND created_at>=$3))"), &[hour, hour]).await?;
+        const FLOWS: TypedSql = by_type!("SELECT COUNT(*) FROM workflow_run_summaries WHERE namespace=$1", "workflow_type", "$2", "");
+        const FLOWS_PAST_HOUR: TypedSql = by_type!([summaries!("(sort_timestamp>=$2 OR (sort_timestamp IS NULL AND created_at>=$3))")], "workflow_type", "$4", "");
+        // A failure belongs to one run, so counting joined rows equals
+        // PHP's `whereHas('run', ...)`.
+        const EXCEPTIONS: TypedSql = by_type!("SELECT COUNT(*) FROM workflow_failures f JOIN workflow_runs r ON r.id=f.workflow_run_id WHERE r.namespace=$1 AND f.created_at>=$2", "r.workflow_type", "$3", "");
+        const FAILED_WEEK: TypedSql = by_type!([summaries!("status='failed' AND updated_at>=$2")], "workflow_type", "$3", "");
+        const MAX_WAIT: TypedSql = by_type!([concat!(summary_columns!(), " WHERE namespace=$1 AND status_bucket='running' AND wait_started_at IS NOT NULL")], "workflow_type", "$2", " ORDER BY wait_started_at,sort_timestamp,created_at,id LIMIT 1");
+        const MAX_DURATION: TypedSql = by_type!([concat!(summary_columns!(), " WHERE namespace=$1 AND duration_ms IS NOT NULL")], "workflow_type", "$2", " ORDER BY duration_ms DESC,sort_timestamp DESC,created_at DESC,id DESC LIMIT 1");
+        const MAX_EXCEPTIONS: TypedSql = by_type!([concat!(summary_columns!(), " WHERE namespace=$1 AND exception_count>0")], "workflow_type", "$2", " ORDER BY exception_count DESC,sort_timestamp DESC,created_at DESC,id DESC LIMIT 1");
+        const CURRENT: TypedSql = by_type!("SELECT status_bucket AS bucket,COUNT(*) AS n FROM workflow_run_summaries WHERE namespace=$1 AND status_bucket<>'completed'", "workflow_type", "$2", " GROUP BY status_bucket");
+        let flows_past_hour = self.typed_tally(&FLOWS_PAST_HOUR, &[hour, hour], filter).await?;
         let mut dashboard = json!({
-            "flows": self.tally("SELECT COUNT(*) FROM workflow_run_summaries WHERE namespace=$1", &[]).await?,
+            "flows": self.typed_tally(&FLOWS, &[], filter).await?,
             "flows_per_minute": per_minute(flows_past_hour),
             "flows_past_hour": flows_past_hour,
-            "exceptions_past_hour": self.tally("SELECT COUNT(*) FROM workflow_failures f WHERE EXISTS (SELECT 1 FROM workflow_runs r WHERE r.id=f.workflow_run_id AND r.namespace=$1) AND f.created_at>=$2", &[hour]).await?,
-            "failed_flows_past_week": self.tally(summaries!("status='failed' AND updated_at>=$2"), &[now - Duration::days(7)]).await?,
-            "max_wait_time_workflow": self.summary_row(concat!(summary_columns!(), " WHERE namespace=$1 AND status_bucket='running' AND wait_started_at IS NOT NULL ORDER BY wait_started_at,sort_timestamp,created_at,id LIMIT 1")).await?,
-            "max_duration_workflow": self.summary_row(concat!(summary_columns!(), " WHERE namespace=$1 AND duration_ms IS NOT NULL ORDER BY duration_ms DESC,sort_timestamp DESC,created_at DESC,id DESC LIMIT 1")).await?,
-            "max_exceptions_workflow": self.summary_row(concat!(summary_columns!(), " WHERE namespace=$1 AND exception_count>0 ORDER BY exception_count DESC,sort_timestamp DESC,created_at DESC,id DESC LIMIT 1")).await?,
+            "exceptions_past_hour": self.typed_tally(&EXCEPTIONS, &[hour], filter).await?,
+            "failed_flows_past_week": self.typed_tally(&FAILED_WEEK, &[now - Duration::days(7)], filter).await?,
+            "max_wait_time_workflow": self.summary_row(&MAX_WAIT, filter).await?,
+            "max_duration_workflow": self.summary_row(&MAX_DURATION, filter).await?,
+            "max_exceptions_workflow": self.summary_row(&MAX_EXCEPTIONS, filter).await?,
             "fleet_overview": {
-                "current": self.bucket_counts("SELECT status_bucket AS bucket,COUNT(*) AS n FROM workflow_run_summaries WHERE namespace=$1 AND status_bucket<>'completed' GROUP BY status_bucket", None, &["running", "failed"]).await?,
+                "current": self.bucket_counts(&CURRENT, None, &["running", "failed"], filter).await?,
                 "trends": {
-                    "hour": self.closed_counts(hour).await?,
-                    "day": self.closed_counts(day).await?,
-                    "week": self.closed_counts(week).await?,
+                    "hour": self.closed_counts(hour, filter).await?,
+                    "day": self.closed_counts(day, filter).await?,
+                    "week": self.closed_counts(week, filter).await?,
                 },
             },
-            "workflow_type_health": self.workflow_type_health(week).await?,
-            "needs_attention": self.needs_attention(now).await?,
-            "fleet_trends_series": self.fleet_trends(now).await?,
-            "workflow_scope": {"namespace": self.namespace.as_ref(), "workflow_types": null, "all_workflow_types": true},
+            "workflow_type_health": self.workflow_type_health(week, filter).await?,
+            "needs_attention": self.needs_attention(now, filter).await?,
+            "fleet_trends_series": self.fleet_trends(now, filter).await?,
+            "workflow_scope": {"namespace": self.namespace.as_ref(), "workflow_types": types,
+                "all_workflow_types": types.is_none()},
             "time_windows": {"generated_at": iso8601(now), "total_runs": "all_retained_runs", "current_status": "current",
                 "recent_hour_from": iso8601(hour), "recent_day_from": iso8601(day), "recent_week_from": iso8601(week),
                 "trends_resolution": "hour"},
@@ -300,9 +357,26 @@ where
         Ok(json!({"namespace": self.namespace.as_ref(), "dashboard": dashboard}))
     }
 
+    /// A namespace count, with any further bound timestamps and then the
+    /// workflow type filter.
+    async fn typed_tally(&self, sql: &TypedSql, times: &[DateTime<Utc>], types: Option<&str>) -> Result<i64> {
+        let mut query = Self::scalar(sql.pick::<DB>(types.is_some())).bind(self.namespace.as_ref());
+        for at in times {
+            query = query.bind(DB::bind_time(*at));
+        }
+        if let Some(types) = types {
+            query = query.bind(types);
+        }
+        Ok(query.fetch_one(&self.pool).await?)
+    }
+
     /// One summary as Eloquent's `WorkflowRunSummary::toArray()`, or null.
-    async fn summary_row(&self, sql: &'static str) -> Result<Value> {
-        let row = Self::query(sql).bind(self.namespace.as_ref()).fetch_optional(&self.pool).await?;
+    async fn summary_row(&self, sql: &TypedSql, types: Option<&str>) -> Result<Value> {
+        let mut query = Self::query(sql.pick::<DB>(types.is_some())).bind(self.namespace.as_ref());
+        if let Some(types) = types {
+            query = query.bind(types);
+        }
+        let row = query.fetch_optional(&self.pool).await?;
         row.map(|row| Self::summary_array(&row)).transpose().map(|row| row.unwrap_or(Value::Null))
     }
 
@@ -340,10 +414,13 @@ where
     }
 
     /// `pluck('count', 'status_bucket')` over `buckets`, zero when absent.
-    async fn bucket_counts(&self, sql: &'static str, since: Option<DateTime<Utc>>, buckets: &[&str]) -> Result<Value> {
-        let mut query = Self::query(sql).bind(self.namespace.as_ref());
+    async fn bucket_counts(&self, sql: &TypedSql, since: Option<DateTime<Utc>>, buckets: &[&str], types: Option<&str>) -> Result<Value> {
+        let mut query = Self::query(sql.pick::<DB>(types.is_some())).bind(self.namespace.as_ref());
         if let Some(since) = since {
             query = query.bind(DB::bind_time(since));
+        }
+        if let Some(types) = types {
+            query = query.bind(types);
         }
         let mut counts = serde_json::Map::new();
         for bucket in buckets {
@@ -358,15 +435,22 @@ where
         Ok(Value::Object(counts))
     }
 
-    async fn closed_counts(&self, since: DateTime<Utc>) -> Result<Value> {
-        self.bucket_counts("SELECT status_bucket AS bucket,COUNT(*) AS n FROM workflow_run_summaries WHERE namespace=$1 AND closed_at>=$2 AND status_bucket IN ('completed','failed') GROUP BY status_bucket",
-            Some(since), &["completed", "failed"]).await
+    async fn closed_counts(&self, since: DateTime<Utc>, types: Option<&str>) -> Result<Value> {
+        const CLOSED: TypedSql = by_type!("SELECT status_bucket AS bucket,COUNT(*) AS n FROM workflow_run_summaries WHERE namespace=$1 AND closed_at>=$2 AND status_bucket IN ('completed','failed')",
+            "workflow_type", "$3", " GROUP BY status_bucket");
+        self.bucket_counts(&CLOSED, Some(since), &["completed", "failed"], types).await
     }
 
-    /// `workflowTypeHealth`: the week's ten busiest workflow types.
-    async fn workflow_type_health(&self, week: DateTime<Utc>) -> Result<Value> {
-        let types = Self::query("SELECT workflow_type,COUNT(*) AS total_runs FROM workflow_run_summaries WHERE namespace=$1 AND created_at>=$2 GROUP BY workflow_type ORDER BY total_runs DESC LIMIT 10")
-            .bind(self.namespace.as_ref()).bind(DB::bind_time(week)).fetch_all(&self.pool).await?;
+    /// `workflowTypeHealth`: the week's ten busiest workflow types. Each
+    /// listed type passed the filter, so its own figures need no other.
+    async fn workflow_type_health(&self, week: DateTime<Utc>, filter: Option<&str>) -> Result<Value> {
+        const BUSIEST: TypedSql = by_type!("SELECT workflow_type,COUNT(*) AS total_runs FROM workflow_run_summaries WHERE namespace=$1 AND created_at>=$2",
+            "workflow_type", "$3", " GROUP BY workflow_type ORDER BY total_runs DESC LIMIT 10");
+        let mut busiest = Self::query(BUSIEST.pick::<DB>(filter.is_some())).bind(self.namespace.as_ref()).bind(DB::bind_time(week));
+        if let Some(filter) = filter {
+            busiest = busiest.bind(filter);
+        }
+        let types = busiest.fetch_all(&self.pool).await?;
         let mut health = Vec::with_capacity(types.len());
         for row in types {
             let workflow_type = DB::string(&row, "workflow_type")?;
@@ -401,7 +485,7 @@ where
     }
 
     /// `needsAttention`: PHP's alert rules over workers and run summaries.
-    async fn needs_attention(&self, now: DateTime<Utc>) -> Result<Value> {
+    async fn needs_attention(&self, now: DateTime<Utc>, types: Option<&str>) -> Result<Value> {
         let hour = now - Duration::hours(1);
         let mut alerts = Vec::new();
         let stuck = self.tally("SELECT COUNT(*) FROM workflow_worker_compatibility_heartbeats WHERE namespace=$1 AND recorded_at<$2 AND recorded_at>$3",
@@ -411,20 +495,20 @@ where
                 "message": format!("{stuck} worker(s) have not sent heartbeat in 5+ minutes"), "count": stuck,
                 "action": "Check worker health and restart if needed"}));
         }
-        let long_running = self.tally(summaries!("status_bucket='running' AND started_at<$2 AND wait_started_at IS NULL"), &[hour]).await?;
+        let long_running = self.typed_tally(&by_type!([summaries!("status_bucket='running' AND started_at<$2 AND wait_started_at IS NULL")], "workflow_type", "$3", ""), &[hour], types).await?;
         if long_running > 0 {
             alerts.push(json!({"type": "long_running", "severity": "info",
                 "message": format!("{long_running} workflow(s) running longer than 1 hour"), "count": long_running,
                 "action": "Review workflow duration expectations"}));
         }
-        let storms = self.tally(summaries!("status_bucket='running' AND updated_at>=$2 AND exception_count>=10"), &[hour]).await?;
+        let storms = self.typed_tally(&by_type!([summaries!("status_bucket='running' AND updated_at>=$2 AND exception_count>=10")], "workflow_type", "$3", ""), &[hour], types).await?;
         if storms > 0 {
             alerts.push(json!({"type": "retry_storm", "severity": "error",
                 "message": format!("{storms} workflow(s) with 10+ exceptions in last hour"), "count": storms,
                 "action": "Investigate activity failures and fix root cause"}));
         }
-        let failed = self.tally(summaries!("status='failed' AND closed_at>=$2"), &[hour]).await?;
-        let completed = self.tally(summaries!("status='completed' AND closed_at>=$2"), &[hour]).await?;
+        let failed = self.typed_tally(&by_type!([summaries!("status='failed' AND closed_at>=$2")], "workflow_type", "$3", ""), &[hour], types).await?;
+        let completed = self.typed_tally(&by_type!([summaries!("status='completed' AND closed_at>=$2")], "workflow_type", "$3", ""), &[hour], types).await?;
         let total = failed + completed;
         if total >= 10 && failed as f64 / total as f64 * 100.0 > 20.0 {
             alerts.push(json!({"type": "high_failure_rate", "severity": "error",
@@ -432,8 +516,8 @@ where
                 "count": failed, "action": "Review failed workflows for common patterns"}));
         }
         let overdue = now - Duration::minutes(30);
-        let long_waits = self.tally(summaries!("status_bucket='running' AND wait_started_at IS NOT NULL AND (task_problem=TRUE OR repair_attention=TRUE OR (wait_kind IN ('activity','child','signal','condition','update') AND wait_deadline_at<=$2) OR (next_task_status='ready' AND next_task_at<$3) OR (wait_kind='timer' AND wait_deadline_at<$4 AND (next_task_status IS NULL OR next_task_status<>'leased')))"),
-            &[now, overdue, overdue]).await?;
+        let long_waits = self.typed_tally(&by_type!([summaries!("status_bucket='running' AND wait_started_at IS NOT NULL AND (task_problem=TRUE OR repair_attention=TRUE OR (wait_kind IN ('activity','child','signal','condition','update') AND wait_deadline_at<=$2) OR (next_task_status='ready' AND next_task_at<$3) OR (wait_kind='timer' AND wait_deadline_at<$4 AND (next_task_status IS NULL OR next_task_status<>'leased')))")],
+            "workflow_type", "$5", ""), &[now, overdue, overdue], types).await?;
         if long_waits > 0 {
             alerts.push(json!({"type": "long_waits", "severity": "warning",
                 "message": format!("{long_waits} workflow(s) with blocked or overdue waits"), "count": long_waits,
@@ -444,17 +528,27 @@ where
     }
 
     /// `fleetTrendsSeries`: completed and failed runs per hour for a week.
-    async fn fleet_trends(&self, now: DateTime<Utc>) -> Result<Value> {
+    async fn fleet_trends(&self, now: DateTime<Utc>, types: Option<&str>) -> Result<Value> {
+        const POSTGRES: TypedSql = by_type!("SELECT TO_CHAR(closed_at, 'YYYY-MM-DD HH24:00:00') AS hour_bucket,status_bucket,COUNT(*) AS run_count FROM workflow_run_summaries WHERE namespace=$1 AND closed_at IS NOT NULL AND closed_at>=$2 AND closed_at<$3 AND status_bucket IN ('completed','failed')",
+            "workflow_type", "$4", " GROUP BY TO_CHAR(closed_at, 'YYYY-MM-DD HH24:00:00'),status_bucket");
+        const MYSQL: TypedSql = by_type!("SELECT DATE_FORMAT(closed_at, '%Y-%m-%d %H:00:00') AS hour_bucket,status_bucket,COUNT(*) AS run_count FROM workflow_run_summaries WHERE namespace=$1 AND closed_at IS NOT NULL AND closed_at>=$2 AND closed_at<$3 AND status_bucket IN ('completed','failed')",
+            "workflow_type", "$4", " GROUP BY DATE_FORMAT(closed_at, '%Y-%m-%d %H:00:00'),status_bucket");
+        const SQLITE: TypedSql = by_type!("SELECT STRFTIME('%Y-%m-%d %H:00:00', closed_at) AS hour_bucket,status_bucket,COUNT(*) AS run_count FROM workflow_run_summaries WHERE namespace=$1 AND closed_at IS NOT NULL AND closed_at>=$2 AND closed_at<$3 AND status_bucket IN ('completed','failed')",
+            "workflow_type", "$4", " GROUP BY STRFTIME('%Y-%m-%d %H:00:00', closed_at),status_bucket");
         let week = now - Duration::weeks(1);
         let start = start_of_hour(week);
         let end = start_of_hour(now);
         let sql = match DB::NAME {
-            "PostgreSQL" => "SELECT TO_CHAR(closed_at, 'YYYY-MM-DD HH24:00:00') AS hour_bucket,status_bucket,COUNT(*) AS run_count FROM workflow_run_summaries WHERE namespace=$1 AND closed_at IS NOT NULL AND closed_at>=$2 AND closed_at<$3 AND status_bucket IN ('completed','failed') GROUP BY TO_CHAR(closed_at, 'YYYY-MM-DD HH24:00:00'),status_bucket",
-            "MySQL" => "SELECT DATE_FORMAT(closed_at, '%Y-%m-%d %H:00:00') AS hour_bucket,status_bucket,COUNT(*) AS run_count FROM workflow_run_summaries WHERE namespace=$1 AND closed_at IS NOT NULL AND closed_at>=$2 AND closed_at<$3 AND status_bucket IN ('completed','failed') GROUP BY DATE_FORMAT(closed_at, '%Y-%m-%d %H:00:00'),status_bucket",
-            _ => "SELECT STRFTIME('%Y-%m-%d %H:00:00', closed_at) AS hour_bucket,status_bucket,COUNT(*) AS run_count FROM workflow_run_summaries WHERE namespace=$1 AND closed_at IS NOT NULL AND closed_at>=$2 AND closed_at<$3 AND status_bucket IN ('completed','failed') GROUP BY STRFTIME('%Y-%m-%d %H:00:00', closed_at),status_bucket",
+            "PostgreSQL" => &POSTGRES,
+            "MySQL" => &MYSQL,
+            _ => &SQLITE,
         };
-        let rows = Self::query(sql).bind(self.namespace.as_ref()).bind(DB::bind_time(week)).bind(DB::bind_time(end + Duration::hours(1)))
-            .fetch_all(&self.pool).await?;
+        let mut query = Self::query(sql.pick::<DB>(types.is_some())).bind(self.namespace.as_ref()).bind(DB::bind_time(week))
+            .bind(DB::bind_time(end + Duration::hours(1)));
+        if let Some(types) = types {
+            query = query.bind(types);
+        }
+        let rows = query.fetch_all(&self.pool).await?;
         let mut counts = std::collections::HashMap::new();
         for row in rows {
             counts.insert((DB::string(&row, "hour_bucket")?, DB::string(&row, "status_bucket")?), DB::number(&row, "run_count")?);
@@ -1027,7 +1121,7 @@ where
 
     /// PHP's `RuntimeExternalPayloadCleanupMetrics`: the expired registrations
     /// and the namespace's recorded cleanup passes.
-    async fn external_payload_cleanup_metrics(&self, config: &MetricsConfig) -> Result<Value> {
+    pub(super) async fn external_payload_cleanup_metrics(&self, config: &MetricsConfig) -> Result<Value> {
         let bound = whole_second(now());
         let stats =
             Self::query("SELECT * FROM runtime_external_payload_cleanup_stats WHERE namespace=$1")
@@ -1084,14 +1178,9 @@ where
     /// published PHP's repair pass would select across every namespace.
     pub(super) async fn repair_status(&self) -> Result<Value> {
         let at = now();
-        let bound = whole_second(at);
-        let cutoff = whole_second(at - Duration::seconds(REDISPATCH_AFTER_SECONDS));
-        let mut tasks = Self::query(repair_candidates::TASK_SCOPES);
-        for time in [bound, bound, bound, cutoff, cutoff, cutoff, bound] {
-            tasks = tasks.bind(DB::bind_time(time));
-        }
-        let tasks = scope_rows::<DB>(tasks.fetch_all(&self.pool).await?)?;
-        let runs = scope_rows::<DB>(Self::query(repair_candidates::RUN_SCOPES).fetch_all(&self.pool).await?)?;
+        let unfiltered = super::repair_pass::PassRequest::default();
+        let tasks = self.repairable_task_scopes(&unfiltered, at).await?;
+        let runs = self.missing_task_scopes(&unfiltered).await?;
         let oldest_run = match Self::query(repair_candidates::OLDEST_RUN).fetch_optional(&self.pool).await? {
             Some(row) => DB::optional_instant(&row, "wait_started_at")?
                 .or(DB::optional_instant(&row, "started_at")?)
@@ -1363,6 +1452,8 @@ pub(crate) struct MetricsConfig {
     pub(crate) workflow_task_lease_seconds: i64,
     pub(crate) activity_task_lease_seconds: i64,
     pub(crate) abandoned_upload_expiry_seconds: i64,
+    /// The honored signal, update and payload ceilings.
+    pub(crate) structural: super::StructuralLimits,
 }
 
 fn empty_repair_snapshot() -> Value {
@@ -1386,16 +1477,19 @@ fn empty_repair_snapshot() -> Value {
     })
 }
 
-fn structural_limits(connection: &str) -> Value {
+/// `StructuralLimits::snapshot`: honored ceilings as configured, where a
+/// disabled one reads 0 (`intConfig`'s `max(0, value)`).
+fn structural_limits(connection: &str, limits: &super::StructuralLimits, memo: Option<usize>) -> Value {
+    let shown = |limit: Option<usize>| limit.unwrap_or(0);
     let configured = json!({
         "pending_activity_count": 2000,
         "pending_child_count": 1000,
         "pending_timer_count": 2000,
-        "pending_signal_count": 5000,
-        "pending_update_count": 500,
+        "pending_signal_count": shown(limits.pending_signals),
+        "pending_update_count": shown(limits.pending_updates),
         "command_batch_size": 1000,
-        "payload_size_bytes": 2_097_152,
-        "memo_size_bytes": 262_144,
+        "payload_size_bytes": shown(limits.payload_bytes),
+        "memo_size_bytes": shown(memo),
         "search_attribute_size_bytes": 40960,
         "history_transaction_size": 5000,
         "warning_threshold_percent": 80,
@@ -1415,7 +1509,8 @@ fn structural_limits(connection: &str) -> Value {
 
 /// What this runtime needs from its backends, in PHP's capability shape.
 fn backend_capabilities(now: DateTime<Utc>, connection: &str) -> Value {
-    let limits = structural_limits(connection);
+    // Only the backend's issues are reported here, which no ceiling changes.
+    let limits = structural_limits(connection, &super::StructuralLimits::default(), None);
     let issues = limits["issues"].clone();
     let severity = if issues.as_array().is_some_and(|issues| !issues.is_empty()) {
         "info"
@@ -1450,7 +1545,7 @@ fn backend_capabilities(now: DateTime<Utc>, connection: &str) -> Value {
 
 /// Native claims ready tasks on each poll; it runs no repair loop.
 /// The grouped candidate rows of one repair candidate query.
-fn scope_rows<DB: Backend>(rows: Vec<DB::Row>) -> Result<Vec<ScopeRow>>
+pub(super) fn scope_rows<DB: Backend>(rows: Vec<DB::Row>) -> Result<Vec<ScopeRow>>
 where
     usize: ColumnIndex<DB::Row>,
     for<'r> i64: Decode<'r, DB>,

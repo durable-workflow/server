@@ -7,27 +7,6 @@ use serde_json::{Value, json};
 /// `TaskRepairPolicy::SCAN_LIMIT`.
 pub(super) const SCAN_LIMIT: usize = 25;
 
-/// `existingTaskQuery`: ready tasks that are due and whose dispatch failed,
-/// whose claim failed, or whose dispatch is overdue, and leased tasks whose
-/// lease expired. `$1`–`$3` and `$7` are "now"; `$4`–`$6` are the redispatch
-/// cutoff, both in whole seconds as Laravel binds them.
-macro_rules! repairable_tasks {
-    () => {
-        "((status='ready' AND (available_at IS NULL OR available_at<=$1) AND (\
-         (last_dispatch_attempt_at IS NOT NULL AND last_dispatch_error IS NOT NULL AND last_dispatch_error<>'' \
-           AND (last_dispatched_at IS NULL OR last_dispatch_attempt_at>last_dispatched_at) \
-           AND (repair_available_at IS NULL OR repair_available_at<=$2)) \
-         OR (last_claim_failed_at IS NOT NULL AND last_claim_error IS NOT NULL AND last_claim_error<>'' \
-           AND ((repair_available_at IS NOT NULL AND repair_available_at<=$3) \
-             OR (repair_available_at IS NULL AND last_claim_failed_at<=$4))) \
-         OR ((last_dispatch_attempt_at IS NULL OR last_dispatch_error IS NULL OR last_dispatch_error='' \
-             OR (last_dispatched_at IS NOT NULL AND last_dispatch_attempt_at<=last_dispatched_at)) \
-           AND (last_claim_failed_at IS NULL OR last_claim_error IS NULL OR last_claim_error='') \
-           AND (last_dispatched_at<=$5 OR (last_dispatched_at IS NULL AND created_at<=$6))))) \
-         OR (status='leased' AND lease_expires_at IS NOT NULL AND lease_expires_at<=$7))"
-    };
-}
-
 /// `missingTaskRunQuery`: open runs without a next task that need repair, or
 /// that wait for children which have all closed while no workflow task is open.
 macro_rules! missing_task_runs {
@@ -45,18 +24,7 @@ macro_rules! missing_task_runs {
     };
 }
 
-pub(super) const TASK_SCOPES: &str = concat!(
-    "SELECT connection,queue,compatibility,COUNT(*) AS candidate_count,MIN(created_at) AS oldest_candidate_at \
-     FROM workflow_tasks WHERE ",
-    repairable_tasks!(),
-    " GROUP BY connection,queue,compatibility"
-);
-pub(super) const RUN_SCOPES: &str = concat!(
-    "SELECT connection,queue,compatibility,COUNT(*) AS candidate_count,\
-     MIN(COALESCE(wait_started_at,started_at,created_at)) AS oldest_candidate_at FROM workflow_run_summaries WHERE ",
-    missing_task_runs!(),
-    " GROUP BY connection,queue,compatibility"
-);
+pub(super) const MISSING_TASK_RUNS: &str = missing_task_runs!();
 /// `oldestMissingRunCandidate`, in the backend's own null ordering, as PHP's.
 pub(super) const OLDEST_RUN: &str = concat!(
     "SELECT wait_started_at,started_at,created_at FROM workflow_run_summaries WHERE ",
@@ -75,7 +43,7 @@ pub(super) struct ScopeRow {
 
 impl ScopeRow {
     /// `nullableString` of each scope column.
-    fn values(&self) -> [Option<&str>; 3] {
+    pub(super) fn values(&self) -> [Option<&str>; 3] {
         [&self.connection, &self.queue, &self.compatibility]
             .map(|value| value.as_deref().filter(|value| !value.is_empty()))
     }
@@ -100,6 +68,19 @@ impl ScopeRow {
 /// `normalizedScopes` with each scope's selected ids counted: oldest scope
 /// first, each holding at most `limit` candidates.
 fn buckets(rows: &[ScopeRow], limit: usize) -> Vec<(String, usize)> {
+    normalized(rows)
+        .into_iter()
+        .map(|scope| {
+            let count: usize = rows.iter().filter(|row| row.within(scope)).map(|row| row.count).sum();
+            (scope.key(), count.min(limit))
+        })
+        .filter(|(_, count)| *count > 0)
+        .collect()
+}
+
+/// `normalizedScopes`: one row per scope key, keeping its oldest, ordered by
+/// oldest candidate and then key.
+pub(super) fn normalized(rows: &[ScopeRow]) -> Vec<&ScopeRow> {
     let mut chosen: Vec<&ScopeRow> = Vec::new();
     for row in rows {
         match chosen.iter().position(|scope| scope.key() == row.key()) {
@@ -116,13 +97,6 @@ fn buckets(rows: &[ScopeRow], limit: usize) -> Vec<(String, usize)> {
         order(left).cmp(&order(right)).then_with(|| left.key().cmp(&right.key()))
     });
     chosen
-        .into_iter()
-        .map(|scope| {
-            let count: usize = rows.iter().filter(|row| row.within(scope)).map(|row| row.count).sum();
-            (scope.key(), count.min(limit))
-        })
-        .filter(|(_, count)| *count > 0)
-        .collect()
 }
 
 /// `selectedScopeCounts`: one candidate from each scope in turn, up to

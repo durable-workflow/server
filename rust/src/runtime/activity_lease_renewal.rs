@@ -20,7 +20,7 @@ const RULES: &laravel_rules::Rules = &[
 ];
 
 /// A worker-protocol response with PHP's protocol fields.
-fn worker(status: StatusCode, mut response: Value) -> RuntimeError {
+pub(super) fn worker(status: StatusCode, mut response: Value) -> RuntimeError {
     response["protocol_version"] = json!(super::WORKER_PROTOCOL_VERSION);
     response["server_capabilities"] = capabilities();
     RuntimeError::Protocol { status, response }
@@ -35,16 +35,16 @@ fn outcome_status(reason: Option<&str>) -> StatusCode {
     }
 }
 
-fn micros(at: DateTime<Utc>) -> String {
+pub(super) fn micros(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(SecondsFormat::Micros, true)
 }
 
 /// The rows an attempt's authority is read from.
-struct Rows<R> {
-    attempt: R,
-    activity: Option<R>,
-    run: Option<R>,
-    task: Option<R>,
+pub(super) struct Rows<R> {
+    pub(super) attempt: R,
+    pub(super) activity: Option<R>,
+    pub(super) run: Option<R>,
+    pub(super) task: Option<R>,
 }
 
 store_methods! {
@@ -92,6 +92,28 @@ store_methods! {
                 Some(task) => DB::optional_string(task, "lease_owner")?.as_deref() == Some(owner),
                 None => false,
             };
+        // `heartbeatForAttempt`: a session-bound attempt renews its session
+        // before its own lease; a refused renewal renews nothing.
+        let mut worker_session = Value::Null;
+        let session = match &rows.activity {
+            Some(activity) => DB::optional_document_row(activity, "activity_options")?
+                .and_then(|options| super::worker_sessions::CommandSession::from_snapshot(&options["worker_session"])),
+            None => None,
+        };
+        if leased_by_owner && let Some(session) = &session {
+            match self.renew_session_for_attempt(&mut tx, session, owner).await? {
+                Ok(snapshot) => worker_session = snapshot,
+                Err((status, snapshot, renewal)) => {
+                    let mut response = observed;
+                    response["lease_renewed"] = json!(false);
+                    response["can_continue"] = json!(false);
+                    response["reason"] = renewal["reason"].clone();
+                    response["worker_session"] = snapshot;
+                    response["worker_session_renewal"] = renewal;
+                    return Err(worker(status, response));
+                }
+            }
+        }
         let at = now();
         let mut status = if leased_by_owner {
             let task = rows.task.as_ref().expect("task checked above");
@@ -118,7 +140,7 @@ store_methods! {
         status["lease_renewed"] = status["can_continue"].clone();
         status["server_time"] = json!(micros(at));
         status["task_id"] = json!(task_id);
-        status["worker_session"] = Value::Null;
+        status["worker_session"] = worker_session;
         let code = outcome_status(status["reason"].as_str());
         if code != StatusCode::OK {
             return Err(worker(code, status));
@@ -128,7 +150,36 @@ store_methods! {
         Ok(status)
     }
 
-    async fn attempt_rows(tx: &mut Transaction<'_, DB>, attempt_id: &str) -> Result<Option<Rows<DB::Row>>> {
+    /// `RuntimePayloadCompletionLease::mayResume` for an activity: its task
+    /// is still leased to the owner and its attempt can continue on that task
+    /// for that owner. An expired lease alone does not end it, since the
+    /// activity may still renew before lease recovery.
+    pub(super) async fn activity_completion_may_resume(
+        &self,
+        tx: &mut Transaction<'_, DB>,
+        task_id: &str,
+        attempt_id: &str,
+        owner: &str,
+    ) -> Result<bool> {
+        let Some(task) = Self::query("SELECT status,lease_owner FROM workflow_tasks WHERE id=$1 AND namespace=$2")
+            .bind(task_id)
+            .bind(self.namespace.as_ref())
+            .fetch_optional(&mut **tx)
+            .await?
+        else {
+            return Ok(false);
+        };
+        if DB::string(&task, "status")? != "leased" || DB::optional_string(&task, "lease_owner")?.as_deref() != Some(owner) {
+            return Ok(false);
+        }
+        let Some(rows) = Self::attempt_rows(tx, attempt_id).await? else {
+            return Ok(false);
+        };
+        let status = Self::attempt_status(attempt_id, &rows, None)?;
+        Ok(status["can_continue"] == true && status["workflow_task_id"] == task_id && status["lease_owner"] == owner)
+    }
+
+    pub(super) async fn attempt_rows(tx: &mut Transaction<'_, DB>, attempt_id: &str) -> Result<Option<Rows<DB::Row>>> {
         let Some(attempt) = Self::query("SELECT * FROM activity_attempts WHERE id=$1")
             .bind(attempt_id)
             .fetch_optional(&mut **tx)
@@ -159,7 +210,7 @@ store_methods! {
 
     /// Workflow's `attemptStatus` over its continuation state. `refused`
     /// replaces the state with a refusal that cannot continue.
-    fn attempt_status(attempt_id: &str, rows: &Rows<DB::Row>, refused: Option<&'static str>) -> Result<Value> {
+    pub(super) fn attempt_status(attempt_id: &str, rows: &Rows<DB::Row>, refused: Option<&'static str>) -> Result<Value> {
         let (can_continue, cancel_requested, reason) = match refused {
             Some(reason) => (false, false, Some(reason)),
             None => Self::continuation(rows, now())?,

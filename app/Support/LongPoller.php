@@ -87,6 +87,9 @@ class LongPoller
         );
 
         try {
+            $progress = LongPollResponseProgress::current();
+            $progress?->beginWait($timeoutSeconds);
+
             while (microtime(true) < $deadline) {
                 $now = microtime(true);
                 $sleepUntil = min(
@@ -97,6 +100,7 @@ class LongPoller
                 $sleepMilliseconds = max(1, (int) ceil(max(0, $sleepUntil - $now) * 1000));
 
                 $this->pause($sleepMilliseconds);
+                $progress?->checkpoint();
 
                 $now = microtime(true);
                 $wakeChanged = $wakeChannels !== [] && $this->signals->changed($wakeSnapshot);

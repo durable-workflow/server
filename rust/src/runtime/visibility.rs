@@ -29,6 +29,13 @@ pub(super) struct VisibilityFilter {
     offset: i64,
 }
 
+impl VisibilityFilter {
+    /// The run list for one workflow type, as a status bucket and page.
+    pub(super) fn of_type(workflow_type: &str, status: Option<String>, limit: i64, offset: i64) -> Self {
+        Self { workflow_type: Some(workflow_type.to_owned()), status, pattern: None, visibility: None, limit, offset }
+    }
+}
+
 /// Candidate runs read per page while a structured query filters them.
 const QUERY_SCAN_PAGE: i64 = 500;
 
@@ -118,18 +125,18 @@ fn validation(field: &'static str, message: &'static str) -> RuntimeError {
     }
 }
 
-pub(super) const VISIBILITY_PAGE: &str = "SELECT r.id,r.workflow_instance_id,r.workflow_type,r.queue,r.status,r.compatibility,r.started_at,r.closed_at,i.business_key FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE r.namespace=$1 AND i.namespace=$2 AND ($3 IS NULL OR r.workflow_type=$4) AND ($5 IS NULL OR CASE WHEN r.status IN ('pending','running','waiting') THEN 'running' WHEN r.status='completed' THEN 'completed' ELSE 'failed' END=$6 OR r.status=$7) AND ($8 IS NULL OR r.workflow_instance_id LIKE $9 OR i.business_key LIKE $10) ORDER BY r.started_at DESC,r.id DESC LIMIT $11 OFFSET $12";
+pub(super) const VISIBILITY_PAGE: &str = "SELECT r.id,r.workflow_instance_id,r.workflow_type,r.queue,r.status,r.compatibility,r.started_at,r.closed_at,COALESCE(r.business_key,i.business_key) AS business_key FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE r.namespace=$1 AND i.namespace=$2 AND ($3 IS NULL OR r.workflow_type=$4) AND ($5 IS NULL OR CASE WHEN r.status IN ('pending','running','waiting') THEN 'running' WHEN r.status='completed' THEN 'completed' ELSE 'failed' END=$6 OR r.status=$7) AND ($8 IS NULL OR r.workflow_instance_id LIKE $9 OR COALESCE(r.business_key,i.business_key) LIKE $10) ORDER BY r.started_at DESC,r.id DESC LIMIT $11 OFFSET $12";
 
 // Preserve decimal micro/nanosecond ordering across PHP SQL UTC and earlier
 // native RFC3339 UTC strings without SQLite floating-point date conversion.
 pub(super) const SQLITE_VISIBILITY_PAGE: &str = r#"
 WITH runs AS (
-    SELECT r.id,r.workflow_instance_id,r.workflow_type,r.queue,r.status,r.compatibility,r.started_at,r.closed_at,i.business_key,
+    SELECT r.id,r.workflow_instance_id,r.workflow_type,r.queue,r.status,r.compatibility,r.started_at,r.closed_at,COALESCE(r.business_key,i.business_key) AS business_key,
         replace(replace(replace(r.started_at,'T',' '),'Z',''),'+00:00','') AS _dw_started_utc
     FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id
     WHERE r.namespace=$1 AND i.namespace=$2 AND ($3 IS NULL OR r.workflow_type=$4)
         AND ($5 IS NULL OR CASE WHEN r.status IN ('pending','running','waiting') THEN 'running' WHEN r.status='completed' THEN 'completed' ELSE 'failed' END=$6 OR r.status=$7)
-        AND ($8 IS NULL OR r.workflow_instance_id LIKE $9 OR i.business_key LIKE $10)
+        AND ($8 IS NULL OR r.workflow_instance_id LIKE $9 OR COALESCE(r.business_key,i.business_key) LIKE $10)
 )
 SELECT *,rtrim(rtrim(CASE WHEN length(_dw_started_utc)=19 THEN _dw_started_utc||'.0' ELSE _dw_started_utc END,'0'),'.') AS _dw_started_order
 FROM runs ORDER BY _dw_started_order DESC,id DESC LIMIT $11 OFFSET $12
@@ -147,6 +154,11 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    /// Up to `limit` runs from the filter's offset, in the list's order.
+    pub(super) async fn visibility_rows(&self, filter: &VisibilityFilter, limit: i64) -> Result<Vec<DB::Row>> {
+        self.visibility_page(filter, limit, filter.offset).await
+    }
+
     async fn visibility_page(&self, filter: &VisibilityFilter, limit: i64, offset: i64) -> Result<Vec<DB::Row>> {
         // PHP's index filters cancelled and terminated runs by their exact
         // status and the other values by status bucket.

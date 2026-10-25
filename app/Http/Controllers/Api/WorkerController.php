@@ -4508,7 +4508,7 @@ class WorkerController
         }
 
         try {
-            $task = $this->updateValidationTasks->poll(
+            $poll = $this->updateValidationTasks->pollResult(
                 $namespace,
                 $worker,
                 isset($validated['timeout_seconds']) ? (int) $validated['timeout_seconds'] : null,
@@ -4520,12 +4520,19 @@ class WorkerController
                 $validated['task_queue'],
                 $exception,
             );
+        } catch (\Throwable $exception) {
+            if (! BackendLockPressure::is($exception)) {
+                throw $exception;
+            }
+
+            return BackendLockPressure::workerPollResponse(
+                'update_validation_task',
+                $namespace,
+                $validated['task_queue'],
+            );
         }
 
-        return WorkerProtocol::json([
-            'task' => $task,
-            'poll_status' => $task === null ? 'empty' : 'leased',
-        ]);
+        return WorkerProtocol::json($poll);
     }
 
     public function approveUpdateValidationTask(Request $request, string $taskId): JsonResponse

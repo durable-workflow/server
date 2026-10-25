@@ -44,6 +44,8 @@ pub struct Runtime {
     transition_codec: Arc<Semaphore>,
     pub(super) external: Arc<super::ExternalPayloadConfig>,
     pub(super) queries: Arc<super::QueryTaskConfig>,
+    /// The package's signal, update and payload ceilings (DW_V2_LIMIT_*).
+    pub(super) structural: super::StructuralLimits,
 }
 
 struct TimerScheduler {
@@ -142,6 +144,10 @@ impl Runtime {
         self.queries = Arc::new(config);
         self
     }
+    pub fn with_structural_limits(mut self, limits: super::StructuralLimits) -> Self {
+        self.structural = limits;
+        self
+    }
     /// The configured history page sizes (DW_HISTORY_PAGE_SIZE_DEFAULT and _MAX).
     pub(super) fn history_pages(&self) -> super::history_pages::HistoryPages {
         super::history_pages::HistoryPages {
@@ -187,6 +193,7 @@ impl Runtime {
         let external = super::ExternalPayloadConfig::from_env()?;
         let queries = super::QueryTaskConfig::from_env()?;
         let limit = super::memo_limits::configured_limit()?;
+        let structural = super::StructuralLimits::from_env()?;
         let history_budget = super::history_budget::Config::from_env()?;
         let search_attribute_limit = super::search_attributes::configured_limit()?;
         let mut store = Store::new(sqlite::open(database).await?);
@@ -197,7 +204,7 @@ impl Runtime {
         store.activity_task_lease_seconds = queries.activity_task_lease_seconds;
         store.update_wait_seconds = queries.update_wait_completion_timeout_seconds;
         store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
-        Self::from_storage(Storage::Sqlite(store), token, external, queries).await
+        Self::from_storage(Storage::Sqlite(store), token, external, queries, structural).await
     }
 
     pub async fn open_postgres(options: PgConnectOptions, token: String) -> Result<Self> {
@@ -205,6 +212,7 @@ impl Runtime {
         let external = super::ExternalPayloadConfig::from_env()?;
         let queries = super::QueryTaskConfig::from_env()?;
         let limit = super::memo_limits::configured_limit()?;
+        let structural = super::StructuralLimits::from_env()?;
         let history_budget = super::history_budget::Config::from_env()?;
         let search_attribute_limit = super::search_attributes::configured_limit()?;
         let mut store = Store::new(PostgresStorage::open(options).await?.into_pool());
@@ -215,7 +223,7 @@ impl Runtime {
         store.activity_task_lease_seconds = queries.activity_task_lease_seconds;
         store.update_wait_seconds = queries.update_wait_completion_timeout_seconds;
         store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
-        Self::from_storage(Storage::Postgres(store), token, external, queries).await
+        Self::from_storage(Storage::Postgres(store), token, external, queries, structural).await
     }
 
     pub async fn open_mysql(options: MySqlConnectOptions, token: String) -> Result<Self> {
@@ -223,6 +231,7 @@ impl Runtime {
         let external = super::ExternalPayloadConfig::from_env()?;
         let queries = super::QueryTaskConfig::from_env()?;
         let limit = super::memo_limits::configured_limit()?;
+        let structural = super::StructuralLimits::from_env()?;
         let history_budget = super::history_budget::Config::from_env()?;
         let search_attribute_limit = super::search_attributes::configured_limit()?;
         let mut store = Store::new(MySqlStorage::open(options).await?.into_pool());
@@ -233,7 +242,7 @@ impl Runtime {
         store.activity_task_lease_seconds = queries.activity_task_lease_seconds;
         store.update_wait_seconds = queries.update_wait_completion_timeout_seconds;
         store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
-        Self::from_storage(Storage::MySql(store), token, external, queries).await
+        Self::from_storage(Storage::MySql(store), token, external, queries, structural).await
     }
 
     async fn from_storage(
@@ -241,6 +250,7 @@ impl Runtime {
         token: String,
         external: super::ExternalPayloadConfig,
         queries: super::QueryTaskConfig,
+        structural: super::StructuralLimits,
     ) -> Result<Self> {
         let runtime = Self {
             storage: Arc::new(storage),
@@ -252,6 +262,7 @@ impl Runtime {
             transition_codec: Arc::new(Semaphore::new(1)),
             external: Arc::new(external),
             queries: Arc::new(queries),
+            structural,
         };
         runtime.verify_ready().await?;
         if let Err(error) = runtime.initialize_namespace_registry().await {
@@ -322,6 +333,7 @@ impl Runtime {
             transition_codec: self.transition_codec.clone(),
             external: self.external.clone(),
             queries: self.queries.clone(),
+            structural: self.structural,
         }
     }
     pub(super) fn namespace(&self) -> &str {
@@ -337,8 +349,23 @@ impl Runtime {
     delegate!(describe_namespace(name: &str) -> Result<Value>);
     delegate!(operator_metrics(config: &super::operator_metrics::MetricsConfig) -> Result<Value>);
     delegate!(system_health(config: &super::operator_metrics::MetricsConfig) -> Result<(bool, Value)>);
-    delegate!(operator_dashboard(config: &super::operator_metrics::MetricsConfig, bounded: bool) -> Result<Value>);
+    delegate!(operator_dashboard(config: &super::operator_metrics::MetricsConfig, bounded: bool, types: Option<&[String]>) -> Result<Value>);
     delegate!(repair_status() -> Result<Value>);
+    delegate!(repair_pass(request: &super::repair_pass::PassRequest) -> Result<Value>);
+    delegate!(system_metrics() -> Result<Value>);
+    delegate!(prometheus_metrics() -> Result<Value>);
+    delegate!(payload_cleanup_status(config: &super::operator_metrics::MetricsConfig) -> Result<Value>);
+    /// The namespace's payload cleanup pass, with its local storage when an
+    /// enabled local policy names it.
+    pub(crate) async fn payload_cleanup_pass(&self, limit: i64) -> Result<Value> {
+        let local = super::external_transport::local(self).await.ok();
+        let retention = self.external.abandoned_seconds;
+        match &*self.storage {
+            Storage::Sqlite(store) => store.payload_cleanup_pass(limit, retention, local.as_ref()).await,
+            Storage::Postgres(store) => store.payload_cleanup_pass(limit, retention, local.as_ref()).await,
+            Storage::MySql(store) => store.payload_cleanup_pass(limit, retention, local.as_ref()).await,
+        }
+    }
     delegate!(retention_status(limit: i64) -> Result<Value>);
     delegate!(retention_pass(limit: i64, run_ids: Vec<String>) -> Result<(Value, bool)>);
     delegate!(activity_timeout_status(limit: i64) -> Result<Value>);
@@ -426,6 +453,35 @@ impl Runtime {
         }
     }
 
+    /// `resolveWorkflowTaskCommandPayloadReferences`: each command payload
+    /// must decode as one Avro value, checked in command and field order.
+    async fn check_command_payloads(&self, body: &Value) -> Result<()> {
+        use super::command_payloads::{Check, UNDECODABLE, invalid};
+        let checks = super::command_payloads::checks(body);
+        if checks.is_empty() {
+            return Ok(());
+        }
+        // Completion work uses the transition codec, never read capacity.
+        // The permit is released before the completion takes its own.
+        let permit = self.transition_codec.clone().acquire_owned().await
+            .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let codec = crate::codec::ValueCodec::new()
+                .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?;
+            for check in checks {
+                match check {
+                    Check::Decode { field, blob } if codec.decode(&blob).is_err() => return Err(invalid(&field, UNDECODABLE)),
+                    Check::Decode { .. } => {}
+                    Check::Refuse(error) => return Err(error),
+                }
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?
+    }
+
     /// Refuses an envelope blob the codec cannot decode, with PHP's message.
     async fn decodable(&self, blob: &Value) -> Result<()> {
         let Some(blob) = blob.as_str().map(str::to_owned) else {
@@ -468,6 +524,197 @@ impl Runtime {
             Storage::MySql(store) => store.start(body, memo, external, context).await,
         }
     }
+    /// `ActivityController::start`: validates like PHP, then starts the
+    /// activity in its own host run.
+    pub(crate) async fn start_standalone_activity(&self, body: Value, context: Value) -> Result<Value> {
+        let mut body = super::laravel_rules::normalize(&body);
+        let request = super::standalone_activities::start_request(&body)?;
+        // `AvroPayloadEnvelopeResolver::resolve`: no input stores none; plain
+        // values are encoded; an external reference is retained.
+        let input = body.get("input").is_some_and(|input| !input.is_null());
+        let mut external = None;
+        if input {
+            super::input_envelope::transport(&body)?;
+            match self.plain_arguments(&body).await? {
+                Some(blob) => body["input"] = json!({"codec": "avro", "blob": blob}),
+                None => {
+                    external = self.prepare_external(&body["input"]).await?;
+                    if external.is_none() {
+                        self.decodable(&body["input"]["blob"]).await?;
+                    }
+                }
+            }
+        }
+        let arguments = match &external {
+            Some(prepared) => Some(prepared.stored()),
+            None if input => Some(super::envelope(&body, "input")?),
+            None => None,
+        };
+        match &*self.storage {
+            Storage::Sqlite(store) => store.start_standalone_activity(request, arguments, external, context).await,
+            Storage::Postgres(store) => store.start_standalone_activity(request, arguments, external, context).await,
+            Storage::MySql(store) => store.start_standalone_activity(request, arguments, external, context).await,
+        }
+    }
+
+    /// `ActivityController::show`.
+    pub(crate) async fn standalone_activity(&self, activity_id: &str) -> Result<Value> {
+        let (host, execution) = match &*self.storage {
+            Storage::Sqlite(store) => store.standalone_host(activity_id).await?,
+            Storage::Postgres(store) => store.standalone_host(activity_id).await?,
+            Storage::MySql(store) => store.standalone_host(activity_id).await?,
+        };
+        let attempts = self.standalone_attempts(&host, &execution).await?;
+        let mut view = json!({"activity_id":host["workflow_instance_id"],"workflow_id":host["workflow_instance_id"],
+            "workflow_run_id":host["id"],"workflow_type":host["workflow_type"],"namespace":self.namespace(),
+            "activity_type":execution["activity_type"],"activity_class":execution["activity_class"],
+            "activity_execution_id":execution["id"],"activity_status":execution["status"]});
+        Self::extend_attempts(&mut view, &attempts);
+        for (key, value) in [("task_queue", &host["queue"]), ("business_key", &host["business_key"]), ("status", &host["status"]),
+            ("closed_reason", &host["closed_reason"]), ("started_at", &host["started_at"]), ("closed_at", &host["closed_at"]),
+            ("last_progress_at", &host["last_progress_at"]), ("compatibility", &host["compatibility"]),
+            ("payload_codec", &host["payload_codec"]), ("schedule_to_start_deadline_at", &execution["schedule_deadline_at"]),
+            ("schedule_to_close_deadline_at", &execution["schedule_to_close_deadline_at"]),
+            ("last_heartbeat_at", &execution["last_heartbeat_at"])] {
+            view[key] = value.clone();
+        }
+        view["result"] = match execution["result"].as_str() {
+            Some(result) if execution["status"] == "completed" => super::wire(result),
+            _ => Value::Null,
+        };
+        Ok(view)
+    }
+
+    delegate!(message_stream_workflow_bound(workflow_id: &str) -> Result<bool>);
+    delegate!(record_malformed_message(workflow_id: &str, stream: &str, message_id: &Value) -> Result<()>);
+    delegate!(message_stream_diagnostics(workflow_id: &str, stream: Option<&str>) -> Result<Vec<Value>>);
+
+    /// `MessageStreamController::append`: the stream name, the workflow in
+    /// this namespace, the request rules and the payload envelope, in PHP's
+    /// order. A refused request or payload counts as malformed input.
+    pub(crate) async fn append_message(&self, workflow_id: &str, stream: &str, body: Value, context: Value) -> Result<(StatusCode, Value)> {
+        super::message_streams::check_path_name(stream)?;
+        if !self.message_stream_workflow_bound(workflow_id).await? {
+            return Err(super::RuntimeError::Protocol {
+                status: StatusCode::NOT_FOUND,
+                response: json!({"accepted":false,"workflow_id":workflow_id,"stream_name":stream,"outcome":"rejected","reason":"instance_not_found"}),
+            });
+        }
+        let body = super::laravel_rules::normalize(&body);
+        let blob = match self.message_payload(&body).await {
+            Ok(blob) => blob,
+            Err(error) => {
+                if matches!(&error, super::RuntimeError::Protocol { status, .. } | super::RuntimeError::Refused { status, .. } if *status == StatusCode::UNPROCESSABLE_ENTITY) {
+                    self.record_malformed_message(workflow_id, stream, &body["message_id"]).await?;
+                }
+                return Err(error);
+            }
+        };
+        let message_id = body["message_id"].as_str().unwrap_or_default().to_owned();
+        let (codec, structural) = (self.signal_codec.clone(), self.structural);
+        match &*self.storage {
+            Storage::Sqlite(store) => store.append_message(workflow_id, stream, &message_id, "avro", &blob, &context, codec, structural).await,
+            Storage::Postgres(store) => store.append_message(workflow_id, stream, &message_id, "avro", &blob, &context, codec, structural).await,
+            Storage::MySql(store) => store.append_message(workflow_id, stream, &message_id, "avro", &blob, &context, codec, structural).await,
+        }
+    }
+
+    /// The request rules, then `AvroPayloadEnvelopeResolver::resolve`: no
+    /// input is an empty argument list, plain values are encoded, and an
+    /// inline envelope keeps its exact bytes.
+    async fn message_payload(&self, body: &Value) -> Result<String> {
+        super::message_streams::check_append(body)?;
+        if body.get("input").is_none_or(Value::is_null) {
+            return super::queries::empty_arguments(self.signal_codec.clone()).await;
+        }
+        super::input_envelope::transport(body)?;
+        if let Some(blob) = self.plain_arguments(body).await? {
+            return Ok(blob);
+        }
+        if self.prepare_external(&body["input"]).await?.is_some() {
+            // PHP keeps the reference and resolves it for workers; native
+            // does not resolve stream payload references yet.
+            return Err(super::RuntimeError::Protocol {
+                status: StatusCode::NOT_IMPLEMENTED,
+                response: json!({"accepted":false,"workflow_id":null,"message_id":body["message_id"],"outcome":"rejected",
+                    "reason":"message_stream_external_payload_unavailable"}),
+            });
+        }
+        self.decodable(&body["input"]["blob"]).await?;
+        super::envelope(body, "input")
+    }
+
+    /// `MessageStreamController::index` and `show`.
+    pub(crate) async fn message_streams(&self, workflow_id: &str, stream: Option<&str>) -> Result<Value> {
+        if let Some(stream) = stream {
+            super::message_streams::check_path_name(stream)?;
+        }
+        if !self.message_stream_workflow_bound(workflow_id).await? {
+            return Err(super::RuntimeError::Protocol {
+                status: StatusCode::NOT_FOUND,
+                response: json!({"message":"Workflow not found.","reason":"instance_not_found"}),
+            });
+        }
+        let streams = self.message_stream_diagnostics(workflow_id, stream).await?;
+        match stream {
+            None => Ok(json!({"workflow_id":workflow_id,"count":streams.len(),"streams":streams})),
+            Some(stream) => match streams.into_iter().next() {
+                Some(found) => Ok(json!({"workflow_id":workflow_id,"stream":found})),
+                None => Err(super::RuntimeError::Protocol {
+                    status: StatusCode::NOT_FOUND,
+                    response: json!({"workflow_id":workflow_id,"stream_name":stream,"reason":"message_stream_not_found"}),
+                }),
+            },
+        }
+    }
+
+    /// `ActivityController::index`.
+    pub(crate) async fn standalone_activities(&self, query: Value) -> Result<Value> {
+        let request = super::standalone_activities::list_request(&query)?;
+        let (page, more) = match &*self.storage {
+            Storage::Sqlite(store) => store.standalone_hosts(&request).await?,
+            Storage::Postgres(store) => store.standalone_hosts(&request).await?,
+            Storage::MySql(store) => store.standalone_hosts(&request).await?,
+        };
+        let mut activities = Vec::with_capacity(page.len());
+        for (host, execution) in &page {
+            let attempts = self.standalone_attempts(host, execution).await?;
+            let mut entry = json!({"activity_id":host["workflow_instance_id"],"workflow_id":host["workflow_instance_id"],
+                "workflow_run_id":host["id"],"activity_execution_id":execution["id"],"activity_type":execution["activity_type"],
+                "activity_class":execution["activity_class"],"activity_status":execution["status"]});
+            Self::extend_attempts(&mut entry, &attempts);
+            for (key, value) in [("task_queue", &host["queue"]), ("status", &host["status"]),
+                ("status_bucket", &host["status_bucket"]), ("business_key", &host["business_key"]),
+                ("started_at", &host["started_at"]), ("closed_at", &host["closed_at"])] {
+                entry[key] = value.clone();
+            }
+            activities.push(entry);
+        }
+        Ok(json!({"activity_count":activities.len(),"activities":activities,
+            "next_page_token":more.then(|| super::standalone_activities::page_token(request.offset + request.page_size))}))
+    }
+
+    /// The host run's activity view, as `RunActivityView` reads it.
+    async fn standalone_attempts(&self, host: &Value, execution: &Value) -> Result<Value> {
+        let activities = if execution.is_null() {
+            json!([])
+        } else {
+            let workflow_id = host["workflow_instance_id"].as_str().unwrap_or_default();
+            let run_id = host["id"].as_str().unwrap_or_default();
+            self.activities(workflow_id, run_id).await?["activities"].clone()
+        };
+        Ok(super::standalone_activities::attempt_fields(execution, &activities))
+    }
+
+    fn extend_attempts(view: &mut Value, attempts: &Value) {
+        for key in ["attempt_count", "current_attempt_id", "current_attempt_status", "current_attempt", "attempts"] {
+            view[key] = attempts[key].clone();
+        }
+        view["attempt_state"] = json!({"activity_execution_id":attempts["activity_execution_id"],
+            "attempt_count":attempts["attempt_count"],"current_attempt_id":attempts["current_attempt_id"],
+            "current_attempt_status":attempts["current_attempt_status"],"attempts":attempts["attempts"]});
+    }
+
     pub(crate) async fn create_schedule(
         &self,
         body: Value,
@@ -521,8 +768,14 @@ impl Runtime {
         super::input_envelope::transport(&body)?;
         super::laravel_validation::operation_name(name, "signal")?;
         super::command_requests::signal(&body)?;
-        let arguments = self.command_arguments(&body).await?;
-        let prepared = super::store::prepare_control_arguments(
+        // `AvroPayloadEnvelopeResolver::resolve` with the namespace's storage:
+        // a runtime external reference is checked, then kept by reference.
+        let mut external = self.prepare_external(&body["input"]).await?;
+        let arguments = match external.as_mut() {
+            Some(prepared) => prepared.blob()?,
+            None => self.command_arguments(&body).await?,
+        };
+        let mut prepared = super::store::prepare_control_arguments(
             self.signal_codec.clone(),
             name.to_owned(),
             arguments,
@@ -530,6 +783,9 @@ impl Runtime {
             true,
         )
         .await?;
+        if let Some(external) = &external {
+            prepared.arguments = external.stored();
+        }
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
@@ -541,6 +797,8 @@ impl Runtime {
                         prepared,
                         self.transition_codec.clone(),
                         context,
+                        self.structural,
+                        external.as_ref(),
                     )
                     .await
             }
@@ -554,6 +812,8 @@ impl Runtime {
                         prepared,
                         self.transition_codec.clone(),
                         context,
+                        self.structural,
+                        external.as_ref(),
                     )
                     .await
             }
@@ -567,6 +827,8 @@ impl Runtime {
                         prepared,
                         self.transition_codec.clone(),
                         context,
+                        self.structural,
+                        external.as_ref(),
                     )
                     .await
             }
@@ -638,13 +900,15 @@ impl Runtime {
         super::input_envelope::transport(&body)?;
         super::laravel_validation::operation_name(name, "update")?;
         super::command_requests::update(&body)?;
-        let arguments = self.command_arguments(&body).await?;
-        if arguments.len() > super::queries::ARGUMENT_BYTES {
-            return Err(refuse(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "update_arguments_exceed_budget",
-            ));
-        }
+        // PHP bounds update arguments by its structural payload ceiling,
+        // which rejects them durably, not by a request budget. A runtime
+        // external reference is resolved to its bytes, which the update
+        // keeps inline (`resolveToArray`).
+        let mut external = self.prepare_external(&body["input"]).await?;
+        let arguments = match external.as_mut() {
+            Some(prepared) => prepared.blob()?,
+            None => self.command_arguments(&body).await?,
+        };
         let prepared = super::store::prepare_control_arguments(
             self.signal_codec.clone(),
             name.to_owned(),
@@ -656,17 +920,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone())
+                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone(), self.structural, external.as_ref())
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone())
+                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone(), self.structural, external.as_ref())
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone())
+                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone(), self.structural, external.as_ref())
                     .await
             }
         }
@@ -699,11 +963,24 @@ impl Runtime {
             return Err(invalid("input", "The input field must be an array."));
         }
         // Like PHP's AvroPayloadEnvelopeResolver, plain values are encoded
-        // as the query's arguments.
-        let arguments = match input {
-            None => super::queries::empty_arguments(self.signal_codec.clone()).await?,
-            Some(_) => self.command_arguments(&body).await?,
+        // as the query's arguments. A runtime external reference is claimed
+        // and resolved to its bytes, which the query carries inline.
+        let mut external = match input {
+            Some(_) => self.prepare_external(&body["input"]).await?,
+            None => None,
         };
+        let arguments = match (input, external.as_mut()) {
+            (None, _) => super::queries::empty_arguments(self.signal_codec.clone()).await?,
+            (Some(_), Some(prepared)) => prepared.blob()?,
+            (Some(_), None) => self.command_arguments(&body).await?,
+        };
+        if let Some(prepared) = &external {
+            match &*self.storage {
+                Storage::Sqlite(store) => store.claim_external(prepared).await?,
+                Storage::Postgres(store) => store.claim_external(prepared).await?,
+                Storage::MySql(store) => store.claim_external(prepared).await?,
+            }
+        }
         if arguments.len() > super::queries::ARGUMENT_BYTES {
             return Err(refuse(
                 StatusCode::PAYLOAD_TOO_LARGE,
@@ -732,6 +1009,90 @@ impl Runtime {
                 store
                     .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries, command.as_ref())
                     .await
+            }
+        }
+    }
+    /// `pollUpdateValidationTasks`.
+    pub(crate) async fn poll_update_validation(&self, body: Value) -> Result<Value> {
+        super::update_validation::poll_rules(&body)?;
+        let timeout = match body.get("timeout_seconds") {
+            None | Some(Value::Null) => self.worker_poll_wait(),
+            Some(value) => super::laravel_validation::integer(value).and_then(|value| u64::try_from(value).ok()).unwrap_or(0),
+        };
+        let worker_id = super::text(&body, "worker_id")?;
+        let task_queue = super::text(&body, "task_queue")?;
+        let leased = match &*self.storage {
+            Storage::Sqlite(store) => store.update_validation_poll(worker_id, task_queue, timeout).await?,
+            Storage::Postgres(store) => store.update_validation_poll(worker_id, task_queue, timeout).await?,
+            Storage::MySql(store) => store.update_validation_poll(worker_id, task_queue, timeout).await?,
+        };
+        let task = match leased {
+            Some(task_id) => Some(self.update_validation_task(&task_id).await?),
+            None => None,
+        };
+        let status = if task.is_some() { "leased" } else { "empty" };
+        Ok(json!({"task":task,"poll_status":status}))
+    }
+    /// `POST /worker/update-validation-tasks/{taskId}/approve` and `/reject`.
+    pub(crate) async fn complete_update_validation(&self, task_id: &str, body: Value, reject: bool) -> Result<(StatusCode, Value)> {
+        super::update_validation::completion_rules(&body, reject)?;
+        let failure = reject.then(|| body["failure"].clone());
+        match &*self.storage {
+            Storage::Sqlite(store) => store.complete_update_validation(task_id, &body, failure.as_ref()).await,
+            Storage::Postgres(store) => store.complete_update_validation(task_id, &body, failure.as_ref()).await,
+            Storage::MySql(store) => store.complete_update_validation(task_id, &body, failure.as_ref()).await,
+        }
+    }
+    /// A leased validation task as a worker receives it, with the run's
+    /// replay bundle.
+    async fn update_validation_task(&self, task_id: &str) -> Result<Value> {
+        let mut task = match &*self.storage {
+            Storage::Sqlite(store) => store.update_validation_payload(task_id).await?,
+            Storage::Postgres(store) => store.update_validation_payload(task_id).await?,
+            Storage::MySql(store) => store.update_validation_payload(task_id).await?,
+        };
+        if task.get("history_events").is_some()
+            && let (Some(workflow_id), Some(run_id)) = (task["workflow_id"].as_str(), task["run_id"].as_str())
+        {
+            let export = self.history_bundle(&workflow_id.to_owned(), &run_id.to_owned(), false).await?;
+            task["history_export"] = export;
+        }
+        Ok(task)
+    }
+    /// `pollWorkflowTasks`: workflow tasks, validation tasks or both, as
+    /// `task_kinds` asks. Every task names its kind.
+    pub(crate) async fn poll_workflow_tasks(&self, body: Value, protocol_version: &str) -> Result<Value> {
+        let kinds = super::update_validation::task_kinds(&body)?;
+        let pages = self.history_pages();
+        let wait = self.worker_poll_wait();
+        let mark = |mut answer: Value| {
+            if let Some(task) = answer["task"].as_object_mut() {
+                task.insert("task_kind".into(), json!("workflow"));
+            }
+            answer
+        };
+        if kinds == ["workflow"] {
+            return self.poll_with_pages(body, "workflow", protocol_version, pages, wait).await.map(mark);
+        }
+        let timeout = match body.get("timeout_seconds") {
+            None | Some(Value::Null) => wait,
+            Some(value) => super::laravel_validation::integer(value)
+                .filter(|seconds| (0..=60).contains(seconds))
+                .and_then(|seconds| u64::try_from(seconds).ok())
+                .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_poll_timeout"))?,
+        };
+        let leased = match &*self.storage {
+            Storage::Sqlite(store) => store.multiplexed_poll(&body, &kinds, protocol_version, pages, timeout, wait).await?,
+            Storage::Postgres(store) => store.multiplexed_poll(&body, &kinds, protocol_version, pages, timeout, wait).await?,
+            Storage::MySql(store) => store.multiplexed_poll(&body, &kinds, protocol_version, pages, timeout, wait).await?,
+        };
+        match leased {
+            super::update_validation::Leased::Workflow(answer) => Ok(mark(answer)),
+            super::update_validation::Leased::Validation(task_id) => {
+                let mut task = self.update_validation_task(&task_id).await?;
+                // The multiplexed poll's history paging field.
+                task["next_history_page_token"] = Value::Null;
+                Ok(json!({"task":task,"poll_status":"leased","server_capabilities":super::store::capabilities()}))
             }
         }
     }
@@ -825,6 +1186,11 @@ impl Runtime {
     );
     /// `HistoryController::export`: one run's replay bundle.
     pub(crate) async fn history_export(&self, workflow_id: &str, run_id: &str) -> Result<Value> {
+        self.history_bundle(workflow_id, run_id, true).await
+    }
+    /// One run's replay bundle, signed when asked and configured.
+    /// `HistoryExport::forRun` itself, as replay tasks carry it, is unsigned.
+    async fn history_bundle(&self, workflow_id: &str, run_id: &str, signed: bool) -> Result<Value> {
         let (mut rows, memo) = match &*self.storage {
             Storage::Sqlite(store) => store.history_export_rows(workflow_id, run_id).await?,
             Storage::Postgres(store) => store.history_export_rows(workflow_id, run_id).await?,
@@ -838,7 +1204,7 @@ impl Runtime {
                 .map(|value| value.trim().to_owned())
                 .filter(|value| !value.is_empty())
         };
-        let signing = setting(["DW_V2_HISTORY_EXPORT_SIGNING_KEY", "WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY"]).map(|key| {
+        let signing = setting(["DW_V2_HISTORY_EXPORT_SIGNING_KEY", "WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY"]).filter(|_| signed).map(|key| {
             super::history_export::Signing {
                 key,
                 key_id: setting(["DW_V2_HISTORY_EXPORT_SIGNING_KEY_ID", "WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY_ID"]),
@@ -932,6 +1298,41 @@ impl Runtime {
             Storage::MySql(store) => store.describe_task_queue(queue, &self.queries).await,
         }
     }
+    pub(crate) async fn build_id_action(&self, queue: &str, body: Value, action: super::deployments::Action) -> Result<(StatusCode, Value)> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.build_id_action(queue, &body, action).await,
+            Storage::Postgres(store) => store.build_id_action(queue, &body, action).await,
+            Storage::MySql(store) => store.build_id_action(queue, &body, action).await,
+        }
+    }
+    pub(crate) async fn priority_fairness(&self, queue: &str) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.priority_fairness(queue).await,
+            Storage::Postgres(store) => store.priority_fairness(queue).await,
+            Storage::MySql(store) => store.priority_fairness(queue).await,
+        }
+    }
+    pub(crate) async fn deployments(&self) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.deployments().await,
+            Storage::Postgres(store) => store.deployments().await,
+            Storage::MySql(store) => store.deployments().await,
+        }
+    }
+    pub(crate) async fn deployment(&self, name: &str) -> Result<(StatusCode, Value)> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.deployment(name).await,
+            Storage::Postgres(store) => store.deployment(name).await,
+            Storage::MySql(store) => store.deployment(name).await,
+        }
+    }
+    pub(crate) async fn deployment_action(&self, name: &str, action: super::deployments::Action) -> Result<(StatusCode, Value)> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.deployment_action(name, action).await,
+            Storage::Postgres(store) => store.deployment_action(name, action).await,
+            Storage::MySql(store) => store.deployment_action(name, action).await,
+        }
+    }
     pub(crate) async fn task_queue_build_ids(&self, queue: &str) -> Result<Value> {
         match &*self.storage {
             Storage::Sqlite(store) => store.task_queue_build_ids(queue, &self.queries).await,
@@ -958,6 +1359,11 @@ impl Runtime {
     #[cfg(test)]
     delegate!(poll(body: Value, kind: &'static str, protocol_version: &str) -> Result<Value>);
     delegate!(poll_with_pages(body: Value, kind: &'static str, protocol_version: &str, pages: super::history_pages::HistoryPages, default_wait: u64) -> Result<Value>);
+    delegate!(create_worker_session(body: Value, protocol: &str) -> Result<super::worker_sessions::Answer>);
+    delegate!(heartbeat_worker_session(session_id: &str, body: Value, protocol: &str) -> Result<super::worker_sessions::Answer>);
+    delegate!(close_worker_session(session_id: &str, body: Value, protocol: &str) -> Result<super::worker_sessions::Answer>);
+    delegate!(list_worker_sessions() -> Result<Value>);
+    delegate!(show_worker_session(session_id: &str) -> Result<Value>);
     delegate!(heartbeat_task(task_id: &str, body: Value) -> Result<Value>);
     pub(crate) async fn deliver_cancellation(&self, task_id: &str, body: Value, protocol: &str) -> Result<Value> {
         let codec = self.transition_codec.clone();
@@ -983,7 +1389,9 @@ impl Runtime {
         worker: Option<super::runtime_credentials::Principal>,
         protocol: Option<&str>,
     ) -> Result<Value> {
+        self.check_command_payloads(&body).await?;
         let external = self.prepare_command_payloads(&body).await?;
+        let body = super::completion_rules::canonical_payloads(body)?;
         if let Some(commands) = body["commands"].as_array() {
             for command in commands
                 .iter()
@@ -1006,12 +1414,6 @@ impl Runtime {
                 .iter()
                 .filter(|command| command["type"] == "complete_update")
             {
-                if commands.len() != 1 {
-                    return Err(refuse(
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        "invalid_update_task_commands",
-                    ));
-                }
                 let result = super::envelope(command, "result")?;
                 if result.len() > super::queries::RESULT_BYTES {
                     return Err(refuse(
@@ -1031,17 +1433,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol)
+                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural)
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol)
+                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural)
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol)
+                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural)
                     .await
             }
         }
@@ -1072,6 +1474,35 @@ impl Runtime {
                     .close_workflow(command, workflow_id, run_id, reason, blob, context)
                     .await
             }
+        }
+    }
+    /// `WorkflowController::redriveRun`: the run must exist before its
+    /// request is validated.
+    pub(crate) async fn redrive_run(&self, workflow_id: &str, run_id: &str, body: Value, context: Value) -> Result<(StatusCode, Value)> {
+        if !self.run_in_namespace(workflow_id, run_id).await? {
+            return Err(super::redrive::run_not_found(workflow_id, run_id));
+        }
+        let request_id = super::redrive::request_id(&body)?;
+        match &*self.storage {
+            Storage::Sqlite(store) => store.redrive_run(workflow_id, run_id, request_id, context).await,
+            Storage::Postgres(store) => store.redrive_run(workflow_id, run_id, request_id, context).await,
+            Storage::MySql(store) => store.redrive_run(workflow_id, run_id, request_id, context).await,
+        }
+    }
+    /// `WorkflowStub::attemptArchive` for the current run.
+    pub(crate) async fn archive_workflow(
+        &self,
+        workflow_id: &str,
+        run_id: Option<&str>,
+        body: Value,
+        context: Value,
+    ) -> Result<(StatusCode, Value)> {
+        let reason = super::archive::reason(&body, workflow_id)?;
+        let blob = super::archive::payload(reason.as_deref())?;
+        match &*self.storage {
+            Storage::Sqlite(store) => store.archive_workflow(workflow_id, run_id, reason, blob, context).await,
+            Storage::Postgres(store) => store.archive_workflow(workflow_id, run_id, reason, blob, context).await,
+            Storage::MySql(store) => store.archive_workflow(workflow_id, run_id, reason, blob, context).await,
         }
     }
     pub(crate) async fn request_cancellation(
@@ -1123,6 +1554,21 @@ impl Runtime {
     }
     pub(crate) async fn complete_activity(&self, task_id: &str, body: Value) -> Result<Value> {
         let external = self.prepare_external(&body["result"]).await?;
+        // `ActivityOutcomeRecorder` measures the result it would store.
+        let stored = match &external {
+            Some(prepared) => prepared.stored(),
+            None => super::envelope(&body, "result")?,
+        };
+        if let Some(exceeded) = super::memo_limits::Exceeded::payload(self.structural.payload_bytes, &stored) {
+            let (failure, blob) =
+                super::activity_failures::structural_failure(&exceeded, self.signal_codec.clone()).await?;
+            let limit = Some(exceeded);
+            return match &*self.storage {
+                Storage::Sqlite(store) => store.fail_activity(task_id, body, failure, blob, limit).await,
+                Storage::Postgres(store) => store.fail_activity(task_id, body, failure, blob, limit).await,
+                Storage::MySql(store) => store.fail_activity(task_id, body, failure, blob, limit).await,
+            };
+        }
         match &*self.storage {
             Storage::Sqlite(store) => store.complete_activity(task_id, body, external).await,
             Storage::Postgres(store) => store.complete_activity(task_id, body, external).await,
@@ -1132,13 +1578,14 @@ impl Runtime {
     delegate!(heartbeat_activity(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     delegate!(activity_status(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     delegate!(renew_activity_lease(task_id: &str, body: Value) -> Result<Value>);
+    delegate!(acknowledge_activity_cancellation(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     pub(crate) async fn fail_activity(&self, task_id: &str, body: Value) -> Result<Value> {
         let (failure, blob) =
             super::activity_failures::prepare_failure(&body, self.signal_codec.clone()).await?;
         match &*self.storage {
-            Storage::Sqlite(store) => store.fail_activity(task_id, body, failure, blob).await,
-            Storage::Postgres(store) => store.fail_activity(task_id, body, failure, blob).await,
-            Storage::MySql(store) => store.fail_activity(task_id, body, failure, blob).await,
+            Storage::Sqlite(store) => store.fail_activity(task_id, body, failure, blob, None).await,
+            Storage::Postgres(store) => store.fail_activity(task_id, body, failure, blob, None).await,
+            Storage::MySql(store) => store.fail_activity(task_id, body, failure, blob, None).await,
         }
     }
 }

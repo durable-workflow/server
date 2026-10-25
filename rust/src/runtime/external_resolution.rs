@@ -17,6 +17,18 @@ pub(crate) struct PreparedExternal {
 pub(super) type PreparedCommands = BTreeMap<usize, PreparedExternal>;
 
 impl PreparedExternal {
+    /// The verified payload: the Avro blob the reference stands for, read
+    /// once to validate it before the reference alone is stored.
+    pub(super) fn blob(&mut self) -> Result<String> {
+        use std::io::Read;
+        let mut blob = String::new();
+        self._snapshot
+            .read_to_string(&mut blob)
+            .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, "external_payload_unsupported"))?;
+        self._snapshot.rewind().map_err(super::external_transport::snapshot_error)?;
+        Ok(blob.trim().to_owned())
+    }
+
     pub(super) fn stored(&self) -> String {
         format!(
             "{STORED_PREFIX}{}",
@@ -98,32 +110,21 @@ impl Runtime {
         permit: Option<Arc<OwnedSemaphorePermit>>,
     ) -> Result<Option<PreparedExternal>> {
         if value.get("external_storage").is_some() {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "external_payload_unsupported",
-            ));
+            return Err(super::external_transport::provider_reference());
         }
         let Some(reference) = value.get("external_payload") else {
             return Ok(None);
         };
-        if value.as_object().is_none_or(|map| map.len() != 2) || value["codec"] != "avro" {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "external_payload_unsupported",
-            ));
+        // `incomingEnvelope`: exactly codec and external_payload; the codec
+        // is compared with the registered reference after its lookup.
+        if value.as_object().is_none_or(|map| map.len() != 2 || !map.contains_key("codec")) {
+            return Err(super::external_transport::typed_error(StatusCode::UNPROCESSABLE_ENTITY, "external_payload_unsupported",
+                "External payload envelopes must contain exactly codec and external_payload."));
         }
-        let reference = Reference::validate(reference).map_err(|_| {
-            refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "external_payload_unsupported",
-            )
+        // `RuntimeExternalPayloadReference::validate`'s message.
+        let reference = Reference::validate(reference).map_err(|error| {
+            super::external_transport::typed_error(StatusCode::UNPROCESSABLE_ENTITY, "external_payload_unsupported", error.to_string())
         })?;
-        if value["codec"] != reference.codec {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "external_payload_integrity_mismatch",
-            ));
-        }
         if reference.size_bytes as u64 > self.external.max_bytes.max(1) {
             return Err(refuse(
                 StatusCode::PAYLOAD_TOO_LARGE,
@@ -132,6 +133,12 @@ impl Runtime {
         }
         let prepare = async {
             let registered = self.external_payload_for_fetch(&reference).await?;
+            if value["codec"] != reference.codec {
+                return Err(refuse(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "external_payload_integrity_mismatch",
+                ));
+            }
             let storage = super::external_transport::local(self).await?;
             let snapshot = match permit {
                 Some(permit) => {

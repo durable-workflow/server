@@ -9,7 +9,7 @@ use sqlx::{
 };
 use std::{collections::BTreeMap, sync::OnceLock, time::Duration};
 
-pub const VERSION: i64 = 4;
+pub const VERSION: i64 = 5;
 type Catalog = Vec<(String, String)>;
 
 pub const MARKER_SQL: &str = "CREATE TABLE dw_server_schema (engine VARCHAR(64) NOT NULL PRIMARY KEY,version BIGINT NOT NULL,bootstrap_checksum VARBINARY(48) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin";
@@ -44,7 +44,9 @@ impl Flavor {
                 concat!(
                     include_str!("../../migrations/mysql/0003_full_schema.sql"),
                     "\n",
-                    include_str!("../../migrations/mysql/0004_worker_incarnations.sql")
+                    include_str!("../../migrations/mysql/0004_worker_incarnations.sql"),
+                    "\n",
+                    include_str!("../../migrations/mysql/0005_worker_session_holders.sql")
                 ),
             ),
             Self::MariaDb => (
@@ -52,14 +54,16 @@ impl Flavor {
                 concat!(
                     include_str!("../../migrations/mariadb/0003_full_schema.sql"),
                     "\n",
-                    include_str!("../../migrations/mariadb/0004_worker_incarnations.sql")
+                    include_str!("../../migrations/mariadb/0004_worker_incarnations.sql"),
+                    "\n",
+                    include_str!("../../migrations/mariadb/0005_worker_session_holders.sql")
                 ),
             ),
         };
         slot.get_or_init(|| {
             let mut migrations = Migrator::with_migrations(vec![Migration::new(
                 VERSION,
-                "full frozen PHP schema and native worker incarnations".into(),
+                "full frozen PHP schema, native worker incarnations and session holders".into(),
                 MigrationType::Simple,
                 sql.into_sql_str(),
                 false,
@@ -72,8 +76,8 @@ impl Flavor {
     }
     fn expected(self) -> Result<Catalog> {
         Ok(serde_json::from_str(&canonical(match self {
-            Self::MySql => include_str!("../../migrations/mysql/0004_catalog.json"),
-            Self::MariaDb => include_str!("../../migrations/mariadb/0004_catalog.json"),
+            Self::MySql => include_str!("../../migrations/mysql/0005_catalog.json"),
+            Self::MariaDb => include_str!("../../migrations/mariadb/0005_catalog.json"),
         }))?)
     }
     /// The single native migration, which a takeover records as applied.
@@ -87,11 +91,19 @@ impl Flavor {
         let (frozen, incarnations) = match self {
             Self::MySql => (
                 include_str!("../../migrations/mysql/0003_full_schema.sql"),
-                include_str!("../../migrations/mysql/0004_worker_incarnations.sql"),
+                concat!(
+                    include_str!("../../migrations/mysql/0004_worker_incarnations.sql"),
+                    "\n",
+                    include_str!("../../migrations/mysql/0005_worker_session_holders.sql")
+                ),
             ),
             Self::MariaDb => (
                 include_str!("../../migrations/mariadb/0003_full_schema.sql"),
-                include_str!("../../migrations/mariadb/0004_worker_incarnations.sql"),
+                concat!(
+                    include_str!("../../migrations/mariadb/0004_worker_incarnations.sql"),
+                    "\n",
+                    include_str!("../../migrations/mariadb/0005_worker_session_holders.sql")
+                ),
             ),
         };
         Ok(super::upgrade::native_relations(
@@ -102,6 +114,10 @@ impl Flavor {
         .replace(
             "CREATE TABLE dw_worker_registration_incarnations",
             "CREATE TABLE IF NOT EXISTS dw_worker_registration_incarnations",
+        )
+        .replace(
+            "CREATE TABLE dw_worker_session_holders",
+            "CREATE TABLE IF NOT EXISTS dw_worker_session_holders",
         ))
     }
     pub(super) fn checksum(self) -> &'static [u8] {

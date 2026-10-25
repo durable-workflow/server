@@ -1,0 +1,351 @@
+{
+  "applicable": true,
+  "namespace": "pr1-worker-session-activities-wsa",
+  "complete_protocol_1_7": {
+    "status": 409,
+    "reason": "worker_sessions_unavailable",
+    "message": "Worker-session activity commands require worker protocol 1.8 or newer."
+  },
+  "complete_protocol_1_17": {
+    "status": 409,
+    "reason": "portable_worker_affinity_protocol_floor_unavailable",
+    "message": null
+  },
+  "complete_on_timer": {
+    "status": 422,
+    "reason": "validation_failed",
+    "message": "worker_session is only supported for schedule_activity commands."
+  },
+  "complete_without_session_id": {
+    "status": 422,
+    "reason": "validation_failed",
+    "message": "Worker session commands require a non-empty session_id."
+  },
+  "complete_accepted": 200,
+  "complete_incapable": {
+    "status": 409,
+    "reason": "worker_capability_not_supported",
+    "message": null
+  },
+  "show_before_claim": {
+    "status": 404,
+    "reason": "worker_session_not_found",
+    "message": "Worker session [pr1-worker-session-activities-wsa-lazy] not found in namespace [pr1-worker-session-activities-wsa]."
+  },
+  "poll_without_requirement": {
+    "status": 200,
+    "poll_status": "empty",
+    "worker_session": null,
+    "has_session_key": false
+  },
+  "poll_protocol_1_7": {
+    "status": 200,
+    "poll_status": "empty",
+    "worker_session": null,
+    "has_session_key": false
+  },
+  "poll_capable": {
+    "status": 200,
+    "poll_status": "leased",
+    "worker_session": {
+      "session_id": "pr1-worker-session-activities-wsa-lazy",
+      "queue": "pr1-worker-session-activities-wsa-queue",
+      "requirements": [
+        "gpu"
+      ],
+      "lease_seconds": 90,
+      "ttl_seconds": 1800,
+      "max_concurrent_activities": 1,
+      "create_if_missing": true,
+      "allow_reacquire_after_failure": true,
+      "status": "active",
+      "lease_owner": "pr1-worker-session-activities-wsa-gpu",
+      "lease_expires_at": "present",
+      "ttl_expires_at": "present"
+    },
+    "has_session_key": true
+  },
+  "show_after_claim": {
+    "status": 200,
+    "session": {
+      "session_id": "pr1-worker-session-activities-wsa-lazy",
+      "namespace": "pr1-worker-session-activities-wsa",
+      "connection": null,
+      "queue": "pr1-worker-session-activities-wsa-queue",
+      "requirements": [
+        "gpu"
+      ],
+      "status": "active",
+      "lease_owner": "pr1-worker-session-activities-wsa-gpu",
+      "holder": {
+        "worker_id": "pr1-worker-session-activities-wsa-gpu",
+        "task_queue": "pr1-worker-session-activities-wsa-queue",
+        "status": "active",
+        "last_heartbeat_at": "present",
+        "is_stale": false
+      },
+      "failure_reason": null,
+      "lease_seconds": 90,
+      "ttl_seconds": 1800,
+      "max_concurrent_activities": 1,
+      "create_if_missing": true,
+      "allow_reacquire_after_failure": true,
+      "active_activity_count": 1,
+      "lease_span": 90,
+      "times": {
+        "lease_expires_at": "present",
+        "ttl_expires_at": "present",
+        "closed_at": "null",
+        "last_heartbeat_at": "present",
+        "created_at": "present",
+        "updated_at": "present"
+      }
+    }
+  },
+  "poll_other_capable": {
+    "status": 200,
+    "poll_status": "empty",
+    "worker_session": null,
+    "has_session_key": false
+  },
+  "activity_heartbeat": {
+    "status": 200,
+    "heartbeat_recorded": true,
+    "worker_session": {
+      "session_id": "pr1-worker-session-activities-wsa-lazy",
+      "namespace": "pr1-worker-session-activities-wsa",
+      "connection": null,
+      "queue": "pr1-worker-session-activities-wsa-queue",
+      "requirements": [
+        "gpu"
+      ],
+      "status": "active",
+      "lease_owner": "pr1-worker-session-activities-wsa-gpu",
+      "holder": {
+        "worker_id": "pr1-worker-session-activities-wsa-gpu",
+        "task_queue": "pr1-worker-session-activities-wsa-queue",
+        "status": "active",
+        "last_heartbeat_at": "present",
+        "is_stale": false
+      },
+      "failure_reason": null,
+      "lease_seconds": 90,
+      "ttl_seconds": 1800,
+      "max_concurrent_activities": 1,
+      "create_if_missing": true,
+      "allow_reacquire_after_failure": true,
+      "active_activity_count": 1,
+      "lease_span": 90,
+      "times": {
+        "lease_expires_at": "present",
+        "ttl_expires_at": "present",
+        "closed_at": "null",
+        "last_heartbeat_at": "present",
+        "created_at": "present",
+        "updated_at": "present"
+      }
+    }
+  },
+  "activity_status": {
+    "status": 200,
+    "can_continue": true,
+    "reason": null,
+    "worker_session": {
+      "session_id": "pr1-worker-session-activities-wsa-lazy",
+      "queue": "pr1-worker-session-activities-wsa-queue",
+      "requirements": [
+        "gpu"
+      ],
+      "lease_seconds": 90,
+      "ttl_seconds": 1800,
+      "max_concurrent_activities": 1,
+      "create_if_missing": true,
+      "allow_reacquire_after_failure": true,
+      "status": "active",
+      "lease_owner": "pr1-worker-session-activities-wsa-gpu",
+      "lease_expires_at": "present",
+      "ttl_expires_at": "present"
+    }
+  },
+  "activity_renew": {
+    "status": 200,
+    "lease_renewed": true,
+    "worker_session": {
+      "session_id": "pr1-worker-session-activities-wsa-lazy",
+      "namespace": "pr1-worker-session-activities-wsa",
+      "connection": null,
+      "queue": "pr1-worker-session-activities-wsa-queue",
+      "requirements": [
+        "gpu"
+      ],
+      "status": "active",
+      "lease_owner": "pr1-worker-session-activities-wsa-gpu",
+      "holder": {
+        "worker_id": "pr1-worker-session-activities-wsa-gpu",
+        "task_queue": "pr1-worker-session-activities-wsa-queue",
+        "status": "active",
+        "last_heartbeat_at": "present",
+        "is_stale": false
+      },
+      "failure_reason": null,
+      "lease_seconds": 90,
+      "ttl_seconds": 1800,
+      "max_concurrent_activities": 1,
+      "create_if_missing": true,
+      "allow_reacquire_after_failure": true,
+      "active_activity_count": 1,
+      "lease_span": 90,
+      "times": {
+        "lease_expires_at": "present",
+        "ttl_expires_at": "present",
+        "closed_at": "null",
+        "last_heartbeat_at": "present",
+        "created_at": "present",
+        "updated_at": "present"
+      }
+    }
+  },
+  "session_closed": 200,
+  "heartbeat_after_close": {
+    "status": 409,
+    "reason": "session_not_active",
+    "can_continue": false,
+    "heartbeat_recorded": false,
+    "worker_session_renewal": {
+      "admitted": false,
+      "reason": "session_not_active",
+      "error": "Worker session is not active."
+    },
+    "worker_session_status": "closed"
+  },
+  "status_after_close": {
+    "status": 200,
+    "can_continue": false,
+    "reason": "worker_session_unavailable"
+  },
+  "complete_after_close": 200,
+  "limit_one": [
+    "leased",
+    "empty"
+  ],
+  "limit_two": [
+    "leased",
+    "leased"
+  ],
+  "queue_mismatch_polls": [
+    "empty",
+    "empty"
+  ],
+  "operator_metrics": {
+    "status": 200,
+    "worker_sessions": {
+      "total": 3,
+      "active": 2,
+      "closed": 1,
+      "expired": 0,
+      "failed": 0,
+      "orphaned": 0
+    }
+  },
+  "capabilities": {
+    "worker_sessions": {
+      "feature": "worker_sessions",
+      "contract_version": "1.0",
+      "minimum_protocol_version": "1.8",
+      "command_field": "worker_session",
+      "activity_options_field": "worker_session",
+      "verbs": [
+        "create",
+        "heartbeat",
+        "close"
+      ],
+      "lifecycle": {
+        "creation": "lazy_create_on_first_admitted_activity_or_explicit_worker_create",
+        "renewal": "activity_heartbeat_or_explicit_session_heartbeat",
+        "close": "explicit_holder_close",
+        "lease_expiry": "session_expires_when_lease_is_not_renewed",
+        "ttl_expiry": "absolute_session_ttl_is_terminal_for_that_session_id"
+      },
+      "ownership": "single_worker_lease_owner",
+      "lease": {
+        "scope": "namespace_session_id",
+        "owner": "registered_worker_id",
+        "activity_attempt_leases_remain_independent": true
+      },
+      "admission": {
+        "queue_routing_first": true,
+        "requires_registered_worker": true,
+        "requires_capabilities": true,
+        "create_if_missing_default": true,
+        "allow_reacquire_after_failure_default": true
+      },
+      "rollout_safety": {
+        "minimum_protocol_version": "1.8",
+        "mixed_server_rollout_fenced_by_protocol_version": true,
+        "servers_below_minimum_must_reject_worker_session_commands": true,
+        "servers_below_minimum_must_not_claim_worker_session_activity_tasks": true
+      },
+      "limits": {
+        "max_concurrent_worker_sessions": "worker_registration",
+        "max_concurrent_activities": "session"
+      },
+      "default_max_concurrent_activities": 1,
+      "renewal": {
+        "activity_heartbeat_renews_session": true,
+        "explicit_session_heartbeat": true
+      },
+      "failure_detection": [
+        "lease_expiry",
+        "registered_worker_heartbeat_staleness"
+      ],
+      "holder_loss": {
+        "in_flight_activities_keep_at_least_once_attempt_semantics": true,
+        "replacement_worker_must_reacquire_session": true,
+        "process_local_state_must_be_rebuilt_after_reacquire": true
+      },
+      "cancellation": {
+        "workflow_cancellation_observed_through_activity_heartbeat": true,
+        "session_lease_does_not_override_activity_cancel_requested": true,
+        "planned_shutdown_should_close_sessions": true
+      },
+      "routing": [
+        "queue",
+        "connection",
+        "requirements"
+      ],
+      "visibility": [
+        "active",
+        "closed",
+        "expired",
+        "failed",
+        "orphaned"
+      ],
+      "statuses": [
+        "active",
+        "closed",
+        "expired",
+        "failed",
+        "orphaned"
+      ],
+      "terminal_statuses": [
+        "closed"
+      ],
+      "terminal_conditions": [
+        "explicit_close",
+        "ttl_expired",
+        "allow_reacquire_after_failure_false"
+      ],
+      "authoring_guidance": [
+        "use_for_process_local_state_gpu_memory_or_filesystem_affinity",
+        "prefer_ordinary_queued_activities_for_independent_steps",
+        "prefer_one_larger_activity_for_atomic_side_effects"
+      ],
+      "supported": true
+    },
+    "worker_session_verbs": [
+      "create",
+      "heartbeat",
+      "close"
+    ]
+  }
+}
