@@ -53,13 +53,23 @@ const TASK_SNAPSHOT_EVENTS: &[&str] = &[
 /// in the command row (`c.payload`). Other commands keep no stored reference.
 /// Only a stored reference is read; inline payloads are not.
 macro_rules! run_commands_sql {
-    ($signal:literal, $start:literal) => {
+    ($signal:literal, $start:literal, $php:literal) => {
         concat!(
             "SELECT c.id,c.command_sequence,c.command_type,c.target_scope,c.requested_workflow_run_id,c.resolved_workflow_run_id,c.source,c.status,c.outcome,c.rejection_reason,c.workflow_type,c.workflow_class,c.accepted_at,c.applied_at,c.rejected_at,c.context,s.signal_name,CASE WHEN c.command_type='signal' AND ",
             $signal,
             " THEN s.arguments WHEN c.command_type='start' AND ",
             $start,
-            " THEN c.payload END AS stored_payload FROM workflow_commands c LEFT JOIN workflow_signal_records s ON s.workflow_command_id=c.id WHERE c.workflow_run_id=$1 AND c.workflow_instance_id=$2 ORDER BY c.command_sequence,c.created_at,c.id"
+            " THEN c.payload END AS stored_payload,CASE WHEN ",
+            $php,
+            // An imported PHP history keeps PHP's own external references.
+            " THEN c.payload END AS php_payload_reference,",
+            // `commandReason()` reads only small inline payloads of commands
+            // that were not rejected; references are never read for a reason.
+            "CASE WHEN c.status<>'rejected' AND (c.payload_codec IS NULL OR c.payload_codec='avro') AND LENGTH(c.payload)<=8192 AND NOT (",
+            $start,
+            ") AND NOT (",
+            $php,
+            ") THEN c.payload END AS reason_payload FROM workflow_commands c LEFT JOIN workflow_signal_records s ON s.workflow_command_id=c.id AND s.workflow_instance_id=c.workflow_instance_id WHERE c.workflow_run_id=$1 AND c.workflow_instance_id=$2 ORDER BY c.command_sequence,c.created_at,c.id"
         )
     };
 }
@@ -644,13 +654,17 @@ where
         let command_rows = Self::query(DB::RUN_COMMANDS_SQL)
             .bind(DB::string(&row, "id")?).bind(workflow_id).fetch_all(&self.pool).await?;
         let mut commands = Vec::with_capacity(command_rows.len());
+        let mut reason_codec = None;
         for command in command_rows {
             // `oversizedPayloadPreview` over the stored reference's envelope;
             // an omitted preview also omits the target name, as PHP does.
             let omitted = DB::optional_string(&command, "stored_payload")?
                 .as_deref()
                 .and_then(super::external_resolution::stored_envelope)
-                .is_some_and(|envelope| super::run_describe::oversized(&envelope));
+                .is_some_and(|envelope| super::run_describe::oversized(&envelope))
+                || DB::optional_string(&command, "php_payload_reference")?
+                    .as_deref()
+                    .is_some_and(super::external_resolution::oversized_reference);
             let target_name = DB::optional_string(&command, "signal_name")?.filter(|_| !omitted);
             let mut public = json!({"id":DB::string(&command,"id")?,"sequence":DB::optional_number(&command,"command_sequence")?,
                 "type":DB::string(&command,"command_type")?,"target_scope":DB::string(&command,"target_scope")?,
@@ -668,6 +682,18 @@ where
             let fields = public.as_object_mut().expect("command object");
             if let Some(context) = DB::optional_document_row(&command, "context")? {
                 fields.extend(super::command_context::described(&context));
+            }
+            // `commandReason()`: a command that was not rejected shows the
+            // reason its payload records. Only small inline payloads are read;
+            // every writer caps the reason at 1000 characters.
+            if let Some(payload) = DB::optional_string(&command, "reason_payload")? {
+                let codec = reason_codec.get_or_insert_with(|| crate::codec::ValueCodec::new().ok());
+                if let Some(Ok(crate::codec::Value::Map(map))) = codec.as_ref().map(|codec| codec.decode(&payload))
+                    && let Some(crate::codec::Value::String(reason)) = map.get("reason")
+                    && !reason.is_empty()
+                {
+                    fields.insert("reason".into(), json!(reason));
+                }
             }
             fields.retain(|_, value| !value.is_null());
             commands.push(public);
@@ -712,6 +738,11 @@ where
         page_size: i64,
     ) -> Result<Value> {
         self.describe(workflow_id, Some(run_id)).await?;
+        let run = Self::query("SELECT compatibility,queue FROM workflow_runs WHERE id=$1")
+            .bind(run_id)
+            .fetch_one(&self.pool)
+            .await?;
+        let compatibility = self.compatibility_fields(&run).await?;
         let (events, next) =
             Self::history_page(&self.pool, run_id, after_sequence, page_size).await?;
         let public_events: Vec<Value> = events
@@ -722,9 +753,11 @@ where
             "principal": super::history_presentation::principal(&e["payload"]), "payload": e["payload"]})
             })
             .collect();
-        Ok(
-            json!({"workflow_id": workflow_id, "run_id": run_id, "events": public_events, "next_page_token": next}),
-        )
+        // `HistoryController::show` reports the run's compatibility as
+        // describe does.
+        let mut body = json!({"workflow_id": workflow_id, "run_id": run_id, "events": public_events, "next_page_token": next});
+        body.as_object_mut().expect("history object").extend(compatibility);
+        Ok(body)
     }
 
     pub(crate) async fn signal(
@@ -1282,8 +1315,10 @@ where
             return Ok(());
         }
         let signal_id = text(&payload, "workflow_signal_id")?;
-        let signal = Self::query("SELECT s.*,c.message_sequence FROM workflow_signal_records s JOIN workflow_commands c ON c.id=s.workflow_command_id WHERE s.id=$1 AND s.workflow_run_id=$2")
-            .bind(signal_id).bind(run_id).fetch_one(&mut **tx).await?;
+        // The signal's own command, never one of another workflow (Server #765).
+        let signal = Self::query("SELECT s.*,c.message_sequence FROM workflow_signal_records s JOIN workflow_commands c ON c.id=s.workflow_command_id AND c.workflow_instance_id=s.workflow_instance_id WHERE s.id=$1 AND s.workflow_run_id=$2")
+            .bind(signal_id).bind(run_id).fetch_optional(&mut **tx).await?
+            .ok_or_else(|| refuse(StatusCode::CONFLICT, "signal_command_unavailable"))?;
         if DB::string(&signal, "status")? != "received" {
             return Err(refuse(StatusCode::CONFLICT, "signal_already_applied"));
         }
@@ -1328,9 +1363,10 @@ where
         .await?;
         let command_id = DB::string(&signal, "workflow_command_id")?;
         let applied_at = now();
-        Self::query("UPDATE workflow_commands SET applied_at=$1 WHERE id=$2")
+        Self::query("UPDATE workflow_commands SET applied_at=$1 WHERE id=$2 AND workflow_instance_id=$3")
             .bind(DB::bind_time(applied_at))
             .bind(&command_id)
+            .bind(DB::string(&signal, "workflow_instance_id")?)
             .execute(&mut **tx)
             .await?;
         // PHP's `applySignal` takes a sequence only from the signal's own
@@ -3889,11 +3925,11 @@ where
         };
         let command_type = DB::optional_string(&row, "command_type")?;
         let target_name = match command_type.as_deref() {
-            Some("signal") => Self::query("SELECT signal_name FROM workflow_signal_records WHERE workflow_command_id=$1")
-                .bind(command_id).fetch_optional(&mut **tx).await?
+            Some("signal") => Self::query("SELECT signal_name FROM workflow_signal_records WHERE workflow_command_id=$1 AND workflow_instance_id=$2")
+                .bind(command_id).bind(DB::string(&row, "workflow_instance_id")?).fetch_optional(&mut **tx).await?
                 .map(|record| DB::optional_string(&record, "signal_name")).transpose()?.flatten(),
-            Some("update") => Self::query("SELECT update_name FROM workflow_updates WHERE workflow_command_id=$1")
-                .bind(command_id).fetch_optional(&mut **tx).await?
+            Some("update") => Self::query("SELECT update_name FROM workflow_updates WHERE workflow_command_id=$1 AND workflow_instance_id=$2")
+                .bind(command_id).bind(DB::string(&row, "workflow_instance_id")?).fetch_optional(&mut **tx).await?
                 .map(|record| DB::optional_string(&record, "update_name")).transpose()?.flatten(),
             _ => None,
         };

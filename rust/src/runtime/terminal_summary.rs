@@ -34,11 +34,13 @@ where
             .await?;
         let status = DB::string(&run, "status")?;
         let closed = terminal(&status);
-        // Retention and imported histories need their separately qualified
+        // Retention and v1 projections need their separately qualified
         // counters. Never label a partial scan as a complete stored summary.
-        if DB::optional_instant(&run, "details_pruned_at")?.is_some()
-            || DB::optional_string(&run, "import_source")?.is_some()
-        {
+        // An embedded v2 import is a complete v2 history, projected as PHP's
+        // `RunSummaryProjector` projects it, from the imported rows.
+        let import_source = DB::optional_string(&run, "import_source")?;
+        let embedded_import = import_source.as_deref() == Some(super::workflow_import::IMPORT_SOURCE);
+        if DB::optional_instant(&run, "details_pruned_at")?.is_some() || (import_source.is_some() && !embedded_import) {
             return Ok(());
         }
         // A state outside the qualified producer must not retain an earlier
@@ -129,6 +131,13 @@ where
             .bind(failures.len() as i64).bind(count).bind(bytes).bind(fan_out).bind(pressure).bind(pressure).bind(run_id).execute(&mut **tx).await?;
         if let Some(active) = active {
             Self::write_active_summary_fields(tx, run_id, &active).await?;
+        }
+        if embedded_import {
+            Self::query("UPDATE workflow_run_summaries SET engine_source=$1 WHERE id=$2")
+                .bind(super::workflow_import::ENGINE_SOURCE)
+                .bind(run_id)
+                .execute(&mut **tx)
+                .await?;
         }
         Ok(())
     }

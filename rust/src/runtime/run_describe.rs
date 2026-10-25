@@ -222,6 +222,25 @@ where
         Ok(updates)
     }
 
+    /// A run's compatibility marker and whether the live fleet supports it,
+    /// as describe and history report them.
+    pub(super) async fn compatibility_fields(&self, run: &DB::Row) -> Result<Map<String, Value>> {
+        let compatibility = DB::optional_string(run, "compatibility")?;
+        let queue = DB::optional_string(run, "queue")?;
+        let snapshots = self.fleet_snapshots(now()).await?;
+        let (supported, fleet_reason) = super::run_diagnostics::fleet_supports(
+            &snapshots,
+            compatibility.as_deref().map(str::trim).filter(|value| !value.is_empty()),
+            queue.as_deref(),
+        );
+        Ok(Map::from_iter([
+            ("compatibility".into(), json!(compatibility)),
+            ("compatibility_status".into(), json!(if supported { "compatible" } else { "no_compatible_worker" })),
+            ("compatibility_supported_in_fleet".into(), json!(supported)),
+            ("compatibility_fleet_reason".into(), json!(fleet_reason)),
+        ]))
+    }
+
     /// The fields `formatRun` adds for a described run row.
     pub(super) async fn describe_fields(
         &self,
@@ -249,14 +268,7 @@ where
             Some(row) => (DB::optional_string(&row, "wait_kind")?, DB::optional_string(&row, "wait_reason")?),
             None => (None, None),
         };
-        let compatibility = DB::optional_string(run, "compatibility")?;
-        let queue = DB::optional_string(run, "queue")?;
-        let snapshots = self.fleet_snapshots(now()).await?;
-        let (supported, fleet_reason) = super::run_diagnostics::fleet_supports(
-            &snapshots,
-            compatibility.as_deref().map(str::trim).filter(|value| !value.is_empty()),
-            queue.as_deref(),
-        );
+        let compatibility = self.compatibility_fields(run).await?;
         // `canServeQuery`: failed, cancelled and terminated runs refuse
         // queries; others need a registered route.
         let query_servable = current
@@ -272,10 +284,7 @@ where
         if started["recovery_kind"] == "redrive" && started["continued_from_run_id"].is_string() {
             fields.insert("continued_from_run_id".into(), started["continued_from_run_id"].clone());
         }
-        fields.insert("compatibility".into(), json!(compatibility));
-        fields.insert("compatibility_status".into(), json!(if supported { "compatible" } else { "no_compatible_worker" }));
-        fields.insert("compatibility_supported_in_fleet".into(), json!(supported));
-        fields.insert("compatibility_fleet_reason".into(), json!(fleet_reason));
+        fields.extend(compatibility);
         // `ServerWorkflowControlPlane::withDefinitionRouting`.
         let mut tx = self.begin_read().await?;
         let routing = self.definition_inspect(&mut tx, run, None).await?;
