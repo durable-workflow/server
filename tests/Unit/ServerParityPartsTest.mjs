@@ -1,4 +1,4 @@
-// Each Shared Server fixtures database job runs in four parts on separate
+// Each Shared Server fixtures database job runs in five parts on separate
 // runners. Every step either prepares the part (and so runs in every part) or
 // belongs to exactly one part, so no check runs twice or not at all.
 import test from 'node:test';
@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 
 const workflow = readFileSync('.github/workflows/server-parity.yml', 'utf8');
-const PARTS = ['native-tests', 'corpus', 'cohorts', 'sdk-directions'];
+const PARTS = ['native-tests', 'corpus', 'cohorts', 'sdk-directions', 'corrected-markers'];
 const EVERY_PART = [/^actions\/checkout@/, /^Fetch /, /^Create TLS fixture certificates$/, /^Bootstrap independent /,
   /^Collect /, /^Summarize /, /^Retain /];
 
@@ -39,9 +39,9 @@ function partsOf(step) {
 
 for (const [name, key] of [['mysql-execution', 'Compare three runtimes'], ['postgres-storage', 'Compare three runtimes'],
   ['execution-and-codec', 'Execute and compare Rust']]) {
-  test(`${name} runs every check in exactly one of four parts`, () => {
+  test(`${name} runs every check in exactly one of five parts`, () => {
     const block = job(name);
-    assert.match(block, /^ {8}part: \[native-tests, corpus, cohorts, sdk-directions\]$/m);
+    assert.match(block, /^ {8}part: \[native-tests, corpus, cohorts, sdk-directions, corrected-markers\]$/m);
     assert.match(block, /^ {6}DW_PARITY_PART: \$\{\{ matrix\.part \}\}$/m);
     assert.match(block, /^ {4}timeout-minutes: 60$/m);
     const all = steps(block);
@@ -64,19 +64,24 @@ for (const [name, key] of [['mysql-execution', 'Compare three runtimes'], ['post
     for (const cohort of ['Start the shared native node the cohorts use', 'Compare separate configured role-token cohort',
       'Back up, take over and resume a separate published PHP upgrade source',
       'Back up, take over and resume a published PHP 2.9.7 upgrade source',
-      'Compare corrected markers, ranges, clocks and activity expiry', 'Compare installed local external payload consumers',
+      'Compare installed local external payload consumers',
       'Compare published query deadlines and installed Worker authority',
       'Compare pinned PHP, embedded and native worker-fencing source cohort',
       'Compare SDK temporary database pressure with declared fault limits']) {
       assert.ok(cohorts.includes(cohort), `${name}: ${cohort} is in the cohorts part`);
     }
+    // The corrected marker cohort runs alone in its part, against that part's
+    // own native node, so the cohorts part no longer waits for it.
+    assert.deepEqual(inPart('corrected-markers'), ['Start the native node the corrected marker cohort uses',
+      'Compare corrected markers, ranges, clocks and activity expiry', 'Retire corrected cohort resources'], name);
     // Cleanups still run after a failure within their part.
     for (const step of all.filter(step => step.name.startsWith('Retire '))) {
-      assert.match(step.condition, /^\$\{\{ always\(\) && matrix\.part == 'cohorts' \}\}$/, step.name);
+      const part = step.name === 'Retire corrected cohort resources' ? 'corrected-markers' : 'cohorts';
+      assert.equal(step.condition, `\${{ always() && matrix.part == '${part}' }}`, step.name);
     }
-    // The corrected cohort runs against the cohorts' own native node.
     const corrected = all.find(step => step.name.startsWith('Compare corrected markers'));
-    assert.match(corrected.condition, /steps\.prepare_cohorts\.outcome == 'success'/);
+    assert.match(corrected.condition, /steps\.prepare_corrected\.outcome == 'success'/);
+    assert.equal(all.find(step => step.name === 'Start the native node the corrected marker cohort uses').id, 'prepare_corrected');
     assert.doesNotMatch(block, /steps\.prepare_runtime_comparison\.outcome/);
     assert.equal(all.find(step => step.name === 'Start the shared native node the cohorts use').id, 'prepare_cohorts');
     // Each part retains its own summary.
