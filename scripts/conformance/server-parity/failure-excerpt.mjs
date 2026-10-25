@@ -2,7 +2,9 @@
 // in observation order, so a flake can be diagnosed from the retained artifact
 // without keeping the record. It names each request's method, path, status,
 // transport flags, worker and poll identity. Request and response bodies,
-// payloads and credentials are never read into it.
+// payloads and credentials are never read into it. Stored workflow task rows
+// are listed by their counters and clock fields too, so a reference repair
+// pass that touched a task during a phase shows which task and when.
 
 const SKIP = new Set(['request', 'response', 'request_body', 'response_body', 'response_bytes_base64',
   'transport_jsonl', 'stdout', 'stderr', 'fixture']);
@@ -20,6 +22,21 @@ function line(path, item) {
   return fields.join(' ');
 }
 
+// The task fields a stored-state line names: identities, enums, counters and
+// clocks. Payloads, errors and leases' owners are left out.
+const TASK_FIELDS = ['workflow_run_id', 'task_type', 'status', 'attempt_count', 'repair_count', 'available_at',
+  'leased_at', 'lease_expires_at', 'last_dispatched_at', 'last_claim_failed_at', 'repair_available_at',
+  'created_at', 'updated_at'];
+
+function taskLine(path, row) {
+  const fields = [`${path} task ${typeof row.id === 'string' || typeof row.id === 'number' ? row.id : '?'}`];
+  for (const key of TASK_FIELDS) {
+    const value = row[key];
+    if (typeof value === 'string' || typeof value === 'number') fields.push(`${key}=${String(value).slice(0, 64)}`);
+  }
+  return fields.join(' ');
+}
+
 function walk(value, path, out, limit) {
   if (out.length >= limit || value === null || typeof value !== 'object') return;
   if (Array.isArray(value)) {
@@ -29,8 +46,15 @@ function walk(value, path, out, limit) {
   if (typeof value.method === 'string' && typeof value.path === 'string' && Object.hasOwn(value, 'status')) {
     out.push(line(path, value));
   }
+  const tasks = value.tables?.workflow_tasks?.rows;
+  if (Array.isArray(tasks)) {
+    for (const [index, row] of tasks.entries()) {
+      if (out.length >= limit) return;
+      if (row && typeof row === 'object') out.push(taskLine(`${path}.tables.workflow_tasks[${index}]`, row));
+    }
+  }
   for (const [key, child] of Object.entries(value)) {
-    if (!SKIP.has(key)) walk(child, `${path}.${key}`, out, limit);
+    if (!SKIP.has(key) && key !== 'tables') walk(child, `${path}.${key}`, out, limit);
   }
 }
 
