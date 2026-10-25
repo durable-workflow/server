@@ -24,6 +24,13 @@ final class WorkerSessionRegistry
 
     public const MAX_CONCURRENT_ACTIVITIES = 1000;
 
+    /**
+     * A worker that declares this capability at registration sends its
+     * registration token on every explicit worker session create, heartbeat
+     * and close, and the server refuses those requests without it.
+     */
+    public const REGISTRATION_TOKEN_CAPABILITY = 'worker_session_registration_token';
+
     private const DEFAULT_TTL_SECONDS = 1800;
 
     private const DEFAULT_MAX_CONCURRENT_ACTIVITIES = 1;
@@ -753,23 +760,37 @@ final class WorkerSessionRegistry
 
     /**
      * A registration token the request sends must be the worker's current
-     * one. Without it, a stale process and its same-ID replacement are
-     * indistinguishable once the replacement has reacquired.
+     * one. Without a token, a stale process and its same-ID replacement are
+     * indistinguishable once the replacement has reacquired, so a worker
+     * whose current registration declares REGISTRATION_TOKEN_CAPABILITY must
+     * send it on every explicit create, heartbeat and close. A registration
+     * without the capability keeps the published contract: a request without
+     * a token acts for the worker ID's current registration.
      *
      * @return array<string, mixed>|null
      */
     private function staleRegistration(string $namespace, string $workerId, ?string $registrationToken): ?array
     {
-        if ($registrationToken === null) {
-            return null;
-        }
-
+        /** @var WorkerRegistration|null $current */
         $current = WorkerRegistration::query()
             ->where('namespace', $namespace)
             ->where('worker_id', $workerId)
-            ->value('registration_token');
+            ->first(['registration_token', 'capabilities']);
 
-        return is_string($current) && hash_equals($current, $registrationToken)
+        if ($registrationToken === null) {
+            return $current instanceof WorkerRegistration
+                && in_array(self::REGISTRATION_TOKEN_CAPABILITY, $current->capabilities ?? [], true)
+                ? $this->failure(
+                    'stale_worker_registration',
+                    'The worker\'s current registration requires its registration token on worker session requests. Send it, or register again and reacquire the session.',
+                    409,
+                )
+                : null;
+        }
+
+        return $current instanceof WorkerRegistration
+            && is_string($current->registration_token)
+            && hash_equals($current->registration_token, $registrationToken)
             ? null
             : $this->failure(
                 'stale_worker_registration',

@@ -36,6 +36,12 @@ const SESSIONS_LISTED: &str = "SELECT id,session_id,connection,queue,requirement
 const HELD_SESSIONS: &str = "SELECT COUNT(*) FROM workflow_worker_sessions WHERE namespace=$1 AND lease_owner=$2 AND status='active' AND (lease_expires_at IS NULL OR lease_expires_at>$3) AND session_id<>$4";
 const HOLDER: &str = "SELECT task_queue,status,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2";
 /// The worker's current registration token, as the poll fence reads it.
+/// The capabilities the worker's current registration declared.
+const REGISTRATION_CAPABILITIES: &str = "SELECT capabilities FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2";
+/// `WorkerSessionRegistry::REGISTRATION_TOKEN_CAPABILITY`: a worker that
+/// declares it sends its registration token on every explicit session
+/// create, heartbeat and close, and requests without it are refused.
+const REGISTRATION_TOKEN_CAPABILITY: &str = "worker_session_registration_token";
 const CURRENT_TOKEN: &str = "SELECT token FROM dw_worker_registration_incarnations WHERE namespace=$1 AND worker_id=$2 AND status='active' ORDER BY created_at DESC LIMIT 1";
 /// The registration incarnation that acquired or last renewed a session.
 const SESSION_HOLDER: &str = "SELECT incarnation FROM dw_worker_session_holders WHERE namespace=$1 AND session_id=$2";
@@ -954,11 +960,21 @@ store_methods! {
     }
 
     /// A registration token the request sent must be the worker's current
-    /// one. Without it, a stale process and its same-ID replacement are
-    /// indistinguishable once the replacement has reacquired.
+    /// one. Without a token, a stale process and its same-ID replacement are
+    /// indistinguishable once the replacement has reacquired, so a worker
+    /// whose current registration declares [`REGISTRATION_TOKEN_CAPABILITY`]
+    /// must send it on every explicit create, heartbeat and close. Without
+    /// the capability, a request without a token acts for the worker ID's
+    /// current registration, as published PHP's does.
     async fn stale_registration(&self, tx: &mut Transaction<'_, DB>, worker_id: &str, token: Option<&str>) -> Result<Option<Answer>> {
         let Some(token) = token else {
-            return Ok(None);
+            let declared = Self::query(REGISTRATION_CAPABILITIES)
+                .bind(self.namespace.as_ref()).bind(worker_id).fetch_optional(&mut **tx).await?
+                .map(|row| DB::optional_document_row(&row, "capabilities")).transpose()?.flatten()
+                .is_some_and(|flags| flags.as_array().is_some_and(|flags| flags.iter().any(|flag| flag == REGISTRATION_TOKEN_CAPABILITY)));
+            return Ok(declared.then(|| failure("stale_worker_registration",
+                "The worker's current registration requires its registration token on worker session requests. Send it, or register again and reacquire the session.",
+                StatusCode::CONFLICT, Map::new())));
         };
         let current = self.current_token(tx, worker_id).await?;
         Ok((!current.is_some_and(|current| same_token(&current, token))).then(|| failure("stale_worker_registration",

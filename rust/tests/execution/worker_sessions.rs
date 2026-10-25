@@ -225,11 +225,21 @@ async fn session_numbers_are_bounded_on_every_path() {
 }
 
 async fn register_holder(app: &Router, worker: &str, queue: &str) -> String {
+    register_with(app, worker, queue, json!(["worker_sessions", "gpu"])).await
+}
+
+/// A holder that declares it sends its registration token on every
+/// explicit session request, so the server requires it.
+async fn register_token_holder(app: &Router, worker: &str, queue: &str) -> String {
+    register_with(app, worker, queue, json!(["worker_sessions", "gpu", "worker_session_registration_token"])).await
+}
+
+async fn register_with(app: &Router, worker: &str, queue: &str, capabilities: Value) -> String {
     let manifest = json!({"local_activities":{"supported":false,"minimum_protocol_version":"1.18"},
         "sticky_execution":{"supported":false,"minimum_protocol_version":"1.18"},
         "worker_sessions":{"supported":true,"minimum_protocol_version":"1.18"}});
     let (status, answer) = request(app, "POST", "/api/worker/register", json!({"worker_id":worker,"task_queue":queue,"runtime":"php",
-        "supported_workflow_types":["echo"],"supported_activity_types":["act"],"capabilities":["worker_sessions","gpu"],
+        "supported_workflow_types":["echo"],"supported_activity_types":["act"],"capabilities":capabilities,
         "capability_manifest":manifest})).await;
     assert_eq!(status, StatusCode::CREATED, "{answer}");
     answer["registration_token"].as_str().expect("a registration token").to_owned()
@@ -237,60 +247,99 @@ async fn register_holder(app: &Router, worker: &str, queue: &str) -> String {
 
 // A same-ID re-registration orphans the sessions the previous registration
 // held (Server #740): the replacement reacquires, never reuses, and a request
-// that sends the replaced registration's token is refused without changing
-// anything. A worker heartbeat keeps the registration, so its holder reuses.
+// from the replaced process, with its old token or with none, is refused
+// without changing anything. A worker heartbeat keeps the registration, so
+// its holder reuses. The worker declared that it sends its token.
 #[tokio::test]
 async fn a_same_id_replacement_reacquires_the_session_and_fences_the_old_process() {
     let database = TestDatabase::new().await;
     let app = router(database.open().await.unwrap());
-    let create = |token: Option<&str>| {
-        let mut body = json!({"worker_id":"gpu-worker","session_id":"gpu-state","requirements":["gpu"]});
+    let with_token = |mut body: Value, token: Option<&str>| {
         if let Some(token) = token {
             body["registration_token"] = json!(token);
         }
-        create(&app, body)
+        body
     };
+    let create = |token: Option<&str>, options: Value| {
+        let mut body = json!({"worker_id":"gpu-worker","session_id":"gpu-state","requirements":["gpu"]});
+        for (key, value) in options.as_object().into_iter().flatten() {
+            body[key] = value.clone();
+        }
+        create(&app, with_token(body, token))
+    };
+    let heartbeat = |token: Option<&str>| request(&app, "POST", "/api/worker/sessions/gpu-state/heartbeat",
+        with_token(json!({"worker_id":"gpu-worker","lease_seconds":900}), token));
+    let close = |token: Option<&str>| request(&app, "DELETE", "/api/worker/sessions/gpu-state",
+        with_token(json!({"worker_id":"gpu-worker"}), token));
+    let shown = || request(&app, "GET", "/api/worker-sessions/gpu-state", Value::Null);
+
+    let first = register_token_holder(&app, "gpu-worker", "sessions").await;
+    let (status, created) = create(Some(&first), json!({})).await;
+    assert_eq!((status, created["outcome"].clone()), (StatusCode::CREATED, json!("created")), "{created}");
+    let (status, beat) = request(&app, "POST", "/api/worker/heartbeat", json!({"worker_id":"gpu-worker"})).await;
+    assert_eq!(status, StatusCode::OK, "{beat}");
+    let (status, reused) = create(Some(&first), json!({})).await;
+    assert_eq!((status, reused["outcome"].clone()), (StatusCode::OK, json!("reused")), "{reused}");
+
+    let second = register_token_holder(&app, "gpu-worker", "sessions").await;
+    assert_ne!(first, second);
+    let (status, orphaned) = heartbeat(Some(&second)).await;
+    assert_eq!((status, orphaned["reason"].clone(), orphaned["session"]["status"].clone(), orphaned["session"]["failure_reason"].clone()),
+        (StatusCode::CONFLICT, json!("session_not_active"), json!("orphaned"), json!("worker_registration_replaced")), "{orphaned}");
+    for refused in [heartbeat(Some(&first)).await, create(Some(&first), json!({})).await] {
+        assert_eq!((refused.0, refused.1["reason"].clone()), (StatusCode::CONFLICT, json!("stale_worker_registration")), "{}", refused.1);
+    }
+    let (status, reacquired) = create(Some(&second), json!({})).await;
+    assert_eq!((status, reacquired["outcome"].clone(), reacquired["session"]["status"].clone()),
+        (StatusCode::OK, json!("reacquired"), json!("active")), "{reacquired}");
+    let (status, current) = heartbeat(Some(&second)).await;
+    assert_eq!((status, current["outcome"].clone()), (StatusCode::OK, json!("heartbeat_recorded")), "{current}");
+
+    // The replaced process can neither reuse, renew nor close the session,
+    // with its old token or with none, and nothing changes.
+    let before = shown().await;
+    assert_eq!(before.0, StatusCode::OK, "{}", before.1);
+    for stale in [Some(first.as_str()), None] {
+        for refused in [create(stale, json!({"lease_seconds":5,"max_concurrent_activities":9})).await, heartbeat(stale).await, close(stale).await] {
+            assert_eq!((refused.0, refused.1["reason"].clone()), (StatusCode::CONFLICT, json!("stale_worker_registration")), "{}", refused.1);
+        }
+        assert_eq!(shown().await, before, "a refused request changes nothing");
+    }
+    let (status, invalid) = close(Some("not-a-token")).await;
+    assert_eq!((status, invalid["errors"]["registration_token"][0].clone()),
+        (StatusCode::UNPROCESSABLE_ENTITY, json!("The registration token field format is invalid.")), "{invalid}");
+    let (status, closed) = close(Some(&second)).await;
+    assert_eq!((status, closed["outcome"].clone()), (StatusCode::OK, json!("closed")), "{closed}");
+}
+
+// Published workers send no registration token. Without the token
+// capability, a request without one acts for the worker ID's current
+// registration, as published PHP's does; a token that is sent must be current.
+#[tokio::test]
+async fn without_the_token_capability_a_tokenless_request_acts_for_the_current_registration() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let body = json!({"worker_id":"gpu-worker","session_id":"gpu-legacy","requirements":["gpu"]});
+    let first = register_holder(&app, "gpu-worker", "sessions").await;
+    let (status, created) = create(&app, body.clone()).await;
+    assert_eq!((status, created["outcome"].clone()), (StatusCode::CREATED, json!("created")), "{created}");
+    register_holder(&app, "gpu-worker", "sessions").await;
     let heartbeat = |token: Option<&str>| {
         let mut body = json!({"worker_id":"gpu-worker"});
         if let Some(token) = token {
             body["registration_token"] = json!(token);
         }
-        request(&app, "POST", "/api/worker/sessions/gpu-state/heartbeat", body)
+        request(&app, "POST", "/api/worker/sessions/gpu-legacy/heartbeat", body)
     };
-
-    let first = register_holder(&app, "gpu-worker", "sessions").await;
-    let (status, created) = create(Some(&first)).await;
-    assert_eq!((status, created["outcome"].clone()), (StatusCode::CREATED, json!("created")), "{created}");
-    let (status, beat) = request(&app, "POST", "/api/worker/heartbeat", json!({"worker_id":"gpu-worker"})).await;
-    assert_eq!(status, StatusCode::OK, "{beat}");
-    let (status, reused) = create(None).await;
-    assert_eq!((status, reused["outcome"].clone()), (StatusCode::OK, json!("reused")), "{reused}");
-
-    let second = register_holder(&app, "gpu-worker", "sessions").await;
-    assert_ne!(first, second);
     let (status, orphaned) = heartbeat(None).await;
-    assert_eq!((status, orphaned["reason"].clone(), orphaned["session"]["status"].clone(), orphaned["session"]["failure_reason"].clone()),
-        (StatusCode::CONFLICT, json!("session_not_active"), json!("orphaned"), json!("worker_registration_replaced")), "{orphaned}");
-    for refused in [heartbeat(Some(&first)).await, create(Some(&first)).await] {
-        assert_eq!((refused.0, refused.1["reason"].clone()), (StatusCode::CONFLICT, json!("stale_worker_registration")), "{}", refused.1);
-    }
-    let (status, reacquired) = create(Some(&second)).await;
-    assert_eq!((status, reacquired["outcome"].clone(), reacquired["session"]["status"].clone()),
-        (StatusCode::OK, json!("reacquired"), json!("active")), "{reacquired}");
+    assert_eq!((status, orphaned["session"]["failure_reason"].clone()), (StatusCode::CONFLICT, json!("worker_registration_replaced")), "{orphaned}");
+    let (status, reacquired) = create(&app, body).await;
+    assert_eq!((status, reacquired["outcome"].clone()), (StatusCode::OK, json!("reacquired")), "{reacquired}");
+    let (status, beat) = heartbeat(None).await;
+    assert_eq!((status, beat["outcome"].clone()), (StatusCode::OK, json!("heartbeat_recorded")), "{beat}");
     let (status, stale) = heartbeat(Some(&first)).await;
     assert_eq!((status, stale["reason"].clone()), (StatusCode::CONFLICT, json!("stale_worker_registration")), "{stale}");
-    for current in [heartbeat(Some(&second)).await, heartbeat(None).await] {
-        assert_eq!((current.0, current.1["outcome"].clone()), (StatusCode::OK, json!("heartbeat_recorded")), "{}", current.1);
-    }
-    let (status, refused) = request(&app, "DELETE", "/api/worker/sessions/gpu-state",
-        json!({"worker_id":"gpu-worker","registration_token":first})).await;
-    assert_eq!((status, refused["reason"].clone()), (StatusCode::CONFLICT, json!("stale_worker_registration")), "{refused}");
-    let (status, invalid) = request(&app, "DELETE", "/api/worker/sessions/gpu-state",
-        json!({"worker_id":"gpu-worker","registration_token":"not-a-token"})).await;
-    assert_eq!((status, invalid["errors"]["registration_token"][0].clone()),
-        (StatusCode::UNPROCESSABLE_ENTITY, json!("The registration token field format is invalid.")), "{invalid}");
-    let (status, closed) = request(&app, "DELETE", "/api/worker/sessions/gpu-state",
-        json!({"worker_id":"gpu-worker","registration_token":second})).await;
+    let (status, closed) = request(&app, "DELETE", "/api/worker/sessions/gpu-legacy", json!({"worker_id":"gpu-worker"})).await;
     assert_eq!((status, closed["outcome"].clone()), (StatusCode::OK, json!("closed")), "{closed}");
 }
 

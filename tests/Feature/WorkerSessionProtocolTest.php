@@ -1107,17 +1107,23 @@ class WorkerSessionProtocolTest extends TestCase
 
     public function test_a_same_id_replacement_reacquires_the_session_and_fences_the_old_process(): void
     {
+        // The worker declares that it sends its registration token on every
+        // explicit session request, so the server requires it.
         $register = fn (): ?string => $this->registerWorkerThroughProtocol(
             workerId: 'gpu-worker',
             taskQueue: 'gpu-activities',
             supportedActivityTypes: ['tests.external-greeting-activity'],
-            capabilities: ['gpu:nvidia-l4'],
+            capabilities: ['gpu:nvidia-l4', WorkerSessionRegistry::REGISTRATION_TOKEN_CAPABILITY],
         );
         $holder = static fn (): ?string => WorkerSessionLease::query()->where('session_id', 'gpu-state')->value('lease_owner_incarnation');
-        $create = fn (?string $token = null) => $this->postJson('/api/worker/sessions', array_filter([
+        $row = static fn (): array => WorkerSessionLease::query()->where('session_id', 'gpu-state')->firstOrFail()->getAttributes();
+        $create = fn (?string $token = null, array $options = []) => $this->postJson('/api/worker/sessions', array_filter([
             'worker_id' => 'gpu-worker', 'session_id' => 'gpu-state', 'requirements' => ['gpu:nvidia-l4'], 'registration_token' => $token,
+            ...$options,
         ]), $this->workerHeaders());
         $heartbeat = fn (?string $token = null) => $this->postJson('/api/worker/sessions/gpu-state/heartbeat',
+            array_filter(['worker_id' => 'gpu-worker', 'registration_token' => $token, 'lease_seconds' => 900]), $this->workerHeaders());
+        $close = fn (?string $token = null) => $this->deleteJson('/api/worker/sessions/gpu-state',
             array_filter(['worker_id' => 'gpu-worker', 'registration_token' => $token]), $this->workerHeaders());
 
         $first = $register();
@@ -1127,13 +1133,13 @@ class WorkerSessionProtocolTest extends TestCase
 
         // A worker heartbeat keeps the registration, so the holder reuses it.
         $this->postJson('/api/worker/heartbeat', ['worker_id' => 'gpu-worker'], $this->workerHeaders())->assertOk();
-        $create()->assertOk()->assertJsonPath('outcome', 'reused');
+        $create($first)->assertOk()->assertJsonPath('outcome', 'reused');
 
         // A same-ID re-registration rotates the token: the session is orphaned.
         $second = $register();
         $this->assertIsString($second);
         $this->assertNotSame($first, $second);
-        $heartbeat()
+        $heartbeat($second)
             ->assertStatus(409)
             ->assertJsonPath('reason', 'session_not_active')
             ->assertJsonPath('session.status', 'orphaned')
@@ -1145,13 +1151,49 @@ class WorkerSessionProtocolTest extends TestCase
         // The replacement reacquires, never reuses, and becomes the holder.
         $create($second)->assertOk()->assertJsonPath('outcome', 'reacquired')->assertJsonPath('session.status', 'active');
         $this->assertSame(hash('sha256', $second), $holder());
-        $heartbeat($first)->assertStatus(409)->assertJsonPath('reason', 'stale_worker_registration');
         $heartbeat($second)->assertOk()->assertJsonPath('outcome', 'heartbeat_recorded');
+
+        // The stale process, with its old token or with none, can neither
+        // reuse, renew nor close the replacement's session, and changes nothing.
+        $before = $row();
+        foreach ([$first, null] as $stale) {
+            $create($stale, ['lease_seconds' => 5, 'max_concurrent_activities' => 9])
+                ->assertStatus(409)->assertJsonPath('reason', 'stale_worker_registration');
+            $heartbeat($stale)->assertStatus(409)->assertJsonPath('reason', 'stale_worker_registration');
+            $close($stale)->assertStatus(409)->assertJsonPath('reason', 'stale_worker_registration');
+            $this->assertSame($before, $row(), 'a refused request changes nothing');
+        }
+        $close($second)->assertOk()->assertJsonPath('outcome', 'closed');
+    }
+
+    public function test_without_the_token_capability_a_tokenless_request_acts_for_the_current_registration(): void
+    {
+        // Published workers do not send a registration token. For them the
+        // published contract holds: a request without one acts for the worker
+        // ID's current registration, while a token that is sent must be current.
+        $register = fn (): ?string => $this->registerWorkerThroughProtocol(
+            workerId: 'gpu-worker',
+            taskQueue: 'gpu-activities',
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+            capabilities: ['gpu:nvidia-l4'],
+        );
+        $create = fn (?string $token = null) => $this->postJson('/api/worker/sessions', array_filter([
+            'worker_id' => 'gpu-worker', 'session_id' => 'gpu-legacy', 'requirements' => ['gpu:nvidia-l4'], 'registration_token' => $token,
+        ]), $this->workerHeaders());
+        $heartbeat = fn (?string $token = null) => $this->postJson('/api/worker/sessions/gpu-legacy/heartbeat',
+            array_filter(['worker_id' => 'gpu-worker', 'registration_token' => $token]), $this->workerHeaders());
+
+        $first = $register();
+        $create()->assertCreated()->assertJsonPath('outcome', 'created');
+        $second = $register();
+        $heartbeat()->assertStatus(409)->assertJsonPath('session.failure_reason', 'worker_registration_replaced');
+        $create()->assertOk()->assertJsonPath('outcome', 'reacquired');
+        $this->assertSame(hash('sha256', (string) $second),
+            WorkerSessionLease::query()->where('session_id', 'gpu-legacy')->value('lease_owner_incarnation'));
         $heartbeat()->assertOk()->assertJsonPath('outcome', 'heartbeat_recorded');
-        $this->deleteJson('/api/worker/sessions/gpu-state', ['worker_id' => 'gpu-worker', 'registration_token' => $first],
-            $this->workerHeaders())->assertStatus(409)->assertJsonPath('reason', 'stale_worker_registration');
-        $this->deleteJson('/api/worker/sessions/gpu-state', ['worker_id' => 'gpu-worker', 'registration_token' => $second],
-            $this->workerHeaders())->assertOk()->assertJsonPath('outcome', 'closed');
+        $heartbeat($first)->assertStatus(409)->assertJsonPath('reason', 'stale_worker_registration');
+        $this->deleteJson('/api/worker/sessions/gpu-legacy', ['worker_id' => 'gpu-worker'], $this->workerHeaders())
+            ->assertOk()->assertJsonPath('outcome', 'closed');
     }
 
     public function test_a_same_id_replacement_reacquires_a_session_through_an_activity_claim(): void

@@ -247,7 +247,7 @@
     "workerRegistrationToken": {
       "type": "string",
       "pattern": "^[a-f0-9]{32}$",
-      "description": "The token worker registration returned. When sent, it must be the worker's current registration, otherwise the request is refused with stale_worker_registration and changes nothing. A same-ID re-registration orphans the sessions the previous registration held (worker_registration_replaced) until they are reacquired."
+      "description": "The token worker registration returned. When sent, it must be the worker's current registration, otherwise the request is refused with stale_worker_registration and changes nothing. A worker whose current registration declared the worker_session_registration_token capability must send it on every explicit create, heartbeat and close: without it the request is refused the same way, so a replaced process can neither reuse, renew nor close its replacement's session. Without that capability a request without a token acts for the worker ID's current registration, as before the token existed. A same-ID re-registration orphans the sessions the previous registration held (worker_registration_replaced) until they are reacquired. Session-bound activity claims and their heartbeats keep their own attempt leases."
     },
     "workerSessionHeartbeatRequest": {
       "type": "object",
