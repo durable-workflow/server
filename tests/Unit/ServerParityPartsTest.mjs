@@ -120,3 +120,9 @@ test('the database bootstraps run the native suites only in the native-tests par
     assert.match(bootstrap.text, /'if \[ "\$DW_PARITY_PART" = native-tests \]; then cargo test [^']* --test execution [^']*; fi && cargo build --locked --offline'/, name);
   }
 });
+
+test('every readiness probe bounds each request, so one silent connection cannot stall a part', () => {
+  const probes = workflow.match(/curl[^\n]*\n?[^\n]*\/api\/ready/g) ?? [];
+  assert.ok(probes.length >= 20, `${probes.length} readiness probes`);
+  for (const probe of probes) assert.match(probe, /--connect-timeout \d+ --max-time \d+ "?http:/, probe);
+});

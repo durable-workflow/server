@@ -509,7 +509,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-php:8080/api/ready > parity-evidence/php-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-php:8080/api/ready > parity-evidence/php-readiness.json; then
               ready=1
               break
             fi
@@ -547,7 +547,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-native-a:8080/api/ready > parity-evidence/native-a-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-native-a:8080/api/ready > parity-evidence/native-a-readiness.json; then
               ready=1
               break
             fi
@@ -558,7 +558,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-native-b:8080/api/ready > parity-evidence/native-b-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-native-b:8080/api/ready > parity-evidence/native-b-readiness.json; then
               ready=1
               break
             fi
@@ -655,7 +655,7 @@ jobs:
           docker kill --signal=KILL "$RESOURCE_SCOPE-native-a"
           test "$(docker inspect --format='{{.State.ExitCode}}' "$RESOURCE_SCOPE-native-a")" = 137
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-            -fsS http://parity-native-b:8080/api/ready > parity-evidence/native-survivor-readiness.json
+            -fsS --connect-timeout 2 --max-time 5 http://parity-native-b:8080/api/ready > parity-evidence/native-survivor-readiness.json
           docker run -d --name "$RESOURCE_SCOPE-recovered" --network "$RESOURCE_SCOPE" --network-alias=parity-recovered \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
             -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token -e DW_BIND_ADDRESS=0.0.0.0:8080 \
@@ -666,7 +666,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-recovered:8080/api/ready > parity-evidence/native-restart-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-recovered:8080/api/ready > parity-evidence/native-restart-readiness.json; then
               ready=1
               break
             fi
@@ -736,7 +736,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-native-a:8080/api/ready > parity-evidence/sdk-native-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-native-a:8080/api/ready > parity-evidence/sdk-native-readiness.json; then
               ready=1
               break
             fi
@@ -763,7 +763,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-native-b:8080/api/ready > parity-evidence/cohort-native-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-native-b:8080/api/ready > parity-evidence/cohort-native-readiness.json; then
               ready=1
               break
             fi
@@ -816,7 +816,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-native-b:8080/api/ready > parity-evidence/corrected-native-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-native-b:8080/api/ready > parity-evidence/corrected-native-readiness.json; then
               ready=1
               break
             fi
@@ -1108,7 +1108,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-php:8080/api/ready > parity-evidence/php-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-php:8080/api/ready > parity-evidence/php-readiness.json; then
               ready=1
               break
             fi
@@ -1145,7 +1145,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-native-a:8080/api/ready > parity-evidence/native-a-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-native-a:8080/api/ready > parity-evidence/native-a-readiness.json; then
               ready=1
               break
             fi
@@ -1156,7 +1156,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-native-b:8080/api/ready > parity-evidence/native-b-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-native-b:8080/api/ready > parity-evidence/native-b-readiness.json; then
               ready=1
               break
             fi
@@ -1257,7 +1257,7 @@ jobs:
           docker kill --signal=KILL "$RESOURCE_SCOPE-native-a"
           test "$(docker inspect --format='{{.State.ExitCode}}' "$RESOURCE_SCOPE-native-a")" = 137
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-            -fsS http://parity-native-b:8080/api/ready > parity-evidence/native-survivor-readiness.json
+            -fsS --connect-timeout 2 --max-time 5 http://parity-native-b:8080/api/ready > parity-evidence/native-survivor-readiness.json
           docker run -d --name "$RESOURCE_SCOPE-recovered" --network "$RESOURCE_SCOPE" --network-alias=parity-recovered \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
             -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token -e DW_BIND_ADDRESS=0.0.0.0:8080 \
@@ -1268,7 +1268,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-recovered:8080/api/ready > parity-evidence/native-restart-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-recovered:8080/api/ready > parity-evidence/native-restart-readiness.json; then
               ready=1
               break
             fi
@@ -1338,7 +1338,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-native-a:8080/api/ready > parity-evidence/sdk-native-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-native-a:8080/api/ready > parity-evidence/sdk-native-readiness.json; then
               ready=1
               break
             fi
@@ -1365,7 +1365,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-native-b:8080/api/ready > parity-evidence/cohort-native-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-native-b:8080/api/ready > parity-evidence/cohort-native-readiness.json; then
               ready=1
               break
             fi
@@ -1420,7 +1420,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-native-b:8080/api/ready > parity-evidence/corrected-native-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-native-b:8080/api/ready > parity-evidence/corrected-native-readiness.json; then
               ready=1
               break
             fi
@@ -1750,7 +1750,7 @@ jobs:
             ready=0
             for attempt in $(seq 1 30); do
               if docker run --rm --user=1000:1000 --entrypoint curl --network "$RESOURCE_SCOPE" "$image" \
-                -fsS "http://parity-$target:8080/api/ready" > "parity-evidence/$target-readiness.json"; then
+                -fsS --connect-timeout 2 --max-time 5 "http://parity-$target:8080/api/ready" > "parity-evidence/$target-readiness.json"; then
                 ready=1
                 break
               fi
@@ -1907,7 +1907,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --entrypoint curl --network "$RESOURCE_SCOPE" "$image" \
-              -fsS http://parity-recovered:8080/api/ready > parity-evidence/restart-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-recovered:8080/api/ready > parity-evidence/restart-readiness.json; then
               ready=1
               break
             fi
@@ -1952,7 +1952,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-rust:8080/api/ready > parity-evidence/sdk-native-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-rust:8080/api/ready > parity-evidence/sdk-native-readiness.json; then
               ready=1
               break
             fi
@@ -1986,7 +1986,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-recovered:8080/api/ready > parity-evidence/cohort-native-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-recovered:8080/api/ready > parity-evidence/cohort-native-readiness.json; then
               ready=1
               break
             fi
@@ -2054,7 +2054,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-recovered:8080/api/ready > parity-evidence/corrected-native-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-recovered:8080/api/ready > parity-evidence/corrected-native-readiness.json; then
               ready=1
               break
             fi
