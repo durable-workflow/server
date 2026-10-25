@@ -20,11 +20,6 @@ DELETE /api/service-endpoints/{endpointName}/services/{serviceName}/operations/{
 POST /api/service-endpoints/{endpointName}/services/{serviceName}/operations/{operationName}/execute
 GET /api/service-endpoints/{endpointName}/services/{serviceName}/operations/{operationName}/service-calls/{serviceCallId}
 POST /api/service-endpoints/{endpointName}/services/{serviceName}/operations/{operationName}/service-calls/{serviceCallId}/cancel
-GET /api/worker-sessions
-GET /api/worker-sessions/{sessionId}
-POST /api/worker/sessions
-DELETE /api/worker/sessions/{sessionId}
-POST /api/worker/sessions/{sessionId}/heartbeat
 POST /api/worker/workflow-tasks/{taskId}/cancellation-scopes/checkpoint
 POST /api/worker/workflow-tasks/{taskId}/cancellation-scopes/deliver
 POST /api/worker/workflow-tasks/{taskId}/cancellation-scopes/open
