@@ -246,6 +246,40 @@ async fn lineage_links_only_existing_runs_of_one_namespace() {
     assert_eq!((foreign["links"]["parents"].clone(), foreign["links"]["children"].clone()), (json!([]), json!([])), "{foreign}");
 }
 
+// Two bundles that each carry the same parent/child link, imported at the
+// same moment: native serializes durable transactions, so whichever imports
+// second sees the first run committed and writes the link exactly once.
+#[tokio::test]
+async fn reciprocal_imports_at_the_same_moment_write_their_link_once() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let other = database.open().await.unwrap();
+    let (first, second) = (router(runtime), router(other));
+    let (parent_run, child_run, link_id) = (fresh_id(), fresh_id(), ulid::Ulid::new().to_string());
+    let entry = |side: &str, instance: &str, run: &str| {
+        let mut entry = link(side, instance, run);
+        entry["id"] = json!(link_id);
+        entry["type"] = json!("child");
+        entry
+    };
+    let parent = bundle("terminated", "wi-reciprocal-parent", &[("{u:1}", parent_run.as_str())], |document| {
+        document["links"]["children"] = json!([entry("children", "wi-reciprocal-child", &child_run)]);
+    });
+    let child = bundle("terminated", "wi-reciprocal-child", &[("{u:1}", child_run.as_str())], |document| {
+        document["links"]["parents"] = json!([entry("parents", "wi-reciprocal-parent", &parent_run)]);
+    });
+    let ((parent_status, parent_report), (child_status, child_report)) =
+        tokio::join!(import(&first, "default", &parent), import(&second, "default", &child));
+    assert_eq!(parent_status, StatusCode::CREATED, "{parent_report}");
+    assert_eq!(child_status, StatusCode::CREATED, "{child_report}");
+    let written = parent_report["rows"]["workflow_links"].as_i64().unwrap() + child_report["rows"]["workflow_links"].as_i64().unwrap();
+    assert_eq!(written, 1, "{parent_report} {child_report}");
+    let exported = snapshot(&first, "default", "wi-reciprocal-child", &child_run).await;
+    let parents = exported["links"]["parents"].as_array().unwrap();
+    assert_eq!(parents.len(), 1, "{exported}");
+    assert_eq!((parents[0]["id"].clone(), parents[0]["parent_workflow_run_id"].clone()), (json!(link_id), json!(parent_run)));
+}
+
 #[tokio::test]
 async fn foreign_row_references_are_refused_before_anything_is_written() {
     let database = TestDatabase::new().await;
