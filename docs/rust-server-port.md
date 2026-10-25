@@ -82,11 +82,12 @@ Updated October 24, 2026.
     ([#737](https://github.com/durable-workflow/server/issues/737)).
 
   No expectation is edited to make native pass.
-- **Parity surface.** Native serves 138 of the 175 API route methods in
+- **Parity surface.** Native serves 139 of the 175 API route methods in
   published 2.11.1's route table, with message streams, update validation,
-  activity cancellation acknowledgement and worker sessions. An execution
-  test sends each one through the native router, and the ones still
-  answering `501 rust_capability_not_implemented` must match
+  activity cancellation acknowledgement, worker sessions and embedded v2
+  workflow import. An execution test sends each one through the native
+  router, and the ones still answering `501 rust_capability_not_implemented`
+  must match
   [`unserved-php-routes.v2.11.1.txt`](../rust/tests/fixtures/unserved-php-routes.v2.11.1.txt).
 - **Next action.** Land the items above in order, keep porting the unserved
   routes fixture first, and package the native binary into the server image.
@@ -132,12 +133,15 @@ any other unknown path or method answers PHP's own 404 or 405
   `repair-pass` fixture; a recovery native does not perform yet is
   reported as its candidate's failure, with 207.
 - **Worker protocol features.**
-  - Worker sessions.
   - Local activities (prepare, checkpoint, recover, heartbeat, control,
     outcome and cancellation acknowledgement).
   - Cancellation scopes.
-  - Activity cancellation acknowledgement. (Lease renewal, from Server 2.11,
-    is served: `POST /api/worker/activity-tasks/{task}/renew-lease`, with the
+  - (Worker sessions are served: create, heartbeat, close, list and detail,
+    with the `worker-sessions` and `worker-session-activities` fixtures.)
+  - (Activity cancellation acknowledgement is served:
+    `POST /api/worker/activity-tasks/{task}/acknowledge-cancellation`, with the
+    `activity-cancellation-acknowledgement` fixture. So is lease renewal, from
+    Server 2.11: `POST /api/worker/activity-tasks/{task}/renew-lease`, with the
     `activity_lease_renewal` capability and the `activity-lease-renewal` fixture.)
   - (Synchronous update validation is served: the validation task poll,
     approve and reject routes, the multiplexed workflow poll with
@@ -146,7 +150,11 @@ any other unknown path or method answers PHP's own 404 or 405
     `poll_request_id` or bind a request id to its task kinds; see
     `docs/rust-server-port-checkpoints/2026-10-23-update-validation.md`.)
 - **Run operations.**
-  - Imports from embedded v2 and Waterline v1.
+  - Waterline v1 import. (Embedded v2 import is served:
+    `POST /api/workflows/import/embedded-v2`. Unlike published PHP, native
+    refuses a bundle whose rows reference rows outside it, links only runs of
+    one namespace, and reads the signing key only from the request body
+    ([#765](https://github.com/durable-workflow/server/issues/765)).)
 - **Other families.**
   - Message streams are served
     ([checkpoint](rust-server-port-checkpoints/2026-10-23-message-streams.md)),

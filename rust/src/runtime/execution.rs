@@ -1578,6 +1578,16 @@ impl Runtime {
     delegate!(heartbeat_activity(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     delegate!(activity_status(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     delegate!(renew_activity_lease(task_id: &str, body: Value) -> Result<Value>);
+    delegate!(import_existing_run(run_id: &str) -> Result<Option<super::workflow_import::ExistingRun>>);
+    delegate!(import_write(plan: &super::workflow_import::Plan) -> std::result::Result<super::workflow_import::Rows, String>);
+    /// The namespace this runtime's store serves.
+    pub(crate) fn namespace_name(&self) -> String {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.namespace_name(),
+            Storage::Postgres(store) => store.namespace_name(),
+            Storage::MySql(store) => store.namespace_name(),
+        }
+    }
     delegate!(acknowledge_activity_cancellation(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     pub(crate) async fn fail_activity(&self, task_id: &str, body: Value) -> Result<Value> {
         let (failure, blob) =
