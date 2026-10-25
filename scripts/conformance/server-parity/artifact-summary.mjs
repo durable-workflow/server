@@ -12,7 +12,7 @@ function priority(path, failed) {
   if (failed && /(?:^|\/)query-authority\/clients\/(?:php|rust)\/[^/]+\/(?:client\.stderr|observer\.log)$/.test(path)) return 0;
   if (/^(rust|mysql|postgres|comparator|codec-load|artifact-summary)(-execution)?-tests\.txt$/.test(name)) return 0;
   if (/^(comparison|compare)([-.].*)?\.json$/.test(name) || /-comparison\.json$/.test(name)) return 1;
-  if (failed && (/^(?:php|embedded|rust)-record\.txt$/.test(name)
+  if (failed && (/^(?:php|embedded|rust)-record\.txt$/.test(name) || /\.failure-excerpt\.txt$/.test(name)
       || /^sdk-(?:signals|queries)-profile\.log$/.test(name))) return 1;
   if (failed && (/\.stderr$/.test(name) || /(?:stderr|error|failure|bootstrap|install|build).*(?:\.log|\.txt)$/.test(name)
       || /^(?:php|rust|native)(?:[-.].*)?\.log$/.test(name) || /server\.log$/.test(name))) return 2;

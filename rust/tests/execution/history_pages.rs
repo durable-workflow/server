@@ -17,6 +17,10 @@ async fn long_history(app: &Router, workflow: &str) -> Value {
         let (status, body) = request(app, "POST", &format!("/api/workflows/{workflow}/signal/note"), json!([])).await;
         assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     }
+    // Building a history can outlast the 30-second stale window, after which
+    // a silent registration cannot poll (`WorkerPollFence::isFresh`).
+    let (status, body) = request(app, "POST", "/api/worker/heartbeat", json!({"worker_id":"worker"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     started
 }
 

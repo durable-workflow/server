@@ -1012,6 +1012,90 @@ impl Runtime {
             }
         }
     }
+    /// `pollUpdateValidationTasks`.
+    pub(crate) async fn poll_update_validation(&self, body: Value) -> Result<Value> {
+        super::update_validation::poll_rules(&body)?;
+        let timeout = match body.get("timeout_seconds") {
+            None | Some(Value::Null) => self.worker_poll_wait(),
+            Some(value) => super::laravel_validation::integer(value).and_then(|value| u64::try_from(value).ok()).unwrap_or(0),
+        };
+        let worker_id = super::text(&body, "worker_id")?;
+        let task_queue = super::text(&body, "task_queue")?;
+        let leased = match &*self.storage {
+            Storage::Sqlite(store) => store.update_validation_poll(worker_id, task_queue, timeout).await?,
+            Storage::Postgres(store) => store.update_validation_poll(worker_id, task_queue, timeout).await?,
+            Storage::MySql(store) => store.update_validation_poll(worker_id, task_queue, timeout).await?,
+        };
+        let task = match leased {
+            Some(task_id) => Some(self.update_validation_task(&task_id).await?),
+            None => None,
+        };
+        let status = if task.is_some() { "leased" } else { "empty" };
+        Ok(json!({"task":task,"poll_status":status}))
+    }
+    /// `POST /worker/update-validation-tasks/{taskId}/approve` and `/reject`.
+    pub(crate) async fn complete_update_validation(&self, task_id: &str, body: Value, reject: bool) -> Result<(StatusCode, Value)> {
+        super::update_validation::completion_rules(&body, reject)?;
+        let failure = reject.then(|| body["failure"].clone());
+        match &*self.storage {
+            Storage::Sqlite(store) => store.complete_update_validation(task_id, &body, failure.as_ref()).await,
+            Storage::Postgres(store) => store.complete_update_validation(task_id, &body, failure.as_ref()).await,
+            Storage::MySql(store) => store.complete_update_validation(task_id, &body, failure.as_ref()).await,
+        }
+    }
+    /// A leased validation task as a worker receives it, with the run's
+    /// replay bundle.
+    async fn update_validation_task(&self, task_id: &str) -> Result<Value> {
+        let mut task = match &*self.storage {
+            Storage::Sqlite(store) => store.update_validation_payload(task_id).await?,
+            Storage::Postgres(store) => store.update_validation_payload(task_id).await?,
+            Storage::MySql(store) => store.update_validation_payload(task_id).await?,
+        };
+        if task.get("history_events").is_some()
+            && let (Some(workflow_id), Some(run_id)) = (task["workflow_id"].as_str(), task["run_id"].as_str())
+        {
+            let export = self.history_bundle(&workflow_id.to_owned(), &run_id.to_owned(), false).await?;
+            task["history_export"] = export;
+        }
+        Ok(task)
+    }
+    /// `pollWorkflowTasks`: workflow tasks, validation tasks or both, as
+    /// `task_kinds` asks. Every task names its kind.
+    pub(crate) async fn poll_workflow_tasks(&self, body: Value, protocol_version: &str) -> Result<Value> {
+        let kinds = super::update_validation::task_kinds(&body)?;
+        let pages = self.history_pages();
+        let wait = self.worker_poll_wait();
+        let mark = |mut answer: Value| {
+            if let Some(task) = answer["task"].as_object_mut() {
+                task.insert("task_kind".into(), json!("workflow"));
+            }
+            answer
+        };
+        if kinds == ["workflow"] {
+            return self.poll_with_pages(body, "workflow", protocol_version, pages, wait).await.map(mark);
+        }
+        let timeout = match body.get("timeout_seconds") {
+            None | Some(Value::Null) => wait,
+            Some(value) => super::laravel_validation::integer(value)
+                .filter(|seconds| (0..=60).contains(seconds))
+                .and_then(|seconds| u64::try_from(seconds).ok())
+                .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_poll_timeout"))?,
+        };
+        let leased = match &*self.storage {
+            Storage::Sqlite(store) => store.multiplexed_poll(&body, &kinds, protocol_version, pages, timeout, wait).await?,
+            Storage::Postgres(store) => store.multiplexed_poll(&body, &kinds, protocol_version, pages, timeout, wait).await?,
+            Storage::MySql(store) => store.multiplexed_poll(&body, &kinds, protocol_version, pages, timeout, wait).await?,
+        };
+        match leased {
+            super::update_validation::Leased::Workflow(answer) => Ok(mark(answer)),
+            super::update_validation::Leased::Validation(task_id) => {
+                let mut task = self.update_validation_task(&task_id).await?;
+                // The multiplexed poll's history paging field.
+                task["next_history_page_token"] = Value::Null;
+                Ok(json!({"task":task,"poll_status":"leased","server_capabilities":super::store::capabilities()}))
+            }
+        }
+    }
     pub(crate) async fn poll_query(&self, body: Value) -> Result<Value> {
         match &*self.storage {
             Storage::Sqlite(store) => store.poll_query(body, &self.queries).await,
@@ -1102,6 +1186,11 @@ impl Runtime {
     );
     /// `HistoryController::export`: one run's replay bundle.
     pub(crate) async fn history_export(&self, workflow_id: &str, run_id: &str) -> Result<Value> {
+        self.history_bundle(workflow_id, run_id, true).await
+    }
+    /// One run's replay bundle, signed when asked and configured.
+    /// `HistoryExport::forRun` itself, as replay tasks carry it, is unsigned.
+    async fn history_bundle(&self, workflow_id: &str, run_id: &str, signed: bool) -> Result<Value> {
         let (mut rows, memo) = match &*self.storage {
             Storage::Sqlite(store) => store.history_export_rows(workflow_id, run_id).await?,
             Storage::Postgres(store) => store.history_export_rows(workflow_id, run_id).await?,
@@ -1115,7 +1204,7 @@ impl Runtime {
                 .map(|value| value.trim().to_owned())
                 .filter(|value| !value.is_empty())
         };
-        let signing = setting(["DW_V2_HISTORY_EXPORT_SIGNING_KEY", "WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY"]).map(|key| {
+        let signing = setting(["DW_V2_HISTORY_EXPORT_SIGNING_KEY", "WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY"]).filter(|_| signed).map(|key| {
             super::history_export::Signing {
                 key,
                 key_id: setting(["DW_V2_HISTORY_EXPORT_SIGNING_KEY_ID", "WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY_ID"]),
@@ -1270,6 +1359,11 @@ impl Runtime {
     #[cfg(test)]
     delegate!(poll(body: Value, kind: &'static str, protocol_version: &str) -> Result<Value>);
     delegate!(poll_with_pages(body: Value, kind: &'static str, protocol_version: &str, pages: super::history_pages::HistoryPages, default_wait: u64) -> Result<Value>);
+    delegate!(create_worker_session(body: Value, protocol: &str) -> Result<super::worker_sessions::Answer>);
+    delegate!(heartbeat_worker_session(session_id: &str, body: Value, protocol: &str) -> Result<super::worker_sessions::Answer>);
+    delegate!(close_worker_session(session_id: &str, body: Value, protocol: &str) -> Result<super::worker_sessions::Answer>);
+    delegate!(list_worker_sessions() -> Result<Value>);
+    delegate!(show_worker_session(session_id: &str) -> Result<Value>);
     delegate!(heartbeat_task(task_id: &str, body: Value) -> Result<Value>);
     pub(crate) async fn deliver_cancellation(&self, task_id: &str, body: Value, protocol: &str) -> Result<Value> {
         let codec = self.transition_codec.clone();

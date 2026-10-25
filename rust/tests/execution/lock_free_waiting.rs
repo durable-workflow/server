@@ -113,10 +113,12 @@ async fn held_polls_observe_work_and_removed_registrations_from_another_node() {
     assert_eq!(removed.0, StatusCode::OK, "{}", removed.1);
     let (status, refused) = tokio::time::timeout(Duration::from_secs(5), waiting)
         .await
-        .expect("a held poll refuses a registration another node removed")
+        .expect("a held poll ends when another node removes its registration")
         .unwrap();
-    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
-    assert_eq!(refused["reason"], "worker_not_registered", "{refused}");
+    // `WorkerPollFence`: published 2.11.1 ends a held poll whose registration
+    // is gone with 200 stale_worker_registration (worker-poll-fence fixture).
+    assert_eq!(status, StatusCode::OK, "{refused}");
+    assert_eq!((refused["poll_status"].clone(), refused["task"].clone()), (json!("stale_worker_registration"), Value::Null), "{refused}");
     node_a.close().await;
     node_b.close().await;
     database.remove().await;

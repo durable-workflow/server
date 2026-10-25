@@ -223,3 +223,21 @@ test('accept explicit null reason on successful native query completion', () => 
   assert.deepEqual(checkSdkQueryDirection(fixture, observation, 'query-model'),
     {three_fresh_readonly_queries: true, exact_typed_completion: true});
 });
+test('a status-0 request names its path and transport flags, never payload bytes', () => {
+  const observation = model(fixtureFor('python', 'rust'));
+  Object.assign(observation.sdk_query_direction.phases[1].requests[0], {status: 0, response: null,
+    client_cancelled: true, transport_error: null, request_body_complete: true, upstream_request_started: true});
+  assert.throws(() => checkSdkQueryDirection(fixtureFor('python', 'rust'), observation, 'query-model'), error => {
+    assert.equal(error.message, 'query-0 query: expected HTTP 200, observed 0 for POST /api/workflows/query-model/query/state '
+      + '{"client_cancelled":true,"transport_error":null,"request_body_complete":true,"upstream_request_started":true}');
+    assert(!error.message.includes('empty-arguments'), 'request payload stays out of the message');
+    return true;
+  });
+});
+test('a failed query completion names the completion, not the caller', () => {
+  const observation = model(fixture);
+  const complete = observation.sdk_query_direction.phases[0].requests.find(r => /query-tasks\/.*\/complete/.test(r.path));
+  Object.assign(complete, {status: 0, response: null, client_cancelled: false, transport_error: 'ECONNRESET'});
+  assert.throws(() => checkSdkQueryDirection(fixture, observation, 'query-model'),
+    /original query completion: expected HTTP 200, observed 0 for POST \/api\/worker\/query-tasks\/.*"transport_error":"ECONNRESET"/);
+});
