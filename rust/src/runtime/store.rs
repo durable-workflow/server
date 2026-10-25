@@ -577,9 +577,10 @@ where
         // refused signals which intentionally have no workflow history event.
         // Select metadata only: large customer payloads are never decoded or
         // copied merely to display the command's target and admission result.
-        let command_rows = Self::query("SELECT c.id,c.command_sequence,c.command_type,c.target_scope,c.requested_workflow_run_id,c.resolved_workflow_run_id,c.source,c.status,c.outcome,c.rejection_reason,c.workflow_type,c.workflow_class,c.accepted_at,c.applied_at,c.rejected_at,c.context,s.signal_name FROM workflow_commands c LEFT JOIN workflow_signal_records s ON s.workflow_command_id=c.id WHERE c.workflow_run_id=$1 AND c.workflow_instance_id=$2 ORDER BY c.command_sequence,c.created_at,c.id")
+        let command_rows = Self::query("SELECT c.id,c.command_sequence,c.command_type,c.target_scope,c.requested_workflow_run_id,c.resolved_workflow_run_id,c.source,c.status,c.outcome,c.rejection_reason,c.workflow_type,c.workflow_class,c.accepted_at,c.applied_at,c.rejected_at,c.context,s.signal_name,CASE WHEN c.payload LIKE 'dw-native-external-payload-v1:%' OR c.payload LIKE 'dw-external-payload:v1:%' THEN c.payload END AS payload_reference,CASE WHEN c.status<>'rejected' AND (c.payload_codec IS NULL OR c.payload_codec='avro') AND LENGTH(c.payload)<=8192 AND c.payload NOT LIKE 'dw-native-external-payload-v1:%' AND c.payload NOT LIKE 'dw-external-payload:v1:%' THEN c.payload END AS reason_payload FROM workflow_commands c LEFT JOIN workflow_signal_records s ON s.workflow_command_id=c.id WHERE c.workflow_run_id=$1 AND c.workflow_instance_id=$2 ORDER BY c.command_sequence,c.created_at,c.id")
             .bind(DB::string(&row, "id")?).bind(workflow_id).fetch_all(&self.pool).await?;
         let mut commands = Vec::with_capacity(command_rows.len());
+        let mut reason_codec = None;
         for command in command_rows {
             let mut public = json!({"id":DB::string(&command,"id")?,"sequence":DB::optional_number(&command,"command_sequence")?,
                 "type":DB::string(&command,"command_type")?,"target_scope":DB::string(&command,"target_scope")?,
@@ -594,6 +595,27 @@ where
             let fields = public.as_object_mut().expect("command object");
             if let Some(context) = DB::optional_document_row(&command, "context")? {
                 fields.extend(super::command_context::described(&context));
+            }
+            // `payload_preview_omitted`: an oversized external payload hides
+            // the command's target, as published 2.11 describes it.
+            let omitted = DB::optional_string(&command, "payload_reference")?
+                .as_deref()
+                .is_some_and(super::external_resolution::oversized_reference);
+            if omitted {
+                fields.remove("target_name");
+            }
+            fields.insert("payload_preview_omitted".into(), json!(omitted));
+            // `commandReason()`: a command that was not rejected shows the
+            // reason its payload records. Only small inline payloads are read;
+            // every writer caps the reason at 1000 characters.
+            if let Some(payload) = DB::optional_string(&command, "reason_payload")? {
+                let codec = reason_codec.get_or_insert_with(|| crate::codec::ValueCodec::new().ok());
+                if let Some(Ok(crate::codec::Value::Map(map))) = codec.as_ref().map(|codec| codec.decode(&payload))
+                    && let Some(crate::codec::Value::String(reason)) = map.get("reason")
+                    && !reason.is_empty()
+                {
+                    fields.insert("reason".into(), json!(reason));
+                }
             }
             fields.retain(|_, value| !value.is_null());
             commands.push(public);
@@ -638,6 +660,11 @@ where
         page_size: i64,
     ) -> Result<Value> {
         self.describe(workflow_id, Some(run_id)).await?;
+        let run = Self::query("SELECT compatibility,queue FROM workflow_runs WHERE id=$1")
+            .bind(run_id)
+            .fetch_one(&self.pool)
+            .await?;
+        let compatibility = self.compatibility_fields(&run).await?;
         let (events, next) =
             Self::history_page(&self.pool, run_id, after_sequence, page_size).await?;
         let public_events: Vec<Value> = events
@@ -648,9 +675,11 @@ where
             "principal": super::history_presentation::principal(&e["payload"]), "payload": e["payload"]})
             })
             .collect();
-        Ok(
-            json!({"workflow_id": workflow_id, "run_id": run_id, "events": public_events, "next_page_token": next}),
-        )
+        // `HistoryController::show` reports the run's compatibility as
+        // describe does.
+        let mut body = json!({"workflow_id": workflow_id, "run_id": run_id, "events": public_events, "next_page_token": next});
+        body.as_object_mut().expect("history object").extend(compatibility);
+        Ok(body)
     }
 
     pub(crate) async fn signal(
