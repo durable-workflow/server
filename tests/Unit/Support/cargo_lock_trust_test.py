@@ -126,7 +126,7 @@ class CargoLockTrustTest(unittest.TestCase):
         for path in sorted(REQUIRED):
             with self.subTest(path=path):
                 names = {name for name, _ in packages((ROOT / path).read_text(encoding="utf-8"))}
-                self.assertTrue(set(FLOORS) <= names, f"{path} no longer resolves the trust crates")
+                self.assertLessEqual(set(FLOORS), names, f"{path} no longer resolves the trust crates")
 
     def test_immutable_evidence_keeps_its_recorded_bytes(self) -> None:
         for path, digest in IMMUTABLE_EVIDENCE.items():
