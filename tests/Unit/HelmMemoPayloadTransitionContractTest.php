@@ -27,7 +27,9 @@ final class HelmMemoPayloadTransitionContractTest extends TestCase
         $this->assertStringContainsString('(not (has $phase (list "Succeeded" "Failed")))', $helpers);
         $this->assertStringContainsString('(not $terminal)', $helpers);
         $this->assertStringContainsString('$pod.metadata.deletionTimestamp', $helpers);
-        $this->assertStringContainsString('docker.io/durableworkflow/server:2.0.0', $helpers);
+        $release = json_decode($this->read('resources/release/source-release.json'), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertIsString($release['server']['version'] ?? null);
+        $this->assertStringContainsString('docker.io/durableworkflow/server:'.$release['server']['version'], $helpers);
         $this->assertStringNotContainsString('get $labels "app.kubernetes.io/version"', $helpers);
         $this->assertStringContainsString('fail (printf "memo payload transition', $helpers);
     }

@@ -14,7 +14,8 @@ use GuzzleHttp\HandlerStack;
 // acknowledge the stop from the activity worker. The main run is also refused
 // for each ownership, protocol and validation fault, acknowledged, read back
 // and acknowledged again. Separate runs cover a claim polled on protocol 1.19,
-// an immediate cancel, a retried attempt and a run terminated after delivery.
+// an immediate cancel, a retried attempt, a run terminated after delivery and
+// activity deliveries refused by the run's typed history.
 // Responses are recorded raw, without the protocol's capability map beyond
 // its acknowledgement flag.
 function finishHttpActivityCancellationAcknowledgement(Client $admin, array $fixture, string $workflowId, string $url): array
@@ -188,6 +189,34 @@ function finishHttpActivityCancellationAcknowledgement(Client $admin, array $fix
     $state['terminate'] = $raw('POST', '/api/workflows/'.$terminated['workflow_id'].'/terminate', ['reason' => 'acknowledgement fixture'])['status'];
     $state['terminated_ack'] = $ack($terminated, $own($terminated) + ['request_id' => $terminatedDelivered['request_id']]);
     $state['terminated_history'] = array_column($history($terminated), 'event_type');
+
+    // An activity delivery is checked against typed history first: the
+    // activity completed before the request, then a timer was started at
+    // sequence 2. Delivering to the activity, or as an activity at the
+    // timer, is refused and records nothing; the timer then takes it.
+    $boundary = $state['boundary_claim'] = $claim('boundary');
+    $boundaryPoll = ['worker_id' => $boundary['worker'], 'task_queue' => $boundary['queue'], 'timeout_seconds' => 0];
+    $state['boundary_complete'] = $raw('POST', '/api/worker/activity-tasks/'.$boundary['task_id'].'/complete',
+        $own($boundary) + ['result' => $done])['status'];
+    $resumed = $ok($raw('POST', '/api/worker/workflow-tasks/poll', $boundaryPoll), 200, 'boundary resume')['task'];
+    $state['boundary_timer'] = $raw('POST', '/api/worker/workflow-tasks/'.$resumed['task_id'].'/complete', [
+        'lease_owner' => $resumed['lease_owner'], 'workflow_task_attempt' => $resumed['workflow_task_attempt'],
+        'commands' => [['type' => 'start_timer', 'delay_seconds' => 3600]]])['status'];
+    $state['boundary_request'] = $request($boundary)['status'];
+    $cancelling = $ok($raw('POST', '/api/worker/workflow-tasks/poll', $boundaryPoll), 200, 'boundary cancellation claim')['task'];
+    $state['boundary_task_id'] = $cancelling['task_id'];
+    $deliverAt = static fn (int $sequence, string $kind): array => $raw('POST',
+        '/api/worker/workflow-tasks/'.$cancelling['task_id'].'/deliver-cancellation', [
+            'lease_owner' => $cancelling['lease_owner'], 'workflow_task_attempt' => $cancelling['workflow_task_attempt'],
+            'request_id' => $cancelling['cancellation_request']['request_id'] ?? null, 'sequence' => $sequence,
+            'call_kind' => $kind]);
+    $state['boundary_history_before'] = $history($boundary);
+    $state['boundary_resolved_activity'] = $deliverAt(1, 'activity');
+    $state['boundary_timer_as_activity'] = $deliverAt(2, 'activity');
+    $state['boundary_history_after_refusals'] = $history($boundary);
+    $state['boundary_pending'] = $request($boundary);
+    $state['boundary_delivery'] = $deliverAt(2, 'timer');
+    $state['boundary_history_after_delivery'] = $history($boundary);
 
     return $state;
 }
