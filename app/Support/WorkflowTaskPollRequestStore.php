@@ -93,6 +93,7 @@ class WorkflowTaskPollRequestStore
     ): array {
         $pendingKey = $this->pendingKey($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId);
         $deadline = microtime(true) + (($timeoutMilliseconds ?? $this->waitTimeoutMilliseconds()) / 1000);
+        $progress = LongPollResponseProgress::current();
 
         while (microtime(true) < $deadline) {
             $result = $this->result(
@@ -116,6 +117,7 @@ class WorkflowTaskPollRequestStore
                 ];
             }
 
+            $progress?->checkpoint();
             $this->pause($this->pollIntervalMilliseconds());
         }
 

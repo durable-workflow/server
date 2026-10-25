@@ -16,6 +16,7 @@ use App\Support\SharedServiceBoundaryPolicy;
 use App\Support\TaskQueueAdmission;
 use App\Support\WorkerCompatibilityHeartbeatRecorder;
 use App\Support\WorkerPollClaimGate;
+use App\Support\WorkerPollDiagnostics;
 use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowTaskFailureMetrics;
 use App\Support\WorkflowTaskPoller;
@@ -55,6 +56,15 @@ return [
     ],
 
     'cache_keys' => [
+        'worker_poll_diagnostics' => [
+            'owner' => WorkerPollDiagnostics::class,
+            'prefix' => 'server:worker-poll-diagnostic:',
+            'dimensions' => ['namespace', 'task_queue'],
+            'ttl' => 'WorkerPollDiagnostics::RETENTION_SECONDS, 900 seconds from the latest observed early disconnect.',
+            'bound' => 'One fixed-size last-observation value per namespace and task queue touched within the TTL window. No request, worker, task or attempt index is retained.',
+            'admission' => 'Only an observed negotiated poll disconnect before its configured wait writes a value; subsequent observations overwrite that queue value.',
+            'eviction' => 'Cache TTL without a sweeper. Diagnostic values never grant or revoke task authority.',
+        ],
         'polling_cache_availability_probe' => [
             'owner' => ServerPollingCache::class,
             'prefix' => 'server:polling-cache:',
