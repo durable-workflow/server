@@ -24,6 +24,7 @@ macro_rules! store_methods {
 }
 
 mod active_summary;
+mod activity_cancellation_ack;
 mod activity_completion_uploads;
 mod activity_deadlines;
 mod activity_failures;
@@ -119,6 +120,7 @@ mod service_catalog;
 mod sqlite;
 mod start_definition;
 mod start_request;
+mod message_streams;
 mod storage_test;
 mod store;
 mod system_metrics;

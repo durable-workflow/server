@@ -133,7 +133,7 @@ async fn unclaimed(database: &TestDatabase) -> i64 {
 }
 
 /// One integer the database answers.
-async fn count(database: &TestDatabase, query: &'static str) -> i64 {
+async fn count(database: &TestDatabase, query: impl sqlx::SqlSafeStr) -> i64 {
     match database {
         TestDatabase::Sqlite(dir) => {
             let pool = sqlx::SqlitePool::connect(&format!(
