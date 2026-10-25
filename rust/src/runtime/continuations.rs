@@ -105,15 +105,13 @@ where
         }
         // Published PHP continues a run whatever it has open. Its activities,
         // timers, children and waits stay with the closed predecessor, and no
-        // parent-close policy applies. Streams, service calls and live
-        // queries are not transferred by native yet.
+        // parent-close policy applies. Message streams pass to the next run
+        // when the completion records its stream acknowledgements. Durable
+        // output streams, service calls and live queries are not transferred
+        // by native yet.
         for (sql, selected) in [
             (
                 "SELECT COUNT(*) FROM workflow_durable_streams WHERE workflow_instance_id=$1",
-                workflow.as_str(),
-            ),
-            (
-                "SELECT COUNT(*) FROM workflow_inbound_streams WHERE workflow_instance_id=$1",
                 workflow.as_str(),
             ),
             (

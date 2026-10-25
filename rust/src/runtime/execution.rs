@@ -585,6 +585,89 @@ impl Runtime {
         Ok(view)
     }
 
+    delegate!(message_stream_workflow_bound(workflow_id: &str) -> Result<bool>);
+    delegate!(record_malformed_message(workflow_id: &str, stream: &str, message_id: &Value) -> Result<()>);
+    delegate!(message_stream_diagnostics(workflow_id: &str, stream: Option<&str>) -> Result<Vec<Value>>);
+
+    /// `MessageStreamController::append`: the stream name, the workflow in
+    /// this namespace, the request rules and the payload envelope, in PHP's
+    /// order. A refused request or payload counts as malformed input.
+    pub(crate) async fn append_message(&self, workflow_id: &str, stream: &str, body: Value, context: Value) -> Result<(StatusCode, Value)> {
+        super::message_streams::check_path_name(stream)?;
+        if !self.message_stream_workflow_bound(workflow_id).await? {
+            return Err(super::RuntimeError::Protocol {
+                status: StatusCode::NOT_FOUND,
+                response: json!({"accepted":false,"workflow_id":workflow_id,"stream_name":stream,"outcome":"rejected","reason":"instance_not_found"}),
+            });
+        }
+        let body = super::laravel_rules::normalize(&body);
+        let blob = match self.message_payload(&body).await {
+            Ok(blob) => blob,
+            Err(error) => {
+                if matches!(&error, super::RuntimeError::Protocol { status, .. } | super::RuntimeError::Refused { status, .. } if *status == StatusCode::UNPROCESSABLE_ENTITY) {
+                    self.record_malformed_message(workflow_id, stream, &body["message_id"]).await?;
+                }
+                return Err(error);
+            }
+        };
+        let message_id = body["message_id"].as_str().unwrap_or_default().to_owned();
+        let (codec, structural) = (self.signal_codec.clone(), self.structural);
+        match &*self.storage {
+            Storage::Sqlite(store) => store.append_message(workflow_id, stream, &message_id, "avro", &blob, &context, codec, structural).await,
+            Storage::Postgres(store) => store.append_message(workflow_id, stream, &message_id, "avro", &blob, &context, codec, structural).await,
+            Storage::MySql(store) => store.append_message(workflow_id, stream, &message_id, "avro", &blob, &context, codec, structural).await,
+        }
+    }
+
+    /// The request rules, then `AvroPayloadEnvelopeResolver::resolve`: no
+    /// input is an empty argument list, plain values are encoded, and an
+    /// inline envelope keeps its exact bytes.
+    async fn message_payload(&self, body: &Value) -> Result<String> {
+        super::message_streams::check_append(body)?;
+        if body.get("input").is_none_or(Value::is_null) {
+            return super::queries::empty_arguments(self.signal_codec.clone()).await;
+        }
+        super::input_envelope::transport(body)?;
+        if let Some(blob) = self.plain_arguments(body).await? {
+            return Ok(blob);
+        }
+        if self.prepare_external(&body["input"]).await?.is_some() {
+            // PHP keeps the reference and resolves it for workers; native
+            // does not resolve stream payload references yet.
+            return Err(super::RuntimeError::Protocol {
+                status: StatusCode::NOT_IMPLEMENTED,
+                response: json!({"accepted":false,"workflow_id":null,"message_id":body["message_id"],"outcome":"rejected",
+                    "reason":"message_stream_external_payload_unavailable"}),
+            });
+        }
+        self.decodable(&body["input"]["blob"]).await?;
+        super::envelope(body, "input")
+    }
+
+    /// `MessageStreamController::index` and `show`.
+    pub(crate) async fn message_streams(&self, workflow_id: &str, stream: Option<&str>) -> Result<Value> {
+        if let Some(stream) = stream {
+            super::message_streams::check_path_name(stream)?;
+        }
+        if !self.message_stream_workflow_bound(workflow_id).await? {
+            return Err(super::RuntimeError::Protocol {
+                status: StatusCode::NOT_FOUND,
+                response: json!({"message":"Workflow not found.","reason":"instance_not_found"}),
+            });
+        }
+        let streams = self.message_stream_diagnostics(workflow_id, stream).await?;
+        match stream {
+            None => Ok(json!({"workflow_id":workflow_id,"count":streams.len(),"streams":streams})),
+            Some(stream) => match streams.into_iter().next() {
+                Some(found) => Ok(json!({"workflow_id":workflow_id,"stream":found})),
+                None => Err(super::RuntimeError::Protocol {
+                    status: StatusCode::NOT_FOUND,
+                    response: json!({"workflow_id":workflow_id,"stream_name":stream,"reason":"message_stream_not_found"}),
+                }),
+            },
+        }
+    }
+
     /// `ActivityController::index`.
     pub(crate) async fn standalone_activities(&self, query: Value) -> Result<Value> {
         let request = super::standalone_activities::list_request(&query)?;
@@ -929,6 +1012,90 @@ impl Runtime {
             }
         }
     }
+    /// `pollUpdateValidationTasks`.
+    pub(crate) async fn poll_update_validation(&self, body: Value) -> Result<Value> {
+        super::update_validation::poll_rules(&body)?;
+        let timeout = match body.get("timeout_seconds") {
+            None | Some(Value::Null) => self.worker_poll_wait(),
+            Some(value) => super::laravel_validation::integer(value).and_then(|value| u64::try_from(value).ok()).unwrap_or(0),
+        };
+        let worker_id = super::text(&body, "worker_id")?;
+        let task_queue = super::text(&body, "task_queue")?;
+        let leased = match &*self.storage {
+            Storage::Sqlite(store) => store.update_validation_poll(worker_id, task_queue, timeout).await?,
+            Storage::Postgres(store) => store.update_validation_poll(worker_id, task_queue, timeout).await?,
+            Storage::MySql(store) => store.update_validation_poll(worker_id, task_queue, timeout).await?,
+        };
+        let task = match leased {
+            Some(task_id) => Some(self.update_validation_task(&task_id).await?),
+            None => None,
+        };
+        let status = if task.is_some() { "leased" } else { "empty" };
+        Ok(json!({"task":task,"poll_status":status}))
+    }
+    /// `POST /worker/update-validation-tasks/{taskId}/approve` and `/reject`.
+    pub(crate) async fn complete_update_validation(&self, task_id: &str, body: Value, reject: bool) -> Result<(StatusCode, Value)> {
+        super::update_validation::completion_rules(&body, reject)?;
+        let failure = reject.then(|| body["failure"].clone());
+        match &*self.storage {
+            Storage::Sqlite(store) => store.complete_update_validation(task_id, &body, failure.as_ref()).await,
+            Storage::Postgres(store) => store.complete_update_validation(task_id, &body, failure.as_ref()).await,
+            Storage::MySql(store) => store.complete_update_validation(task_id, &body, failure.as_ref()).await,
+        }
+    }
+    /// A leased validation task as a worker receives it, with the run's
+    /// replay bundle.
+    async fn update_validation_task(&self, task_id: &str) -> Result<Value> {
+        let mut task = match &*self.storage {
+            Storage::Sqlite(store) => store.update_validation_payload(task_id).await?,
+            Storage::Postgres(store) => store.update_validation_payload(task_id).await?,
+            Storage::MySql(store) => store.update_validation_payload(task_id).await?,
+        };
+        if task.get("history_events").is_some()
+            && let (Some(workflow_id), Some(run_id)) = (task["workflow_id"].as_str(), task["run_id"].as_str())
+        {
+            let export = self.history_bundle(&workflow_id.to_owned(), &run_id.to_owned(), false).await?;
+            task["history_export"] = export;
+        }
+        Ok(task)
+    }
+    /// `pollWorkflowTasks`: workflow tasks, validation tasks or both, as
+    /// `task_kinds` asks. Every task names its kind.
+    pub(crate) async fn poll_workflow_tasks(&self, body: Value, protocol_version: &str) -> Result<Value> {
+        let kinds = super::update_validation::task_kinds(&body)?;
+        let pages = self.history_pages();
+        let wait = self.worker_poll_wait();
+        let mark = |mut answer: Value| {
+            if let Some(task) = answer["task"].as_object_mut() {
+                task.insert("task_kind".into(), json!("workflow"));
+            }
+            answer
+        };
+        if kinds == ["workflow"] {
+            return self.poll_with_pages(body, "workflow", protocol_version, pages, wait).await.map(mark);
+        }
+        let timeout = match body.get("timeout_seconds") {
+            None | Some(Value::Null) => wait,
+            Some(value) => super::laravel_validation::integer(value)
+                .filter(|seconds| (0..=60).contains(seconds))
+                .and_then(|seconds| u64::try_from(seconds).ok())
+                .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_poll_timeout"))?,
+        };
+        let leased = match &*self.storage {
+            Storage::Sqlite(store) => store.multiplexed_poll(&body, &kinds, protocol_version, pages, timeout, wait).await?,
+            Storage::Postgres(store) => store.multiplexed_poll(&body, &kinds, protocol_version, pages, timeout, wait).await?,
+            Storage::MySql(store) => store.multiplexed_poll(&body, &kinds, protocol_version, pages, timeout, wait).await?,
+        };
+        match leased {
+            super::update_validation::Leased::Workflow(answer) => Ok(mark(answer)),
+            super::update_validation::Leased::Validation(task_id) => {
+                let mut task = self.update_validation_task(&task_id).await?;
+                // The multiplexed poll's history paging field.
+                task["next_history_page_token"] = Value::Null;
+                Ok(json!({"task":task,"poll_status":"leased","server_capabilities":super::store::capabilities()}))
+            }
+        }
+    }
     pub(crate) async fn poll_query(&self, body: Value) -> Result<Value> {
         match &*self.storage {
             Storage::Sqlite(store) => store.poll_query(body, &self.queries).await,
@@ -1019,6 +1186,11 @@ impl Runtime {
     );
     /// `HistoryController::export`: one run's replay bundle.
     pub(crate) async fn history_export(&self, workflow_id: &str, run_id: &str) -> Result<Value> {
+        self.history_bundle(workflow_id, run_id, true).await
+    }
+    /// One run's replay bundle, signed when asked and configured.
+    /// `HistoryExport::forRun` itself, as replay tasks carry it, is unsigned.
+    async fn history_bundle(&self, workflow_id: &str, run_id: &str, signed: bool) -> Result<Value> {
         let (mut rows, memo) = match &*self.storage {
             Storage::Sqlite(store) => store.history_export_rows(workflow_id, run_id).await?,
             Storage::Postgres(store) => store.history_export_rows(workflow_id, run_id).await?,
@@ -1032,7 +1204,7 @@ impl Runtime {
                 .map(|value| value.trim().to_owned())
                 .filter(|value| !value.is_empty())
         };
-        let signing = setting(["DW_V2_HISTORY_EXPORT_SIGNING_KEY", "WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY"]).map(|key| {
+        let signing = setting(["DW_V2_HISTORY_EXPORT_SIGNING_KEY", "WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY"]).filter(|_| signed).map(|key| {
             super::history_export::Signing {
                 key,
                 key_id: setting(["DW_V2_HISTORY_EXPORT_SIGNING_KEY_ID", "WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY_ID"]),
@@ -1187,6 +1359,11 @@ impl Runtime {
     #[cfg(test)]
     delegate!(poll(body: Value, kind: &'static str, protocol_version: &str) -> Result<Value>);
     delegate!(poll_with_pages(body: Value, kind: &'static str, protocol_version: &str, pages: super::history_pages::HistoryPages, default_wait: u64) -> Result<Value>);
+    delegate!(create_worker_session(body: Value, protocol: &str) -> Result<super::worker_sessions::Answer>);
+    delegate!(heartbeat_worker_session(session_id: &str, body: Value, protocol: &str) -> Result<super::worker_sessions::Answer>);
+    delegate!(close_worker_session(session_id: &str, body: Value, protocol: &str) -> Result<super::worker_sessions::Answer>);
+    delegate!(list_worker_sessions() -> Result<Value>);
+    delegate!(show_worker_session(session_id: &str) -> Result<Value>);
     delegate!(heartbeat_task(task_id: &str, body: Value) -> Result<Value>);
     pub(crate) async fn deliver_cancellation(&self, task_id: &str, body: Value, protocol: &str) -> Result<Value> {
         let codec = self.transition_codec.clone();
@@ -1256,17 +1433,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol)
+                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural)
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol)
+                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural)
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol)
+                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural)
                     .await
             }
         }
@@ -1412,6 +1589,7 @@ impl Runtime {
         }
     }
     delegate!(bridge_command(workflow_id: &str, kind: &str, adapter: &str, action: &str, key: &str, field: &str, name: &str) -> Result<Option<String>>);
+    delegate!(acknowledge_activity_cancellation(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     pub(crate) async fn fail_activity(&self, task_id: &str, body: Value) -> Result<Value> {
         let (failure, blob) =
             super::activity_failures::prepare_failure(&body, self.signal_codec.clone()).await?;

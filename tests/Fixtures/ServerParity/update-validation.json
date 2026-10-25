@@ -1,0 +1,1051 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "update-validation",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "update validation λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "update validation λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "update_validation": {
+    "workflow_type": "parity.validated",
+    "updates": [
+      "approve_me",
+      "plain",
+      "reject_me"
+    ],
+    "validators": [
+      "approve_me",
+      "reject_me"
+    ],
+    "lease_wait_seconds": 6,
+    "expected": {
+      "approve": {
+        "response": {
+          "outcome": "approved",
+          "status": 200,
+          "update_id": "<id:1>",
+          "update_validation_attempt": 1,
+          "update_validation_task_id": "<id:1>"
+        },
+        "status": 200
+      },
+      "approve_again": {
+        "response": {
+          "error": "The update validation task already has a terminal result.",
+          "outcome": "rejected",
+          "reason": "duplicate_update_validation_completion",
+          "status": 409,
+          "update_id": "<id:1>",
+          "update_validation_attempt": 1,
+          "update_validation_task_id": "<id:1>"
+        },
+        "status": 409
+      },
+      "approve_old_attempt": {
+        "response": {
+          "error": "Update validation completion belongs to a stale delivery attempt.",
+          "outcome": "rejected",
+          "reason": "stale_update_validation_completion",
+          "status": 409,
+          "update_id": "<id:2>",
+          "update_validation_attempt": 2,
+          "update_validation_task_id": "<id:2>"
+        },
+        "status": 409
+      },
+      "approve_second": {
+        "response": {
+          "outcome": "approved",
+          "status": 200,
+          "update_id": "<id:2>",
+          "update_validation_attempt": 2,
+          "update_validation_task_id": "<id:2>"
+        },
+        "status": 200
+      },
+      "approve_unknown": {
+        "response": {
+          "error": "Update validation task not found.",
+          "outcome": "rejected",
+          "reason": "update_validation_task_not_found",
+          "status": 404,
+          "update_id": "<id:3>",
+          "update_validation_task_id": "<id:3>"
+        },
+        "status": 404
+      },
+      "approve_wrong_attempt": {
+        "response": {
+          "error": "Update validation completion belongs to a stale delivery attempt.",
+          "outcome": "rejected",
+          "reason": "stale_update_validation_completion",
+          "status": 409,
+          "update_id": "<id:1>",
+          "update_validation_attempt": 1,
+          "update_validation_task_id": "<id:1>"
+        },
+        "status": 409
+      },
+      "approve_wrong_owner": {
+        "response": {
+          "error": "Update validation lease is owned by another worker.",
+          "outcome": "rejected",
+          "reason": "update_validation_lease_owner_mismatch",
+          "status": 409,
+          "update_id": "<id:1>",
+          "update_validation_attempt": 1,
+          "update_validation_task_id": "<id:1>"
+        },
+        "status": 409
+      },
+      "approved_update": {
+        "response": {
+          "accepted_at": "<time>",
+          "applied_at": null,
+          "closed_at": null,
+          "command_id": "<id:4>",
+          "command_sequence": 3,
+          "command_source": "control_plane",
+          "command_status": "accepted",
+          "failure_id": null,
+          "failure_message": null,
+          "outcome": null,
+          "reason": null,
+          "rejected_at": null,
+          "rejection_reason": null,
+          "requested_run_id": null,
+          "resolved_run_id": "<id:5>",
+          "result": null,
+          "result_envelope": null,
+          "run_id": "<id:5>",
+          "target_scope": "instance",
+          "update_id": "<id:1>",
+          "update_name": "approve_me",
+          "update_status": "accepted",
+          "validation_errors": [],
+          "wait_for": "accepted",
+          "wait_timed_out": false,
+          "wait_timeout_seconds": null,
+          "workflow_id": "<workflow>",
+          "workflow_sequence": null,
+          "workflow_type": "parity.validated"
+        },
+        "status": 202
+      },
+      "bad_task_kinds": {
+        "response": {
+          "errors": {
+            "task_kinds.1": [
+              "The selected task_kinds.1 is invalid."
+            ]
+          },
+          "message": "The selected task_kinds.1 is invalid.",
+          "reason": "validation_failed",
+          "validation_errors": {
+            "task_kinds.1": [
+              "The selected task_kinds.1 is invalid."
+            ]
+          }
+        },
+        "status": 422
+      },
+      "busy_approve_late": {
+        "response": {
+          "error": "The update validation task already has a terminal result.",
+          "outcome": "rejected",
+          "reason": "duplicate_update_validation_completion",
+          "status": 409,
+          "update_id": "<id:6>",
+          "update_validation_attempt": 1,
+          "update_validation_task_id": "<id:6>"
+        },
+        "status": 409
+      },
+      "capability": [
+        true,
+        {
+          "acceptance_boundary": "validator_approved",
+          "completion": {
+            "approve_endpoint": "/worker/update-validation-tasks/{taskId}/approve",
+            "fence_fields": [
+              "lease_owner",
+              "update_validation_attempt"
+            ],
+            "reject_endpoint": "/worker/update-validation-tasks/{taskId}/reject",
+            "typed_failure_reasons": [
+              "update_validation_task_not_found",
+              "duplicate_update_validation_completion",
+              "update_validation_task_not_leased",
+              "update_validation_lease_owner_mismatch",
+              "stale_update_validation_completion",
+              "update_validation_lease_expired",
+              "update_validator_worker_lost"
+            ]
+          },
+          "duplicate_completion": "typed_rejection",
+          "lease_timeout_seconds": 5,
+          "minimum_protocol_version": "1.13",
+          "missing_contract": "typed_rejection",
+          "request_id_required": true,
+          "sdk_surfaces": {
+            "sdk-php": "validators_not_exposed",
+            "sdk-python": "validator_capable",
+            "sdk-rust": "validators_not_exposed"
+          },
+          "stale_completion": "typed_rejection",
+          "supported": true,
+          "task_poll": {
+            "default_task_kinds": [
+              "workflow"
+            ],
+            "endpoint": "/worker/workflow-tasks/poll",
+            "poll_request_id_binding": "normalized_task_kind_set",
+            "poll_request_id_conflict_reason": "poll_request_task_kinds_conflict",
+            "request_field": "task_kinds",
+            "response_discriminator": "task.task_kind",
+            "strategy": "multiplexed",
+            "task_kinds": [
+              "workflow",
+              "update_validation"
+            ]
+          },
+          "timeout_seconds": 10,
+          "unsupported_worker": "typed_rejection",
+          "validator_execution": "replay_without_handler_or_state_commit",
+          "worker_capability": "update_validation_tasks",
+          "workflow_contract_field": "update_validators"
+        }
+      ],
+      "capability_unsupported": {
+        "response": {
+          "approved": false,
+          "message": "Active workers do not advertise synchronous pre-accept update validation.",
+          "outcome": "update_validation_failed",
+          "reason": "update_validation_capability_unsupported",
+          "rejection_reason": "update_validation_capability_unsupported",
+          "retryable": false,
+          "run_id": "<id:7>",
+          "update_id": "<id:8>",
+          "update_name": "approve_me",
+          "wait_for": "accepted",
+          "workflow_id": "<workflow>-incapable"
+        },
+        "status": 409
+      },
+      "completed_wait": {
+        "response": {
+          "accepted_at": "<time>",
+          "applied_at": null,
+          "closed_at": null,
+          "command_id": "<id:9>",
+          "command_sequence": 2,
+          "command_source": "control_plane",
+          "command_status": "accepted",
+          "failure_id": null,
+          "failure_message": null,
+          "outcome": null,
+          "reason": null,
+          "rejected_at": null,
+          "rejection_reason": null,
+          "requested_run_id": null,
+          "resolved_run_id": "<id:10>",
+          "result": null,
+          "result_envelope": null,
+          "run_id": "<id:10>",
+          "target_scope": "instance",
+          "update_id": "<id:2>",
+          "update_name": "approve_me",
+          "update_status": "accepted",
+          "validation_errors": [],
+          "wait_for": "completed",
+          "wait_timed_out": true,
+          "wait_timeout_seconds": 2,
+          "workflow_id": "<workflow>-slow",
+          "workflow_sequence": null,
+          "workflow_type": "parity.validated"
+        },
+        "status": 202
+      },
+      "contract_missing": {
+        "response": {
+          "message": "The durable workflow contract does not state whether this update has a validator.",
+          "outcome": "update_validation_failed",
+          "reason": "update_validator_contract_missing",
+          "rejection_reason": "update_validator_contract_missing",
+          "retryable": false,
+          "run_id": "<id:11>",
+          "update_name": "plain",
+          "wait_for": "accepted",
+          "workflow_id": "<workflow>-silent"
+        },
+        "status": 409
+      },
+      "dedicated_poll": {
+        "poll_status": "leased",
+        "status": 200,
+        "task": {
+          "arguments": [
+            {
+              "v": 3
+            }
+          ],
+          "attempt": 1,
+          "export_history": [
+            "StartAccepted",
+            "WorkflowStarted",
+            "SignalWaitOpened",
+            "UpdateRejected"
+          ],
+          "history": [
+            "StartAccepted",
+            "WorkflowStarted",
+            "SignalWaitOpened",
+            "UpdateRejected"
+          ],
+          "keys": [
+            "compatibility",
+            "history_events",
+            "history_export",
+            "last_history_sequence",
+            "lease_expires_at",
+            "lease_owner",
+            "payload_codec",
+            "run_id",
+            "run_status",
+            "task_kind",
+            "task_queue",
+            "update_arguments",
+            "update_id",
+            "update_name",
+            "update_validation_attempt",
+            "update_validation_task_id",
+            "workflow_arguments",
+            "workflow_class",
+            "workflow_id",
+            "workflow_type"
+          ],
+          "lease_owner": "<workflow>-validator",
+          "payload_codec": "avro",
+          "run_status": "waiting",
+          "same_ids": true,
+          "task_kind": "update_validation",
+          "update_name": "approve_me",
+          "workflow_id": "<workflow>",
+          "workflow_type": "parity.validated"
+        }
+      },
+      "execution_timeout": {
+        "response": {
+          "approved": false,
+          "message": "Synchronous update validation did not complete before the acceptance deadline.",
+          "outcome": "update_validation_failed",
+          "reason": "update_validation_execution_timeout",
+          "rejection_reason": "update_validation_execution_timeout",
+          "retryable": false,
+          "run_id": "<id:12>",
+          "update_id": "<id:6>",
+          "update_name": "approve_me",
+          "update_validation_attempt": 1,
+          "wait_for": "accepted",
+          "workflow_id": "<workflow>-busy"
+        },
+        "status": 504
+      },
+      "fail": {
+        "response": {
+          "outcome": "failed",
+          "reason": "validator_error",
+          "status": 200,
+          "update_id": "<id:13>",
+          "update_validation_attempt": 1,
+          "update_validation_task_id": "<id:13>"
+        },
+        "status": 200
+      },
+      "failed_again": {
+        "response": {
+          "approved": false,
+          "failure_type": "RuntimeError",
+          "message": "validator crashed",
+          "outcome": "update_validation_failed",
+          "reason": "validator_error",
+          "rejection_reason": "validator_error",
+          "retryable": false,
+          "run_id": "<id:10>",
+          "update_id": "<id:13>",
+          "update_name": "reject_me",
+          "update_validation_attempt": 1,
+          "wait_for": "accepted",
+          "workflow_id": "<workflow>-slow"
+        },
+        "status": 409
+      },
+      "failed_update": {
+        "response": {
+          "approved": false,
+          "failure_type": "RuntimeError",
+          "message": "validator crashed",
+          "outcome": "update_validation_failed",
+          "reason": "validator_error",
+          "rejection_reason": "validator_error",
+          "retryable": false,
+          "run_id": "<id:10>",
+          "update_id": "<id:13>",
+          "update_name": "reject_me",
+          "update_validation_attempt": 1,
+          "wait_for": "accepted",
+          "workflow_id": "<workflow>-slow"
+        },
+        "status": 409
+      },
+      "first_task_kind": "workflow",
+      "history": [
+        [
+          "StartAccepted",
+          [
+            "workflow_command_id"
+          ],
+          null
+        ],
+        [
+          "WorkflowStarted",
+          [
+            "workflow_command_id"
+          ],
+          null
+        ],
+        [
+          "SignalWaitOpened",
+          [],
+          null
+        ],
+        [
+          "UpdateRejected",
+          [
+            "update_id",
+            "update_name",
+            "validation_errors",
+            "workflow_command_id"
+          ],
+          {
+            "v": [
+              "too small"
+            ]
+          }
+        ],
+        [
+          "UpdateAccepted",
+          [
+            "request_id",
+            "update_id",
+            "update_name",
+            "workflow_command_id"
+          ],
+          null
+        ],
+        [
+          "UpdateAccepted",
+          [
+            "request_id",
+            "update_id",
+            "update_name",
+            "workflow_command_id"
+          ],
+          null
+        ]
+      ],
+      "invalid_arguments": {
+        "response": {
+          "message": "Workflow update [approve_me] argument validation failed.",
+          "outcome": "update_validation_failed",
+          "reason": "invalid_update_arguments",
+          "rejection_reason": "invalid_update_arguments",
+          "retryable": false,
+          "run_id": "<id:5>",
+          "update_name": "approve_me",
+          "validation_errors": {
+            "value": [
+              "The value argument must be of type array."
+            ]
+          },
+          "wait_for": "accepted",
+          "workflow_id": "<workflow>"
+        },
+        "status": 422
+      },
+      "lease_expired": {
+        "response": {
+          "error": "Update validation task lease has expired.",
+          "outcome": "rejected",
+          "reason": "update_validation_lease_expired",
+          "status": 409,
+          "update_id": "<id:2>",
+          "update_validation_attempt": 1,
+          "update_validation_task_id": "<id:2>"
+        },
+        "status": 409
+      },
+      "lost_approve": {
+        "response": {
+          "error": "The validator worker is no longer active.",
+          "outcome": "rejected",
+          "reason": "update_validator_worker_lost",
+          "status": 409,
+          "update_id": "<id:14>",
+          "update_validation_attempt": 1,
+          "update_validation_task_id": "<id:14>"
+        },
+        "status": 409
+      },
+      "lost_deregistered": 200,
+      "multiplexed_order": [
+        "update_validation",
+        "workflow"
+      ],
+      "multiplexed_poll": {
+        "poll_status": "leased",
+        "status": 200,
+        "task": {
+          "arguments": [
+            {
+              "v": 2
+            }
+          ],
+          "attempt": 1,
+          "export_history": [
+            "StartAccepted",
+            "WorkflowStarted",
+            "SignalWaitOpened"
+          ],
+          "history": [
+            "StartAccepted",
+            "WorkflowStarted",
+            "SignalWaitOpened"
+          ],
+          "keys": [
+            "compatibility",
+            "history_events",
+            "history_export",
+            "last_history_sequence",
+            "lease_expires_at",
+            "lease_owner",
+            "next_history_page_token",
+            "payload_codec",
+            "run_id",
+            "run_status",
+            "task_kind",
+            "task_queue",
+            "update_arguments",
+            "update_id",
+            "update_name",
+            "update_validation_attempt",
+            "update_validation_task_id",
+            "workflow_arguments",
+            "workflow_class",
+            "workflow_id",
+            "workflow_type"
+          ],
+          "lease_owner": "<workflow>-validator",
+          "payload_codec": "avro",
+          "run_status": "waiting",
+          "same_ids": true,
+          "task_kind": "update_validation",
+          "update_name": "reject_me",
+          "workflow_id": "<workflow>",
+          "workflow_type": "parity.validated"
+        }
+      },
+      "multiplexed_without_capability": {
+        "response": {
+          "error": "Worker registration does not advertise synchronous update validation.",
+          "poll_status": "unsupported",
+          "reason": "update_validation_capability_not_advertised",
+          "task": null
+        },
+        "status": 409
+      },
+      "no_request_id": {
+        "response": {
+          "message": "Updates with declared validators require request_id so validation and application remain idempotent across retries.",
+          "outcome": "update_validation_failed",
+          "reason": "update_validation_request_id_required",
+          "rejection_reason": "update_validation_request_id_required",
+          "retryable": true,
+          "run_id": "<id:5>",
+          "update_name": "approve_me",
+          "wait_for": "accepted",
+          "workflow_id": "<workflow>"
+        },
+        "status": 422
+      },
+      "ordered_update": 202,
+      "plain": {
+        "response": {
+          "accepted_at": "<time>",
+          "applied_at": null,
+          "closed_at": null,
+          "command_id": "<id:15>",
+          "command_sequence": 4,
+          "command_source": "control_plane",
+          "command_status": "accepted",
+          "failure_id": null,
+          "failure_message": null,
+          "outcome": null,
+          "reason": null,
+          "rejected_at": null,
+          "rejection_reason": null,
+          "requested_run_id": null,
+          "resolved_run_id": "<id:5>",
+          "result": null,
+          "result_envelope": null,
+          "run_id": "<id:5>",
+          "target_scope": "instance",
+          "update_id": "<id:16>",
+          "update_name": "plain",
+          "update_status": "accepted",
+          "validation_errors": [],
+          "wait_for": "accepted",
+          "wait_timed_out": false,
+          "wait_timeout_seconds": null,
+          "workflow_id": "<workflow>",
+          "workflow_sequence": null,
+          "workflow_type": "parity.validated"
+        },
+        "status": 202
+      },
+      "plain_before_order": 202,
+      "poll_without_capability": {
+        "response": {
+          "error": "Worker registration does not advertise synchronous update validation.",
+          "poll_status": "unsupported",
+          "reason": "update_validation_capability_not_advertised",
+          "task": null
+        },
+        "status": 409
+      },
+      "reclaimed": {
+        "attempt": 2,
+        "same_task": true
+      },
+      "register": {
+        "capabilities": [
+          "query_tasks",
+          "workflow_updates",
+          "update_validation_tasks"
+        ],
+        "status": 201
+      },
+      "reject": {
+        "response": {
+          "outcome": "rejected",
+          "reason": "update_validator_rejected",
+          "status": 200,
+          "update_id": "<id:17>",
+          "update_validation_attempt": 1,
+          "update_validation_task_id": "<id:17>"
+        },
+        "status": 200
+      },
+      "reject_again": {
+        "response": {
+          "error": "The update validation task already has a terminal result.",
+          "outcome": "rejected",
+          "reason": "duplicate_update_validation_completion",
+          "status": 409,
+          "update_id": "<id:17>",
+          "update_validation_attempt": 1,
+          "update_validation_task_id": "<id:17>"
+        },
+        "status": 409
+      },
+      "reject_without_failure": {
+        "response": {
+          "errors": {
+            "failure": [
+              "The failure field is required."
+            ],
+            "failure.message": [
+              "The failure.message field is required."
+            ]
+          },
+          "message": "The failure field is required. (and 1 more error)",
+          "reason": "validation_failed",
+          "validation_errors": {
+            "failure": [
+              "The failure field is required."
+            ],
+            "failure.message": [
+              "The failure.message field is required."
+            ]
+          }
+        },
+        "status": 422
+      },
+      "rejected_update": {
+        "response": {
+          "accepted": false,
+          "approved": false,
+          "command_id": "<id:18>",
+          "command_status": "rejected",
+          "message": "too small",
+          "outcome": "rejected_invalid_arguments",
+          "reason": "update_validator_rejected",
+          "rejection_reason": "update_validator_rejected",
+          "retryable": false,
+          "run_id": "<id:5>",
+          "update_id": "<id:17>",
+          "update_name": "reject_me",
+          "update_status": "rejected",
+          "update_validation_attempt": 1,
+          "validation_errors": {
+            "v": [
+              "too small"
+            ]
+          },
+          "wait_for": "accepted",
+          "wait_timed_out": false,
+          "wait_timeout_seconds": null,
+          "workflow_id": "<workflow>"
+        },
+        "status": 422
+      },
+      "request_default": {
+        "attempt": 1,
+        "poll_status": "leased",
+        "status": 200,
+        "task": "<id:19>",
+        "task_kind": "workflow"
+      },
+      "request_default_both": {
+        "response": {
+          "bound_task_kinds": [
+            "workflow"
+          ],
+          "error": "Poll request ID is already bound to a different task-kind set.",
+          "poll_request_id": "pr-z",
+          "poll_status": "conflict",
+          "reason": "poll_request_task_kinds_conflict",
+          "requested_task_kinds": [
+            "update_validation",
+            "workflow"
+          ],
+          "task": null
+        },
+        "status": 409
+      },
+      "request_default_replay": {
+        "attempt": 1,
+        "poll_status": "leased",
+        "status": 200,
+        "task": "<id:19>",
+        "task_kind": "workflow"
+      },
+      "request_first": {
+        "attempt": 1,
+        "poll_status": "leased",
+        "status": 200,
+        "task": "<id:20>",
+        "task_kind": "update_validation"
+      },
+      "request_other_set": {
+        "response": {
+          "bound_task_kinds": [
+            "update_validation",
+            "workflow"
+          ],
+          "error": "Poll request ID is already bound to a different task-kind set.",
+          "poll_request_id": "pr-x",
+          "poll_status": "conflict",
+          "reason": "poll_request_task_kinds_conflict",
+          "requested_task_kinds": [
+            "workflow"
+          ],
+          "task": null
+        },
+        "status": 409
+      },
+      "request_reordered": {
+        "attempt": 1,
+        "poll_status": "leased",
+        "status": 200,
+        "task": "<id:20>",
+        "task_kind": "update_validation"
+      },
+      "request_update": 202,
+      "request_validation_set": {
+        "response": {
+          "bound_task_kinds": [
+            "update_validation",
+            "workflow"
+          ],
+          "error": "Poll request ID is already bound to a different task-kind set.",
+          "poll_request_id": "pr-x",
+          "poll_status": "conflict",
+          "reason": "poll_request_task_kinds_conflict",
+          "requested_task_kinds": [
+            "update_validation"
+          ],
+          "task": null
+        },
+        "status": 409
+      },
+      "retained_approval": {
+        "response": {
+          "accepted_at": "<time>",
+          "applied_at": null,
+          "closed_at": null,
+          "command_id": "<id:4>",
+          "command_sequence": 3,
+          "command_source": "control_plane",
+          "command_status": "accepted",
+          "failure_id": null,
+          "failure_message": null,
+          "outcome": null,
+          "reason": null,
+          "rejected_at": null,
+          "rejection_reason": null,
+          "requested_run_id": null,
+          "resolved_run_id": "<id:5>",
+          "result": null,
+          "result_envelope": null,
+          "run_id": "<id:5>",
+          "target_scope": "instance",
+          "update_id": "<id:1>",
+          "update_name": "approve_me",
+          "update_status": "accepted",
+          "validation_errors": [],
+          "wait_for": "accepted",
+          "wait_timed_out": false,
+          "wait_timeout_seconds": null,
+          "workflow_id": "<workflow>",
+          "workflow_sequence": null,
+          "workflow_type": "parity.validated"
+        },
+        "status": 202
+      },
+      "retained_rejection": {
+        "response": {
+          "accepted": false,
+          "accepted_at": null,
+          "applied_at": null,
+          "closed_at": "<time>",
+          "command_id": "<id:18>",
+          "command_sequence": 2,
+          "command_source": "control_plane",
+          "command_status": "rejected",
+          "failure_id": null,
+          "failure_message": null,
+          "outcome": "rejected_invalid_arguments",
+          "reason": "update_validator_rejected",
+          "rejected_at": "<time>",
+          "rejection_reason": "update_validator_rejected",
+          "requested_run_id": null,
+          "resolved_run_id": "<id:5>",
+          "result": null,
+          "result_envelope": null,
+          "run_id": "<id:5>",
+          "target_scope": "instance",
+          "update_id": "<id:17>",
+          "update_name": "reject_me",
+          "update_status": "rejected",
+          "validation_errors": {
+            "v": [
+              "too small"
+            ]
+          },
+          "wait_for": "accepted",
+          "wait_timed_out": false,
+          "wait_timeout_seconds": null,
+          "workflow_id": "<workflow>",
+          "workflow_sequence": null,
+          "workflow_type": "parity.validated"
+        },
+        "status": 422
+      },
+      "slow_history": [
+        [
+          "StartAccepted",
+          [
+            "workflow_command_id"
+          ],
+          null
+        ],
+        [
+          "WorkflowStarted",
+          [
+            "workflow_command_id"
+          ],
+          null
+        ],
+        [
+          "SignalWaitOpened",
+          [],
+          null
+        ],
+        [
+          "UpdateAccepted",
+          [
+            "request_id",
+            "update_id",
+            "update_name",
+            "workflow_command_id"
+          ],
+          null
+        ],
+        [
+          "UpdateAccepted",
+          [
+            "request_id",
+            "update_id",
+            "update_name",
+            "workflow_command_id"
+          ],
+          null
+        ],
+        [
+          "UpdateAccepted",
+          [
+            "request_id",
+            "update_id",
+            "update_name",
+            "workflow_command_id"
+          ],
+          null
+        ]
+      ],
+      "unclaimed": {
+        "response": {
+          "approved": false,
+          "message": "Synchronous update validation did not complete before the acceptance deadline.",
+          "outcome": "update_validation_failed",
+          "reason": "update_validation_task_not_claimed",
+          "rejection_reason": "update_validation_task_not_claimed",
+          "retryable": false,
+          "run_id": "<id:21>",
+          "update_id": "<id:22>",
+          "update_name": "approve_me",
+          "update_validation_attempt": 0,
+          "wait_for": "accepted",
+          "workflow_id": "<workflow>-idle"
+        },
+        "status": 504
+      },
+      "unclaimed_again": {
+        "response": {
+          "approved": false,
+          "message": "Synchronous update validation did not complete before the acceptance deadline.",
+          "outcome": "update_validation_failed",
+          "reason": "update_validation_task_not_claimed",
+          "rejection_reason": "update_validation_task_not_claimed",
+          "retryable": false,
+          "run_id": "<id:21>",
+          "update_id": "<id:22>",
+          "update_name": "approve_me",
+          "update_validation_attempt": 0,
+          "wait_for": "accepted",
+          "workflow_id": "<workflow>-idle"
+        },
+        "status": 504
+      },
+      "unclaimed_conflict": {
+        "response": {
+          "approved": false,
+          "message": "The update request ID was already used with different arguments.",
+          "outcome": "update_validation_failed",
+          "reason": "update_validation_idempotency_conflict",
+          "rejection_reason": "update_validation_idempotency_conflict",
+          "retryable": false,
+          "run_id": "<id:21>",
+          "update_id": "<id:22>",
+          "update_name": "approve_me",
+          "wait_for": "accepted",
+          "workflow_id": "<workflow>-idle"
+        },
+        "status": 409
+      },
+      "unregistered_poll": {
+        "response": {
+          "error": "Worker must be registered before polling. Call POST /worker/register first.",
+          "reason": "worker_not_registered",
+          "worker_id": "<workflow>-nobody"
+        },
+        "status": 412
+      },
+      "worker_incompatible": {
+        "response": {
+          "approved": false,
+          "message": "Active workers do not advertise a validator-capable implementation matching this workflow run.",
+          "outcome": "update_validation_failed",
+          "reason": "update_validator_worker_incompatible",
+          "rejection_reason": "update_validator_worker_incompatible",
+          "retryable": true,
+          "run_id": "<id:23>",
+          "update_id": "<id:24>",
+          "update_name": "approve_me",
+          "wait_for": "accepted",
+          "workflow_id": "<workflow>-changed"
+        },
+        "status": 409
+      },
+      "worker_lost": {
+        "response": {
+          "approved": false,
+          "message": "The validator worker was lost before returning a validation result.",
+          "outcome": "update_validation_failed",
+          "reason": "update_validator_worker_lost",
+          "rejection_reason": "update_validator_worker_lost",
+          "retryable": false,
+          "run_id": "<id:25>",
+          "update_id": "<id:14>",
+          "update_name": "approve_me",
+          "update_validation_attempt": 1,
+          "wait_for": "accepted",
+          "workflow_id": "<workflow>-lost"
+        },
+        "status": 504
+      },
+      "worker_unavailable": {
+        "response": {
+          "approved": false,
+          "message": "No active worker is available to perform synchronous update validation.",
+          "outcome": "update_validation_failed",
+          "reason": "update_validator_worker_unavailable",
+          "rejection_reason": "update_validator_worker_unavailable",
+          "retryable": true,
+          "run_id": "<id:25>",
+          "update_id": "<id:26>",
+          "update_name": "approve_me",
+          "wait_for": "accepted",
+          "workflow_id": "<workflow>-lost"
+        },
+        "status": 409
+      }
+    }
+  },
+  "contract": "Synchronous update validation (published Server 2.11.1, ValidatedExternalWorkflowUpdateAdmission and WorkflowUpdateValidationTaskBroker). Server capabilities advertise update_validation_tasks and the synchronous_update_validation contract with a 10-second caller wait and a 5-second claim. A raw worker declares update_validators for two of three updates, so the run's WorkflowStarted records declared_update_validators. Before validation, an update without request_id and one with invalid arguments are refused and record nothing. A validated update waits while a worker claims its validation task through the multiplexed workflow poll (task_kinds) or the dedicated poll; the task carries the run's replay history and history export, update arguments, attempt and lease. Approval admits the update with update_id equal to the task id and UpdateAccepted with request_id; a validator rejection records a rejected command and update under the task id with UpdateRejected and its validation errors, and answers 422; any other worker failure answers 409 and records nothing. Completions are fenced by lease owner, attempt, lease expiry and worker freshness, and a terminal task refuses duplicates. Retries with the same request_id return the recorded receipt or the stored failure; changed arguments conflict. Nobody claiming, a lost worker and a worker that never answers each time out with 504 after the wait. An expired lease is claimed again with the next attempt. The multiplexed poll alternates kinds after each lease. A worker contract without update_validators refuses every remote update; no capable or matching worker, and no worker at all, refuse with 409. Identifiers, timestamps, the requester and the control-plane block are normalized or left to their own fixtures."
+}

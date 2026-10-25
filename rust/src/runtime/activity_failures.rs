@@ -430,7 +430,8 @@ where
             return Err(super::RuntimeError::Protocol {
                 status: StatusCode::CONFLICT,
                 response: json!({"task_id":task_id,"activity_attempt_id":attempt_id,"outcome":reported,
-                    "recorded":false,"reason":"stale_attempt","next_task_id":null}),
+                    "recorded":false,"reason":"stale_attempt","next_task_id":null,
+                    "protocol_version":super::WORKER_PROTOCOL_VERSION,"server_capabilities":super::store::capabilities()}),
             });
         }
         Self::closed_run_outcome(&mut tx, &task, &body, reported).await?;
@@ -540,7 +541,9 @@ where
             }
             payload["task"] = json!({"id":task_id,"type":"activity","status":"leased",
                 "available_at":DB::optional_instant(&task,"available_at")?,"leased_at":DB::optional_instant(&task,"leased_at")?,
-                "lease_owner":DB::optional_string(&task,"lease_owner")?,"attempt_count":count});
+                "lease_owner":DB::optional_string(&task,"lease_owner")?,"lease_expires_at":DB::optional_instant(&task,"lease_expires_at")?,
+                "attempt_count":count,"repair_count":DB::number(&task,"repair_count")?,"queue":DB::string(&task,"queue")?,
+                "connection":DB::PHP_CONNECTION});
             let failed_event = payload.clone();
             Self::append(
                 &mut tx,

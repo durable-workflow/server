@@ -24,6 +24,7 @@ macro_rules! store_methods {
 }
 
 mod active_summary;
+mod activity_cancellation_ack;
 mod activity_completion_uploads;
 mod activity_deadlines;
 mod activity_failures;
@@ -81,6 +82,9 @@ mod operator_metrics;
 mod payload_cleanup;
 mod payload_discovery;
 mod payload_limits;
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub mod poll_pauses;
 mod poll_readiness;
 pub mod postgres;
 mod previews;
@@ -119,6 +123,7 @@ mod service_catalog;
 mod sqlite;
 mod start_definition;
 mod start_request;
+mod message_streams;
 mod storage_test;
 mod store;
 mod system_metrics;
@@ -131,6 +136,7 @@ mod terminal_updates;
 mod timer_summary;
 mod transaction;
 mod update_summary;
+mod update_validation;
 mod updates;
 pub mod upgrade;
 mod visibility;
@@ -139,6 +145,9 @@ mod wait_projection;
 mod wait_timeouts;
 mod worker_contracts;
 mod worker_incarnations;
+mod worker_poll_fence;
+mod worker_sessions;
+mod workflow_poll_requests;
 mod worker_management;
 mod worker_admission;
 mod workflow_failures;

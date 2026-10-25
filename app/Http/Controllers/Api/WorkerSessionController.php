@@ -11,6 +11,9 @@ use Illuminate\Http\Request;
 
 class WorkerSessionController
 {
+    /** The token registration returned, as fenced deregistration accepts it. */
+    private const REGISTRATION_TOKEN_RULES = ['nullable', 'string', 'regex:/^[a-f0-9]{32}$/D'];
+
     public function __construct(
         private readonly WorkerSessionRegistry $sessions,
     ) {}
@@ -52,7 +55,7 @@ class WorkerSessionController
             ], 422);
         }
 
-        $result = $this->sessions->createOrReacquire($namespace, $worker, $options);
+        $result = $this->sessions->createOrReacquire($namespace, $worker, $options, $validated['registration_token'] ?? null);
 
         return WorkerProtocol::json($result, (int) $result['status']);
     }
@@ -71,7 +74,8 @@ class WorkerSessionController
 
         $validated = $request->validate([
             'worker_id' => ['required', 'string', 'max:255'],
-            'lease_seconds' => ['nullable', 'integer', 'min:1'],
+            'lease_seconds' => ['nullable', 'integer', 'min:1', 'max:'.WorkerSessionRegistry::MAX_LEASE_SECONDS],
+            'registration_token' => self::REGISTRATION_TOKEN_RULES,
         ]);
 
         $result = $this->sessions->heartbeat(
@@ -79,6 +83,7 @@ class WorkerSessionController
             $validated['worker_id'],
             $sessionId,
             $validated['lease_seconds'] ?? null,
+            $validated['registration_token'] ?? null,
         );
 
         return WorkerProtocol::json($result, (int) $result['status']);
@@ -98,9 +103,10 @@ class WorkerSessionController
 
         $validated = $request->validate([
             'worker_id' => ['required', 'string', 'max:255'],
+            'registration_token' => self::REGISTRATION_TOKEN_RULES,
         ]);
 
-        $result = $this->sessions->close($namespace, $validated['worker_id'], $sessionId);
+        $result = $this->sessions->close($namespace, $validated['worker_id'], $sessionId, $validated['registration_token'] ?? null);
 
         return WorkerProtocol::json($result, (int) $result['status']);
     }
@@ -154,11 +160,12 @@ class WorkerSessionController
             'queue' => ['nullable', 'string', 'max:255'],
             'requirements' => ['nullable', 'array'],
             'requirements.*' => ['string', 'max:255'],
-            'lease_seconds' => ['nullable', 'integer', 'min:1'],
-            'ttl_seconds' => ['nullable', 'integer', 'min:1'],
-            'max_concurrent_activities' => ['nullable', 'integer', 'min:1'],
+            'lease_seconds' => ['nullable', 'integer', 'min:1', 'max:'.WorkerSessionRegistry::MAX_LEASE_SECONDS],
+            'ttl_seconds' => ['nullable', 'integer', 'min:1', 'max:'.WorkerSessionRegistry::MAX_TTL_SECONDS],
+            'max_concurrent_activities' => ['nullable', 'integer', 'min:1', 'max:'.WorkerSessionRegistry::MAX_CONCURRENT_ACTIVITIES],
             'create_if_missing' => ['nullable', 'boolean'],
             'allow_reacquire_after_failure' => ['nullable', 'boolean'],
+            'registration_token' => self::REGISTRATION_TOKEN_RULES,
         ]);
     }
 
