@@ -6,7 +6,8 @@ of [Server #526](https://github.com/durable-workflow/server/issues/526).
 
 ## Negotiation
 
-Workflow, activity and query worker polls may explicitly request:
+Workflow, activity, query and dedicated update-validation polls may explicitly
+request:
 
 ```http
 Accept: application/vnd.durable-workflow.poll.v1+json, application/json;q=0.9

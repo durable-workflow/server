@@ -14,6 +14,7 @@ final class WorkerPollResponseProgress
         'api/worker/workflow-tasks/poll',
         'api/worker/activity-tasks/poll',
         'api/worker/query-tasks/poll',
+        'api/worker/update-validation-tasks/poll',
     ];
 
     public function handle(Request $request, Closure $next): Response

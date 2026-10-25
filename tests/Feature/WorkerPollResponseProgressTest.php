@@ -43,11 +43,12 @@ class WorkerPollResponseProgressTest extends TestCase
         }
     }
 
-    public function test_negotiation_preserves_early_status_and_raw_json_body(): void
+    #[DataProvider('pollKinds')]
+    public function test_negotiation_preserves_early_status_and_raw_json_body(string $kind): void
     {
         $raw = '{"task":null,"decimal":1.0,"large":9223372036854775808}';
         $original = JsonResponse::fromJsonString($raw, 429, ['Retry-After' => '2']);
-        $response = $this->throughTransport(static fn () => $original, strtoupper(LongPollResponseProgress::MEDIA_TYPE).', application/json;q=0.9');
+        $response = $this->throughTransport(static fn () => $original, strtoupper(LongPollResponseProgress::MEDIA_TYPE).', application/json;q=0.9', '/api/worker/'.$kind.'-tasks/poll');
         $this->assertInstanceOf(StreamedResponse::class, $response);
         $this->assertSame(429, $response->getStatusCode());
         $wire = TestResponse::fromBaseResponse($response)->streamedContent();
@@ -56,6 +57,11 @@ class WorkerPollResponseProgressTest extends TestCase
         $this->assertSame(LongPollResponseProgress::SCHEMA, $frame['schema']);
         $this->assertSame(429, $frame['status']);
         $this->assertSame('2', $frame['headers']['retry-after']);
+    }
+
+    public static function pollKinds(): array
+    {
+        return ['workflow' => ['workflow'], 'activity' => ['activity'], 'query' => ['query'], 'update-validation' => ['update-validation']];
     }
 
     public function test_a_real_wait_suspends_and_releases_its_slot_before_successful_delivery(): void
@@ -181,9 +187,9 @@ class WorkerPollResponseProgressTest extends TestCase
         });
     }
 
-    private function throughTransport(Closure $handler, string $accept = LongPollResponseProgress::MEDIA_TYPE): Response
+    private function throughTransport(Closure $handler, string $accept = LongPollResponseProgress::MEDIA_TYPE, string $path = '/api/worker/workflow-tasks/poll'): Response
     {
-        $request = Request::create('/api/worker/workflow-tasks/poll', 'POST', ['task_queue' => 'fixture-queue', 'timeout_seconds' => 30]);
+        $request = Request::create($path, 'POST', ['task_queue' => 'fixture-queue', 'timeout_seconds' => 30]);
         $request->headers->set('Accept', $accept);
         $request->attributes->set('namespace', 'fixture');
         $this->app->instance('request', $request);
