@@ -762,11 +762,14 @@ jobs:
               -v "$PWD/rust-target:/target:ro" --tmpfs /state --entrypoint /target/debug/durable-workflow-server \
               mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
           done
-          for node in a b; do
+          # Literal node URLs keep each probe's target a fixed container name.
+          for url in http://parity-native-a:8080 http://parity-native-b:8080; do
+            name=${url#*//parity-}
+            name=${name%:*}
             ready=0
             for attempt in $(seq 1 30); do
               if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-                -fsS --connect-timeout 2 --max-time 5 "http://parity-native-$node:8080/api/ready" > "parity-evidence/sdk-native-$node-readiness.json"; then
+                -fsS --connect-timeout 2 --max-time 5 "$url/api/ready" > "parity-evidence/sdk-$name-readiness.json"; then
                 ready=1
                 break
               fi
@@ -1380,11 +1383,14 @@ jobs:
               -v "$PWD/rust-target:/target:ro" --tmpfs /state --entrypoint /target/debug/durable-workflow-server \
               mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
           done
-          for node in a b; do
+          # Literal node URLs keep each probe's target a fixed container name.
+          for url in http://parity-native-a:8080 http://parity-native-b:8080; do
+            name=${url#*//parity-}
+            name=${name%:*}
             ready=0
             for attempt in $(seq 1 30); do
               if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-                -fsS --connect-timeout 2 --max-time 5 "http://parity-native-$node:8080/api/ready" > "parity-evidence/sdk-native-$node-readiness.json"; then
+                -fsS --connect-timeout 2 --max-time 5 "$url/api/ready" > "parity-evidence/sdk-$name-readiness.json"; then
                 ready=1
                 break
               fi
@@ -2001,11 +2007,14 @@ jobs:
               --entrypoint /target/debug/durable-workflow-server \
               mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
           done
-          for node in rust rust-b; do
+          # Literal node URLs keep each probe's target a fixed container name.
+          for url in http://parity-rust:8080 http://parity-rust-b:8080; do
+            name=${url#*//parity-}
+            name=${name%:*}
             ready=0
             for attempt in $(seq 1 30); do
               if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-                -fsS --connect-timeout 2 --max-time 5 "http://parity-$node:8080/api/ready" > "parity-evidence/sdk-native-$node-readiness.json"; then
+                -fsS --connect-timeout 2 --max-time 5 "$url/api/ready" > "parity-evidence/sdk-$name-readiness.json"; then
                 ready=1
                 break
               fi

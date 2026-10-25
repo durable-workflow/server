@@ -164,5 +164,5 @@ test('the existing MySQL matrix splits its execution tests into two parts, every
 test('every readiness probe bounds each request, so one silent connection cannot stall a part', () => {
   const probes = workflow.match(/curl[^\n]*\n?[^\n]*\/api\/ready/g) ?? [];
   assert.ok(probes.length >= 20, `${probes.length} readiness probes`);
-  for (const probe of probes) assert.match(probe, /--connect-timeout \d+ --max-time \d+ "?http:/, probe);
+  for (const probe of probes) assert.match(probe, /--connect-timeout \d+ --max-time \d+ "?(http:|\$url\/)/, probe);
 });
