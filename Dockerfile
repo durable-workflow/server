@@ -24,15 +24,6 @@ RUN git clone --depth 1 --branch "${PHPREDIS_VERSION}" https://github.com/phpred
          exit 1; \
        fi
 
-# Debian 13 has no fixed libbrotli1 for CVE-2026-111497 yet: rebuild Debian's
-# own source with upstream's fix, for each release architecture (see
-# docker/brotli/build.sh). The runtime stage installs only that package.
-FROM php@sha256:d89e8b3d2033c3179dcd9999d913670eb12a07410a95e60205c64e7d0fac7aef AS brotli
-COPY docker/trust/ /usr/local/lib/server-trust/
-RUN sh /usr/local/lib/server-trust/verify-trust.sh system
-COPY docker/brotli/ /usr/src/server-brotli/
-RUN sh /usr/src/server-brotli/build.sh
-
 # The fixed official Apache runtime is pinned for both release architectures.
 FROM php@sha256:d89e8b3d2033c3179dcd9999d913670eb12a07410a95e60205c64e7d0fac7aef AS base
 
@@ -45,9 +36,10 @@ COPY --from=phpredis-source /phpredis /usr/src/php/ext/redis
 
 # The image's trust checks; `server-verify-trust` reruns them on any image.
 COPY docker/trust/ /usr/local/lib/server-trust/
-# The fixed Brotli decoder and its check, `server-verify-brotli`.
+# The Brotli decoder check, `server-verify-brotli`. Debian's signed
+# libbrotli1 1.1.0-2+deb13u1 (trixie-security) carries the CVE-2026-111497
+# fix; the package list below takes it over the base image's 1.1.0-2+b7.
 COPY docker/brotli/ /usr/local/lib/server-brotli/
-COPY --from=brotli /out/ /usr/src/server-brotli-deb/
 
 # Published conformance runners execute from the exact Server image.
 # Keep their Node and Python runtimes available alongside the service. Node
@@ -58,6 +50,7 @@ RUN chmod 0755 /usr/local/lib/server-trust/verify-trust.sh \
     && server-verify-trust system \
     && apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    libbrotli1 \
     libpq-dev \
     libstdc++6 \
     libzip-dev \
@@ -65,8 +58,6 @@ RUN chmod 0755 /usr/local/lib/server-trust/verify-trust.sh \
     python3-venv \
     unzip \
     util-linux \
-    && dpkg -i /usr/src/server-brotli-deb/libbrotli1_*.deb \
-    && rm -rf /usr/src/server-brotli-deb \
     && ln -s /usr/local/lib/server-brotli/verify-brotli.sh /usr/local/bin/server-verify-brotli \
     && docker-php-ext-install opcache redis pdo pdo_mysql pdo_pgsql pcntl zip bcmath \
     && groupmod --gid 1000 www-data \

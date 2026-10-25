@@ -149,7 +149,7 @@ jobs:
           DW_REQUIRE_COMPOSER_TRUST_TEST: '1'
         run: python3 -m unittest tests/Unit/Support/composer_trust_test.py tests/Unit/Support/release_composer_audit_test.py
 
-      - name: Prove the image builds, installs and checks the fixed Brotli decoder
+      - name: Prove the image installs and checks the fixed Brotli decoder
         run: python3 -m unittest tests/Unit/Support/brotli_trust_test.py
 
   feature:

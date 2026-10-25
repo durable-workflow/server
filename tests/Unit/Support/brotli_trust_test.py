@@ -1,17 +1,16 @@
 """The Server image's Brotli decoders carry the CVE-2026-111497 fix.
 
-Debian 13 has no fixed libbrotli1 yet, so the image rebuilds Debian's own
-brotli 1.1.0-2 with upstream's fix for the 1.1 line (docker/brotli). These
-checks keep the vendored patch, the pinned sources, the package version and
-the Dockerfile wiring as reviewed. The image-level check is
-docker/brotli/verify-brotli.sh, which the build runs.
+Debian's security team fixed CVE-2026-111497 in libbrotli1 1.1.0-2+deb13u1
+(trixie-security), so the image installs Debian's signed package over the
+base image's 1.1.0-2+b7 instead of rebuilding it. These checks keep the
+minimum version and the Dockerfile wiring as reviewed. The image-level check
+is docker/brotli/verify-brotli.sh, which the build runs.
 
 Run with: python3 -m unittest tests/Unit/Support/brotli_trust_test.py
 """
 
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import subprocess
@@ -21,14 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 BROTLI = ROOT / "docker" / "brotli"
-PATCH_SHA256 = "3c1e4587947e4c61dd9c7c4619b1ae12d6bedbfd3c33c23981bf31269e18d52c"
-UPSTREAM_FIX = "da9806362874b9bd4b552a3af360b5d6347beb12"
-SOURCES = {
-    "brotli_1.1.0-2.dsc": "39b06802a852629132d549a7f7449dee7f435e801706714a4bc2ea2f15b28f36",
-    "brotli_1.1.0.orig.tar.gz": "10973f4b4199eafa1d5735ef661ddb2ec2f97319ee9fd1824d4aabe08cff5265",
-    "brotli_1.1.0-2.debian.tar.xz": "3d913a3740bcad9a294007575a6beb1846beadbd62b44fb2bf9fdaeddea3236f",
-}
-VERSION = "1.1.0-2+b7+dw1"
+MINIMUM = "1.1.0-2+deb13u1"
 
 
 def debian_compare(left: str, right: str) -> int:
@@ -77,17 +69,16 @@ def stages(dockerfile: str) -> dict[str, str]:
 def dockerfile_problems(dockerfile: str) -> list[str]:
     problems = []
     named = stages(dockerfile)
-    builder, base = named.get("brotli", ""), named.get("base", "")
-    image = lambda text: (re.match(r"FROM (\S+)", text) or [None, None])[1]
-    if not builder:
-        return ["no brotli builder stage"]
-    if image(builder) != image(base) or "@sha256:" not in (image(builder) or ""):
-        problems.append("the builder must use the runtime's exact pinned base")
-    if builder.find("verify-trust.sh system") < 0 or builder.find("verify-trust.sh system") > builder.find("build.sh"):
-        problems.append("the builder must check its CA store before it downloads")
-    install = base.find("dpkg -i /usr/src/server-brotli-deb/libbrotli1_")
-    if "COPY --from=brotli /out/ /usr/src/server-brotli-deb/" not in base or install < 0:
-        problems.append("the runtime must install the rebuilt libbrotli1")
+    base = named.get("base", "")
+    if "brotli" in named or "server-brotli-deb" in dockerfile or "server-brotli/build.sh" in dockerfile:
+        problems.append("the image must take Debian's fixed libbrotli1, not a rebuild")
+    trust = base.find("server-verify-trust system")
+    install = base.find("apt-get install")
+    package = base.find("\n    libbrotli1 \\\n", install)
+    if install < 0 or package < 0 or base.find("&& ", install, package) >= 0:
+        problems.append("the runtime's package list must take libbrotli1")
+    if trust < 0 or install < 0 or trust > install:
+        problems.append("the runtime must check its CA store before it downloads")
     final = base.find("server-verify-trust final")
     if final < 0 or base.find("server-verify-brotli", final) < 0:
         problems.append("the runtime must verify its decoders before production downloads")
@@ -102,28 +93,18 @@ def dockerfile_problems(dockerfile: str) -> list[str]:
 
 
 class BrotliTrustTest(unittest.TestCase):
-    def test_the_vendored_patch_is_upstreams_fix(self) -> None:
-        patch = (BROTLI / "CVE-2026-111497.patch").read_bytes()
-        self.assertEqual(hashlib.sha256(patch).hexdigest(), PATCH_SHA256)
-        text = patch.decode()
-        self.assertTrue(text.startswith(f"From {UPSTREAM_FIX} "))
-        self.assertEqual(re.findall(r"(?m)^diff --git a/(\S+)", text), ["c/dec/decode.c", "c/include/brotli/decode.h"])
-        self.assertIn("+  BROTLI_ERROR_CODE(_ERROR_FORMAT_, BLOCK_SWITCH, -17) SEPARATOR", text)
-
-    def test_the_debian_sources_are_pinned(self) -> None:
-        lines = (BROTLI / "source.sha256").read_text().splitlines()
-        self.assertEqual({name: digest for digest, name in (line.split("  ") for line in lines)}, SOURCES)
-        build = (BROTLI / "build.sh").read_text()
-        self.assertLess(build.index('sha256sum -c "$here/source.sha256"'), build.index("dpkg-source -x"))
-        self.assertIn("echo CVE-2026-111497.patch >> debian/patches/series", build)
-        self.assertIn("apt-get source --download-only brotli=1.1.0-2", build)
-
-    def test_the_version_replaces_trixies_and_yields_to_a_debian_fix(self) -> None:
-        self.assertEqual((BROTLI / "version").read_text().strip(), VERSION)
-        self.assertGreater(debian_compare(VERSION, "1.1.0-2+b7"), 0)
-        self.assertLess(debian_compare(VERSION, "1.1.0-2+deb13u1"), 0)
-        self.assertLess(debian_compare(VERSION, "1.1.1-1"), 0)
+    def test_the_minimum_is_debians_security_fix(self) -> None:
+        self.assertEqual((BROTLI / "version").read_text().strip(), MINIMUM)
+        self.assertGreater(debian_compare(MINIMUM, "1.1.0-2+b7"), 0, "above the base image's package")
+        self.assertGreater(debian_compare(MINIMUM, "1.1.0-2+b7+dw1"), 0, "above the retired rebuild")
+        self.assertLess(debian_compare(MINIMUM, "1.1.0-2+deb13u2"), 0, "a later Debian fix still passes")
         self.assertEqual(debian_compare("1.0~rc1-1", "1.0-1"), -1)
+        verify = (BROTLI / "verify-brotli.sh").read_text()
+        self.assertIn('dpkg --compare-versions "$installed" ge "$minimum"', verify)
+
+    def test_no_rebuild_remains(self) -> None:
+        for name in ("build.sh", "source.sha256", "CVE-2026-111497.patch"):
+            self.assertFalse((BROTLI / name).exists(), name)
 
     def test_the_check_identifies_the_fix_without_a_malformed_stream(self) -> None:
         check = (BROTLI / "brotli-check.py").read_text()
@@ -172,25 +153,28 @@ class BrotliTrustTest(unittest.TestCase):
             self.assertNotEqual(inventory(root, root / "usr" / "lib" / "libbrotlidec.so.1").returncode, 0,
                                 "the expected library must be the resolved file, not a link")
 
-    def test_the_dockerfile_builds_installs_and_verifies_the_fix(self) -> None:
+    def test_the_dockerfile_installs_and_verifies_the_fix(self) -> None:
         self.assertEqual(dockerfile_problems((ROOT / "Dockerfile").read_text()), [])
 
     def test_unwired_dockerfiles_fail(self) -> None:
         dockerfile = (ROOT / "Dockerfile").read_text()
+        rebuild = ("FROM php@sha256:" + "0" * 64 + " AS brotli\nRUN sh /usr/src/server-brotli/build.sh\n\n"
+                   "# The fixed official Apache runtime")
         for label, mutated in [
-            ("no install", dockerfile.replace("    && dpkg -i /usr/src/server-brotli-deb/libbrotli1_*.deb \\\n", "")),
+            ("no install", dockerfile.replace("    libbrotli1 \\\n", "")),
+            ("install before the trust check", dockerfile.replace(
+                "    && server-verify-trust system \\\n    && apt-get update", "    && apt-get update", 1)),
+            ("a rebuild stage", dockerfile.replace("# The fixed official Apache runtime", rebuild, 1)),
             ("no runtime check", dockerfile.replace("RUN server-verify-trust final \\\n    && server-verify-brotli\n",
                                                     "RUN server-verify-trust final\n")),
             ("no final check", dockerfile.replace("    && rm -rf /var/lib/apt/lists/* \\\n    && server-verify-brotli\n",
                                                   "    && rm -rf /var/lib/apt/lists/*\n")),
             ("floor after clone", dockerfile.replace('RUN apk add --no-cache --upgrade "brotli-libs>=1.2.1-r0" \\\n'
                                                      '    && apk info -e "brotli-libs>=1.2.1-r0"\n\n', "")),
-            ("other base", re.sub(r"(?m)^(FROM php@sha256:)[0-9a-f]+( AS brotli)$", r"\g<1>" + "0" * 64 + r"\2", dockerfile)),
         ]:
             with self.subTest(label):
                 self.assertNotEqual(mutated, dockerfile, label)
                 self.assertNotEqual(dockerfile_problems(mutated), [], label)
-
 
 if __name__ == "__main__":
     unittest.main()

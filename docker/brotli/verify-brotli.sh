@@ -1,18 +1,18 @@
 #!/bin/sh
 # Refuses an image whose Brotli decoders lack the CVE-2026-111497 fix. The
-# system decoder must be the rebuilt libbrotli1 (see build.sh), be the only
-# libbrotlidec on the image and be the one every linked object loads. Node
-# must be a release carrying its own fixed copy. No malformed stream is used:
-# the fix's new error code identifies the fixed decoder, and a valid stream
-# must still round trip.
+# system decoder must be Debian's libbrotli1 at or above the trixie-security
+# fix named in `version`, be the only libbrotlidec on the image and be the one
+# every linked object loads. Node must be a release carrying its own fixed
+# copy. No malformed stream is used: the fix's new error code identifies the
+# fixed decoder, and a valid stream must still round trip.
 set -eu
 
 here=$(dirname "$(readlink -f "$0")")
-expected=$(cat "$here/version")
+minimum=$(cat "$here/version")
 fail() { echo "$*" >&2; exit 1; }
 
 installed=$(dpkg-query -W -f '${Version}' libbrotli1)
-[ "$installed" = "$expected" ] || fail "libbrotli1 $installed is not the fixed $expected."
+dpkg --compare-versions "$installed" ge "$minimum" || fail "libbrotli1 $installed is older than the fixed $minimum."
 library=$(readlink -f "$(dpkg -L libbrotli1 | grep '/libbrotlidec\.so\.1$')")
 case $(dpkg -S "$library" 2>/dev/null) in
     libbrotli1:*) ;;
