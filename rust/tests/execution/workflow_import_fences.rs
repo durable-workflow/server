@@ -280,6 +280,39 @@ async fn reciprocal_imports_at_the_same_moment_write_their_link_once() {
     assert_eq!((parents[0]["id"].clone(), parents[0]["parent_workflow_run_id"].clone()), (json!(link_id), json!(parent_run)));
 }
 
+// PHP's own answers come first: an ineligible bundle reports only its
+// eligibility findings, and a bundle whose run already exists reports the
+// run conflict, whatever its references say. The fence then refuses before a
+// dry run or a write.
+#[tokio::test]
+async fn php_s_eligibility_and_run_checks_answer_before_the_reference_fence() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let existing = bundle("terminated", "wi-existing", &[], |_| {});
+    assert_eq!(import(&app, "default", &existing).await.0, StatusCode::CREATED);
+    let existing_run = run_of(&existing);
+    // The run is renamed to the existing one; every reference still names
+    // the bundle's own run.
+    let colliding = bundle("terminated", "wi-colliding", &[], |document| document["workflow"]["run_id"] = json!(existing_run));
+    let (status, report) = namespaces::scoped(&app, "default", "POST", ROUTE, json!({"bundle": colliding, "dry_run": true})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{report}");
+    let rules: Vec<&str> = report["eligibility"]["errors"].as_array().unwrap().iter().map(|error| error["rule"].as_str().unwrap()).collect();
+    assert_eq!(rules, ["target.run_id_conflict"], "{report}");
+    let anonymous = bundle("terminated", "wi-anonymous", &[], |document| {
+        let workflow = document["workflow"].as_object_mut().unwrap();
+        workflow.remove("instance_id");
+        workflow.remove("run_id");
+    });
+    let (_, report) = import(&app, "default", &anonymous).await;
+    let rules: Vec<&str> = report["eligibility"]["errors"].as_array().unwrap().iter().map(|error| error["rule"].as_str().unwrap()).collect();
+    assert!(rules.contains(&"workflow.run_id_missing") && !rules.iter().any(|rule| rule.starts_with("references.")), "{report}");
+    // A dry run of a bundle the fence refuses is refused too.
+    let crafted = bundle("terminated", "wi-crafted", &[], |document| document["commands"][0]["resolved_run_id"] = json!(existing_run));
+    let (status, report) = namespaces::scoped(&app, "default", "POST", ROUTE, json!({"bundle": crafted, "dry_run": true})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{report}");
+    refused(&report, "references.foreign_run", "commands.0.resolved_run_id must name the imported run");
+}
+
 #[tokio::test]
 async fn foreign_row_references_are_refused_before_anything_is_written() {
     let database = TestDatabase::new().await;

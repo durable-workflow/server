@@ -306,8 +306,12 @@ impl Eligibility {
     }
 
     fn with_error(&self, rule: &str, message: &str) -> Value {
+        self.with_errors(vec![finding(rule, message)])
+    }
+
+    fn with_errors(&self, findings: Vec<Value>) -> Value {
         let mut errors = self.errors.clone();
-        errors.push(finding(rule, message));
+        errors.extend(findings);
         json!({"eligible": false, "errors": errors, "warnings": self.warnings})
     }
 }
@@ -353,7 +357,6 @@ fn eligibility(bundle: &PhpArray, integrity: &str, signature_verified: bool, sum
     }
     reject_unsupported_payload_codecs(&root, &mut errors);
     reject_open_leases(&root, &mut errors);
-    reject_foreign_references(&root, summary, &mut errors);
     Eligibility { errors, warnings }
 }
 
@@ -1052,6 +1055,14 @@ impl Runtime {
                 "A workflow run with this run_id already exists and was not imported from the same bundle.")), &empty, None));
         }
         let root = Php::Array(prepared.bundle.clone());
+        // Native's reference fence (Server #765), after PHP's eligibility and
+        // run checks so their answers stay PHP's, and before a dry run or a
+        // write.
+        let mut references = Vec::new();
+        reject_foreign_references(&root, &prepared.summary, &mut references);
+        if !references.is_empty() {
+            return Ok(answer("rejected", Some(prepared.eligibility.with_errors(references)), &empty, None));
+        }
         if prepared.options.dry_run {
             return Ok(answer("dry_run", None, &estimated_rows(&root), None));
         }
