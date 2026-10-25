@@ -694,8 +694,7 @@ jobs:
           }
           trap container_log_tails ERR
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           # Each profile brings its own published PHP and embedded databases and
           # shares this part's native node, as the profiles shared the corpus's.
@@ -723,8 +722,7 @@ jobs:
         run: |
           set -euo pipefail
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run -d --name "$RESOURCE_SCOPE-native-b" --network "$RESOURCE_SCOPE" --network-alias=parity-native-b \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
@@ -776,8 +774,7 @@ jobs:
         run: |
           set -euo pipefail
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run -d --name "$RESOURCE_SCOPE-native-b" --network "$RESOURCE_SCOPE" --network-alias=parity-native-b \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
@@ -1296,8 +1293,7 @@ jobs:
           }
           trap container_log_tails ERR
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           # Each profile brings its own published PHP and embedded databases and
           # shares this part's native node, as the profiles shared the corpus's.
@@ -1325,8 +1321,7 @@ jobs:
         run: |
           set -euo pipefail
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run -d --name "$RESOURCE_SCOPE-native-b" --network "$RESOURCE_SCOPE" --network-alias=parity-native-b \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
@@ -1380,8 +1375,7 @@ jobs:
         run: |
           set -euo pipefail
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run -d --name "$RESOURCE_SCOPE-native-b" --network "$RESOURCE_SCOPE" --network-alias=parity-native-b \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
@@ -1906,8 +1900,7 @@ jobs:
           }
           trap container_log_tails ERR
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           mkdir -p parity-state parity-evidence
           # The profiles' published PHP containers run as 1000:1000; grant that
@@ -1942,8 +1935,7 @@ jobs:
         run: |
           set -euo pipefail
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           mkdir -p parity-state parity-evidence
           # The cohorts' published PHP containers run as 1000:1000; grant that
@@ -2010,8 +2002,7 @@ jobs:
         run: |
           set -euo pipefail
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           mkdir -p parity-state parity-evidence
           # The cohorts' published PHP containers run as 1000:1000; grant that

@@ -64,9 +64,36 @@
     {
       "path": ".github/workflows/server-parity.yml",
       "line": "bash scripts/ci/run-composer.sh --rm -v \"$PWD:/source\" -w /source -- \\",
-      "count": 3,
+      "count": 12,
       "confinement": "scripts/ci/run-composer.sh runs Composer in the pinned image after Alpine's fixed Brotli decoder (brotli-safe-composer.sh), never in the image under test. It sets COMPOSER_CAFILE to the checked store and COMPOSER_CAPATH to an empty directory after the caller's options, which may not name either, an entrypoint, an env file, /checked-ca or --volumes-from.",
       "guards": [
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        },
         {
           "type": "composer-wrapper"
         },
