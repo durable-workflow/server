@@ -276,7 +276,7 @@ return [
             'legacy' => 'WORKFLOW_SERVER_WORKER_POLL_SIGNAL_CHECK_INTERVAL_MS',
         ],
         'DW_POLLING_CACHE_PATH' => [
-            'description' => 'Directory for worker-poll coordination state.',
+            'description' => 'Writable local directory for worker-poll coordination and process-owned wait-slot locks, including when the polling cache uses Redis or a database.',
             'default' => 'storage/framework/cache/server-polling/<APP_ENV>',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_POLLING_CACHE_PATH',
@@ -294,7 +294,7 @@ return [
             'legacy' => 'WORKFLOW_SERVER_WORKER_LONG_POLL_MAX_CONCURRENT',
         ],
         'DW_WORKER_LONG_POLL_MAX_CONCURRENT_PER_NAMESPACE' => [
-            'description' => 'Optional per-node cap for concurrent held workflow/activity long-poll waits from one namespace. The effective cap cannot exceed the global worker wait cap. Configured namespace isolation fails closed when shared cache authority is unavailable.',
+            'description' => 'Optional per-node cap for concurrent held workflow/activity long-poll waits from one namespace. The effective cap cannot exceed the global worker wait cap. Process-owned local locks enforce both caps independently of shared-cache availability and fail closed if their local directory is unavailable.',
             'default' => '(unset)',
             'since' => '2.0.3',
             'legacy' => 'WORKFLOW_SERVER_WORKER_LONG_POLL_MAX_CONCURRENT_PER_NAMESPACE',
@@ -519,7 +519,7 @@ return [
             'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_POLL_MAX_CONCURRENT',
         ],
         'DW_QUERY_TASK_POLL_MAX_CONCURRENT_PER_NAMESPACE' => [
-            'description' => 'Optional per-node cap for concurrent held query-task long-poll waits from one namespace. The effective cap cannot exceed the global query-task wait cap. Configured namespace isolation fails closed when shared cache authority is unavailable.',
+            'description' => 'Optional per-node cap for concurrent held query-task long-poll waits from one namespace. The effective cap cannot exceed the global query-task wait cap. Process-owned local locks enforce both caps independently of shared-cache availability and fail closed if their local directory is unavailable.',
             'default' => '(unset)',
             'since' => '2.0.3',
             'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_POLL_MAX_CONCURRENT_PER_NAMESPACE',
