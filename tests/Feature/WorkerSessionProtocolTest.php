@@ -1207,6 +1207,41 @@ class WorkerSessionProtocolTest extends TestCase
         }
     }
 
+    public function test_a_superseded_registration_can_neither_create_renew_nor_close_its_session(): void
+    {
+        // Plain deregistration commits the registration as superseded before it
+        // deletes the row, and lease recovery supersedes a stale holder. Until
+        // the worker registers again, its session requests are refused.
+        foreach ([true, false] as $sendsToken) {
+            $workerId = $sendsToken ? 'gpu-token-worker' : 'gpu-published-worker';
+            $sessionId = $workerId.'-state';
+            $token = $this->registerWorkerThroughProtocol(
+                workerId: $workerId,
+                taskQueue: 'gpu-activities',
+                supportedActivityTypes: ['tests.external-greeting-activity'],
+                capabilities: ['gpu:nvidia-l4', ...($sendsToken ? [WorkerSessionRegistry::REGISTRATION_TOKEN_CAPABILITY] : [])],
+            );
+            $sent = $sendsToken ? $token : null;
+            $this->postJson('/api/worker/sessions', array_filter(['worker_id' => $workerId, 'session_id' => $sessionId,
+                'requirements' => ['gpu:nvidia-l4'], 'registration_token' => $sent]), $this->workerHeaders())->assertCreated();
+            WorkerRegistration::query()->where('worker_id', $workerId)->update(['status' => WorkerRegistration::STATUS_SUPERSEDED]);
+            $row = static fn (): array => WorkerSessionLease::query()->where('session_id', $sessionId)->firstOrFail()->getAttributes();
+            $before = $row();
+            foreach ([
+                $this->postJson('/api/worker/sessions', array_filter(['worker_id' => $workerId, 'session_id' => $sessionId,
+                    'requirements' => ['gpu:nvidia-l4'], 'registration_token' => $sent, 'lease_seconds' => 5]), $this->workerHeaders()),
+                $this->postJson("/api/worker/sessions/{$sessionId}/heartbeat",
+                    array_filter(['worker_id' => $workerId, 'registration_token' => $sent, 'lease_seconds' => 900]), $this->workerHeaders()),
+                $this->deleteJson("/api/worker/sessions/{$sessionId}",
+                    array_filter(['worker_id' => $workerId, 'registration_token' => $sent]), $this->workerHeaders()),
+            ] as $refused) {
+                $refused->assertStatus(409)->assertJsonPath('reason', 'worker_registration_superseded')
+                    ->assertJsonPath('remediation', 'Restart and register the worker with a new worker_id.');
+            }
+            $this->assertSame($before, $row(), 'a refused request changes nothing');
+        }
+    }
+
     public function test_without_the_token_capability_a_tokenless_request_acts_for_the_current_registration(): void
     {
         // Published workers do not send a registration token. For them the

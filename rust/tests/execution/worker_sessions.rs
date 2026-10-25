@@ -366,6 +366,49 @@ async fn a_deregistered_worker_can_neither_renew_nor_close_its_session() {
     }
 }
 
+// A registration fenced as superseded (plain deregistration commits that
+// before deleting the row, and lease recovery supersedes a stale holder) can
+// neither create, renew nor close a session until the worker registers again.
+#[tokio::test]
+async fn a_superseded_registration_can_neither_create_renew_nor_close_its_session() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    for sends_token in [true, false] {
+        let worker = if sends_token { "gpu-token-worker" } else { "gpu-published-worker" };
+        let session = format!("{worker}-state");
+        let token = if sends_token {
+            register_token_holder(&app, worker, "sessions").await
+        } else {
+            register_holder(&app, worker, "sessions").await
+        };
+        let sent = sends_token.then_some(token.as_str());
+        let with_token = |mut body: Value| {
+            if let Some(sent) = sent {
+                body["registration_token"] = json!(sent);
+            }
+            body
+        };
+        let (status, created) = create(&app, with_token(json!({"worker_id":worker,"session_id":session,"requirements":["gpu"]}))).await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        // Test-owned literal only.
+        database.execute(sqlx::AssertSqlSafe(format!(
+            "UPDATE workflow_worker_registrations SET status='superseded' WHERE worker_id='{worker}'"))).await;
+        let shown_path = format!("/api/worker-sessions/{session}");
+        let shown = || request(&app, "GET", &shown_path, Value::Null);
+        let before = shown().await;
+        assert_eq!(before.0, StatusCode::OK, "{}", before.1);
+        for refused in [
+            create(&app, with_token(json!({"worker_id":worker,"session_id":session,"requirements":["gpu"],"lease_seconds":5}))).await,
+            request(&app, "POST", &format!("/api/worker/sessions/{session}/heartbeat"), with_token(json!({"worker_id":worker,"lease_seconds":900}))).await,
+            request(&app, "DELETE", &format!("/api/worker/sessions/{session}"), with_token(json!({"worker_id":worker}))).await,
+        ] {
+            assert_eq!((refused.0, refused.1["reason"].clone(), refused.1["remediation"].clone()), (StatusCode::CONFLICT,
+                json!("worker_registration_superseded"), json!("Restart and register the worker with a new worker_id.")), "{}", refused.1);
+        }
+        assert_eq!(shown().await, before, "a refused request changes nothing");
+    }
+}
+
 // Published workers send no registration token. Without the token
 // capability, a request without one acts for the worker ID's current
 // registration, as published PHP's does; a token that is sent must be current.

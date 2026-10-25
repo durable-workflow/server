@@ -37,7 +37,7 @@ const HELD_SESSIONS: &str = "SELECT COUNT(*) FROM workflow_worker_sessions WHERE
 const HOLDER: &str = "SELECT task_queue,status,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2";
 /// The worker's current registration token, as the poll fence reads it.
 /// The registration terms a worker session is admitted against.
-const SESSION_REGISTRATION: &str = "SELECT task_queue,capabilities,max_concurrent_worker_sessions FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2";
+const SESSION_REGISTRATION: &str = "SELECT task_queue,capabilities,max_concurrent_worker_sessions,status FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2";
 /// The capabilities the worker's current registration declared.
 const REGISTRATION_CAPABILITIES: &str = "SELECT capabilities FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2";
 /// `WorkerSessionRegistry::REGISTRATION_TOKEN_CAPABILITY`: a worker that
@@ -436,6 +436,14 @@ fn success(outcome: &str, session: Value, status: StatusCode) -> Answer {
         "status":status.as_u16(),"reason":null}) }
 }
 
+/// `supersededRegistration`: a registration fenced as superseded has lost
+/// its authority, as PHP's worker heartbeat treats it.
+fn superseded_answer(worker_id: &str) -> Answer {
+    failure("worker_registration_superseded", "Worker registration was fenced after its leases were recovered.",
+        StatusCode::CONFLICT, Map::from_iter([("worker_id".to_owned(), json!(worker_id)),
+            ("remediation".to_owned(), json!("Restart and register the worker with a new worker_id."))]))
+}
+
 /// `notRegistered`: an explicit session request from a worker without a
 /// current registration.
 fn not_registered(worker_id: &str, action: &str) -> Answer {
@@ -505,6 +513,7 @@ store_methods! {
             .bind(self.namespace.as_ref()).bind(&worker_id).fetch_optional(&mut *tx).await?;
         let answer = match current {
             None => not_registered(&worker_id, "creating"),
+            Some(current) if Self::registration_superseded(&current)? => superseded_answer(&worker_id),
             Some(current) => match self.stale_registration(&mut tx, &worker_id, body["registration_token"].as_str()).await? {
                 Some(stale) => stale,
                 None => {
@@ -979,6 +988,11 @@ store_methods! {
         Ok(())
     }
 
+    /// Whether a registration row is fenced as superseded.
+    fn registration_superseded(row: &DB::Row) -> Result<bool> {
+        Ok(DB::optional_string(row, "status")?.as_deref() == Some("superseded"))
+    }
+
     /// The fence of an explicit heartbeat or close: the worker must have a
     /// current registration, with or without a token, so a process whose
     /// registration was deleted can no longer renew or close the session it
@@ -987,8 +1001,11 @@ store_methods! {
         -> Result<Option<Answer>> {
         let registered = Self::query(SESSION_REGISTRATION)
             .bind(self.namespace.as_ref()).bind(worker_id).fetch_optional(&mut **tx).await?;
-        if registered.is_none() {
+        let Some(registered) = registered else {
             return Ok(Some(not_registered(worker_id, action)));
+        };
+        if Self::registration_superseded(&registered)? {
+            return Ok(Some(superseded_answer(worker_id)));
         }
         self.stale_registration(tx, worker_id, token).await
     }

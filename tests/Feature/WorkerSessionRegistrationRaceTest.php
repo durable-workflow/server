@@ -2,11 +2,14 @@
 
 namespace Tests\Feature;
 
+use App\Models\WorkerRegistration;
 use App\Models\WorkerSessionLease;
 use App\Support\WorkerProtocol;
 use App\Support\WorkerSessionRegistry;
 use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Database\Events\TransactionCommitted;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use PDO;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
@@ -54,7 +57,7 @@ class WorkerSessionRegistrationRaceTest extends TestCase
             $actors['session'] = $this->forkActor(fn (): array => $this->sessionRequest($verb, $first), pause: 'lock');
             $this->readMessage($actors['session']);
             fwrite($actors['session']['socket'], "go\n");
-            $this->assertTrue($this->readMessage($actors['session'])['registration_locked']);
+            $this->assertNotNull($this->readMessage($actors['session'])['paused']);
 
             $actors['register'] = $this->forkActor(fn (): array => ['token' => $this->register()]);
             $replacement = $this->readMessage($actors['register']);
@@ -125,7 +128,7 @@ class WorkerSessionRegistrationRaceTest extends TestCase
             $actors['session'] = $this->forkActor(fn (): array => $this->sessionRequest($verb, null), pause: 'lock');
             $this->readMessage($actors['session']);
             fwrite($actors['session']['socket'], "go\n");
-            $this->assertTrue($this->readMessage($actors['session'])['registration_locked']);
+            $this->assertNotNull($this->readMessage($actors['session'])['paused']);
 
             $actors['deregister'] = $this->forkActor(fn (): array => ['status' => $this->deleteJson('/api/worker/registrations/race-worker',
                 [], $this->workerHeaders())->status()]);
@@ -154,6 +157,54 @@ class WorkerSessionRegistrationRaceTest extends TestCase
         $before = WorkerSessionLease::query()->where('session_id', 'race-state')->firstOrFail()->getAttributes();
         $this->sessionResponse($verb, null)->assertStatus(412)->assertJsonPath('reason', 'worker_not_registered');
         $this->assertSame($before, WorkerSessionLease::query()->where('session_id', 'race-state')->firstOrFail()->getAttributes());
+    }
+
+    public static function drivers(): array
+    {
+        return ['mysql' => ['mysql'], 'pgsql' => ['pgsql']];
+    }
+
+    /**
+     * Plain deregistration commits the registration as superseded, recovers
+     * its leases and only then deletes the row. Inside that window a
+     * published tokenless create, heartbeat or close is refused and changes
+     * nothing; once the row is gone it is refused as unregistered.
+     */
+    #[DataProvider('drivers')]
+    public function test_session_requests_inside_a_deregistrations_superseded_window_are_refused(string $driver): void
+    {
+        $this->initializeDatabase($driver);
+        $this->register(sendsToken: false);
+        $this->sessionResponse('create', null)->assertCreated();
+        $actors = [];
+        DB::purge();
+        try {
+            $actors['deregister'] = $this->forkActor(fn (): array => ['status' => $this->deleteJson('/api/worker/registrations/race-worker',
+                [], $this->workerHeaders())->status()], pause: 'superseded');
+            $this->readMessage($actors['deregister']);
+            fwrite($actors['deregister']['socket'], "go\n");
+            $this->assertSame('superseded', $this->readMessage($actors['deregister'])['paused']);
+
+            $before = WorkerSessionLease::query()->where('session_id', 'race-state')->firstOrFail()->getAttributes();
+            foreach (['create', 'heartbeat', 'close'] as $verb) {
+                $this->sessionResponse($verb, null)->assertStatus(409)->assertJsonPath('reason', 'worker_registration_superseded');
+            }
+            $this->assertSame($before, WorkerSessionLease::query()->where('session_id', 'race-state')->firstOrFail()->getAttributes());
+
+            fwrite($actors['deregister']['socket'], "continue\n");
+            $this->assertSame(200, $this->finishActor($actors['deregister'])['status']);
+            unset($actors['deregister']);
+        } finally {
+            foreach ($actors as $actor) {
+                posix_kill($actor['pid'], SIGKILL);
+                pcntl_waitpid($actor['pid'], $status);
+                fclose($actor['socket']);
+            }
+            DB::purge();
+            DB::reconnect();
+        }
+
+        $this->sessionResponse('heartbeat', null)->assertStatus(412)->assertJsonPath('reason', 'worker_not_registered');
     }
 
     public static function creates(): array
@@ -187,7 +238,7 @@ class WorkerSessionRegistrationRaceTest extends TestCase
             $actors['session'] = $this->forkActor(fn (): array => $this->sessionRequest('create', $sendsToken ? $first : null), pause: 'read');
             $this->readMessage($actors['session']);
             fwrite($actors['session']['socket'], "go\n");
-            $this->assertTrue($this->readMessage($actors['session'])['registration_locked']);
+            $this->assertNotNull($this->readMessage($actors['session'])['paused']);
 
             // The replacement registers and reacquires while the create waits
             // between its first read and its transaction.
@@ -321,13 +372,27 @@ class WorkerSessionRegistrationRaceTest extends TestCase
                 if (fgets($sockets[1]) !== "go\n") {
                     throw new RuntimeException('Actor was not released.');
                 }
-                if ($pause !== null) {
+                if ($pause === 'superseded') {
+                    // Pause right after a transaction commits the registration
+                    // as superseded, while the row still exists.
+                    $paused = false;
+                    Event::listen(TransactionCommitted::class, static function () use (&$paused, $sockets, $pause): void {
+                        if (! $paused && DB::table('workflow_worker_registrations')->where('worker_id', 'race-worker')
+                            ->value('status') === WorkerRegistration::STATUS_SUPERSEDED) {
+                            $paused = true;
+                            fwrite($sockets[1], json_encode(['paused' => $pause]).PHP_EOL);
+                            if (fgets($sockets[1]) !== "continue\n") {
+                                throw new RuntimeException('Deregistration was not released.');
+                            }
+                        }
+                    });
+                } elseif ($pause !== null) {
                     $paused = false;
                     DB::listen(static function (QueryExecuted $query) use (&$paused, $sockets, $pause): void {
                         if (! $paused && str_contains($query->sql, 'workflow_worker_registrations')
                             && ($pause === 'read' || str_contains(strtolower($query->sql), 'for update'))) {
                             $paused = true;
-                            fwrite($sockets[1], json_encode(['registration_locked' => true]).PHP_EOL);
+                            fwrite($sockets[1], json_encode(['paused' => $pause]).PHP_EOL);
                             if (fgets($sockets[1]) !== "continue\n") {
                                 throw new RuntimeException('Session request was not released.');
                             }

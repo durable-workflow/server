@@ -90,6 +90,9 @@ final class WorkerSessionRegistry
             if (! $current instanceof WorkerRegistration) {
                 return $this->notRegistered($worker->worker_id, 'creating');
             }
+            if ($superseded = $this->supersededRegistration($current)) {
+                return $superseded;
+            }
             if ($stale = $this->staleRegistration($current, $registrationToken)) {
                 return $stale;
             }
@@ -127,6 +130,9 @@ final class WorkerSessionRegistry
             $current = $this->lockedRegistration($namespace, $workerId);
             if (! $current instanceof WorkerRegistration) {
                 return $this->notRegistered($workerId, 'renewing');
+            }
+            if ($superseded = $this->supersededRegistration($current)) {
+                return $superseded;
             }
             if ($stale = $this->staleRegistration($current, $registrationToken)) {
                 return $stale;
@@ -224,6 +230,9 @@ final class WorkerSessionRegistry
             $current = $this->lockedRegistration($namespace, $workerId);
             if (! $current instanceof WorkerRegistration) {
                 return $this->notRegistered($workerId, 'closing');
+            }
+            if ($superseded = $this->supersededRegistration($current)) {
+                return $superseded;
             }
             if ($stale = $this->staleRegistration($current, $registrationToken)) {
                 return $stale;
@@ -813,6 +822,23 @@ final class WorkerSessionRegistry
     {
         return $this->failure('worker_not_registered', sprintf('Worker must be registered before %s a worker session.', $action), 412,
             ['worker_id' => $workerId]);
+    }
+
+    /**
+     * A registration fenced as superseded, by deregistration before its row is
+     * deleted or by lease recovery, has lost its authority, as the worker
+     * heartbeat and polls already treat it.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function supersededRegistration(WorkerRegistration $current): ?array
+    {
+        return $current->status === WorkerRegistration::STATUS_SUPERSEDED
+            ? $this->failure('worker_registration_superseded', 'Worker registration was fenced after its leases were recovered.', 409, [
+                'worker_id' => $current->worker_id,
+                'remediation' => 'Restart and register the worker with a new worker_id.',
+            ])
+            : null;
     }
 
     /**
