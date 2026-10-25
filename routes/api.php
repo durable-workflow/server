@@ -40,6 +40,7 @@ use App\Http\Middleware\RequireRole;
 use App\Http\Middleware\RequireTopologyRoles;
 use App\Http\Middleware\RequireWorkflowBootstrapReady;
 use App\Http\Middleware\RuntimeExternalPayloadTransport;
+use App\Http\Middleware\WorkerPollResponseProgress;
 use App\Http\Middleware\WorkerProtocolVersionResolver;
 use Illuminate\Support\Facades\Route;
 
@@ -228,7 +229,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
     });
 
     // ── Worker Task Polling ──────────────────────────────────────────
-    Route::prefix('worker')->middleware([$worker, $wpv, $httpWorker, $workflowBootstrap, $ns])->group(function () {
+    Route::prefix('worker')->middleware([$worker, $wpv, $httpWorker, $workflowBootstrap, $ns, WorkerPollResponseProgress::class])->group(function () {
         Route::delete('/registrations/{workerId}', [WorkerDeregistrationController::class, 'destroy']);
         Route::post('/registrations/{workerId}/deregister', [WorkerDeregistrationController::class, 'destroyFenced']);
         Route::post('/heartbeat', [WorkerController::class, 'heartbeat']);
