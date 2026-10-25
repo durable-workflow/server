@@ -39,6 +39,11 @@ db="$scope-db"
 probe="$scope-ready"
 cleanup() {
   docker logs --tail 40 "$native_server" > "$output/server-log.txt" 2>&1 || true
+  # Stop this cell's server and database on every exit, failure included, so
+  # a failed cell never keeps them running while later cells qualify. The
+  # job's always() step removes them.
+  docker stop --time 10 "$native_server" >/dev/null 2>&1 || true
+  docker stop --time 10 "$db" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 docker network create "$scope" >/dev/null

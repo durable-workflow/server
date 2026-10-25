@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {gunzipSync, inflateSync, brotliDecompressSync} from 'node:zlib';
+import {checkUnsentKilledAuthorPoll} from './killed-author-poll.mjs';
 
 const typed = value => value === null ? {type: 'null', value: null}
   : typeof value === 'boolean' ? {type: 'boolean', value} : {type: 'int64', value: String(value)};
@@ -97,8 +98,12 @@ export function checkCorrectedClock(fixture, observation, workflowId) {
     const request = row.request_body?JSON.parse(row.request_body):null;
     if (row.client_cancelled) {
       assert.equal(row.method,'POST'); assert.equal(row.status,0); assert.equal(row.response_body,'');
-      assert.equal(row.response_bytes_base64,''); assert.equal(row.request_body_complete,true); assert.equal(row.upstream_request_started,true);
+      assert.equal(row.response_bytes_base64,'');
       assert(['/api/worker/workflow-tasks/poll','/api/worker/activity-tasks/poll','/api/worker/query-tasks/poll'].includes(row.path));
+      // The fixture declares cancel_unsent_original_polls: the killed original
+      // author's poll can end before the proxy forwards it (Server #754).
+      if (!row.upstream_request_started) return checkUnsentKilledAuthorPoll(row,requests,spec,phases.original.actor,workflowId);
+      assert.equal(row.request_body_complete,true); assert.equal(row.upstream_request_started,true);
       const current = [workflowId+':workflow:clock-wait',workflowId+':workflow:wider'];
       if (!current.includes(request.worker_id)) {
         assert.equal(spec.producer,'python'); assert.equal(phases.original.actor.author_exit_code,-9);
