@@ -141,49 +141,14 @@ fn large(heartbeats: i64) -> Value {
     command
 }
 
-fn leak(sql: String) -> &'static str {
-    Box::leak(sql.into_boxed_str())
-}
-
-/// The rows of a two-column text query, written for each backend.
-async fn texts(database: &TestDatabase, sqlite: &str, postgres: &str, mysql: &str) -> Vec<(String, String)> {
-    match database {
-        TestDatabase::Sqlite(dir) => {
-            let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", dir.path().join("runtime.sqlite").display())).await.unwrap();
-            let rows = sqlx::query_as(sqlx::AssertSqlSafe(sqlite.to_owned())).fetch_all(&pool).await.unwrap();
-            pool.close().await;
-            rows
-        }
-        TestDatabase::Postgres { options, .. } => {
-            let pool = sqlx::postgres::PgPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap();
-            let rows = sqlx::query_as(sqlx::AssertSqlSafe(postgres.to_owned())).fetch_all(&pool).await.unwrap();
-            pool.close().await;
-            rows
-        }
-        TestDatabase::MySql { options, .. } => {
-            let pool = sqlx::mysql::MySqlPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap();
-            let rows = sqlx::query_as(sqlx::AssertSqlSafe(mysql.to_owned())).fetch_all(&pool).await.unwrap();
-            pool.close().await;
-            rows
-        }
-    }
-}
-
 /// Every table's row count, and the state of every task and run.
 async fn durable_state(database: &TestDatabase) -> (Vec<(String, i64)>, Vec<(String, String)>, Vec<(String, String)>) {
-    let tables = texts(database,
-        "SELECT name, name FROM sqlite_master WHERE type='table' ORDER BY name",
-        "SELECT table_name::text, table_name::text FROM information_schema.tables WHERE table_schema='public' ORDER BY 1",
-        "SELECT CAST(table_name AS CHAR), CAST(table_name AS CHAR) FROM information_schema.tables WHERE table_schema=DATABASE() ORDER BY 1").await;
-    let mut counts = Vec::new();
-    for (table, _) in tables {
-        counts.push((table.clone(), task_retry::rows(database, leak(format!("SELECT COUNT(*) FROM {table}"))).await));
-    }
-    let tasks = texts(database,
+    let counts = table_counts(database).await;
+    let tasks = text_rows(database,
         "SELECT id, status || '|' || COALESCE(lease_owner, '') || '|' || COALESCE(lease_expires_at, '') || '|' || attempt_count FROM workflow_tasks ORDER BY id",
         "SELECT id, status || '|' || COALESCE(lease_owner, '') || '|' || COALESCE(lease_expires_at::text, '') || '|' || attempt_count::text FROM workflow_tasks ORDER BY id",
         "SELECT id, CONCAT(status, '|', COALESCE(lease_owner, ''), '|', COALESCE(CAST(lease_expires_at AS CHAR), ''), '|', attempt_count) FROM workflow_tasks ORDER BY id").await;
-    let runs = texts(database,
+    let runs = text_rows(database,
         "SELECT id, status || '|' || last_history_sequence || '|' || COALESCE(updated_at, '') FROM workflow_runs ORDER BY id",
         "SELECT id, status || '|' || last_history_sequence::text || '|' || COALESCE(updated_at::text, '') FROM workflow_runs ORDER BY id",
         "SELECT id, CONCAT(status, '|', last_history_sequence, '|', COALESCE(CAST(updated_at AS CHAR), '')) FROM workflow_runs ORDER BY id").await;
@@ -192,7 +157,7 @@ async fn durable_state(database: &TestDatabase) -> (Vec<(String, i64)>, Vec<(Str
 
 /// The stored history of a run, in order: each event's type and payload.
 async fn stored_history(database: &TestDatabase, run_id: &str) -> Vec<(String, String)> {
-    texts(database,
+    text_rows(database,
         &format!("SELECT event_type, payload FROM workflow_history_events WHERE workflow_run_id='{run_id}' ORDER BY sequence"),
         &format!("SELECT event_type, payload::text FROM workflow_history_events WHERE workflow_run_id='{run_id}' ORDER BY sequence"),
         &format!("SELECT event_type, CAST(payload AS CHAR) FROM workflow_history_events WHERE workflow_run_id='{run_id}' ORDER BY sequence")).await
