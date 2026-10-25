@@ -291,9 +291,9 @@ pub(crate) struct Normalized {
 
 pub(crate) enum Outcome {
     Invalid { errors: Vec<Php> },
-    /// Larger than one transaction may write. `encoded` is how many events
-    /// were built and measured first: 0 for a refusal by count.
-    TooLarge { error: Php, encoded: usize },
+    /// Larger than one transaction may write. `built` is how many events
+    /// were built first: 0 for a refusal by count.
+    TooLarge { error: Php, built: usize },
     Valid(Box<Normalized>),
 }
 
@@ -360,7 +360,7 @@ pub(crate) fn normalize_bounded(source_id: &str, source: &PhpArray, namespace: O
     let projected = ["logs", "signals", "exceptions"].iter()
         .fold(1usize + usize::from(terminal), |total, key| total.saturating_add(row_count(source.get(key))));
     if let Some(error) = exceeded(limits, projected, 0) {
-        return Outcome::TooLarge { error, encoded: 0 };
+        return Outcome::TooLarge { error, built: 0 };
     }
     let (workflow_id, run_id, import_id) = mapped_identity(&source_id, &qualified);
     let connection = string(source.get("connection"));
@@ -423,24 +423,13 @@ pub(crate) fn normalize_bounded(source_id: &str, source: &PhpArray, namespace: O
         ("task_queue_context", task_queue),
         ("unsupported_fields", unsupported.clone()),
     ]);
-    let events = events(source, &logs, &signals, &exceptions, migration, status, started_at, last_progress_at, &run_id);
-    // `strlen(json_encode($event, JSON_UNESCAPED_SLASHES))` over each event
-    // as PHP holds it: type, Carbon time, payload, sequence and id. The
-    // first event past the byte limit stops the measure.
-    let mut history_size_bytes: usize = 0;
-    for (index, event) in events.iter().enumerate() {
-        let size = object(vec![
-            ("event_type", text(event.event_type)),
-            ("recorded_at", optional(json_time(event.recorded_at))),
-            ("payload", event.payload.clone()),
-            ("sequence", Php::Int(event.sequence)),
-            ("id", text(&event.id)),
-        ]).encode(Flags { unescaped_slashes: true, ..Flags::default() }).len();
-        history_size_bytes = history_size_bytes.saturating_add(size);
-        if let Some(error) = exceeded(limits, 0, history_size_bytes) {
-            return Outcome::TooLarge { error, encoded: index + 1 };
-        }
-    }
+    // Events are built one at a time, and the first past the byte limit
+    // stops the build.
+    let (events, history_size_bytes) = match events(source, &logs, &signals, &exceptions, migration, status, started_at,
+        last_progress_at, &run_id, limits) {
+        Ok(built) => built,
+        Err((error, built)) => return Outcome::TooLarge { error, built },
+    };
     let history_size_bytes = i64::try_from(history_size_bytes).unwrap_or(i64::MAX);
     Outcome::Valid(Box::new(Normalized {
         namespace,
@@ -497,49 +486,34 @@ fn unsupported_fields(source: &PhpArray, logs: &[PhpArray], signals: &[PhpArray]
 /// terminal event, ordered by boundary, whole-second time (untimed first)
 /// and source order, with sequence and id assigned after sorting.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
+thread_local! {
+    /// How many events `events` has built, for the controls that prove a
+    /// refused build stops at the first event past the limit.
+    static EVENTS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Where a projected event comes from.
+#[derive(Clone, Copy)]
+enum Origin {
+    Start,
+    Log(usize),
+    Signal(usize),
+    Exception(usize),
+    Terminal(&'static str),
+}
+
+/// The projected events, ordered as PHP orders them, with their history
+/// bytes (`strlen(json_encode($event, JSON_UNESCAPED_SLASHES))` over each
+/// event as PHP holds it: type, Carbon time, payload, sequence and id).
+/// The order is decided from each event's boundary, time and source order
+/// alone; then each event is built and measured in turn, and the first one
+/// past the byte limit stops the build with how many were built.
+#[allow(clippy::too_many_arguments)]
 fn events(source: &PhpArray, logs: &[PhpArray], signals: &[PhpArray], exceptions: &[PhpArray], migration: Php,
-    status: &str, started_at: Option<Stamp>, last_progress_at: Option<Stamp>, run_id: &str) -> Vec<Event> {
+    status: &str, started_at: Option<Stamp>, last_progress_at: Option<Stamp>, run_id: &str,
+    limits: &super::StructuralLimits) -> std::result::Result<(Vec<Event>, usize), (Php, usize)> {
     let field = |row: &PhpArray, key: &str| row.get(key).cloned().unwrap_or(Php::Null);
-    let mut pending: Vec<(u8, i64, &'static str, Option<Stamp>, Php)> = vec![(0, 0, "WorkflowStarted", started_at, object(vec![
-        ("migration_projection", migration),
-        ("legacy_payloads", object(vec![("arguments", opaque(source.get("arguments")))])),
-    ]))];
-    for (index, log) in logs.iter().enumerate() {
-        pending.push((1, 100 + index as i64, "ActivityCompleted", timestamp(coalesce(log, &["created_at", "now"])), object(vec![
-            ("migration_projection", object(vec![
-                ("source_record", text("workflow_log")),
-                ("legacy_id", field(log, "id")),
-                ("legacy_index", field(log, "index")),
-            ])),
-            ("activity", object(vec![
-                ("class", field(log, "class")),
-                ("logical_time", field(log, "now")),
-                ("result", opaque(log.get("result"))),
-            ])),
-        ])));
-    }
-    for (index, signal) in signals.iter().enumerate() {
-        pending.push((1, 200 + index as i64, "SignalReceived", timestamp(coalesce(signal, &["created_at", "received_at"])), object(vec![
-            ("migration_projection", object(vec![
-                ("source_record", text("workflow_signal")),
-                ("legacy_id", field(signal, "id")),
-            ])),
-            ("signal_name", coalesce(signal, &["name", "method"]).cloned().unwrap_or(Php::Null)),
-            ("arguments", opaque(signal.get("arguments"))),
-        ])));
-    }
-    for (index, exception) in exceptions.iter().enumerate() {
-        pending.push((1, 300 + index as i64, "ActivityFailed", timestamp(exception.get("created_at")), object(vec![
-            ("migration_projection", object(vec![
-                ("source_record", text("workflow_exception")),
-                ("legacy_id", field(exception, "id")),
-            ])),
-            ("exception", object(vec![
-                ("class", field(exception, "class")),
-                ("value", opaque(exception.get("exception"))),
-            ])),
-        ])));
-    }
     let terminal = match status {
         "completed" => Some("WorkflowCompleted"),
         "failed" => Some("WorkflowFailed"),
@@ -547,31 +521,104 @@ fn events(source: &PhpArray, logs: &[PhpArray], signals: &[PhpArray], exceptions
         "terminated" => Some("WorkflowTerminated"),
         _ => None,
     };
+    let mut order: Vec<(u8, i64, Option<Stamp>, Origin)> =
+        Vec::with_capacity(2 + logs.len() + signals.len() + exceptions.len());
+    order.push((0, 0, started_at, Origin::Start));
+    for (index, log) in logs.iter().enumerate() {
+        order.push((1, 100 + index as i64, timestamp(coalesce(log, &["created_at", "now"])), Origin::Log(index)));
+    }
+    for (index, signal) in signals.iter().enumerate() {
+        order.push((1, 200 + index as i64, timestamp(coalesce(signal, &["created_at", "received_at"])), Origin::Signal(index)));
+    }
+    for (index, exception) in exceptions.iter().enumerate() {
+        order.push((1, 300 + index as i64, timestamp(exception.get("created_at")), Origin::Exception(index)));
+    }
     if let Some(event_type) = terminal {
-        pending.push((2, i64::MAX, event_type, last_progress_at, object(vec![
-            ("migration_projection", object(vec![
-                ("source_status", source.get("status").cloned().unwrap_or(Php::Null)),
-                ("execution_owner", text("v1")),
-            ])),
-            ("legacy_payloads", object(vec![("output", opaque(source.get("output")))])),
-        ])));
+        order.push((2, i64::MAX, last_progress_at, Origin::Terminal(event_type)));
     }
     // Carbon's getTimestamp: whole seconds; PHP_INT_MIN for an untimed event.
-    pending.sort_by_key(|(boundary, order, _, at, _)| (*boundary, at.map_or(i64::MIN, |at| at.utc.timestamp()), *order));
-    pending
-        .into_iter()
-        .enumerate()
-        .map(|(index, (_, _, event_type, recorded_at, payload))| {
-            let sequence = index as i64 + 1;
-            Event {
-                id: sha256(&format!("{run_id}\0{sequence}\0{event_type}"))[..26].to_owned(),
-                sequence,
-                event_type,
-                recorded_at,
-                payload,
+    order.sort_by_key(|(boundary, order, at, _)| (*boundary, at.map_or(i64::MIN, |at| at.utc.timestamp()), *order));
+
+    let mut migration = Some(migration);
+    let mut built = Vec::with_capacity(order.len());
+    let mut bytes: usize = 0;
+    for (index, (_, _, recorded_at, origin)) in order.into_iter().enumerate() {
+        let (event_type, payload) = match origin {
+            Origin::Start => ("WorkflowStarted", object(vec![
+                ("migration_projection", migration.take().unwrap_or(Php::Null)),
+                ("legacy_payloads", object(vec![("arguments", opaque(source.get("arguments")))])),
+            ])),
+            Origin::Log(index) => {
+                let log = &logs[index];
+                ("ActivityCompleted", object(vec![
+                    ("migration_projection", object(vec![
+                        ("source_record", text("workflow_log")),
+                        ("legacy_id", field(log, "id")),
+                        ("legacy_index", field(log, "index")),
+                    ])),
+                    ("activity", object(vec![
+                        ("class", field(log, "class")),
+                        ("logical_time", field(log, "now")),
+                        ("result", opaque(log.get("result"))),
+                    ])),
+                ]))
             }
-        })
-        .collect()
+            Origin::Signal(index) => {
+                let signal = &signals[index];
+                ("SignalReceived", object(vec![
+                    ("migration_projection", object(vec![
+                        ("source_record", text("workflow_signal")),
+                        ("legacy_id", field(signal, "id")),
+                    ])),
+                    ("signal_name", coalesce(signal, &["name", "method"]).cloned().unwrap_or(Php::Null)),
+                    ("arguments", opaque(signal.get("arguments"))),
+                ]))
+            }
+            Origin::Exception(index) => {
+                let exception = &exceptions[index];
+                ("ActivityFailed", object(vec![
+                    ("migration_projection", object(vec![
+                        ("source_record", text("workflow_exception")),
+                        ("legacy_id", field(exception, "id")),
+                    ])),
+                    ("exception", object(vec![
+                        ("class", field(exception, "class")),
+                        ("value", opaque(exception.get("exception"))),
+                    ])),
+                ]))
+            }
+            Origin::Terminal(event_type) => (event_type, object(vec![
+                ("migration_projection", object(vec![
+                    ("source_status", source.get("status").cloned().unwrap_or(Php::Null)),
+                    ("execution_owner", text("v1")),
+                ])),
+                ("legacy_payloads", object(vec![("output", opaque(source.get("output")))])),
+            ])),
+        };
+        #[cfg(test)]
+        EVENTS_BUILT.with(|count| count.set(count.get() + 1));
+        let sequence = index as i64 + 1;
+        let event = Event {
+            id: sha256(&format!("{run_id}\0{sequence}\0{event_type}"))[..26].to_owned(),
+            sequence,
+            event_type,
+            recorded_at,
+            payload,
+        };
+        let size = object(vec![
+            ("event_type", text(event.event_type)),
+            ("recorded_at", optional(json_time(event.recorded_at))),
+            ("payload", event.payload.clone()),
+            ("sequence", Php::Int(event.sequence)),
+            ("id", text(&event.id)),
+        ]).encode(Flags { unescaped_slashes: true, ..Flags::default() }).len();
+        bytes = bytes.checked_add(size).unwrap_or(usize::MAX);
+        if let Some(error) = exceeded(limits, 0, bytes) {
+            return Err((error, index + 1));
+        }
+        built.push(event);
+    }
+    Ok((built, bytes))
 }
 
 /// `report`: the projection report, with the first error's reason, message
@@ -1125,18 +1172,27 @@ mod tests {
         super::super::StructuralLimits { history_events: events, history_bytes: bytes, ..super::super::StructuralLimits::default() }
     }
 
+    /// Events built by `events` while `run` runs on this thread.
+    fn events_built<T>(run: impl FnOnce() -> T) -> (T, usize) {
+        EVENTS_BUILT.with(|count| count.set(0));
+        let result = run();
+        (result, EVENTS_BUILT.with(std::cell::Cell::get))
+    }
+
     #[test]
     fn the_event_count_is_refused_before_any_event_is_built() {
         let source = completed_source(10);
         let source = source.array().unwrap();
         // Start, ten logs, one signal and the terminal event; a non-row
         // exceptions value counts nothing.
-        let Outcome::Valid(normalized) = normalize_bounded("src-1", source, None, &limited(Some(13), None)) else { panic!("exact count") };
-        assert_eq!(normalized.events.len(), 13);
-        match normalize_bounded("src-1", source, None, &limited(Some(12), None)) {
-            Outcome::TooLarge { error, encoded } => {
-                // Refused from the row counts: no event built or measured.
-                assert_eq!(encoded, 0);
+        let (outcome, built) = events_built(|| normalize_bounded("src-1", source, None, &limited(Some(13), None)));
+        let Outcome::Valid(normalized) = outcome else { panic!("exact count") };
+        assert_eq!((normalized.events.len(), built), (13, 13));
+        let (outcome, built) = events_built(|| normalize_bounded("src-1", source, None, &limited(Some(12), None)));
+        match outcome {
+            Outcome::TooLarge { error, built: reported } => {
+                // Refused from the row counts: no event built.
+                assert_eq!((reported, built), (0, 0));
                 assert_eq!(error.to_json()["limit"], json!({"dimension": "history_transaction_size", "used": 13, "limit": 12}));
             }
             _ => panic!("one over the event limit"),
@@ -1147,26 +1203,56 @@ mod tests {
     }
 
     #[test]
-    fn history_bytes_stop_at_the_first_event_over_the_limit() {
+    fn history_bytes_stop_the_build_at_the_first_event_over_the_limit() {
         let source = completed_source(10);
         let source = source.array().unwrap();
         let Outcome::Valid(normalized) = normalize_bounded("src-1", source, None, &limited(None, None)) else { panic!("valid") };
         let total = usize::try_from(normalized.history_size_bytes).unwrap();
         let Outcome::Valid(exact) = normalize_bounded("src-1", source, None, &limited(None, Some(total))) else { panic!("exact bytes") };
         assert_eq!(exact.history_size_bytes, normalized.history_size_bytes);
-        // One byte short: measured to the last event, which passes the limit.
+        // One byte short: every event is built, and the last passes the limit.
         match normalize_bounded("src-1", source, None, &limited(None, Some(total - 1))) {
-            Outcome::TooLarge { error, encoded } => {
-                assert_eq!(encoded, normalized.events.len());
+            Outcome::TooLarge { error, built } => {
+                assert_eq!(built, normalized.events.len());
                 assert_eq!(error.to_json()["limit"], json!({"dimension": "history_transaction_bytes", "used": total, "limit": total - 1}));
             }
             _ => panic!("one byte over"),
         }
-        // A limit below the first event stops after measuring that event.
-        match normalize_bounded("src-1", source, None, &limited(None, Some(1))) {
-            Outcome::TooLarge { encoded, .. } => assert_eq!(encoded, 1),
-            _ => panic!("far over"),
+    }
+
+    #[test]
+    fn an_early_event_over_the_byte_limit_builds_no_later_event() {
+        // The start event is first and carries the source's arguments; many
+        // valid logs follow it.
+        let mut source = completed_source(2_000);
+        if let Php::Array(array) = &mut source {
+            array.0.push((Key::of("arguments"), text("x".repeat(50_000))));
         }
+        let source = source.array().unwrap();
+        let (outcome, built) = events_built(|| normalize_bounded("src-1", source, None, &limited(None, Some(10_000))));
+        match outcome {
+            Outcome::TooLarge { error, built: reported } => {
+                // Only the start event was built; none of the 2,002 after it.
+                assert_eq!((reported, built), (1, 1));
+                assert_eq!(error.to_json()["limit"]["dimension"], "history_transaction_bytes");
+            }
+            _ => panic!("the start event alone passes the limit"),
+        }
+        // With room for the start event and a few more, the build stops at
+        // the first event past the limit.
+        let (outcome, start) = events_built(|| normalize_bounded("src-1", source, None, &limited(None, None)));
+        let Outcome::Valid(all) = outcome else { panic!("valid") };
+        assert_eq!(start, all.events.len());
+        let first = |count: usize| all.events[..count].iter().map(|event| object(vec![
+            ("event_type", text(event.event_type)),
+            ("recorded_at", optional(json_time(event.recorded_at))),
+            ("payload", event.payload.clone()),
+            ("sequence", Php::Int(event.sequence)),
+            ("id", text(&event.id)),
+        ]).encode(Flags { unescaped_slashes: true, ..Flags::default() }).len()).sum::<usize>();
+        let (outcome, built) = events_built(|| normalize_bounded("src-1", source, None, &limited(None, Some(first(4)))));
+        assert!(matches!(outcome, Outcome::TooLarge { built: 5, .. }));
+        assert_eq!(built, 5);
     }
 
     #[test]

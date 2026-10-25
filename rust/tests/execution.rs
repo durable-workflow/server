@@ -328,6 +328,44 @@ enum TestDatabase {
     },
 }
 
+/// The rows of a two-column text query, written for each backend.
+async fn text_rows(database: &TestDatabase, sqlite: &str, postgres: &str, mysql: &str) -> Vec<(String, String)> {
+    match database {
+        TestDatabase::Sqlite(dir) => {
+            let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", dir.path().join("runtime.sqlite").display())).await.unwrap();
+            let rows = sqlx::query_as(sqlx::AssertSqlSafe(sqlite.to_owned())).fetch_all(&pool).await.unwrap();
+            pool.close().await;
+            rows
+        }
+        TestDatabase::Postgres { options, .. } => {
+            let pool = sqlx::postgres::PgPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap();
+            let rows = sqlx::query_as(sqlx::AssertSqlSafe(postgres.to_owned())).fetch_all(&pool).await.unwrap();
+            pool.close().await;
+            rows
+        }
+        TestDatabase::MySql { options, .. } => {
+            let pool = sqlx::mysql::MySqlPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap();
+            let rows = sqlx::query_as(sqlx::AssertSqlSafe(mysql.to_owned())).fetch_all(&pool).await.unwrap();
+            pool.close().await;
+            rows
+        }
+    }
+}
+
+/// Every table of the test database, by name, with its row count.
+async fn table_counts(database: &TestDatabase) -> Vec<(String, i64)> {
+    let tables = text_rows(database,
+        "SELECT name, name FROM sqlite_master WHERE type='table' ORDER BY name",
+        "SELECT table_name::text, table_name::text FROM information_schema.tables WHERE table_schema='public' ORDER BY 1",
+        "SELECT CAST(table_name AS CHAR), CAST(table_name AS CHAR) FROM information_schema.tables WHERE table_schema=DATABASE() ORDER BY 1").await;
+    let mut counts = Vec::with_capacity(tables.len());
+    for (table, _) in tables {
+        let sql: &'static str = Box::leak(format!("SELECT COUNT(*) FROM {table}").into_boxed_str());
+        counts.push((table, task_retry::rows(database, sql).await));
+    }
+    counts
+}
+
 impl TestDatabase {
     async fn new() -> Self {
         assert!(

@@ -269,8 +269,8 @@ contract fixture before its correction.
     bytes than one transaction may (`DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE`,
     `_BYTES`) with `409 v1_projection_too_large`, before reading or writing
     any row. The count is checked from the source's row counts before any
-    event is built, and history bytes are added up event by event, stopping
-    at the first event past the limit. Published 2.11.1 has no limit
+    event is built; then each event is built and measured in turn, and the
+    first event past the byte limit stops the build. Published 2.11.1 has no limit
     ([#770](https://github.com/durable-workflow/server/issues/770)).
 - **Environment settings.** Of PHP's 164 contract settings, native honors
   49 and ignores 51 that change nothing it serves. It also honors
