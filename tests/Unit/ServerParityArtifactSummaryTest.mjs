@@ -134,3 +134,20 @@ test('failed recorder diagnostic tails survive without retaining raw records or 
   summarizeEvidence(source, success, {outcome: 'success'});
   assert.equal(existsSync(join(success, 'php-record.txt')), false);
 });
+
+test('a failed record outline survives a full collection of setup logs and stays out of success summaries', t => {
+  const {source, output, root} = fixture(t);
+  for (let index = 0; index < 140; index++) {
+    writeFileSync(join(source, `completed-${index}-install.txt`), 'installed successfully\n');
+  }
+  mkdirSync(join(source, 'legacy-marker/php'), {recursive: true});
+  writeFileSync(join(source, 'legacy-marker/php/record.failure-excerpt.txt'), '== legacy-one-marker-control (product-fail)\n');
+  writeFileSync(join(source, 'legacy-marker/php/record.json'), 'raw responses');
+  summarizeEvidence(source, output, {outcome: 'failure'});
+  assert.equal(readFileSync(join(output, 'legacy-marker/php/record.failure-excerpt.txt'), 'utf8'),
+    '== legacy-one-marker-control (product-fail)\n');
+  assert.equal(existsSync(join(output, 'legacy-marker/php/record.json')), false);
+  const success = join(root, 'success');
+  summarizeEvidence(source, success, {outcome: 'success'});
+  assert.equal(existsSync(join(success, 'legacy-marker/php/record.failure-excerpt.txt')), false);
+});

@@ -14,6 +14,10 @@ import {checkSearchAttributes} from './search-attribute-contract.mjs';
 import {checkStorageTest} from './storage-test-contract.mjs';
 import {checkActivityLeaseRenewal} from './activity-lease-renewal-contract.mjs';
 import {checkRecordLocalActivity} from './record-local-activity-contract.mjs';
+import {checkWorkflowPollRequest} from './workflow-poll-request-contract.mjs';
+import {checkWorkerPollFence} from './worker-poll-fence-contract.mjs';
+import {checkWorkerSessions} from './worker-sessions-contract.mjs';
+import {checkWorkerSessionActivities} from './worker-session-activities-contract.mjs';
 import {checkActivityCancellationAcknowledgement} from './activity-cancellation-ack-contract.mjs';
 import {checkServiceCatalog} from './service-catalog-contract.mjs';
 import {checkSystemMetrics} from './system-metrics-contract.mjs';
@@ -23,6 +27,7 @@ import {checkPayloadCleanup} from './payload-cleanup-contract.mjs';
 import {checkClusterInfo} from './cluster-info-contract.mjs';
 import {checkRepairPass} from './repair-pass-contract.mjs';
 import {checkNamespaceDelete} from './namespace-delete-contract.mjs';
+import {checkUpdateValidation} from './update-validation-contract.mjs';
 import {checkMessageStreams} from './message-streams-contract.mjs';
 import {checkSchedulePolicies} from './schedule-policies-contract.mjs';
 import {checkScheduleCatalog} from './schedule-catalog-contract.mjs';
@@ -155,6 +160,10 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const storageTest = fixture.storage_test ? checkStorageTest(fixture, observation, workflowId) : null;
   const activityLeaseRenewal = fixture.activity_lease_renewal ? checkActivityLeaseRenewal(fixture, observation, workflowId) : null;
   const recordLocalActivity = fixture.record_local_activity ? checkRecordLocalActivity(fixture, observation, workflowId) : null;
+  const workflowPollRequest = fixture.workflow_poll_request ? checkWorkflowPollRequest(fixture, observation, workflowId) : null;
+  const workerPollFence = fixture.worker_poll_fence ? checkWorkerPollFence(fixture, observation, workflowId) : null;
+  const workerSessions = fixture.worker_sessions ? checkWorkerSessions(fixture, observation, workflowId) : null;
+  const workerSessionActivities = fixture.worker_session_activities ? checkWorkerSessionActivities(fixture, observation, workflowId) : null;
   const activityCancellationAcknowledgement = fixture.activity_cancellation_acknowledgement
     ? checkActivityCancellationAcknowledgement(fixture, observation, workflowId) : null;
   const serviceCatalog = fixture.service_catalog ? checkServiceCatalog(fixture, observation, workflowId) : null;
@@ -165,6 +174,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const clusterInfo = fixture.cluster_info ? checkClusterInfo(fixture, observation, workflowId) : null;
   const repairPass = fixture.repair_pass ? checkRepairPass(fixture, observation, workflowId) : null;
   const namespaceDelete = fixture.namespace_delete ? checkNamespaceDelete(fixture, observation, workflowId) : null;
+  const updateValidation = fixture.update_validation ? checkUpdateValidation(fixture, observation, workflowId) : null;
   const messageStreams = fixture.message_streams ? checkMessageStreams(fixture, observation, workflowId) : null;
   const schedulePolicies = fixture.schedule_policies ? checkSchedulePolicies(fixture, observation, workflowId) : null;
   const scheduleCatalog = fixture.schedule_catalog ? checkScheduleCatalog(fixture, observation, workflowId) : null;
@@ -714,6 +724,10 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(storageTest ? {storage_test: storageTest} : {}),
     ...(activityLeaseRenewal ? {activity_lease_renewal: activityLeaseRenewal} : {}),
     ...(recordLocalActivity ? {record_local_activity: recordLocalActivity} : {}),
+    ...(workflowPollRequest ? {workflow_poll_request: workflowPollRequest} : {}),
+    ...(workerPollFence ? {worker_poll_fence: workerPollFence} : {}),
+    ...(workerSessions ? {worker_sessions: workerSessions} : {}),
+    ...(workerSessionActivities ? {worker_session_activities: workerSessionActivities} : {}),
     ...(activityCancellationAcknowledgement ? {activity_cancellation_acknowledgement: activityCancellationAcknowledgement} : {}),
     ...(serviceCatalog ? {service_catalog: serviceCatalog} : {}),
     ...(systemMetrics ? {system_metrics: systemMetrics} : {}),
@@ -723,6 +737,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(clusterInfo ? {cluster_info: clusterInfo} : {}),
     ...(repairPass ? {repair_pass: repairPass} : {}),
     ...(namespaceDelete ? {namespace_delete: namespaceDelete} : {}),
+    ...(updateValidation ? {update_validation: updateValidation} : {}),
     ...(messageStreams ? {message_streams: messageStreams} : {}),
     ...(schedulePolicies ? {schedule_policies: schedulePolicies} : {}),
     ...(scheduleCatalog ? {schedule_catalog: scheduleCatalog} : {}),

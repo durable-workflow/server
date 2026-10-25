@@ -207,6 +207,11 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route("/api/worker/register", post(register))
         .route("/api/worker/heartbeat", post(worker_heartbeat))
+        .route("/api/worker/sessions", post(create_worker_session))
+        .route("/api/worker/sessions/{session_id}", delete(close_worker_session))
+        .route("/api/worker/sessions/{session_id}/heartbeat", post(heartbeat_worker_session))
+        .route("/api/worker-sessions", get(list_worker_sessions))
+        .route("/api/worker-sessions/{session_id}", get(show_worker_session))
         .route("/api/worker/registrations/{worker_id}", delete(deregister))
         .route(
             "/api/worker/registrations/{worker_id}/deregister",
@@ -302,6 +307,15 @@ pub fn router(runtime: Runtime) -> Router {
             post(complete_query),
         )
         .route("/api/worker/query-tasks/{task_id}/fail", post(fail_query))
+        .route("/api/worker/update-validation-tasks/poll", post(poll_update_validation))
+        .route(
+            "/api/worker/update-validation-tasks/{task_id}/approve",
+            post(approve_update_validation),
+        )
+        .route(
+            "/api/worker/update-validation-tasks/{task_id}/reject",
+            post(reject_update_validation),
+        )
         .fallback(route_fallback)
         .method_not_allowed_fallback(route_fallback)
         .layer(middleware::from_fn(empty_list_body))
@@ -636,7 +650,7 @@ enum Rest {
 }
 
 /// Route families a named namespace may use, by prefix.
-const NAMESPACE_FAMILIES: [(&str, Rest, Allowed); 8] = [
+const NAMESPACE_FAMILIES: [(&str, Rest, Allowed); 9] = [
     // Runtime credentials are server-wide; the namespace only scopes a tenant.
     ("/api/runtime-credentials/", Rest::Anything, Allowed::Any),
     ("/api/external-payloads/v1/", Rest::Anything, READ),
@@ -652,6 +666,8 @@ const NAMESPACE_FAMILIES: [(&str, Rest, Allowed); 8] = [
     ("/api/workers/", Rest::OneSegment, Allowed::Only(&["GET", "DELETE"])),
     // Deployments are the namespace's own build-id rollouts.
     ("/api/deployments/", Rest::NonEmpty, READ_WRITE),
+    // Worker session visibility reads the namespace's own sessions.
+    ("/api/worker-sessions/", Rest::OneSegment, READ),
 ];
 
 fn named_namespace_operation(method: &str, path: &str) -> bool {
@@ -693,6 +709,7 @@ fn exact_namespace_route(path: &str) -> Option<Allowed> {
         "/api/task-queues"
         | "/api/deployments"
         | "/api/workers"
+        | "/api/worker-sessions"
         | "/api/system/operator-metrics"
         | "/api/system/health"
         | "/api/system/operator-dashboard"
@@ -758,9 +775,14 @@ fn worker_route(rest: &str) -> Option<Allowed> {
         ["register" | "heartbeat"]
             | ["registrations", _]
             | ["registrations", _, "deregister"]
+            | ["sessions"]
+            | ["sessions", _]
+            | ["sessions", _, "heartbeat"]
             | ["workflow-tasks" | "activity-tasks", "poll"]
             | ["query-tasks", "poll"]
             | ["query-tasks", _, "complete" | "fail" | "status"]
+            | ["update-validation-tasks", "poll"]
+            | ["update-validation-tasks", _, "approve" | "reject"]
             | ["workflow-tasks", _, "complete" | "fail" | "history" | "heartbeat" | "deliver-cancellation"]
             | ["activity-tasks", _, "complete" | "fail" | "heartbeat" | "status" | "renew-lease" | "acknowledge-cancellation"]
     )
@@ -1587,6 +1609,61 @@ fn worker_response(mut body: Value) -> Value {
     body["server_capabilities"] = capabilities();
     body
 }
+/// A worker session answer: PHP's status, its body repeating it, and the
+/// worker protocol envelope.
+fn session_answer(answer: super::worker_sessions::Answer) -> Response {
+    (answer.status, Json(worker_response(answer.body))).into_response()
+}
+
+async fn create_worker_session(
+    Extension(runtime): Extension<Runtime>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Response> {
+    let protocol = request_protocol(&headers)?;
+    runtime.create_worker_session(body, protocol).await.map(session_answer).map_err(worker_refusal)
+}
+
+async fn heartbeat_worker_session(
+    Extension(runtime): Extension<Runtime>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Response> {
+    let protocol = request_protocol(&headers)?;
+    runtime.heartbeat_worker_session(&session_id, body, protocol).await.map(session_answer).map_err(worker_refusal)
+}
+
+/// The holder may name itself in the JSON body or as `?worker_id=`.
+async fn close_worker_session(
+    Extension(runtime): Extension<Runtime>,
+    Path(session_id): Path<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Response> {
+    let protocol = request_protocol(&headers)?;
+    let mut fields = if body.is_empty() {
+        json!({})
+    } else {
+        serde_json::from_slice::<Value>(&body).ok().filter(Value::is_object).unwrap_or_else(|| json!({}))
+    };
+    if let Some(worker_id) = query.get("worker_id")
+        && fields.get("worker_id").is_none()
+    {
+        fields["worker_id"] = json!(worker_id);
+    }
+    runtime.close_worker_session(&session_id, fields, protocol).await.map(session_answer).map_err(worker_refusal)
+}
+
+async fn list_worker_sessions(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    runtime.list_worker_sessions().await.map(Json)
+}
+
+async fn show_worker_session(Extension(runtime): Extension<Runtime>, Path(session_id): Path<String>) -> Result<Json<Value>> {
+    runtime.show_worker_session(&session_id).await.map(Json)
+}
+
 async fn worker_heartbeat(
     Extension(runtime): Extension<Runtime>,
     headers: HeaderMap,
@@ -1864,12 +1941,46 @@ async fn poll_workflow(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    let pages = runtime.history_pages();
-    let wait = runtime.worker_poll_wait();
     runtime
-        .poll_with_pages(body, "workflow", request_protocol(&headers)?, pages, wait)
+        .poll_workflow_tasks(body, request_protocol(&headers)?)
         .await
         .map(Json)
+        .map_err(worker_refusal)
+}
+
+async fn poll_update_validation(
+    Extension(runtime): Extension<Runtime>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    request_protocol(&headers)?;
+    runtime
+        .poll_update_validation(body)
+        .await
+        .map(|body| Json(worker_response(body)))
+        .map_err(worker_refusal)
+}
+
+async fn approve_update_validation(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    request_protocol(&headers)?;
+    let (status, body) = runtime.complete_update_validation(&task_id, body, false).await.map_err(worker_refusal)?;
+    Ok((status, Json(worker_response(body))))
+}
+
+async fn reject_update_validation(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    request_protocol(&headers)?;
+    let (status, body) = runtime.complete_update_validation(&task_id, body, true).await.map_err(worker_refusal)?;
+    Ok((status, Json(worker_response(body))))
 }
 async fn poll_activity(
     Extension(runtime): Extension<Runtime>,
