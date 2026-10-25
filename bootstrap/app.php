@@ -10,6 +10,7 @@ use App\Support\ControlPlaneOperation;
 use App\Support\ControlPlaneProtocol;
 use App\Support\DatabaseStorageExhausted;
 use App\Support\NamespaceDurableStateException;
+use App\Support\PollClientDisconnected;
 use App\Support\RuntimeExternalPayloadAudit;
 use App\Support\RuntimeExternalPayloadException;
 use App\Support\WorkerProtocol;
@@ -42,6 +43,16 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
+        $exceptions->dontReport([PollClientDisconnected::class]);
+
+        $exceptions->render(function (PollClientDisconnected $exception, Request $request) {
+            return WorkerProtocol::json([
+                'task' => null,
+                'reason' => 'poll_client_disconnected',
+                'retryable' => true,
+            ], 499);
+        });
+
         $exceptions->render(function (Throwable $exception, Request $request) {
             return DatabaseStorageExhausted::is($exception)
                 ? DatabaseStorageExhausted::response($request)
