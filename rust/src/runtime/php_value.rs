@@ -345,69 +345,75 @@ impl Parser<'_> {
             b't' => self.literal(b"true", Php::Bool(true)),
             b'f' => self.literal(b"false", Php::Bool(false)),
             b'"' => self.string().map(Php::Str),
-            b'[' => self.nested(|parser| {
-                let mut array = PhpArray::default();
-                parser.space();
-                if parser.bytes.get(parser.at) == Some(&b']') {
-                    parser.at += 1;
-                    return Some(array);
-                }
-                loop {
-                    let value = parser.value()?;
-                    array.0.push((Key::Int(array.0.len() as i64), value));
-                    parser.space();
-                    match parser.bytes.get(parser.at)? {
-                        b',' => parser.at += 1,
-                        b']' => {
-                            parser.at += 1;
-                            return Some(array);
-                        }
-                        _ => return None,
-                    }
-                }
-            }),
-            b'{' => self.nested(|parser| {
-                let mut array = PhpArray::default();
-                // Each key's position, so a large object parses in linear time.
-                let mut positions: std::collections::HashMap<Key, usize> = std::collections::HashMap::new();
-                parser.space();
-                if parser.bytes.get(parser.at) == Some(&b'}') {
-                    parser.at += 1;
-                    return Some(array);
-                }
-                loop {
-                    parser.space();
-                    if parser.bytes.get(parser.at) != Some(&b'"') {
-                        return None;
-                    }
-                    let key = parser.string()?;
-                    parser.space();
-                    if parser.bytes.get(parser.at) != Some(&b':') {
-                        return None;
-                    }
-                    parser.at += 1;
-                    let value = parser.value()?;
-                    // A repeated key replaces the earlier value in place.
-                    let key = Key::of(&key);
-                    match positions.get(&key) {
-                        Some(&index) => array.0[index].1 = value,
-                        None => {
-                            positions.insert(key.clone(), array.0.len());
-                            array.0.push((key, value));
-                        }
-                    }
-                    parser.space();
-                    match parser.bytes.get(parser.at)? {
-                        b',' => parser.at += 1,
-                        b'}' => {
-                            parser.at += 1;
-                            return Some(array);
-                        }
-                        _ => return None,
-                    }
-                }
-            }),
+            b'[' => self.nested(Self::json_list),
+            b'{' => self.nested(Self::json_object),
             _ => self.number(),
+        }
+    }
+
+    /// A JSON array as a PHP list, keys 0..n.
+    fn json_list(parser: &mut Self) -> Option<PhpArray> {
+        let mut array = PhpArray::default();
+        parser.space();
+        if parser.bytes.get(parser.at) == Some(&b']') {
+            parser.at += 1;
+            return Some(array);
+        }
+        loop {
+            let value = parser.value()?;
+            array.0.push((Key::Int(array.0.len() as i64), value));
+            parser.space();
+            match parser.bytes.get(parser.at)? {
+                b',' => parser.at += 1,
+                b']' => {
+                    parser.at += 1;
+                    return Some(array);
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// A JSON object as a PHP array, keeping each key's first position.
+    fn json_object(parser: &mut Self) -> Option<PhpArray> {
+        let mut array = PhpArray::default();
+        // Each key's position, so a large object parses in linear time.
+        let mut positions: std::collections::HashMap<Key, usize> = std::collections::HashMap::new();
+        parser.space();
+        if parser.bytes.get(parser.at) == Some(&b'}') {
+            parser.at += 1;
+            return Some(array);
+        }
+        loop {
+            parser.space();
+            if parser.bytes.get(parser.at) != Some(&b'"') {
+                return None;
+            }
+            let key = parser.string()?;
+            parser.space();
+            if parser.bytes.get(parser.at) != Some(&b':') {
+                return None;
+            }
+            parser.at += 1;
+            let value = parser.value()?;
+            // A repeated key replaces the earlier value in place.
+            let key = Key::of(&key);
+            match positions.get(&key) {
+                Some(&index) => array.0[index].1 = value,
+                None => {
+                    positions.insert(key.clone(), array.0.len());
+                    array.0.push((key, value));
+                }
+            }
+            parser.space();
+            match parser.bytes.get(parser.at)? {
+                b',' => parser.at += 1,
+                b'}' => {
+                    parser.at += 1;
+                    return Some(array);
+                }
+                _ => return None,
+            }
         }
     }
 

@@ -135,7 +135,8 @@ async fn described_commands_select_no_inline_payload() {
             .await
             .unwrap();
         if let Some(arguments) = arguments {
-            Store::<sqlx::Sqlite>::query("INSERT INTO workflow_signal_records(id,workflow_command_id,signal_name,status,arguments) VALUES ($1,$2,'s','received',$3)")
+            // A signal record shares its command's instance, as every writer stores it.
+            Store::<sqlx::Sqlite>::query("INSERT INTO workflow_signal_records(id,workflow_command_id,workflow_instance_id,signal_name,status,arguments) VALUES ($1,$2,'instance','s','received',$3)")
                 .bind(format!("s-{id}"))
                 .bind(*id)
                 .bind(*arguments)

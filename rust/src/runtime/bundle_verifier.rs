@@ -214,39 +214,12 @@ fn check_payload_manifest(bundle: &Php, findings: &mut Findings) {
     if let Some(entries) = array(manifest.get("entries")) {
         for (index, entry) in &entries.0 {
             let fallback = format!("payload_manifest.entries[{}]", index.text());
-            let Some(_) = entry.array() else {
+            if entry.array().is_none() {
                 findings.error("payload_manifest.entry_invalid", "Payload manifest entry must be an object.", fallback);
                 continue;
-            };
+            }
             let path = string_value(entry.get("path")).map_or(fallback, str::to_owned);
-            let codec = string_value(entry.get("codec"));
-            let available = entry.get("available").is_some_and(Php::truthy);
-            let redacted = entry.get("redacted").is_some_and(Php::truthy);
-            let diagnostic = string_value(entry.get("diagnostic"));
-            if codec.is_none() {
-                findings.error("payload_manifest.codec_missing", format!("Payload manifest entry [{path}] is missing codec."), path.clone());
-            }
-            if !redacted && available && diagnostic == Some("payload_missing") {
-                findings.error("payload_manifest.payload_missing",
-                    format!("Manifest reports payload [{path}] available but bundle has no payload bytes."), path.clone());
-            }
-            if codec == Some("avro") && available && !redacted && diagnostic != Some("external_storage_reference") {
-                if string_value(entry.get("avro_framing")).is_none() {
-                    findings.add("payload_manifest.avro_framing_missing", WARNING,
-                        format!("Avro payload [{path}] is missing framing metadata; offline decoders cannot pick a wrapper schema."),
-                        Some(path.clone()), json!({}));
-                }
-                if let (Some(writer), Some(actual)) =
-                    (string_value(entry.get("writer_schema")), string_value(entry.get("writer_schema_fingerprint")))
-                {
-                    let expected = (writer == schema).then(|| fingerprint.clone());
-                    if expected.as_deref() != Some(actual) {
-                        findings.add("payload_manifest.writer_schema_fingerprint_mismatch", ERROR,
-                            format!("Avro payload [{path}] writer_schema_fingerprint disagrees with the embedded schema; offline decoders will reject this entry."),
-                            Some(path.clone()), json!({"expected":expected,"actual":actual}));
-                    }
-                }
-            }
+            check_manifest_entry(entry, &path, schema, &fingerprint, findings);
         }
     }
     let Some(codec_schemas) = array(bundle.get("codec_schemas")) else {
@@ -267,6 +240,39 @@ fn check_payload_manifest(bundle: &Php, findings: &mut Findings) {
         }
         _ => findings.error("codec_schemas.value_schema_missing", "Avro codec metadata does not bundle the current Value writer schema.",
             "codec_schemas.avro.writer_schemas"),
+    }
+}
+
+/// One payload manifest entry's codec, availability and Avro framing checks,
+/// in PHP's order.
+fn check_manifest_entry(entry: &Php, path: &str, schema: &str, fingerprint: &str, findings: &mut Findings) {
+    let codec = string_value(entry.get("codec"));
+    let available = entry.get("available").is_some_and(Php::truthy);
+    let redacted = entry.get("redacted").is_some_and(Php::truthy);
+    let diagnostic = string_value(entry.get("diagnostic"));
+    if codec.is_none() {
+        findings.error("payload_manifest.codec_missing", format!("Payload manifest entry [{path}] is missing codec."), path.to_owned());
+    }
+    if !redacted && available && diagnostic == Some("payload_missing") {
+        findings.error("payload_manifest.payload_missing",
+            format!("Manifest reports payload [{path}] available but bundle has no payload bytes."), path.to_owned());
+    }
+    if codec == Some("avro") && available && !redacted && diagnostic != Some("external_storage_reference") {
+        if string_value(entry.get("avro_framing")).is_none() {
+            findings.add("payload_manifest.avro_framing_missing", WARNING,
+                format!("Avro payload [{path}] is missing framing metadata; offline decoders cannot pick a wrapper schema."),
+                Some(path.to_owned()), json!({}));
+        }
+        if let (Some(writer), Some(actual)) =
+            (string_value(entry.get("writer_schema")), string_value(entry.get("writer_schema_fingerprint")))
+        {
+            let expected = (writer == schema).then(|| fingerprint.to_owned());
+            if expected.as_deref() != Some(actual) {
+                findings.add("payload_manifest.writer_schema_fingerprint_mismatch", ERROR,
+                    format!("Avro payload [{path}] writer_schema_fingerprint disagrees with the embedded schema; offline decoders will reject this entry."),
+                    Some(path.to_owned()), json!({"expected":expected,"actual":actual}));
+            }
+        }
     }
 }
 

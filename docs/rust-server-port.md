@@ -89,6 +89,10 @@ Updated October 24, 2026.
   the native router, and the ones still answering
   `501 rust_capability_not_implemented` must match
   [`unserved-php-routes.v2.11.1.txt`](../rust/tests/fixtures/unserved-php-routes.v2.11.1.txt).
+  Unlike published PHP, native's embedded v2 import refuses a bundle whose
+  rows reference rows outside it, links only runs of one namespace, and reads
+  the signing key only from the request body
+  ([#765](https://github.com/durable-workflow/server/issues/765)).
 - **Next action.** Land the items above in order, keep porting the unserved
   routes fixture first, and package the native binary into the server image.
 

@@ -69,7 +69,7 @@ macro_rules! run_commands_sql {
             $start,
             ") AND NOT (",
             $php,
-            ") THEN c.payload END AS reason_payload FROM workflow_commands c LEFT JOIN workflow_signal_records s ON s.workflow_command_id=c.id WHERE c.workflow_run_id=$1 AND c.workflow_instance_id=$2 ORDER BY c.command_sequence,c.created_at,c.id"
+            ") THEN c.payload END AS reason_payload FROM workflow_commands c LEFT JOIN workflow_signal_records s ON s.workflow_command_id=c.id AND s.workflow_instance_id=c.workflow_instance_id WHERE c.workflow_run_id=$1 AND c.workflow_instance_id=$2 ORDER BY c.command_sequence,c.created_at,c.id"
         )
     };
 }
@@ -1352,8 +1352,10 @@ where
             return Ok(());
         }
         let signal_id = text(&payload, "workflow_signal_id")?;
-        let signal = Self::query("SELECT s.*,c.message_sequence FROM workflow_signal_records s JOIN workflow_commands c ON c.id=s.workflow_command_id WHERE s.id=$1 AND s.workflow_run_id=$2")
-            .bind(signal_id).bind(run_id).fetch_one(&mut **tx).await?;
+        // The signal's own command, never one of another workflow (Server #765).
+        let signal = Self::query("SELECT s.*,c.message_sequence FROM workflow_signal_records s JOIN workflow_commands c ON c.id=s.workflow_command_id AND c.workflow_instance_id=s.workflow_instance_id WHERE s.id=$1 AND s.workflow_run_id=$2")
+            .bind(signal_id).bind(run_id).fetch_optional(&mut **tx).await?
+            .ok_or_else(|| refuse(StatusCode::CONFLICT, "signal_command_unavailable"))?;
         if DB::string(&signal, "status")? != "received" {
             return Err(refuse(StatusCode::CONFLICT, "signal_already_applied"));
         }
@@ -1398,9 +1400,10 @@ where
         .await?;
         let command_id = DB::string(&signal, "workflow_command_id")?;
         let applied_at = now();
-        Self::query("UPDATE workflow_commands SET applied_at=$1 WHERE id=$2")
+        Self::query("UPDATE workflow_commands SET applied_at=$1 WHERE id=$2 AND workflow_instance_id=$3")
             .bind(DB::bind_time(applied_at))
             .bind(&command_id)
+            .bind(DB::string(&signal, "workflow_instance_id")?)
             .execute(&mut **tx)
             .await?;
         // PHP's `applySignal` takes a sequence only from the signal's own
@@ -3959,11 +3962,11 @@ where
         };
         let command_type = DB::optional_string(&row, "command_type")?;
         let target_name = match command_type.as_deref() {
-            Some("signal") => Self::query("SELECT signal_name FROM workflow_signal_records WHERE workflow_command_id=$1")
-                .bind(command_id).fetch_optional(&mut **tx).await?
+            Some("signal") => Self::query("SELECT signal_name FROM workflow_signal_records WHERE workflow_command_id=$1 AND workflow_instance_id=$2")
+                .bind(command_id).bind(DB::string(&row, "workflow_instance_id")?).fetch_optional(&mut **tx).await?
                 .map(|record| DB::optional_string(&record, "signal_name")).transpose()?.flatten(),
-            Some("update") => Self::query("SELECT update_name FROM workflow_updates WHERE workflow_command_id=$1")
-                .bind(command_id).fetch_optional(&mut **tx).await?
+            Some("update") => Self::query("SELECT update_name FROM workflow_updates WHERE workflow_command_id=$1 AND workflow_instance_id=$2")
+                .bind(command_id).bind(DB::string(&row, "workflow_instance_id")?).fetch_optional(&mut **tx).await?
                 .map(|record| DB::optional_string(&record, "update_name")).transpose()?.flatten(),
             _ => None,
         };

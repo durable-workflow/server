@@ -10,14 +10,20 @@
 //! ConvertEmptyStringsToNull, so the checksum, the dedupe key and every
 //! stored value see the same document PHP's importer sees.
 //!
-//! Two published defects are not copied. PHP looks the run and the instance
-//! up in every namespace, so a bundle imported into another namespace
-//! answers already_imported for a namespace that holds no such run, and an
-//! import attaches its run to another namespace's instance and takes over
-//! its current run. Native counts a run as already imported only in the
-//! requested namespace (elsewhere it is a run_id conflict), and refuses to
-//! write into an instance of another namespace (a failed write, as PHP
-//! itself reports when the run number collides).
+//! Published defects are not copied (Server #765). PHP looks the run and the
+//! instance up in every namespace, so a bundle imported into another
+//! namespace answers already_imported for a namespace that holds no such
+//! run, and an import attaches its run to another namespace's instance and
+//! takes over its current run. Native counts a run as already imported only
+//! in the requested namespace (elsewhere it is a run_id conflict), and
+//! refuses to write into an instance of another namespace (a failed write,
+//! as PHP itself reports when the run number collides). PHP also copies
+//! every row reference unchecked, so a bundle can point its signals and
+//! updates at another run's commands, its tasks at another run's
+//! activities, and its lineage at another namespace's runs; native refuses
+//! such a bundle (`reject_foreign_references`, `check_store_references`)
+//! and links only runs of one namespace. And native reads the signing key
+//! only from the body, never from the URL.
 use super::bundle_verifier::{self, Decoded};
 use super::execution::Runtime;
 use super::php_value::{self, Flags, Key, Php, PhpArray};
@@ -26,6 +32,7 @@ use super::{Result, refuse};
 use axum::http::StatusCode;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::{Map, Value, json};
+use std::collections::{HashMap, HashSet};
 
 pub(super) const IMPORT_SOURCE: &str = "embedded_v2";
 pub(super) const ENGINE_SOURCE: &str = "embedded_v2_import";
@@ -170,7 +177,8 @@ fn max_sequence(rows: &[&Php], key: &str) -> i64 {
     rows.iter().filter_map(|row| int(row.get(key))).fold(0, i64::max)
 }
 
-/// The options PHP's controller reads from the body (or the query string).
+/// The options PHP's controller reads from the body (or the query string,
+/// except the signing key).
 pub(super) struct Options {
     pub(super) dry_run: bool,
     pub(super) import_id: Option<String>,
@@ -198,24 +206,35 @@ fn string_input(value: Option<&Php>) -> Option<String> {
     (!text.is_empty()).then(|| text.to_owned())
 }
 
-const OPTION_KEYS: [&str; 4] = ["dry_run", "import_id", "require_signature", "signing_key"];
+/// The options the query string may carry. The signing key is not one.
+const QUERY_OPTION_KEYS: [&str; 3] = ["dry_run", "import_id", "require_signature"];
 
 /// What the controller decides before the importer runs.
 pub(super) enum Request {
     /// The 422 `invalid_import_bundle` answer.
     Invalid,
+    /// The 422 `signing_key_in_query` answer: a signing key in the URL.
+    KeyInQuery,
     Import(PhpArray, Options),
 }
 
 /// `EmbeddedV2ImportController::store` up to the importer: the bundle is
 /// `bundle` when that is an array, else the whole body; options come from
 /// the body, then the query string (`$request->input`).
+///
+/// Unlike PHP, native reads `signing_key` only from the body and refuses a
+/// request that puts one in the query string (Server #765). Access logs,
+/// tracing and client history keep URLs, and the key verifies the HMAC.
 pub(super) fn request(body: &[u8], query: &[(String, String)]) -> Request {
+    // Any spelling PHP would read as the option (`signing_key[]` too).
+    if query.iter().any(|(key, _)| key.starts_with("signing_key")) {
+        return Request::KeyInQuery;
+    }
     let body = php_value::request_body(body);
     // Only the options are read, so only they are kept; a repeated
     // parameter's last value wins.
     let mut query_input = PhpArray::default();
-    for (key, value) in query.iter().filter(|(key, _)| OPTION_KEYS.contains(&key.as_str())) {
+    for (key, value) in query.iter().filter(|(key, _)| QUERY_OPTION_KEYS.contains(&key.as_str())) {
         let mut value = Php::Str(value.clone());
         value.normalize();
         query_input.insert(Key::of(key), value);
@@ -225,7 +244,7 @@ pub(super) fn request(body: &[u8], query: &[(String, String)]) -> Request {
         dry_run: boolean(input("dry_run")),
         import_id: string_input(input("import_id")),
         require_signature: boolean(input("require_signature")),
-        signing_key: string_input(input("signing_key")),
+        signing_key: string_input(body.get("signing_key")),
     };
     let bundle = match body.get("bundle") {
         Some(Php::Array(bundle)) => bundle.clone(),
@@ -287,8 +306,12 @@ impl Eligibility {
     }
 
     fn with_error(&self, rule: &str, message: &str) -> Value {
+        self.with_errors(vec![finding(rule, message)])
+    }
+
+    fn with_errors(&self, findings: Vec<Value>) -> Value {
         let mut errors = self.errors.clone();
-        errors.push(finding(rule, message));
+        errors.extend(findings);
         json!({"eligible": false, "errors": errors, "warnings": self.warnings})
     }
 }
@@ -437,6 +460,254 @@ fn reject_open_leases(bundle: &Php, errors: &mut Vec<Value>) {
     });
     if running {
         errors.push(finding("activities.running_attempt_present", "Running activity attempts must be released before import."));
+    }
+}
+
+/// The ids of the rows the writer imports, selected as it selects them.
+#[derive(Default)]
+struct BundleIds<'a> {
+    /// Each command's id and type.
+    commands: HashMap<&'a str, &'a str>,
+    signals: HashSet<&'a str>,
+    updates: HashSet<&'a str>,
+    tasks: HashSet<&'a str>,
+    activities: HashSet<&'a str>,
+    attempts: HashSet<&'a str>,
+    timers: HashSet<&'a str>,
+    failures: HashSet<&'a str>,
+}
+
+impl<'a> BundleIds<'a> {
+    fn of(bundle: &'a Php) -> Self {
+        let mut ids = Self::default();
+        for command in list(bundle.get("commands")) {
+            if let (Some(kind), Some(_), Some(id)) = (enumerated(COMMAND_TYPES, command.get("type")),
+                enumerated(COMMAND_STATUSES, command.get("status")), text(command.get("id")))
+            {
+                ids.commands.insert(id, kind);
+            }
+        }
+        let collect = |section: &str, written: &dyn Fn(&Php) -> bool| -> HashSet<&'a str> {
+            list(bundle.get(section)).into_iter().filter(|row| written(row)).filter_map(|row| text(row.get("id"))).collect()
+        };
+        ids.signals = collect("signals", &|row| enumerated(SIGNAL_STATUSES, row.get("status")).is_some());
+        ids.updates = collect("updates", &|row| enumerated(UPDATE_STATUSES, row.get("status")).is_some());
+        ids.tasks = collect("tasks", &|row| {
+            enumerated(TASK_TYPES, row.get("type")).is_some() && enumerated(TASK_STATUSES, row.get("status")).is_some()
+        });
+        ids.activities = collect("activities", &|row| enumerated(ACTIVITY_STATUSES, row.get("status")).is_some());
+        ids.timers = collect("timers", &|row| enumerated(TIMER_STATUSES, row.get("status")).is_some());
+        ids.failures = collect("failures", &|_| true);
+        // The writer imports the attempts of every activity with an id.
+        for activity in list(bundle.get("activities")).into_iter().filter(|activity| text(activity.get("id")).is_some()) {
+            for attempt in list(activity.get("attempts")) {
+                if let (Some(_), Some(id)) = (enumerated(ATTEMPT_STATUSES, attempt.get("status")), text(attempt.get("id"))) {
+                    ids.attempts.insert(id);
+                }
+            }
+        }
+        ids
+    }
+}
+
+/// Each imported command, signal and update that requests a run other
+/// than the imported one: its path and that run.
+fn requested_runs<'a>(bundle: &'a Php, run_id: &str) -> Vec<(String, &'a str)> {
+    let mut requested = Vec::new();
+    for (section, statuses) in [("commands", COMMAND_STATUSES), ("signals", SIGNAL_STATUSES), ("updates", UPDATE_STATUSES)] {
+        for (index, row) in list(bundle.get(section)).into_iter().enumerate() {
+            let written = enumerated(statuses, row.get("status")).is_some()
+                && (section != "commands" || enumerated(COMMAND_TYPES, row.get("type")).is_some());
+            if let Some(run) = text(row.get("requested_run_id")).filter(|run| written && *run != run_id) {
+                requested.push((format!("{section}.{index}.requested_run_id"), run));
+            }
+        }
+    }
+    requested
+}
+
+/// The references a task payload carries, each to rows of one kind.
+const TASK_PAYLOAD_REFERENCES: &[(&str, &str)] = &[
+    ("activity_execution_id", "an activity"),
+    ("activity_attempt_id", "an activity attempt"),
+    ("timer_id", "a timer"),
+    ("workflow_signal_id", "a signal"),
+    ("workflow_update_id", "an update"),
+    ("workflow_command_id", "a command"),
+];
+
+/// Native refuses a bundle whose rows point outside the bundle (Server
+/// #765). Published PHP copies every reference unchecked, and the runtime
+/// joins or updates the rows they name: a signal or update applies to its
+/// command by id, a lost activity lease settles the activity its task names,
+/// a lineage row puts a related run into history exports. So each copied
+/// reference must name a row this import writes, of the expected kind. A
+/// requested run may also be another run of the same workflow, and a failed
+/// update a failure no run holds; the write checks those and lineage
+/// against the store. History event payloads are history, not references:
+/// what the runtime resolves from them stays within the run.
+fn reject_foreign_references(bundle: &Php, summary: &Summary, errors: &mut Vec<Value>) {
+    let mut check = References { ids: BundleIds::of(bundle), run_id: summary.run_id.as_deref(), errors };
+    if let Some(id) = text(summary.get("archive_command_id"))
+        && !check.command(id, None)
+    {
+        check.unresolved("workflow.archive_command_id".into(), "a command");
+    }
+    check.history(bundle);
+    check.messages(bundle);
+    check.activities(bundle);
+    check.tasks(bundle);
+    check.failures(bundle);
+    check.links(bundle);
+}
+
+/// One bundle's reference checks and the findings they add.
+struct References<'a, 'e> {
+    ids: BundleIds<'a>,
+    run_id: Option<&'a str>,
+    errors: &'e mut Vec<Value>,
+}
+
+impl References<'_, '_> {
+    fn unresolved(&mut self, path: String, kind: &str) {
+        self.errors.push(finding("references.unresolved", &format!("Bundle {path} must name {kind} in this bundle.")));
+    }
+
+    fn command(&self, id: &str, kind: Option<&str>) -> bool {
+        self.ids.commands.get(id).is_some_and(|found| kind.is_none_or(|kind| *found == kind))
+    }
+
+    /// Whether `id` names a row of the kind a task payload key or a resume
+    /// source kind refers to.
+    fn names(&self, key: &str, id: &str) -> bool {
+        match key {
+            "activity_execution_id" | "activity_execution" => self.ids.activities.contains(id),
+            "activity_attempt_id" => self.ids.attempts.contains(id),
+            "timer_id" | "timer" => self.ids.timers.contains(id),
+            "workflow_signal_id" | "workflow_signal" => self.ids.signals.contains(id),
+            "workflow_update_id" | "workflow_update" => self.ids.updates.contains(id),
+            _ => self.command(id, None),
+        }
+    }
+
+    fn history(&mut self, bundle: &Php) {
+        for (index, event) in list(bundle.get("history_events")).into_iter().enumerate() {
+            if enumerated(HISTORY_EVENT_TYPES, event.get("type")).is_none() {
+                continue;
+            }
+            if text(event.get("workflow_task_id")).is_some_and(|id| !self.ids.tasks.contains(id)) {
+                self.unresolved(format!("history_events.{index}.workflow_task_id"), "a task");
+            }
+            if text(event.get("workflow_command_id")).is_some_and(|id| !self.command(id, None)) {
+                self.unresolved(format!("history_events.{index}.workflow_command_id"), "a command");
+            }
+        }
+    }
+
+    /// Commands, signals and updates resolve to this run, and a signal's or
+    /// update's command is one of this bundle's of its kind.
+    fn messages(&mut self, bundle: &Php) {
+        for (section, statuses, kind) in
+            [("commands", COMMAND_STATUSES, None), ("signals", SIGNAL_STATUSES, Some("signal")), ("updates", UPDATE_STATUSES, Some("update"))]
+        {
+            for (index, row) in list(bundle.get(section)).into_iter().enumerate() {
+                let written = enumerated(statuses, row.get("status")).is_some()
+                    && (kind.is_some() || enumerated(COMMAND_TYPES, row.get("type")).is_some());
+                if !written {
+                    continue;
+                }
+                if text(row.get("resolved_run_id")).is_some_and(|id| Some(id) != self.run_id) {
+                    self.errors.push(finding("references.foreign_run",
+                        &format!("Bundle {section}.{index}.resolved_run_id must name the imported run.")));
+                }
+                if let Some(kind) = kind
+                    && text(row.get("command_id")).is_some_and(|id| !self.command(id, Some(kind)))
+                {
+                    let expected = if kind == "update" { "an update command" } else { "a signal command" };
+                    self.unresolved(format!("{section}.{index}.command_id"), expected);
+                }
+            }
+        }
+    }
+
+    fn activities(&mut self, bundle: &Php) {
+        for (index, activity) in list(bundle.get("activities")).into_iter().enumerate() {
+            if text(activity.get("id")).is_none() {
+                continue;
+            }
+            let attempts: Vec<(usize, &Php)> = list(activity.get("attempts")).into_iter().enumerate()
+                .filter(|(_, attempt)| enumerated(ATTEMPT_STATUSES, attempt.get("status")).is_some())
+                .collect();
+            // The writer imports these attempts even when it skips the activity.
+            if enumerated(ACTIVITY_STATUSES, activity.get("status")).is_none() {
+                if !attempts.is_empty() {
+                    self.unresolved(format!("activities.{index}.attempts"), "attempts of an imported activity");
+                }
+                continue;
+            }
+            let own: HashSet<&str> = attempts.iter().filter_map(|(_, attempt)| text(attempt.get("id"))).collect();
+            if text(activity.get("current_attempt_id")).is_some_and(|id| !own.contains(id)) {
+                self.unresolved(format!("activities.{index}.current_attempt_id"), "one of the activity's own attempts");
+            }
+            for (position, attempt) in attempts {
+                for key in ["workflow_task_id", "task_id"] {
+                    if text(attempt.get(key)).is_some_and(|id| !self.ids.tasks.contains(id)) {
+                        self.unresolved(format!("activities.{index}.attempts.{position}.{key}"), "a task");
+                    }
+                }
+            }
+        }
+    }
+
+    fn tasks(&mut self, bundle: &Php) {
+        for (index, task) in list(bundle.get("tasks")).into_iter().enumerate() {
+            if enumerated(TASK_TYPES, task.get("type")).is_none() || enumerated(TASK_STATUSES, task.get("status")).is_none() {
+                continue;
+            }
+            let Some(payload) = task.get("payload").filter(|payload| payload.is_array()) else {
+                continue;
+            };
+            for (key, kind) in TASK_PAYLOAD_REFERENCES {
+                if text(payload.get(key)).is_some_and(|id| !self.names(key, id)) {
+                    self.unresolved(format!("tasks.{index}.payload.{key}"), kind);
+                }
+            }
+            // A wait's resume source, for the kinds the bundle itself carries.
+            if let (Some(kind @ ("activity_execution" | "timer" | "workflow_signal" | "workflow_update")), Some(id)) =
+                (text(payload.get("resume_source_kind")), text(payload.get("resume_source_id")))
+                && !self.names(kind, id)
+            {
+                self.unresolved(format!("tasks.{index}.payload.resume_source_id"), &format!("the {kind} it resumes"));
+            }
+        }
+    }
+
+    fn failures(&mut self, bundle: &Php) {
+        for (index, failure) in list(bundle.get("failures")).into_iter().enumerate() {
+            if text(failure.get("source_kind")) == Some("activity_execution")
+                && text(failure.get("source_id")).is_some_and(|id| !self.ids.activities.contains(id))
+            {
+                self.unresolved(format!("failures.{index}.source_id"), "an activity");
+            }
+        }
+    }
+
+    /// A link never names the imported run as its own related run; the
+    /// write checks the related run against the store.
+    fn links(&mut self, bundle: &Php) {
+        let Some(run_id) = self.run_id else {
+            return;
+        };
+        let empty = Php::Array(PhpArray::default());
+        let links = bundle.get("links").filter(|value| value.is_array()).unwrap_or(&empty);
+        for (side, other) in [("parents", "parent"), ("children", "child")] {
+            for (index, link) in list(links.get(side)).into_iter().enumerate() {
+                if text(link.get(&format!("{other}_workflow_run_id"))) == Some(run_id) {
+                    self.errors.push(finding("references.self_link",
+                        &format!("Bundle links.{side}.{index} names the imported run as its own {other}.")));
+                }
+            }
+        }
     }
 }
 
@@ -745,6 +1016,12 @@ impl Runtime {
                     "message": "Import request body must be a history-export bundle or {\"bundle\": ...}.",
                     "reason": "invalid_import_bundle"}))));
             }
+            // The answer never repeats the key.
+            Request::KeyInQuery => {
+                return Ok((StatusCode::UNPROCESSABLE_ENTITY, operation().response(json!({
+                    "message": "signing_key must be sent in the request body, not in the URL.",
+                    "reason": "signing_key_in_query"}))));
+            }
             Request::Import(bundle, options) => (bundle, options),
         };
         let namespace = self.namespace_name();
@@ -778,6 +1055,14 @@ impl Runtime {
                 "A workflow run with this run_id already exists and was not imported from the same bundle.")), &empty, None));
         }
         let root = Php::Array(prepared.bundle.clone());
+        // Native's reference fence (Server #765), after PHP's eligibility and
+        // run checks so their answers stay PHP's, and before a dry run or a
+        // write.
+        let mut references = Vec::new();
+        reject_foreign_references(&root, &prepared.summary, &mut references);
+        if !references.is_empty() {
+            return Ok(answer("rejected", Some(prepared.eligibility.with_errors(references)), &empty, None));
+        }
         if prepared.options.dry_run {
             return Ok(answer("dry_run", None, &estimated_rows(&root), None));
         }
@@ -864,6 +1149,89 @@ store_methods! {
         Ok(rows)
     }
 
+    /// The references `reject_foreign_references` leaves to the store. A
+    /// requested run other than the imported one must be another run of the
+    /// same workflow in this namespace, and a failure a failed update names
+    /// outside the bundle must belong to no run (Server #765).
+    async fn check_store_references(
+        tx: &mut super::transaction::Transaction<'_, DB>,
+        bundle: &Php,
+        namespace: &str,
+        run_id: &str,
+        instance_id: &str,
+    ) -> std::result::Result<(), String> {
+        let field = |row: &DB::Row, name: &str| DB::optional_string(row, name).map_err(|error| error.to_string());
+        for (path, requested) in requested_runs(bundle, run_id) {
+            let found = Self::query("SELECT namespace,workflow_instance_id FROM workflow_runs WHERE id=$1")
+                .bind(requested).fetch_optional(&mut **tx).await.map_err(|error| error.to_string())?;
+            let same_workflow = match &found {
+                Some(found) => field(found, "namespace")?.as_deref() == Some(namespace)
+                    && field(found, "workflow_instance_id")?.as_deref() == Some(instance_id),
+                None => false,
+            };
+            if !same_workflow {
+                return Err(format!("Imported {path} is not a run of this workflow in this namespace."));
+            }
+        }
+        Self::check_update_failures(tx, bundle).await
+    }
+
+    /// A failure a failed update names outside the bundle belongs to no run.
+    async fn check_update_failures(
+        tx: &mut super::transaction::Transaction<'_, DB>,
+        bundle: &Php,
+    ) -> std::result::Result<(), String> {
+        let db = |error: sqlx::Error| error.to_string();
+        let failures = BundleIds::of(bundle).failures;
+        for (index, update) in list(bundle.get("updates")).into_iter().enumerate() {
+            if enumerated(UPDATE_STATUSES, update.get("status")).is_none() {
+                continue;
+            }
+            let Some(failure) = text(update.get("failure_id")).filter(|failure| !failures.contains(failure)) else {
+                continue;
+            };
+            if Self::query("SELECT id FROM workflow_failures WHERE id=$1").bind(failure).fetch_optional(&mut **tx).await.map_err(db)?.is_some() {
+                return Err(format!("Imported updates.{index}.failure_id names a failure of another run."));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether to write a lineage link to this related run now. Native
+    /// links only runs of one namespace (Server #765): a related run or
+    /// instance in another namespace fails the import. A related run that
+    /// does not exist yet is left to its own import, whose bundle carries
+    /// the same link, so no link ever waits for a run that a later import
+    /// could create in another namespace.
+    async fn import_link_endpoint(
+        tx: &mut super::transaction::Transaction<'_, DB>,
+        namespace: &str,
+        link_id: &str,
+        other_instance: &str,
+        other_run: &str,
+    ) -> std::result::Result<bool, String> {
+        let db = |error: sqlx::Error| error.to_string();
+        let field = |row: &DB::Row, name: &str| DB::optional_string(row, name).map_err(|error| error.to_string());
+        if let Some(related) = Self::query("SELECT namespace,workflow_instance_id FROM workflow_runs WHERE id=$1")
+            .bind(other_run).fetch_optional(&mut **tx).await.map_err(db)?
+        {
+            if field(&related, "namespace")?.as_deref() != Some(namespace) {
+                return Err(format!("Imported workflow link [{link_id}] names a run of another namespace."));
+            }
+            if field(&related, "workflow_instance_id")?.as_deref() != Some(other_instance) {
+                return Err(format!("Imported workflow link [{link_id}] names a run outside the instance it names."));
+            }
+            return Ok(true);
+        }
+        if let Some(owner) = Self::query("SELECT namespace FROM workflow_instances WHERE id=$1")
+            .bind(other_instance).fetch_optional(&mut **tx).await.map_err(db)?
+            && field(&owner, "namespace")?.as_deref() != Some(namespace)
+        {
+            return Err(format!("Imported workflow link [{link_id}] names an instance of another namespace."));
+        }
+        Ok(false)
+    }
+
     async fn import_rows(tx: &mut super::transaction::Transaction<'_, DB>, plan: &Plan, namespace: &str) -> std::result::Result<Rows, String> {
         let db = |error: sqlx::Error| error.to_string();
         let mut rows: Rows = [0; 15];
@@ -931,6 +1299,7 @@ store_methods! {
                 (None, run_number, message_cursor)
             }
         };
+        Self::check_store_references(tx, bundle, namespace, run_id, instance_id).await?;
 
         let closed = time(summary.get("closed_at"))?;
         let archived = time(summary.get("archived_at"))?;
@@ -1185,6 +1554,9 @@ store_methods! {
                     (instance_id, run_id, other_instance, other_run)
                 };
                 let link_id = ulid_value(link.get("id")).map_or_else(id, str::to_owned);
+                if !Self::import_link_endpoint(tx, namespace, &link_id, other_instance, other_run).await? {
+                    continue;
+                }
                 let link_type = text(link.get("type")).unwrap_or(if parent { "parent" } else { "child" });
                 let sequence = int(link.get("sequence"));
                 let primary = truthy(link.get("is_primary_parent"));
@@ -1291,6 +1663,15 @@ mod tests {
             panic!("an import");
         };
         assert!(bundle.contains("import_id") && options.dry_run && options.import_id.is_none());
+        // The signing key is read only from the body; in the URL it refuses
+        // the request, in any spelling PHP would read.
+        let Request::Import(_, options) = request(br#"{"bundle":{"a":1},"signing_key":" k1 "}"#, &[("dry_run".into(), "1".into())]) else {
+            panic!("an import");
+        };
+        assert_eq!(options.signing_key.as_deref(), Some("k1"));
+        for key in ["signing_key", "signing_key[]", "signing_key[0]"] {
+            assert!(matches!(request(br#"{"bundle":{"a":1}}"#, &[(key.into(), "k1".into())]), Request::KeyInQuery));
+        }
     }
 
     #[test]

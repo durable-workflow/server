@@ -90,7 +90,7 @@ pub(super) const COMMANDS: &[(&str, Column)] = &[
     ("payload", Text), ("source", Text), ("request_id", Text), ("status", Text), ("outcome", Text), ("rejection_reason", Text),
     ("accepted_at", Time), ("applied_at", Time), ("rejected_at", Time),
 ];
-pub(super) const COMMANDS_SQL: &str = "SELECT c.*,COALESCE(s.signal_name,u.update_name) AS target_name FROM workflow_commands c LEFT JOIN workflow_signal_records s ON s.workflow_command_id=c.id LEFT JOIN workflow_updates u ON u.workflow_command_id=c.id WHERE c.workflow_run_id=$1 ORDER BY c.command_sequence,c.created_at,c.id";
+pub(super) const COMMANDS_SQL: &str = "SELECT c.*,COALESCE(s.signal_name,u.update_name) AS target_name FROM workflow_commands c LEFT JOIN workflow_signal_records s ON s.workflow_command_id=c.id AND s.workflow_instance_id=c.workflow_instance_id LEFT JOIN workflow_updates u ON u.workflow_command_id=c.id AND u.workflow_instance_id=c.workflow_instance_id WHERE c.workflow_run_id=$1 ORDER BY c.command_sequence,c.created_at,c.id";
 pub(super) const SIGNALS: &[(&str, Column)] = &[
     ("id", Text), ("workflow_command_id", Text), ("command_sequence", Int), ("workflow_sequence", Int), ("signal_name", Text),
     ("signal_wait_id", Text), ("target_scope", Text), ("requested_workflow_run_id", Text), ("resolved_workflow_run_id", Text),
@@ -137,8 +137,11 @@ pub(super) const LINKS: &[(&str, Column)] = &[
     ("child_workflow_instance_id", Text), ("child_workflow_run_id", Text), ("is_primary_parent", Flag), ("created_at", Time),
     ("run_number", Int), ("workflow_type", Text), ("workflow_class", Text), ("status", Text), ("closed_reason", Text),
 ];
-pub(super) const PARENTS_SQL: &str = "SELECT l.*,CASE WHEN l.is_primary_parent THEN 1 ELSE 0 END AS is_primary_parent_flag,r.run_number,r.workflow_type,r.workflow_class,r.status,r.closed_reason FROM workflow_links l LEFT JOIN workflow_runs r ON r.id=l.parent_workflow_run_id WHERE l.child_workflow_run_id=$1 ORDER BY l.created_at,l.id";
-pub(super) const CHILDREN_SQL: &str = "SELECT l.*,CASE WHEN l.is_primary_parent THEN 1 ELSE 0 END AS is_primary_parent_flag,r.run_number,r.workflow_type,r.workflow_class,r.status,r.closed_reason FROM workflow_links l LEFT JOIN workflow_runs r ON r.id=l.child_workflow_run_id WHERE l.parent_workflow_run_id=$1 AND l.link_type='continue_as_new' ORDER BY l.created_at,l.id";
+// A related run of another namespace is never exported, whatever a link
+// row says (Server #765); a command's signal or update must share its
+// instance.
+pub(super) const PARENTS_SQL: &str = "SELECT l.*,CASE WHEN l.is_primary_parent THEN 1 ELSE 0 END AS is_primary_parent_flag,r.run_number,r.workflow_type,r.workflow_class,r.status,r.closed_reason FROM workflow_links l LEFT JOIN workflow_runs r ON r.id=l.parent_workflow_run_id WHERE l.child_workflow_run_id=$1 AND (r.id IS NULL OR r.namespace=(SELECT m.namespace FROM workflow_runs m WHERE m.id=l.child_workflow_run_id)) ORDER BY l.created_at,l.id";
+pub(super) const CHILDREN_SQL: &str = "SELECT l.*,CASE WHEN l.is_primary_parent THEN 1 ELSE 0 END AS is_primary_parent_flag,r.run_number,r.workflow_type,r.workflow_class,r.status,r.closed_reason FROM workflow_links l LEFT JOIN workflow_runs r ON r.id=l.child_workflow_run_id WHERE l.parent_workflow_run_id=$1 AND l.link_type='continue_as_new' AND (r.id IS NULL OR r.namespace=(SELECT m.namespace FROM workflow_runs m WHERE m.id=l.parent_workflow_run_id)) ORDER BY l.created_at,l.id";
 
 /// The rows `forRun` reads for one run.
 #[derive(Default)]
