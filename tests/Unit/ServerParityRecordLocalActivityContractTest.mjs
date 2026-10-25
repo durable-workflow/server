@@ -97,3 +97,20 @@ for (const [label, change, message] of [
     assert.throws(() => check(observation(change)), message);
   });
 }
+
+test('a task snapshot names the backend\'s own storage connection, one per observation', () => {
+  for (const name of ['pgsql', 'mysql']) {
+    const renamed = observation(state => {
+      for (const run of ['completed_run', 'failed_run', 'protocol_1_18_run']) events(state, run)[0].payload.task.connection = name;
+    });
+    assert.deepStrictEqual(check(renamed), {scope: 'record_local_activity'});
+  }
+  const mixed = observation(state => {
+    events(state, 'failed_run')[0].payload.task.connection = 'pgsql';
+  });
+  assert.throws(() => check(mixed), /actual names one storage connection: sqlite, pgsql/);
+  const unknown = observation(state => {
+    for (const run of ['completed_run', 'failed_run', 'protocol_1_18_run']) events(state, run)[0].payload.task.connection = 'redis';
+  });
+  assert.throws(() => check(unknown), /actual storage connection redis/);
+});
