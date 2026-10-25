@@ -1498,7 +1498,9 @@ Wait-slot limits are per API node. Every API node must keep its own unique
 `DW_SERVER_ID` and a writable `DW_POLLING_CACHE_PATH`, including deployments
 using Redis or database polling caches. One local admission lock enforces the
 global and optional namespace caps together; a held file descriptor owns each
-wait. Normal request cleanup or process death releases that capacity without
+wait on a local filesystem supporting advisory locks. All request processes
+on that node must share this directory. Normal request cleanup or process death
+releases capacity without
 waiting for a cache TTL, and one node cannot release another node's live waits.
 Unavailable local lock storage refuses an idle wait rather than exceeding its
 configured limits. Immediate task claims still happen before wait admission;

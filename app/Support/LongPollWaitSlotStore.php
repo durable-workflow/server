@@ -257,6 +257,6 @@ final class LongPollWaitSlotStore
         $path = (string) config('server.polling.cache_path', storage_path('framework/cache/server-polling'));
 
         return rtrim($path, '/').'/wait-slots/'
-            .sha1((string) config('server.server_id', gethostname())).'/'.$pool;
+            .hash('sha256', (string) config('server.server_id', gethostname())).'/'.$pool;
     }
 }

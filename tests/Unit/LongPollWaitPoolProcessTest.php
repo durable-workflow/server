@@ -85,6 +85,6 @@ class LongPollWaitPoolProcessTest extends TestCase
 
     private function node(string $name): string
     {
-        return $this->directory.'/'.sha1($name).'/worker';
+        return $this->directory.'/'.hash('sha256', $name).'/worker';
     }
 }

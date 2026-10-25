@@ -161,7 +161,7 @@ class LongPollWaitSlotStoreTest extends TestCase
         }
 
         $root = config('server.polling.cache_path').'/wait-slots/'
-            .sha1((string) config('server.server_id', gethostname())).'/worker';
+            .hash('sha256', (string) config('server.server_id', gethostname())).'/worker';
         $this->assertCount(1, glob($root.'/slot-*.lock'));
     }
 
@@ -183,7 +183,7 @@ class LongPollWaitSlotStoreTest extends TestCase
         $replacement = $slots->tryAcquire(30, 'replacement');
         $this->assertNotNull($replacement);
         $root = config('server.polling.cache_path').'/wait-slots/'
-            .sha1((string) config('server.server_id', gethostname())).'/worker';
+            .hash('sha256', (string) config('server.server_id', gethostname())).'/worker';
         $this->assertCount(3, glob($root.'/slot-*.lock'));
 
         config(['server.polling.max_concurrent_waits' => 3]);

@@ -3,7 +3,6 @@
 namespace App\Support;
 
 use DirectoryIterator;
-use RuntimeException;
 
 final class LongPollWaitPool
 {
@@ -15,7 +14,7 @@ final class LongPollWaitPool
         int $waitSeconds,
     ): ?LongPollWaitSlot {
         if (! is_dir($directory) && ! @mkdir($directory, 0700, true) && ! is_dir($directory)) {
-            throw new RuntimeException('Cannot create the node-local long-poll reservation directory.');
+            throw new LongPollWaitStorageUnavailable('Cannot create the node-local long-poll reservation directory.');
         }
 
         $coordinator = $this->open($directory.'/admission.lock');
@@ -39,7 +38,7 @@ final class LongPollWaitPool
                 $candidate = $this->open($directory.'/slot-'.bin2hex(random_bytes(16)).'.lock');
 
                 if (! flock($candidate, LOCK_EX | LOCK_NB)) {
-                    throw new RuntimeException('Cannot own the new long-poll reservation.');
+                    throw new LongPollWaitStorageUnavailable('Cannot own the new long-poll reservation.');
                 }
             }
 
@@ -54,7 +53,7 @@ final class LongPollWaitPool
             if (! ftruncate($candidate, 0)
                 || fwrite($candidate, $metadata) !== strlen($metadata)
                 || ! fflush($candidate)) {
-                throw new RuntimeException('Cannot record the long-poll reservation.');
+                throw new LongPollWaitStorageUnavailable('Cannot record the long-poll reservation.');
             }
 
             $slot = LongPollWaitSlot::acquired($candidate);
@@ -100,7 +99,7 @@ final class LongPollWaitPool
                 // Only admissions open files, under admission.lock.
                 // No blocked contender can retain an unlinked inode.
                 if (! unlink($path)) {
-                    throw new RuntimeException('Cannot retire an unused long-poll reservation.');
+                    throw new LongPollWaitStorageUnavailable('Cannot retire an unused long-poll reservation.');
                 }
             }
 
@@ -149,7 +148,7 @@ final class LongPollWaitPool
         $handle = @fopen($path, $mode);
 
         if ($handle === false) {
-            throw new RuntimeException('Cannot open the node-local long-poll reservation.');
+            throw new LongPollWaitStorageUnavailable('Cannot open the node-local long-poll reservation.');
         }
 
         return $handle;
