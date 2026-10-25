@@ -26,8 +26,7 @@ export DW_PORT_SOURCE_ROOT="$PWD"
 port_project="dw-server-port-$(date -u +%Y%m%dT%H%M%S | tr '[:upper:]' '[:lower:]')"
 port_compose=scripts/perf/server-port-baseline.compose.yml
 port_image=$(jq -r .artifacts.server benchmarks/server-port/v1/php-baseline.json)
-docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-  -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$port_image" \
+bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
   install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
 mkdir -p benchmarks/capacity/v1/bindings/php/vendor
 docker compose -p "$port_project" -f "$port_compose" config --quiet
