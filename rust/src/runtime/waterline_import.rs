@@ -128,6 +128,64 @@ fn rows(value: Option<&Php>) -> Vec<PhpArray> {
     }
 }
 
+/// How many rows `rows` would return, without copying them.
+fn row_count(value: Option<&Php>) -> usize {
+    match value {
+        Some(Php::Array(array)) => array.values().filter(|value| value.array().is_some()).count(),
+        _ => 0,
+    }
+}
+
+/// A projection larger than one transaction may write: its history events
+/// against `DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE`, or its history bytes
+/// against `DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES`. Published PHP has no
+/// such limit; native refuses before reading or writing any row.
+fn too_large(dimension: &str, used: usize, limit: usize) -> Php {
+    let (measure, setting) = match dimension {
+        "history_transaction_size" => ("history events", "DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE"),
+        _ => ("history bytes", "DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES"),
+    };
+    object(vec![
+        ("reason", text("v1_projection_too_large")),
+        ("message", text(format!("The projection would write {used} {measure} in one transaction; at most {limit} are allowed ({dimension})."))),
+        ("remediation", text(format!("Keep the workflow on its v1 runtime, or raise {setting} on this server before importing it."))),
+        ("limit", object(vec![("dimension", text(dimension)), ("used", Php::Int(used as i64)), ("limit", Php::Int(limit as i64))])),
+    ])
+}
+
+/// The first limit a projection of `events` events and `bytes` bytes
+/// exceeds, if any; 0 disables a limit.
+fn exceeded(limits: &super::StructuralLimits, events: usize, bytes: usize) -> Option<Php> {
+    let over = |limit: Option<usize>, used: usize| limit.filter(|limit| *limit > 0 && used > *limit);
+    over(limits.history_events, events)
+        .map(|limit| too_large("history_transaction_size", events, limit))
+        .or_else(|| over(limits.history_bytes, bytes).map(|limit| too_large("history_transaction_bytes", bytes, limit)))
+}
+
+/// The body that refuses an operation on a read-only projection.
+pub(super) fn read_only_body(workflow_id: &str, run_id: &str, operation: &str) -> Value {
+    json!({
+        "message": format!("Operation [{operation}] is unavailable because this execution is a read-only projection owned by the source v1 runtime."),
+        "reason": "v1_projection_read_only",
+        "remediation": "Run commands against the source v1 application until it completes; repeat projection never dispatches or advances standalone execution.",
+        "workflow_id": workflow_id,
+        "run_id": run_id,
+        "operation": operation,
+        "execution_owner": "v1",
+    })
+}
+
+/// A message stream append refused on a read-only projection, in the shape
+/// of the stream's own refusals. Published PHP accepts it.
+pub(super) fn read_only_append(workflow_id: &str, run_id: &str, stream: &str) -> Value {
+    let mut body = read_only_body(workflow_id, run_id, "message_stream_append");
+    for (key, value) in [("accepted", json!(false)), ("duplicate", json!(false)), ("stream_name", json!(stream)),
+        ("outcome", json!("rejected"))] {
+        body[key] = value;
+    }
+    body
+}
+
 fn error(reason: &str, message: &str, remediation: &str) -> Php {
     object(vec![("reason", text(reason)), ("message", text(message)), ("remediation", text(remediation))])
 }
@@ -233,11 +291,26 @@ pub(crate) struct Normalized {
 
 pub(crate) enum Outcome {
     Invalid { errors: Vec<Php> },
+    /// Larger than one transaction may write. `encoded` is how many events
+    /// were built and measured first: 0 for a refusal by count.
+    TooLarge { error: Php, encoded: usize },
     Valid(Box<Normalized>),
 }
 
-/// `LegacyV1Projection::normalize`.
+/// `LegacyV1Projection::normalize`, without size limits.
+#[cfg(test)]
 pub(crate) fn normalize(source_id: &str, source: &PhpArray, namespace: Option<&str>) -> Outcome {
+    let unlimited = super::StructuralLimits { history_events: None, history_bytes: None, ..super::StructuralLimits::default() };
+    normalize_bounded(source_id, source, namespace, &unlimited)
+}
+
+/// `LegacyV1Projection::normalize`, refusing a projection larger than one
+/// transaction may write. The event count is known from the source's row
+/// counts and is checked before any row is copied or any event is built;
+/// history bytes are added up event by event and the first event past the
+/// limit stops the measure.
+pub(crate) fn normalize_bounded(source_id: &str, source: &PhpArray, namespace: Option<&str>,
+    limits: &super::StructuralLimits) -> Outcome {
     let source_id = php_trim(source_id).to_owned();
     let namespace = namespace.map(php_trim).filter(|namespace| !namespace.is_empty()).unwrap_or("default").to_owned();
     let qualified = string(coalesce(source, &["operator_id", "id"]));
@@ -281,6 +354,14 @@ pub(crate) fn normalize(source_id: &str, source: &PhpArray, namespace: Option<&s
         return Outcome::Invalid { errors };
     };
 
+    // The start event, one event per log, signal and exception, and a
+    // terminal event when the status has one.
+    let terminal = matches!(status, "completed" | "failed" | "cancelled" | "terminated");
+    let projected = ["logs", "signals", "exceptions"].iter()
+        .fold(1usize + usize::from(terminal), |total, key| total.saturating_add(row_count(source.get(key))));
+    if let Some(error) = exceeded(limits, projected, 0) {
+        return Outcome::TooLarge { error, encoded: 0 };
+    }
     let (workflow_id, run_id, import_id) = mapped_identity(&source_id, &qualified);
     let connection = string(source.get("connection"));
     let queue = string(source.get("queue"));
@@ -317,7 +398,6 @@ pub(crate) fn normalize(source_id: &str, source: &PhpArray, namespace: Option<&s
     ]);
     let started_at = timestamp(source.get("created_at"));
     let last_progress_at = timestamp(source.get("updated_at")).or(started_at);
-    let terminal = matches!(status, "completed" | "failed" | "cancelled" | "terminated");
     let closed_at = if terminal { last_progress_at } else { None };
     let raw = |key: &str| source.get(key).cloned().unwrap_or(Php::Null);
     let rows_value = |rows: &[PhpArray]| list(rows.iter().cloned().map(Php::Array).collect());
@@ -345,14 +425,23 @@ pub(crate) fn normalize(source_id: &str, source: &PhpArray, namespace: Option<&s
     ]);
     let events = events(source, &logs, &signals, &exceptions, migration, status, started_at, last_progress_at, &run_id);
     // `strlen(json_encode($event, JSON_UNESCAPED_SLASHES))` over each event
-    // as PHP holds it: type, Carbon time, payload, sequence and id.
-    let history_size_bytes = events.iter().map(|event| object(vec![
-        ("event_type", text(event.event_type)),
-        ("recorded_at", optional(json_time(event.recorded_at))),
-        ("payload", event.payload.clone()),
-        ("sequence", Php::Int(event.sequence)),
-        ("id", text(&event.id)),
-    ]).encode(Flags { unescaped_slashes: true, ..Flags::default() }).len() as i64).sum();
+    // as PHP holds it: type, Carbon time, payload, sequence and id. The
+    // first event past the byte limit stops the measure.
+    let mut history_size_bytes: usize = 0;
+    for (index, event) in events.iter().enumerate() {
+        let size = object(vec![
+            ("event_type", text(event.event_type)),
+            ("recorded_at", optional(json_time(event.recorded_at))),
+            ("payload", event.payload.clone()),
+            ("sequence", Php::Int(event.sequence)),
+            ("id", text(&event.id)),
+        ]).encode(Flags { unescaped_slashes: true, ..Flags::default() }).len();
+        history_size_bytes = history_size_bytes.saturating_add(size);
+        if let Some(error) = exceeded(limits, 0, history_size_bytes) {
+            return Outcome::TooLarge { error, encoded: index + 1 };
+        }
+    }
+    let history_size_bytes = i64::try_from(history_size_bytes).unwrap_or(i64::MAX);
     Outcome::Valid(Box::new(Normalized {
         namespace,
         workflow_id,
@@ -490,6 +579,7 @@ fn events(source: &PhpArray, logs: &[PhpArray], signals: &[PhpArray], exceptions
 fn report(outcome: &Outcome, status: &str, extra: Vec<(&str, Value)>) -> Value {
     let (identity, dedupe, unsupported, errors) = match outcome {
         Outcome::Invalid { errors } => (Value::Null, Value::Null, json!([]), list(errors.clone()).to_json()),
+        Outcome::TooLarge { error, .. } => (Value::Null, Value::Null, json!([]), list(vec![error.clone()]).to_json()),
         Outcome::Valid(normalized) => (normalized.identity.to_json(), json!(normalized.dedupe_key),
             normalized.unsupported.to_json(), json!([])),
     };
@@ -628,6 +718,11 @@ pub(super) async fn read_only_guard(request: axum::extract::Request, next: axum:
         ["api", "workflows", workflow, "runs", run, operation @ ("signal" | "query" | "update"), name] => {
             (*workflow, Some(*run), *operation, Some(*name))
         }
+        // Refused before its body is read: an append would deliver a signal
+        // and create a workflow task for the projection.
+        ["api", "workflows", workflow, "message-streams", stream, "messages"] => {
+            (*workflow, None, "message_stream_append", Some(*stream))
+        }
         _ => return next.run(request).await,
     };
     let (Some(runtime), Some(workflow)) = (request.extensions().get::<Runtime>().cloned(), decoded(workflow)) else {
@@ -660,15 +755,10 @@ pub(super) async fn read_only_guard(request: axum::extract::Request, next: axum:
         request
     };
     drop(request);
-    let body = json!({
-        "message": format!("Operation [{operation}] is unavailable because this execution is a read-only projection owned by the source v1 runtime."),
-        "reason": "v1_projection_read_only",
-        "remediation": "Run commands against the source v1 application until it completes; repeat projection never dispatches or advances standalone execution.",
-        "workflow_id": workflow,
-        "run_id": run_id,
-        "operation": operation,
-        "execution_owner": "v1",
-    });
+    if operation == "message_stream_append" {
+        return (StatusCode::CONFLICT, axum::Json(read_only_append(&workflow, &run_id, &name))).into_response();
+    }
+    let body = read_only_body(&workflow, &run_id, operation);
     let body = match operation {
         "signal" => Operation::Signal(&name).response(body),
         "query" => Operation::Query(&name).response(body),
@@ -693,7 +783,8 @@ impl Runtime {
         };
         let namespace = self.namespace_name();
         // Hashing and JSON encoding of the whole source stay off the async workers.
-        let outcome = tokio::task::spawn_blocking(move || normalize(&source_id, &workflow, Some(&namespace)))
+        let limits = self.structural;
+        let outcome = tokio::task::spawn_blocking(move || normalize_bounded(&source_id, &workflow, Some(&namespace), &limits))
             .await
             .map_err(|_| super::refuse(StatusCode::SERVICE_UNAVAILABLE, "waterline_import_unavailable"))?;
         let answer = |status: &str, extra: Vec<(&str, Value)>| {
@@ -704,6 +795,11 @@ impl Runtime {
             };
             (code, operation().response(report(&outcome, status, extra)))
         };
+        // A projection too large for one transaction is refused before any
+        // row is read or written.
+        if let Outcome::TooLarge { error, .. } = &outcome {
+            return Ok(answer("rejected", vec![("limit", error.to_json()["limit"].clone())]));
+        }
         let Outcome::Valid(normalized) = &outcome else {
             return Ok(answer("rejected", Vec::new()));
         };
@@ -937,6 +1033,73 @@ store_methods! {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn direct_appends_and_malformed_counts_never_touch_a_projection() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = super::super::Runtime::open(directory.path().join("projection.sqlite").to_str().unwrap(), "test-token".into())
+            .await
+            .unwrap();
+        let source = json!({"id": "v1:4201", "legacy_id": "4201", "engine_source": "v1", "class": "App\\Workflows\\Legacy\\Subscription",
+            "status": "running", "arguments": "a:0:{}", "logs": [{"id": 9101, "index": 0, "class": "App\\Activities\\Bill",
+                "result": "i:42;", "created_at": "2026-09-30T09:00:02.000000Z"}], "created_at": "2026-09-30T09:00:00.000000Z"});
+        let body = serde_json::to_vec(&json!({"source_id": "guard-src", "workflow": source})).unwrap();
+        let (status, report) = runtime.import_waterline_v1(&body).await.unwrap();
+        assert_eq!(status, StatusCode::CREATED, "{report}");
+        let workflow_id = report["identity"]["standalone"]["workflow_id"].as_str().unwrap().to_owned();
+        let run_id = report["identity"]["standalone"]["run_id"].clone();
+        let pool = runtime.sqlite_pool();
+        let snapshot = || async {
+            let mut counts = Vec::new();
+            for table in ["workflow_inbound_streams", "workflow_inbound_stream_items", "workflow_signal_records", "workflow_commands",
+                "workflow_history_events", "workflow_tasks", "workflow_run_summaries"] {
+                let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}"))).fetch_one(pool).await.unwrap();
+                counts.push((table, count));
+            }
+            let summary: Option<String> = sqlx::query_scalar("SELECT CAST(updated_at AS TEXT) FROM workflow_run_summaries")
+                .fetch_one(pool).await.unwrap();
+            (counts, summary)
+        };
+        let before = snapshot().await;
+
+        // The service refuses before reading the body, valid or not.
+        for body in [json!({"message_id": "m-1", "input": ["x"]}), json!({"message_id": 7, "input": "not a list"})] {
+            match runtime.append_message(&workflow_id, "orders", body, json!({})).await {
+                Err(super::super::RuntimeError::Protocol { status, response }) => {
+                    assert_eq!(status, StatusCode::CONFLICT, "{response}");
+                    assert_eq!((&response["reason"], &response["run_id"]), (&json!("v1_projection_read_only"), &run_id), "{response}");
+                    assert_eq!(response["operation"], "message_stream_append");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        // The store's own guard refuses under its lock, and malformed input
+        // is not counted against a projection.
+        match runtime.store_append_message(&workflow_id, "orders", "m-2", "wwHioz3/VYAiNwA=").await {
+            Err(super::super::RuntimeError::Protocol { status, response }) => {
+                assert_eq!((status, &response["reason"]), (StatusCode::CONFLICT, &json!("v1_projection_read_only")), "{response}");
+            }
+            other => panic!("{other:?}"),
+        }
+        runtime.record_malformed_message(&workflow_id, "orders", &json!("m-3")).await.unwrap();
+
+        assert_eq!(snapshot().await, before);
+        runtime.close().await;
+    }
+
+    #[test]
+    fn size_limits_name_the_first_dimension_exceeded() {
+        let limits = |events, bytes| super::super::StructuralLimits { history_events: events, history_bytes: bytes,
+            ..super::super::StructuralLimits::default() };
+        assert!(exceeded(&limits(Some(3), Some(100)), 3, 100).is_none());
+        let refusal = exceeded(&limits(Some(3), Some(100)), 4, 101).unwrap().to_json();
+        assert_eq!((&refusal["reason"], &refusal["limit"]), (&json!("v1_projection_too_large"),
+            &json!({"dimension": "history_transaction_size", "used": 4, "limit": 3})));
+        let refusal = exceeded(&limits(Some(3), Some(100)), 3, 101).unwrap().to_json();
+        assert_eq!(refusal["limit"]["dimension"], "history_transaction_bytes");
+        // 0 disables a limit.
+        assert!(exceeded(&limits(Some(0), Some(0)), usize::MAX, usize::MAX).is_none());
+    }
+
     #[test]
     fn mapped_identities_follow_php() {
         // PHP: LegacyV1Projection::mappedIdentity('legacy-prod', 'v1:42').
@@ -947,6 +1110,63 @@ mod tests {
         assert_eq!(mapped_identity("Legacy:Prod..X", "v1:1").0.split(':').nth(1), Some("legacy-prod..x"));
         assert_eq!(mapped_identity(&"a".repeat(40), "v1:1").0.split(':').nth(1).map(str::len), Some(32));
         assert_eq!(mapped_identity("::", "v1:1").0.split(':').nth(1), Some("source"));
+    }
+
+    /// A completed source with `logs` logs, parsed as the request body is.
+    fn completed_source(logs: usize) -> Php {
+        let logs: Vec<Value> = (0..logs).map(|index| json!({"id": index, "class": "App\\Activities\\Step",
+            "result": "s:4:\"done\";", "created_at": "2026-09-30T08:00:01.000000Z"})).collect();
+        let body = json!({"operator_id": "v1:4501", "engine_source": "v1", "class": "App\\Workflows\\Legacy\\Bare",
+            "status": "completed", "logs": logs, "signals": [{"id": 1, "name": "go"}], "exceptions": "not rows"});
+        super::super::php_value::decode(body.to_string().as_bytes()).unwrap()
+    }
+
+    fn limited(events: Option<usize>, bytes: Option<usize>) -> super::super::StructuralLimits {
+        super::super::StructuralLimits { history_events: events, history_bytes: bytes, ..super::super::StructuralLimits::default() }
+    }
+
+    #[test]
+    fn the_event_count_is_refused_before_any_event_is_built() {
+        let source = completed_source(10);
+        let source = source.array().unwrap();
+        // Start, ten logs, one signal and the terminal event; a non-row
+        // exceptions value counts nothing.
+        let Outcome::Valid(normalized) = normalize_bounded("src-1", source, None, &limited(Some(13), None)) else { panic!("exact count") };
+        assert_eq!(normalized.events.len(), 13);
+        match normalize_bounded("src-1", source, None, &limited(Some(12), None)) {
+            Outcome::TooLarge { error, encoded } => {
+                // Refused from the row counts: no event built or measured.
+                assert_eq!(encoded, 0);
+                assert_eq!(error.to_json()["limit"], json!({"dimension": "history_transaction_size", "used": 13, "limit": 12}));
+            }
+            _ => panic!("one over the event limit"),
+        }
+        // An invalid source still answers its own errors first.
+        let invalid = super::super::php_value::decode(br#"{"engine_source":"v1","logs":[{},{},{}]}"#).unwrap();
+        assert!(matches!(normalize_bounded("src-1", invalid.array().unwrap(), None, &limited(Some(1), None)), Outcome::Invalid { .. }));
+    }
+
+    #[test]
+    fn history_bytes_stop_at_the_first_event_over_the_limit() {
+        let source = completed_source(10);
+        let source = source.array().unwrap();
+        let Outcome::Valid(normalized) = normalize_bounded("src-1", source, None, &limited(None, None)) else { panic!("valid") };
+        let total = usize::try_from(normalized.history_size_bytes).unwrap();
+        let Outcome::Valid(exact) = normalize_bounded("src-1", source, None, &limited(None, Some(total))) else { panic!("exact bytes") };
+        assert_eq!(exact.history_size_bytes, normalized.history_size_bytes);
+        // One byte short: measured to the last event, which passes the limit.
+        match normalize_bounded("src-1", source, None, &limited(None, Some(total - 1))) {
+            Outcome::TooLarge { error, encoded } => {
+                assert_eq!(encoded, normalized.events.len());
+                assert_eq!(error.to_json()["limit"], json!({"dimension": "history_transaction_bytes", "used": total, "limit": total - 1}));
+            }
+            _ => panic!("one byte over"),
+        }
+        // A limit below the first event stops after measuring that event.
+        match normalize_bounded("src-1", source, None, &limited(None, Some(1))) {
+            Outcome::TooLarge { encoded, .. } => assert_eq!(encoded, 1),
+            _ => panic!("far over"),
+        }
     }
 
     #[test]

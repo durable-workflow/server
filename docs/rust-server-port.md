@@ -232,9 +232,28 @@ contract fixture before its correction.
   batch size, and still caps parallel groups at 100 members and a run at 64
   updates over its lifetime. #612 tracks the rest
   ([checkpoint](rust-server-port-checkpoints/2026-10-23-structural-limits.md)).
-- **Environment settings.** Of PHP's 166 contract settings, native honors
-  43 and ignores 57 that change nothing it serves. It refuses to start on a
-  non-default value of the other 66
+- **Waterline v1 projections, ahead of published PHP.**
+  - Native refuses a message stream append to a projection with
+    `409 v1_projection_read_only`, at the route before the body is read and
+    again under the store's lock. Published 2.11.1 accepts it and creates a
+    signal and a workflow task
+    ([#769](https://github.com/durable-workflow/server/issues/769)).
+  - Native refuses a projection that would write more history events or
+    bytes than one transaction may (`DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE`,
+    `_BYTES`) with `409 v1_projection_too_large`, before reading or writing
+    any row. The count is checked from the source's row counts before any
+    event is built, and history bytes are added up event by event, stopping
+    at the first event past the limit. Published 2.11.1 has no limit
+    ([#770](https://github.com/durable-workflow/server/issues/770)).
+  - Operator metrics, the health snapshot and the backend capabilities
+    publish the active `history_transaction_size` and
+    `history_transaction_bytes` (0 when disabled), as Workflow #934's
+    `StructuralLimits::snapshot()` does.
+- **Environment settings.** Of PHP's 164 contract settings, native honors
+  49 and ignores 51 that change nothing it serves. It also honors
+  `DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES`, which the Workflow package reads
+  and PHP's contract does not list yet. It refuses to start on a
+  non-default value of the other 64
   ([checkpoint](rust-server-port-checkpoints/2026-10-22-environment-contract.md)).
   Several of those are cheap to honor: repair timing and the multi-node
   declaration.
