@@ -12,6 +12,17 @@
 # schedule. The loop restarts right after the PHP record. The MySQL and
 # PostgreSQL jobs record this fixture in their main corpus with their loops
 # running.
+#
+# Server #754. Even with the loop stopped, the probe's own concurrent updates
+# can cost published PHP a write: 2.11.1 claims a validation task with a read
+# and then a write in one deferred SQLite transaction, and when another writer
+# commits in between, SQLite refuses the upgrade at once ("database is
+# locked"), whatever the busy timeout. Current PHP retries that write; the
+# published reference cannot. So when the PHP record fails and the PHP server
+# logged that error during it, the PHP record runs once more under a fresh
+# workflow prefix, and embedded and Rust record under that prefix too, as
+# compare requires. Any other PHP failure, and any embedded or Rust failure,
+# fails at once. A retry leaves a warning and the first attempt's files.
 set -euo pipefail
 php_url="$1"
 native_url="$2"
@@ -21,20 +32,51 @@ fixture=tests/Fixtures/ServerParity/update-validation.json
 image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
 . scripts/conformance/server-parity/php-maintenance-window.sh
 
+prefix=parity-v1
 http_record() {
   local url="$1" target="$2"
   docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
     -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
     -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
-    --mode http --url "$url" --target "$target" --output "/evidence/update-validation-$target.json" --fixture "$fixture"
+    --mode http --url "$url" --target "$target" --output "/evidence/update-validation-$target.json" --fixture "$fixture" \
+    --prefix "$prefix"
 }
 
-run_without_maintenance parity-evidence/update-validation-maintenance-schedule.txt -- http_record "$php_url" php
+# run_without_maintenance runs its command under errexit's exemption, so the
+# command keeps the record's status instead of returning it.
+php_status=0
+php_record() {
+  php_status=0
+  http_record "$php_url" php || php_status=$?
+}
+
+started=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
+run_without_maintenance parity-evidence/update-validation-maintenance-schedule.txt -- php_record
+if ((php_status != 0)); then
+  locked=parity-evidence/update-validation-php.attempt-1.locked.txt
+  { docker logs --since "$started" "$RESOURCE_SCOPE-server" 2>&1 || true; } \
+    | grep -m 5 'database is locked' | cut -c 1-400 > "$locked" || true
+  if [[ ! -s "$locked" ]]; then
+    rm -f "$locked"
+    exit "$php_status"
+  fi
+  for name in update-validation-php.json update-validation-php.failure-excerpt.txt; do
+    if [[ -e "parity-evidence/$name" ]]; then
+      mv "parity-evidence/$name" "parity-evidence/${name/update-validation-php./update-validation-php.attempt-1.}"
+    fi
+  done
+  excerpt=$(tr '\n' ' ' < parity-evidence/update-validation-php.attempt-1.failure-excerpt.txt 2>/dev/null || true)
+  echo "::warning title=Published PHP update-validation record retried::The PHP record failed (${excerpt:-no excerpt}) after published PHP logged 'database is locked'; recording all three targets under a fresh prefix (Server #754)."
+  prefix=parity-v1-retry
+  run_without_maintenance parity-evidence/update-validation-maintenance-schedule-retry.txt -- php_record
+  ((php_status == 0)) || exit "$php_status"
+fi
 docker run --rm --user=1000:1000 --entrypoint node \
   -v "$PWD:/source:ro" -v "$PWD/parity-state:/state" -v "$PWD/parity-evidence:/evidence" -w /source \
   -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/embedded.sqlite -e DW_MODE=embedded \
   -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
-  --mode embedded --application-root /app --target embedded --output /evidence/update-validation-embedded.json --fixture "$fixture"
+  --mode embedded --application-root /app --target embedded --output /evidence/update-validation-embedded.json --fixture "$fixture" \
+  --prefix "$prefix"
 http_record "$native_url" rust
 docker run --rm --user=1000:1000 --entrypoint node \
   -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
