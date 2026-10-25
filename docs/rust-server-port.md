@@ -158,8 +158,11 @@ any other unknown path or method answers PHP's own 404 or 405
   - Service endpoints. (The service catalog reads from Server 2.11 are served:
     native never holds catalog rows, so every list is PHP's empty page and every
     identity its not-found answer; the `service-catalog` fixture checks 37 cases.)
-  - Nexus operations.
   - Bridge adapters.
+  - (Caller-indexed Nexus operation reads are served, with the
+    `nexus-operations` fixture. Native writes no service calls and takeover
+    refuses a source that holds any, so every list is PHP's empty answer; an
+    execution test seeds rows for the row shape and newest-first order.)
 
 ## Known gaps found in review
 

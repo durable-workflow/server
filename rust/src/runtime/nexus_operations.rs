@@ -2,8 +2,9 @@
 //! them (`ServiceCatalogController::nexusOperationsForWorkflow` and
 //! `nexusOperationsForRun`): the namespace's outbound service calls of one
 //! workflow, or of one of its runs, newest first. Neither route checks that
-//! the workflow or run exists. Native starts no Nexus operations, so the rows
-//! are those a takeover kept.
+//! the workflow or run exists. Native starts no Nexus operations and takeover
+//! refuses a source that holds any service call, so today every list is
+//! empty; rows a later service-call port writes render as PHP renders them.
 use super::Result;
 use serde_json::{Map, Value, json};
 
