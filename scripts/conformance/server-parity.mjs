@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import {mkdtempSync, readFileSync, readdirSync, rmSync} from 'node:fs';
+import {mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {basename, dirname, join, resolve} from 'node:path';
@@ -20,6 +20,7 @@ import {checkCorrectedRangeArtifacts, checkCorrectedRangePackages} from './serve
 import {checkActivityDeadlinePackages} from './server-parity/activity-deadline-contract.mjs';
 import {checkActivityDeadlineReceiptPackages} from './server-parity/activity-deadline-receipts-contract.mjs';
 import {contractFailureLocation} from './server-parity/failure-location.mjs';
+import {failureExcerpt} from './server-parity/failure-excerpt.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const {values, positionals} = parseArgs({allowPositionals: true, options: {
@@ -155,6 +156,9 @@ try {
         record.outcome = 'product-fail';
         record.finished_at = new Date().toISOString();
         writeRecord(values.output, record, originals);
+        // The artifact summary keeps this outline; it does not keep the record.
+        writeFileSync(values.output.replace(/\.json$/, '') + '.failure-excerpt.txt',
+          failureExcerpt(record.cases.filter(item => item.outcome !== 'pass')));
         throw new Error(`${failed.length} fixture(s) differ: ${failed.join(', ')}`);
       }
       record.outcome = 'pass';
