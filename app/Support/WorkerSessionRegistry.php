@@ -87,12 +87,11 @@ final class WorkerSessionRegistry
             // Admit against the registration as it is now, locked, not as the
             // controller read it before the transaction.
             $current = $this->lockedRegistration($namespace, $worker->worker_id);
+            if (! $current instanceof WorkerRegistration) {
+                return $this->notRegistered($worker->worker_id, 'creating');
+            }
             if ($stale = $this->staleRegistration($current, $registrationToken)) {
                 return $stale;
-            }
-            if (! $current instanceof WorkerRegistration) {
-                return $this->failure('worker_not_registered', 'Worker must be registered before creating a worker session.', 412,
-                    ['worker_id' => $worker->worker_id]);
             }
 
             return $this->acquireLocked($namespace, $current, $options, null);
@@ -125,7 +124,11 @@ final class WorkerSessionRegistry
         ?string $registrationToken = null,
     ): array {
         return DB::transaction(function () use ($namespace, $workerId, $sessionId, $leaseSeconds, $registrationToken): array {
-            if ($stale = $this->staleRegistration($this->lockedRegistration($namespace, $workerId), $registrationToken)) {
+            $current = $this->lockedRegistration($namespace, $workerId);
+            if (! $current instanceof WorkerRegistration) {
+                return $this->notRegistered($workerId, 'renewing');
+            }
+            if ($stale = $this->staleRegistration($current, $registrationToken)) {
                 return $stale;
             }
 
@@ -218,7 +221,11 @@ final class WorkerSessionRegistry
     public function close(string $namespace, string $workerId, string $sessionId, ?string $registrationToken = null): array
     {
         return DB::transaction(function () use ($namespace, $workerId, $sessionId, $registrationToken): array {
-            if ($stale = $this->staleRegistration($this->lockedRegistration($namespace, $workerId), $registrationToken)) {
+            $current = $this->lockedRegistration($namespace, $workerId);
+            if (! $current instanceof WorkerRegistration) {
+                return $this->notRegistered($workerId, 'closing');
+            }
+            if ($stale = $this->staleRegistration($current, $registrationToken)) {
                 return $stale;
             }
 
@@ -796,6 +803,19 @@ final class WorkerSessionRegistry
     }
 
     /**
+     * A session request needs the worker's current registration, with or
+     * without a token: once deregistration deletes it, the former process can
+     * no longer renew, close or recreate the session it held.
+     *
+     * @return array<string, mixed>
+     */
+    private function notRegistered(string $workerId, string $action): array
+    {
+        return $this->failure('worker_not_registered', sprintf('Worker must be registered before %s a worker session.', $action), 412,
+            ['worker_id' => $workerId]);
+    }
+
+    /**
      * A registration token the request sends must be the worker's current
      * one. Without a token, a stale process and its same-ID replacement are
      * indistinguishable once the replacement has reacquired, so a worker
@@ -806,11 +826,10 @@ final class WorkerSessionRegistry
      *
      * @return array<string, mixed>|null
      */
-    private function staleRegistration(?WorkerRegistration $current, ?string $registrationToken): ?array
+    private function staleRegistration(WorkerRegistration $current, ?string $registrationToken): ?array
     {
         if ($registrationToken === null) {
-            return $current instanceof WorkerRegistration
-                && in_array(self::REGISTRATION_TOKEN_CAPABILITY, $current->capabilities ?? [], true)
+            return in_array(self::REGISTRATION_TOKEN_CAPABILITY, $current->capabilities ?? [], true)
                 ? $this->failure(
                     'stale_worker_registration',
                     'The worker\'s current registration requires its registration token on worker session requests. Send it, or register again and reacquire the session.',
@@ -819,8 +838,7 @@ final class WorkerSessionRegistry
                 : null;
         }
 
-        return $current instanceof WorkerRegistration
-            && is_string($current->registration_token)
+        return is_string($current->registration_token)
             && hash_equals($current->registration_token, $registrationToken)
             ? null
             : $this->failure(

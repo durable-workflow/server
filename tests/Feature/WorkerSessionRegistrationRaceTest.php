@@ -95,6 +95,67 @@ class WorkerSessionRegistrationRaceTest extends TestCase
         $this->assertSame($before, WorkerSessionLease::query()->where('session_id', 'race-state')->firstOrFail()->getAttributes());
     }
 
+    public static function deregistrations(): array
+    {
+        $cases = [];
+        foreach (['mysql', 'pgsql'] as $driver) {
+            foreach (['heartbeat', 'close'] as $verb) {
+                $cases[$driver.' '.$verb] = [$driver, $verb];
+            }
+        }
+
+        return $cases;
+    }
+
+    /**
+     * A published tokenless heartbeat or close and the worker's deregistration
+     * serialize on the registration row: the request either commits while the
+     * registration exists, as here, or sees none and is refused, as it is
+     * afterwards, without changing the session.
+     */
+    #[DataProvider('deregistrations')]
+    public function test_a_session_request_and_a_deregistration_serialize(string $driver, string $verb): void
+    {
+        $this->initializeDatabase($driver);
+        $this->register(sendsToken: false);
+        $this->sessionResponse('create', null)->assertCreated();
+        $actors = [];
+        DB::purge();
+        try {
+            $actors['session'] = $this->forkActor(fn (): array => $this->sessionRequest($verb, null), pause: 'lock');
+            $this->readMessage($actors['session']);
+            fwrite($actors['session']['socket'], "go\n");
+            $this->assertTrue($this->readMessage($actors['session'])['registration_locked']);
+
+            $actors['deregister'] = $this->forkActor(fn (): array => ['status' => $this->deleteJson('/api/worker/registrations/race-worker',
+                [], $this->workerHeaders())->status()]);
+            $deregistration = $this->readMessage($actors['deregister']);
+            fwrite($actors['deregister']['socket'], "go\n");
+            // The deregistration waits on the row the session request holds.
+            $this->awaitLockWait($deregistration['connection_id']);
+
+            fwrite($actors['session']['socket'], "continue\n");
+            $session = $this->finishActor($actors['session']);
+            unset($actors['session']);
+            $this->assertSame(200, $this->finishActor($actors['deregister'])['status']);
+            unset($actors['deregister']);
+        } finally {
+            foreach ($actors as $actor) {
+                posix_kill($actor['pid'], SIGKILL);
+                pcntl_waitpid($actor['pid'], $status);
+                fclose($actor['socket']);
+            }
+            DB::purge();
+            DB::reconnect();
+        }
+
+        $this->assertSame([200, $verb === 'heartbeat' ? 'heartbeat_recorded' : 'closed'], [$session['status'], $session['outcome']],
+            json_encode($session));
+        $before = WorkerSessionLease::query()->where('session_id', 'race-state')->firstOrFail()->getAttributes();
+        $this->sessionResponse($verb, null)->assertStatus(412)->assertJsonPath('reason', 'worker_not_registered');
+        $this->assertSame($before, WorkerSessionLease::query()->where('session_id', 'race-state')->firstOrFail()->getAttributes());
+    }
+
     public static function creates(): array
     {
         $cases = [];

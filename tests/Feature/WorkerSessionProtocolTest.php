@@ -1166,6 +1166,47 @@ class WorkerSessionProtocolTest extends TestCase
         $close($second)->assertOk()->assertJsonPath('outcome', 'closed');
     }
 
+    public function test_a_deregistered_worker_can_neither_renew_nor_close_its_session(): void
+    {
+        // Deregistration deletes the registration and leaves the session for
+        // holder-loss handling. The former process, with its token or without,
+        // is refused and changes nothing: a token worker deregistered through
+        // the fenced route, a published worker through the plain one.
+        foreach ([true, false] as $sendsToken) {
+            $workerId = $sendsToken ? 'gpu-token-worker' : 'gpu-published-worker';
+            $sessionId = $workerId.'-state';
+            $token = $this->registerWorkerThroughProtocol(
+                workerId: $workerId,
+                taskQueue: 'gpu-activities',
+                supportedActivityTypes: ['tests.external-greeting-activity'],
+                capabilities: ['gpu:nvidia-l4', ...($sendsToken ? [WorkerSessionRegistry::REGISTRATION_TOKEN_CAPABILITY] : [])],
+            );
+            $this->assertIsString($token);
+            $this->postJson('/api/worker/sessions', array_filter(['worker_id' => $workerId, 'session_id' => $sessionId,
+                'requirements' => ['gpu:nvidia-l4'], 'registration_token' => $sendsToken ? $token : null]), $this->workerHeaders())
+                ->assertCreated();
+            $row = static fn (): array => WorkerSessionLease::query()->where('session_id', $sessionId)->firstOrFail()->getAttributes();
+            $before = $row();
+            if ($sendsToken) {
+                $this->postJson("/api/worker/registrations/{$workerId}/deregister", ['registration_token' => $token],
+                    $this->workerHeaders())->assertOk();
+            } else {
+                $this->deleteJson("/api/worker/registrations/{$workerId}", [], $this->workerHeaders())->assertOk();
+            }
+            foreach ([null, $token] as $sent) {
+                $this->postJson("/api/worker/sessions/{$sessionId}/heartbeat",
+                    array_filter(['worker_id' => $workerId, 'registration_token' => $sent, 'lease_seconds' => 900]), $this->workerHeaders())
+                    ->assertStatus(412)->assertJsonPath('reason', 'worker_not_registered')
+                    ->assertJsonPath('error', 'Worker must be registered before renewing a worker session.');
+                $this->deleteJson("/api/worker/sessions/{$sessionId}",
+                    array_filter(['worker_id' => $workerId, 'registration_token' => $sent]), $this->workerHeaders())
+                    ->assertStatus(412)->assertJsonPath('reason', 'worker_not_registered')
+                    ->assertJsonPath('error', 'Worker must be registered before closing a worker session.');
+                $this->assertSame($before, $row(), 'a refused request changes nothing');
+            }
+        }
+    }
+
     public function test_without_the_token_capability_a_tokenless_request_acts_for_the_current_registration(): void
     {
         // Published workers do not send a registration token. For them the

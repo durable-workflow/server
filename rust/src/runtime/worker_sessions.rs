@@ -436,6 +436,13 @@ fn success(outcome: &str, session: Value, status: StatusCode) -> Answer {
         "status":status.as_u16(),"reason":null}) }
 }
 
+/// `notRegistered`: an explicit session request from a worker without a
+/// current registration.
+fn not_registered(worker_id: &str, action: &str) -> Answer {
+    failure("worker_not_registered", &format!("Worker must be registered before {action} a worker session."),
+        StatusCode::PRECONDITION_FAILED, Map::from_iter([("worker_id".to_owned(), json!(worker_id))]))
+}
+
 fn failure(reason: &str, error: &str, status: StatusCode, context: Map<String, Value>) -> Answer {
     let mut body = context;
     body.insert("admitted".into(), json!(false));
@@ -496,12 +503,11 @@ store_methods! {
         // lock; begin() serializes this with every re-registration.
         let current = Self::query(SESSION_REGISTRATION)
             .bind(self.namespace.as_ref()).bind(&worker_id).fetch_optional(&mut *tx).await?;
-        let answer = match self.stale_registration(&mut tx, &worker_id, body["registration_token"].as_str()).await? {
-            Some(stale) => stale,
-            None => match current {
-                None => failure("worker_not_registered", "Worker must be registered before creating a worker session.",
-                    StatusCode::PRECONDITION_FAILED, Map::from_iter([("worker_id".to_owned(), json!(worker_id))])),
-                Some(current) => {
+        let answer = match current {
+            None => not_registered(&worker_id, "creating"),
+            Some(current) => match self.stale_registration(&mut tx, &worker_id, body["registration_token"].as_str()).await? {
+                Some(stale) => stale,
+                None => {
                     let capabilities: Vec<String> = DB::optional_document_row(&current, "capabilities")?
                         .as_ref()
                         .and_then(Value::as_array)
@@ -800,9 +806,9 @@ store_methods! {
         let body = validate(&body, false)?;
         let worker_id = body["worker_id"].as_str().unwrap_or_default();
         let mut tx = self.begin().await?;
-        if let Some(stale) = self.stale_registration(&mut tx, worker_id, body["registration_token"].as_str()).await? {
+        if let Some(refused) = self.session_request_fence(&mut tx, worker_id, body["registration_token"].as_str(), "renewing").await? {
             tx.commit().await?;
-            return Ok(stale);
+            return Ok(refused);
         }
         let Some(mut session) = self.locked_session(&mut tx, session_id).await? else {
             tx.commit().await?;
@@ -832,9 +838,9 @@ store_methods! {
         let body = validate(&body, false)?;
         let worker_id = body["worker_id"].as_str().unwrap_or_default();
         let mut tx = self.begin().await?;
-        if let Some(stale) = self.stale_registration(&mut tx, worker_id, body["registration_token"].as_str()).await? {
+        if let Some(refused) = self.session_request_fence(&mut tx, worker_id, body["registration_token"].as_str(), "closing").await? {
             tx.commit().await?;
-            return Ok(stale);
+            return Ok(refused);
         }
         let Some(mut session) = self.locked_session(&mut tx, session_id).await? else {
             tx.commit().await?;
@@ -971,6 +977,20 @@ store_methods! {
                 .execute(&mut **tx).await?;
         }
         Ok(())
+    }
+
+    /// The fence of an explicit heartbeat or close: the worker must have a
+    /// current registration, with or without a token, so a process whose
+    /// registration was deleted can no longer renew or close the session it
+    /// held; then the registration token rules apply.
+    async fn session_request_fence(&self, tx: &mut Transaction<'_, DB>, worker_id: &str, token: Option<&str>, action: &str)
+        -> Result<Option<Answer>> {
+        let registered = Self::query(SESSION_REGISTRATION)
+            .bind(self.namespace.as_ref()).bind(worker_id).fetch_optional(&mut **tx).await?;
+        if registered.is_none() {
+            return Ok(Some(not_registered(worker_id, action)));
+        }
+        self.stale_registration(tx, worker_id, token).await
     }
 
     /// A registration token the request sent must be the worker's current

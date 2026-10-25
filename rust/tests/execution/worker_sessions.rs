@@ -312,6 +312,60 @@ async fn a_same_id_replacement_reacquires_the_session_and_fences_the_old_process
     assert_eq!((status, closed["outcome"].clone()), (StatusCode::OK, json!("closed")), "{closed}");
 }
 
+// Deregistration deletes the registration and leaves the session for
+// holder-loss handling. The former process, with its token or without, can
+// neither renew nor close the session, and nothing changes: a token worker
+// deregistered through the fenced route, a published one through the plain one.
+#[tokio::test]
+async fn a_deregistered_worker_can_neither_renew_nor_close_its_session() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    for sends_token in [true, false] {
+        let worker = if sends_token { "gpu-token-worker" } else { "gpu-published-worker" };
+        let session = format!("{worker}-state");
+        let token = if sends_token {
+            register_token_holder(&app, worker, "sessions").await
+        } else {
+            register_holder(&app, worker, "sessions").await
+        };
+        let mut body = json!({"worker_id":worker,"session_id":session,"requirements":["gpu"]});
+        if sends_token {
+            body["registration_token"] = json!(token);
+        }
+        let (status, created) = create(&app, body).await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let shown_path = format!("/api/worker-sessions/{session}");
+        let shown = || request(&app, "GET", &shown_path, Value::Null);
+        let (status, deregistered) = if sends_token {
+            request(&app, "POST", &format!("/api/worker/registrations/{worker}/deregister"), json!({"registration_token":token})).await
+        } else {
+            request(&app, "DELETE", &format!("/api/worker/registrations/{worker}"), json!({})).await
+        };
+        assert_eq!(status, StatusCode::OK, "{deregistered}");
+        // The session shows its holder lost on read, as PHP's does; that read
+        // settles it before the refused requests are compared with it.
+        let before = shown().await;
+        assert_eq!((before.0, before.1["session"]["status"].clone()), (StatusCode::OK, json!("orphaned")), "{}", before.1);
+        for sent in [None, Some(token.as_str())] {
+            let with_token = |mut body: Value| {
+                if let Some(sent) = sent {
+                    body["registration_token"] = json!(sent);
+                }
+                body
+            };
+            let (status, renewed) = request(&app, "POST", &format!("/api/worker/sessions/{session}/heartbeat"),
+                with_token(json!({"worker_id":worker,"lease_seconds":900}))).await;
+            assert_eq!((status, renewed["reason"].clone(), renewed["error"].clone()), (StatusCode::PRECONDITION_FAILED,
+                json!("worker_not_registered"), json!("Worker must be registered before renewing a worker session.")), "{renewed}");
+            let (status, closed) = request(&app, "DELETE", &format!("/api/worker/sessions/{session}"),
+                with_token(json!({"worker_id":worker}))).await;
+            assert_eq!((status, closed["reason"].clone(), closed["error"].clone()), (StatusCode::PRECONDITION_FAILED,
+                json!("worker_not_registered"), json!("Worker must be registered before closing a worker session.")), "{closed}");
+            assert_eq!(shown().await, before, "a refused request changes nothing");
+        }
+    }
+}
+
 // Published workers send no registration token. Without the token
 // capability, a request without one acts for the worker ID's current
 // registration, as published PHP's does; a token that is sent must be current.
