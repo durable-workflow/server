@@ -128,7 +128,7 @@ where
             (true, false, None)
         };
         // Observation preserves the existing lease and never records progress.
-        let response = json!({"task_id":task_id,"activity_attempt_id":attempt_id,"lease_owner":owner,
+        let mut response = json!({"task_id":task_id,"activity_attempt_id":attempt_id,"lease_owner":owner,
             "can_continue":can_continue,"cancel_requested":cancel_requested,"reason":reason,"heartbeat_recorded":false,
             // PHP formats each time in UTC with microseconds.
             "lease_expires_at":expires.map(super::cooperative::timestamp),
@@ -136,6 +136,12 @@ where
             "run_status":run_status,"run_closed_reason":DB::optional_string(&run,"closed_reason")?,"run_closed_at":DB::optional_instant(&run,"closed_at")?.map(super::cooperative::timestamp),
             "activity_status":activity_status,"attempt_status":attempt_status,"task_status":task_status,
             "deadlines":super::activity_deadlines::deadlines_view::<DB>(&activity)?,"worker_session":null,"protocol_version":protocol,"server_capabilities":super::store::capabilities()});
+        // A cooperative request that reached this attempt shows its receipt.
+        if cancel_requested
+            && let Some(receipt) = Self::activity_cancellation_receipt(tx, &run, &DB::string(&activity, "id")?, attempt_id).await?
+        {
+            response["cancellation_acknowledgement"] = receipt;
+        }
         Ok((response, Self::cancellation_request(&run)?.is_none()))
     }
 
@@ -195,11 +201,13 @@ where
                 other => other,
             })?;
         // Published PHP answers with this structured refusal for ordinary
-        // expired authority, and for any closed run, whose activity is told
-        // it was cancelled. This read never records progress or renews a
-        // lease; a concurrently closed attempt remains fenced.
+        // expired authority, for any closed run, whose activity is told it
+        // was cancelled, and for an attempt a cooperative cancellation
+        // reached. This read never records progress or renews a lease; a
+        // concurrently closed attempt remains fenced.
         let closed = !observed["run_closed_reason"].is_null();
-        if observed["can_continue"] == false && (closed || ordinary && observed["cancel_requested"] == false) {
+        let delivered = observed["cancel_requested"] == true && observed["reason"] == "attempt_closed";
+        if observed["can_continue"] == false && (closed || delivered || ordinary && observed["cancel_requested"] == false) {
             let response = json!({"task_id":task_id,"activity_attempt_id":attempt_id,"lease_owner":body["lease_owner"],
                 "cancel_requested":observed["cancel_requested"],"can_continue":false,"reason":observed["reason"],
                 "run_closed_reason":observed["run_closed_reason"],"run_closed_at":observed["run_closed_at"],

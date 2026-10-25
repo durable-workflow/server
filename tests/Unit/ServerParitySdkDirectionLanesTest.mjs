@@ -90,7 +90,7 @@ test('all nine profiles pass and each PHP server is stopped after its profile', 
   assert.deepEqual(new Set(Object.values(statuses)), new Set(['0']));
   assertEveryServerRetired(events);
   for (const [variant, tag] of Object.entries(PROFILES)) {
-    assert.match(child.stdout, new RegExp(`::group::${tag} \\(exit 0\\)\\nprofile output for ${variant}\\n::endgroup::`));
+    assert.match(child.stdout, new RegExp(`::group::${tag} \\(exit 0, \\d+ s\\)\\nprofile output for ${variant}\\n::endgroup::`));
   }
   assert.doesNotMatch(child.stderr, /::error::|::warning::/);
 });
@@ -104,8 +104,8 @@ test('a failed profile still runs its lane and fails the wrapper only after ever
   assert.ok(started(events, 'activity') > events.indexOf('end timer'), 'the lane continues after a failure');
   assert.match(child.stderr, /^::error::SDK direction profile sdk-timers exited 7$/m);
   assert.equal(child.stderr.match(/::error::/g).length, 1);
-  assert.match(child.stdout, /::group::sdk-timers \(exit 7\)\nprofile output for timer\n::endgroup::/);
-  assert.match(child.stdout, /::group::sdk-queries \(exit 0\)/, 'logs after the failure are still printed');
+  assert.match(child.stdout, /::group::sdk-timers \(exit 7, \d+ s\)\nprofile output for timer\n::endgroup::/);
+  assert.match(child.stdout, /::group::sdk-queries \(exit 0, \d+ s\)/, 'logs after the failure are still printed');
 });
 
 test('a failed stop warns without changing any profile status', () => {

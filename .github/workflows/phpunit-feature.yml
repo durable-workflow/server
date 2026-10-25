@@ -20,6 +20,12 @@ on:
 permissions:
   contents: read
 
+# A new PR cycle supersedes its previous qualification. Main and manual runs
+# keep distinct run IDs so each requested qualification can finish.
+concurrency:
+  group: phpunit-feature-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   action-policy:
     name: Central action policy preflight
@@ -74,6 +80,8 @@ jobs:
 
       - name: Restore PHP's SQLite maintenance loop on every path
         run: node --test tests/Unit/PhpMaintenanceWindowTest.mjs
+      - name: Restore the patch cohort's maintenance loop on every path
+        run: node --test tests/Unit/PatchCohortMaintenanceTest.mjs
 
       - name: Run the required checks for merge queue groups
         run: node --test tests/Unit/MergeGroupTriggersTest.mjs
@@ -119,7 +127,8 @@ jobs:
   feature:
     name: PHPUnit feature suite
     needs: action-policy
-    if: ${{ always() }}
+    # Report policy failures while allowing cancelled revisions to stop.
+    if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -348,7 +357,7 @@ jobs:
   qualification:
     name: Feature source qualification
     needs: [preflight, feature]
-    if: ${{ always() }}
+    if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
 

@@ -4,46 +4,42 @@ namespace App\Support;
 
 final class LongPollWaitSlot
 {
-    /**
-     * @param  list<array{cache: ServerPollingCache, key: string, owner: string}>  $reservations
-     */
     private function __construct(
-        private readonly array $reservations,
+        private mixed $handle,
+        private readonly int $processId,
     ) {}
 
     public static function unlimited(): self
     {
-        return new self([]);
+        return new self(null, getmypid());
     }
 
-    public static function acquired(ServerPollingCache $cache, string $key, string $owner): self
+    /** @param resource $handle */
+    public static function acquired(mixed $handle): self
     {
-        return new self([compact('cache', 'key', 'owner')]);
-    }
-
-    public static function combine(self ...$slots): self
-    {
-        $reservations = [];
-
-        foreach ($slots as $slot) {
-            array_push($reservations, ...$slot->reservations);
-        }
-
-        return new self($reservations);
+        return new self($handle, getmypid());
     }
 
     public function release(): void
     {
-        foreach (array_reverse($this->reservations) as $reservation) {
-            try {
-                $store = $reservation['cache']->store();
+        $handle = $this->handle;
+        $this->handle = null;
 
-                if ($store->get($reservation['key']) === $reservation['owner']) {
-                    $store->forget($reservation['key']);
-                }
-            } catch (\Throwable) {
-                continue;
-            }
+        if (! is_resource($handle)) {
+            return;
         }
+
+        // A fork may inherit the descriptor. Its cleanup must not unlock the
+        // parent's open-file description while the parent still owns a wait.
+        if (getmypid() === $this->processId) {
+            flock($handle, LOCK_UN);
+        }
+
+        fclose($handle);
+    }
+
+    public function __destruct()
+    {
+        $this->release();
     }
 }
