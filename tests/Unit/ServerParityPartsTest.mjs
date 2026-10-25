@@ -128,7 +128,7 @@ test('the database bootstraps run the native suites only in the native-tests par
   assert.match(mysql.text, /'case "\$DW_PARITY_PART" in native-tests\) shard=1 suffix= ;; native-tests-b\) shard=2 suffix=-b ;; \*\) shard= ;; esac; if \[ "\$DW_PARITY_PART" = native-tests \]; then cargo test [^']*runtime::mysql::[^']* > \/evidence\/mysql-tests\.txt \|\| exit 1; fi; if \[ -n "\$shard" \]; then [^']*cargo test --locked --offline --test execution -- --exact --nocapture --test-threads=2 \$\(cat \/evidence\/execution-shard\$suffix\.txt\) > \/evidence\/mysql-execution-tests\$suffix\.txt \|\| exit 1; fi; cargo build --locked --offline'/);
 });
 
-test('the existing MySQL matrix splits its execution tests into two parts, every test in exactly one', () => {
+test('the MySQL 8 labels split their execution tests into two parts, every test in exactly one', () => {
   const block = job('mysql-execution');
   assert.match(block, /^ {6}DW_EXECUTION_SHARDS: \$\{\{ matrix\.execution_shards \|\| 1 \}\}$/m);
   // Matrix values come from the label's include entry; the added
@@ -136,13 +136,16 @@ test('the existing MySQL matrix splits its execution tests into two parts, every
   const include = block.slice(block.indexOf('\n        include:\n'), block.indexOf('\n    env:\n'));
   const entries = include.split(/\n {10}- /).slice(1).map(text => Object.fromEntries(
     [...('label: ' + text.replace(/^label: /, '')).matchAll(/^\s*([a-z_]+): (\S+)$/gm)].map(match => match.slice(1))));
-  const existing = entries.filter(entry => entry.label === 'existing-php-mysql-matrix');
-  assert.equal(existing.length, 2, JSON.stringify(entries));
-  const [label, half] = existing;
-  assert.equal(label.part, undefined);
-  assert.equal(label.execution_shards, '2');
-  assert.deepEqual(half, {...label, part: 'native-tests-b'});
-  assert.ok(entries.filter(entry => entry.label !== 'existing-php-mysql-matrix').every(entry => !entry.execution_shards && !entry.part));
+  const sharded = ['mysql-8.0', 'existing-php-mysql-matrix'];
+  for (const name of sharded) {
+    const pair = entries.filter(entry => entry.label === name);
+    assert.equal(pair.length, 2, JSON.stringify(entries));
+    const [label, half] = pair;
+    assert.equal(label.part, undefined);
+    assert.equal(label.execution_shards, '2');
+    assert.deepEqual(half, {...label, part: 'native-tests-b'});
+  }
+  assert.ok(entries.filter(entry => !sharded.includes(entry.label)).every(entry => !entry.execution_shards && !entry.part));
   // The selection the bootstrap runs: list, sort bytewise, deal round-robin.
   const bootstrap = steps(block).find(step => step.name.startsWith('Bootstrap independent ')).text;
   const selection = /cargo test --locked --offline --test execution -- --list --format terse \| sed -n "s\/: test\\\$\/\/p" \| LC_ALL=C sort \| awk -v count="\$DW_EXECUTION_SHARDS" -v shard="\$shard" "([^"]+)" > \/evidence\/execution-shard\$suffix\.txt && test -s \/evidence\/execution-shard\$suffix\.txt && /.exec(bootstrap);
