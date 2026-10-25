@@ -8,14 +8,12 @@ final class LongPollWaitSlotStore
 {
     private const ABSOLUTE_MAX_NAMESPACE_WAITS = 1024;
 
-    private const CACHE_PREFIX = 'server:long-poll-wait-slot:';
-
     private const WORKER_POOL = 'worker';
 
     private const QUERY_TASK_POOL = 'query-task';
 
     public function __construct(
-        private readonly ServerPollingCache $cache,
+        private readonly LongPollWaitPool $pool,
     ) {}
 
     public function tryAcquire(int $timeoutSeconds, ?string $namespace = null): ?LongPollWaitSlot
@@ -123,69 +121,21 @@ final class LongPollWaitSlotStore
             return null;
         }
 
-        if (! $this->cache->available()) {
-            return $maxConcurrentWaitsPerNamespace === null
-                ? LongPollWaitSlot::unlimited()
-                : null;
-        }
-
-        $expiresAt = now()->addSeconds(max(1, $timeoutSeconds + 5));
-        $namespaceSlot = LongPollWaitSlot::unlimited();
-
         try {
-            if ($maxConcurrentWaitsPerNamespace !== null) {
-                $namespaceSlot = $this->acquireSlot(
-                    $maxConcurrentWaitsPerNamespace,
-                    $pool,
-                    $expiresAt,
-                    $namespace,
-                );
-
-                if ($namespaceSlot === null) {
-                    return null;
-                }
-            }
-
-            $globalSlot = $maxConcurrentWaits === null
-                ? LongPollWaitSlot::unlimited()
-                : $this->acquireSlot($maxConcurrentWaits, $pool, $expiresAt);
-
-            if ($globalSlot === null) {
-                $namespaceSlot->release();
-
-                return null;
-            }
-
-            return LongPollWaitSlot::combine($namespaceSlot, $globalSlot);
+            return $this->pool->tryAcquire(
+                $this->poolDirectory($pool),
+                $maxConcurrentWaits,
+                $namespace,
+                $maxConcurrentWaitsPerNamespace,
+                $timeoutSeconds,
+            );
         } catch (Throwable) {
-            $namespaceSlot->release();
+            logger()->warning('Node-local long-poll capacity is unavailable; check that DW_POLLING_CACHE_PATH is writable.', [
+                'wait_pool' => $pool,
+            ]);
 
-            // A local HTTP-worker reservation cannot provide cross-node
-            // correctness. Preserve the historical fail-open behavior only
-            // when namespace isolation has not been configured.
-            return $maxConcurrentWaitsPerNamespace === null
-                ? LongPollWaitSlot::unlimited()
-                : null;
+            return null;
         }
-    }
-
-    private function acquireSlot(
-        int $maxConcurrentWaits,
-        string $pool,
-        \DateTimeInterface $expiresAt,
-        ?string $namespace = null,
-    ): ?LongPollWaitSlot {
-        $owner = bin2hex(random_bytes(16));
-
-        for ($slot = 0; $slot < $maxConcurrentWaits; $slot++) {
-            $key = $this->slotKey($slot, $pool, $namespace);
-
-            if ($this->cache->store()->add($key, $owner, $expiresAt)) {
-                return LongPollWaitSlot::acquired($this->cache, $key, $owner);
-            }
-        }
-
-        return null;
     }
 
     private function configuredMaxConcurrentWaits(): ?int
@@ -302,15 +252,11 @@ final class LongPollWaitSlotStore
         return min($phpServerWorkers - 1, max(2, intdiv($phpServerWorkers, 2) + 1));
     }
 
-    private function slotKey(int $slot, string $pool, ?string $namespace = null): string
+    private function poolDirectory(string $pool): string
     {
-        $prefix = self::CACHE_PREFIX.sha1((string) config('server.server_id', gethostname()));
-        $prefix = $pool === self::WORKER_POOL ? $prefix : $prefix.':'.$pool;
+        $path = (string) config('server.polling.cache_path', storage_path('framework/cache/server-polling'));
 
-        if ($namespace !== null) {
-            $prefix .= ':namespace:'.hash('sha256', $namespace);
-        }
-
-        return $prefix.':'.$slot;
+        return rtrim($path, '/').'/wait-slots/'
+            .sha1((string) config('server.server_id', gethostname())).'/'.$pool;
     }
 }

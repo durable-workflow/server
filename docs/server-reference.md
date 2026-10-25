@@ -1474,7 +1474,7 @@ multi-worker deployments should use MySQL/PostgreSQL with Redis.
 
 The standalone server image also reserves Apache request-worker capacity for
 health and control-plane routes. Empty workflow and activity worker long-polls
-acquire a short-lived wait slot before sleeping; once the node-local slot cap
+acquire a process-owned wait slot before sleeping; once the node-local slot cap
 is reached, additional idle polls receive `Retry-After: 1` instead of entering
 a tight empty-poll loop or holding another PHP server worker for the full poll
 timeout. Published Python, Rust, PHP, and other supported workers receive a
@@ -1493,6 +1493,16 @@ before any wait slot or backpressure response is required. Size
 the Apache request pool and the two explicit long-poll caps for expected
 concurrent workflow, activity, and query workers when building a larger
 standalone deployment.
+
+Wait-slot limits are per API node. Every API node must keep its own unique
+`DW_SERVER_ID` and a writable `DW_POLLING_CACHE_PATH`, including deployments
+using Redis or database polling caches. One local admission lock enforces the
+global and optional namespace caps together; a held file descriptor owns each
+wait. Normal request cleanup or process death releases that capacity without
+waiting for a cache TTL, and one node cannot release another node's live waits.
+Unavailable local lock storage refuses an idle wait rather than exceeding its
+configured limits. Immediate task claims still happen before wait admission;
+a wait slot does not grant a task lease.
 
 Across Compose, plain Docker, and Kubernetes, the supported bootstrap contract
 is the same: run the image's `server-bootstrap` command once before starting the
@@ -1816,7 +1826,7 @@ every operator-facing variable the server honors.
 | `DW_WORKER_POLL_TIMEOUT` | `30` | Seconds the server holds a poll open. |
 | `DW_WORKER_POLL_INTERVAL_MS` | `1000` | Internal scan interval during an open poll. |
 | `DW_WORKER_POLL_SIGNAL_CHECK_INTERVAL_MS` | `100` | Wake-signal check interval during an open poll. |
-| `DW_POLLING_CACHE_PATH` | `storage/.../server-polling/<APP_ENV>` | Directory for worker-poll coordination state. |
+| `DW_POLLING_CACHE_PATH` | `storage/.../server-polling/<APP_ENV>` | Writable local coordination and wait-lock directory, also required with Redis or database polling caches. |
 | `DW_WAKE_SIGNAL_TTL_SECONDS` | `max(DW_WORKER_POLL_TIMEOUT + 5, 60)` | TTL for per-queue wake signals. |
 | `DW_WORKER_LONG_POLL_MAX_CONCURRENT` | (unset; derived for PHP CLI server) | Optional cap for concurrent held workflow/activity worker long-poll waits on this server node. Query-task polls use a separate wait budget so live workflow queries are not starved by idle workflow/activity waits. |
 | `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` | `2` | PHP CLI server workers reserved for health and control-plane requests when deriving the workflow/activity long-poll wait cap. |

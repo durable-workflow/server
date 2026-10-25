@@ -3,9 +3,7 @@
 namespace Tests\Unit;
 
 use App\Support\LongPollWaitSlotStore;
-use App\Support\ServerPollingCache;
 use Illuminate\Contracts\Cache\Factory as CacheFactory;
-use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery;
 use RuntimeException;
@@ -100,7 +98,7 @@ class LongPollWaitSlotStoreTest extends TestCase
         $tenantB->release();
     }
 
-    public function test_configured_namespace_cap_fails_closed_without_shared_cache_authority(): void
+    public function test_namespace_isolation_remains_bounded_without_shared_cache(): void
     {
         config([
             'server.polling.max_concurrent_waits' => 2,
@@ -109,9 +107,90 @@ class LongPollWaitSlotStoreTest extends TestCase
 
         $factory = Mockery::mock(CacheFactory::class);
         $factory->shouldReceive('store')->andThrow(new RuntimeException('cache unavailable'));
-        $slots = new LongPollWaitSlotStore(new ServerPollingCache($factory, new Filesystem));
+        $this->app->instance(CacheFactory::class, $factory);
+        $slots = app(LongPollWaitSlotStore::class);
 
+        $first = $slots->tryAcquire(30, 'tenant-a');
+        $this->assertNotNull($first);
         $this->assertNull($slots->tryAcquire(30, 'tenant-a'));
+        $other = $slots->tryAcquire(30, 'tenant-b');
+        $this->assertNotNull($other);
+        $this->assertNull($slots->tryAcquire(30, 'tenant-c'));
+        $first->release();
+        $other->release();
+    }
+
+    public function test_configured_capacity_fails_closed_without_local_lock_authority(): void
+    {
+        $blocked = tempnam(sys_get_temp_dir(), 'dw-poll-blocked-');
+        $this->assertIsString($blocked);
+        config(['server.polling.cache_path' => $blocked]);
+
+        try {
+            $this->assertNull(app(LongPollWaitSlotStore::class)->tryAcquire(30, 'tenant-a'));
+        } finally {
+            unlink($blocked);
+        }
+    }
+
+    public function test_a_live_wait_does_not_expire_and_old_release_cannot_free_its_replacement(): void
+    {
+        config(['server.polling.max_concurrent_waits' => 1]);
+        $slots = app(LongPollWaitSlotStore::class);
+        $old = $slots->tryAcquire(1);
+        $this->assertNotNull($old);
+        $this->travel(60)->seconds();
+        $this->assertNull($slots->tryAcquire(1));
+        $old->release();
+        $replacement = $slots->tryAcquire(1);
+        $this->assertNotNull($replacement);
+        $old->release();
+        $this->assertNull($slots->tryAcquire(1));
+        $replacement->release();
+    }
+
+    public function test_sequential_namespaces_reuse_a_bounded_node_pool(): void
+    {
+        config(['server.polling.max_concurrent_waits_per_namespace' => 1]);
+        $slots = app(LongPollWaitSlotStore::class);
+
+        foreach (range(1, 20) as $number) {
+            $slot = $slots->tryAcquire(30, 'tenant-'.$number);
+            $this->assertNotNull($slot);
+            $slot->release();
+        }
+
+        $root = config('server.polling.cache_path').'/wait-slots/'
+            .sha1((string) config('server.server_id', gethostname())).'/worker';
+        $this->assertCount(1, glob($root.'/slot-*.lock'));
+    }
+
+    public function test_a_released_burst_is_compacted_without_removing_live_waits(): void
+    {
+        config(['server.polling.max_concurrent_waits' => 8]);
+        $slots = app(LongPollWaitSlotStore::class);
+        $held = [];
+
+        foreach (range(1, 8) as $number) {
+            $held[] = $slots->tryAcquire(30, 'tenant-'.$number);
+            $this->assertNotNull($held[array_key_last($held)]);
+        }
+
+        foreach (array_slice($held, 0, 6) as $slot) {
+            $slot->release();
+        }
+
+        $replacement = $slots->tryAcquire(30, 'replacement');
+        $this->assertNotNull($replacement);
+        $root = config('server.polling.cache_path').'/wait-slots/'
+            .sha1((string) config('server.server_id', gethostname())).'/worker';
+        $this->assertCount(3, glob($root.'/slot-*.lock'));
+
+        config(['server.polling.max_concurrent_waits' => 3]);
+        $this->assertNull($slots->tryAcquire(30, 'extra'));
+        $replacement->release();
+        $held[6]->release();
+        $held[7]->release();
     }
 
     public function test_invalid_namespace_cap_fails_closed_instead_of_becoming_unlimited(): void
