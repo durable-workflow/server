@@ -585,6 +585,89 @@ impl Runtime {
         Ok(view)
     }
 
+    delegate!(message_stream_workflow_bound(workflow_id: &str) -> Result<bool>);
+    delegate!(record_malformed_message(workflow_id: &str, stream: &str, message_id: &Value) -> Result<()>);
+    delegate!(message_stream_diagnostics(workflow_id: &str, stream: Option<&str>) -> Result<Vec<Value>>);
+
+    /// `MessageStreamController::append`: the stream name, the workflow in
+    /// this namespace, the request rules and the payload envelope, in PHP's
+    /// order. A refused request or payload counts as malformed input.
+    pub(crate) async fn append_message(&self, workflow_id: &str, stream: &str, body: Value, context: Value) -> Result<(StatusCode, Value)> {
+        super::message_streams::check_path_name(stream)?;
+        if !self.message_stream_workflow_bound(workflow_id).await? {
+            return Err(super::RuntimeError::Protocol {
+                status: StatusCode::NOT_FOUND,
+                response: json!({"accepted":false,"workflow_id":workflow_id,"stream_name":stream,"outcome":"rejected","reason":"instance_not_found"}),
+            });
+        }
+        let body = super::laravel_rules::normalize(&body);
+        let blob = match self.message_payload(&body).await {
+            Ok(blob) => blob,
+            Err(error) => {
+                if matches!(&error, super::RuntimeError::Protocol { status, .. } | super::RuntimeError::Refused { status, .. } if *status == StatusCode::UNPROCESSABLE_ENTITY) {
+                    self.record_malformed_message(workflow_id, stream, &body["message_id"]).await?;
+                }
+                return Err(error);
+            }
+        };
+        let message_id = body["message_id"].as_str().unwrap_or_default().to_owned();
+        let (codec, structural) = (self.signal_codec.clone(), self.structural);
+        match &*self.storage {
+            Storage::Sqlite(store) => store.append_message(workflow_id, stream, &message_id, "avro", &blob, &context, codec, structural).await,
+            Storage::Postgres(store) => store.append_message(workflow_id, stream, &message_id, "avro", &blob, &context, codec, structural).await,
+            Storage::MySql(store) => store.append_message(workflow_id, stream, &message_id, "avro", &blob, &context, codec, structural).await,
+        }
+    }
+
+    /// The request rules, then `AvroPayloadEnvelopeResolver::resolve`: no
+    /// input is an empty argument list, plain values are encoded, and an
+    /// inline envelope keeps its exact bytes.
+    async fn message_payload(&self, body: &Value) -> Result<String> {
+        super::message_streams::check_append(body)?;
+        if body.get("input").is_none_or(Value::is_null) {
+            return super::queries::empty_arguments(self.signal_codec.clone()).await;
+        }
+        super::input_envelope::transport(body)?;
+        if let Some(blob) = self.plain_arguments(body).await? {
+            return Ok(blob);
+        }
+        if self.prepare_external(&body["input"]).await?.is_some() {
+            // PHP keeps the reference and resolves it for workers; native
+            // does not resolve stream payload references yet.
+            return Err(super::RuntimeError::Protocol {
+                status: StatusCode::NOT_IMPLEMENTED,
+                response: json!({"accepted":false,"workflow_id":null,"message_id":body["message_id"],"outcome":"rejected",
+                    "reason":"message_stream_external_payload_unavailable"}),
+            });
+        }
+        self.decodable(&body["input"]["blob"]).await?;
+        super::envelope(body, "input")
+    }
+
+    /// `MessageStreamController::index` and `show`.
+    pub(crate) async fn message_streams(&self, workflow_id: &str, stream: Option<&str>) -> Result<Value> {
+        if let Some(stream) = stream {
+            super::message_streams::check_path_name(stream)?;
+        }
+        if !self.message_stream_workflow_bound(workflow_id).await? {
+            return Err(super::RuntimeError::Protocol {
+                status: StatusCode::NOT_FOUND,
+                response: json!({"message":"Workflow not found.","reason":"instance_not_found"}),
+            });
+        }
+        let streams = self.message_stream_diagnostics(workflow_id, stream).await?;
+        match stream {
+            None => Ok(json!({"workflow_id":workflow_id,"count":streams.len(),"streams":streams})),
+            Some(stream) => match streams.into_iter().next() {
+                Some(found) => Ok(json!({"workflow_id":workflow_id,"stream":found})),
+                None => Err(super::RuntimeError::Protocol {
+                    status: StatusCode::NOT_FOUND,
+                    response: json!({"workflow_id":workflow_id,"stream_name":stream,"reason":"message_stream_not_found"}),
+                }),
+            },
+        }
+    }
+
     /// `ActivityController::index`.
     pub(crate) async fn standalone_activities(&self, query: Value) -> Result<Value> {
         let request = super::standalone_activities::list_request(&query)?;
@@ -1256,17 +1339,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol)
+                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural)
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol)
+                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural)
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol)
+                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural)
                     .await
             }
         }
@@ -1415,6 +1498,7 @@ impl Runtime {
             Storage::MySql(store) => store.namespace_name(),
         }
     }
+    delegate!(acknowledge_activity_cancellation(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     pub(crate) async fn fail_activity(&self, task_id: &str, body: Value) -> Result<Value> {
         let (failure, blob) =
             super::activity_failures::prepare_failure(&body, self.signal_codec.clone()).await?;

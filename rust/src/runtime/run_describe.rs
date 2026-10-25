@@ -31,8 +31,12 @@ fn max_payload_bytes() -> i64 {
 }
 
 /// `oversizedPayloadPreview`: an external payload larger than the limit.
-fn oversized(envelope: &Value) -> bool {
-    envelope["external_storage"]["size_bytes"].as_i64().is_some_and(|size| size > max_payload_bytes())
+/// PHP's stored envelope names its reference `external_storage`; native's
+/// names it `external_payload`.
+pub(super) fn oversized(envelope: &Value) -> bool {
+    ["external_storage", "external_payload"]
+        .iter()
+        .any(|key| envelope[key]["size_bytes"].as_i64().is_some_and(|size| size > max_payload_bytes()))
 }
 
 /// Carbon's `toIso8601String()`, which PHP's run description uses.
@@ -331,6 +335,8 @@ mod tests {
         assert!(oversized(&json!({"external_storage":{"size_bytes":2 * 1024 * 1024 + 1}})));
         assert!(!oversized(&json!({"external_storage":{"size_bytes":2 * 1024 * 1024}})));
         assert!(!oversized(&json!({"codec":"avro","blob":"AA=="})));
+        assert!(oversized(&json!({"codec":"avro","external_payload":{"size_bytes":2 * 1024 * 1024 + 1}})));
+        assert!(!oversized(&json!({"codec":"avro","external_payload":{"size_bytes":2 * 1024 * 1024}})));
         assert_eq!(without_empty(json!({"a":null,"b":[],"c":{},"d":0})), json!({"c":{},"d":0}));
         let time = DateTime::parse_from_rfc3339("2026-10-21T07:38:51.123Z").unwrap().with_timezone(&Utc);
         assert_eq!(iso8601(Some(time)), json!("2026-10-21T07:38:51+00:00"));
