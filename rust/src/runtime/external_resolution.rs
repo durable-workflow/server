@@ -37,6 +37,23 @@ impl PreparedExternal {
     }
 }
 
+/// `WorkflowController::oversizedPayloadPreview` over a stored command
+/// payload: an external reference, native's or one PHP stored, whose size is
+/// above `max_payload_bytes`. Only the small reference is read.
+pub(super) fn oversized_reference(payload: &str) -> bool {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let size = if let Some(json) = payload.strip_prefix(STORED_PREFIX) {
+        serde_json::from_str::<Value>(json).ok().and_then(|reference| reference["size_bytes"].as_u64())
+    } else if let Some(encoded) = payload.strip_prefix(super::history_presentation::PHP_EXTERNAL_REFERENCE) {
+        STANDARD.decode(encoded).ok()
+            .and_then(|json| serde_json::from_slice::<Value>(&json).ok())
+            .and_then(|envelope| envelope["external_storage"]["size_bytes"].as_u64())
+    } else {
+        None
+    };
+    size.is_some_and(|size| size > super::payload_limits::max_payload_bytes() as u64)
+}
+
 pub(super) fn stored_envelope(blob: &str) -> Option<Value> {
     let value = serde_json::from_str(blob.strip_prefix(STORED_PREFIX)?).ok()?;
     let reference = Reference::validate(&value).ok()?;

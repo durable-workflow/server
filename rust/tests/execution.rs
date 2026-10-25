@@ -311,6 +311,9 @@ mod route_coverage;
 #[path = "execution/worker_sessions.rs"]
 mod worker_sessions;
 
+#[path = "execution/workflow_import_fences.rs"]
+mod workflow_import_fences;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {

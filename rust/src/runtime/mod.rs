@@ -36,6 +36,7 @@ mod activity_results;
 mod activity_summary;
 mod all_groups;
 mod backend;
+mod bundle_verifier;
 mod cancellation;
 mod cancellation_cascade;
 mod child_summary;
@@ -83,6 +84,7 @@ mod operator_metrics;
 mod payload_cleanup;
 mod payload_discovery;
 mod payload_limits;
+mod php_value;
 #[cfg(debug_assertions)]
 #[doc(hidden)]
 pub mod poll_pauses;
@@ -111,6 +113,7 @@ mod task_queue_build_ids;
 mod task_queues;
 mod query_route;
 mod run_describe;
+mod workflow_import;
 mod workflow_streams;
 mod schedule_list;
 mod schedule_storage;

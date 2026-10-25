@@ -20,6 +20,7 @@ pub(super) enum Operation<'a> {
     Update(&'a str),
     Signal(&'a str),
     Query(&'a str),
+    ImportEmbeddedV2,
 }
 
 impl Operation<'_> {
@@ -136,6 +137,8 @@ impl Operation<'_> {
                 &["workflow_id", "operation_name", "operation_name_field"],
                 &["outcome"],
             ),
+            // PHP defines no contract for the import, so its defaults apply.
+            Self::ImportEmbeddedV2 => ("import_embedded_v2", &[], &[]),
         };
         let mut metadata = json!({"schema":"durable-workflow.v2.control-plane-response", "version":1,
             "operation":operation, "workflow_id":body.get("workflow_id"),
@@ -301,7 +304,7 @@ impl Operation<'_> {
                  selected_run_not_current configured_workflow_type_invalid v1_projection_read_only \
                  backend_lock_pressure control_plane_internal_error",
             ),
-            Self::List | Self::ListRuns | Self::Describe | Self::Observe | Self::Debug => return None,
+            Self::List | Self::ListRuns | Self::Describe | Self::Observe | Self::Debug | Self::ImportEmbeddedV2 => return None,
         })
     }
 }
@@ -315,6 +318,7 @@ pub(super) async fn admission_response(request: Request, mut body: Value) -> Val
     let path = request.uri().path().to_owned();
     let segments: Vec<_> = path.trim_start_matches('/').split('/').collect();
     let operation = match (request.method().as_str(), segments.as_slice()) {
+        ("POST", ["api", "workflows", "import", "embedded-v2"]) => Operation::ImportEmbeddedV2,
         ("POST", ["api", "workflows"]) => Operation::Start,
         ("POST", ["api", "workflows", _, "signal", name])
         | ("POST", ["api", "workflows", _, "runs", _, "signal", name]) => Operation::Signal(name),
