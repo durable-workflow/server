@@ -11,8 +11,8 @@ import {spawnSync} from 'node:child_process';
 const workflow = readFileSync('.github/workflows/server-parity.yml', 'utf8');
 const PARTS = ['native-tests', 'corpus', 'restarts', 'cohorts', 'sdk-directions', 'corrected-markers'];
 const SHARED_NODES = 'Start the published PHP and native nodes the corpus parts share';
-const EVERY_PART = [/^actions\/checkout@/, /^Fetch /, /^Create TLS fixture certificates$/, /^Bootstrap independent /,
-  /^Collect /, /^Summarize /, /^Retain /];
+const EVERY_PART = [/^actions\/checkout@/, /^Pull the pinned images, retrying registry errors$/, /^Fetch /,
+  /^Create TLS fixture certificates$/, /^Bootstrap independent /, /^Collect /, /^Summarize /, /^Retain /];
 
 function job(name) {
   const start = workflow.indexOf(`\n  ${name}:\n`);
