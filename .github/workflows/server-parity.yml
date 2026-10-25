@@ -41,6 +41,7 @@ on:
       - tests/Unit/ServerParityWorkerReplacementContractTest.mjs
       - tests/Unit/ServerParityOperatorMetricsContractTest.mjs
       - tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs
+      - tests/Unit/ServerParityWorkflowPollRequestContractTest.mjs
       - tests/Unit/ServerParityActivityCancellationAckContractTest.mjs
       - tests/Unit/ServerParityServiceCatalogContractTest.mjs
       - tests/Unit/ServerParitySystemMetricsContractTest.mjs
@@ -50,6 +51,8 @@ on:
       - tests/Unit/ServerParityRepairPassContractTest.mjs
       - tests/Unit/ServerParityClusterInfoContractTest.mjs
       - tests/Unit/ServerParityNamespaceDeleteContractTest.mjs
+      - tests/Unit/ServerParityUpdateValidationContractTest.mjs
+      - tests/Unit/ServerParityFixtureSelectionTest.mjs
       - tests/Unit/ServerParityMessageStreamsContractTest.mjs
       - tests/Unit/ServerParityWaitingHistoryContractTest.mjs
       - tests/Unit/ServerParityTaskRetryContractTest.mjs
@@ -319,14 +322,14 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      # Each database runs in four parts on separate runners: the native
-      # database suites and TLS checks, the shared corpus with its profiles and
-      # restart cases, the published-SDK direction profiles, and the separate
-      # cohorts. Every part bootstraps the same database and native build; no
-      # part depends on another.
+      # Each database runs in six parts on separate runners: the native
+      # database suites and TLS checks, the shared corpus, its profiles and
+      # restart cases, the published-SDK direction profiles, the corrected
+      # marker cohort, and the other cohorts. Every part bootstraps the same
+      # database and native build; no part depends on another.
       matrix:
         label: [mysql-8.0, existing-php-mysql-matrix, mariadb-10.11]
-        part: [native-tests, corpus, cohorts, sdk-directions]
+        part: [native-tests, corpus, restarts, cohorts, sdk-directions, corrected-markers]
         include:
           - label: mysql-8.0
             image: mirror.gcr.io/library/mysql@sha256:62fb722c78b24245ddff1796a0fcee4a49cc5b87e0aaaf20c92d1da9e0a2497b
@@ -483,8 +486,8 @@ jobs:
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
             "$image" artisan server:bootstrap --force > parity-evidence/published-upgrade-bootstrap.txt
-      - name: Compare three runtimes, recover killed native nodes and refuse published PHP takeover
-        if: ${{ matrix.part == 'corpus' }}
+      - name: Start the published PHP and native nodes the corpus parts share
+        if: ${{ matrix.part == 'corpus' || matrix.part == 'restarts' }}
         id: prepare_runtime_comparison
         run: |
           set -euo pipefail
@@ -505,7 +508,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-php:8080/api/ready > parity-evidence/php-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-php:8080/api/ready > parity-evidence/php-readiness.json; then
               ready=1
               break
             fi
@@ -543,15 +546,34 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-native-a:8080/api/ready > parity-evidence/native-a-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-native-a:8080/api/ready > parity-evidence/native-a-readiness.json; then
               ready=1
               break
             fi
             sleep 1
           done
           test "$ready" = 1
-          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-            -fsS http://parity-native-b:8080/api/ready > parity-evidence/native-b-readiness.json
+          # native-b starts with native-a but may still be binding its port.
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+              -fsS --connect-timeout 2 --max-time 5 http://parity-native-b:8080/api/ready > parity-evidence/native-b-readiness.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+      - name: Compare three runtimes over the shared fixture corpus
+        if: ${{ matrix.part == 'corpus' }}
+        run: |
+          set -euo pipefail
+          # Bounded container log tails make a failure in this step diagnosable from its own log.
+          container_log_tails() {
+            bash scripts/conformance/server-parity/container-log-tails.sh
+          }
+          trap container_log_tails ERR
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
           export DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
           mkdir -p parity-consumers
           curl --fail --location --retry 3 --output parity-consumers/dw.phar https://github.com/durable-workflow/cli/releases/download/2.2.0/dw.phar
@@ -604,6 +626,20 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json > parity-evidence/comparison.json || compare_status=$?
+          # A native fixture difference fails the step only after the
+          # comparison has run, so one difference cannot hide the rest.
+          test "$native_record_status" -eq 0
+          test "$compare_status" -eq 0
+      - name: Compare published patch, legacy-marker and range-repair profiles, recover killed native nodes and refuse published PHP takeover
+        if: ${{ matrix.part == 'restarts' }}
+        run: |
+          set -euo pipefail
+          # Bounded container log tails make a failure in this step diagnosable from its own log.
+          container_log_tails() {
+            bash scripts/conformance/server-parity/container-log-tails.sh
+          }
+          trap container_log_tails ERR
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
           bash scripts/conformance/server-parity/published-sdk-patch-profile.sh mysql http://parity-php:8080 http://parity-native-a:8080
           bash scripts/conformance/server-parity/repeated-patch-profile.sh mysql http://parity-php:8080 http://parity-native-a:8080
           bash scripts/conformance/server-parity/legacy-marker-profile.sh mysql http://parity-php:8080 http://parity-native-a:8080
@@ -618,7 +654,7 @@ jobs:
           docker kill --signal=KILL "$RESOURCE_SCOPE-native-a"
           test "$(docker inspect --format='{{.State.ExitCode}}' "$RESOURCE_SCOPE-native-a")" = 137
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-            -fsS http://parity-native-b:8080/api/ready > parity-evidence/native-survivor-readiness.json
+            -fsS --connect-timeout 2 --max-time 5 http://parity-native-b:8080/api/ready > parity-evidence/native-survivor-readiness.json
           docker run -d --name "$RESOURCE_SCOPE-recovered" --network "$RESOURCE_SCOPE" --network-alias=parity-recovered \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
             -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token -e DW_BIND_ADDRESS=0.0.0.0:8080 \
@@ -629,7 +665,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-recovered:8080/api/ready > parity-evidence/native-restart-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-recovered:8080/api/ready > parity-evidence/native-restart-readiness.json; then
               ready=1
               break
             fi
@@ -674,10 +710,6 @@ jobs:
             catalog php_ref > parity-evidence/catalog-after.json
           cmp parity-evidence/php-before.json parity-evidence/php-after.json
           cmp parity-evidence/catalog-before.json parity-evidence/catalog-after.json
-          # A native fixture difference fails the step only after every later
-          # check has run, so one difference cannot hide the rest.
-          test "$native_record_status" -eq 0
-          test "$compare_status" -eq 0
       - name: Compare every published-SDK direction profile in three concurrent lanes
         if: ${{ matrix.part == 'sdk-directions' }}
         run: |
@@ -703,7 +735,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-native-a:8080/api/ready > parity-evidence/sdk-native-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-native-a:8080/api/ready > parity-evidence/sdk-native-readiness.json; then
               ready=1
               break
             fi
@@ -730,7 +762,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-native-b:8080/api/ready > parity-evidence/cohort-native-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-native-b:8080/api/ready > parity-evidence/cohort-native-readiness.json; then
               ready=1
               break
             fi
@@ -764,12 +796,38 @@ jobs:
           DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.9.7
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:30c34c5f3256a812fbccbe505a068309b58b0c14d01ffff0465d88604cb36d50
         run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh mysql
+      - name: Start the native node the corrected marker cohort uses
+        id: prepare_corrected
+        if: ${{ matrix.part == 'corrected-markers' }}
+        run: |
+          set -euo pipefail
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
+          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
+            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+            install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
+          docker run -d --name "$RESOURCE_SCOPE-native-b" --network "$RESOURCE_SCOPE" --network-alias=parity-native-b \
+            --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
+            -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token -e DW_BIND_ADDRESS=0.0.0.0:8080 \
+            -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
+            -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD/rust-target:/target:ro" --tmpfs /state --entrypoint /target/debug/durable-workflow-server \
+            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+              -fsS --connect-timeout 2 --max-time 5 http://parity-native-b:8080/api/ready > parity-evidence/corrected-native-readiness.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
       - name: Compare corrected markers, ranges, clocks and activity expiry
-        if: ${{ !cancelled() && matrix.part == 'cohorts' && steps.prepare_cohorts.outcome == 'success' }}
-        # The cohorts' own native node; the corpus part kills its native-a.
+        if: ${{ !cancelled() && matrix.part == 'corrected-markers' && steps.prepare_corrected.outcome == 'success' }}
+        # The part's own native node; the corpus part kills its native-a.
         run: bash scripts/conformance/server-parity/corrected-marker-shared-profile.sh mysql http://parity-native-b:8080
       - name: Retire corrected cohort resources
-        if: ${{ always() && matrix.part == 'cohorts' }}
+        if: ${{ always() && matrix.part == 'corrected-markers' }}
         run: bash scripts/conformance/server-parity/corrected-marker-cleanup.sh mysql
       - name: Compare installed local external payload consumers
         if: ${{ !cancelled() && matrix.part == 'cohorts' }}
@@ -895,14 +953,14 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      # Each database runs in four parts on separate runners: the native
-      # database suites and TLS checks, the shared corpus with its profiles and
-      # restart cases, the published-SDK direction profiles, and the separate
-      # cohorts. Every part bootstraps the same database and native build; no
-      # part depends on another.
+      # Each database runs in six parts on separate runners: the native
+      # database suites and TLS checks, the shared corpus, its profiles and
+      # restart cases, the published-SDK direction profiles, the corrected
+      # marker cohort, and the other cohorts. Every part bootstraps the same
+      # database and native build; no part depends on another.
       matrix:
         label: [existing-php-matrix, postgres-17]
-        part: [native-tests, corpus, cohorts, sdk-directions]
+        part: [native-tests, corpus, restarts, cohorts, sdk-directions, corrected-markers]
         include:
           - label: existing-php-matrix
             image: mirror.gcr.io/library/postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
@@ -1025,8 +1083,8 @@ jobs:
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
             "$image" artisan server:bootstrap --force > parity-evidence/published-upgrade-bootstrap.txt
-      - name: Compare three runtimes, recover killed native nodes and refuse published PHP takeover
-        if: ${{ matrix.part == 'corpus' }}
+      - name: Start the published PHP and native nodes the corpus parts share
+        if: ${{ matrix.part == 'corpus' || matrix.part == 'restarts' }}
         id: prepare_runtime_comparison
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
@@ -1049,7 +1107,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-php:8080/api/ready > parity-evidence/php-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-php:8080/api/ready > parity-evidence/php-readiness.json; then
               ready=1
               break
             fi
@@ -1086,15 +1144,36 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-native-a:8080/api/ready > parity-evidence/native-a-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-native-a:8080/api/ready > parity-evidence/native-a-readiness.json; then
               ready=1
               break
             fi
             sleep 1
           done
           test "$ready" = 1
-          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-            -fsS http://parity-native-b:8080/api/ready > parity-evidence/native-b-readiness.json
+          # native-b starts with native-a but may still be binding its port.
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+              -fsS --connect-timeout 2 --max-time 5 http://parity-native-b:8080/api/ready > parity-evidence/native-b-readiness.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+      - name: Compare three runtimes over the shared fixture corpus
+        if: ${{ matrix.part == 'corpus' }}
+        env:
+          POSTGRES_IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          # Bounded container log tails make a failure in this step diagnosable from its own log.
+          container_log_tails() {
+            bash scripts/conformance/server-parity/container-log-tails.sh
+          }
+          trap container_log_tails ERR
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
           export DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
           mkdir -p parity-consumers
           curl --fail --location --retry 3 --output parity-consumers/dw.phar https://github.com/durable-workflow/cli/releases/download/2.2.0/dw.phar
@@ -1147,6 +1226,22 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json > parity-evidence/comparison.json || compare_status=$?
+          # A native fixture difference fails the step only after the
+          # comparison has run, so one difference cannot hide the rest.
+          test "$native_record_status" -eq 0
+          test "$compare_status" -eq 0
+      - name: Compare published patch, legacy-marker and range-repair profiles, recover killed native nodes and refuse published PHP takeover
+        if: ${{ matrix.part == 'restarts' }}
+        env:
+          POSTGRES_IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          # Bounded container log tails make a failure in this step diagnosable from its own log.
+          container_log_tails() {
+            bash scripts/conformance/server-parity/container-log-tails.sh
+          }
+          trap container_log_tails ERR
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
           bash scripts/conformance/server-parity/published-sdk-patch-profile.sh pgsql http://parity-php:8080 http://parity-native-a:8080
           bash scripts/conformance/server-parity/repeated-patch-profile.sh pgsql http://parity-php:8080 http://parity-native-a:8080
           bash scripts/conformance/server-parity/legacy-marker-profile.sh pgsql http://parity-php:8080 http://parity-native-a:8080
@@ -1161,7 +1256,7 @@ jobs:
           docker kill --signal=KILL "$RESOURCE_SCOPE-native-a"
           test "$(docker inspect --format='{{.State.ExitCode}}' "$RESOURCE_SCOPE-native-a")" = 137
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-            -fsS http://parity-native-b:8080/api/ready > parity-evidence/native-survivor-readiness.json
+            -fsS --connect-timeout 2 --max-time 5 http://parity-native-b:8080/api/ready > parity-evidence/native-survivor-readiness.json
           docker run -d --name "$RESOURCE_SCOPE-recovered" --network "$RESOURCE_SCOPE" --network-alias=parity-recovered \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
             -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token -e DW_BIND_ADDRESS=0.0.0.0:8080 \
@@ -1172,7 +1267,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-recovered:8080/api/ready > parity-evidence/native-restart-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-recovered:8080/api/ready > parity-evidence/native-restart-readiness.json; then
               ready=1
               break
             fi
@@ -1217,10 +1312,6 @@ jobs:
             catalog php_ref > parity-evidence/catalog-after.json
           cmp parity-evidence/php-before.json parity-evidence/php-after.json
           cmp parity-evidence/catalog-before.json parity-evidence/catalog-after.json
-          # A native fixture difference fails the step only after every later
-          # check has run, so one difference cannot hide the rest.
-          test "$native_record_status" -eq 0
-          test "$compare_status" -eq 0
       - name: Compare every published-SDK direction profile in three concurrent lanes
         if: ${{ matrix.part == 'sdk-directions' }}
         run: |
@@ -1246,7 +1337,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-native-a:8080/api/ready > parity-evidence/sdk-native-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-native-a:8080/api/ready > parity-evidence/sdk-native-readiness.json; then
               ready=1
               break
             fi
@@ -1273,7 +1364,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-native-b:8080/api/ready > parity-evidence/cohort-native-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-native-b:8080/api/ready > parity-evidence/cohort-native-readiness.json; then
               ready=1
               break
             fi
@@ -1309,14 +1400,40 @@ jobs:
           DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.9.7
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:30c34c5f3256a812fbccbe505a068309b58b0c14d01ffff0465d88604cb36d50
         run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh pgsql
+      - name: Start the native node the corrected marker cohort uses
+        id: prepare_corrected
+        if: ${{ matrix.part == 'corrected-markers' }}
+        run: |
+          set -euo pipefail
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
+          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
+            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+            install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
+          docker run -d --name "$RESOURCE_SCOPE-native-b" --network "$RESOURCE_SCOPE" --network-alias=parity-native-b \
+            --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
+            -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token -e DW_BIND_ADDRESS=0.0.0.0:8080 \
+            -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
+            -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD/rust-target:/target:ro" --tmpfs /state --entrypoint /target/debug/durable-workflow-server \
+            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+              -fsS --connect-timeout 2 --max-time 5 http://parity-native-b:8080/api/ready > parity-evidence/corrected-native-readiness.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
       - name: Compare corrected markers, ranges, clocks and activity expiry
-        if: ${{ !cancelled() && matrix.part == 'cohorts' && steps.prepare_cohorts.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.part == 'corrected-markers' && steps.prepare_corrected.outcome == 'success' }}
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
-        # The cohorts' own native node; the corpus part kills its native-a.
+        # The part's own native node; the corpus part kills its native-a.
         run: bash scripts/conformance/server-parity/corrected-marker-shared-profile.sh pgsql http://parity-native-b:8080
       - name: Retire corrected cohort resources
-        if: ${{ always() && matrix.part == 'cohorts' }}
+        if: ${{ always() && matrix.part == 'corrected-markers' }}
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: bash scripts/conformance/server-parity/corrected-marker-cleanup.sh pgsql
@@ -1482,12 +1599,13 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      # Four parts on separate runners: the native suites and codec, the
-      # shared corpus with its profiles and restart cases, the published-SDK
-      # direction profiles, and the separate cohorts. Every part builds the
-      # same native server; no part depends on another.
+      # Six parts on separate runners: the native suites and codec, the
+      # shared corpus, its profiles and restart cases, the published-SDK
+      # direction profiles, the corrected marker cohort, and the other
+      # cohorts. Every part builds the same native server; no part depends on
+      # another.
       matrix:
-        part: [native-tests, corpus, cohorts, sdk-directions]
+        part: [native-tests, corpus, restarts, cohorts, sdk-directions, corrected-markers]
     env:
       DW_PARITY_PART: ${{ matrix.part }}
     steps:
@@ -1573,8 +1691,8 @@ jobs:
             mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
             cargo run --locked --offline --example codec-fixtures -- \
             ../tests/Fixtures/ServerParity/Codec/v1.json /evidence/php-codec.json > parity-evidence/cross-decode.json
-      - name: Execute and compare Rust, published PHP and embedded fixtures
-        if: ${{ matrix.part == 'corpus' }}
+      - name: Start the published PHP and native nodes the corpus parts share
+        if: ${{ matrix.part == 'corpus' || matrix.part == 'restarts' }}
         id: prepare_runtime_comparison
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
@@ -1594,7 +1712,7 @@ jobs:
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
-            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParitySdkDirectionLanesTest.mjs tests/Unit/ServerParityCodecDeadlineCellsTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs tests/Unit/ServerParityActivityCancellationAckContractTest.mjs tests/Unit/ServerParityServiceCatalogContractTest.mjs tests/Unit/ServerParitySystemMetricsContractTest.mjs tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs tests/Unit/ServerParityPrometheusMetricsContractTest.mjs tests/Unit/ServerParityPayloadCleanupContractTest.mjs tests/Unit/ServerParityRepairPassContractTest.mjs tests/Unit/ServerParityClusterInfoContractTest.mjs tests/Unit/ServerParityNamespaceDeleteContractTest.mjs tests/Unit/ServerParityMessageStreamsContractTest.mjs > parity-evidence/comparator-tests.txt
+            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParitySdkDirectionLanesTest.mjs tests/Unit/ServerParityCodecDeadlineCellsTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityFailureLocationTest.mjs tests/Unit/ServerParityFailureExcerptTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs tests/Unit/ServerParityActivityCancellationAckContractTest.mjs tests/Unit/ServerParityServiceCatalogContractTest.mjs tests/Unit/ServerParitySystemMetricsContractTest.mjs tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs tests/Unit/ServerParityPrometheusMetricsContractTest.mjs tests/Unit/ServerParityPayloadCleanupContractTest.mjs tests/Unit/ServerParityRepairPassContractTest.mjs tests/Unit/ServerParityClusterInfoContractTest.mjs tests/Unit/ServerParityNamespaceDeleteContractTest.mjs tests/Unit/ServerParityMessageStreamsContractTest.mjs tests/Unit/ServerParityWorkflowPollRequestContractTest.mjs tests/Unit/ServerParityUpdateValidationContractTest.mjs tests/Unit/ServerParityFixtureSelectionTest.mjs > parity-evidence/comparator-tests.txt
           docker run --rm --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
             --network=none --entrypoint node -v "$PWD:/source:ro" -w /source \
             "$image" --test tests/Unit/ServerParityCodecDeadlineLoadTest.mjs > parity-evidence/codec-load-tests.txt
@@ -1631,7 +1749,7 @@ jobs:
             ready=0
             for attempt in $(seq 1 30); do
               if docker run --rm --user=1000:1000 --entrypoint curl --network "$RESOURCE_SCOPE" "$image" \
-                -fsS "http://parity-$target:8080/api/ready" > "parity-evidence/$target-readiness.json"; then
+                -fsS --connect-timeout 2 --max-time 5 "http://parity-$target:8080/api/ready" > "parity-evidence/$target-readiness.json"; then
                 ready=1
                 break
               fi
@@ -1639,20 +1757,34 @@ jobs:
             done
             test "$ready" = 1
           done
-          export DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
-          mkdir -p parity-consumers
-          curl --fail --location --retry 3 --output parity-consumers/dw.phar https://github.com/durable-workflow/cli/releases/download/2.2.0/dw.phar
-          printf '%s  %s\n' "$(jq -r '.visibility.cli.phar_sha256' tests/Fixtures/ServerParity/visibility-current-runs.json)" parity-consumers/dw.phar | sha256sum -c > parity-evidence/cli-artifact.txt
-          export DW_PARITY_CLI_PHAR=/source/parity-consumers/dw.phar
+          # The restarts part needs the maintenance loop as much as the corpus does.
           docker run -d --name "$RESOURCE_SCOPE-php-maintenance" --network "$RESOURCE_SCOPE" \
             --user=1000:1000 --cpus=0.25 --memory=256m --memory-swap=256m --entrypoint sh \
             -v "$PWD/parity-state:/state" -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/php.sqlite -e DB_SQLITE_BUSY_TIMEOUT=30000 \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
             "$image" -c 'while :; do php artisan workflow:v2:repair-pass --json; php artisan schedule:evaluate --limit=100 --json; sleep 1; done'
+      - name: Execute and compare Rust, published PHP and embedded fixtures
+        if: ${{ matrix.part == 'corpus' }}
+        env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: |
+          set -euo pipefail
+          # Bounded container log tails make a failure in this step diagnosable from its own log.
+          container_log_tails() {
+            bash scripts/conformance/server-parity/container-log-tails.sh
+          }
+          trap container_log_tails ERR
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
+          export DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
+          mkdir -p parity-consumers
+          curl --fail --location --retry 3 --output parity-consumers/dw.phar https://github.com/durable-workflow/cli/releases/download/2.2.0/dw.phar
+          printf '%s  %s\n' "$(jq -r '.visibility.cli.phar_sha256' tests/Fixtures/ServerParity/visibility-current-runs.json)" parity-consumers/dw.phar | sha256sum -c > parity-evidence/cli-artifact.txt
+          export DW_PARITY_CLI_PHAR=/source/parity-consumers/dw.phar
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR "$image" scripts/conformance/server-parity.mjs record \
             --mode http --url http://parity-server:8080 --target php --output /evidence/php.json \
+            --exclude-fixture tests/Fixtures/ServerParity/update-validation.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-pending.json \
@@ -1665,6 +1797,7 @@ jobs:
             -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/embedded.sqlite -e DW_MODE=embedded \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
             --mode embedded --application-root /app --target embedded --output /evidence/embedded.json \
+            --exclude-fixture tests/Fixtures/ServerParity/update-validation.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-pending.json \
@@ -1677,6 +1810,7 @@ jobs:
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR "$image" scripts/conformance/server-parity.mjs record \
             --mode http --url http://parity-rust:8080 --target rust --output /evidence/rust.json \
+            --exclude-fixture tests/Fixtures/ServerParity/update-validation.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-pending.json \
@@ -1688,6 +1822,7 @@ jobs:
           docker run --rm --user=1000:1000 --entrypoint node \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
             scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json \
+            --exclude-fixture tests/Fixtures/ServerParity/update-validation.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-pending.json \
@@ -1695,6 +1830,27 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json > parity-evidence/comparison.json || compare_status=$?
+          # Server #723: update-validation records apart from the main corpus, and
+          # its published PHP record runs with PHP's maintenance loop stopped.
+          update_validation_status=0
+          bash scripts/conformance/server-parity/update-validation-sqlite.sh http://parity-server:8080 http://parity-rust:8080 || update_validation_status=$?
+          # A native fixture difference fails the step only after the
+          # comparison has run, so one difference cannot hide the rest.
+          test "$native_record_status" -eq 0
+          test "$compare_status" -eq 0
+          test "$update_validation_status" -eq 0
+      - name: Compare published patch, legacy-marker and range-repair profiles
+        if: ${{ matrix.part == 'restarts' }}
+        env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: |
+          set -euo pipefail
+          # Bounded container log tails make a failure in this step diagnosable from its own log.
+          container_log_tails() {
+            bash scripts/conformance/server-parity/container-log-tails.sh
+          }
+          trap container_log_tails ERR
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
           bash scripts/conformance/server-parity/published-sdk-patch-profile.sh sqlite http://parity-server:8080 http://parity-rust:8080
           bash scripts/conformance/server-parity/repeated-patch-profile.sh sqlite http://parity-server:8080 http://parity-rust:8080
           bash scripts/conformance/server-parity/legacy-marker-profile.sh sqlite http://parity-server:8080 http://parity-rust:8080
@@ -1751,7 +1907,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --entrypoint curl --network "$RESOURCE_SCOPE" "$image" \
-              -fsS http://parity-recovered:8080/api/ready > parity-evidence/restart-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-recovered:8080/api/ready > parity-evidence/restart-readiness.json; then
               ready=1
               break
             fi
@@ -1764,10 +1920,6 @@ jobs:
               php scripts/conformance/server-parity/cooperative-restart.php finish http://parity-recovered:8080 /evidence/cooperative-restart-receipt.json > /evidence/cooperative-restart-finish.json
               php scripts/conformance/server-parity/restart.php finish http://parity-recovered:8080 /evidence/restart-receipt.json > /evidence/restart-finish.json
             '
-          # A native fixture difference fails the step only after every later
-          # check has run, so one difference cannot hide the rest.
-          test "$native_record_status" -eq 0
-          test "$compare_status" -eq 0
       - name: Compare every published-SDK direction profile in three concurrent lanes
         if: ${{ matrix.part == 'sdk-directions' }}
         env:
@@ -1800,7 +1952,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-rust:8080/api/ready > parity-evidence/sdk-native-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-rust:8080/api/ready > parity-evidence/sdk-native-readiness.json; then
               ready=1
               break
             fi
@@ -1834,7 +1986,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS http://parity-recovered:8080/api/ready > parity-evidence/cohort-native-readiness.json; then
+              -fsS --connect-timeout 2 --max-time 5 http://parity-recovered:8080/api/ready > parity-evidence/cohort-native-readiness.json; then
               ready=1
               break
             fi
@@ -1876,13 +2028,46 @@ jobs:
           DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.9.7
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:30c34c5f3256a812fbccbe505a068309b58b0c14d01ffff0465d88604cb36d50
         run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh sqlite
+      - name: Start the native node the corrected marker cohort uses
+        id: prepare_corrected
+        if: ${{ matrix.part == 'corrected-markers' }}
+        env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: |
+          set -euo pipefail
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
+          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
+            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+            install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
+          mkdir -p parity-state parity-evidence
+          # The cohorts' published PHP containers run as 1000:1000; grant that
+          # user alone, not everyone.
+          setfacl -m u:1000:rwx,d:u:1000:rwx parity-state parity-evidence
+          docker network create "$RESOURCE_SCOPE"
+          docker run -d --name "$RESOURCE_SCOPE-recovered" --network "$RESOURCE_SCOPE" --network-alias=parity-recovered \
+            --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
+            -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token \
+            -e DB_DATABASE=/state/rust.sqlite -e DW_BIND_ADDRESS=0.0.0.0:8080 \
+            -v "$PWD/rust-target:/target:ro" -v "$PWD/parity-state:/state" \
+            --entrypoint /target/debug/durable-workflow-server \
+            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+              -fsS --connect-timeout 2 --max-time 5 http://parity-recovered:8080/api/ready > parity-evidence/corrected-native-readiness.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
       - name: Compare corrected markers, ranges, clocks and activity expiry
-        if: ${{ !cancelled() && matrix.part == 'cohorts' && steps.prepare_cohorts.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.part == 'corrected-markers' && steps.prepare_corrected.outcome == 'success' }}
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/conformance/server-parity/corrected-marker-shared-profile.sh sqlite http://parity-recovered:8080
       - name: Retire corrected cohort resources
-        if: ${{ always() && matrix.part == 'cohorts' }}
+        if: ${{ always() && matrix.part == 'corrected-markers' }}
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/conformance/server-parity/corrected-marker-cleanup.sh sqlite

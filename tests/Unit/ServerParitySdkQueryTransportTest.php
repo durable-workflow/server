@@ -252,4 +252,48 @@ final class ServerParitySdkQueryTransportTest extends TestCase
             unlink($journal);
         }
     }
+
+    private function queryCompletionRequests(): array
+    {
+        return [
+            ['method' => 'POST', 'path' => '/api/worker/query-tasks/poll', 'status' => 200,
+                'client_cancelled' => false, 'transport_error' => null,
+                'response' => ['task' => ['query_task_id' => 'query-task', 'workflow_id' => 'original', 'run_id' => 'run']]],
+            ['method' => 'POST', 'path' => '/api/worker/query-tasks/query-task/complete', 'status' => 200,
+                'client_cancelled' => false, 'transport_error' => null,
+                'response' => ['query_task_id' => 'query-task', 'outcome' => 'completed']],
+        ];
+    }
+
+    public function test_the_author_is_released_only_after_its_query_completion_response(): void
+    {
+        self::assertTrue(\sdkQueryCompletionAcknowledged($this->queryCompletionRequests(), 'original', 'run'));
+        self::assertFalse(\sdkQueryCompletionAcknowledged([$this->queryCompletionRequests()[0]], 'original', 'run'),
+            'a claimed query whose completion has no response yet keeps the author running');
+    }
+
+    public function test_cancelled_failed_foreign_or_misordered_query_completions_do_not_release_the_author(): void
+    {
+        // The observed flake: the caller returned, the author was stopped, and
+        // its in-flight completion was recorded as client-cancelled status 0.
+        foreach ([
+            'status' => 0, 'client_cancelled' => true, 'transport_error' => 'ECONNRESET',
+        ] as $field => $value) {
+            $requests = $this->queryCompletionRequests();
+            $requests[1][$field] = $value;
+            self::assertFalse(\sdkQueryCompletionAcknowledged($requests, 'original', 'run'), $field);
+        }
+        $requests = $this->queryCompletionRequests();
+        $requests[1]['response'] = new stdClass;
+        self::assertFalse(\sdkQueryCompletionAcknowledged($requests, 'original', 'run'), 'an empty response object');
+        $requests = $this->queryCompletionRequests();
+        $requests[1]['response']['query_task_id'] = 'foreign-query';
+        self::assertFalse(\sdkQueryCompletionAcknowledged($requests, 'original', 'run'), 'a foreign completion receipt');
+        $requests = $this->queryCompletionRequests();
+        $requests[0]['response'] = new stdClass;
+        self::assertFalse(\sdkQueryCompletionAcknowledged($requests, 'original', 'run'), 'an empty poll');
+        self::assertFalse(\sdkQueryCompletionAcknowledged(array_reverse($this->queryCompletionRequests()), 'original', 'run'));
+        self::assertFalse(\sdkQueryCompletionAcknowledged($this->queryCompletionRequests(), 'foreign', 'run'));
+        self::assertFalse(\sdkQueryCompletionAcknowledged($this->queryCompletionRequests(), 'original', 'foreign'));
+    }
 }
