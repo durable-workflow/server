@@ -78,9 +78,12 @@ pub(super) const STREAM_COUNTS: [&str; 3] =
     ["message_streams_deleted", "message_stream_items_deleted", "message_stream_items_compacted"];
 
 /// Counts that hold a run's details, the run-id binds of each, and the
-/// skip reason. An abandoned activity's hold is read from history.
+/// skip reason. An abandoned activity's hold is read from history. A run
+/// whose instance has inbound message streams is held too: native does not
+/// compact or remove stream state as PHP's MessageStreamRetentionCleanup
+/// does yet, so it keeps the run rather than orphan the streams.
 pub(super) const HOLDS: &[(&str, usize, &str)] = &[
-    ("SELECT (SELECT COUNT(*) FROM workflow_durable_streams WHERE workflow_run_id=$1)+(SELECT COUNT(*) FROM workflow_messages WHERE workflow_run_id=$2)", 2, "message_stream_cleanup_unavailable"),
+    ("SELECT (SELECT COUNT(*) FROM workflow_durable_streams WHERE workflow_run_id=$1)+(SELECT COUNT(*) FROM workflow_messages WHERE workflow_run_id=$2)+(SELECT COUNT(*) FROM workflow_inbound_streams WHERE workflow_instance_id IN (SELECT workflow_instance_id FROM workflow_runs WHERE id=$3))", 3, "message_stream_cleanup_unavailable"),
     (REFERENCES_SQL, 5, "external_payload_cleanup_unavailable"),
 ];
 

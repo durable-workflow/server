@@ -349,8 +349,9 @@ where
             "last_claim_failed_at",
             "repair_available_at",
         ] {
+            // PHP's snapshot times are UTC with microseconds.
             if let Some(value) = DB::optional_instant(task, field)? {
-                snapshot[field] = json!(value);
+                snapshot[field] = json!(super::query_authority::wire(value));
             }
         }
         for field in ["lease_owner", "compatibility", "last_dispatch_error", "last_claim_error"] {
