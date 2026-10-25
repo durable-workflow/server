@@ -12,8 +12,10 @@ use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
 use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Contracts\ServiceControlPlane;
+use Workflow\V2\Contracts\WorkflowServiceOperationAuthorizer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
+use Workflow\V2\Exceptions\ServiceOperationAuthorizationException;
 use Workflow\V2\Exceptions\WorkflowOutputCodecUnavailableException;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSearchAttribute;
@@ -35,6 +37,7 @@ use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\Support\WorkflowQueryContract;
+use Workflow\V2\Support\WorkflowServiceOperationAuthority;
 use Workflow\V2\Support\WorkflowTaskLease;
 
 /**
@@ -62,6 +65,7 @@ final class WorkflowPackageApiFloor
      * remediation hint that points at the upgrade.
      */
     private const REQUIRED_APIS = [
+        [WorkflowServiceOperationAuthority::class, 'options'],
         // CodecRegistry::universal() is the public Avro-only codec authority
         // used by /api/cluster/info and the embedded control-plane request
         // contract.
@@ -157,6 +161,7 @@ final class WorkflowPackageApiFloor
      * Concrete classes the server instantiates or catches directly.
      */
     private const REQUIRED_CLASSES = [
+        ServiceOperationAuthorizationException::class,
         ExternalPayloadIntegrityException::class,
         LocalFilesystemExternalPayloadStorage::class,
         WorkflowOutputCodecUnavailableException::class,
@@ -189,6 +194,7 @@ final class WorkflowPackageApiFloor
      * Interface methods the server type-hints directly.
      */
     private const REQUIRED_INTERFACE_APIS = [
+        [WorkflowServiceOperationAuthorizer::class, 'authorize'],
         [MatchingRole::class, 'wake'],
         [MatchingRole::class, 'runPass'],
         [ServiceControlPlane::class, 'execute'],
