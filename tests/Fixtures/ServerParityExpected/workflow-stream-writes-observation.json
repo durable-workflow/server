@@ -1,0 +1,858 @@
+{
+  "applicable": true,
+  "workflow_id": "parity-v1-workflow-stream-writes-wsw",
+  "run_id": "01m5rwqt9swt5hthyvnqaac50h",
+  "list_empty": {
+    "status": 200,
+    "response": {
+      "workflow_id": "parity-v1-workflow-stream-writes-wsw",
+      "workflow_run_id": "01m5rwqt9swt5hthyvnqaac50h",
+      "count": 0,
+      "streams": []
+    }
+  },
+  "show_missing": {
+    "status": 404,
+    "response": {
+      "message": "Stream not found.",
+      "reason": "stream_not_found"
+    }
+  },
+  "items_missing": {
+    "status": 404,
+    "response": {
+      "message": "Stream not found.",
+      "reason": "stream_not_found"
+    }
+  },
+  "close_missing": {
+    "status": 404,
+    "response": {
+      "message": "Stream not found.",
+      "reason": "stream_not_found"
+    }
+  },
+  "append_first": {
+    "status": 200,
+    "response": {
+      "workflow_id": "parity-v1-workflow-stream-writes-wsw",
+      "workflow_run_id": "01m5rwqt9swt5hthyvnqaac50h",
+      "stream": {
+        "stream_name": "tokens",
+        "status": "open",
+        "last_offset": 1,
+        "total_items": 2,
+        "pending_items": 2,
+        "opened_at": "2026-10-25T06:42:31.000000Z",
+        "last_appended_at": "2026-10-25T06:42:31.000000Z",
+        "closed_at": null,
+        "error_reason": null,
+        "retention_seconds": null
+      },
+      "accepted_offsets": [
+        0,
+        1
+      ],
+      "accepted": 2,
+      "deduped": 0
+    }
+  },
+  "append_retry": {
+    "status": 200,
+    "response": {
+      "workflow_id": "parity-v1-workflow-stream-writes-wsw",
+      "workflow_run_id": "01m5rwqt9swt5hthyvnqaac50h",
+      "stream": {
+        "stream_name": "tokens",
+        "status": "open",
+        "last_offset": 2,
+        "total_items": 3,
+        "pending_items": 3,
+        "opened_at": "2026-10-25T06:42:31.000000Z",
+        "last_appended_at": "2026-10-25T06:42:31.000000Z",
+        "closed_at": null,
+        "error_reason": null,
+        "retention_seconds": null
+      },
+      "accepted_offsets": [
+        0,
+        2
+      ],
+      "accepted": 1,
+      "deduped": 1
+    }
+  },
+  "show_after_appends": {
+    "status": 200,
+    "response": {
+      "workflow_id": "parity-v1-workflow-stream-writes-wsw",
+      "workflow_run_id": "01m5rwqt9swt5hthyvnqaac50h",
+      "stream": {
+        "stream_name": "tokens",
+        "status": "open",
+        "last_offset": 2,
+        "total_items": 3,
+        "pending_items": 3,
+        "opened_at": "2026-10-25T06:42:31.000000Z",
+        "last_appended_at": "2026-10-25T06:42:31.000000Z",
+        "closed_at": null,
+        "error_reason": null,
+        "retention_seconds": null
+      }
+    }
+  },
+  "items_window": {
+    "status": 200,
+    "response": {
+      "workflow_id": "parity-v1-workflow-stream-writes-wsw",
+      "workflow_run_id": "01m5rwqt9swt5hthyvnqaac50h",
+      "stream": {
+        "stream_name": "tokens",
+        "status": "open",
+        "last_offset": 2,
+        "total_items": 3,
+        "pending_items": 3,
+        "opened_at": "2026-10-25T06:42:31.000000Z",
+        "last_appended_at": "2026-10-25T06:42:31.000000Z",
+        "closed_at": null,
+        "error_reason": null,
+        "retention_seconds": null
+      },
+      "items": [
+        {
+          "offset": 1,
+          "idempotency_key": "k2",
+          "origin": "workflow_command",
+          "origin_reference": null,
+          "item_type": null,
+          "content_type": null,
+          "payload": "plain text",
+          "payload_reference": null,
+          "payload_codec": "avro",
+          "emitted_at": "2026-10-25T06:42:31.000000Z"
+        }
+      ],
+      "next_offset": 2,
+      "terminal": false
+    }
+  },
+  "show_after_window": {
+    "status": 200,
+    "response": {
+      "workflow_id": "parity-v1-workflow-stream-writes-wsw",
+      "workflow_run_id": "01m5rwqt9swt5hthyvnqaac50h",
+      "stream": {
+        "stream_name": "tokens",
+        "status": "open",
+        "last_offset": 2,
+        "total_items": 3,
+        "pending_items": 3,
+        "opened_at": "2026-10-25T06:42:31.000000Z",
+        "last_appended_at": "2026-10-25T06:42:31.000000Z",
+        "closed_at": null,
+        "error_reason": null,
+        "retention_seconds": null
+      }
+    }
+  },
+  "items_all": {
+    "status": 200,
+    "response": {
+      "workflow_id": "parity-v1-workflow-stream-writes-wsw",
+      "workflow_run_id": "01m5rwqt9swt5hthyvnqaac50h",
+      "stream": {
+        "stream_name": "tokens",
+        "status": "open",
+        "last_offset": 2,
+        "total_items": 3,
+        "pending_items": 0,
+        "opened_at": "2026-10-25T06:42:31.000000Z",
+        "last_appended_at": "2026-10-25T06:42:31.000000Z",
+        "closed_at": null,
+        "error_reason": null,
+        "retention_seconds": null
+      },
+      "items": [
+        {
+          "offset": 0,
+          "idempotency_key": "k1",
+          "origin": "worker",
+          "origin_reference": "attempt-1",
+          "item_type": "token",
+          "content_type": "application/json",
+          "payload": {
+            "token": "Hello",
+            "count": 9007199254740993,
+            "unicode": "λ"
+          },
+          "payload_reference": null,
+          "payload_codec": null,
+          "emitted_at": "2026-10-25T06:42:31.000000Z"
+        },
+        {
+          "offset": 1,
+          "idempotency_key": "k2",
+          "origin": "workflow_command",
+          "origin_reference": null,
+          "item_type": null,
+          "content_type": null,
+          "payload": "plain text",
+          "payload_reference": null,
+          "payload_codec": "avro",
+          "emitted_at": "2026-10-25T06:42:31.000000Z"
+        },
+        {
+          "offset": 2,
+          "idempotency_key": null,
+          "origin": "workflow_command",
+          "origin_reference": null,
+          "item_type": null,
+          "content_type": null,
+          "payload": [
+            1,
+            2,
+            3
+          ],
+          "payload_reference": null,
+          "payload_codec": null,
+          "emitted_at": "2026-10-25T06:42:31.000000Z"
+        }
+      ],
+      "next_offset": 3,
+      "terminal": false
+    }
+  },
+  "show_after_catch_up": {
+    "status": 200,
+    "response": {
+      "workflow_id": "parity-v1-workflow-stream-writes-wsw",
+      "workflow_run_id": "01m5rwqt9swt5hthyvnqaac50h",
+      "stream": {
+        "stream_name": "tokens",
+        "status": "open",
+        "last_offset": 2,
+        "total_items": 3,
+        "pending_items": 0,
+        "opened_at": "2026-10-25T06:42:31.000000Z",
+        "last_appended_at": "2026-10-25T06:42:31.000000Z",
+        "closed_at": null,
+        "error_reason": null,
+        "retention_seconds": null
+      }
+    }
+  },
+  "items_wait_empty": {
+    "status": 200,
+    "response": {
+      "workflow_id": "parity-v1-workflow-stream-writes-wsw",
+      "workflow_run_id": "01m5rwqt9swt5hthyvnqaac50h",
+      "stream": {
+        "stream_name": "tokens",
+        "status": "open",
+        "last_offset": 2,
+        "total_items": 3,
+        "pending_items": 0,
+        "opened_at": "2026-10-25T06:42:31.000000Z",
+        "last_appended_at": "2026-10-25T06:42:31.000000Z",
+        "closed_at": null,
+        "error_reason": null,
+        "retention_seconds": null
+      },
+      "items": [],
+      "next_offset": 3,
+      "terminal": false
+    }
+  },
+  "items_wait_returned_after_wait": true,
+  "append_full": {
+    "status": 429,
+    "response": {
+      "message": "Stream pending-items cap reached; consumer is draining too slowly.",
+      "reason": "stream_full",
+      "pending_items": 2,
+      "max_pending_items": 2
+    }
+  },
+  "show_after_full": {
+    "status": 200,
+    "response": {
+      "workflow_id": "parity-v1-workflow-stream-writes-wsw",
+      "workflow_run_id": "01m5rwqt9swt5hthyvnqaac50h",
+      "stream": {
+        "stream_name": "tokens",
+        "status": "open",
+        "last_offset": 4,
+        "total_items": 5,
+        "pending_items": 2,
+        "opened_at": "2026-10-25T06:42:31.000000Z",
+        "last_appended_at": "2026-10-25T06:42:33.000000Z",
+        "closed_at": null,
+        "error_reason": null,
+        "retention_seconds": null
+      }
+    }
+  },
+  "items_after_full": {
+    "status": 200,
+    "response": {
+      "workflow_id": "parity-v1-workflow-stream-writes-wsw",
+      "workflow_run_id": "01m5rwqt9swt5hthyvnqaac50h",
+      "stream": {
+        "stream_name": "tokens",
+        "status": "open",
+        "last_offset": 4,
+        "total_items": 5,
+        "pending_items": 0,
+        "opened_at": "2026-10-25T06:42:31.000000Z",
+        "last_appended_at": "2026-10-25T06:42:33.000000Z",
+        "closed_at": null,
+        "error_reason": null,
+        "retention_seconds": null
+      },
+      "items": [
+        {
+          "offset": 3,
+          "idempotency_key": "k3",
+          "origin": "workflow_command",
+          "origin_reference": null,
+          "item_type": null,
+          "content_type": null,
+          "payload": {
+            "n": 3
+          },
+          "payload_reference": null,
+          "payload_codec": null,
+          "emitted_at": "2026-10-25T06:42:33.000000Z"
+        },
+        {
+          "offset": 4,
+          "idempotency_key": null,
+          "origin": "workflow_command",
+          "origin_reference": null,
+          "item_type": null,
+          "content_type": null,
+          "payload": {
+            "n": 4
+          },
+          "payload_reference": null,
+          "payload_codec": null,
+          "emitted_at": "2026-10-25T06:42:33.000000Z"
+        }
+      ],
+      "next_offset": 5,
+      "terminal": false
+    }
+  },
+  "refusals": {
+    "no_items": {
+      "status": 422,
+      "response": {
+        "message": "The items field is required.",
+        "reason": "validation_failed",
+        "errors": {
+          "items": [
+            "The items field is required."
+          ]
+        },
+        "validation_errors": {
+          "items": [
+            "The items field is required."
+          ]
+        }
+      }
+    },
+    "empty_items": {
+      "status": 422,
+      "response": {
+        "message": "The items field is required.",
+        "reason": "validation_failed",
+        "errors": {
+          "items": [
+            "The items field is required."
+          ]
+        },
+        "validation_errors": {
+          "items": [
+            "The items field is required."
+          ]
+        }
+      }
+    },
+    "too_many_items": {
+      "status": 422,
+      "response": {
+        "message": "The items field must not have more than 500 items.",
+        "reason": "validation_failed",
+        "errors": {
+          "items": [
+            "The items field must not have more than 500 items."
+          ]
+        },
+        "validation_errors": {
+          "items": [
+            "The items field must not have more than 500 items."
+          ]
+        }
+      }
+    },
+    "item_not_object": {
+      "status": 422,
+      "response": {
+        "message": "The items.0 field must be an array.",
+        "reason": "validation_failed",
+        "errors": {
+          "items.0": [
+            "The items.0 field must be an array."
+          ]
+        },
+        "validation_errors": {
+          "items.0": [
+            "The items.0 field must be an array."
+          ]
+        }
+      }
+    },
+    "bad_codec": {
+      "status": 422,
+      "response": {
+        "message": "unsupported_payload_codec: workflow payload codec \"not-a-codec\" is not supported by Durable Workflow 2.0; use codec=\"avro\" with the fixed Avro Value schema and single-object framing. JSON remains the HTTP document transport, not a workflow payload codec.",
+        "reason": "validation_failed",
+        "errors": {
+          "items.0.payload_codec": [
+            "unsupported_payload_codec: workflow payload codec \"not-a-codec\" is not supported by Durable Workflow 2.0; use codec=\"avro\" with the fixed Avro Value schema and single-object framing. JSON remains the HTTP document transport, not a workflow payload codec."
+          ]
+        },
+        "validation_errors": {
+          "items.0.payload_codec": [
+            "unsupported_payload_codec: workflow payload codec \"not-a-codec\" is not supported by Durable Workflow 2.0; use codec=\"avro\" with the fixed Avro Value schema and single-object framing. JSON remains the HTTP document transport, not a workflow payload codec."
+          ]
+        }
+      }
+    },
+    "long_idempotency_key": {
+      "status": 422,
+      "response": {
+        "message": "The items.0.idempotency_key field must not be greater than 191 characters.",
+        "reason": "validation_failed",
+        "errors": {
+          "items.0.idempotency_key": [
+            "The items.0.idempotency_key field must not be greater than 191 characters."
+          ]
+        },
+        "validation_errors": {
+          "items.0.idempotency_key": [
+            "The items.0.idempotency_key field must not be greater than 191 characters."
+          ]
+        }
+      }
+    },
+    "zero_max_pending": {
+      "status": 422,
+      "response": {
+        "message": "The max pending items field must be at least 1.",
+        "reason": "validation_failed",
+        "errors": {
+          "max_pending_items": [
+            "The max pending items field must be at least 1."
+          ]
+        },
+        "validation_errors": {
+          "max_pending_items": [
+            "The max pending items field must be at least 1."
+          ]
+        }
+      }
+    },
+    "bad_stream_append": {
+      "status": 400,
+      "response": {
+        "message": "invalid stream name",
+        "reason": "invalid_request"
+      }
+    },
+    "unstored_reference": {
+      "status": 422,
+      "response": {
+        "schema": "durable-workflow.v2.runtime-external-payload-error.v1",
+        "reason": "external_payload_unsupported",
+        "message": "Payload reference fields require an opaque runtime external payload reference object.",
+        "retryable": false,
+        "status": 422
+      }
+    },
+    "unknown_run_append": {
+      "status": 404,
+      "response": {
+        "message": "Workflow run not found.",
+        "reason": "instance_not_found"
+      }
+    },
+    "unknown_workflow_append": {
+      "status": 404,
+      "response": {
+        "message": "Workflow run not found.",
+        "reason": "instance_not_found"
+      }
+    },
+    "bad_stream_show": {
+      "status": 400,
+      "response": {
+        "message": "invalid stream name",
+        "reason": "invalid_stream_name"
+      }
+    },
+    "bad_stream_items": {
+      "status": 400,
+      "response": {
+        "message": "invalid stream name",
+        "reason": "invalid_stream_name"
+      }
+    },
+    "negative_from": {
+      "status": 422,
+      "response": {
+        "message": "The from field must be at least 0.",
+        "reason": "validation_failed",
+        "errors": {
+          "from": [
+            "The from field must be at least 0."
+          ]
+        },
+        "validation_errors": {
+          "from": [
+            "The from field must be at least 0."
+          ]
+        }
+      }
+    },
+    "too_many_read": {
+      "status": 422,
+      "response": {
+        "message": "The max items field must not be greater than 500.",
+        "reason": "validation_failed",
+        "errors": {
+          "max_items": [
+            "The max items field must not be greater than 500."
+          ]
+        },
+        "validation_errors": {
+          "max_items": [
+            "The max items field must not be greater than 500."
+          ]
+        }
+      }
+    },
+    "long_wait": {
+      "status": 422,
+      "response": {
+        "message": "The wait seconds field must not be greater than 60.",
+        "reason": "validation_failed",
+        "errors": {
+          "wait_seconds": [
+            "The wait seconds field must not be greater than 60."
+          ]
+        },
+        "validation_errors": {
+          "wait_seconds": [
+            "The wait seconds field must not be greater than 60."
+          ]
+        }
+      }
+    },
+    "bad_stream_close": {
+      "status": 400,
+      "response": {
+        "message": "invalid stream name",
+        "reason": "invalid_stream_name"
+      }
+    },
+    "long_error_reason": {
+      "status": 422,
+      "response": {
+        "message": "The error reason field must not be greater than 191 characters.",
+        "reason": "validation_failed",
+        "errors": {
+          "error_reason": [
+            "The error reason field must not be greater than 191 characters."
+          ]
+        },
+        "validation_errors": {
+          "error_reason": [
+            "The error reason field must not be greater than 191 characters."
+          ]
+        }
+      }
+    },
+    "zero_retention": {
+      "status": 422,
+      "response": {
+        "message": "The retention seconds field must be at least 1.",
+        "reason": "validation_failed",
+        "errors": {
+          "retention_seconds": [
+            "The retention seconds field must be at least 1."
+          ]
+        },
+        "validation_errors": {
+          "retention_seconds": [
+            "The retention seconds field must be at least 1."
+          ]
+        }
+      }
+    },
+    "unknown_run_close": {
+      "status": 404,
+      "response": {
+        "message": "Workflow run not found.",
+        "reason": "instance_not_found"
+      }
+    }
+  },
+  "list_after_refusals": {
+    "status": 200,
+    "response": {
+      "workflow_id": "parity-v1-workflow-stream-writes-wsw",
+      "workflow_run_id": "01m5rwqt9swt5hthyvnqaac50h",
+      "count": 1,
+      "streams": [
+        {
+          "stream_name": "tokens",
+          "status": "open",
+          "last_offset": 4,
+          "total_items": 5,
+          "pending_items": 0,
+          "opened_at": "2026-10-25T06:42:31.000000Z",
+          "last_appended_at": "2026-10-25T06:42:33.000000Z",
+          "closed_at": null,
+          "error_reason": null,
+          "retention_seconds": null
+        }
+      ]
+    }
+  },
+  "close": {
+    "status": 200,
+    "response": {
+      "workflow_id": "parity-v1-workflow-stream-writes-wsw",
+      "workflow_run_id": "01m5rwqt9swt5hthyvnqaac50h",
+      "stream": {
+        "stream_name": "tokens",
+        "status": "closed",
+        "last_offset": 4,
+        "total_items": 5,
+        "pending_items": 0,
+        "opened_at": "2026-10-25T06:42:31.000000Z",
+        "last_appended_at": "2026-10-25T06:42:33.000000Z",
+        "closed_at": "2026-10-25T06:42:35.000000Z",
+        "error_reason": null,
+        "retention_seconds": 3600
+      }
+    }
+  },
+  "close_again": {
+    "status": 200,
+    "response": {
+      "workflow_id": "parity-v1-workflow-stream-writes-wsw",
+      "workflow_run_id": "01m5rwqt9swt5hthyvnqaac50h",
+      "stream": {
+        "stream_name": "tokens",
+        "status": "closed",
+        "last_offset": 4,
+        "total_items": 5,
+        "pending_items": 0,
+        "opened_at": "2026-10-25T06:42:31.000000Z",
+        "last_appended_at": "2026-10-25T06:42:33.000000Z",
+        "closed_at": "2026-10-25T06:42:35.000000Z",
+        "error_reason": null,
+        "retention_seconds": 3600
+      }
+    }
+  },
+  "append_closed": {
+    "status": 409,
+    "response": {
+      "message": "Stream is closed.",
+      "reason": "stream_closed"
+    }
+  },
+  "items_closed_tail": {
+    "status": 200,
+    "response": {
+      "workflow_id": "parity-v1-workflow-stream-writes-wsw",
+      "workflow_run_id": "01m5rwqt9swt5hthyvnqaac50h",
+      "stream": {
+        "stream_name": "tokens",
+        "status": "closed",
+        "last_offset": 4,
+        "total_items": 5,
+        "pending_items": 0,
+        "opened_at": "2026-10-25T06:42:31.000000Z",
+        "last_appended_at": "2026-10-25T06:42:33.000000Z",
+        "closed_at": "2026-10-25T06:42:35.000000Z",
+        "error_reason": null,
+        "retention_seconds": 3600
+      },
+      "items": [],
+      "next_offset": 5,
+      "terminal": true
+    }
+  },
+  "items_closed_head": {
+    "status": 200,
+    "response": {
+      "workflow_id": "parity-v1-workflow-stream-writes-wsw",
+      "workflow_run_id": "01m5rwqt9swt5hthyvnqaac50h",
+      "stream": {
+        "stream_name": "tokens",
+        "status": "closed",
+        "last_offset": 4,
+        "total_items": 5,
+        "pending_items": 0,
+        "opened_at": "2026-10-25T06:42:31.000000Z",
+        "last_appended_at": "2026-10-25T06:42:33.000000Z",
+        "closed_at": "2026-10-25T06:42:35.000000Z",
+        "error_reason": null,
+        "retention_seconds": 3600
+      },
+      "items": [
+        {
+          "offset": 4,
+          "idempotency_key": null,
+          "origin": "workflow_command",
+          "origin_reference": null,
+          "item_type": null,
+          "content_type": null,
+          "payload": {
+            "n": 4
+          },
+          "payload_reference": null,
+          "payload_codec": null,
+          "emitted_at": "2026-10-25T06:42:33.000000Z"
+        }
+      ],
+      "next_offset": 5,
+      "terminal": true
+    }
+  },
+  "append_other": {
+    "status": 200,
+    "response": {
+      "workflow_id": "parity-v1-workflow-stream-writes-wsw",
+      "workflow_run_id": "01m5rwqt9swt5hthyvnqaac50h",
+      "stream": {
+        "stream_name": "audit",
+        "status": "open",
+        "last_offset": 0,
+        "total_items": 1,
+        "pending_items": 1,
+        "opened_at": "2026-10-25T06:42:35.000000Z",
+        "last_appended_at": "2026-10-25T06:42:35.000000Z",
+        "closed_at": null,
+        "error_reason": null,
+        "retention_seconds": null
+      },
+      "accepted_offsets": [
+        0
+      ],
+      "accepted": 1,
+      "deduped": 0
+    }
+  },
+  "close_errored": {
+    "status": 200,
+    "response": {
+      "workflow_id": "parity-v1-workflow-stream-writes-wsw",
+      "workflow_run_id": "01m5rwqt9swt5hthyvnqaac50h",
+      "stream": {
+        "stream_name": "audit",
+        "status": "errored",
+        "last_offset": 0,
+        "total_items": 1,
+        "pending_items": 1,
+        "opened_at": "2026-10-25T06:42:35.000000Z",
+        "last_appended_at": "2026-10-25T06:42:35.000000Z",
+        "closed_at": "2026-10-25T06:42:35.000000Z",
+        "error_reason": "producer crashed",
+        "retention_seconds": 60
+      }
+    }
+  },
+  "append_errored": {
+    "status": 409,
+    "response": {
+      "message": "Stream is errored.",
+      "reason": "stream_errored"
+    }
+  },
+  "items_errored": {
+    "status": 200,
+    "response": {
+      "workflow_id": "parity-v1-workflow-stream-writes-wsw",
+      "workflow_run_id": "01m5rwqt9swt5hthyvnqaac50h",
+      "stream": {
+        "stream_name": "audit",
+        "status": "errored",
+        "last_offset": 0,
+        "total_items": 1,
+        "pending_items": 0,
+        "opened_at": "2026-10-25T06:42:35.000000Z",
+        "last_appended_at": "2026-10-25T06:42:35.000000Z",
+        "closed_at": "2026-10-25T06:42:35.000000Z",
+        "error_reason": "producer crashed",
+        "retention_seconds": 60
+      },
+      "items": [
+        {
+          "offset": 0,
+          "idempotency_key": null,
+          "origin": "workflow_command",
+          "origin_reference": null,
+          "item_type": "event",
+          "content_type": null,
+          "payload": {
+            "audit": true
+          },
+          "payload_reference": null,
+          "payload_codec": null,
+          "emitted_at": "2026-10-25T06:42:35.000000Z"
+        }
+      ],
+      "next_offset": 1,
+      "terminal": true
+    }
+  },
+  "list_final": {
+    "status": 200,
+    "response": {
+      "workflow_id": "parity-v1-workflow-stream-writes-wsw",
+      "workflow_run_id": "01m5rwqt9swt5hthyvnqaac50h",
+      "count": 2,
+      "streams": [
+        {
+          "stream_name": "audit",
+          "status": "errored",
+          "last_offset": 0,
+          "total_items": 1,
+          "pending_items": 0,
+          "opened_at": "2026-10-25T06:42:35.000000Z",
+          "last_appended_at": "2026-10-25T06:42:35.000000Z",
+          "closed_at": "2026-10-25T06:42:35.000000Z",
+          "error_reason": "producer crashed",
+          "retention_seconds": 60
+        },
+        {
+          "stream_name": "tokens",
+          "status": "closed",
+          "last_offset": 4,
+          "total_items": 5,
+          "pending_items": 0,
+          "opened_at": "2026-10-25T06:42:31.000000Z",
+          "last_appended_at": "2026-10-25T06:42:33.000000Z",
+          "closed_at": "2026-10-25T06:42:35.000000Z",
+          "error_reason": null,
+          "retention_seconds": 3600
+        }
+      ]
+    }
+  }
+}
