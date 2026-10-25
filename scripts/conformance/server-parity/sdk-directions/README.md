@@ -34,6 +34,8 @@ bash scripts/conformance/server-parity/sdk-direction-profile.sh BACKEND NATIVE_U
 bash scripts/conformance/server-parity/sdk-direction-cleanup.sh BACKEND
 ```
 
+CI runs every variant through `sdk-direction-lanes.sh BACKEND NATIVE_URL`, in three concurrent lanes against one native server; each variant keeps its own databases, containers and evidence.
+
 Set `RESOURCE_SCOPE` to the owning network and supply `MYSQL_IMAGE` or
 `POSTGRES_IMAGE` for that backend, as the shared workflow does. The profile
 starts the exact PHP reference and embedded engine in independent databases;

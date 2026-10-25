@@ -139,21 +139,32 @@ final class WorkflowUpdateValidationTaskBroker
         WorkerRegistration $worker,
         ?int $timeoutSeconds = null,
     ): ?array {
+        return $this->pollResult($namespace, $worker, $timeoutSeconds)['task'];
+    }
+
+    /**
+     * @return array{task: array<string, mixed>|null, poll_status: string}
+     */
+    public function pollResult(
+        string $namespace,
+        WorkerRegistration $worker,
+        ?int $timeoutSeconds = null,
+    ): array {
         if (! $this->workerSupportsValidation($worker)) {
-            return null;
+            return ['task' => null, 'poll_status' => 'empty'];
         }
 
-        $task = $this->longPoller->until(
-            fn (): ?array => $this->claimAvailable($namespace, $worker),
-            static fn (?array $candidate): bool => is_array($candidate),
+        $fence = $this->workerFence($worker);
+
+        return $this->longPoller->until(
+            fn (): array => $this->claimAvailableResult($namespace, $worker, $fence),
+            static fn (array $candidate): bool => $candidate['poll_status'] !== 'empty',
             $timeoutSeconds,
             wakeChannels: $this->signals->updateValidationTaskPollChannels($namespace, $worker->task_queue),
             reserveWorkerWaitSlot: true,
             waitSlotPool: 'query-task',
             waitSlotNamespace: $namespace,
         );
-
-        return is_array($task) ? $task : null;
     }
 
     /**
@@ -163,17 +174,27 @@ final class WorkflowUpdateValidationTaskBroker
      */
     public function claimAvailable(string $namespace, WorkerRegistration $worker): ?array
     {
+        return $this->claimAvailableResult($namespace, $worker, $this->workerFence($worker))['task'];
+    }
+
+    /**
+     * @param  array<string, mixed>  $fence
+     * @return array{task: array<string, mixed>|null, poll_status: string}
+     */
+    private function claimAvailableResult(string $namespace, WorkerRegistration $worker, array $fence): array
+    {
         app(StoragePressure::class)->requireNewWork();
 
         if (! $this->workerSupportsValidation($worker)) {
-            return null;
+            return ['task' => null, 'poll_status' => 'empty'];
         }
 
-        $task = $this->claim($namespace, $worker);
+        $claim = $this->claim($namespace, $worker, $fence);
 
-        return $task instanceof WorkflowUpdateValidationTask
-            ? $this->taskPayload($task)
-            : null;
+        return [
+            'task' => $claim['task'] instanceof WorkflowUpdateValidationTask ? $this->taskPayload($claim['task']) : null,
+            'poll_status' => $claim['poll_status'],
+        ];
     }
 
     /**
@@ -361,9 +382,17 @@ final class WorkflowUpdateValidationTaskBroker
         }
     }
 
-    private function claim(string $namespace, WorkerRegistration $worker): ?WorkflowUpdateValidationTask
+    /**
+     * @param  array<string, mixed>  $fence
+     * @return array{task: WorkflowUpdateValidationTask|null, poll_status: string}
+     */
+    private function claim(string $namespace, WorkerRegistration $worker, array $fence): array
     {
-        $claim = function () use ($namespace, $worker): ?WorkflowUpdateValidationTask {
+        $claim = function () use ($namespace, $worker, $fence): array {
+            if (! $this->workerFenceIsCurrent($worker, $fence)) {
+                return ['task' => null, 'poll_status' => 'stale_worker_registration'];
+            }
+
             /** @var Collection<int, WorkflowUpdateValidationTask> $tasks */
             $tasks = WorkflowUpdateValidationTask::query()
                 ->where('namespace', $namespace)
@@ -392,15 +421,40 @@ final class WorkflowUpdateValidationTaskBroker
                     'lease_expires_at' => now()->addSeconds($this->leaseTimeoutSeconds()),
                 ])->save();
 
-                return $task;
+                return ['task' => $task, 'poll_status' => 'leased'];
             }
 
-            return null;
+            return ['task' => null, 'poll_status' => 'empty'];
         };
 
         return app(WorkerProtocolMutationRetrier::class)->run(
-            fn (): ?WorkflowUpdateValidationTask => DB::transaction($claim),
+            fn (): array => DB::transaction($claim),
         );
+    }
+
+    /** @param array<string, mixed> $fence */
+    private function workerFenceIsCurrent(WorkerRegistration $worker, array $fence): bool
+    {
+        if (! WorkerPollFence::isCurrentForUpdate($fence)) {
+            return false;
+        }
+
+        // The existing fence holds the row lock through this claim. A new
+        // registration can retain every routing and process identity field.
+        $token = WorkerRegistration::query()
+            ->where('namespace', $worker->namespace)->where('worker_id', $worker->worker_id)->value('registration_token');
+        $incarnation = is_string($token) ? hash('sha256', $token) : null;
+
+        return $fence['registration_incarnation'] === $incarnation;
+    }
+
+    /** @return array<string, mixed> */
+    private function workerFence(WorkerRegistration $worker): array
+    {
+        return [
+            ...WorkerPollFence::snapshot($worker),
+            'registration_incarnation' => is_string($worker->registration_token) ? hash('sha256', $worker->registration_token) : null,
+        ];
     }
 
     /**

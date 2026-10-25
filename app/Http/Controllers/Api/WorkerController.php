@@ -4508,7 +4508,7 @@ class WorkerController
         }
 
         try {
-            $task = $this->updateValidationTasks->poll(
+            $poll = $this->updateValidationTasks->pollResult(
                 $namespace,
                 $worker,
                 isset($validated['timeout_seconds']) ? (int) $validated['timeout_seconds'] : null,
@@ -4532,10 +4532,7 @@ class WorkerController
             );
         }
 
-        return WorkerProtocol::json([
-            'task' => $task,
-            'poll_status' => $task === null ? 'empty' : 'leased',
-        ]);
+        return WorkerProtocol::json($poll);
     }
 
     public function approveUpdateValidationTask(Request $request, string $taskId): JsonResponse
