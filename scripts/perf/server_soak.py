@@ -28,12 +28,12 @@ CONTROL_PLANE_VERSION = os.environ.get("DW_PERF_CONTROL_PLANE_VERSION", "2")
 WORKER_PROTOCOL_VERSION = os.environ.get("DW_PERF_WORKER_PROTOCOL_VERSION", "1.2")
 ERROR_WRITE_LOCK = threading.Lock()
 SERVER_CACHE_KEY_PATTERNS = {
+    "worker_poll_diagnostics": "*server:worker-poll-diagnostic:*",
     "polling_cache_availability_probe": "*server:polling-cache:*",
     "long_poll_signals": "*server:long-poll-signal:*",
     "workflow_task_poll_requests": "*server:workflow-task-poll-request:*",
     "activity_task_poll_requests": "*server:activity-task-poll-request:*",
     "query_task_poll_requests": "*server:query-task-poll-request:*",
-    "long_poll_wait_slots": "*server:long-poll-wait-slot:*",
     "sqlite_worker_poll_claim_gate": "*server:sqlite-worker-poll-claim:*",
     "workflow_query_tasks": "*server:workflow-query-task:*",
     "task_queue_admission_locks": "*server:task-queue-admission:*",

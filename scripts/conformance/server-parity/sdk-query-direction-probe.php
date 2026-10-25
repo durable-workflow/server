@@ -191,6 +191,35 @@ function sdkQueryWorkflowAcknowledgement(array $requests, string $workflowId, st
     return null;
 }
 
+/**
+ * True once the author's own completion of a query task it claimed for this
+ * run has a successful, uncancelled response in its journal.
+ */
+function sdkQueryCompletionAcknowledged(array $requests, string $workflowId, string $runId): bool
+{
+    foreach ($requests as $pollIndex => $poll) {
+        $task = is_array($poll['response'] ?? null) ? ($poll['response']['task'] ?? null) : null;
+        if (($poll['method'] ?? null) !== 'POST' || ($poll['path'] ?? null) !== '/api/worker/query-tasks/poll'
+            || ($poll['status'] ?? null) !== 200 || ! is_array($task)
+            || ($task['workflow_id'] ?? null) !== $workflowId || ($task['run_id'] ?? null) !== $runId
+            || ! is_string($task['query_task_id'] ?? null) || $task['query_task_id'] === '') {
+            continue;
+        }
+        $path = '/api/worker/query-tasks/'.$task['query_task_id'].'/complete';
+        foreach ($requests as $index => $completion) {
+            if ($index > $pollIndex && ($completion['method'] ?? null) === 'POST' && ($completion['path'] ?? null) === $path
+                && ($completion['status'] ?? null) === 200 && ($completion['client_cancelled'] ?? true) === false
+                && ($completion['transport_error'] ?? null) === null
+                && is_array($completion['response'] ?? null)
+                && ($completion['response']['query_task_id'] ?? null) === $task['query_task_id']) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 function sdkQueryActorFinish(array &$actor, float $deadline, string $evidence, string $workflowId): array
 {
     while (sdkQueryActorPoll($actor)) {
@@ -307,6 +336,15 @@ function sdkQueryDirectionHttpObservation(array $fixture, array $options): array
             $query = sdkQueryActorFinish($actors[$queryPhase], $deadline, $evidence, $options['workflow-id']);
             $after = sdkDirectionSnapshot($client, $options['workflow-id'], $runId);
             if (($query['client_finished'] ?? false) === true) {
+                // Native wakes the caller as soon as the completion commits, so
+                // the caller can finish before the author's own completion
+                // response arrives. Stopping the author then cancels that request
+                // (published Python runs queries on a thread its stop cancels).
+                // Release the author only after its completion is observed.
+                while (! sdkQueryCompletionAcknowledged(sdkQueryLiveWireRequests($author), $options['workflow-id'], $runId)
+                    && sdkQueryActorPoll($author) && microtime(true) < $deadline) {
+                    usleep(10000);
+                }
                 file_put_contents($author['receipt'], $actors[$queryPhase]['stdout']);
             } else {
                 proc_terminate($author['process']);

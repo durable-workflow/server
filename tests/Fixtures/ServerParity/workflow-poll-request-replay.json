@@ -1,0 +1,41 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "workflow-poll-request-replay",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "poll request λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "poll request λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "workflow_poll_request": {
+    "workflow_type": "parity.v1.poll_request",
+    "request_id": "poll-request-λ-1",
+    "empty_request_id": "poll-request-empty",
+    "empty_blob": "wwHioz3/VYAiNwwA"
+  },
+  "contract": "POST /api/worker/workflow-tasks/poll with poll_request_id replays the request's last answer, keyed by namespace, task queue, registered build id, worker and the trimmed id. An empty poll stays empty while its result is cached, even after work arrives, so a fresh id leases that work. A lease replays with its current lease, renewed by a workflow-task heartbeat, and a padded copy of the id is the same id. Once its task is no longer deliverable the id polls afresh: it leases the next ready task, which it then replays, or answers empty when nothing is ready. It is never refused as expired. Embedded applications have no worker protocol."
+}
