@@ -66,6 +66,11 @@ Only the accepted task response authorizes execution. An offer never does.
 If the response is lost, retry the exact selected token, registration, poll ID
 and endpoint. An already-accepted live claim can replay after the offer deadline
 without another attempt. A refused duplicate cannot revoke a peer's claim.
+After the original deadline, the Server serializes against in-flight acceptance
+under the registration lock and reads the actual task record. It either permits
+the original live receipt to replay or returns `task_offer_expired`; an empty
+acceptance response is not proof that no claim committed. This also resolves
+expired packets whose task was claimed by a peer or removed.
 Expired unaccepted packets, replaced registrations and changed task identities
 are refused. Query status remains a read and does not confirm delivery.
 

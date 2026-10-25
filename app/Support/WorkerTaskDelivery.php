@@ -5,6 +5,8 @@ namespace App\Support;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowUpdateValidationTask;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
@@ -72,6 +74,7 @@ final class WorkerTaskDelivery
         $context = new self($namespace, $queue, $pollRequestId, $route, $taskKinds, $snapshot, $offer);
         if ($offer !== null) {
             $context->assertContext($offer);
+            $context->assertExpiredOfferOutcome();
         }
 
         return $context;
@@ -204,14 +207,6 @@ final class WorkerTaskDelivery
         ];
     }
 
-    public function assertTimelyAcceptance(): void
-    {
-        if ($this->offer === null) {
-            throw new TaskDeliveryOfferRejected('task_offer_mismatch');
-        }
-        TaskDeliveryOffer::assertUnexpired($this->offer);
-    }
-
     public function assertReceipt(mixed $receipt, string $taskId, int $attempt): void
     {
         $this->lockWorker();
@@ -243,7 +238,7 @@ final class WorkerTaskDelivery
         $payload = $task->payload ?? [];
         $payload[self::RECEIPT_KEY] = $this->acceptedReceipt((int) $task->attempt_count);
         $task->forceFill(['payload' => $payload, 'delivery_poll_key' => $this->pollKey()])->save();
-        $this->assertTimelyAcceptance();
+        $this->acceptedReceipt((int) $task->attempt_count);
     }
 
     /** Expired offer packets may still replay their already-accepted live claim. */
@@ -272,6 +267,38 @@ final class WorkerTaskDelivery
             || ! hash_equals($data['delivery_id'], TaskDeliveryOffer::identifier($data))) {
             throw new TaskDeliveryOfferRejected('worker_registration_lost_authority');
         }
+    }
+
+    /** Serialize against any in-flight acceptance before declaring no live claim. */
+    private function assertExpiredOfferOutcome(): void
+    {
+        if ($this->offer === null || now()->getTimestampMs() < $this->offer['expires_at_ms']) {
+            return;
+        }
+        DB::transaction(function (): void {
+            $this->lockWorker();
+            $id = $this->offer['task_id'];
+            $kind = $this->offer['task_kind'];
+            $task = match ($kind) {
+                'workflow', 'activity' => NamespaceWorkflowScope::task($this->namespace, $id)?->toArray(),
+                'update_validation' => WorkflowUpdateValidationTask::query()->where('namespace', $this->namespace)->find($id)?->toArray(),
+                'query' => app(WorkflowQueryTaskBroker::class)->task($id),
+                default => null,
+            };
+            $receipt = match ($kind) {
+                'workflow', 'activity' => $task['payload'][self::RECEIPT_KEY] ?? null,
+                'update_validation' => $task['delivery_receipt'] ?? null,
+                default => $task[self::RECEIPT_KEY] ?? null,
+            };
+            if (! is_array($task) || ($task['namespace'] ?? null) !== $this->namespace
+                || ($task['queue'] ?? $task['task_queue'] ?? null) !== $this->queue
+                || ($task['status'] ?? null) !== 'leased' || ($task['lease_owner'] ?? null) !== $this->worker['worker_id']
+                || ! is_string($task['lease_expires_at'] ?? null) || ! Carbon::parse($task['lease_expires_at'])->isFuture()
+                || ! is_array($receipt) || ($receipt['delivery_id'] ?? null) !== $this->offer['delivery_id']) {
+                throw new TaskDeliveryOfferRejected('task_offer_expired');
+            }
+            $this->assertReceipt($receipt, $id, (int) ($task['attempt_count'] ?? 0));
+        });
     }
 
     private function assertWorkerCurrent(array $data): void

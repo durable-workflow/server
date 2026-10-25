@@ -133,6 +133,30 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $this->assertSame($before, $broker->task($task['query_task_id']));
     }
 
+    public function test_expiry_resolves_a_query_offer_after_a_peer_claim_without_mutating_its_authority(): void
+    {
+        Queue::fake();
+        $run = $this->startRemoteWorkflow('query-expired-offer-peer');
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+        $this->registerPythonWorker('delivery-worker', 'python-queries', ['python.queryable'], ['query_tasks', WorkerTaskDelivery::CAPABILITY]);
+        WorkerRegistration::query()->where('worker_id', 'delivery-worker')->firstOrFail()
+            ->forceFill(['registration_token' => str_repeat('a', 32)])->save();
+        $headers = $this->workerHeaders() + [WorkerTaskDelivery::HEADER => WorkerTaskDelivery::VERSION];
+        $body = ['worker_id' => 'delivery-worker', 'task_queue' => 'python-queries', 'timeout_seconds' => 0,
+            'poll_request_id' => 'delivery-poll', 'registration_token' => str_repeat('a', 32)];
+        $path = '/api/worker/query-tasks/offers';
+        $offer = $this->postJson($path, $body, $headers)->assertOk();
+        $this->registerPythonWorker('peer', 'python-queries', ['python.queryable']);
+        $this->postJson('/api/worker/query-tasks/poll', ['worker_id' => 'peer', 'task_queue' => 'python-queries', 'timeout_seconds' => 0], $this->workerHeaders())
+            ->assertOk()->assertJsonPath('task.query_task_id', $task['query_task_id']);
+        $before = $broker->task($task['query_task_id']);
+        $this->travel(3)->seconds();
+        $this->postJson($path, $body + ['task_offer_token' => $offer->json('task_offer.token')], $headers)
+            ->assertConflict()->assertJsonPath('reason', 'task_offer_expired');
+        $this->assertSame($before, $broker->task($task['query_task_id']));
+    }
+
     #[DataProvider('deliveryCacheFailures')]
     public function test_query_acceptance_cache_failures_preserve_only_committed_authority(string $mode, bool $committed): void
     {

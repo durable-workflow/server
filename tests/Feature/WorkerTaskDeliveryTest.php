@@ -104,6 +104,39 @@ class WorkerTaskDeliveryTest extends TestCase
     }
 
     #[DataProvider('kinds')]
+    public function test_expiry_resolves_an_offer_even_after_a_peer_has_claimed_the_task(string $kind): void
+    {
+        $task = $this->queuedTask($kind);
+        $this->actor($task->queue);
+        $offer = $this->offer($kind, $task->queue);
+        $this->registerWorker('peer', $task->queue);
+        $this->flushHeaders();
+        $this->withHeaders($this->workerHeaders())->postJson('/api/worker/'.$kind.'-tasks/poll', [
+            'worker_id' => 'peer', 'task_queue' => $task->queue, 'poll_request_id' => 'peer-poll', 'timeout_seconds' => 0,
+        ])->assertOk()->assertJsonPath('task.task_id', $task->id);
+        $before = $task->fresh()->getRawOriginal();
+        $this->travel(3)->seconds();
+        $this->withHeaders($this->headers())->postJson($this->path($kind),
+            $this->body($task->queue) + ['task_offer_token' => $offer['token']])
+            ->assertConflict()->assertJsonPath('reason', 'task_offer_expired');
+        $this->assertSame($before, $task->fresh()->getRawOriginal());
+    }
+
+    #[DataProvider('kinds')]
+    public function test_expiry_resolves_an_offer_for_a_deleted_task_without_claiming_another(string $kind): void
+    {
+        $task = $this->queuedTask($kind);
+        $this->actor($task->queue);
+        $offer = $this->offer($kind, $task->queue);
+        $task->delete();
+        $this->travel(3)->seconds();
+        $this->withHeaders($this->headers())->postJson($this->path($kind),
+            $this->body($task->queue) + ['task_offer_token' => $offer['token']])
+            ->assertConflict()->assertJsonPath('reason', 'task_offer_expired');
+        $this->assertSame(0, WorkflowTask::query()->where('status', TaskStatus::Leased)->count());
+    }
+
+    #[DataProvider('kinds')]
     public function test_a_replacement_registration_cannot_accept_the_old_offer(string $kind): void
     {
         $task = $this->queuedTask($kind);

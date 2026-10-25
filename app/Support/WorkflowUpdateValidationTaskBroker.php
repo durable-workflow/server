@@ -465,7 +465,7 @@ final class WorkflowUpdateValidationTaskBroker
         if ($delivery !== null) {
             $task->forceFill(['delivery_poll_key' => $delivery->pollKey(),
                 'delivery_receipt' => $delivery->acceptedReceipt($task->attempt_count)])->save();
-            $delivery->assertTimelyAcceptance();
+            $delivery->acceptedReceipt($task->attempt_count);
         }
 
         return ['task' => $task, 'poll_status' => 'leased'];

@@ -109,6 +109,29 @@ class WorkflowUpdateValidationTaskTest extends TestCase
         $this->assertSame(1, WorkflowUpdateValidationTask::query()->where('status', 'leased')->count());
     }
 
+    public function test_expiry_resolves_a_validation_offer_after_a_peer_claim(): void
+    {
+        $this->registerValidatorWorker('delivery-worker', ['workflow_tasks', 'update_validation_tasks', WorkerTaskDelivery::CAPABILITY]);
+        $this->worker('delivery-worker')->forceFill(['registration_token' => str_repeat('a', 32)])->save();
+        $run = $this->startRemoteWorkflow('delivery-expired-peer');
+        $this->createPendingValidationTask($run, 'delivery-expired-peer');
+        $task = WorkflowUpdateValidationTask::query()->where('workflow_run_id', $run->id)->firstOrFail();
+        $body = ['worker_id' => 'delivery-worker', 'task_queue' => self::TASK_QUEUE, 'timeout_seconds' => 0,
+            'poll_request_id' => 'delivery-poll', 'registration_token' => str_repeat('a', 32)];
+        $headers = $this->workerHeaders() + [WorkerTaskDelivery::HEADER => WorkerTaskDelivery::VERSION];
+        $path = '/api/worker/update-validation-tasks/offers';
+        $offer = $this->postJson($path, $body, $headers)->assertOk();
+        $this->registerValidatorWorker('peer', ['workflow_tasks', 'update_validation_tasks']);
+        $this->postJson('/api/worker/update-validation-tasks/poll', [
+            'worker_id' => 'peer', 'task_queue' => self::TASK_QUEUE, 'timeout_seconds' => 0,
+        ], $this->workerHeaders())->assertOk()->assertJsonPath('task.update_validation_task_id', $task->id);
+        $before = $task->fresh()->getRawOriginal();
+        $this->travel(3)->seconds();
+        $this->postJson($path, $body + ['task_offer_token' => $offer->json('task_offer.token')], $headers)
+            ->assertConflict()->assertJsonPath('reason', 'task_offer_expired');
+        $this->assertSame($before, $task->fresh()->getRawOriginal());
+    }
+
     public function test_validation_claim_that_finishes_after_the_offer_budget_rolls_back(): void
     {
         $this->registerValidatorWorker('delivery-worker', ['workflow_tasks', 'update_validation_tasks', WorkerTaskDelivery::CAPABILITY]);
