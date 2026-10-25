@@ -1,0 +1,182 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "message-streams",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "message streams λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "message streams λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "message_streams": {
+    "workflow_type": "parity.v1.message_streams",
+    "stream": "orders",
+    "other_stream": "audit",
+    "bad_stream": "bad name!",
+    "condition_fingerprint_source": "message-stream:orders",
+    "manifest": {
+      "schema": "durable-workflow.v2.message-streams.contract",
+      "version": 1,
+      "capability_flag": "message_streams",
+      "minimum_worker_protocol_version": "1.15",
+      "scope": "workflow_instance",
+      "transport": {
+        "append_path": "/api/workflows/{workflow_id}/message-streams/{stream_name}/messages",
+        "diagnostics_path": "/api/workflows/{workflow_id}/message-streams",
+        "internal_signal": "__durable_workflow_message_stream",
+        "message_schema": "durable-workflow.v2.message-stream.message",
+        "cursor_schema": "durable-workflow.v2.message-stream.cursor",
+        "payload_envelope": "inline_avro_at_the_server_to_worker_delivery_boundary",
+        "durable_payload": "exact_inline_avro_bytes_or_the_verified_external_storage_reference",
+        "payload_visibility": "payload_is_present_only_in_durable_signal_history_and_is_omitted_from_stream_diagnostics"
+      },
+      "identity": {
+        "producer_key": "message_id",
+        "order_key": "position",
+        "first_position": 1,
+        "duplicate_same_payload": "return_existing_position_without_redelivery",
+        "duplicate_different_payload": "reject_message_identity_conflict"
+      },
+      "cursor": {
+        "ownership": "server",
+        "worker_completion_field": "message_stream_cursors",
+        "monotonic": true,
+        "advancement": "highest_contiguous_consumed_position",
+        "history_event": "MessageCursorAdvanced",
+        "continue_as_new": "a_payload_free_cursor_checkpoint_and_unconsumed_messages_are_delivered_to_the_current_run"
+      },
+      "waiting": {
+        "worker_completion_field": "message_stream_waits",
+        "durable_wakeup": "runtime_reserved_signal_task_resume",
+        "pending_wait_is_diagnostic": true
+      },
+      "batch": {
+        "minimum": 1,
+        "maximum": 100,
+        "waits_for": "first_message",
+        "returns": "up_to_maximum_currently_available_messages"
+      },
+      "replay": {
+        "ordering_source": "server_assigned_position",
+        "deduplication_source": "message_id_and_instance_cursor",
+        "worker_replacement": "history_replay_reconstructs_pending_messages_and_cursor_acknowledgement_is_idempotent",
+        "server_restart": "stream_items_cursor_and_wait_state_are_database_durable",
+        "external_payloads": "references_remain_reference_backed_at_rest_and_are_resolved_for_worker_delivery_then_removed_with_namespace_retention"
+      },
+      "sdk_handoffs": {
+        "php": "WorkflowContext::messageStream(string)->receive(int)",
+        "python": "WorkflowContext.message_stream(str).receive(max_items)",
+        "rust": "WorkflowContext::message_stream(name).receive(max_items).await"
+      },
+      "conformance": {
+        "runtimes": [
+          "php",
+          "python",
+          "rust"
+        ],
+        "targets": [
+          "server",
+          "cloud"
+        ],
+        "required_scenarios": [
+          "repeated_messages_are_observed_in_position_order_exactly_once",
+          "duplicate_delivery_preserves_one_logical_message",
+          "worker_is_replaced_mid_stream",
+          "continue_as_new_retains_cursor_and_pending_messages",
+          "server_restart_retains_cursor_wait_and_order"
+        ],
+        "artifacts": "published"
+      }
+    },
+    "messages": {
+      "m1": [
+        {
+          "n": 1
+        }
+      ],
+      "m2": [
+        {
+          "n": 2
+        }
+      ],
+      "m3": [
+        {
+          "n": 3
+        }
+      ],
+      "conflict": [
+        {
+          "n": 9
+        }
+      ]
+    },
+    "long_message_id_length": 192,
+    "refusals": {
+      "stream_name": "The stream name must contain 1-128 letters, numbers, periods, underscores, colons, or hyphens.",
+      "metadata_stream_name": "The stream_name must contain 1-128 letters, numbers, periods, underscores, colons, or hyphens.",
+      "message_id_required": "The message id field is required.",
+      "message_id_format": "The message id field format is invalid.",
+      "message_id_max": "The message id field must not be greater than 191 characters.",
+      "input_array": "The input field must be an array.",
+      "wait_after_cursor": "The pending wait must start after the durable stream cursor.",
+      "cursor_beyond": "The cursor cannot advance beyond the last accepted stream position.",
+      "duplicate_wait": "A stream may have only one pending wait per workflow task completion.",
+      "negative_cursor": "The message_stream_cursors.0.through_position field must be at least 0.",
+      "old_protocol_remediation": "Send the X-Durable-Workflow-Protocol-Version header with worker protocol 1.15 or newer."
+    },
+    "first_run_events": [
+      "StartAccepted",
+      "WorkflowStarted",
+      "ConditionWaitOpened",
+      "SignalReceived",
+      "SignalReceived",
+      "SignalReceived",
+      "MessageCursorAdvanced",
+      "ConditionWaitSatisfied",
+      "ConditionWaitOpened",
+      "MessageCursorAdvanced",
+      "SignalReceived",
+      "MessageCursorAdvanced",
+      "ConditionWaitSatisfied",
+      "WorkflowContinuedAsNew",
+      "SignalRejected",
+      "SignalRejected",
+      "MessageCursorAdvanced"
+    ],
+    "continued_run_events": [
+      "WorkflowStarted",
+      "SignalReceived",
+      "SignalReceived",
+      "SignalReceived",
+      "WorkflowCompleted",
+      "SignalRejected",
+      "SignalRejected",
+      "SignalRejected",
+      "MessageCursorAdvanced"
+    ]
+  },
+  "contract": "Message streams (published Server 2.11.1, MessageStreamController and MessageStreamService over the Workflow package's runtime-reserved signal). Cluster info publishes the message streams contract and the worker capability the same contract with supported true. A client appends ordered messages to a named stream of a workflow instance: the first message is position 1, a repeated message id with the same payload is a duplicate at its original position, and with another payload a 409 message_identity_conflict. Each accepted message reaches the current run as a __durable_workflow_message_stream SignalReceived whose single argument holds the message schema, stream name, message id, position and the inline payload envelope. Refused requests are counted as malformed without keeping their payload, by a diagnostic message id. Diagnostics list every stream of the instance by name with positions, pending counts, the pending wait, duplicate and malformed counts and the last input, without payloads. A worker on protocol 1.15 or newer reports open receives with message_stream_waits and consumed messages with message_stream_cursors on a workflow task completion; the server checks both before the completion changes anything, records MessageCursorAdvanced for each moved cursor and clears the wait. An open condition wait is woken by a stream message, which it consumes without SignalApplied. When the run continues as new, the next run receives a payload-free cursor checkpoint for each acknowledged stream and every unconsumed message again, in append order; signals the old run had not consumed are rejected. Appends to a closed run are refused with run_not_active, duplicates included. Embedded applications have no HTTP message streams."
+}

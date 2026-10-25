@@ -25,14 +25,29 @@ shared=(-v "$PWD:/source:ro" -v "$PWD/published-sdk-adapters:/sdk-adapters:ro"
   -e DW_PARITY_RUST_PATCH_WORKER=/sdk-adapters/rust-worker
   -e PYTHONDONTWRITEBYTECODE=1 -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION)
 export DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
-for target in php rust; do
-  if test "$target" = php; then url="$php_url"; else url="$native_url"; fi
+# Server #721. On SQLite the published PHP API server and its maintenance loop
+# share one database file. SQLite refuses a deferred transaction's upgrade to a
+# writer at once, without a busy wait, so PHP answers a contended poll with its
+# typed backend_lock_pressure refusal. The published Python run_until helper
+# then ends its Worker (sdk-python #218). This cohort tests patch replacement,
+# not writer contention, so the PHP record runs with the maintenance loop
+# stopped, and the loop restarts right after it. The fixtures use no timers or
+# repair. The observer still never retries a poll refusal.
+. scripts/conformance/server-parity/published-sdk-patch/maintenance.sh
+record() {
   docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
     --network "$RESOURCE_SCOPE" --entrypoint node "${shared[@]}" "$image" \
-    scripts/conformance/server-parity.mjs record --mode http --url "$url" --target "$target" \
+    scripts/conformance/server-parity.mjs record --mode http --url "$1" --target "$2" \
     --prefix published-sdk-v1 --artifacts "$profile/artifacts.json" "${fixtures[@]}" \
-    --output "/evidence/published-sdk-patch/$target/record.json"
-done
+    --output "/evidence/published-sdk-patch/$2/record.json"
+}
+if test "$backend" = sqlite; then
+  run_without_maintenance parity-evidence/published-sdk-patch/maintenance-schedule.txt -- \
+    record "$php_url" php
+else
+  record "$php_url" php
+fi
+record "$native_url" rust
 case "$backend" in
   mysql) embedded=(-e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=embedded_ref
     -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password) ;;

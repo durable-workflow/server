@@ -435,6 +435,8 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $workerPollFence = isset($fixture['worker_poll_fence']) ? finishHttpWorkerPollFence($client, $fixture, $workflowId, $url) : null;
     $workerSessions = isset($fixture['worker_sessions']) ? finishHttpWorkerSessions($client, $fixture, $workflowId, $url) : null;
     $workerSessionActivities = isset($fixture['worker_session_activities']) ? finishHttpWorkerSessionActivities($client, $fixture, $workflowId, $url) : null;
+    $activityCancellationAcknowledgement = isset($fixture['activity_cancellation_acknowledgement'])
+        ? finishHttpActivityCancellationAcknowledgement($client, $fixture, $workflowId, $url) : null;
     $serviceCatalog = isset($fixture['service_catalog']) ? finishHttpServiceCatalog($client, $fixture, $workflowId, $url) : null;
     $systemMetrics = isset($fixture['system_metrics']) ? finishHttpSystemMetrics($client, $fixture, $workflowId, $url) : null;
     $operatorDashboardTypes = isset($fixture['operator_dashboard_types']) ? finishHttpOperatorDashboardTypes($client, $fixture, $workflowId, $url) : null;
@@ -444,6 +446,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $repairPass = isset($fixture['repair_pass']) ? finishHttpRepairPass($client, $fixture, $workflowId, $url) : null;
     $namespaceDelete = isset($fixture['namespace_delete']) ? finishHttpNamespaceDelete($client, $fixture, $workflowId, $queue, $url) : null;
     $updateValidation = isset($fixture['update_validation']) ? finishHttpUpdateValidation($client, $fixture, $workflowId, $url) : null;
+    $messageStreams = isset($fixture['message_streams']) ? finishHttpMessageStreams($client, $fixture, $workflowId, $url) : null;
     $schedulePolicies = isset($fixture['schedule_policies']) ? finishHttpSchedulePolicies($client, $fixture, $workflowId, $url) : null;
     $scheduleCatalog = isset($fixture['schedule_catalog'])
         ? finishHttpSchedulePolicies($client, $fixture, $workflowId, $url, 'schedule_catalog')
@@ -548,6 +551,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'worker_poll_fence' => $workerPollFence,
         'worker_sessions' => $workerSessions,
         'worker_session_activities' => $workerSessionActivities,
+        'activity_cancellation_acknowledgement' => $activityCancellationAcknowledgement,
         'service_catalog' => $serviceCatalog,
         'system_metrics' => $systemMetrics,
         'operator_dashboard_types' => $operatorDashboardTypes,
@@ -557,6 +561,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'repair_pass' => $repairPass,
         'namespace_delete' => $namespaceDelete,
         'update_validation' => $updateValidation,
+        'message_streams' => $messageStreams,
         'schedule_policies' => $schedulePolicies,
         'schedule_catalog' => $scheduleCatalog,
         'signals_before_worker' => $signalsBeforeWorker,
@@ -865,6 +870,7 @@ try {
     require __DIR__.'/worker-poll-fence-probe.php';
     require __DIR__.'/worker-sessions-probe.php';
     require __DIR__.'/worker-session-activities-probe.php';
+    require __DIR__.'/activity-cancellation-ack-probe.php';
     require __DIR__.'/service-catalog-probe.php';
     require __DIR__.'/system-metrics-probe.php';
     require __DIR__.'/operator-dashboard-types-probe.php';
@@ -874,6 +880,7 @@ try {
     require __DIR__.'/repair-pass-probe.php';
     require __DIR__.'/namespace-delete-probe.php';
     require __DIR__.'/update-validation-probe.php';
+    require __DIR__.'/message-streams-probe.php';
     require __DIR__.'/schedule-policies-probe.php';
     require __DIR__.'/signals-before-worker-probe.php';
     require __DIR__.'/worker-deregistration-probe.php';
@@ -1047,6 +1054,9 @@ try {
     if ($mode === 'embedded' && isset($fixture['worker_session_activities'])) {
         $observation['worker_session_activities'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
     }
+    if ($mode === 'embedded' && isset($fixture['activity_cancellation_acknowledgement'])) {
+        $observation['activity_cancellation_acknowledgement'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
+    }
     if ($mode === 'embedded' && isset($fixture['service_catalog'])) {
         $observation['service_catalog'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_service_catalog'];
     }
@@ -1073,6 +1083,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['update_validation'])) {
         $observation['update_validation'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_update_validation'];
+    }
+    if ($mode === 'embedded' && isset($fixture['message_streams'])) {
+        $observation['message_streams'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_message_streams'];
     }
     if ($mode === 'embedded' && isset($fixture['schedule_policies'])) {
         $observation['schedule_policies'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_schedules'];

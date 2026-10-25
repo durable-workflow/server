@@ -27,12 +27,14 @@ lanes=(
   "timer:sdk-timers activity:sdk-directions query:sdk-queries"
 )
 run_lane() {
-  local lane=$1 entry variant tag status
+  local lane=$1 entry variant tag status started
   for entry in $lane; do
-    variant=${entry%%:*} tag=${entry#*:} status=0
+    variant=${entry%%:*} tag=${entry#*:} status=0 started=$SECONDS
     bash scripts/conformance/server-parity/sdk-direction-profile.sh "$backend" "$native_url" "$variant" \
       > "$evidence/$tag.log" 2>&1 || status=$?
     printf '%s\n' "$status" > "$evidence/$tag.status"
+    # Each profile's duration, so lane balance can be measured from the log.
+    printf '%s\n' "$((SECONDS - started))" > "$evidence/$tag.seconds"
     # The profile's status is already kept; a failed stop leaves the server to
     # the final cleanup.
     docker stop --time 30 "$RESOURCE_SCOPE-$tag-server" >/dev/null 2>&1 \
@@ -48,7 +50,8 @@ for lane in "${lanes[@]}"; do
   for entry in $lane; do
     tag=${entry#*:}
     status=$(cat "$evidence/$tag.status" 2>/dev/null || echo missing)
-    echo "::group::$tag (exit $status)"
+    seconds=$(cat "$evidence/$tag.seconds" 2>/dev/null || echo unknown)
+    echo "::group::$tag (exit $status, $seconds s)"
     cat "$evidence/$tag.log"
     echo "::endgroup::"
     if [[ "$status" != 0 ]]; then
