@@ -1329,7 +1329,7 @@ function invocationAvailability(surfaceName) {
     const appDir = stringValue(record.app_dir) || envValue('DW_SKEW_PHP_SDK_APP_DIR');
     if (appDir && fs.existsSync(path.join(appDir, 'vendor/autoload.php'))) {
       if (executableOnPath('docker')) {
-        return { available: true, appDir, phpImage: envValue('DW_SKEW_PHP_IMAGE') || 'composer:2' };
+        return { available: true, appDir, phpImage: envValue('DW_SKEW_PHP_IMAGE') || 'composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee' };
       }
 
       return {
@@ -1374,7 +1374,7 @@ function invocationAvailability(surfaceName) {
           available: true,
           appDir,
           surfaceUrl,
-          phpImage: envValue('DW_SKEW_PHP_IMAGE') || 'composer:2',
+          phpImage: envValue('DW_SKEW_PHP_IMAGE') || 'composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee',
         };
       }
 
@@ -2574,7 +2574,7 @@ function phpDockerInvocation(availability, script, payload, strategy = { kind: '
       `${script}:/tmp/dw-skew-probe.php:ro`,
       '-w',
       '/app',
-      availability.phpImage || 'composer:2',
+      availability.phpImage || 'composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee',
       'php',
       '/tmp/dw-skew-probe.php',
       JSON.stringify(payload),

@@ -61,9 +61,12 @@ for role in original replacement; do
   else
     app=embedded-app; inputs=embedded; lock=$(jq -r '.embedded_composer_lock_sha256' "$profile/artifacts.json")
   fi
+  # Composer in these frozen images trusts only a checked CA file (GHSA-6q48-6c7w-9gw2).
+  sh scripts/ci/checked-ca.sh parity-composer-trust
   docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --entrypoint sh \
     -v "$PWD:/source:ro" -v "$PWD/parity-legacy-state/$app:/runtime" "${engine[@]}" \
     -w /runtime -e COMPOSER_HOME=/tmp/composer -e DW_PARITY_EMBEDDED_PROFILE="/source/$profile/$inputs" \
+    -v "$PWD/parity-composer-trust:/composer-trust:ro" -e COMPOSER_CAFILE=/composer-trust/ca.pem -e COMPOSER_CAPATH=/composer-trust/no-ca-directory \
     -e DW_PARITY_EMBEDDED_LOCK_SHA256="$lock" "$image" \
     /source/scripts/conformance/server-parity/repeated-patch-install.sh \
     > "parity-evidence/legacy-marker/embedded-$role-install.txt" 2>&1

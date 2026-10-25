@@ -23,7 +23,7 @@
     "rust": "sdk-rust-worker"
   },
   "installation_images": {
-    "composer": "docker.io/library/composer:2.10.2",
+    "composer": "docker.io/library/composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee",
     "docker_cli": "docker.io/library/docker:27.5.1-cli"
   },
   "cleanup": {

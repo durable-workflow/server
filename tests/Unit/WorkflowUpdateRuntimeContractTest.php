@@ -1836,7 +1836,7 @@ class WorkflowUpdateRuntimeContractTest extends TestCase
             $source,
         );
         $this->assertStringContainsString(
-            'PIP_CONFIG_FILE=/dev/null "$venv_python" -m pip --isolated install',
+            'PIP_CONFIG_FILE=/dev/null "$venv_python" -I -m pip --isolated install',
             $source,
         );
         $this->assertStringContainsString(
