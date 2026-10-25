@@ -64,6 +64,9 @@ for (const [name, key] of [['mysql-execution', 'Compare three runtimes'], ['post
     assert.ok(inPart('corpus').some(step => step.startsWith(key)), `${name}: the corpus comparison is in the corpus part`);
     assert.equal(all.filter(step => step.name === SHARED_NODES).length, 1, `${name}: one shared node start`);
     assert.equal(all.find(step => step.name === SHARED_NODES).id, 'prepare_runtime_comparison', name);
+    // Both parts need every node the original step started, including the
+    // published PHP maintenance loop the patch profiles pause and resume.
+    assert.match(all.find(step => step.name === SHARED_NODES).text, /--name "\$RESOURCE_SCOPE-php-maintenance"/, name);
     // The profiles and restart cases run in their own part, against nodes the
     // part starts itself, so the corpus part no longer waits for them.
     const restarts = inPart('restarts');
