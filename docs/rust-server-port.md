@@ -151,7 +151,10 @@ any other unknown path or method answers PHP's own 404 or 405
     `docs/rust-server-port-checkpoints/2026-10-23-update-validation.md`.)
 - **Run operations.**
   - Waterline v1 import. (Embedded v2 import is served:
-    `POST /api/workflows/import/embedded-v2`.)
+    `POST /api/workflows/import/embedded-v2`. Unlike published PHP, native
+    refuses a bundle whose rows reference rows outside it, links only runs of
+    one namespace, and reads the signing key only from the request body
+    ([#765](https://github.com/durable-workflow/server/issues/765)).)
 - **Other families.**
   - Message streams are served
     ([checkpoint](rust-server-port-checkpoints/2026-10-23-message-streams.md)),
