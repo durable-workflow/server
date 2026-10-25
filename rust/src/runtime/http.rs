@@ -651,7 +651,7 @@ enum Rest {
 }
 
 /// Route families a named namespace may use, by prefix.
-const NAMESPACE_FAMILIES: [(&str, Rest, Allowed); 9] = [
+const NAMESPACE_FAMILIES: [(&str, Rest, Allowed); 10] = [
     // Runtime credentials are server-wide; the namespace only scopes a tenant.
     ("/api/runtime-credentials/", Rest::Anything, Allowed::Any),
     ("/api/external-payloads/v1/", Rest::Anything, READ),
