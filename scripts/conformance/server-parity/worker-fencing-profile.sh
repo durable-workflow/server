@@ -35,15 +35,15 @@ chmod a+w parity-fence-source "$sdk_path"
 image=$(jq -r '.server.build_platform_image | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' "$tuple")
 rust_image=mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
 if ! test -f parity-fence-source/vendor/autoload.php; then
-  docker run --rm --user=1000:1000 --entrypoint composer -e COMPOSER_HOME=/tmp/parity-composer \
-    -v "$PWD/parity-fence-source:/app" -w /app "$image" install --no-dev --no-scripts --no-interaction --prefer-dist \
+  bash scripts/ci/run-composer.sh --rm --user=1000:1000 -e COMPOSER_HOME=/tmp/parity-composer \
+    -v "$PWD/parity-fence-source:/app" -w /app -- install --no-dev --no-scripts --no-interaction --prefer-dist \
     > parity-evidence/${tag}-server-install.txt 2>&1
 else
   printf '%s\n' 'Reusing the exact locked server dependencies from the preceding source cohort.' > "parity-evidence/${tag}-server-install.txt"
 fi
 if ! test -f "$sdk_path/vendor/autoload.php"; then
-  docker run --rm --user=1000:1000 --entrypoint composer -e COMPOSER_HOME=/tmp/parity-composer \
-    -v "$PWD:/source" -w "/source/$sdk_path" "$image" install --no-dev --no-scripts --no-interaction --prefer-dist \
+  bash scripts/ci/run-composer.sh --rm --user=1000:1000 -e COMPOSER_HOME=/tmp/parity-composer \
+    -v "$PWD:/source" -w "/source/$sdk_path" -- install --no-dev --no-scripts --no-interaction --prefer-dist \
     > parity-evidence/${tag}-sdk-install.txt 2>&1
 else
   printf '%s\n' 'Reusing the exact locked sdk dependencies from the preceding source cohort.' > "parity-evidence/${tag}-sdk-install.txt"

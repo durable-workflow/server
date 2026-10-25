@@ -1,12 +1,8 @@
 name: Reusable Helm Chart Checks
 
 on:
+  # Callers validate their own commit; checkout uses it by default.
   workflow_call:
-    inputs:
-      source_ref:
-        description: Exact Server source revision to validate
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -35,7 +31,6 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ inputs.source_ref }}
 
       - name: Enforce immutable chart versioning
         env:
@@ -61,10 +56,22 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Bootstrap patched pip trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+
       - name: Check database CA mounts and bootstrap configuration
+        # pip also trusts the runner's own store (truststore). legacy-certs
+        # keeps it to the bundle the bootstrap action checked.
+        env:
+          PIP_USE_DEPRECATED: legacy-certs
         run: |
-          python3 -m pip install --only-binary :all: PyYAML==6.0.2
-          python3 scripts/ci/test_database_tls_chart.py
+          python -I -m pip install --only-binary :all: PyYAML==6.0.2
+          python scripts/ci/test_database_tls_chart.py
 
       - name: Render every CI fixture
         run: |
@@ -129,12 +136,14 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ inputs.source_ref }}
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Bootstrap patched pip trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
 
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
@@ -143,6 +152,11 @@ jobs:
 
       - name: Set up chart-testing
         uses: helm/chart-testing-action@6ec842c01de15ebb84c8627d2744a0c2f2755c9f  # v2.8.0
+        # The action installs its tools with its own venv's pip. Point that pip
+        # at the bundle the bootstrap action checked, and only that bundle.
+        env:
+          PIP_CERT: ${{ env.pythonLocation }}/lib/python3.12/site-packages/pip/_vendor/certifi/cacert.pem
+          PIP_USE_DEPRECATED: legacy-certs
         with:
           version: ${{ env.CHART_TESTING_VERSION }}
           yamllint_version: ${{ env.YAMLLINT_VERSION }}

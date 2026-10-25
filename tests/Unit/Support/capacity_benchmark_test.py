@@ -2508,5 +2508,36 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         self.assertEqual(capacity_suite.RESULT_SCHEMA, result["schema"])
 
 
+class PythonAdapterLockTest(unittest.TestCase):
+    """The Python adapter lock pins and hashes its complete graph."""
+
+    HASH = "--hash=sha256:" + "a" * 64
+
+    def check(self, lock: str) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "requirements.txt").write_text("durable-workflow==2.0.1\n")
+            (root / "requirements.lock").write_text(lock)
+            capacity_suite._validate_adapter_dependency("python", root, "2.0.1")
+
+    def test_a_hashed_lock_passes(self) -> None:
+        self.check(f"anyio==4.14.2 {self.HASH}\ndurable-workflow==2.0.1 {self.HASH} {self.HASH}\n")
+
+    def test_the_checked_in_lock_passes(self) -> None:
+        root = ROOT / "benchmarks/capacity/v1/bindings/python"
+        capacity_suite._validate_adapter_dependency("python", root, "2.0.1")
+
+    def test_unhashed_or_unpinned_locks_are_refused(self) -> None:
+        for lock in (
+            "anyio==4.14.2\ndurable-workflow==2.0.1 " + self.HASH + "\n",
+            "anyio==4.14.2 --hash=md5:00\ndurable-workflow==2.0.1 " + self.HASH + "\n",
+            "anyio>=4 " + self.HASH + "\ndurable-workflow==2.0.1 " + self.HASH + "\n",
+            "anyio==4.14.2 " + self.HASH + "\n",
+        ):
+            with self.subTest(lock=lock.splitlines()[0]):
+                with self.assertRaises(capacity_suite.ContractError):
+                    self.check(lock)
+
+
 if __name__ == "__main__":
     unittest.main()

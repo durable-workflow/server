@@ -34,6 +34,21 @@ for(const item of record.cases){
     'cold public delivery omitted':value=>{value.corrected_markers.requests=value.corrected_markers.requests.filter(row=>row.path!=='/api/worker/workflow-tasks/poll');},
     'committed completion cancelled':value=>{value.corrected_markers.requests.find(row=>row.path.endsWith('/complete')).client_cancelled=true;},
   };
+  // A killed author's poll the proxy never forwarded (Server #754) is admitted
+  // only with no bytes, no response and the original's lifecycle around it.
+  if(original.corrected_markers.requests.some(row=>row.client_cancelled&&!row.upstream_request_started)){
+    const unsent=value=>value.corrected_markers.requests.find(row=>row.client_cancelled&&!row.upstream_request_started);
+    Object.assign(mutations,{
+      'unsent cancellation claims received body':value=>{unsent(value).request_body_complete=true;},
+      'unsent cancellation invents request authority':value=>{unsent(value).request_body='{}';},
+      'unsent cancellation invents forwarding':value=>{unsent(value).upstream_request_started=true;},
+      'unsent cancellation invents response':value=>{unsent(value).status=200;},
+      'unsent cancellation lacks original registration':value=>{value.corrected_markers.requests=value.corrected_markers.requests.filter(row=>
+        row.path!=='/api/worker/register'||JSON.parse(row.request_body).worker_id!==value.workflow_id+':workflow:original');},
+      'unsent cancellation after original retirement':value=>{value.corrected_markers.requests=value.corrected_markers.requests.filter(row=>
+        row.method!=='DELETE'||row.path!=='/api/worker/registrations/'+encodeURIComponent(value.workflow_id+':workflow:original'));},
+    });
+  }
   for(const[name,mutate]of Object.entries(mutations)){
     const corrupted=structuredClone(original);mutate(corrupted);assert.throws(()=>read(corrupted),undefined,name);
   }
