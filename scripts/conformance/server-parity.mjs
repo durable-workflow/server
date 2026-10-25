@@ -19,6 +19,7 @@ import {checkCorrectedMarkerArtifacts, checkCorrectedMarkerPackages} from './ser
 import {checkCorrectedRangeArtifacts, checkCorrectedRangePackages} from './server-parity/corrected-range-contract.mjs';
 import {checkActivityDeadlinePackages} from './server-parity/activity-deadline-contract.mjs';
 import {checkActivityDeadlineReceiptPackages} from './server-parity/activity-deadline-receipts-contract.mjs';
+import {contractFailureLocation} from './server-parity/failure-location.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const {values, positionals} = parseArgs({allowPositionals: true, options: {
@@ -137,7 +138,8 @@ try {
           // its own workflow. Report it and keep recording, so one run shows
           // every difference. A runner-blocked case still stops the record.
           if (item.outcome === 'product-fail') {
-            console.error(`${fixture.id}: ${error.message}`);
+            const location = contractFailureLocation(error);
+            console.error(`${fixture.id}: ${error.message}${location ? `\n  at ${location}` : ''}`);
             continue;
           }
           record.outcome = item.outcome;
