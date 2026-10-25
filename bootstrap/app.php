@@ -45,7 +45,8 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withExceptions(function (Exceptions $exceptions) {
         $exceptions->dontReport([PollClientDisconnected::class]);
 
-        $exceptions->render(function (PollClientDisconnected $exception, Request $request) {
+        // Laravel selects renderers by the first parameter's reflected type.
+        $exceptions->render(function (PollClientDisconnected $exception) {
             return WorkerProtocol::json([
                 'task' => null,
                 'reason' => 'poll_client_disconnected',

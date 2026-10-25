@@ -46,16 +46,15 @@ final class WorkerPollDiagnostics
 
         try {
             $last = $this->cache->store()->get($this->key($namespace, $taskQueue));
+            if ($last === null || is_array($last)) {
+                $result = ['status' => $last === null ? 'no_recent_observation' : 'warning',
+                    'retention_seconds' => self::RETENTION_SECONDS, 'last_disconnect' => $last];
+            }
         } catch (Throwable) {
-            return $result;
+            // Retain the unavailable state when a diagnostic read fails.
         }
 
-        if ($last !== null && ! is_array($last)) {
-            return $result;
-        }
-
-        return ['status' => $last === null ? 'no_recent_observation' : 'warning',
-            'retention_seconds' => self::RETENTION_SECONDS, 'last_disconnect' => $last];
+        return $result;
     }
 
     private function key(string $namespace, string $taskQueue): string
