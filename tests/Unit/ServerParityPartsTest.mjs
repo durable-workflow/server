@@ -1,4 +1,4 @@
-// Each Shared Server fixtures database job runs in three parts on separate
+// Each Shared Server fixtures database job runs in four parts on separate
 // runners. Every step either prepares the part (and so runs in every part) or
 // belongs to exactly one part, so no check runs twice or not at all.
 import test from 'node:test';
@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 
 const workflow = readFileSync('.github/workflows/server-parity.yml', 'utf8');
-const PARTS = ['native-tests', 'corpus', 'cohorts'];
+const PARTS = ['native-tests', 'corpus', 'cohorts', 'sdk-directions'];
 const EVERY_PART = [/^actions\/checkout@/, /^Fetch /, /^Create TLS fixture certificates$/, /^Bootstrap independent /,
   /^Collect /, /^Summarize /, /^Retain /];
 
@@ -39,9 +39,9 @@ function partsOf(step) {
 
 for (const [name, key] of [['mysql-execution', 'Compare three runtimes'], ['postgres-storage', 'Compare three runtimes'],
   ['execution-and-codec', 'Execute and compare Rust']]) {
-  test(`${name} runs every check in exactly one of three parts`, () => {
+  test(`${name} runs every check in exactly one of four parts`, () => {
     const block = job(name);
-    assert.match(block, /^ {8}part: \[native-tests, corpus, cohorts\]$/m);
+    assert.match(block, /^ {8}part: \[native-tests, corpus, cohorts, sdk-directions\]$/m);
     assert.match(block, /^ {6}DW_PARITY_PART: \$\{\{ matrix\.part \}\}$/m);
     assert.match(block, /^ {4}timeout-minutes: 60$/m);
     const all = steps(block);
@@ -55,6 +55,11 @@ for (const [name, key] of [['mysql-execution', 'Compare three runtimes'], ['post
     }
     const inPart = part => all.filter(step => partsOf(step).length === 1 && partsOf(step)[0] === part).map(step => step.name);
     assert.ok(inPart('corpus').some(step => step.startsWith(key)), `${name}: the corpus comparison is in the corpus part`);
+    // The published-SDK direction lanes run once, in their own part, so the
+    // corpus part no longer waits for them.
+    assert.deepEqual(inPart('sdk-directions'), ['Compare every published-SDK direction profile in three concurrent lanes'], name);
+    const lanes = all.filter(step => step.text.includes('sdk-direction-lanes.sh')).map(step => step.name);
+    assert.deepEqual(lanes, ['Compare every published-SDK direction profile in three concurrent lanes'], `${name}: lanes run in one step`);
     const cohorts = inPart('cohorts');
     for (const cohort of ['Start the shared native node the cohorts use', 'Compare separate configured role-token cohort',
       'Back up, take over and resume a separate published PHP upgrade source',
