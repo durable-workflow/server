@@ -332,11 +332,14 @@ async fn a_replacement_registration_releases_the_activity_lease_at_once() {
     );
     let (status, stale) = request(&app, "POST", &path, complete(&original)).await;
     assert_eq!(status, StatusCode::CONFLICT, "{stale}");
+    let mut stale = stale;
+    assert!(stale.as_object_mut().unwrap().remove("server_capabilities").is_some(), "worker protocol fields");
     assert_eq!(
         stale,
         json!({"task_id":original["task_id"],"activity_attempt_id":original["activity_attempt_id"],
         "outcome":"completed","recorded":false,"reason":"stale_attempt","next_task_id":null,
-        "lease_owner":"replaced","activity_status":"running","attempt_status":"expired","task_status":"leased"})
+        "lease_owner":"replaced","activity_status":"running","attempt_status":"expired","task_status":"leased",
+        "protocol_version":"1.20"})
     );
     let (status, done) = request(&app, "POST", &path, complete(&replacement)).await;
     assert_eq!(status, StatusCode::OK, "{done}");
@@ -345,11 +348,14 @@ async fn a_replacement_registration_releases_the_activity_lease_at_once() {
     // result is still stale, as in PHP, not a conflicting duplicate.
     let (status, late) = request(&app, "POST", &path, complete(&original)).await;
     assert_eq!(status, StatusCode::CONFLICT, "{late}");
+    let mut late = late;
+    assert!(late.as_object_mut().unwrap().remove("server_capabilities").is_some(), "worker protocol fields");
     assert_eq!(
         late,
         json!({"task_id":original["task_id"],"activity_attempt_id":original["activity_attempt_id"],
         "outcome":"completed","recorded":false,"reason":"stale_attempt","next_task_id":null,
-        "lease_owner":"replaced","activity_status":"completed","attempt_status":"expired","task_status":"completed"})
+        "lease_owner":"replaced","activity_status":"completed","attempt_status":"expired","task_status":"completed",
+        "protocol_version":"1.20"})
     );
     let fail_path = format!(
         "/api/worker/activity-tasks/{}/fail",
@@ -359,10 +365,12 @@ async fn a_replacement_registration_releases_the_activity_lease_at_once() {
         json!({"activity_attempt_id":original["activity_attempt_id"],"lease_owner":"replaced",
             "failure":{"message":"late","type":"RuntimeException"}})).await;
     assert_eq!(status, StatusCode::CONFLICT, "{late_failure}");
+    let mut late_failure = late_failure;
+    assert!(late_failure.as_object_mut().unwrap().remove("server_capabilities").is_some(), "worker protocol fields");
     assert_eq!(
         late_failure,
         json!({"task_id":original["task_id"],"activity_attempt_id":original["activity_attempt_id"],
-        "outcome":"failed","recorded":false,"reason":"stale_attempt","next_task_id":null})
+        "outcome":"failed","recorded":false,"reason":"stale_attempt","next_task_id":null,"protocol_version":"1.20"})
     );
     // The replacement's own repeated result keeps its idempotent receipt.
     let (status, again) = request(&app, "POST", &path, complete(&replacement)).await;

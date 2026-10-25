@@ -234,22 +234,27 @@ async fn every_authored_deadline_fences_outcomes_and_resolves_once() {
                 json!({"lease_owner":activity["lease_owner"],"activity_attempt_id":activity["activity_attempt_id"],
                     "result":envelope(Payload::Long(-1))})).await;
             assert_eq!(late.0, StatusCode::CONFLICT, "{field}: {}", late.1);
+            let mut receipt = late.1.clone();
+            assert!(receipt.as_object_mut().unwrap().remove("server_capabilities").is_some(), "{field}: worker protocol fields");
             assert_eq!(
-                late.1,
+                receipt,
                 json!({"task_id":activity["task_id"],"activity_attempt_id":activity["activity_attempt_id"],
                     "outcome":"completed","recorded":false,"reason":"stale_attempt","next_task_id":null,
                     "lease_owner":activity["lease_owner"],"activity_status":"failed","attempt_status":"failed",
-                    "task_status":"cancelled"}),
+                    "task_status":"cancelled","protocol_version":"1.20"}),
                 "{field}"
             );
             let late = request(&app, "POST", &path("fail"),
                 json!({"lease_owner":activity["lease_owner"],"activity_attempt_id":activity["activity_attempt_id"],
                     "failure":{"type":"RuntimeException","message":"late","code":0}})).await;
             assert_eq!(late.0, StatusCode::CONFLICT, "{field}: {}", late.1);
+            let mut receipt = late.1.clone();
+            assert!(receipt.as_object_mut().unwrap().remove("server_capabilities").is_some(), "{field}: worker protocol fields");
             assert_eq!(
-                late.1,
+                receipt,
                 json!({"task_id":activity["task_id"],"activity_attempt_id":activity["activity_attempt_id"],
-                    "outcome":"failed","recorded":false,"reason":"stale_attempt","next_task_id":null}),
+                    "outcome":"failed","recorded":false,"reason":"stale_attempt","next_task_id":null,
+                    "protocol_version":"1.20"}),
                 "{field}"
             );
         }
