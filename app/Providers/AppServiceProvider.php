@@ -34,6 +34,7 @@ use App\Support\ValidatedExternalWorkflowUpdateAdmission;
 use App\Support\WorkflowMemoRollingCompatibility;
 use App\Support\WorkflowObservability;
 use App\Support\WorkflowPackageApiFloor;
+use App\Support\WorkflowServiceOperationAuthorizer;
 use App\Support\WorkflowTaskLeaseConfiguration;
 use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
@@ -180,6 +181,10 @@ class AppServiceProvider extends ServiceProvider
         $this->app->singleton(ServiceBoundaryAuditRecorder::class);
 
         $this->app->singleton(ServiceCallBoundary::class);
+        $this->app->bind(
+            \Workflow\V2\Contracts\WorkflowServiceOperationAuthorizer::class,
+            WorkflowServiceOperationAuthorizer::class,
+        );
     }
 
     private function normalizeRedisPorts(): void

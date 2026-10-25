@@ -97,8 +97,10 @@ final class WorkerServiceOperationTest extends TestCase
                 }
                 $this->assertSame([['invoice' => 42]], $actual['arguments']);
                 $this->assertSame('avro', $actual['payload_codec']);
-                $this->assertSame('nexus-test-principal', $actual['principal_subject']);
-                $this->assertSame(['worker'], $actual['principal_roles']);
+                $this->assertSame('nexus-test-principal', $actual['principal']->subject);
+                $this->assertSame(['worker'], $actual['principal']->roles);
+                $this->assertArrayNotHasKey('principal_subject', $actual);
+                $this->assertArrayNotHasKey('principal_roles', $actual);
                 $this->assertSame($task['run_id'], $actual['caller_workflow_run_id']);
 
                 return true;
@@ -306,6 +308,28 @@ final class WorkerServiceOperationTest extends TestCase
         $this->complete($task, $this->command([$selector => $selector === 'service_call_id' ? $call->id : 'invoice-42']))->assertForbidden();
 
         $this->assertSame($history, WorkflowHistoryEvent::query()->count());
+        $this->assertDatabaseCount('workflow_runs', 2);
+    }
+
+    #[DataProvider('replaySelectors')]
+    public function test_service_call_replay_requires_the_exact_caller_instance(string $selector): void
+    {
+        $this->seedCatalog();
+        $task = $this->leaseWorkflow();
+        $this->authenticateWorker();
+        $this->complete($task, $this->command(['idempotency_key' => 'invoice-42']))->assertOk();
+        $call = WorkflowServiceCall::query()->sole();
+        $call->update(['caller_workflow_instance_id' => 'another-instance']);
+        $task = $this->pollWorkflow();
+        $before = $call->getRawOriginal();
+        $history = WorkflowHistoryEvent::query()->count();
+
+        $this->complete($task, $this->command([$selector => $selector === 'service_call_id' ? $call->id : 'invoice-42']))
+            ->assertForbidden();
+
+        $this->assertSame($before, $call->fresh()->getRawOriginal());
+        $this->assertSame($history, WorkflowHistoryEvent::query()->count());
+        $this->assertSame('leased', WorkflowTask::query()->findOrFail($task['task_id'])->status->value);
         $this->assertDatabaseCount('workflow_runs', 2);
     }
 
