@@ -68,3 +68,87 @@ async fn a_run_parked_in_a_signal_wait_takes_cancellation_there_and_cleans_up() 
     assert_eq!(cancelled["principal"], Value::Null, "{cancelled}");
     assert_eq!(cancelled["payload"]["cancellation_cleanup"]["outcome"], "completed", "{cancelled}");
 }
+
+async fn cooperative_worker(app: &Router) {
+    let registered = request_protocol(app, "POST", "/api/worker/register",
+        json!({"worker_id":"cleanup-worker","task_queue":"test","runtime":"php","supported_workflow_types":["echo"],
+            "supported_activity_types":[],"capabilities":["cooperative_cancellation"]}), "1.20").await;
+    assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+}
+
+async fn request_root(app: &Router, workflow: &str) -> Value {
+    let requested = request(app, "POST", &format!("/api/workflows/{workflow}/request-cancellation"),
+        json!({"reason":"timer boundary","cleanup_timeout_seconds":60})).await;
+    assert_eq!(requested.0, StatusCode::ACCEPTED, "{}", requested.1);
+    requested.1["cancellation_request"]["request_id"].clone()
+}
+
+// A timed condition wait's timeout timer belongs to the wait
+// (WorkflowStepHistory::isPureTimerEvent), so published PHP refuses a timer
+// delivery there as a shape mismatch without touching the timer; the
+// condition delivery then cancels it.
+#[tokio::test]
+async fn a_timer_delivery_at_a_timed_waits_timeout_is_a_shape_mismatch() {
+    use super::activity_cancellation_ack::{deliver_at, refused_delivery};
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    cooperative_worker(&app).await;
+    let run = start(&app, "timed-wait-timer").await;
+    let task = cooperative_poll(&app, "workflow").await;
+    let opened = finish_task(&app, &task, json!([{"type":"open_condition_wait","timeout_seconds":600}])).await;
+    assert_eq!(opened.0, StatusCode::OK, "{}", opened.1);
+    let request_id = request_root(&app, "timed-wait-timer").await;
+    let root = cooperative_poll(&app, "workflow").await;
+    let before = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    let wrong = deliver_at(&app, &root, &request_id, 1, "timer").await;
+    assert_eq!(wrong, (StatusCode::CONFLICT, refused_delivery(&root, &run["run_id"], "cancellation_delivery_shape_mismatch")));
+    assert_eq!(run_history(&app, &run["workflow_id"], &run["run_id"]).await, before);
+    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_timers WHERE status='pending'").await, 1);
+    let delivered = deliver_at(&app, &root, &request_id, 1, "condition").await;
+    assert_eq!((delivered.0, delivered.1["delivered"].clone()), (StatusCode::OK, json!(true)), "{}", delivered.1);
+    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_timers WHERE status='pending'").await, 0);
+    runtime.close().await;
+    database.remove().await;
+}
+
+// Only a timer that resolved before the request is not eligible
+// (resolvedBeforeRequest). One that fired after it still takes the delivery,
+// as it is: published PHP's cancelOpenWaitAtSequence leaves a fired timer
+// alone and records the delivery.
+#[tokio::test]
+async fn a_timer_that_fired_after_the_request_still_takes_the_delivery() {
+    use super::activity_cancellation_ack::deliver_at;
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    cooperative_worker(&app).await;
+    let run = start(&app, "fired-after-request").await;
+    let task = cooperative_poll(&app, "workflow").await;
+    let timer = finish_task(&app, &task, json!([{"type":"start_timer","delay_seconds":1}])).await;
+    assert_eq!(timer.0, StatusCode::OK, "{}", timer.1);
+    let request_id = request_root(&app, "fired-after-request").await;
+    let root = cooperative_poll(&app, "workflow").await;
+    assert_eq!(root["cancellation_request"]["request_id"], request_id, "{root}");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    let fired = loop {
+        let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+        if history.as_array().unwrap().iter().any(|event| event["event_type"] == "TimerFired") {
+            break history;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "timer never fired: {history}");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    let events = fired.as_array().unwrap();
+    let position = |kind: &str| events.iter().position(|event| event["event_type"] == kind).unwrap();
+    assert!(position("CooperativeCancellationRequested") < position("TimerFired"), "{fired}");
+    let delivered = deliver_at(&app, &root, &request_id, 1, "timer").await;
+    assert_eq!((delivered.0, delivered.1["delivered"].clone(), delivered.1["sequence"].clone()),
+        (StatusCode::OK, json!(true), json!(1)), "{}", delivered.1);
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    let kinds: Vec<_> = history.as_array().unwrap().iter().map(|event| event["event_type"].clone()).collect();
+    assert!(!kinds.contains(&json!("TimerCancelled")), "{history}");
+    assert_eq!(kinds.last(), Some(&json!("CooperativeCancellationDelivered")), "{history}");
+    runtime.close().await;
+    database.remove().await;
+}
