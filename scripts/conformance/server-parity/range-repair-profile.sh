@@ -51,7 +51,7 @@ case "$backend" in
     database=(-e DB_CONNECTION=sqlite -v "$state:/range-state") ;;
   *) echo 'Choose mysql, pgsql or sqlite' >&2; exit 2 ;;
 esac
-docker run --name "$resource-sdk" "${limits[@]}" --entrypoint composer -e COMPOSER_HOME=/tmp/composer -v "$state/sdk:/sdk" -w /sdk "$image" \
+bash scripts/ci/run-composer.sh --name "$resource-sdk" "${limits[@]}" -v "$state/sdk:/sdk" -w /sdk -- \
   install --no-interaction --no-progress --no-cache > "$evidence/sdk-install.txt" 2>&1
 printf '%s  %s\n' "$(jq -r '.sdk_php_composer_lock_sha256' "$manifest")" "$state/sdk/composer.lock" \
   | sha256sum -c > "$evidence/sdk-lock.txt"

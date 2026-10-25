@@ -511,11 +511,11 @@ if ! python3 -m venv "$run_root/.venv" > "$result_dir/python-venv.log" 2>&1; the
   exit 1
 fi
 # durable-workflow== is intentionally visible for public runner scanners.
-if ! "$run_root/.venv/bin/python" -m pip install --upgrade pip > "$result_dir/python-pip-upgrade.log" 2>&1; then
-  blocked_result "pip upgrade failed; see python-pip-upgrade.log" "$started_at"
+if ! sh "$script_dir/../ci/bootstrap-patched-pip.sh" "$run_root/.venv/bin/python" > "$result_dir/python-pip-upgrade.log" 2>&1; then
+  blocked_result "patched pip bootstrap failed; see python-pip-upgrade.log" "$started_at"
   exit 1
 fi
-if ! "$run_root/.venv/bin/python" -m pip install "durable-workflow==$python_sdk_version" > "$result_dir/python-sdk-install.log" 2>&1; then
+if ! "$run_root/.venv/bin/python" -I -m pip install "durable-workflow==$python_sdk_version" > "$result_dir/python-sdk-install.log" 2>&1; then
   blocked_result "durable-workflow==$python_sdk_version install failed; see python-sdk-install.log" "$started_at"
   exit 1
 fi
@@ -968,7 +968,7 @@ PY
 
   set +e
   docker run --rm --user "$host_uid_gid" -e HOME=/tmp -e COMPOSER_HOME=/tmp/composer \
-    -v "$waterline_app:/app" -w /app composer:2 \
+    -v "$waterline_app:/app" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \
     composer create-project laravel/laravel . --no-interaction --no-progress \
     > "$result_dir/waterline-create-project.log" 2>&1
   waterline_create_status=$?
@@ -984,7 +984,7 @@ PY
 
     set +e
     docker run --rm --user "$host_uid_gid" -e HOME=/tmp -e COMPOSER_HOME=/tmp/composer \
-      -v "$waterline_app:/app" -w /app composer:2 \
+      -v "$waterline_app:/app" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \
       composer require --no-interaction --no-progress \
         "durable-workflow/waterline:${waterline_version}@beta" \
         "durable-workflow/workflow:${workflow_php_version}@beta" \
@@ -1004,7 +1004,7 @@ PY
       -e DB_DATABASE=/app/database/database.sqlite \
       -e WATERLINE_ENGINE_SOURCE=v2 \
       -e WATERLINE_ALLOW_UNAUTHENTICATED=true \
-      composer:2 php artisan key:generate --force \
+      composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan key:generate --force \
       > "$result_dir/waterline-key-generate.log" 2>&1
     waterline_key_status=$?
     set -e
@@ -1020,7 +1020,7 @@ PY
       -e DB_DATABASE=/app/database/database.sqlite \
       -e WATERLINE_ENGINE_SOURCE=v2 \
       -e WATERLINE_ALLOW_UNAUTHENTICATED=true \
-      composer:2 php artisan migrate --force \
+      composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan migrate --force \
       > "$result_dir/waterline-migrate.log" 2>&1
     waterline_migrate_status=$?
     set -e
@@ -1037,7 +1037,7 @@ PY
       -e DB_DATABASE=/app/database/database.sqlite \
       -e WATERLINE_ENGINE_SOURCE=v2 \
       -e WATERLINE_ALLOW_UNAUTHENTICATED=true \
-      composer:2 php artisan waterline:namespace-conformance \
+      composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan waterline:namespace-conformance \
         --run-id "published-namespaces-${RUN_ID:-waterline}" \
         "${waterline_artifact_args[@]}" \
         --output /result/waterline-namespace-result.json \

@@ -1293,7 +1293,7 @@ DOCKERFILE
   fi
 
   mkdir -p "$run_root/waterline-app"
-  if ! docker run --rm -v "$run_root/waterline-app:/app" composer:2 sh -lc "
+  if ! docker run --rm -v "$run_root/waterline-app:/app" composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee sh -lc "
     composer create-project --no-interaction --no-progress laravel/laravel . &&
     composer require --no-interaction --no-progress \
       'durable-workflow/waterline:${DW_WATERLINE_VERSION}@beta' \

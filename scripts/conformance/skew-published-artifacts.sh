@@ -473,8 +473,8 @@ python_source="not_installed"
 if [[ -n "${DW_PYTHON_SDK_VERSION:-}" ]]; then
   if require_command python3; then
     if python3 -m venv "$run_root/.venv" >"$result_dir/python-install.log" 2>&1 \
-      && "$run_root/.venv/bin/python" -m pip install --upgrade pip >>"$result_dir/python-install.log" 2>&1 \
-      && "$run_root/.venv/bin/python" -m pip install "durable-workflow==${DW_PYTHON_SDK_VERSION}" >>"$result_dir/python-install.log" 2>&1; then
+      && sh "$script_dir/../ci/bootstrap-patched-pip.sh" "$run_root/.venv/bin/python" >>"$result_dir/python-install.log" 2>&1 \
+      && "$run_root/.venv/bin/python" -I -m pip install "durable-workflow==${DW_PYTHON_SDK_VERSION}" >>"$result_dir/python-install.log" 2>&1; then
       python_status="available"
       python_reason=""
       python_source="pypi"
@@ -501,7 +501,7 @@ if [[ -n "$php_sdk_version" ]]; then
     php_sdk_status="runner_blocked"
     php_sdk_reason="PHP SDK install requires an exact durable-workflow/sdk version; got ${php_sdk_version}"
   elif require_command docker; then
-    if docker run --rm -v "$run_root/php-sdk-worker:/app" composer:2 \
+    if docker run --rm -v "$run_root/php-sdk-worker:/app" composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \
       composer require --no-interaction --no-progress "durable-workflow/sdk:${php_sdk_version}" >"$result_dir/php-sdk-composer-install.log" 2>&1; then
       php_sdk_status="available"
       php_sdk_reason=""
@@ -513,7 +513,7 @@ if [[ -n "$php_sdk_version" ]]; then
     fi
   else
     php_sdk_status="runner_blocked"
-    php_sdk_reason="docker is required to install the PHP SDK artifact through composer:2"
+    php_sdk_reason="docker is required to install the PHP SDK artifact through composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee"
   fi
 fi
 
@@ -549,7 +549,7 @@ if [[ -n "${DW_WATERLINE_VERSION:-}" ]]; then
     waterline_serve_status=0
 
     if [[ -z "$waterline_surface_url" ]]; then
-      if docker run --rm -v "$run_root/waterline:/app" -w /app composer:2 \
+      if docker run --rm -v "$run_root/waterline:/app" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \
         composer create-project laravel/laravel . --no-interaction --no-progress \
         >"$result_dir/waterline-create-project.log" 2>&1; then
         waterline_create_status=0
@@ -562,7 +562,7 @@ if [[ -n "${DW_WATERLINE_VERSION:-}" ]]; then
       mkdir -p "$run_root/waterline/database"
       : > "$run_root/waterline/database/database.sqlite"
 
-      if docker run --rm -v "$run_root/waterline:/app" -w /app composer:2 \
+      if docker run --rm -v "$run_root/waterline:/app" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \
         composer require --no-interaction --no-progress \
           "durable-workflow/waterline:${DW_WATERLINE_VERSION}@beta" \
           "durable-workflow/workflow:${workflow_version}@beta" \
@@ -583,7 +583,7 @@ if [[ -n "${DW_WATERLINE_VERSION:-}" ]]; then
         -e WATERLINE_ENGINE_SOURCE=v2 \
         -e WATERLINE_ALLOW_UNAUTHENTICATED=true \
         -e WATERLINE_NAMESPACE="${DW_SKEW_NAMESPACE:-default}" \
-        composer:2 php artisan key:generate --force \
+        composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan key:generate --force \
         >"$result_dir/waterline-key-generate.log" 2>&1; then
         waterline_key_status=0
       else
@@ -601,7 +601,7 @@ if [[ -n "${DW_WATERLINE_VERSION:-}" ]]; then
         -e WATERLINE_ENGINE_SOURCE=v2 \
         -e WATERLINE_ALLOW_UNAUTHENTICATED=true \
         -e WATERLINE_NAMESPACE="${DW_SKEW_NAMESPACE:-default}" \
-        composer:2 php artisan migrate --force \
+        composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan migrate --force \
         >"$result_dir/waterline-migrate.log" 2>&1; then
         waterline_migrate_status=0
       else
@@ -719,7 +719,7 @@ PHP
         -e WATERLINE_ALLOW_UNAUTHENTICATED=true \
         -e WATERLINE_NAMESPACE="${DW_SKEW_NAMESPACE:-default}" \
         -e DW_SKEW_WATERLINE_FIXTURE_RUN_ID="$waterline_fixture_run_id" \
-        composer:2 php /workspace/waterline-seed.php \
+        composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php /workspace/waterline-seed.php \
         >"$result_dir/waterline-seed-fixture.log" 2>&1; then
         waterline_fixture_status=0
       else
@@ -744,7 +744,7 @@ PHP
         -e WATERLINE_ENGINE_SOURCE=v2 \
         -e WATERLINE_ALLOW_UNAUTHENTICATED=true \
         -e WATERLINE_NAMESPACE="${DW_SKEW_NAMESPACE:-default}" \
-        composer:2 php artisan serve --host=0.0.0.0 --port "$waterline_port" \
+        composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan serve --host=0.0.0.0 --port "$waterline_port" \
         >"$result_dir/waterline-serve-container.id" 2>"$result_dir/waterline-serve-start.log"; then
         if wait_for_waterline "$waterline_surface_url" >"$result_dir/waterline-ready.log" 2>&1; then
           waterline_serve_status=0
@@ -788,7 +788,7 @@ PHP
     fi
   else
     waterline_status="runner_blocked"
-    waterline_reason="docker is required to install the Waterline artifact through composer:2"
+    waterline_reason="docker is required to install the Waterline artifact through composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee"
   fi
 fi
 

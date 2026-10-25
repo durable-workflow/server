@@ -1,6 +1,6 @@
 ARG SERVER_IMAGE=durableworkflow/server@sha256:998b9dffe1f8effb159af9660ac190ccbc9d0c954900e68e9946baa6bb4c6c42
 
-FROM composer:2 AS phpredis-source
+FROM composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee AS phpredis-source
 
 ARG PHPREDIS_VERSION=6.3.0
 ARG PHPREDIS_COMMIT=df4fab2de7fc327c54c94a13af2b9542e4fbd720
@@ -29,6 +29,11 @@ COPY --from=published /app/ /app/
 
 WORKDIR /app
 
+# Composer trusts only the pinned Composer image's checked CA store here
+# (GHSA-6q48-6c7w-9gw2); this base image's own store may hold a withdrawn root.
+COPY --from=phpredis-source /etc/ssl/certs/ca-certificates.crt /etc/composer-trust/ca.pem
+RUN install -d -m 0555 /etc/composer-trust/no-ca-directory
+ENV COMPOSER_CAFILE=/etc/composer-trust/ca.pem COMPOSER_CAPATH=/etc/composer-trust/no-ca-directory
 RUN composer require 'laravel/octane:2.20.0' 'laminas/laminas-diactoros:3.8.0' \
         'symfony/psr-http-message-bridge:7.4.8' \
         --update-no-dev --no-interaction --no-progress --no-scripts \

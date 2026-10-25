@@ -1,4 +1,4 @@
-FROM composer:2 AS dependencies
+FROM composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee AS dependencies
 WORKDIR /sdk
 COPY benchmarks/capacity/v1/bindings/php/composer.json benchmarks/capacity/v1/bindings/php/composer.lock ./
 RUN composer require 'durable-workflow/sdk:2.1.1' \

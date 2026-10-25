@@ -26,5 +26,3 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/helm-chart-checks.yml  # local
-    with:
-      source_ref: ${{ github.sha }}
