@@ -886,11 +886,34 @@ final class WorkflowQueryTaskBroker
             function () use ($namespace, $taskQueue, $leaseOwner, $supportedWorkflowTypes, $workflowDefinitionFingerprints, $buildId, $pollRequestId, $workerPollFence, $delivery, &$workflowBlockStatus): ?array {
                 app(StoragePressure::class)->requireNewWork();
 
-                return $this->probeQueryTask(
-                    $namespace, $taskQueue, $leaseOwner, $supportedWorkflowTypes,
-                    $workflowDefinitionFingerprints, $buildId, $pollRequestId,
-                    $workerPollFence, $delivery, $workflowBlockStatus,
+                $refusal = $this->queryPollRefusal($namespace, $taskQueue, $leaseOwner, $buildId, $pollRequestId, $workerPollFence, $delivery);
+                if ($refusal !== null) {
+                    return $refusal;
+                }
+                if ($pollRequestId !== null) {
+                    $offeredId = $delivery?->offeredTaskId('query');
+                    $offeredTask = $offeredId === null ? null : $this->task($offeredId);
+                    $activeLease = ($offeredTask['status'] ?? null) === 'leased' ? $offeredTask : $this->activeLeasedTaskForPoller(
+                        $namespace, $taskQueue, $leaseOwner, $supportedWorkflowTypes, $workflowDefinitionFingerprints, $buildId, $pollRequestId,
+                    );
+                    if (is_array($activeLease)) {
+                        if ($delivery !== null) {
+                            $this->assertQueryDelivery($delivery, $activeLease, $namespace, $taskQueue, $leaseOwner);
+                        }
+
+                        return $this->queryTaskPayload($activeLease);
+                    }
+                }
+                $workflowBlockStatus = $this->pendingTaskWorkflowBlockStatus(
+                    $namespace, $taskQueue, $leaseOwner, $supportedWorkflowTypes, $workflowDefinitionFingerprints, $buildId,
                 );
+
+                return match ($workflowBlockStatus) {
+                    'workflow_task_pending' => ['poll_status' => $workflowBlockStatus],
+                    'workflow_task_leased' => null,
+                    default => $this->claimNext($namespace, $taskQueue, $leaseOwner, $supportedWorkflowTypes,
+                        $workflowDefinitionFingerprints, $buildId, $pollRequestId, $workerPollFence, $delivery),
+                };
             },
             static fn (?array $task): bool => $task !== null,
             timeoutSeconds: $timeoutSeconds,
@@ -915,41 +938,6 @@ final class WorkflowQueryTaskBroker
             ['superseded', 'stale_worker_registration'],
             true,
         ) ? null : $result;
-    }
-
-    private function probeQueryTask(
-        string $namespace, string $taskQueue, string $leaseOwner, array $supportedWorkflowTypes,
-        array $workflowDefinitionFingerprints, ?string $buildId, ?string $pollRequestId,
-        array $workerPollFence, ?WorkerTaskDelivery $delivery, ?string &$workflowBlockStatus,
-    ): ?array {
-        $refusal = $this->queryPollRefusal($namespace, $taskQueue, $leaseOwner, $buildId, $pollRequestId, $workerPollFence, $delivery);
-        if ($refusal !== null) {
-            return $refusal;
-        }
-        if ($pollRequestId !== null) {
-            $offeredId = $delivery?->offeredTaskId('query');
-            $offeredTask = $offeredId === null ? null : $this->task($offeredId);
-            $activeLease = ($offeredTask['status'] ?? null) === 'leased' ? $offeredTask : $this->activeLeasedTaskForPoller(
-                $namespace, $taskQueue, $leaseOwner, $supportedWorkflowTypes, $workflowDefinitionFingerprints, $buildId, $pollRequestId,
-            );
-            if (is_array($activeLease)) {
-                if ($delivery !== null) {
-                    $this->assertQueryDelivery($delivery, $activeLease, $namespace, $taskQueue, $leaseOwner);
-                }
-
-                return $this->queryTaskPayload($activeLease);
-            }
-        }
-        $workflowBlockStatus = $this->pendingTaskWorkflowBlockStatus(
-            $namespace, $taskQueue, $leaseOwner, $supportedWorkflowTypes, $workflowDefinitionFingerprints, $buildId,
-        );
-
-        return match ($workflowBlockStatus) {
-            'workflow_task_pending' => ['poll_status' => $workflowBlockStatus],
-            'workflow_task_leased' => null,
-            default => $this->claimNext($namespace, $taskQueue, $leaseOwner, $supportedWorkflowTypes,
-                $workflowDefinitionFingerprints, $buildId, $pollRequestId, $workerPollFence, $delivery),
-        };
     }
 
     private function queryPollRefusal(
@@ -1882,7 +1870,12 @@ final class WorkflowQueryTaskBroker
                 $delivery->assertAcceptance($queryTaskId, 'query', (int) ($task['attempt_count'] ?? 0), $fingerprint);
             }
             $leaseExpiresAt = now()->addSeconds($this->leaseTtlSeconds())->min($deadline);
-            if (! $this->store()->add($this->leaseKey($queryTaskId), $leaseOwner, $leaseExpiresAt)) {
+            // The queue lock and task record govern positive acceptance.
+            // A stale legacy hint cannot reserve an authoritative pending
+            // task, and this mode does not create or delete such hints.
+            $reserved = $delivery !== null
+                || $this->store()->add($this->leaseKey($queryTaskId), $leaseOwner, $leaseExpiresAt);
+            if (! $reserved) {
                 $remaining[] = $queryTaskId;
 
                 continue;
@@ -1897,32 +1890,57 @@ final class WorkflowQueryTaskBroker
             $task['leased_at'] = now()->toJSON();
             $task['poll_request_id'] = $pollRequestId;
 
-            if ($delivery !== null) {
-                try {
-                    $task[WorkerTaskDelivery::RECEIPT_KEY] = $delivery->acceptedReceipt($attempt);
-                } catch (TaskDeliveryOfferRejected $exception) {
-                    $this->store()->forget($this->leaseKey($queryTaskId));
-                    throw $exception;
-                }
-            }
-
-            $this->putTask($task);
-            $this->appendLeasedTask($namespace, $taskQueue, $leaseOwner, $queryTaskId);
-            $this->storePendingTaskIds(
-                $namespace,
-                $taskQueue,
-                array_values(array_filter(
-                    $ids,
-                    static fn (string $id): bool => $id !== $queryTaskId,
-                )),
-            );
-
-            return $task;
+            return $this->commitQueryClaim($task, $ids, $delivery, $queueLock);
         }
 
         $this->storePendingTaskIds($namespace, $taskQueue, $remaining);
 
         return null;
+    }
+
+    private function commitQueryClaim(array $task, array $pendingIds, ?WorkerTaskDelivery $delivery, ?LockContract $queueLock): array
+    {
+        $namespace = $task['namespace'];
+        $taskQueue = $task['task_queue'];
+        $queryTaskId = $task['query_task_id'];
+        $leaseOwner = $task['lease_owner'];
+        try {
+            if ($delivery !== null) {
+                // Prepare discovery before publishing the authority record.
+                // A crash may leave a harmless pending ID in this index, but
+                // must not leave an accepted task undiscoverable on recovery.
+                $this->appendLeasedTask($namespace, $taskQueue, $leaseOwner, $queryTaskId);
+                if (! in_array($queryTaskId, $this->leasedTaskIds($namespace, $taskQueue, $leaseOwner), true)) {
+                    throw new QueryTaskQueueUnavailableException($namespace, $taskQueue, 'The task acceptance index was not committed.');
+                }
+                $task[WorkerTaskDelivery::RECEIPT_KEY] = $delivery->acceptedReceipt($task['attempt_count']);
+            }
+            $this->assertQueueLockOwned($namespace, $taskQueue, $queueLock);
+            $this->putTask($task);
+            if ($delivery !== null) {
+                $confirmed = $this->task($queryTaskId);
+                if (! is_array($confirmed) || ($confirmed['status'] ?? null) !== 'leased') {
+                    throw new QueryTaskQueueUnavailableException($namespace, $taskQueue, 'The task acceptance receipt was not committed.');
+                }
+                $this->assertQueryDelivery($delivery, $confirmed, $namespace, $taskQueue, $leaseOwner);
+                $task = $confirmed;
+            }
+            if ($delivery === null) {
+                $this->appendLeasedTask($namespace, $taskQueue, $leaseOwner, $queryTaskId);
+            }
+            $this->storePendingTaskIds($namespace, $taskQueue, array_values(array_filter(
+                $pendingIds, static fn (string $id): bool => $id !== $queryTaskId,
+            )));
+        } catch (\Throwable $exception) {
+            if ($delivery === null || $exception instanceof TaskDeliveryOfferRejected) {
+                throw $exception;
+            }
+            // An uncertain cache write may already contain an accepted live
+            // receipt. Preserve it and let the identical packet replay it.
+            throw new QueryTaskQueueUnavailableException($namespace, $taskQueue, 'The task acceptance could not be confirmed.', $exception);
+        }
+
+        return $task;
     }
 
     private function assertQueryDelivery(WorkerTaskDelivery $delivery, array $task, string $namespace, string $taskQueue, string $leaseOwner): void

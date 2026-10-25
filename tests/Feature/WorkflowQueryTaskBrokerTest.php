@@ -31,6 +31,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Component\Process\Process;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Support\OpenApiSchema;
@@ -130,6 +131,126 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $this->postJson('/api/worker/query-tasks/offers', $body + ['task_offer_token' => $offer->json('task_offer.token')], $headers)
             ->assertConflict();
         $this->assertSame($before, $broker->task($task['query_task_id']));
+    }
+
+    #[DataProvider('deliveryCacheFailures')]
+    public function test_query_acceptance_cache_failures_preserve_only_committed_authority(string $mode, bool $committed): void
+    {
+        Queue::fake();
+        $store = new class extends ArrayStore
+        {
+            public string $mode = 'none';
+
+            public function put($key, $value, $seconds)
+            {
+                if ($this->mode === 'index' && str_starts_with($key, 'server:workflow-query-task:leased:')) {
+                    throw new \RuntimeException('Fixture lease-index failure.');
+                }
+                if ($this->mode === 'index_false' && str_starts_with($key, 'server:workflow-query-task:leased:')) {
+                    return false;
+                }
+                if ($this->mode === 'pending_index' && str_starts_with($key, 'server:workflow-query-task:queue:')) {
+                    throw new \RuntimeException('Fixture pending-index failure.');
+                }
+                if ($this->mode !== 'none' && is_array($value) && ($value['status'] ?? null) === 'leased'
+                    && str_starts_with($key, 'server:workflow-query-task:task:')) {
+                    if ($this->mode === 'before') {
+                        throw new \RuntimeException('Fixture task write failure before commit.');
+                    }
+                    if ($this->mode === 'false') {
+                        return false;
+                    }
+                    if ($this->mode === 'after') {
+                        parent::put($key, $value, $seconds);
+                        throw new \RuntimeException('Fixture task write failure after commit.');
+                    }
+                }
+
+                return parent::put($key, $value, $seconds);
+            }
+        };
+        $this->bindPollingCacheStore($store);
+        $run = $this->startRemoteWorkflow('query-delivery-cache-'.$mode);
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+        $this->registerPythonWorker('delivery-worker', 'python-queries', ['python.queryable'], ['query_tasks', WorkerTaskDelivery::CAPABILITY]);
+        WorkerRegistration::query()->where('worker_id', 'delivery-worker')->firstOrFail()
+            ->forceFill(['registration_token' => str_repeat('a', 32)])->save();
+        $headers = $this->workerHeaders() + [WorkerTaskDelivery::HEADER => WorkerTaskDelivery::VERSION];
+        $body = ['worker_id' => 'delivery-worker', 'task_queue' => 'python-queries', 'timeout_seconds' => 0,
+            'poll_request_id' => 'delivery-poll', 'registration_token' => str_repeat('a', 32)];
+        $path = '/api/worker/query-tasks/offers';
+        $offer = $this->postJson($path, $body, $headers)->assertOk()->assertJsonPath('poll_status', 'offered');
+        $acceptance = $body + ['task_offer_token' => $offer->json('task_offer.token')];
+        $store->mode = $mode;
+        $response = $this->postJson($path, $acceptance, $headers);
+        $stored = $broker->task($task['query_task_id']);
+        $this->assertSame($committed ? 'leased' : 'pending', $stored['status']);
+        $this->assertSame($committed ? 1 : 0, $stored['attempt_count']);
+        $response->assertStatus(503)->assertJsonPath('task', null)->assertJsonPath('reason', 'query_task_queue_unavailable');
+        $store->mode = 'none';
+        if ($committed) {
+            $this->registerPythonWorker('peer', 'python-queries', ['python.queryable']);
+            $this->postJson('/api/worker/query-tasks/poll', ['worker_id' => 'peer', 'task_queue' => 'python-queries', 'timeout_seconds' => 0], $this->workerHeaders())
+                ->assertOk()->assertJsonPath('task', null);
+            $this->postJson($path, $acceptance, $headers)->assertOk()
+                ->assertJsonPath('task.query_task_id', $task['query_task_id'])->assertJsonPath('task.query_task_attempt', 1);
+        } else {
+            $this->registerPythonWorker('peer', 'python-queries', ['python.queryable']);
+            $this->postJson('/api/worker/query-tasks/poll', ['worker_id' => 'peer', 'task_queue' => 'python-queries', 'timeout_seconds' => 0], $this->workerHeaders())
+                ->assertOk()->assertJsonPath('task.query_task_id', $task['query_task_id']);
+        }
+    }
+
+    public static function deliveryCacheFailures(): array
+    {
+        return ['before commit' => ['before', false], 'false write' => ['false', false],
+            'after commit' => ['after', true], 'lease index' => ['index', false],
+            'false lease index' => ['index_false', false],
+            'pending index' => ['pending_index', true]];
+    }
+
+    public function test_a_failed_legacy_query_write_cannot_make_its_hint_authoritative_for_offers(): void
+    {
+        Queue::fake();
+        $store = new class extends ArrayStore
+        {
+            public bool $failClaims = false;
+
+            public function put($key, $value, $seconds)
+            {
+                if ($this->failClaims && is_array($value) && ($value['status'] ?? null) === 'leased'
+                    && str_starts_with($key, 'server:workflow-query-task:task:')) {
+                    throw new \RuntimeException('Fixture legacy claim write failure.');
+                }
+
+                return parent::put($key, $value, $seconds);
+            }
+        };
+        $this->bindPollingCacheStore($store);
+        $run = $this->startRemoteWorkflow('query-legacy-hint');
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+        $this->registerPythonWorker('legacy', 'python-queries', ['python.queryable']);
+        $store->failClaims = true;
+        $this->postJson('/api/worker/query-tasks/poll', ['worker_id' => 'legacy', 'task_queue' => 'python-queries', 'timeout_seconds' => 0], $this->workerHeaders())
+            ->assertStatus(500);
+        $this->assertSame('pending', $broker->task($task['query_task_id'])['status']);
+        $hint = 'server:workflow-query-task:lease:'.$task['query_task_id'];
+        $this->assertSame('legacy', $store->get($hint));
+        $store->failClaims = false;
+        $this->registerPythonWorker('delivery-worker', 'python-queries', ['python.queryable'], ['query_tasks', WorkerTaskDelivery::CAPABILITY]);
+        WorkerRegistration::query()->where('worker_id', 'delivery-worker')->firstOrFail()
+            ->forceFill(['registration_token' => str_repeat('a', 32)])->save();
+        $headers = $this->workerHeaders() + [WorkerTaskDelivery::HEADER => WorkerTaskDelivery::VERSION];
+        $body = ['worker_id' => 'delivery-worker', 'task_queue' => 'python-queries', 'timeout_seconds' => 0,
+            'poll_request_id' => 'delivery-poll', 'registration_token' => str_repeat('a', 32)];
+        $path = '/api/worker/query-tasks/offers';
+        $offer = $this->postJson($path, $body, $headers)->assertOk()->assertJsonPath('poll_status', 'offered');
+        $this->postJson($path, $body + ['task_offer_token' => $offer->json('task_offer.token')], $headers)
+            ->assertOk()->assertJsonPath('task.query_task_id', $task['query_task_id'])->assertJsonPath('task.query_task_attempt', 1);
+        $this->assertSame('legacy', $store->get($hint), 'The new claimant must not delete another owner\'s hint.');
+        $this->assertSame('delivery-worker', $broker->task($task['query_task_id'])['lease_owner']);
     }
 
     public function test_late_query_claim_keeps_original_deadline_despite_configuration_change(): void

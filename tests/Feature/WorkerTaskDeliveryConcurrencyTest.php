@@ -32,7 +32,10 @@ class WorkerTaskDeliveryConcurrencyTest extends TestCase
             File::ensureDirectoryExists(dirname($path));
             touch($path);
             $this->sqliteDatabase = $path;
-            config(['database.connections.sqlite.database' => $path]);
+            config(['database.connections.sqlite.database' => $path,
+                'database.connections.sqlite.busy_timeout' => 1,
+                'database.connections.sqlite.journal_mode' => 'WAL',
+                'database.connections.sqlite.transaction_mode' => 'IMMEDIATE']);
             DB::purge('sqlite');
         }
         $this->migrateDeliveryDatabase();
@@ -83,6 +86,9 @@ class WorkerTaskDeliveryConcurrencyTest extends TestCase
             'DB_CONNECTION' => $connection, 'DB_HOST' => $db['host'] ?? '',
             'DB_PORT' => (string) ($db['port'] ?? ''), 'DB_DATABASE' => $db['database'],
             'DB_USERNAME' => $db['username'] ?? '', 'DB_PASSWORD' => $db['password'] ?? '',
+            'DB_SQLITE_BUSY_TIMEOUT' => (string) ($db['busy_timeout'] ?? 5000),
+            'DB_SQLITE_JOURNAL_MODE' => $db['journal_mode'] ?? 'WAL',
+            'DB_SQLITE_TRANSACTION_MODE' => $db['transaction_mode'] ?? 'IMMEDIATE',
             'DW_POLLING_CACHE_PATH' => config('server.polling.cache_path'),
         ];
         $processes = [];
@@ -123,6 +129,12 @@ class WorkerTaskDeliveryConcurrencyTest extends TestCase
                     'reason' => $result['body']['reason'] ?? null, 'task' => $result['body']['task']['task_id'] ?? null]);
                 $this->assertSame(200, $result['status'], $diagnostic);
                 $this->assertSame($task->id, $result['body']['task']['task_id'] ?? null, $diagnostic);
+                foreach ($result['attempts'] as $attempt) {
+                    if ($attempt['status'] === 503) {
+                        $this->assertSame('backend_lock_pressure', $attempt['reason']);
+                        $this->assertNull($attempt['task']);
+                    }
+                }
             }
             $this->assertSame(1, (int) $task->fresh()->attempt_count);
             $this->assertSame($kind === 'activity' ? 1 : 0, ActivityAttempt::query()->count());

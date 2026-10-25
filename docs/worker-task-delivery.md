@@ -55,6 +55,13 @@ acceptance uses its existing queue lock and authoritative cache task record;
 its receipt stays in that record. Poll wait capacity and wake hints grant no
 task authority.
 
+Query acceptance prepares its discovery index before committing the authority
+record and confirms the stored receipt before returning a task. A failed or
+uncertain cache write returns a typed queue-unavailable response; retry the same
+packet. A committed receipt survives that failure, while an uncommitted task
+remains immediately available to peers. This mode creates no provisional lease
+hint, and an abandoned legacy hint cannot reserve an authoritative pending task.
+
 Only the accepted task response authorizes execution. An offer never does.
 If the response is lost, retry the exact selected token, registration, poll ID
 and endpoint. An already-accepted live claim can replay after the offer deadline
