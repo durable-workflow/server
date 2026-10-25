@@ -340,12 +340,24 @@ jobs:
             image: mirror.gcr.io/library/mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6
             # The expanded shared database was OOM-killed at 1 GiB before TLS checks.
             memory: 2g
+            # Its native suite was the slowest part (17-18 min, 13 of them in
+            # the execution tests), so the execution tests run in two halves:
+            # native-tests runs the first and native-tests-b the second. The
+            # bytewise-sorted test list is dealt round-robin, so each listed
+            # test runs in exactly one half and a new test joins one.
+            execution_shards: 2
+          - label: existing-php-mysql-matrix
+            part: native-tests-b
+            image: mirror.gcr.io/library/mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6
+            memory: 2g
+            execution_shards: 2
           - label: mariadb-10.11
             image: mirror.gcr.io/library/mariadb@sha256:7db29378d4fdab73f8123bbc2b48905c90d1a4b00cf848b028f1e81e623257f2
             # Both expanded originals exhausted the 512 MiB DB fixture ceiling.
             memory: 1g
     env:
       DW_PARITY_PART: ${{ matrix.part }}
+      DW_EXECUTION_SHARDS: ${{ matrix.execution_shards || 1 }}
       RESOURCE_SCOPE: dw-mysql-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.label }}
       MYSQL_IMAGE: ${{ matrix.image }}
       DB_MEMORY: ${{ matrix.memory }}
@@ -459,13 +471,13 @@ jobs:
             "$layout" artisan server:bootstrap --force > parity-evidence/published-bootstrap.txt
           # Compiling the library tests with two jobs peaks near 4.2 GB; a 4 GB limit OOM-killed rustc (exit 101).
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --cpus=2 --memory=6g --memory-swap=6g \
-            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 -e DW_PARITY_PART \
+            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 -e DW_PARITY_PART -e DW_EXECUTION_SHARDS \
             -e DW_TEST_MYSQL_URL=mysql://root:parity-disposable-password@parity-mysql:3306/php_ref \
             -e DW_EXECUTION_MYSQL_URL=mysql://root:parity-disposable-password@parity-mysql:3306/php_ref \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
             -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
             mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 -c \
-            'if [ "$DW_PARITY_PART" = native-tests ]; then cargo test --locked --offline --lib runtime::mysql:: -- --ignored --skip runtime::mysql::tests::bootstrap_child --nocapture --test-threads=2 > /evidence/mysql-tests.txt && cargo test --locked --offline --test execution -- --nocapture --test-threads=2 > /evidence/mysql-execution-tests.txt; fi && cargo build --locked --offline'
+            'case "$DW_PARITY_PART" in native-tests) shard=1 suffix= ;; native-tests-b) shard=2 suffix=-b ;; *) shard= ;; esac; if [ "$DW_PARITY_PART" = native-tests ]; then cargo test --locked --offline --lib runtime::mysql:: -- --ignored --skip runtime::mysql::tests::bootstrap_child --nocapture --test-threads=2 > /evidence/mysql-tests.txt || exit 1; fi; if [ -n "$shard" ]; then cargo test --locked --offline --test execution -- --list --format terse | sed -n "s/: test\$//p" | LC_ALL=C sort | awk -v count="$DW_EXECUTION_SHARDS" -v shard="$shard" "(NR - 1) % count == shard - 1" > /evidence/execution-shard$suffix.txt && test -s /evidence/execution-shard$suffix.txt && cargo test --locked --offline --test execution -- --exact --nocapture --test-threads=2 $(cat /evidence/execution-shard$suffix.txt) > /evidence/mysql-execution-tests$suffix.txt || exit 1; fi; cargo build --locked --offline'
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
