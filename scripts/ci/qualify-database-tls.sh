@@ -88,7 +88,8 @@ docker run --rm --name "$TLS_TEST_PROJECT-certificates" \
         openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 1 -extfile server.ext -out server.pem >/dev/null 2>&1
     '
 if [[ "$TLS_TEST_MODE" = source ]]; then
-    compose run --rm --no-deps php composer install --no-dev --no-scripts --no-interaction --no-progress --prefer-dist
+    # Refuses before any package request unless the image's CA store is checked (GHSA-6q48-6c7w-9gw2).
+    compose run --rm --no-deps php sh -c 'sh scripts/ci/composer-trust-guard.sh && composer install --no-dev --no-scripts --no-interaction --no-progress --prefer-dist'
 fi
 compose up --wait --wait-timeout 240 tls-pg tls-mysql tls-maria redis
 

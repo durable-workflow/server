@@ -37,7 +37,6 @@ services:
   soak-sdk:
     build:
       args:
-        COMPOSER_IMAGE: composer:2.8@sha256:5248900ab8b5f7f880c2d62180e40960cd87f60149ec9a1abfd62ac72a02577c
         PHP_IMAGE: php:8.3-cli@sha256:9bfe0302473ae40466205b3050b8dd9528502e9a9741a96a3911bcaec26bc7cd
     cpus: 0.5
     mem_limit: 512m

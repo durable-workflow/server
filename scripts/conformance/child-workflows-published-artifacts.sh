@@ -244,7 +244,8 @@ prepare_focused_python_sdk() {
   local venv="$run_root/sdk-python-typed-child-failure-venv"
   local install_log="$result_dir/sdk-python-typed-child-failure-install.log"
   if python3 -m venv "$venv" >"$install_log" 2>&1 \
-    && "$venv/bin/python" -m pip install --disable-pip-version-check --no-input "durable-workflow==${DW_PYTHON_SDK_VERSION}" >>"$install_log" 2>&1; then
+    && sh "$script_dir/../ci/bootstrap-patched-pip.sh" "$venv/bin/python" >>"$install_log" 2>&1 \
+    && "$venv/bin/python" -I -m pip install --disable-pip-version-check --no-input "durable-workflow==${DW_PYTHON_SDK_VERSION}" >>"$install_log" 2>&1; then
     export DW_CHILD_WORKFLOWS_PYTHON_BIN="$venv/bin/python"
     return 0
   fi
