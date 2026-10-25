@@ -145,6 +145,7 @@ mod wait_timeouts;
 mod worker_contracts;
 mod worker_incarnations;
 mod worker_poll_fence;
+mod worker_sessions;
 mod workflow_poll_requests;
 mod worker_management;
 mod worker_admission;

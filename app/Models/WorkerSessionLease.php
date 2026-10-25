@@ -22,6 +22,7 @@ class WorkerSessionLease extends Model
         'requirements',
         'status',
         'lease_owner',
+        'lease_owner_incarnation',
         'lease_expires_at',
         'ttl_expires_at',
         'closed_at',
