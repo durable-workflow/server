@@ -60,6 +60,13 @@ pub(super) trait Backend: Database {
     const QUERY_CACHE_DELETE: &str = "DELETE FROM dw_query_cache WHERE \"key\"=$1";
     // A bounded batch of expired per-request query poll rows.
     const QUERY_POLL_EXPIRED: &str = "SELECT \"key\" FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query-poll:%' AND expiration<=$1 ORDER BY \"key\" LIMIT 32";
+    const WORKFLOW_POLL_EXPIRED: &str = "SELECT \"key\" FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-workflow-poll:%' AND expiration<=$1 ORDER BY \"key\" LIMIT 32";
+    /// Add a cache row, or lock the existing one with a no-op update, so
+    /// transactions over one poll request ID run one at a time.
+    const QUERY_CACHE_LOCK: &str = "INSERT INTO dw_query_cache(\"key\",value,expiration) VALUES ($1,$2,$3) ON CONFLICT (\"key\") DO UPDATE SET expiration=dw_query_cache.expiration";
+    /// `WorkflowTaskKindSelector`: create the queue's cursor at
+    /// `update_validation` if it is missing, and lock it.
+    const TASK_KIND_CURSOR_LOCK: &str = "INSERT INTO workflow_task_poll_cursors(namespace,task_queue,next_task_kind,created_at,updated_at) VALUES ($1,$2,'update_validation',$3,$4) ON CONFLICT (namespace,task_queue) DO UPDATE SET next_task_kind=workflow_task_poll_cursors.next_task_kind";
     const MEMO_INITIAL_INSERT: &str = "INSERT INTO workflow_memos(workflow_run_id,workflow_instance_id,\"key\",value,upserted_at_sequence,inherited_from_parent,created_at,updated_at,portable_value,portable_value_sequence) VALUES ($1,$2,$3,$4,0,false,$5,$6,$7,0)";
     const MEMO_INHERIT_INSERT: &str = "INSERT INTO workflow_memos(workflow_run_id,workflow_instance_id,\"key\",value,upserted_at_sequence,inherited_from_parent,created_at,updated_at,portable_value,portable_value_sequence) VALUES ($1,$2,$3,$4,1,true,$5,$6,$7,1)";
     const MEMO_READ: &str = "SELECT \"key\",value,portable_value,portable_value_sequence,upserted_at_sequence FROM workflow_memos WHERE workflow_run_id=$1 ORDER BY \"key\",id LIMIT 101";
@@ -465,6 +472,9 @@ impl Backend for MySql {
         "UPDATE dw_query_cache SET value=$1,expiration=$2 WHERE `key`=$3";
     const QUERY_CACHE_DELETE: &str = "DELETE FROM dw_query_cache WHERE `key`=$1";
     const QUERY_POLL_EXPIRED: &str = "SELECT `key` FROM dw_query_cache WHERE `key` LIKE 'dw-native-query-poll:%' AND expiration<=$1 ORDER BY `key` LIMIT 32";
+    const WORKFLOW_POLL_EXPIRED: &str = "SELECT `key` FROM dw_query_cache WHERE `key` LIKE 'dw-native-workflow-poll:%' AND expiration<=$1 ORDER BY `key` LIMIT 32";
+    const QUERY_CACHE_LOCK: &str = "INSERT INTO dw_query_cache(`key`,value,expiration) VALUES ($1,$2,$3) ON DUPLICATE KEY UPDATE expiration=expiration";
+    const TASK_KIND_CURSOR_LOCK: &str = "INSERT INTO workflow_task_poll_cursors(namespace,task_queue,next_task_kind,created_at,updated_at) VALUES ($1,$2,'update_validation',$3,$4) ON DUPLICATE KEY UPDATE next_task_kind=next_task_kind";
     const TIMER_TASK_SQL: &str = "SELECT id,payload FROM workflow_tasks WHERE workflow_run_id=? AND task_type='timer' AND status='ready' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.timer_id'))=? AND BINARY namespace=BINARY ?";
     const TIMER_SCHEDULE_SQL: &str = "SELECT payload FROM workflow_history_events WHERE workflow_run_id=? AND event_type='TimerScheduled' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.timer_id'))=? ORDER BY sequence DESC LIMIT 1";
     const SIGNAL_RECEIVED_SEQUENCE_SQL: &str = "SELECT sequence FROM workflow_history_events WHERE workflow_run_id=? AND event_type='SignalReceived' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.signal_id'))=? ORDER BY sequence LIMIT 1";

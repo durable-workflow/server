@@ -25,9 +25,6 @@ GET /api/worker-sessions/{sessionId}
 POST /api/worker/sessions
 DELETE /api/worker/sessions/{sessionId}
 POST /api/worker/sessions/{sessionId}/heartbeat
-POST /api/worker/update-validation-tasks/poll
-POST /api/worker/update-validation-tasks/{taskId}/approve
-POST /api/worker/update-validation-tasks/{taskId}/reject
 POST /api/worker/workflow-tasks/{taskId}/cancellation-scopes/checkpoint
 POST /api/worker/workflow-tasks/{taskId}/cancellation-scopes/deliver
 POST /api/worker/workflow-tasks/{taskId}/cancellation-scopes/open

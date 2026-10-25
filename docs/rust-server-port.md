@@ -82,13 +82,13 @@ Updated October 24, 2026.
     ([#737](https://github.com/durable-workflow/server/issues/737)).
 
   No expectation is edited to make native pass.
-- **Parity surface.** Native serves 126 of the 175 API route methods in
-  published 2.11.1's route table. An execution test sends each one through
-  the native router, and the ones still answering
+- **Parity surface.** Native serves 133 of the 175 API route methods in
+  published 2.11.1's route table, with message streams, update validation
+  and activity cancellation acknowledgement. An execution test sends each
+  one through the native router, and the ones still answering
   `501 rust_capability_not_implemented` must match
   [`unserved-php-routes.v2.11.1.txt`](../rust/tests/fixtures/unserved-php-routes.v2.11.1.txt).
-  The work in review serves 12 more: message streams (3), update validation
-  (3), worker sessions (5) and activity cancellation acknowledgement (1).
+  The work in review serves 5 more: worker sessions.
 - **Next action.** Land the items above in order, keep porting the unserved
   routes fixture first, and package the native binary into the server image.
 
@@ -134,13 +134,18 @@ any other unknown path or method answers PHP's own 404 or 405
   reported as its candidate's failure, with 207.
 - **Worker protocol features.**
   - Worker sessions.
-  - Update validation tasks.
   - Local activities (prepare, checkpoint, recover, heartbeat, control,
     outcome and cancellation acknowledgement).
   - Cancellation scopes.
   - Activity cancellation acknowledgement. (Lease renewal, from Server 2.11,
     is served: `POST /api/worker/activity-tasks/{task}/renew-lease`, with the
     `activity_lease_renewal` capability and the `activity-lease-renewal` fixture.)
+  - (Synchronous update validation is served: the validation task poll,
+    approve and reject routes, the multiplexed workflow poll with
+    `task_kinds`, and validator-gated update admission, with the
+    `update-validation` fixture. Native does not replay a validation task by
+    `poll_request_id` or bind a request id to its task kinds; see
+    `docs/rust-server-port-checkpoints/2026-10-23-update-validation.md`.)
 - **Run operations.**
   - Imports from embedded v2 and Waterline v1.
 - **Other families.**

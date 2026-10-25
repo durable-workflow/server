@@ -94,6 +94,11 @@ $claims = [];
 $leaseOutcome = null;
 $until = max($deadline, $leaseExpiry, microtime(true)) + 30;
 while (count($claims) < 4 && microtime(true) < $until) {
+    // The resumed worker heartbeats between polls, as an SDK worker does. A
+    // registration whose last heartbeat is older than the stale window is
+    // refused as stale (WorkerPollFence::isFresh), and the timer and the
+    // expired lease only come due after that window.
+    $expect($request('POST', '/api/worker/heartbeat', ['worker_id' => $worker]), 200, 'worker heartbeat');
     $claimed = $expect($request('POST', '/api/worker/workflow-tasks/poll', ['worker_id' => $worker, 'task_queue' => $queue,
         'timeout_seconds' => 5]), 200, 'workflow task claim')['task'] ?? null;
     if (! is_array($claimed)) {
