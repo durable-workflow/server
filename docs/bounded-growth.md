@@ -1,5 +1,10 @@
 # Server Bounded-Growth Policy
 
+The `worker_poll_diagnostics` surface uses `server:worker-poll-diagnostic:` with one
+last-observation value per namespace and task queue. Each value expires after
+15 minutes; later observations overwrite it. There are no request, worker or
+task indexes, and the observation is not task authority.
+
 The server owns a few cache-backed coordination surfaces, SQL recovery scans,
 JSON metric surfaces, conformance evidence fields, and the perf harness metrics
 that can be remote-written during soaks.

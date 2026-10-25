@@ -10,6 +10,7 @@ use App\Support\DeploymentLifecycleService;
 use App\Support\TaskQueueAdmission;
 use App\Support\TaskQueueBuildIdRolloutSnapshot;
 use App\Support\TaskQueuePriorityFairnessSurface;
+use App\Support\WorkerPollDiagnostics;
 use App\Support\WorkflowDefinitionRouting;
 use App\Support\WorkflowQueryTaskBroker;
 use Illuminate\Http\JsonResponse;
@@ -30,6 +31,7 @@ class TaskQueueController
         private readonly TaskQueuePriorityFairnessSurface $priorityFairness,
         private readonly DeploymentLifecycleService $deployments,
         private readonly WorkflowDefinitionRouting $definitionRouting,
+        private readonly WorkerPollDiagnostics $pollDiagnostics,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -438,6 +440,12 @@ class TaskQueueController
             ),
             'query_tasks' => $this->queryTasks->queueAdmission($namespace, $taskQueue),
         ];
+
+        $payload['poll_transport'] = $this->pollDiagnostics->snapshot($namespace, $taskQueue);
+        if ($payload['poll_transport']['status'] === 'warning') {
+            $payload['repair']['needs_attention'] = true;
+            $payload['repair']['transport_warnings'] = [$payload['poll_transport']['last_disconnect']];
+        }
 
         return $payload;
     }
