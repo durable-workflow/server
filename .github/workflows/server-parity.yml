@@ -549,8 +549,17 @@ jobs:
             sleep 1
           done
           test "$ready" = 1
-          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-            -fsS http://parity-native-b:8080/api/ready > parity-evidence/native-b-readiness.json
+          # native-b starts with native-a but may still be binding its port.
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+              -fsS http://parity-native-b:8080/api/ready > parity-evidence/native-b-readiness.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
           export DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
           mkdir -p parity-consumers
           curl --fail --location --retry 3 --output parity-consumers/dw.phar https://github.com/durable-workflow/cli/releases/download/2.2.0/dw.phar
@@ -1118,8 +1127,17 @@ jobs:
             sleep 1
           done
           test "$ready" = 1
-          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-            -fsS http://parity-native-b:8080/api/ready > parity-evidence/native-b-readiness.json
+          # native-b starts with native-a but may still be binding its port.
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+              -fsS http://parity-native-b:8080/api/ready > parity-evidence/native-b-readiness.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
           export DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
           mkdir -p parity-consumers
           curl --fail --location --retry 3 --output parity-consumers/dw.phar https://github.com/durable-workflow/cli/releases/download/2.2.0/dw.phar
