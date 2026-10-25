@@ -538,8 +538,10 @@ async fn waiting_poll_cannot_claim_for_a_same_id_replacement_registration() {
         .await
         .expect("a replaced poll must refuse without waiting for new work")
         .unwrap();
+    // Published 2.11.1 ends a held query poll fenced off by a replacement
+    // empty, leasing nothing (`performPoll`; worker-poll-fence fixture).
     assert_eq!(stale.0, StatusCode::OK, "{}", stale.1);
-    assert_eq!(stale.1["poll_status"], "stale_worker_registration");
+    assert_eq!(stale.1["poll_status"], "empty");
     assert!(stale.1["task"].is_null());
     let waiting = {
         let app = original.app.clone();

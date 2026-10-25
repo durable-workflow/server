@@ -898,6 +898,58 @@
     ],
     [
         "column",
+        "dw_worker_session_holders.1",
+        {
+            "name": "namespace",
+            "type": "text",
+            "default": null,
+            "identity": "",
+            "not_null": true,
+            "collation": "default",
+            "generated": ""
+        }
+    ],
+    [
+        "column",
+        "dw_worker_session_holders.2",
+        {
+            "name": "session_id",
+            "type": "text",
+            "default": null,
+            "identity": "",
+            "not_null": true,
+            "collation": "default",
+            "generated": ""
+        }
+    ],
+    [
+        "column",
+        "dw_worker_session_holders.3",
+        {
+            "name": "incarnation",
+            "type": "text",
+            "default": null,
+            "identity": "",
+            "not_null": true,
+            "collation": "default",
+            "generated": ""
+        }
+    ],
+    [
+        "column",
+        "dw_worker_session_holders.4",
+        {
+            "name": "updated_at",
+            "type": "timestamp(6) without time zone",
+            "default": null,
+            "identity": "",
+            "not_null": true,
+            "collation": null,
+            "generated": ""
+        }
+    ],
+    [
+        "column",
         "failed_jobs.1",
         {
             "name": "id",
@@ -11977,6 +12029,16 @@
     ],
     [
         "constraint",
+        "dw_worker_session_holders.dw_worker_session_holders_pkey",
+        {
+            "deferred": false,
+            "validated": true,
+            "deferrable": false,
+            "definition": "PRIMARY KEY (namespace, session_id)"
+        }
+    ],
+    [
+        "constraint",
         "failed_jobs.failed_jobs_pkey",
         {
             "deferred": false,
@@ -13062,6 +13124,17 @@
             "unique": true,
             "primary": true,
             "definition": "CREATE UNIQUE INDEX dw_worker_registration_incarnations_pkey ON public.dw_worker_registration_incarnations USING btree (token)"
+        }
+    ],
+    [
+        "index",
+        "dw_worker_session_holders_pkey",
+        {
+            "ready": true,
+            "valid": true,
+            "unique": true,
+            "primary": true,
+            "definition": "CREATE UNIQUE INDEX dw_worker_session_holders_pkey ON public.dw_worker_session_holders USING btree (namespace, session_id)"
         }
     ],
     [
@@ -17253,6 +17326,21 @@
     [
         "relation",
         "dw_worker_registration_incarnations",
+        {
+            "kind": "r",
+            "view": null,
+            "options": null,
+            "partition": false,
+            "persistence": "p",
+            "row_security": false,
+            "access_method": "heap",
+            "partition_key": null,
+            "force_row_security": false
+        }
+    ],
+    [
+        "relation",
+        "dw_worker_session_holders",
         {
             "kind": "r",
             "view": null,

@@ -11,19 +11,21 @@ use tokio::sync::OnceCell;
 
 use super::{Result, refuse};
 
-pub(super) const VERSION: i64 = 4;
+pub(super) const VERSION: i64 = 5;
 
 fn migrator() -> &'static Migrator {
     static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
     MIGRATOR.get_or_init(|| {
         Migrator::with_migrations(vec![Migration::new(
             VERSION,
-            "full frozen PHP schema and native worker incarnations".into(),
+            "full frozen PHP schema, native worker incarnations and session holders".into(),
             MigrationType::Simple,
             concat!(
                 include_str!("../../migrations/sqlite/0003_full_schema.sql"),
                 "\n",
-                include_str!("../../migrations/sqlite/0004_worker_incarnations.sql")
+                include_str!("../../migrations/sqlite/0004_worker_incarnations.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0005_worker_session_holders.sql")
             )
             .into_sql_str(),
             false,
@@ -38,7 +40,11 @@ pub(super) fn native_relations_sql() -> Result<String> {
     super::upgrade::native_relations(
         include_str!("../../migrations/sqlite/0003_full_schema.sql"),
         "CREATE TABLE dw_server_schema ",
-        include_str!("../../migrations/sqlite/0004_worker_incarnations.sql"),
+        concat!(
+            include_str!("../../migrations/sqlite/0004_worker_incarnations.sql"),
+            "\n",
+            include_str!("../../migrations/sqlite/0005_worker_session_holders.sql")
+        ),
     )
 }
 

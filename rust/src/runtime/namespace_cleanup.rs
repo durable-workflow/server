@@ -148,6 +148,7 @@ const CLEANUP: &[(&str, &str, usize)] = &[
 const NATIVE_CLEANUP: &[&str] = &[
     "DELETE FROM dw_poll_receipts WHERE namespace=$1",
     "DELETE FROM dw_worker_registration_incarnations WHERE namespace=$1",
+    "DELETE FROM dw_worker_session_holders WHERE namespace=$1",
 ];
 
 /// Registered external payloads and payload columns holding a reference.

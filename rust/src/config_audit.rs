@@ -224,6 +224,21 @@ where
     .map_or(10, |value| value.int().max(1))
 }
 
+/// `server.update_validation`: how long an update request waits for its
+/// validator (`timeout`, at least 0, 10 when unset) and how long a worker's
+/// claim on a validation task lasts (`lease_timeout`, at least 1, 5 when
+/// unset). The broker casts each with `(int)`.
+pub fn update_validation_timeouts<F>(lookup: F) -> (i64, i64)
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let read = |name, legacy, default: i64| effective(&lookup, name, Some(legacy)).map_or(default, |value: PhpValue| value.int());
+    (
+        read("DW_UPDATE_VALIDATION_TIMEOUT", "WORKFLOW_SERVER_UPDATE_VALIDATION_TIMEOUT", 10).max(0),
+        read("DW_UPDATE_VALIDATION_LEASE_TIMEOUT", "WORKFLOW_SERVER_UPDATE_VALIDATION_LEASE_TIMEOUT", 5).max(1),
+    )
+}
+
 /// `server.worker_protocol.history_page_size_default` and `_max`: `(int)`
 /// casts of the settings, 500 and 1000 when unset. The Workflow package's
 /// bridge then keeps every page between 1 and 1000 events.
@@ -635,8 +650,8 @@ pub const SETTINGS: &[Setting] = &[
     Setting { name: "DW_TASK_DISPATCH_MODE", legacy: Some("WORKFLOW_V2_TASK_DISPATCH_MODE"), disposition: Refused(Exact(&["poll"]), POLL_DISPATCH) },
     Setting { name: "DW_TASK_QUEUE_ADMISSION_OVERRIDES", legacy: Some("WORKFLOW_SERVER_TASK_QUEUE_ADMISSION_OVERRIDES"), disposition: Refused(EmptyObject, TASK_ADMISSION) },
     Setting { name: "DW_TRUST_FORWARDED_ATTRIBUTION_HEADERS", legacy: Some("WORKFLOW_SERVER_TRUST_FORWARDED_ATTRIBUTION_HEADERS"), disposition: Refused(FilterBool(false), FORWARDED) },
-    Setting { name: "DW_UPDATE_VALIDATION_LEASE_TIMEOUT", legacy: Some("WORKFLOW_SERVER_UPDATE_VALIDATION_LEASE_TIMEOUT"), disposition: Ignored },
-    Setting { name: "DW_UPDATE_VALIDATION_TIMEOUT", legacy: Some("WORKFLOW_SERVER_UPDATE_VALIDATION_TIMEOUT"), disposition: Ignored },
+    Setting { name: "DW_UPDATE_VALIDATION_LEASE_TIMEOUT", legacy: Some("WORKFLOW_SERVER_UPDATE_VALIDATION_LEASE_TIMEOUT"), disposition: Honored },
+    Setting { name: "DW_UPDATE_VALIDATION_TIMEOUT", legacy: Some("WORKFLOW_SERVER_UPDATE_VALIDATION_TIMEOUT"), disposition: Honored },
     Setting { name: "DW_V1_ENABLED", legacy: Some("WORKFLOW_V1_ENABLED"), disposition: Refused(CastBool(false), V1) },
     Setting { name: "DW_V2_CACHE_VALIDATION_MODE", legacy: Some("WORKFLOW_V2_CACHE_VALIDATION_MODE"), disposition: Ignored },
     Setting { name: "DW_V2_COMPATIBILITY_HEARTBEAT_TTL", legacy: Some("WORKFLOW_V2_COMPATIBILITY_HEARTBEAT_TTL"), disposition: Refused(Int(30), COMPATIBILITY) },
@@ -866,6 +881,18 @@ mod tests {
         let cast = |raw: &str| PhpValue::Str(raw.into()).cast_bool();
         assert!(cast("off") && cast("no") && cast("false ") && cast("00"));
         assert!(!cast("") && !cast("0"));
+    }
+
+    #[test]
+    fn update_validation_timeouts_are_read_like_the_broker() {
+        let read = |values: &[(&str, &str)]| {
+            let environment = environment(values);
+            update_validation_timeouts(|key| environment.get(key).cloned())
+        };
+        assert_eq!(read(&[]), (10, 5));
+        assert_eq!(read(&[("DW_UPDATE_VALIDATION_TIMEOUT", "3"), ("DW_UPDATE_VALIDATION_LEASE_TIMEOUT", "2")]), (3, 2));
+        assert_eq!(read(&[("WORKFLOW_SERVER_UPDATE_VALIDATION_TIMEOUT", "4")]), (4, 5));
+        assert_eq!(read(&[("DW_UPDATE_VALIDATION_TIMEOUT", "-1"), ("DW_UPDATE_VALIDATION_LEASE_TIMEOUT", "0")]), (0, 1));
     }
 
     #[test]
