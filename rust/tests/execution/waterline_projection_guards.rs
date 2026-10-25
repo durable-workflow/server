@@ -22,16 +22,12 @@ async fn import(app: &Router, source_id: &str, workflow: Value) -> (StatusCode, 
     request(app, "POST", ROUTE, json!({"source_id": source_id, "workflow": workflow})).await
 }
 
-async fn count(database: &TestDatabase, table: &str) -> i64 {
-    task_retry::rows(database, Box::leak(format!("SELECT COUNT(*) FROM {table}").into_boxed_str())).await
-}
-
-/// Every table a projection or a stream append could write.
-async fn rows(database: &TestDatabase) -> Vec<(&'static str, i64)> {
-    let mut counts = Vec::new();
-    for table in ["workflow_instances", "workflow_runs", "workflow_history_events", "workflow_run_summaries", "workflow_tasks",
-        "workflow_commands", "workflow_signal_records", "workflow_inbound_streams", "workflow_inbound_stream_items"] {
-        counts.push((table, count(database, table).await));
+/// Every table's row count: a projection or a stream append may write no
+/// other row than the ones each test expects.
+async fn rows(database: &TestDatabase) -> Vec<(String, i64)> {
+    let counts = table_counts(database).await;
+    for table in ["workflow_links", "workflow_inbound_streams", "workflow_inbound_stream_items", "workflow_signal_records"] {
+        assert!(counts.iter().any(|(name, _)| name == table), "{table} is not in {counts:?}");
     }
     counts
 }
@@ -150,8 +146,97 @@ async fn appends_racing_a_projection_import_never_write() {
     }
     // After the race, the projection and only the projection was written.
     let after = rows(&database).await;
+    assert_eq!(before.len(), after.len());
     for ((table, was), (_, now)) in before.iter().zip(&after) {
-        let grew = match *table {
+        let grew = match table.as_str() {
+            "workflow_instances" | "workflow_runs" | "workflow_run_summaries" => 1,
+            "workflow_history_events" => 2,
+            _ => 0,
+        };
+        assert_eq!(*now, was + grew, "{table}");
+    }
+}
+
+/// A connection holding the lock every durable transaction takes on this
+/// backend: while it is held, no transaction can begin its writes.
+enum TransitionLock {
+    Sqlite(sqlx::SqliteConnection),
+    Postgres(sqlx::PgConnection),
+    MySql(sqlx::MySqlConnection),
+}
+
+async fn hold_transition_lock(database: &TestDatabase) -> TransitionLock {
+    use sqlx::Connection;
+    match database {
+        TestDatabase::Sqlite(dir) => {
+            let url = format!("sqlite://{}", dir.path().join("runtime.sqlite").display());
+            let mut connection = sqlx::SqliteConnection::connect(&url).await.unwrap();
+            sqlx::query("BEGIN IMMEDIATE").execute(&mut connection).await.unwrap();
+            TransitionLock::Sqlite(connection)
+        }
+        TestDatabase::Postgres { options, .. } => {
+            let mut connection = sqlx::PgConnection::connect_with(options).await.unwrap();
+            sqlx::query("SELECT pg_advisory_lock(4924501473315676163)").execute(&mut connection).await.unwrap();
+            TransitionLock::Postgres(connection)
+        }
+        TestDatabase::MySql { options, .. } => {
+            let mut connection = sqlx::MySqlConnection::connect_with(options).await.unwrap();
+            // MySQL runs transaction control only outside prepared statements.
+            sqlx::raw_sql("START TRANSACTION").execute(&mut connection).await.unwrap();
+            sqlx::query("SELECT engine FROM dw_server_schema WHERE engine='rust-development' FOR UPDATE")
+                .execute(&mut connection).await.unwrap();
+            TransitionLock::MySql(connection)
+        }
+    }
+}
+
+async fn release(lock: TransitionLock) {
+    match lock {
+        TransitionLock::Sqlite(mut connection) => { sqlx::query("ROLLBACK").execute(&mut connection).await.unwrap(); }
+        TransitionLock::Postgres(mut connection) => {
+            sqlx::query("SELECT pg_advisory_unlock(4924501473315676163)").execute(&mut connection).await.unwrap();
+        }
+        TransitionLock::MySql(mut connection) => { sqlx::raw_sql("ROLLBACK").execute(&mut connection).await.unwrap(); }
+    }
+}
+
+/// The projection's install waits on the transition lock, so its outcome is
+/// fixed on both sides: an append made while the install is pending finds
+/// no instance and writes nothing, and one made after it commits is refused.
+/// An append reaches the store only for an existing instance, and a
+/// projection's instance and run are written in one transaction, so no
+/// append can pass the store's check and then see the projection appear.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_append_cannot_cross_a_projection_install_waiting_on_the_lock() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let (status, dry) = request(&app, "POST", ROUTE, json!({"source_id": "barrier-src", "workflow": running(1), "dry_run": true})).await;
+    assert_eq!(status, StatusCode::OK, "{dry}");
+    let workflow_id = dry["identity"]["standalone"]["workflow_id"].as_str().unwrap().to_owned();
+    let path = format!("/api/workflows/{}/message-streams/orders/messages", workflow_id.replace(':', "%3A"));
+    let before = rows(&database).await;
+
+    let lock = hold_transition_lock(&database).await;
+    let install = tokio::spawn({
+        let app = app.clone();
+        async move { import(&app, "barrier-src", running(1)).await }
+    });
+    // Give the install time to reach its transaction; it cannot commit.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let (status, body) = request(&app, "POST", &path, json!({"message_id": "m-pending", "input": ["x"]})).await;
+    assert_eq!((status, &body["reason"]), (StatusCode::NOT_FOUND, &json!("instance_not_found")), "{body}");
+    assert!(!install.is_finished(), "the install committed while the transition lock was held");
+    release(lock).await;
+
+    let (status, report) = install.await.unwrap();
+    assert_eq!(status, StatusCode::CREATED, "{report}");
+    let (status, body) = request(&app, "POST", &path, json!({"message_id": "m-after", "input": ["x"]})).await;
+    assert_eq!((status, &body["reason"]), (StatusCode::CONFLICT, &json!("v1_projection_read_only")), "{body}");
+
+    let after = rows(&database).await;
+    assert_eq!(before.len(), after.len());
+    for ((table, was), (_, now)) in before.iter().zip(&after) {
+        let grew = match table.as_str() {
             "workflow_instances" | "workflow_runs" | "workflow_run_summaries" => 1,
             "workflow_history_events" => 2,
             _ => 0,
