@@ -11,6 +11,9 @@ const PROFILES = {
   'namespace-signal': 'sdk-namespace-signals', timer: 'sdk-timers', activity: 'sdk-directions',
   'selected-run-signal': 'sdk-selected-run-signals', signal: 'sdk-signals', query: 'sdk-queries',
 };
+// The profiles that run against the second native server.
+const SECOND_SERVER = new Set(['namespace-signal', 'timer', 'activity']);
+const URLS = {a: 'http://native-a:8080', b: 'http://native-b:8080'};
 
 // Runs the wrapper in a scratch tree whose profile script and `docker` are
 // stubs that append to one event log: a profile starts its PHP server and
@@ -43,7 +46,7 @@ fail="STOP_FAIL_\${tag//-/_}"
 exit "\${!fail:-0}"
 `);
     chmodSync(join(bin, 'docker'), 0o755);
-    const child = spawnSync('bash', ['scripts/conformance/server-parity/sdk-direction-lanes.sh', 'sqlite', 'http://native:8080'], {
+    const child = spawnSync('bash', ['scripts/conformance/server-parity/sdk-direction-lanes.sh', 'sqlite', URLS.a, URLS.b], {
       cwd: root, encoding: 'utf8', timeout: 30000,
       env: {...process.env, ...environment, PATH: `${bin}:${process.env.PATH}`, EVENTS: events, RESOURCE_SCOPE: 'dw-scope-1'},
     });
@@ -57,15 +60,16 @@ exit "\${!fail:-0}"
 
 const started = (events, variant) => events.findIndex(event => event.startsWith(`start ${variant} `));
 
-// Each profile ran once against the given backend and URL, and its PHP server
-// was stopped after the profile ended and before the lane's next profile.
+// Each profile ran once against the given backend and its lane's server, and
+// its PHP server was stopped after the profile ended and before the lane's
+// next profile.
 function assertEveryServerRetired(events) {
   const running = new Set();
   let peak = 0;
   for (const event of events) {
     const [kind, ...rest] = event.split(' ');
     if (kind === 'start') {
-      assert.deepEqual(rest.slice(1), ['sqlite', 'http://native:8080'], event);
+      assert.deepEqual(rest.slice(1), ['sqlite', SECOND_SERVER.has(rest[0]) ? URLS.b : URLS.a], event);
       running.add(PROFILES[rest[0]]);
       peak = Math.max(peak, running.size);
     } else if (kind === 'docker') {
@@ -124,21 +128,38 @@ test('a failed profile and a failed stop of its server keep the profile status',
   assert.match(child.stderr, /^::error::SDK direction profile sdk-queries exited 3$/m);
 });
 
+test('the wrapper refuses to run without a second native server', () => {
+  const child = spawnSync('bash', [LANES, 'sqlite', URLS.a], {
+    encoding: 'utf8', env: {...process.env, RESOURCE_SCOPE: 'dw-scope-1'}, cwd: tmpdir(),
+  });
+  assert.notEqual(child.status, 0);
+  assert.match(child.stderr, /Set the second native URL, a server with its own database/);
+});
+
 test('the wrapper refuses to run without an owning resource scope', () => {
-  const child = spawnSync('bash', [LANES, 'sqlite', 'http://native:8080'], {
+  const child = spawnSync('bash', [LANES, 'sqlite', URLS.a, URLS.b], {
     encoding: 'utf8', env: {...process.env, RESOURCE_SCOPE: ''}, cwd: tmpdir(),
   });
   assert.equal(child.status, 2);
   assert.match(child.stderr, /Set the owning isolated network\/resource scope/);
 });
 
-// The native server is shared by every lane. Two profiles whose fixtures name
-// the same task queue would see each other's workers, so they share a lane.
-test('profiles that share a task queue run in the same lane', () => {
+// A native server is shared by the lanes that name it. Two profiles whose
+// fixtures name the same task queue would see each other's workers on one
+// server, so they share a lane or run on different servers.
+test('profiles that share a task queue on one server run in the same lane', () => {
   const script = readFileSync(LANES, 'utf8');
-  const lanes = [...script.slice(script.indexOf('lanes=(')).split(')')[0].matchAll(/^ {2}"([^"]+)"$/gm)]
-    .map(match => match[1].split(' ').map(entry => entry.split(':')[1]));
+  const parsed = [...script.slice(script.indexOf('lanes=(')).split(')')[0].matchAll(/^ {2}"([^"]+)"$/gm)]
+    .map(match => match[1].split(' '));
+  const servers = parsed.map(([server]) => server);
+  assert.deepEqual([...new Set(servers)].sort(), ['a', 'b'], 'each lane names server a or b');
+  const lanes = parsed.map(([, ...entries]) => entries.map(entry => entry.split(':')[1]));
   assert.deepEqual(lanes.flat().sort(), Object.values(PROFILES).sort(), 'every profile in exactly one lane');
+  for (const [index, lane] of parsed.entries()) {
+    for (const entry of lane.slice(1)) {
+      assert.equal(SECOND_SERVER.has(entry.split(':')[0]), servers[index] === 'b', `${entry} runs on its declared server`);
+    }
+  }
   const queues = tag => {
     const directory = new URL(`../Fixtures/ServerParityProfiles/published-${tag}/`, import.meta.url);
     const text = readdirSync(directory).filter(name => name.endsWith('.json'))
@@ -146,7 +167,8 @@ test('profiles that share a task queue run in the same lane', () => {
     return new Set(text.match(/server-parity-sdk-[a-z-]+/g) ?? []);
   };
   for (const [index, lane] of lanes.entries()) {
-    for (const other of lanes.slice(index + 1)) {
+    for (const [offset, other] of lanes.slice(index + 1).entries()) {
+      if (servers[index] !== servers[index + 1 + offset]) continue;
       for (const tag of lane) {
         for (const peer of other) {
           const shared = [...queues(tag)].filter(queue => queues(peer).has(queue));
