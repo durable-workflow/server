@@ -115,3 +115,47 @@ async fn a_projection_past_the_byte_limit_is_refused_before_any_row() {
     assert_eq!(refusal["limit"], json!({"dimension": "history_transaction_bytes", "used": bytes, "limit": bytes - 1}), "{refusal}");
     assert_eq!(rows(&database).await, before);
 }
+
+/// Appends racing the import that creates a projection: each answers that
+/// the instance does not exist yet or that it is read-only, and no stream,
+/// item, signal, command or task is ever written. The store decides under
+/// the lock every durable transaction takes, so the race has one outcome.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn appends_racing_a_projection_import_never_write() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let (status, dry) = request(&app, "POST", ROUTE, json!({"source_id": "race-src", "workflow": running(1), "dry_run": true})).await;
+    assert_eq!(status, StatusCode::OK, "{dry}");
+    let workflow_id = dry["identity"]["standalone"]["workflow_id"].as_str().unwrap().to_owned();
+    let path = format!("/api/workflows/{}/message-streams/orders/messages", workflow_id.replace(':', "%3A"));
+    let before = rows(&database).await;
+
+    let mut appends = tokio::task::JoinSet::new();
+    for index in 0..24 {
+        let (app, path) = (app.clone(), path.clone());
+        appends.spawn(async move {
+            request(&app, "POST", &path, json!({"message_id": format!("m-{index}"), "input": ["x"]})).await
+        });
+    }
+    let (status, report) = import(&app, "race-src", running(1)).await;
+    assert_eq!(status, StatusCode::CREATED, "{report}");
+    while let Some(answer) = appends.join_next().await {
+        let (status, body) = answer.unwrap();
+        let expected = match status {
+            StatusCode::NOT_FOUND => "instance_not_found",
+            StatusCode::CONFLICT => "v1_projection_read_only",
+            other => panic!("{other}: {body}"),
+        };
+        assert_eq!(body["reason"], expected, "{body}");
+    }
+    // After the race, the projection and only the projection was written.
+    let after = rows(&database).await;
+    for ((table, was), (_, now)) in before.iter().zip(&after) {
+        let grew = match *table {
+            "workflow_instances" | "workflow_runs" | "workflow_run_summaries" => 1,
+            "workflow_history_events" => 2,
+            _ => 0,
+        };
+        assert_eq!(*now, was + grew, "{table}");
+    }
+}
