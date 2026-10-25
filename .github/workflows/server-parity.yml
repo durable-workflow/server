@@ -50,6 +50,8 @@ on:
       - tests/Unit/ServerParityRepairPassContractTest.mjs
       - tests/Unit/ServerParityClusterInfoContractTest.mjs
       - tests/Unit/ServerParityNamespaceDeleteContractTest.mjs
+      - tests/Unit/ServerParityWorkerSessionsContractTest.mjs
+      - tests/Unit/ServerParityWorkerSessionActivitiesContractTest.mjs
       - tests/Unit/ServerParityUpdateValidationContractTest.mjs
       - tests/Unit/ServerParityFixtureSelectionTest.mjs
       - tests/Unit/ServerParityMessageStreamsContractTest.mjs
@@ -317,6 +319,9 @@ jobs:
           if-no-files-found: warn
 
   mysql-execution:
+    # Named explicitly so the added native-tests-b combinations read like the
+    # others instead of listing every matrix value.
+    name: mysql-execution (${{ matrix.label }}, ${{ matrix.part }})
     needs: published-sdk-adapters
     runs-on: ubuntu-latest
     # Each part takes about 20 to 35 minutes; the fixture step runs every
@@ -327,8 +332,10 @@ jobs:
       # Each database runs in six parts on separate runners: the native
       # database suites and TLS checks, the shared corpus, its profiles and
       # restart cases, the published-SDK direction profiles, the corrected
-      # marker cohort, and the other cohorts. Every part bootstraps the same
-      # database and native build; no part depends on another.
+      # marker cohort, and the other cohorts. The two MySQL 8 labels add a
+      # seventh, native-tests-b, for half their execution tests. Every part
+      # bootstraps the same database and native build; no part depends on
+      # another.
       matrix:
         label: [mysql-8.0, existing-php-mysql-matrix, mariadb-10.11]
         part: [native-tests, corpus, restarts, cohorts, sdk-directions, corrected-markers]
@@ -337,16 +344,35 @@ jobs:
             image: mirror.gcr.io/library/mysql@sha256:62fb722c78b24245ddff1796a0fcee4a49cc5b87e0aaaf20c92d1da9e0a2497b
             # The expanded original was OOM-killed at 1 GiB during native pressure.
             memory: 2g
+            # The two MySQL 8 labels' native suites were the slowest parts
+            # (about 21 min each, most of it the execution tests), so their
+            # execution tests run in two halves: native-tests runs the first
+            # and native-tests-b the second. The bytewise-sorted test list is
+            # dealt round-robin, so each listed test runs in exactly one half
+            # and a new test joins one.
+            execution_shards: 2
+          - label: mysql-8.0
+            part: native-tests-b
+            image: mirror.gcr.io/library/mysql@sha256:62fb722c78b24245ddff1796a0fcee4a49cc5b87e0aaaf20c92d1da9e0a2497b
+            memory: 2g
+            execution_shards: 2
           - label: existing-php-mysql-matrix
             image: mirror.gcr.io/library/mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6
             # The expanded shared database was OOM-killed at 1 GiB before TLS checks.
             memory: 2g
+            execution_shards: 2
+          - label: existing-php-mysql-matrix
+            part: native-tests-b
+            image: mirror.gcr.io/library/mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6
+            memory: 2g
+            execution_shards: 2
           - label: mariadb-10.11
             image: mirror.gcr.io/library/mariadb@sha256:7db29378d4fdab73f8123bbc2b48905c90d1a4b00cf848b028f1e81e623257f2
             # Both expanded originals exhausted the 512 MiB DB fixture ceiling.
             memory: 1g
     env:
       DW_PARITY_PART: ${{ matrix.part }}
+      DW_EXECUTION_SHARDS: ${{ matrix.execution_shards || 1 }}
       RESOURCE_SCOPE: dw-mysql-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.label }}
       MYSQL_IMAGE: ${{ matrix.image }}
       DB_MEMORY: ${{ matrix.memory }}
@@ -460,13 +486,13 @@ jobs:
             "$layout" artisan server:bootstrap --force > parity-evidence/published-bootstrap.txt
           # Compiling the library tests with two jobs peaks near 4.2 GB; a 4 GB limit OOM-killed rustc (exit 101).
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --cpus=2 --memory=6g --memory-swap=6g \
-            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 -e DW_PARITY_PART \
+            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 -e DW_PARITY_PART -e DW_EXECUTION_SHARDS \
             -e DW_TEST_MYSQL_URL=mysql://root:parity-disposable-password@parity-mysql:3306/php_ref \
             -e DW_EXECUTION_MYSQL_URL=mysql://root:parity-disposable-password@parity-mysql:3306/php_ref \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
             -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
             mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 -c \
-            'if [ "$DW_PARITY_PART" = native-tests ]; then cargo test --locked --offline --lib runtime::mysql:: -- --ignored --skip runtime::mysql::tests::bootstrap_child --nocapture --test-threads=2 > /evidence/mysql-tests.txt && cargo test --locked --offline --test execution -- --nocapture --test-threads=2 > /evidence/mysql-execution-tests.txt; fi && cargo build --locked --offline'
+            'case "$DW_PARITY_PART" in native-tests) shard=1 suffix= ;; native-tests-b) shard=2 suffix=-b ;; *) shard= ;; esac; if [ "$DW_PARITY_PART" = native-tests ]; then cargo test --locked --offline --lib runtime::mysql:: -- --ignored --skip runtime::mysql::tests::bootstrap_child --nocapture --test-threads=2 > /evidence/mysql-tests.txt || exit 1; fi; if [ -n "$shard" ]; then cargo test --locked --offline --test execution -- --list --format terse | sed -n "s/: test\$//p" | LC_ALL=C sort | awk -v count="$DW_EXECUTION_SHARDS" -v shard="$shard" "(NR - 1) % count == shard - 1" > /evidence/execution-shard$suffix.txt && test -s /evidence/execution-shard$suffix.txt && cargo test --locked --offline --test execution -- --exact --nocapture --test-threads=2 $(cat /evidence/execution-shard$suffix.txt) > /evidence/mysql-execution-tests$suffix.txt || exit 1; fi; cargo build --locked --offline'
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
@@ -726,25 +752,45 @@ jobs:
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           # Each profile brings its own published PHP and embedded databases and
-          # shares this part's native node, as the profiles shared the corpus's.
-          docker run -d --name "$RESOURCE_SCOPE-native-a" --network "$RESOURCE_SCOPE" --network-alias=parity-native-a \
-            --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
-            -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token -e DW_BIND_ADDRESS=0.0.0.0:8080 \
-            -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
+          # shares its lane's native node, as the profiles shared the corpus's.
+          # Node b has its own database, so the namespace-signal profile can run
+          # beside the other two signal profiles, whose task queue it shares.
+          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --entrypoint mysql \
+            "$MYSQL_IMAGE" -h parity-mysql -uroot -pparity-disposable-password \
+            -e 'CREATE DATABASE native_ref_b CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
+          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
+            -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref_b \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
-            -v "$PWD/rust-target:/target:ro" --tmpfs /state --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
-          ready=0
-          for attempt in $(seq 1 30); do
-            if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS --connect-timeout 2 --max-time 5 http://parity-native-a:8080/api/ready > parity-evidence/sdk-native-readiness.json; then
-              ready=1
-              break
-            fi
-            sleep 1
+            -v "$PWD/rust-target:/target:ro" --entrypoint /target/debug/durable-workflow-server \
+            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            schema-bootstrap > parity-evidence/sdk-native-b-bootstrap.json
+          for node in a b; do
+            database=native_ref
+            [ "$node" = b ] && database=native_ref_b
+            docker run -d --name "$RESOURCE_SCOPE-native-$node" --network "$RESOURCE_SCOPE" --network-alias="parity-native-$node" \
+              --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
+              -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token -e DW_BIND_ADDRESS=0.0.0.0:8080 \
+              -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE="$database" \
+              -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+              -v "$PWD/rust-target:/target:ro" --tmpfs /state --entrypoint /target/debug/durable-workflow-server \
+              mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
           done
-          test "$ready" = 1
-          bash scripts/conformance/server-parity/sdk-direction-lanes.sh mysql http://parity-native-a:8080
+          # Literal node URLs keep each probe's target a fixed container name.
+          for url in http://parity-native-a:8080 http://parity-native-b:8080; do
+            name=${url#*//parity-}
+            name=${name%:*}
+            ready=0
+            for attempt in $(seq 1 30); do
+              if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+                -fsS --connect-timeout 2 --max-time 5 "$url/api/ready" > "parity-evidence/sdk-$name-readiness.json"; then
+                ready=1
+                break
+              fi
+              sleep 1
+            done
+            test "$ready" = 1
+          done
+          bash scripts/conformance/server-parity/sdk-direction-lanes.sh mysql http://parity-native-a:8080 http://parity-native-b:8080
       - name: Start the shared native node the cohorts use
         id: prepare_cohorts
         if: ${{ matrix.part == 'cohorts' }}
@@ -1328,25 +1374,44 @@ jobs:
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           # Each profile brings its own published PHP and embedded databases and
-          # shares this part's native node, as the profiles shared the corpus's.
-          docker run -d --name "$RESOURCE_SCOPE-native-a" --network "$RESOURCE_SCOPE" --network-alias=parity-native-a \
-            --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
-            -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token -e DW_BIND_ADDRESS=0.0.0.0:8080 \
-            -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
+          # shares its lane's native node, as the profiles shared the corpus's.
+          # Node b has its own database, so the namespace-signal profile can run
+          # beside the other two signal profiles, whose task queue it shares.
+          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
+            -e PGPASSWORD=parity-disposable-password --entrypoint createdb "$POSTGRES_IMAGE" -h parity-pg -U parity native_ref_b
+          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
+            -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref_b \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
-            -v "$PWD/rust-target:/target:ro" --tmpfs /state --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
-          ready=0
-          for attempt in $(seq 1 30); do
-            if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS --connect-timeout 2 --max-time 5 http://parity-native-a:8080/api/ready > parity-evidence/sdk-native-readiness.json; then
-              ready=1
-              break
-            fi
-            sleep 1
+            -v "$PWD/rust-target:/target:ro" --entrypoint /target/debug/durable-workflow-server \
+            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            schema-bootstrap > parity-evidence/sdk-native-b-bootstrap.json
+          for node in a b; do
+            database=native_ref
+            [ "$node" = b ] && database=native_ref_b
+            docker run -d --name "$RESOURCE_SCOPE-native-$node" --network "$RESOURCE_SCOPE" --network-alias="parity-native-$node" \
+              --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
+              -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token -e DW_BIND_ADDRESS=0.0.0.0:8080 \
+              -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE="$database" \
+              -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+              -v "$PWD/rust-target:/target:ro" --tmpfs /state --entrypoint /target/debug/durable-workflow-server \
+              mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
           done
-          test "$ready" = 1
-          bash scripts/conformance/server-parity/sdk-direction-lanes.sh pgsql http://parity-native-a:8080
+          # Literal node URLs keep each probe's target a fixed container name.
+          for url in http://parity-native-a:8080 http://parity-native-b:8080; do
+            name=${url#*//parity-}
+            name=${name%:*}
+            ready=0
+            for attempt in $(seq 1 30); do
+              if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+                -fsS --connect-timeout 2 --max-time 5 "$url/api/ready" > "parity-evidence/sdk-$name-readiness.json"; then
+                ready=1
+                break
+              fi
+              sleep 1
+            done
+            test "$ready" = 1
+          done
+          bash scripts/conformance/server-parity/sdk-direction-lanes.sh pgsql http://parity-native-a:8080 http://parity-native-b:8080
       - name: Start the shared native node the cohorts use
         id: prepare_cohorts
         if: ${{ matrix.part == 'cohorts' }}
@@ -1714,7 +1779,7 @@ jobs:
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
-            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParitySdkDirectionLanesTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityFailureLocationTest.mjs tests/Unit/ServerParityFailureExcerptTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs tests/Unit/ServerParityActivityCancellationAckContractTest.mjs tests/Unit/ServerParityServiceCatalogContractTest.mjs tests/Unit/ServerParitySystemMetricsContractTest.mjs tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs tests/Unit/ServerParityPrometheusMetricsContractTest.mjs tests/Unit/ServerParityPayloadCleanupContractTest.mjs tests/Unit/ServerParityRepairPassContractTest.mjs tests/Unit/ServerParityClusterInfoContractTest.mjs tests/Unit/ServerParityNamespaceDeleteContractTest.mjs tests/Unit/ServerParityMessageStreamsContractTest.mjs tests/Unit/ServerParityWorkflowStreamWritesContractTest.mjs tests/Unit/ServerParityWorkflowPollRequestContractTest.mjs tests/Unit/ServerParityUpdateValidationContractTest.mjs tests/Unit/ServerParityFixtureSelectionTest.mjs > parity-evidence/comparator-tests.txt
+            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParitySdkDirectionLanesTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityFailureLocationTest.mjs tests/Unit/ServerParityFailureExcerptTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs tests/Unit/ServerParityActivityCancellationAckContractTest.mjs tests/Unit/ServerParityServiceCatalogContractTest.mjs tests/Unit/ServerParitySystemMetricsContractTest.mjs tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs tests/Unit/ServerParityPrometheusMetricsContractTest.mjs tests/Unit/ServerParityPayloadCleanupContractTest.mjs tests/Unit/ServerParityRepairPassContractTest.mjs tests/Unit/ServerParityClusterInfoContractTest.mjs tests/Unit/ServerParityNamespaceDeleteContractTest.mjs tests/Unit/ServerParityMessageStreamsContractTest.mjs tests/Unit/ServerParityWorkflowStreamWritesContractTest.mjs tests/Unit/ServerParityWorkflowPollRequestContractTest.mjs tests/Unit/ServerParityUpdateValidationContractTest.mjs tests/Unit/ServerParityFixtureSelectionTest.mjs tests/Unit/ServerParityWorkerSessionsContractTest.mjs tests/Unit/ServerParityWorkerSessionActivitiesContractTest.mjs > parity-evidence/comparator-tests.txt
           docker run --rm --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
             --network=none --entrypoint node -v "$PWD:/source:ro" -w /source \
             "$image" --test tests/Unit/ServerParityCodecDeadlineLoadTest.mjs > parity-evidence/codec-load-tests.txt
@@ -1943,25 +2008,34 @@ jobs:
           setfacl -m u:1000:rwx,d:u:1000:rwx parity-state parity-evidence
           docker network create "$RESOURCE_SCOPE"
           # Each profile brings its own published PHP and embedded databases and
-          # shares this part's native node, as the profiles shared the corpus's.
-          docker run -d --name "$RESOURCE_SCOPE-rust" --network "$RESOURCE_SCOPE" --network-alias=parity-rust \
-            --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
-            -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token \
-            -e DB_DATABASE=/state/rust.sqlite -e DW_BIND_ADDRESS=0.0.0.0:8080 \
-            -v "$PWD/rust-target:/target:ro" -v "$PWD/parity-state:/state" \
-            --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
-          ready=0
-          for attempt in $(seq 1 30); do
-            if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
-              -fsS --connect-timeout 2 --max-time 5 http://parity-rust:8080/api/ready > parity-evidence/sdk-native-readiness.json; then
-              ready=1
-              break
-            fi
-            sleep 1
+          # shares its lane's native node, as the profiles shared the corpus's.
+          # Node rust-b has its own database file, so the namespace-signal profile
+          # can run beside the other two signal profiles, whose task queue it shares.
+          for node in rust rust-b; do
+            docker run -d --name "$RESOURCE_SCOPE-$node" --network "$RESOURCE_SCOPE" --network-alias="parity-$node" \
+              --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
+              -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token \
+              -e DB_DATABASE="/state/$node.sqlite" -e DW_BIND_ADDRESS=0.0.0.0:8080 \
+              -v "$PWD/rust-target:/target:ro" -v "$PWD/parity-state:/state" \
+              --entrypoint /target/debug/durable-workflow-server \
+              mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
           done
-          test "$ready" = 1
-          bash scripts/conformance/server-parity/sdk-direction-lanes.sh sqlite http://parity-rust:8080
+          # Literal node URLs keep each probe's target a fixed container name.
+          for url in http://parity-rust:8080 http://parity-rust-b:8080; do
+            name=${url#*//parity-}
+            name=${name%:*}
+            ready=0
+            for attempt in $(seq 1 30); do
+              if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+                -fsS --connect-timeout 2 --max-time 5 "$url/api/ready" > "parity-evidence/sdk-$name-readiness.json"; then
+                ready=1
+                break
+              fi
+              sleep 1
+            done
+            test "$ready" = 1
+          done
+          bash scripts/conformance/server-parity/sdk-direction-lanes.sh sqlite http://parity-rust:8080 http://parity-rust-b:8080
       - name: Start the shared native node the cohorts use
         id: prepare_cohorts
         if: ${{ matrix.part == 'cohorts' }}
@@ -2115,6 +2189,7 @@ jobs:
           docker logs "$RESOURCE_SCOPE-server" > parity-evidence/server.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-php-maintenance" > parity-evidence/php-maintenance.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-rust" > parity-evidence/rust.log 2>&1 || true
+          docker logs "$RESOURCE_SCOPE-rust-b" > parity-evidence/rust-b.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/rust-recovered.log 2>&1 || true
           docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-rust" > parity-evidence/rust-state.json 2>&1 || true
           docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-recovered" > parity-evidence/rust-recovered-state.json 2>&1 || true
@@ -2145,6 +2220,7 @@ jobs:
           docker rm -f "$RESOURCE_SCOPE-server" || true
           docker rm -f "$RESOURCE_SCOPE-php-maintenance" || true
           docker rm -f "$RESOURCE_SCOPE-rust" || true
+          docker rm -f "$RESOURCE_SCOPE-rust-b" || true
           docker rm -f "$RESOURCE_SCOPE-recovered" || true
           docker network rm "$RESOURCE_SCOPE" || true
       - name: Summarize fixture evidence

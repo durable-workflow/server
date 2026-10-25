@@ -1377,6 +1377,11 @@ impl Runtime {
     #[cfg(test)]
     delegate!(poll(body: Value, kind: &'static str, protocol_version: &str) -> Result<Value>);
     delegate!(poll_with_pages(body: Value, kind: &'static str, protocol_version: &str, pages: super::history_pages::HistoryPages, default_wait: u64) -> Result<Value>);
+    delegate!(create_worker_session(body: Value, protocol: &str) -> Result<super::worker_sessions::Answer>);
+    delegate!(heartbeat_worker_session(session_id: &str, body: Value, protocol: &str) -> Result<super::worker_sessions::Answer>);
+    delegate!(close_worker_session(session_id: &str, body: Value, protocol: &str) -> Result<super::worker_sessions::Answer>);
+    delegate!(list_worker_sessions() -> Result<Value>);
+    delegate!(show_worker_session(session_id: &str) -> Result<Value>);
     delegate!(heartbeat_task(task_id: &str, body: Value) -> Result<Value>);
     pub(crate) async fn deliver_cancellation(&self, task_id: &str, body: Value, protocol: &str) -> Result<Value> {
         let codec = self.transition_codec.clone();
