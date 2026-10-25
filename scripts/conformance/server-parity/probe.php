@@ -433,6 +433,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $activityLeaseRenewal = isset($fixture['activity_lease_renewal']) ? finishHttpActivityLeaseRenewal($client, $fixture, $workflowId, $url) : null;
     $serviceCatalog = isset($fixture['service_catalog']) ? finishHttpServiceCatalog($client, $fixture, $workflowId, $url) : null;
     $workflowImport = isset($fixture['workflow_import']) ? finishHttpWorkflowImport($client, $fixture, $workflowId, $url) : null;
+    $waterlineImport = isset($fixture['waterline_import']) ? finishHttpWaterlineImport($client, $fixture, $workflowId, $url) : null;
     $systemMetrics = isset($fixture['system_metrics']) ? finishHttpSystemMetrics($client, $fixture, $workflowId, $url) : null;
     $operatorDashboardTypes = isset($fixture['operator_dashboard_types']) ? finishHttpOperatorDashboardTypes($client, $fixture, $workflowId, $url) : null;
     $prometheusMetrics = isset($fixture['prometheus_metrics']) ? finishHttpPrometheusMetrics($client, $fixture, $workflowId, $url) : null;
@@ -542,6 +543,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'activity_lease_renewal' => $activityLeaseRenewal,
         'service_catalog' => $serviceCatalog,
         'workflow_import' => $workflowImport,
+        'waterline_import' => $waterlineImport,
         'system_metrics' => $systemMetrics,
         'operator_dashboard_types' => $operatorDashboardTypes,
         'prometheus_metrics' => $prometheusMetrics,
@@ -855,6 +857,7 @@ try {
     require __DIR__.'/activity-lease-renewal-probe.php';
     require __DIR__.'/service-catalog-probe.php';
     require __DIR__.'/workflow-import-probe.php';
+    require __DIR__.'/waterline-import-probe.php';
     require __DIR__.'/system-metrics-probe.php';
     require __DIR__.'/operator-dashboard-types-probe.php';
     require __DIR__.'/prometheus-metrics-probe.php';
@@ -1028,6 +1031,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['workflow_import'])) {
         $observation['workflow_import'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_workflow_import'];
+    }
+    if ($mode === 'embedded' && isset($fixture['waterline_import'])) {
+        $observation['waterline_import'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_waterline_import'];
     }
     if ($mode === 'embedded' && isset($fixture['system_metrics'])) {
         $observation['system_metrics'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_metrics'];
