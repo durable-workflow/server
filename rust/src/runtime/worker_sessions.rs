@@ -1074,8 +1074,15 @@ mod tests {
 
     /// A string whose equality checks are counted, so the tests below fail
     /// on a quadratic scan rather than on a timing threshold.
-    #[derive(Clone, Hash)]
+    #[derive(Clone)]
     struct Counted(String);
+
+    // Hash and equality both read only the string, so equal values hash alike.
+    impl std::hash::Hash for Counted {
+        fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+            self.0.hash(state);
+        }
+    }
 
     thread_local! {
         static COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
