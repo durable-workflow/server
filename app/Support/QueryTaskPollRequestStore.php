@@ -117,6 +117,7 @@ class QueryTaskPollRequestStore
     ): array {
         $pendingKey = $this->pendingKey($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId);
         $deadline = microtime(true) + (($timeoutMilliseconds ?? $this->waitTimeoutMilliseconds()) / 1000);
+        $progress = LongPollResponseProgress::current();
 
         while (microtime(true) < $deadline) {
             $result = $this->result($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId);
@@ -133,6 +134,7 @@ class QueryTaskPollRequestStore
                 ];
             }
 
+            $progress?->checkpoint();
             $this->pause($this->pollIntervalMilliseconds());
         }
 
