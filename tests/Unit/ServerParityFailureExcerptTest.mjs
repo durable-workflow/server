@@ -37,3 +37,17 @@ test('the outline is bounded per case and in total', () => {
 test('a case without an observation still names its error', () => {
   assert.equal(failureExcerpt([{fixture_id: 'x', outcome: 'runner-blocked', error: 'boom'}]), '== x (runner-blocked): boom\n');
 });
+
+test('stored workflow tasks are listed by counters and clocks, never payloads or errors', () => {
+  const text = failureExcerpt([{fixture_id: 'signal-selected-run-sdk-rust-php', outcome: 'product-fail', error: '1 !== 0',
+    observation: {mode: 'embedded', pairs: [{final_stored: {tables: {
+      workflow_tasks: {rows: [{id: '01TASK', workflow_run_id: '01RUN', task_type: 'workflow', status: 'completed',
+        attempt_count: 1, repair_count: 1, available_at: '2026-10-25 06:40:01', last_dispatched_at: '2026-10-25 06:40:07',
+        payload: {secret: 'payload-bytes'}, last_error: 'error-text', lease_owner: 'owner-name'}]},
+      workflow_commands: {rows: [{method: 'POST', path: '/not-a-request', status: 200}]}}}}]}}]);
+  assert.equal(text, [
+    '== signal-selected-run-sdk-rust-php (product-fail): 1 !== 0',
+    'observation.pairs[0].final_stored.tables.workflow_tasks[0] task 01TASK workflow_run_id=01RUN task_type=workflow status=completed attempt_count=1 repair_count=1 available_at=2026-10-25 06:40:01 last_dispatched_at=2026-10-25 06:40:07',
+    ''].join('\n'));
+  assert(!text.includes('payload-bytes') && !text.includes('error-text') && !text.includes('owner-name') && !text.includes('/not-a-request'));
+});

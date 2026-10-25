@@ -434,6 +434,8 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $nexusOperations = isset($fixture['nexus_operations']) ? finishHttpNexusOperations($client, $fixture, $workflowId, $url) : null;
     $workflowPollRequest = isset($fixture['workflow_poll_request']) ? finishHttpWorkflowPollRequest($client, $fixture, $workflowId, $url) : null;
     $workerPollFence = isset($fixture['worker_poll_fence']) ? finishHttpWorkerPollFence($client, $fixture, $workflowId, $url) : null;
+    $workerSessions = isset($fixture['worker_sessions']) ? finishHttpWorkerSessions($client, $fixture, $workflowId, $url) : null;
+    $workerSessionActivities = isset($fixture['worker_session_activities']) ? finishHttpWorkerSessionActivities($client, $fixture, $workflowId, $url) : null;
     $activityCancellationAcknowledgement = isset($fixture['activity_cancellation_acknowledgement'])
         ? finishHttpActivityCancellationAcknowledgement($client, $fixture, $workflowId, $url) : null;
     $serviceCatalog = isset($fixture['service_catalog']) ? finishHttpServiceCatalog($client, $fixture, $workflowId, $url) : null;
@@ -549,6 +551,8 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'nexus_operations' => $nexusOperations,
         'workflow_poll_request' => $workflowPollRequest,
         'worker_poll_fence' => $workerPollFence,
+        'worker_sessions' => $workerSessions,
+        'worker_session_activities' => $workerSessionActivities,
         'activity_cancellation_acknowledgement' => $activityCancellationAcknowledgement,
         'service_catalog' => $serviceCatalog,
         'system_metrics' => $systemMetrics,
@@ -867,6 +871,8 @@ try {
     require __DIR__.'/nexus-operations-probe.php';
     require __DIR__.'/workflow-poll-request-probe.php';
     require __DIR__.'/worker-poll-fence-probe.php';
+    require __DIR__.'/worker-sessions-probe.php';
+    require __DIR__.'/worker-session-activities-probe.php';
     require __DIR__.'/activity-cancellation-ack-probe.php';
     require __DIR__.'/service-catalog-probe.php';
     require __DIR__.'/system-metrics-probe.php';
@@ -1047,6 +1053,12 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['worker_poll_fence'])) {
         $observation['worker_poll_fence'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
+    }
+    if ($mode === 'embedded' && isset($fixture['worker_sessions'])) {
+        $observation['worker_sessions'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
+    }
+    if ($mode === 'embedded' && isset($fixture['worker_session_activities'])) {
+        $observation['worker_session_activities'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
     }
     if ($mode === 'embedded' && isset($fixture['activity_cancellation_acknowledgement'])) {
         $observation['activity_cancellation_acknowledgement'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];

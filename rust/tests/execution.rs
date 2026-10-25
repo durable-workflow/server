@@ -306,6 +306,9 @@ mod activity_cancellation_ack;
 #[path = "execution/route_coverage.rs"]
 mod route_coverage;
 
+#[path = "execution/worker_sessions.rs"]
+mod worker_sessions;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {
