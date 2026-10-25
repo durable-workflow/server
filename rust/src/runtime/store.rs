@@ -704,7 +704,7 @@ where
         let output_envelope = output.as_deref().map(wire);
         let mut described =
             json!({"workflow_id": workflow_id, "run_id": DB::string(&row,"id")?, "workflow_type": DB::string(&row,"workflow_type")?,
-            "namespace": self.namespace.as_ref(), "task_queue": DB::string(&row,"queue")?, "status": status,
+            "namespace": self.namespace.as_ref(), "task_queue": DB::optional_string(&row,"queue")?, "status": status,
             "commands_scope":"selected_run","commands":commands,
             "status_bucket": super::visibility::status_bucket(&status)?,
             "is_current_run": current,
@@ -715,7 +715,7 @@ where
             "input_envelope": input_envelope, "output_envelope": output_envelope,
             // `toJSON()` for start and close; the run description's
             // `toIso8601String()` for deadlines.
-            "started_at": super::task_queues::json_time(Some(DB::instant(&row,"started_at")?)),
+            "started_at": super::task_queues::json_time(DB::optional_instant(&row,"started_at")?),
             "closed_at": super::task_queues::json_time(DB::optional_instant(&row,"closed_at")?),
             "execution_timeout_seconds": DB::optional_number(&row,"execution_timeout_seconds")?,
             "run_timeout_seconds": DB::optional_number(&row,"run_timeout_seconds")?,
@@ -726,6 +726,38 @@ where
                 .describe_fields(&row, current, terminal, &described["input_envelope"], &described["output_envelope"], stale_after)
                 .await?;
             described.as_object_mut().expect("description object").extend(fields);
+        }
+        // `formatRun` for a Waterline v1 projection: no control-plane
+        // description, every action off, the stored codec and progress time,
+        // and the projection's metadata.
+        if DB::optional_string(&row, "import_source")?.as_deref() == Some(super::waterline_import::IMPORT_SOURCE) {
+            let metadata = self.projection_metadata(&DB::string(&row, "id")?, DB::optional_instant(&row, "imported_at")?,
+                DB::optional_string(&row, "import_dedupe_key")?).await?;
+            let failure = if stale_after.is_some() && described["status"] == "failed" {
+                self.projected_failure(&DB::string(&row, "id")?).await?
+            } else {
+                Value::Null
+            };
+            let fields = described.as_object_mut().expect("description object");
+            fields.insert("payload_codec".into(), json!(DB::optional_string(&row, "payload_codec")?));
+            if stale_after.is_some() {
+                fields.insert("definition_routing".into(), Value::Null);
+                fields.insert("last_progress_at".into(), super::task_queues::json_time(DB::optional_instant(&row, "last_progress_at")?));
+                if let Some(Value::Object(actions)) = fields.get_mut("actions") {
+                    actions.values_mut().for_each(|value| *value = json!(false));
+                }
+                fields.insert("migration_projection".into(), metadata);
+                fields.insert("action_blocked_reason".into(), json!("v1_projection_read_only"));
+                // `terminalFailurePayload`: a projection keeps no failure
+                // snapshots, so a failed one reports its projected activity
+                // failures only.
+                if !failure.is_null() {
+                    fields.insert("error".into(), failure["message"].clone());
+                    fields.insert("exception".into(), failure["exception"].clone());
+                    fields.insert("failures".into(), json!([]));
+                    fields.insert("failure".into(), failure);
+                }
+            }
         }
         Ok(described)
     }
@@ -738,7 +770,7 @@ where
         page_size: i64,
     ) -> Result<Value> {
         self.describe(workflow_id, Some(run_id)).await?;
-        let run = Self::query("SELECT compatibility,queue FROM workflow_runs WHERE id=$1")
+        let run = Self::query("SELECT compatibility,queue,import_source,imported_at,import_dedupe_key FROM workflow_runs WHERE id=$1")
             .bind(run_id)
             .fetch_one(&self.pool)
             .await?;
@@ -757,6 +789,11 @@ where
         // describe does.
         let mut body = json!({"workflow_id": workflow_id, "run_id": run_id, "events": public_events, "next_page_token": next});
         body.as_object_mut().expect("history object").extend(compatibility);
+        // `LegacyV1Projection::metadataForRun` on a projected run.
+        if DB::optional_string(&run, "import_source")?.as_deref() == Some(super::waterline_import::IMPORT_SOURCE) {
+            body["migration_projection"] = self.projection_metadata(run_id, DB::optional_instant(&run, "imported_at")?,
+                DB::optional_string(&run, "import_dedupe_key")?).await?;
+        }
         Ok(body)
     }
 
@@ -4049,7 +4086,8 @@ where
         Ok(
             json!({"id": DB::string(&row,"id")?, "sequence": DB::number(&row,"sequence")?, "event_type": DB::string(&row,"event_type")?,
         "payload": payload,
-        "recorded_at": DB::instant(&row,"recorded_at")?.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+        // A Waterline v1 projection may hold untimed events; PHP reads them as null.
+        "recorded_at": DB::optional_instant(&row,"recorded_at")?.map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true)),
         "workflow_task_id": DB::optional_string(&row,"workflow_task_id")?, "workflow_command_id": DB::optional_string(&row,"workflow_command_id")?}),
         )
     }

@@ -222,3 +222,44 @@ async fn an_oversized_activity_result_fails_the_activity_like_php() {
     runtime.close().await;
     database.remove().await;
 }
+
+/// The history transaction ceilings as the operator metrics, the health
+/// snapshot and the nested backend capabilities report them.
+async fn published_history_limits(app: &Router) -> Vec<(String, Value, Value)> {
+    let (status, metrics) = request(app, "GET", "/api/system/operator-metrics", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{metrics}");
+    let (status, health) = request(app, "GET", "/api/system/health", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{health}");
+    let metrics = &metrics["operator_metrics"];
+    let surfaces = [
+        ("metrics configured", &metrics["structural_limits"]["configured"]),
+        ("metrics effective", &metrics["structural_limits"]["effective"]),
+        ("backend configured", &metrics["backend"]["structural_limits"]["configured"]),
+        ("backend effective", &metrics["backend"]["structural_limits"]["effective"]),
+        ("health configured", &health["health"]["structural_limits"]["configured"]),
+        ("health effective", &health["health"]["structural_limits"]["effective"]),
+    ];
+    surfaces.into_iter().map(|(surface, limits)| {
+        (surface.to_owned(), limits["history_transaction_size"].clone(), limits["history_transaction_bytes"].clone())
+    }).collect()
+}
+
+#[tokio::test]
+async fn every_surface_reports_the_active_history_transaction_limits() {
+    let database = TestDatabase::new().await;
+    for (events, bytes, shown) in [
+        (Some(4321), Some(987_654), (json!(4321), json!(987_654))),
+        (Some(0), None, (json!(0), json!(0))),
+    ] {
+        let limits = StructuralLimits { history_events: events, history_bytes: bytes, ..StructuralLimits::default() };
+        let app = router(database.open().await.unwrap().with_structural_limits(limits));
+        for (surface, size, published_bytes) in published_history_limits(&app).await {
+            assert_eq!((&size, &published_bytes), (&shown.0, &shown.1), "{surface}");
+        }
+    }
+    // The defaults, from no configuration.
+    let app = router(database.open().await.unwrap());
+    for (surface, size, bytes) in published_history_limits(&app).await {
+        assert_eq!((size, bytes), (json!(5000), json!(16_777_216)), "{surface}");
+    }
+}

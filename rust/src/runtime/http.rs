@@ -68,6 +68,7 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route("/api/workflows", get(list_workflows).post(start))
         .route("/api/workflows/import/embedded-v2", post(import_embedded_v2))
+        .route("/api/workflows/import/waterline-v1", post(import_waterline_v1))
         .route("/api/activities", get(list_activities).post(start_activity))
         .route("/api/activities/{activity_id}", get(show_activity))
         .route(
@@ -319,6 +320,7 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .fallback(route_fallback)
         .method_not_allowed_fallback(route_fallback)
+        .layer(middleware::from_fn(super::waterline_import::read_only_guard))
         .layer(middleware::from_fn(empty_list_body))
         // `payload_limits` reads and bounds every body first.
         .layer(DefaultBodyLimit::disable())
@@ -709,7 +711,8 @@ fn exact_namespace_route(path: &str) -> Option<Allowed> {
         // The metrics describe the namespace's own state, read by GET or POST.
         "/api/system/metrics" => READ_WRITE,
         // An import writes into the requested namespace.
-        "/api/external-payloads/v1" | "/api/storage/test" | "/api/workflows/import/embedded-v2" => WRITE,
+        "/api/external-payloads/v1" | "/api/storage/test" | "/api/workflows/import/embedded-v2"
+        | "/api/workflows/import/waterline-v1" => WRITE,
         "/api/task-queues"
         | "/api/deployments"
         | "/api/workers"
@@ -1108,6 +1111,15 @@ async fn import_embedded_v2(
         .map(|query| form_urlencoded::parse(query.as_bytes()).into_owned().collect())
         .unwrap_or_default();
     let (status, answer) = runtime.import_embedded_v2(&body, &query).await?;
+    Ok((status, Json(answer)))
+}
+
+/// `POST /api/workflows/import/waterline-v1`.
+async fn import_waterline_v1(
+    Extension(runtime): Extension<Runtime>,
+    body: axum::body::Bytes,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, answer) = runtime.import_waterline_v1(&body).await?;
     Ok((status, Json(answer)))
 }
 

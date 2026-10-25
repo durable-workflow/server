@@ -286,9 +286,16 @@ where
         }
         fields.extend(compatibility);
         // `ServerWorkflowControlPlane::withDefinitionRouting`.
-        let mut tx = self.begin_read().await?;
-        let routing = self.definition_inspect(&mut tx, run, None).await?;
-        tx.commit().await?;
+        // A Waterline v1 projection has no standalone routing, and may have
+        // no task queue at all.
+        let routing = if DB::optional_string(run, "import_source")?.as_deref() == Some(super::waterline_import::IMPORT_SOURCE) {
+            Value::Null
+        } else {
+            let mut tx = self.begin_read().await?;
+            let routing = self.definition_inspect(&mut tx, run, None).await?;
+            tx.commit().await?;
+            routing
+        };
         fields.insert("definition_routing".into(), routing);
         fields.insert("payload_previews".into(), json!({"input_omitted":input_omitted,"output_omitted":output_omitted,
             "max_encoded_bytes":max_payload_bytes()}));
