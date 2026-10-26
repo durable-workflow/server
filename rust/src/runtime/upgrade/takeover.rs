@@ -344,20 +344,10 @@ fn php_incarnations(layout: &str) -> Result<bool> {
     }
 }
 
-/// Service calls are not part of native yet.
-async fn service_calls_absent<DB: Backend>(tx: &mut DB::Connection) -> Result<()>
-where
-    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
-    DB::Arguments: IntoArguments<DB>,
-{
-    if count::<DB>(tx, "SELECT COUNT(*) AS n FROM workflow_service_calls").await? != 0 {
-        return Err(refuse(
-            StatusCode::CONFLICT,
-            "upgrade_source_service_calls_unsupported",
-        ));
-    }
-    Ok(())
-}
+/// Native keeps a service call's deadline in `dw_service_call_deadlines`,
+/// not in PHP 2.8.0+'s `workflow_service_calls.call_deadline_at`. Copies each
+/// one not copied yet, before that column is dropped; returns how many.
+pub(super) const SERVICE_CALL_DEADLINES: &str = "INSERT INTO dw_service_call_deadlines(service_call_id,namespace,call_deadline_at) SELECT c.id,COALESCE(c.namespace,c.target_namespace,''),c.call_deadline_at FROM workflow_service_calls c WHERE c.call_deadline_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dw_service_call_deadlines d WHERE d.service_call_id=c.id)";
 
 /// Converts a recorded PHP release layout to native's (the design's recipes).
 async fn convert<DB: Backend>(tx: &mut DB::Connection, layout: &str) -> Result<Value>
@@ -367,9 +357,14 @@ where
     for<'q> String: Encode<'q, DB> + Type<DB>,
 {
     let php_incarnations = php_incarnations(layout)?;
-    service_calls_absent::<DB>(tx).await?;
     let (copied, created) = adopt_incarnations::<DB>(tx, php_incarnations).await?;
     let holders = adopt_session_holders::<DB>(tx).await?;
+    // The frozen layout has no call deadlines; every later one does.
+    let deadlines = if php_incarnations {
+        DB::affected(query::<DB>(SERVICE_CALL_DEADLINES).execute(&mut *tx).await?)
+    } else {
+        0
+    };
     if php_incarnations {
         sqlx::raw_sql(
             "DROP TABLE workflow_worker_registration_incarnations; \
@@ -409,6 +404,7 @@ where
     Ok(json!({
         "incarnations_copied":copied, "incarnations_created":created,
         "session_holders_recorded":holders,
+        "service_call_deadlines_copied":deadlines,
         "queue_delivery_references_removed":delivery_references,
         "observability_contexts_removed":observability_contexts
     }))

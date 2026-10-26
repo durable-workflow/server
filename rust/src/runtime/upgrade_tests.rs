@@ -1137,10 +1137,6 @@ async fn takeover_refusals_leave_the_php_database_unchanged() {
     );
     for (statement, expected) in [
         (
-            "INSERT INTO workflow_service_calls(id,endpoint_name,service_name,operation_name,status,operation_mode) VALUES ('call','e','s','o','accepted','sync')",
-            "upgrade_source_service_calls_unsupported",
-        ),
-        (
             "INSERT INTO runtime_external_payloads(id,namespace,storage_uri,storage_uri_sha256,codec,sha256,size_bytes) VALUES ('p','default','s3://b/k','x','avro','y',1)",
             "upgrade_source_external_payloads_unsupported",
         ),
@@ -1243,6 +1239,35 @@ async fn takeover_keeps_php_worker_sessions_held_by_their_current_registration()
     assert_eq!((held["session"]["status"].clone(), held["session"]["failure_reason"].clone()), (json!("active"), Value::Null), "{held}");
     let done = runtime.show_worker_session("done").await.unwrap();
     assert_eq!(done["session"]["status"], "closed", "{done}");
+    runtime.close().await;
+}
+
+/// PHP's service calls carry over: native reads PHP's rows as they are, and
+/// takeover copies each call's deadline into the relation native keeps it in,
+/// so native shows it and times the call out when it is due.
+#[tokio::test]
+async fn takeover_keeps_php_service_calls_and_their_deadlines() {
+    let (_directory, path) = php_release_layout(&[PHP_280_CHANGES, TRACE_CARRIERS, QUEUE_DELIVERY]).await;
+    for statement in [
+        "INSERT INTO workflow_service_calls(id,namespace,endpoint_name,service_name,operation_name,caller_namespace,target_namespace,status,outcome,operation_mode,accepted_at,call_deadline_at,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kcall','default','pay','billing','charge','default','default','accepted','accepted','async','2026-10-26 10:00:00.000000','2001-02-03 04:05:06.500000','2026-10-26 10:00:00','2026-10-26 10:00:00')",
+        "INSERT INTO workflow_service_calls(id,namespace,endpoint_name,service_name,operation_name,caller_namespace,target_namespace,status,outcome,operation_mode,accepted_at,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kopen','default','pay','billing','charge','default','default','accepted','accepted','async','2026-10-26 10:00:01.000000','2026-10-26 10:00:01','2026-10-26 10:00:01')",
+    ] {
+        mutate(&path, statement).await;
+    }
+    let fingerprint = backup_fingerprint(&path).await;
+    let report = takeover::take_over_sqlite(&path, &fingerprint, &queue_config()).await.unwrap();
+    assert_eq!(report["status"], "taken_over", "{report}");
+    assert_eq!(report["converted"]["service_call_deadlines_copied"], 1, "{report}");
+    let runtime = crate::runtime::Runtime::open(&path, "test-token".into()).await.unwrap();
+    let call = runtime.service_catalog_show(&[], crate::runtime::service_catalog::Catalog::Calls, "01m5wvy8d1j3dtr13es05kcall").await.unwrap();
+    assert_eq!((call["status"].clone(), call["call_deadline_at"].clone()), (json!("accepted"), json!("2001-02-03T04:05:06.500000Z")), "{call}");
+    // The deadline has passed, so the repair pass times the call out.
+    let report = runtime.repair_pass(&Default::default()).await.unwrap();
+    assert_eq!(report["service_call_timeouts_enforced"], 1, "{report}");
+    let call = runtime.service_catalog_show(&[], crate::runtime::service_catalog::Catalog::Calls, "01m5wvy8d1j3dtr13es05kcall").await.unwrap();
+    assert_eq!((call["status"].clone(), call["outcome"].clone()), (json!("failed"), json!("timed_out")), "{call}");
+    let open = runtime.service_catalog_show(&[], crate::runtime::service_catalog::Catalog::Calls, "01m5wvy8d1j3dtr13es05kopen").await.unwrap();
+    assert_eq!((open["status"].clone(), open["call_deadline_at"].clone()), (json!("accepted"), Value::Null), "{open}");
     runtime.close().await;
 }
 

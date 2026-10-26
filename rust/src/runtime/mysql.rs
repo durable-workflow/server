@@ -1393,6 +1393,7 @@ mod tests {
                 "INSERT INTO workflow_runs(id,workflow_instance_id,run_number,workflow_class,workflow_type,namespace,status,observability_context) VALUES ('01jrun0000000000000000000a','traced',1,'Traced','traced','default','completed','{\"traceparent\":\"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01\"}');",
                 "INSERT INTO workflow_tasks(id,workflow_run_id,namespace,task_type,status,observability_context) VALUES ('01jtask000000000000000000a','01jrun0000000000000000000a','default','workflow','completed','{\"traceparent\":\"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01\"}');",
                 "INSERT INTO workflow_worker_sessions(namespace,session_id,queue,status,lease_owner,lease_expires_at,ttl_expires_at,created_at,updated_at) VALUES ('default','held','q','active','current','2030-01-01 00:00:00','2030-01-01 00:00:00','2026-10-20 09:00:00','2026-10-20 09:00:00');",
+                "INSERT INTO workflow_service_calls(id,namespace,endpoint_name,service_name,operation_name,caller_namespace,target_namespace,status,outcome,operation_mode,accepted_at,call_deadline_at,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kcall','default','pay','billing','charge','default','default','accepted','accepted','async','2026-10-26 10:00:00.000000','2027-02-03 04:05:06.500000','2026-10-26 10:00:00','2026-10-26 10:00:00');",
             )).await.unwrap();
             connection.close().await.unwrap();
             let fingerprint = backup_fingerprint(&db).await;
@@ -1404,11 +1405,15 @@ mod tests {
             assert_eq!(report["converted"]["observability_contexts_removed"], 2, "{report}");
             assert_eq!(report["converted"]["incarnations_copied"], 3, "{report}");
             assert_eq!(report["converted"]["session_holders_recorded"], 1, "{report}");
+            assert_eq!(report["converted"]["service_call_deadlines_copied"], 1, "{report}");
             converted(&db).await;
             let mut connection = db.connection().await;
             let holder: String = sqlx::query_scalar("SELECT incarnation FROM dw_worker_session_holders WHERE namespace='default' AND session_id='held'")
                 .fetch_one(&mut connection).await.unwrap();
             assert_eq!(holder, super::super::worker_sessions::incarnation_digest("0123456789abcdef0123456789abcdef"));
+            let deadline: (String, String) = sqlx::query_as("SELECT namespace,DATE_FORMAT(call_deadline_at,'%Y-%m-%d %H:%i:%s.%f') FROM dw_service_call_deadlines WHERE service_call_id='01m5wvy8d1j3dtr13es05kcall'")
+                .fetch_one(&mut connection).await.unwrap();
+            assert_eq!(deadline, ("default".to_owned(), "2027-02-03 04:05:06.500000".to_owned()));
             let carriers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND COLUMN_NAME IN ('observability_context','queue_delivery_reference')")
                 .fetch_one(&mut connection).await.unwrap();
             assert_eq!(carriers, 0, "{release}: the PHP-only columns are gone");
@@ -1537,10 +1542,6 @@ mod tests {
         assert_eq!(source_state(&db).await, written);
         db.remove().await;
         for (statement, expected) in [
-            (
-                "INSERT INTO workflow_service_calls(id,endpoint_name,service_name,operation_name,status,operation_mode) VALUES ('call','e','s','o','accepted','sync')",
-                "upgrade_source_service_calls_unsupported",
-            ),
             (
                 "INSERT INTO runtime_external_payloads(id,namespace,storage_uri,storage_uri_sha256,codec,sha256,size_bytes) VALUES ('p','default','s3://b/k','x','avro','y',1)",
                 "upgrade_source_external_payloads_unsupported",

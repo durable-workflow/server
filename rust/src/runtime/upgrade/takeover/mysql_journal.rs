@@ -8,7 +8,7 @@
 //! recorded one.
 use super::{
     BUDGET, DELIVERY_REFERENCES, Result, adopt_incarnations, count, matches_backup,
-    php_incarnations, preconditions, qualified, report, service_calls_absent,
+    php_incarnations, preconditions, qualified, report,
 };
 use crate::runtime::{
     mysql::{self, Flavor, LEDGER_SQL, MARKER_SQL, TAKEOVER_ENGINE},
@@ -228,7 +228,6 @@ async fn verified_snapshot(
     let layout = qualified(&inventory)?.to_owned();
     matches_backup(&digest, run.fingerprint)?;
     php_incarnations(&layout)?;
-    service_calls_absent::<MySql>(connection).await?;
     Ok((inventory, layout))
 }
 
@@ -343,6 +342,10 @@ async fn perform(connection: &mut MySqlConnection, run: &mut Run<'_>, step: i64)
         }
         6 => {
             if column_exists(connection, "workflow_service_calls", "call_deadline_at").await? {
+                // Copy the deadlines native keeps first; a repeated step
+                // copies only those not copied yet.
+                let copied = sqlx::query(super::SERVICE_CALL_DEADLINES).execute(&mut *connection).await?.rows_affected();
+                run.converted.insert("service_call_deadlines_copied".into(), json!(copied));
                 // Dropping only the column would leave its index on status alone.
                 connection.execute("ALTER TABLE workflow_service_calls DROP INDEX wf_service_calls_deadline_idx, DROP COLUMN call_deadline_at").await?;
             }
