@@ -294,6 +294,14 @@ impl Runtime {
     }
 
     #[cfg(test)]
+    pub(super) fn sqlite_store(&self) -> &super::store::Store<sqlx::Sqlite> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store,
+            Storage::Postgres(_) | Storage::MySql(_) => panic!("SQLite-only store test"),
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn sqlite_pool(&self) -> &sqlx::SqlitePool {
         match &*self.storage {
             Storage::Sqlite(store) => &store.pool,
@@ -1614,6 +1622,9 @@ impl Runtime {
         }
     }
     delegate!(acknowledge_activity_cancellation(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
+    delegate!(open_cancellation_scope(task_id: &str, body: Value, protocol: &str) -> Result<(axum::http::StatusCode, Value)>);
+    delegate!(prepare_cancellation_scope(task_id: &str, body: Value, protocol: &str) -> Result<(axum::http::StatusCode, Value)>);
+    delegate!(deliver_cancellation_scope(task_id: &str, body: Value, protocol: &str) -> Result<(axum::http::StatusCode, Value)>);
     pub(crate) async fn fail_activity(&self, task_id: &str, body: Value) -> Result<Value> {
         let (failure, blob) =
             super::activity_failures::prepare_failure(&body, self.signal_codec.clone()).await?;

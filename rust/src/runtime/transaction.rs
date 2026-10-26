@@ -12,6 +12,8 @@ pub(super) struct Transaction<'a, DB: Backend> {
     pub(super) history_budget: super::history_budget::Config,
     /// A workflow task completion's history meter (Workflow #930).
     pub(super) meter: Option<super::history_meter::Meter>,
+    /// The run history the cancellation scope engine has read (`scope_events`).
+    pub(super) scope_history: Option<super::cancellation_scopes::HistoryCache>,
 }
 
 impl<'a, DB: Backend> Transaction<'a, DB> {
@@ -24,6 +26,7 @@ impl<'a, DB: Backend> Transaction<'a, DB> {
             summaries: BTreeSet::new(),
             history_budget,
             meter: None,
+            scope_history: None,
         }
     }
 
