@@ -5,6 +5,7 @@ namespace App\Support;
 use App\Models\WorkflowDurableStream;
 use App\Models\WorkflowDurableStreamItem;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
@@ -431,30 +432,50 @@ final class WorkflowStreamService
             throw new StreamNotFoundException($run, $streamName);
         }
 
-        $stream = WorkflowDurableStream::query()
+        $query = WorkflowDurableStream::query()
             ->where('namespace', $namespace)
             ->where('workflow_run_id', $run->id)
-            ->where('stream_name', $streamName)
-            ->lockForUpdate()
-            ->first();
+            ->where('stream_name', $streamName);
 
-        if ($stream !== null || ! $openIfMissing) {
-            return $stream;
+        if (! $openIfMissing) {
+            return $query->lockForUpdate()->first();
         }
 
-        // The run lock admits one opener at a time, so the stream is created
-        // through its model and the namespace stream quota applies.
-        return WorkflowDurableStream::query()->create([
-            'namespace' => $namespace,
-            'workflow_instance_id' => $run->workflow_instance_id,
-            'workflow_run_id' => $run->id,
-            'stream_name' => $streamName,
-            'status' => WorkflowDurableStream::STATUS_OPEN,
-            'last_offset' => -1,
-            'total_items' => 0,
-            'pending_items' => 0,
-            'opened_at' => Carbon::now(),
-        ]);
+        // A missing-key locking read takes an InnoDB gap lock. Two openers
+        // on different runs can share that gap, then deadlock on insertion.
+        // The run lock already serializes same-run writers: discover without
+        // locking, then take a current record lock only on a row we found.
+        $streamId = (clone $query)->value('id');
+        if ($streamId !== null) {
+            return WorkflowDurableStream::query()->whereKey($streamId)->lockForUpdate()->firstOrFail();
+        }
+
+        try {
+            // Keep model quota admission. A savepoint rolls a failed insert
+            // back without aborting a surrounding command transaction.
+            return DB::transaction(fn () => WorkflowDurableStream::query()->create([
+                'namespace' => $namespace,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'stream_name' => $streamName,
+                'status' => WorkflowDurableStream::STATUS_OPEN,
+                'last_offset' => -1,
+                'total_items' => 0,
+                'pending_items' => 0,
+                'opened_at' => Carbon::now(),
+            ]));
+        } catch (UniqueConstraintViolationException|NamespaceDurableStateException $exception) {
+            if ($exception instanceof NamespaceDurableStateException
+                && $exception->reason !== 'namespace_workflow_streams_exhausted') {
+                throw $exception;
+            }
+
+            // An outer command may hold a repeatable snapshot older than the
+            // run lock. Its stream can already exist even if discovery missed
+            // it. Reuse that committed row; it needs no new quota slot, even
+            // when the namespace is now full or over its configured limit.
+            return $query->lockForUpdate()->first() ?? throw $exception;
+        }
     }
 
     private function assertValidStreamName(string $streamName): void
