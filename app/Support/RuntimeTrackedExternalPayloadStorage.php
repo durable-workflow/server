@@ -49,11 +49,8 @@ class RuntimeTrackedExternalPayloadStorage implements RuntimeExternalPayloadStor
             if ($validationField !== null) {
                 AvroExternalPayloadValidator::validate($result['data'], $validationField);
             }
-            app(RuntimeExternalPayloadWriteClaims::class)->prepare(fn () => $registry->verifyFetchedBytesAndClaim(
+            app(RuntimeExternalPayloadWriteClaims::class)->verifyInput(
                 $this->namespace, $envelope['external_storage']['uri'], $result['data'],
-            ));
-            app(RuntimeExternalPayloadWriteClaims::class)->verified(
-                $this->namespace, $envelope['external_storage']['uri'], $result['data']->sizeBytes, $result['data']->sha256,
             );
 
             return ExternalPayloads::encodeStoredEnvelope($envelope);
@@ -66,12 +63,7 @@ class RuntimeTrackedExternalPayloadStorage implements RuntimeExternalPayloadStor
     {
         $data = $this->fetch($uri);
 
-        $claims = app(RuntimeExternalPayloadWriteClaims::class);
-        $claims->prepare(fn () => app(RuntimeExternalPayloadRegistry::class)->verifyFetchedBytesAndClaim(
-            $this->namespace,
-            $uri,
-            $data,
-        ));
+        app(RuntimeExternalPayloadWriteClaims::class)->verifyInput($this->namespace, $uri, $data);
 
         return $data;
     }

@@ -2,15 +2,19 @@
 
 namespace Tests\Feature;
 
+use App\Models\RuntimeExternalPayload;
 use App\Models\WorkflowNamespace;
+use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\RuntimeExternalPayloadException;
 use App\Support\RuntimeExternalPayloadRegistry;
 use App\Support\RuntimeExternalPayloadWriteClaims;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\File;
 use Mockery;
 use RuntimeException;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
 
 class RuntimeExternalPayloadWriteClaimsTest extends TestCase
 {
@@ -112,5 +116,41 @@ class RuntimeExternalPayloadWriteClaimsTest extends TestCase
             });
         });
         $this->assertSame(['fixture://guard-78', 'fixture://guard-163'], $seen);
+    }
+
+    public function test_preflight_and_a_failed_writer_leave_the_verified_upload_unclaimed(): void
+    {
+        $directory = storage_path('framework/testing/write-claims-'.bin2hex(random_bytes(4)));
+        try {
+            WorkflowNamespace::query()->create([
+                'name' => 'claim-preflight', 'retention_days' => 30,
+                'external_payload_storage' => [
+                    'enabled' => true, 'driver' => 'local', 'threshold_bytes' => 1,
+                    'config' => ['uri' => 'file://'.$directory],
+                ],
+            ]);
+            $bytes = Serializer::serializeWithCodec('avro', ['verified before mutation']);
+            $registry = app(RuntimeExternalPayloadRegistry::class);
+            $reference = $registry->upload('claim-preflight', $bytes, 'avro', hash('sha256', $bytes));
+            $row = RuntimeExternalPayload::query()->findOrFail($reference['reference_id']);
+            $envelope = $registry->resolveAndClaim('claim-preflight', $reference);
+            $storage = app(NamespaceExternalPayloadStorage::class)->driverFor('claim-preflight');
+            app(RuntimeExternalPayloadWriteClaims::class)->transport(function () use ($storage, $row, $envelope, $bytes): void {
+                $this->assertSame($bytes, $storage->get($row->storage_uri));
+                $storage->retainEnvelope($envelope);
+                $this->assertNull($row->fresh()->retained_at, 'Verification must not commit a claim.');
+                try {
+                    DB::transaction(function (): void {
+                        WorkflowNamespace::query()->create(['name' => 'failed-preflight-writer', 'retention_days' => 30]);
+                        throw new RuntimeException('The reference writer rolled back.');
+                    });
+                } catch (RuntimeException) {
+                    $this->assertNull($row->fresh()->retained_at);
+                    $this->assertNotNull($row->fresh()->expires_at);
+                }
+            });
+        } finally {
+            File::deleteDirectory($directory);
+        }
     }
 }

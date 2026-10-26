@@ -10,7 +10,7 @@ use App\Support\RuntimeExternalPayloadCleanup;
 use App\Support\RuntimeExternalPayloadRegistry;
 use App\Support\RuntimePayloadCompletionContext;
 use App\Support\WorkflowQueryTaskBroker;
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
@@ -25,7 +25,7 @@ use Workflow\V2\Models\WorkflowTask;
 
 class RuntimePayloadCompletionUploadsTest extends TestCase
 {
-    use RefreshDatabase;
+    use DatabaseMigrations;
     use ServerTestHelpers;
     use StoragePressureFixture;
 
@@ -34,6 +34,7 @@ class RuntimePayloadCompletionUploadsTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        $this->assertSame(0, DB::connection()->transactionLevel(), 'Completion uploads must reach real commits.');
         Queue::fake();
         $this->directory = storage_path('framework/testing/completion-uploads');
         File::deleteDirectory($this->directory);

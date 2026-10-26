@@ -338,30 +338,57 @@ class WorkflowStreamPayloadRaceTest extends TestCase
     }
 
     #[DataProvider('drivers')]
-    public function test_materialized_input_can_commit_inline_after_its_source_object_is_pruned(string $driver): void
+    public function test_materialized_input_cannot_bypass_its_commit_time_reference_claim(string $driver): void
     {
         $this->initializeDatabase($driver);
         $object = $this->registerObject('materialized-input');
         $oldRunId = $this->summarizedRun('wf-inline-old', RunStatus::Completed);
         $this->addStream($oldRunId, 'old', [$object['uri']]);
 
-        $writer = $this->startActor(fn (): string => app(RuntimeExternalPayloadWriteClaims::class)->transport(function () use ($object): string {
-            $bytes = app(NamespaceExternalPayloadStorage::class)->driverFor('default')->get($object['uri']);
+        $writer = $this->startActor(function () use ($object): array {
+            try {
+                $runId = app(RuntimeExternalPayloadWriteClaims::class)->transport(function () use ($object): string {
+                    $bytes = app(NamespaceExternalPayloadStorage::class)->driverFor('default')->get($object['uri']);
 
-            return DB::transaction(function () use ($bytes): string {
-                $runId = $this->createRun('wf-inline-new');
-                WorkflowRun::query()->whereKey($runId)->update(['arguments' => $bytes, 'payload_codec' => 'avro']);
+                    return DB::transaction(function () use ($bytes): string {
+                        $runId = $this->createRun('wf-inline-new');
+                        WorkflowRun::query()->whereKey($runId)->update(['arguments' => $bytes, 'payload_codec' => 'avro']);
 
-                return $runId;
-            });
-        }), self::afterVerification());
+                        return $runId;
+                    });
+                });
+
+                return ['status' => 201, 'run_id' => $runId];
+            } catch (RuntimeExternalPayloadException $exception) {
+                return ['status' => $exception->status, 'reason' => $exception->reason];
+            }
+        }, self::afterVerification());
         $this->runUntilPaused($writer);
         $this->assertTrue(HistoryRetentionEnforcer::pruneRun('default', $oldRunId)['pruned']);
         $this->resume($writer);
-        $runId = $this->finishActor($writer);
-        $arguments = WorkflowRun::query()->whereKey($runId)->value('arguments');
-        $this->assertSame(['materialized-input'], Serializer::unserializeWithCodec('avro', $arguments));
+        $this->assertSame(['status' => 422, 'reason' => 'external_payload_unsupported'], $this->finishActor($writer));
+        $this->assertFalse(WorkflowRun::query()->where('workflow_instance_id', 'wf-inline-new')->exists());
         $this->assertObjectDeleted($object);
+    }
+
+    #[DataProvider('drivers')]
+    public function test_a_retained_schedule_protects_input_shared_with_a_pruned_run(string $driver): void
+    {
+        $this->initializeDatabase($driver);
+        $object = $this->registerObject('scheduled-input');
+        $oldRunId = $this->summarizedRun('wf-scheduled-old', RunStatus::Completed);
+        $this->addStream($oldRunId, 'old', [$object['uri']]);
+
+        $this->withHeaders($this->apiHeaders())->postJson('/api/schedules', [
+            'schedule_id' => 'shared-input-schedule',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => [
+                'workflow_type' => 'remote.claim-race',
+                'input' => ['codec' => 'avro', 'external_payload' => $object['reference']],
+            ],
+        ])->assertCreated();
+        $this->assertTrue(HistoryRetentionEnforcer::pruneRun('default', $oldRunId)['pruned']);
+        $this->assertObjectKept($object);
     }
 
     private function initializeDatabase(string $driver): void

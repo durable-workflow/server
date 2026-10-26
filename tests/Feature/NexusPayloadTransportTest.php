@@ -137,6 +137,10 @@ class NexusPayloadTransportTest extends TestCase
                 $this->assertSame('avro', $options['payload_codec']);
 
                 return true;
-            })->andReturn(['accepted' => true, 'status' => 'started']);
+            })->andReturnUsing(static fn (): array => DB::transaction(
+                // The dispatch double models the real admission transaction,
+                // including its commit-time input claim.
+                static fn (): array => ['accepted' => true, 'status' => 'started'],
+            ));
     }
 }

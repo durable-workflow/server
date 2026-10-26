@@ -21,6 +21,7 @@ use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowRunWait;
+use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Models\WorkflowScheduleHistoryEvent;
 use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowServiceCall;
@@ -686,6 +687,7 @@ class ExternalPayloadRetentionCleanup
         }
 
         return [
+            [WorkflowSchedule::query(), 'action'],
             [WorkflowRunSummary::query()->whereIn('id', $this->retainedRunIdsQuery($deletedRunIds)), 'visibility_labels'],
             [ActivityExecution::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'arguments'],
             [ActivityExecution::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'result'],

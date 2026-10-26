@@ -54,6 +54,25 @@ final class RuntimeExternalPayloadWriteClaims
         }
     }
 
+    public function verifyInput(string $namespace, string $uri, string|ExternalPayloadStream $data): void
+    {
+        $bytes = $this->prepare(function () use ($namespace, $uri, $data): ?array {
+            $registry = app(RuntimeExternalPayloadRegistry::class);
+            if ($this->active) {
+                return $registry->verifyFetchedBytes($namespace, $uri, $data);
+            }
+
+            // Non-transport callers retain their existing storage-driver
+            // contract. HTTP input claims belong to the reference writer.
+            $registry->verifyFetchedBytesAndClaim($namespace, $uri, $data);
+
+            return null;
+        });
+        if ($bytes !== null) {
+            $this->verified($namespace, $uri, $bytes['size_bytes'], $bytes['sha256']);
+        }
+    }
+
     public function beforeCommit(Connection $connection): void
     {
         $verified = $this->verified[$connection->getName()] ?? [];

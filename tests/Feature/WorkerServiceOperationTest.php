@@ -6,7 +6,8 @@ namespace Tests\Feature;
 
 use App\Models\RuntimeExternalPayload;
 use App\Models\WorkflowNamespace;
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Foundation\Testing\DatabaseMigrations;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Testing\TestResponse;
@@ -27,12 +28,13 @@ use Workflow\V2\Models\WorkflowTask;
 
 final class WorkerServiceOperationTest extends TestCase
 {
-    use RefreshDatabase;
+    use DatabaseMigrations;
     use ServerTestHelpers;
 
     protected function setUp(): void
     {
         parent::setUp();
+        $this->assertSame(0, DB::connection()->transactionLevel(), 'Service admissions must reach real commits.');
         Queue::fake();
         $this->createNamespace('default');
         $this->registerWorker('nexus-worker', 'nexus', supportedWorkflowTypes: ['tests.nexus-caller', 'tests.nexus-target']);

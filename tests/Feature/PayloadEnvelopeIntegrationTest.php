@@ -11,7 +11,7 @@ use App\Models\WorkflowNamespace;
 use App\Support\ExternalPayloadEnvelopeService;
 use App\Support\RuntimeExternalPayloadRegistry;
 use App\Support\WorkerProtocol;
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
@@ -38,13 +38,14 @@ use Workflow\V2\Support\WorkflowExecutor;
 
 class PayloadEnvelopeIntegrationTest extends TestCase
 {
-    use RefreshDatabase;
+    use DatabaseMigrations;
 
     private string $externalStorageDirectory;
 
     protected function setUp(): void
     {
         parent::setUp();
+        $this->assertSame(0, DB::connection()->transactionLevel(), 'Payload writers must reach real commits.');
 
         $this->externalStorageDirectory = storage_path('framework/testing/payload-envelope-external-storage');
         File::deleteDirectory($this->externalStorageDirectory);
