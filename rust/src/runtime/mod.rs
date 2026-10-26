@@ -66,6 +66,7 @@ mod history_presentation;
 mod http;
 mod laravel_validation;
 mod local_activities;
+mod prepared_local;
 mod memo_json;
 mod memo_limits;
 mod history_meter;
