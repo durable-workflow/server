@@ -112,6 +112,8 @@ pub fn router(runtime: Runtime) -> Router {
             get(super::run_observation::selected),
         )
         .route("/api/workflows/{workflow_id}/runs", get(list_runs))
+        .route("/api/workflows/{workflow_id}/nexus-operations", get(nexus_operations_current))
+        .route("/api/workflows/{workflow_id}/runs/{run_id}/nexus-operations", get(nexus_operations_run))
         .route("/api/workflows/{workflow_id}/cancel", post(cancel_current))
         .route(
             "/api/workflows/{workflow_id}/terminate",
@@ -778,7 +780,9 @@ fn workflow_route(rest: &str) -> Option<Allowed> {
         | [_, "runs", _, "history", "export"]
         | [_, "runs", _, "streams"]
         | [_, "runs", _, "streams", _]
-        | [_, "runs", _, "streams", _, "items"] => Some(READ),
+        | [_, "runs", _, "streams", _, "items"]
+        | [_, "nexus-operations"]
+        | [_, "runs", _, "nexus-operations"] => Some(READ),
         [_, "signal" | "query" | "update", _]
         | [_, "runs", _, "signal" | "query" | "update", _]
         | [_, "repair" | "request-cancellation"]
@@ -1205,6 +1209,35 @@ async fn describe_current(
     Ok(Json(
         super::control_plane::Operation::Describe.response(body),
     ))
+}
+
+/// `GET /api/workflows/{workflow_id}/nexus-operations`.
+async fn nexus_operations_current(
+    Extension(runtime): Extension<Runtime>,
+    Path(workflow_id): Path<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Value>> {
+    nexus_operations(runtime, &workflow_id, None, query).await
+}
+
+/// `GET /api/workflows/{workflow_id}/runs/{run_id}/nexus-operations`.
+async fn nexus_operations_run(
+    Extension(runtime): Extension<Runtime>,
+    Path((workflow_id, run_id)): Path<(String, String)>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Value>> {
+    nexus_operations(runtime, &workflow_id, Some(&run_id), query).await
+}
+
+async fn nexus_operations(
+    runtime: Runtime,
+    workflow_id: &str,
+    run_id: Option<&str>,
+    query: std::collections::HashMap<String, String>,
+) -> Result<Json<Value>> {
+    let limit = super::nexus_operations::list_limit(query.get("limit").map(String::as_str));
+    let calls = runtime.nexus_operations(workflow_id, run_id, limit).await?;
+    Ok(Json(super::nexus_operations::listing(workflow_id, run_id, runtime.namespace(), limit, calls)))
 }
 
 async fn list_runs(
