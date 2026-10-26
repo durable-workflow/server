@@ -1,0 +1,4571 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "service-calls",
+  "review_state": "reviewed",
+  "contract": "Published Server 2.11.1 Nexus service-call execution (ServiceCatalogController over Workflow 2.10.2's DefaultServiceControlPlane, operator): POST .../operations/{operation}/execute validates like Laravel (mode, wait, ids, labels, memo, search attributes, payload codec and an Avro arguments payload or {codec, blob} envelope; a provider external_storage reference is refused by the runtime transport before routing), then admits at the service boundary and writes an audit row for every decision. Required roles, caller-namespace deny and allow lists answer 403 with the target redacted (show on the audit row is not redacted), an open circuit 503 circuit_open with retry 30, an invalid shared limit 503 service_boundary_admission_unavailable. An activity_execution or invocable_http call stays accepted with its handler stamped (an uppercase ULID unless the binding names one); a binding without a target is a handler failure (409), retried in the request up to retry_policy.max_attempts unless its type is non-retryable. A deadline policy sets call_deadline_at; one already past is admitted and timed out (200, accepted). GET .../service-calls/{id} reads a call of the operation by trimmed id; POST .../cancel cancels an open call once (repeat or terminal 409 service_call_terminal, a policy with mode none 409 cancellation_not_allowed), validating the reason after the lookup. A repeated idempotency key replays the first call in the describe shape, re-checking authorization (a refusal writes a new audit row). Generated ids and times are placeholders; @own is the fixture's namespace. Embedded applications have no HTTP service calls.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "service calls λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "service calls λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "service_calls": {
+    "requests": [
+      {
+        "label": "register endpoint",
+        "method": "POST",
+        "path": "service-endpoints",
+        "body": {
+          "endpoint_name": "pay"
+        }
+      },
+      {
+        "label": "register service",
+        "method": "POST",
+        "path": "service-endpoints/pay/services",
+        "body": {
+          "service_name": "billing"
+        }
+      },
+      {
+        "label": "register charge",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations",
+        "body": {
+          "operation_name": "charge",
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "charge-activity"
+        }
+      },
+      {
+        "label": "register charge-sync",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations",
+        "body": {
+          "operation_name": "charge-sync",
+          "operation_mode": "sync",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "charge-activity"
+        }
+      },
+      {
+        "label": "register charge-bound",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations",
+        "body": {
+          "operation_name": "charge-bound",
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_binding": {
+            "activity_class": "C",
+            "activity_type": "t",
+            "activity_execution_id": "act-fixed-1",
+            "owning_workflow_instance_id": "wf-own-1",
+            "owning_workflow_run_id": "01howNrun0000000000000000a",
+            "queue": "bq"
+          }
+        }
+      },
+      {
+        "label": "register notify",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations",
+        "body": {
+          "operation_name": "notify",
+          "operation_mode": "async",
+          "handler_binding_kind": "invocable_http",
+          "handler_target_reference": "https://carrier.example/notify"
+        }
+      },
+      {
+        "label": "register notify-bound",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations",
+        "body": {
+          "operation_name": "notify-bound",
+          "operation_mode": "async",
+          "handler_binding_kind": "invocable_http",
+          "handler_binding": {
+            "url": "https://c.example/x",
+            "handler": "h",
+            "carrier": "c",
+            "carrier_request_id": "car-fixed-1",
+            "bound_workflow_instance_id": "wf-bound-1"
+          }
+        }
+      },
+      {
+        "label": "register broken",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations",
+        "body": {
+          "operation_name": "broken",
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_binding": {
+            "queue": "q"
+          }
+        }
+      },
+      {
+        "label": "register broken-retry",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations",
+        "body": {
+          "operation_name": "broken-retry",
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_binding": {
+            "queue": "q"
+          },
+          "retry_policy": {
+            "max_attempts": 3
+          }
+        }
+      },
+      {
+        "label": "register broken-noretry",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations",
+        "body": {
+          "operation_name": "broken-noretry",
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_binding": {
+            "queue": "q"
+          },
+          "retry_policy": {
+            "max_attempts": 3,
+            "non_retryable_error_types": [
+              "handler_target_missing"
+            ]
+          }
+        }
+      },
+      {
+        "label": "register notify-broken",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations",
+        "body": {
+          "operation_name": "notify-broken",
+          "operation_mode": "async",
+          "handler_binding_kind": "invocable_http",
+          "handler_binding": {
+            "carrier": "c"
+          }
+        }
+      },
+      {
+        "label": "register timed",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations",
+        "body": {
+          "operation_name": "timed",
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "t",
+          "deadline_policy": {
+            "timeout_seconds": 3600
+          }
+        }
+      },
+      {
+        "label": "register expired",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations",
+        "body": {
+          "operation_name": "expired",
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "t",
+          "deadline_policy": {
+            "deadline_at": "2001-02-03T04:05:06.5+01:00"
+          }
+        }
+      },
+      {
+        "label": "register nocancel",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations",
+        "body": {
+          "operation_name": "nocancel",
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "t",
+          "cancellation_policy": {
+            "mode": "none"
+          }
+        }
+      },
+      {
+        "label": "register need-role",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations",
+        "body": {
+          "operation_name": "need-role",
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "t",
+          "boundary_policy": {
+            "required_roles": [
+              "nexus-caller"
+            ]
+          }
+        }
+      },
+      {
+        "label": "register deny-caller",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations",
+        "body": {
+          "operation_name": "deny-caller",
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "t",
+          "boundary_policy": {
+            "deny_callers": [
+              "blocked"
+            ]
+          }
+        }
+      },
+      {
+        "label": "register allow-list",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations",
+        "body": {
+          "operation_name": "allow-list",
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "t",
+          "boundary_policy": {
+            "allow_callers": [
+              "partner"
+            ]
+          }
+        }
+      },
+      {
+        "label": "register circuit",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations",
+        "body": {
+          "operation_name": "circuit",
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "t",
+          "boundary_policy": {
+            "circuit_break": {
+              "open": true
+            }
+          }
+        }
+      },
+      {
+        "label": "register misconfigured",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations",
+        "body": {
+          "operation_name": "misconfigured",
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "t",
+          "boundary_policy": {
+            "rate_limit": {
+              "requests_per_minute": "lots"
+            }
+          }
+        }
+      },
+      {
+        "label": "register replay-target",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations",
+        "body": {
+          "operation_name": "replay-target",
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "charge-activity"
+        }
+      },
+      {
+        "label": "execute unknown endpoint",
+        "method": "POST",
+        "path": "service-endpoints/nope/services/billing/operations/charge/execute",
+        "body": {}
+      },
+      {
+        "label": "execute unknown service",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/nope/operations/charge/execute",
+        "body": {}
+      },
+      {
+        "label": "execute unknown operation",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/NOPE/execute",
+        "body": {}
+      },
+      {
+        "label": "execute invalid options",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/charge/execute",
+        "body": {
+          "mode_override": "fast",
+          "wait_timeout_seconds": 86401
+        }
+      },
+      {
+        "label": "execute json codec",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/charge/execute",
+        "body": {
+          "payload_codec": "json"
+        }
+      },
+      {
+        "label": "execute plain arguments",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/charge/execute",
+        "body": {
+          "arguments": "not-avro"
+        }
+      },
+      {
+        "label": "execute bad blob",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/charge/execute",
+        "body": {
+          "arguments": {
+            "codec": "avro",
+            "blob": "%%%"
+          }
+        }
+      },
+      {
+        "label": "execute envelope without blob",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/charge/execute",
+        "body": {
+          "arguments": {
+            "codec": "avro"
+          }
+        }
+      },
+      {
+        "label": "execute numeric blob",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/charge/execute",
+        "body": {
+          "arguments": {
+            "codec": "avro",
+            "blob": 5
+          }
+        }
+      },
+      {
+        "label": "execute provider reference",
+        "method": "POST",
+        "path": "service-endpoints/nope/services/billing/operations/charge/execute",
+        "body": {
+          "arguments": {
+            "codec": "avro",
+            "external_storage": {
+              "uri": "s3://bucket/key"
+            }
+          }
+        }
+      },
+      {
+        "label": "execute bad search attribute",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/charge/execute",
+        "body": {
+          "search_attributes": {
+            "1bad": "x"
+          }
+        }
+      },
+      {
+        "label": "charge",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/charge/execute",
+        "body": {}
+      },
+      {
+        "label": "charge with options",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/charge/execute",
+        "body": {
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          },
+          "connection": "cx",
+          "queue": "qx",
+          "caller_namespace": "Partner-NS",
+          "caller_workflow_instance_id": "caller-wf",
+          "caller_workflow_run_id": "01hcallerrun00000000000000"
+        }
+      },
+      {
+        "label": "charge sync",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/charge-sync/execute",
+        "body": {}
+      },
+      {
+        "label": "charge override",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/charge/execute",
+        "body": {
+          "mode_override": "sync"
+        }
+      },
+      {
+        "label": "charge bound",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/charge-bound/execute",
+        "body": {}
+      },
+      {
+        "label": "notify",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/notify/execute",
+        "body": {}
+      },
+      {
+        "label": "notify bound",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/notify-bound/execute",
+        "body": {}
+      },
+      {
+        "label": "show charge",
+        "method": "GET",
+        "path": "service-endpoints/pay/services/billing/operations/charge/service-calls/{charge.id}"
+      },
+      {
+        "label": "show charge padded",
+        "method": "GET",
+        "path": "service-endpoints/pay/services/billing/operations/charge/service-calls/%20{charge.id}%20"
+      },
+      {
+        "label": "show under another operation",
+        "method": "GET",
+        "path": "service-endpoints/pay/services/billing/operations/notify/service-calls/{charge.id}"
+      },
+      {
+        "label": "show unknown call",
+        "method": "GET",
+        "path": "service-endpoints/pay/services/billing/operations/charge/service-calls/01nosuchcall00000000000000"
+      },
+      {
+        "label": "broken",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/broken/execute",
+        "body": {}
+      },
+      {
+        "label": "broken retry",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/broken-retry/execute",
+        "body": {}
+      },
+      {
+        "label": "broken no retry",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/broken-noretry/execute",
+        "body": {}
+      },
+      {
+        "label": "notify broken",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/notify-broken/execute",
+        "body": {}
+      },
+      {
+        "label": "timed",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/timed/execute",
+        "body": {}
+      },
+      {
+        "label": "expired",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/expired/execute",
+        "body": {}
+      },
+      {
+        "label": "cancel expired",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/expired/service-calls/{expired.id}/cancel",
+        "body": {}
+      },
+      {
+        "label": "show expired",
+        "method": "GET",
+        "path": "service-endpoints/pay/services/billing/operations/expired/service-calls/{expired.id}"
+      },
+      {
+        "label": "cancel charge",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/charge/service-calls/{charge.id}/cancel",
+        "body": {
+          "reason": "operator stop"
+        }
+      },
+      {
+        "label": "cancel charge again",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/charge/service-calls/{charge.id}/cancel",
+        "body": {}
+      },
+      {
+        "label": "cancel long reason",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/charge-sync/service-calls/{charge sync.id}/cancel",
+        "body": {
+          "reason": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      },
+      {
+        "label": "cancel unknown call",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/charge/service-calls/01nosuchcall00000000000000/cancel",
+        "body": {
+          "reason": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      },
+      {
+        "label": "nocancel",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/nocancel/execute",
+        "body": {}
+      },
+      {
+        "label": "cancel nocancel",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/nocancel/service-calls/{nocancel.id}/cancel",
+        "body": {}
+      },
+      {
+        "label": "need role",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/need-role/execute",
+        "body": {}
+      },
+      {
+        "label": "show need role",
+        "method": "GET",
+        "path": "service-endpoints/pay/services/billing/operations/need-role/service-calls/{need role.service_call_id}"
+      },
+      {
+        "label": "deny caller",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/deny-caller/execute",
+        "body": {
+          "caller_namespace": "blocked"
+        }
+      },
+      {
+        "label": "allow list",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/allow-list/execute",
+        "body": {}
+      },
+      {
+        "label": "circuit",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/circuit/execute",
+        "body": {}
+      },
+      {
+        "label": "misconfigured",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/misconfigured/execute",
+        "body": {}
+      },
+      {
+        "label": "replay first",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/replay-target/execute",
+        "body": {
+          "idempotency_key": "k1"
+        }
+      },
+      {
+        "label": "replay again",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/replay-target/execute",
+        "body": {
+          "idempotency_key": " k1 ",
+          "arguments": "wwHioz3/VYAiNwoIZG9uZQ=="
+        }
+      },
+      {
+        "label": "replay other caller",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/replay-target/execute",
+        "body": {
+          "idempotency_key": "k1",
+          "caller_namespace": "other"
+        }
+      },
+      {
+        "label": "cancel replayed",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/replay-target/service-calls/{replay first.id}/cancel",
+        "body": {}
+      },
+      {
+        "label": "replay cancelled",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/replay-target/execute",
+        "body": {
+          "idempotency_key": "k1"
+        }
+      },
+      {
+        "label": "replay second key",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/replay-target/execute",
+        "body": {
+          "idempotency_key": "k2"
+        }
+      },
+      {
+        "label": "require a role",
+        "method": "PUT",
+        "path": "service-endpoints/pay/services/billing/operations/replay-target",
+        "body": {
+          "boundary_policy": {
+            "required_roles": [
+              "nexus-caller"
+            ]
+          }
+        }
+      },
+      {
+        "label": "replay forbidden",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/replay-target/execute",
+        "body": {
+          "idempotency_key": "k2"
+        }
+      },
+      {
+        "label": "show replayed second",
+        "method": "GET",
+        "path": "service-endpoints/pay/services/billing/operations/replay-target/service-calls/{replay second key.id}"
+      }
+    ],
+    "expected": {
+      "register endpoint": [
+        201,
+        {
+          "id": "{id:register endpoint}",
+          "namespace": "@own",
+          "endpoint_name": "pay",
+          "description": null,
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "register service": [
+        201,
+        {
+          "id": "{id:register service}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_name": "billing",
+          "description": null,
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "register charge": [
+        201,
+        {
+          "id": "{id:register charge}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_name": "charge",
+          "description": null,
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "charge-activity",
+          "handler_binding": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "register charge-sync": [
+        201,
+        {
+          "id": "{id:register charge-sync}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_name": "charge-sync",
+          "description": null,
+          "operation_mode": "sync",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "charge-activity",
+          "handler_binding": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "register charge-bound": [
+        201,
+        {
+          "id": "{id:register charge-bound}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_name": "charge-bound",
+          "description": null,
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": null,
+          "handler_binding": {
+            "activity_class": "C",
+            "activity_type": "t",
+            "activity_execution_id": "act-fixed-1",
+            "owning_workflow_instance_id": "wf-own-1",
+            "owning_workflow_run_id": "01howNrun0000000000000000a",
+            "queue": "bq"
+          },
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "register notify": [
+        201,
+        {
+          "id": "{id:register notify}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_name": "notify",
+          "description": null,
+          "operation_mode": "async",
+          "handler_binding_kind": "invocable_http",
+          "handler_target_reference": "https://carrier.example/notify",
+          "handler_binding": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "register notify-bound": [
+        201,
+        {
+          "id": "{id:register notify-bound}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_name": "notify-bound",
+          "description": null,
+          "operation_mode": "async",
+          "handler_binding_kind": "invocable_http",
+          "handler_target_reference": null,
+          "handler_binding": {
+            "url": "https://c.example/x",
+            "handler": "h",
+            "carrier": "c",
+            "carrier_request_id": "car-fixed-1",
+            "bound_workflow_instance_id": "wf-bound-1"
+          },
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "register broken": [
+        201,
+        {
+          "id": "{id:register broken}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_name": "broken",
+          "description": null,
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": null,
+          "handler_binding": {
+            "queue": "q"
+          },
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "register broken-retry": [
+        201,
+        {
+          "id": "{id:register broken-retry}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_name": "broken-retry",
+          "description": null,
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": null,
+          "handler_binding": {
+            "queue": "q"
+          },
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": {
+            "max_attempts": 3
+          },
+          "boundary_policy": null,
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "register broken-noretry": [
+        201,
+        {
+          "id": "{id:register broken-noretry}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_name": "broken-noretry",
+          "description": null,
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": null,
+          "handler_binding": {
+            "queue": "q"
+          },
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": {
+            "max_attempts": 3,
+            "non_retryable_error_types": [
+              "handler_target_missing"
+            ]
+          },
+          "boundary_policy": null,
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "register notify-broken": [
+        201,
+        {
+          "id": "{id:register notify-broken}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_name": "notify-broken",
+          "description": null,
+          "operation_mode": "async",
+          "handler_binding_kind": "invocable_http",
+          "handler_target_reference": null,
+          "handler_binding": {
+            "carrier": "c"
+          },
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "register timed": [
+        201,
+        {
+          "id": "{id:register timed}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_name": "timed",
+          "description": null,
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "t",
+          "handler_binding": null,
+          "deadline_policy": {
+            "timeout_seconds": 3600
+          },
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "register expired": [
+        201,
+        {
+          "id": "{id:register expired}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_name": "expired",
+          "description": null,
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "t",
+          "handler_binding": null,
+          "deadline_policy": {
+            "deadline_at": "2001-02-03T04:05:06.5+01:00"
+          },
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "register nocancel": [
+        201,
+        {
+          "id": "{id:register nocancel}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_name": "nocancel",
+          "description": null,
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "t",
+          "handler_binding": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": {
+            "mode": "none"
+          },
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "register need-role": [
+        201,
+        {
+          "id": "{id:register need-role}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_name": "need-role",
+          "description": null,
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "t",
+          "handler_binding": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": {
+            "required_roles": [
+              "nexus-caller"
+            ]
+          },
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "register deny-caller": [
+        201,
+        {
+          "id": "{id:register deny-caller}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_name": "deny-caller",
+          "description": null,
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "t",
+          "handler_binding": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": {
+            "deny_callers": [
+              "blocked"
+            ]
+          },
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "register allow-list": [
+        201,
+        {
+          "id": "{id:register allow-list}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_name": "allow-list",
+          "description": null,
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "t",
+          "handler_binding": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": {
+            "allow_callers": [
+              "partner"
+            ]
+          },
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "register circuit": [
+        201,
+        {
+          "id": "{id:register circuit}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_name": "circuit",
+          "description": null,
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "t",
+          "handler_binding": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": {
+            "circuit_break": {
+              "open": true
+            }
+          },
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "register misconfigured": [
+        201,
+        {
+          "id": "{id:register misconfigured}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_name": "misconfigured",
+          "description": null,
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "t",
+          "handler_binding": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": {
+            "rate_limit": {
+              "requests_per_minute": "lots"
+            }
+          },
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "register replay-target": [
+        201,
+        {
+          "id": "{id:register replay-target}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_name": "replay-target",
+          "description": null,
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "charge-activity",
+          "handler_binding": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "execute unknown endpoint": [
+        404,
+        {
+          "accepted": false,
+          "message": "Service endpoint [nope] not found in namespace [@own].",
+          "reason": "endpoint_not_found",
+          "namespace": "@own",
+          "endpoint_name": "nope"
+        }
+      ],
+      "execute unknown service": [
+        404,
+        {
+          "message": "Service [nope] not found under endpoint [pay] in namespace [@own].",
+          "reason": "service_not_found",
+          "namespace": "@own",
+          "endpoint_name": "pay",
+          "service_name": "nope"
+        }
+      ],
+      "execute unknown operation": [
+        404,
+        {
+          "message": "Operation [nope] not found under service [billing] at endpoint [pay] in namespace [@own].",
+          "reason": "operation_not_found",
+          "namespace": "@own",
+          "endpoint_name": "pay",
+          "service_name": "billing",
+          "operation_name": "nope"
+        }
+      ],
+      "execute invalid options": [
+        422,
+        {
+          "message": "The selected mode override is invalid. (and 1 more error)",
+          "reason": "validation_failed",
+          "errors": {
+            "mode_override": [
+              "The selected mode override is invalid."
+            ],
+            "wait_timeout_seconds": [
+              "The wait timeout seconds field must not be greater than 86400."
+            ]
+          },
+          "validation_errors": {
+            "mode_override": [
+              "The selected mode override is invalid."
+            ],
+            "wait_timeout_seconds": [
+              "The wait timeout seconds field must not be greater than 86400."
+            ]
+          }
+        }
+      ],
+      "execute json codec": [
+        422,
+        {
+          "message": "unsupported_payload_codec: workflow payload codec \"json\" is not supported by Durable Workflow 2.0; use codec=\"avro\" with the fixed Avro Value schema and single-object framing. JSON remains the HTTP document transport, not a workflow payload codec.",
+          "reason": "validation_failed",
+          "errors": {
+            "payload_codec": [
+              "unsupported_payload_codec: workflow payload codec \"json\" is not supported by Durable Workflow 2.0; use codec=\"avro\" with the fixed Avro Value schema and single-object framing. JSON remains the HTTP document transport, not a workflow payload codec."
+            ]
+          },
+          "validation_errors": {
+            "payload_codec": [
+              "unsupported_payload_codec: workflow payload codec \"json\" is not supported by Durable Workflow 2.0; use codec=\"avro\" with the fixed Avro Value schema and single-object framing. JSON remains the HTTP document transport, not a workflow payload codec."
+            ]
+          }
+        }
+      ],
+      "execute plain arguments": [
+        422,
+        {
+          "message": "The payload must contain one complete Avro Value encoded with the official codec. JSON is only the HTTP document transport.",
+          "reason": "validation_failed",
+          "errors": {
+            "arguments": [
+              "The payload must contain one complete Avro Value encoded with the official codec. JSON is only the HTTP document transport."
+            ]
+          },
+          "validation_errors": {
+            "arguments": [
+              "The payload must contain one complete Avro Value encoded with the official codec. JSON is only the HTTP document transport."
+            ]
+          }
+        }
+      ],
+      "execute bad blob": [
+        422,
+        {
+          "message": "The payload must contain one complete Avro Value encoded with the official codec. JSON is only the HTTP document transport.",
+          "reason": "validation_failed",
+          "errors": {
+            "arguments.blob": [
+              "The payload must contain one complete Avro Value encoded with the official codec. JSON is only the HTTP document transport."
+            ]
+          },
+          "validation_errors": {
+            "arguments.blob": [
+              "The payload must contain one complete Avro Value encoded with the official codec. JSON is only the HTTP document transport."
+            ]
+          }
+        }
+      ],
+      "execute envelope without blob": [
+        422,
+        {
+          "message": "The arguments envelope must contain only codec and blob, or codec and external storage.",
+          "reason": "validation_failed",
+          "errors": {
+            "arguments": [
+              "The arguments envelope must contain only codec and blob, or codec and external storage."
+            ]
+          },
+          "validation_errors": {
+            "arguments": [
+              "The arguments envelope must contain only codec and blob, or codec and external storage."
+            ]
+          }
+        }
+      ],
+      "execute numeric blob": [
+        422,
+        {
+          "message": "The payload envelope blob must be a string.",
+          "reason": "validation_failed",
+          "errors": {
+            "arguments.blob": [
+              "The payload envelope blob must be a string."
+            ]
+          },
+          "validation_errors": {
+            "arguments.blob": [
+              "The payload envelope blob must be a string."
+            ]
+          }
+        }
+      ],
+      "execute provider reference": [
+        422,
+        {
+          "schema": "durable-workflow.v2.runtime-external-payload-error.v1",
+          "reason": "external_payload_unsupported",
+          "message": "Provider-specific external_storage references are not accepted by the runtime transport.",
+          "retryable": false,
+          "status": 422
+        }
+      ],
+      "execute bad search attribute": [
+        422,
+        {
+          "message": "Search attribute key [1bad] must start with a letter and contain only letters, numbers, and underscores.",
+          "reason": "validation_failed",
+          "errors": {
+            "search_attributes": [
+              "Search attribute key [1bad] must start with a letter and contain only letters, numbers, and underscores."
+            ]
+          },
+          "validation_errors": {
+            "search_attributes": [
+              "Search attribute key [1bad] must start with a letter and contain only letters, numbers, and underscores."
+            ]
+          }
+        }
+      ],
+      "charge": [
+        200,
+        {
+          "id": "{id:charge}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register charge}",
+          "operation_name": "charge",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "accepted",
+          "outcome": "accepted",
+          "outcome_category": "accepted",
+          "outcome_reason": "accepted",
+          "outcome_message": null,
+          "outcome_metadata": {
+            "boundary_key": "@own|@own|pay|billing|charge"
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:charge}",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": null,
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|charge",
+            "activity_execution_id": "{ULID:charge}",
+            "activity_class": "charge-activity",
+            "activity_type": "charge-activity",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:charge}",
+          "accepted": true,
+          "idempotent_replay": false,
+          "handler": {
+            "accepted": true,
+            "kind": "activity_execution",
+            "activity_execution_id": "{ULID:charge}",
+            "activity_class": "charge-activity",
+            "activity_type": "charge-activity"
+          },
+          "reason": null
+        }
+      ],
+      "charge with options": [
+        200,
+        {
+          "id": "{id:charge with options}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register charge}",
+          "operation_name": "charge",
+          "caller_namespace": "Partner-NS",
+          "caller_workflow_instance_id": "caller-wf",
+          "caller_workflow_run_id": "01hcallerrun00000000000000",
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "accepted",
+          "outcome": "accepted",
+          "outcome_category": "accepted",
+          "outcome_reason": "accepted",
+          "outcome_message": null,
+          "outcome_metadata": {
+            "boundary_key": "Partner-NS|@own|pay|billing|charge"
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:charge with options}",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": null,
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "Partner-NS|@own|pay|billing|charge",
+            "activity_execution_id": "{ULID:charge with options}",
+            "activity_class": "charge-activity",
+            "activity_type": "charge-activity",
+            "connection": "cx",
+            "queue": "qx",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:charge with options}",
+          "accepted": true,
+          "idempotent_replay": false,
+          "handler": {
+            "accepted": true,
+            "kind": "activity_execution",
+            "activity_execution_id": "{ULID:charge with options}",
+            "activity_class": "charge-activity",
+            "activity_type": "charge-activity"
+          },
+          "reason": null
+        }
+      ],
+      "charge sync": [
+        200,
+        {
+          "id": "{id:charge sync}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register charge-sync}",
+          "operation_name": "charge-sync",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "accepted",
+          "outcome": "accepted",
+          "outcome_category": "accepted",
+          "outcome_reason": "accepted",
+          "outcome_message": null,
+          "outcome_metadata": {
+            "boundary_key": "@own|@own|pay|billing|charge-sync"
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "sync",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:charge sync}",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": null,
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|charge-sync",
+            "activity_execution_id": "{ULID:charge sync}",
+            "activity_class": "charge-activity",
+            "activity_type": "charge-activity",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:charge sync}",
+          "accepted": true,
+          "idempotent_replay": false,
+          "handler": {
+            "accepted": true,
+            "kind": "activity_execution",
+            "activity_execution_id": "{ULID:charge sync}",
+            "activity_class": "charge-activity",
+            "activity_type": "charge-activity"
+          },
+          "reason": null
+        }
+      ],
+      "charge override": [
+        200,
+        {
+          "id": "{id:charge override}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register charge}",
+          "operation_name": "charge",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "accepted",
+          "outcome": "accepted",
+          "outcome_category": "accepted",
+          "outcome_reason": "accepted",
+          "outcome_message": null,
+          "outcome_metadata": {
+            "boundary_key": "@own|@own|pay|billing|charge"
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "sync",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:charge override}",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": null,
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|charge",
+            "activity_execution_id": "{ULID:charge override}",
+            "activity_class": "charge-activity",
+            "activity_type": "charge-activity",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:charge override}",
+          "accepted": true,
+          "idempotent_replay": false,
+          "handler": {
+            "accepted": true,
+            "kind": "activity_execution",
+            "activity_execution_id": "{ULID:charge override}",
+            "activity_class": "charge-activity",
+            "activity_type": "charge-activity"
+          },
+          "reason": null
+        }
+      ],
+      "charge bound": [
+        200,
+        {
+          "id": "{id:charge bound}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register charge-bound}",
+          "operation_name": "charge-bound",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": "wf-own-1",
+          "linked_workflow_run_id": "01howNrun0000000000000000a",
+          "linked_workflow_update_id": null,
+          "status": "accepted",
+          "outcome": "accepted",
+          "outcome_category": "accepted",
+          "outcome_reason": "accepted",
+          "outcome_message": null,
+          "outcome_metadata": {
+            "boundary_key": "@own|@own|pay|billing|charge-bound"
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "act-fixed-1",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": null,
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|charge-bound",
+            "activity_execution_id": "act-fixed-1",
+            "activity_class": "C",
+            "activity_type": "t",
+            "queue": "bq",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:charge bound}",
+          "accepted": true,
+          "idempotent_replay": false,
+          "handler": {
+            "accepted": true,
+            "kind": "activity_execution",
+            "activity_execution_id": "act-fixed-1",
+            "activity_class": "C",
+            "activity_type": "t"
+          },
+          "reason": null
+        }
+      ],
+      "notify": [
+        200,
+        {
+          "id": "{id:notify}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register notify}",
+          "operation_name": "notify",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "accepted",
+          "outcome": "accepted",
+          "outcome_category": "accepted",
+          "outcome_reason": "accepted",
+          "outcome_message": null,
+          "outcome_metadata": {
+            "boundary_key": "@own|@own|pay|billing|notify"
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "invocable_carrier_request",
+          "resolved_target_reference": "{ULID:notify}",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": null,
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|notify",
+            "carrier_request_id": "{ULID:notify}",
+            "carrier_endpoint": "https://carrier.example/notify",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:notify}",
+          "accepted": true,
+          "idempotent_replay": false,
+          "handler": {
+            "accepted": true,
+            "kind": "invocable_carrier_request",
+            "carrier_request_id": "{ULID:notify}",
+            "carrier_endpoint": "https://carrier.example/notify",
+            "carrier_handler": null,
+            "carrier": null
+          },
+          "reason": null
+        }
+      ],
+      "notify bound": [
+        200,
+        {
+          "id": "{id:notify bound}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register notify-bound}",
+          "operation_name": "notify-bound",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": "wf-bound-1",
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "accepted",
+          "outcome": "accepted",
+          "outcome_category": "accepted",
+          "outcome_reason": "accepted",
+          "outcome_message": null,
+          "outcome_metadata": {
+            "boundary_key": "@own|@own|pay|billing|notify-bound"
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "invocable_carrier_request",
+          "resolved_target_reference": "car-fixed-1",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": null,
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|notify-bound",
+            "carrier_request_id": "car-fixed-1",
+            "carrier_endpoint": "https://c.example/x",
+            "carrier_handler": "h",
+            "carrier": "c",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:notify bound}",
+          "accepted": true,
+          "idempotent_replay": false,
+          "handler": {
+            "accepted": true,
+            "kind": "invocable_carrier_request",
+            "carrier_request_id": "car-fixed-1",
+            "carrier_endpoint": "https://c.example/x",
+            "carrier_handler": "h",
+            "carrier": "c"
+          },
+          "reason": null
+        }
+      ],
+      "show charge": [
+        200,
+        {
+          "id": "{id:charge}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register charge}",
+          "operation_name": "charge",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "accepted",
+          "outcome": "accepted",
+          "outcome_category": "accepted",
+          "outcome_reason": "accepted",
+          "outcome_message": null,
+          "outcome_metadata": {
+            "boundary_key": "@own|@own|pay|billing|charge"
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:charge}",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": null,
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|charge",
+            "activity_execution_id": "{ULID:charge}",
+            "activity_class": "charge-activity",
+            "activity_type": "charge-activity",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "found": true,
+          "service_call_id": "{id:charge}"
+        }
+      ],
+      "show charge padded": [
+        200,
+        {
+          "id": "{id:charge}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register charge}",
+          "operation_name": "charge",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "accepted",
+          "outcome": "accepted",
+          "outcome_category": "accepted",
+          "outcome_reason": "accepted",
+          "outcome_message": null,
+          "outcome_metadata": {
+            "boundary_key": "@own|@own|pay|billing|charge"
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:charge}",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": null,
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|charge",
+            "activity_execution_id": "{ULID:charge}",
+            "activity_class": "charge-activity",
+            "activity_type": "charge-activity",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "found": true,
+          "service_call_id": "{id:charge}"
+        }
+      ],
+      "show under another operation": [
+        404,
+        {
+          "message": "Service call [{id:charge}] not found under operation [notify] for service [billing] at endpoint [pay] in namespace [@own].",
+          "reason": "service_call_not_found",
+          "namespace": "@own",
+          "endpoint_name": "pay",
+          "service_name": "billing",
+          "operation_name": "notify",
+          "service_call_id": "{id:charge}"
+        }
+      ],
+      "show unknown call": [
+        404,
+        {
+          "message": "Service call [01nosuchcall00000000000000] not found under operation [charge] for service [billing] at endpoint [pay] in namespace [@own].",
+          "reason": "service_call_not_found",
+          "namespace": "@own",
+          "endpoint_name": "pay",
+          "service_name": "billing",
+          "operation_name": "charge",
+          "service_call_id": "01nosuchcall00000000000000"
+        }
+      ],
+      "broken": [
+        409,
+        {
+          "id": "{id:broken}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register broken}",
+          "operation_name": "broken",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "failed",
+          "outcome": "handler_failed",
+          "outcome_category": "handler",
+          "outcome_reason": "handler_target_missing",
+          "outcome_message": "Activity binding has no activity class or type.",
+          "outcome_metadata": {
+            "failure_reason": "handler_failure",
+            "failure_type": "handler_target_missing",
+            "service_error_type": "handler_target_missing",
+            "caller_observed_error_type": "handler_target_missing",
+            "typed_error_message": "Activity binding has no activity class or type.",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "failed",
+                "outcome": "handler_failed",
+                "outcome_reason": "handler_target_missing",
+                "failure_type": "handler_target_missing",
+                "failure_message": "Activity binding has no activity class or type.",
+                "started_at": "{µs}",
+                "failed_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_error_type": "handler_target_missing",
+          "caller_observed_error_type": "handler_target_missing",
+          "typed_error_message": "Activity binding has no activity class or type.",
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": null,
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": "Activity binding has no activity class or type.",
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|broken",
+            "failure_reason": "handler_failure",
+            "failure_type": "handler_target_missing",
+            "service_error_type": "handler_target_missing",
+            "caller_observed_error_type": "handler_target_missing",
+            "typed_error_message": "Activity binding has no activity class or type.",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "failed",
+                "outcome": "handler_failed",
+                "outcome_reason": "handler_target_missing",
+                "failure_type": "handler_target_missing",
+                "failure_message": "Activity binding has no activity class or type.",
+                "started_at": "{µs}",
+                "failed_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "failed",
+              "outcome": "handler_failed",
+              "outcome_reason": "handler_target_missing",
+              "failure_type": "handler_target_missing",
+              "failure_message": "Activity binding has no activity class or type.",
+              "started_at": "{µs}",
+              "failed_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": "{µs}",
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:broken}",
+          "error_type": "handler_target_missing",
+          "failure_type": "handler_target_missing",
+          "message": "Activity binding has no activity class or type.",
+          "accepted": false,
+          "idempotent_replay": false,
+          "handler": {
+            "accepted": false,
+            "kind": "activity_execution",
+            "reason": "handler_target_missing",
+            "message": "Activity binding has no activity class or type.",
+            "error_type": "handler_target_missing",
+            "failure_type": "handler_target_missing",
+            "service_error_type": "handler_target_missing",
+            "retry_scheduled": false
+          },
+          "reason": "handler_target_missing"
+        }
+      ],
+      "broken retry": [
+        409,
+        {
+          "id": "{id:broken retry}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register broken-retry}",
+          "operation_name": "broken-retry",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "failed",
+          "outcome": "handler_failed",
+          "outcome_category": "handler",
+          "outcome_reason": "handler_target_missing",
+          "outcome_message": "Activity binding has no activity class or type.",
+          "outcome_metadata": {
+            "failure_reason": "handler_failure",
+            "failure_type": "handler_target_missing",
+            "service_error_type": "handler_target_missing",
+            "caller_observed_error_type": "handler_target_missing",
+            "typed_error_message": "Activity binding has no activity class or type.",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "started",
+                "outcome": "accepted",
+                "outcome_reason": "handler_target_missing",
+                "failure_type": "handler_target_missing",
+                "failure_message": "Activity binding has no activity class or type.",
+                "started_at": "{µs}",
+                "retry_scheduled": true,
+                "scheduled_backoff_seconds": 0
+              },
+              {
+                "attempt": 2,
+                "status": "started",
+                "outcome": "accepted",
+                "outcome_reason": "handler_target_missing",
+                "failure_type": "handler_target_missing",
+                "failure_message": "Activity binding has no activity class or type.",
+                "started_at": "{µs}",
+                "retry_scheduled": true,
+                "scheduled_backoff_seconds": 0
+              },
+              {
+                "attempt": 3,
+                "status": "failed",
+                "outcome": "handler_failed",
+                "outcome_reason": "handler_target_missing",
+                "failure_type": "handler_target_missing",
+                "failure_message": "Activity binding has no activity class or type.",
+                "started_at": "{µs}",
+                "failed_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 3
+          },
+          "service_error_type": "handler_target_missing",
+          "caller_observed_error_type": "handler_target_missing",
+          "typed_error_message": "Activity binding has no activity class or type.",
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": null,
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": "Activity binding has no activity class or type.",
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": {
+            "max_attempts": 3
+          },
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|broken-retry",
+            "last_retry_failure": {
+              "failure_reason": "handler_failure",
+              "failure_type": "handler_target_missing",
+              "service_error_type": "handler_target_missing",
+              "caller_observed_error_type": "handler_target_missing",
+              "typed_error_message": "Activity binding has no activity class or type."
+            },
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "started",
+                "outcome": "accepted",
+                "outcome_reason": "handler_target_missing",
+                "failure_type": "handler_target_missing",
+                "failure_message": "Activity binding has no activity class or type.",
+                "started_at": "{µs}",
+                "retry_scheduled": true,
+                "scheduled_backoff_seconds": 0
+              },
+              {
+                "attempt": 2,
+                "status": "started",
+                "outcome": "accepted",
+                "outcome_reason": "handler_target_missing",
+                "failure_type": "handler_target_missing",
+                "failure_message": "Activity binding has no activity class or type.",
+                "started_at": "{µs}",
+                "retry_scheduled": true,
+                "scheduled_backoff_seconds": 0
+              },
+              {
+                "attempt": 3,
+                "status": "failed",
+                "outcome": "handler_failed",
+                "outcome_reason": "handler_target_missing",
+                "failure_type": "handler_target_missing",
+                "failure_message": "Activity binding has no activity class or type.",
+                "started_at": "{µs}",
+                "failed_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 3,
+            "failure_reason": "handler_failure",
+            "failure_type": "handler_target_missing",
+            "service_error_type": "handler_target_missing",
+            "caller_observed_error_type": "handler_target_missing",
+            "typed_error_message": "Activity binding has no activity class or type."
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "started",
+              "outcome": "accepted",
+              "outcome_reason": "handler_target_missing",
+              "failure_type": "handler_target_missing",
+              "failure_message": "Activity binding has no activity class or type.",
+              "started_at": "{µs}",
+              "retry_scheduled": true,
+              "scheduled_backoff_seconds": 0
+            },
+            {
+              "attempt": 2,
+              "status": "started",
+              "outcome": "accepted",
+              "outcome_reason": "handler_target_missing",
+              "failure_type": "handler_target_missing",
+              "failure_message": "Activity binding has no activity class or type.",
+              "started_at": "{µs}",
+              "retry_scheduled": true,
+              "scheduled_backoff_seconds": 0
+            },
+            {
+              "attempt": 3,
+              "status": "failed",
+              "outcome": "handler_failed",
+              "outcome_reason": "handler_target_missing",
+              "failure_type": "handler_target_missing",
+              "failure_message": "Activity binding has no activity class or type.",
+              "started_at": "{µs}",
+              "failed_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 3,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": "{µs}",
+          "completed_at": null,
+          "failed_at": "{µs}",
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:broken retry}",
+          "error_type": "handler_target_missing",
+          "failure_type": "handler_target_missing",
+          "message": "Activity binding has no activity class or type.",
+          "accepted": false,
+          "idempotent_replay": false,
+          "handler": {
+            "accepted": false,
+            "kind": "activity_execution",
+            "reason": "handler_target_missing",
+            "message": "Activity binding has no activity class or type.",
+            "error_type": "handler_target_missing",
+            "failure_type": "handler_target_missing",
+            "service_error_type": "handler_target_missing",
+            "retry_scheduled": false
+          },
+          "reason": "handler_target_missing"
+        }
+      ],
+      "broken no retry": [
+        409,
+        {
+          "id": "{id:broken no retry}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register broken-noretry}",
+          "operation_name": "broken-noretry",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "failed",
+          "outcome": "handler_failed",
+          "outcome_category": "handler",
+          "outcome_reason": "handler_target_missing",
+          "outcome_message": "Activity binding has no activity class or type.",
+          "outcome_metadata": {
+            "failure_reason": "handler_failure",
+            "failure_type": "handler_target_missing",
+            "service_error_type": "handler_target_missing",
+            "caller_observed_error_type": "handler_target_missing",
+            "typed_error_message": "Activity binding has no activity class or type.",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "failed",
+                "outcome": "handler_failed",
+                "outcome_reason": "handler_target_missing",
+                "failure_type": "handler_target_missing",
+                "failure_message": "Activity binding has no activity class or type.",
+                "started_at": "{µs}",
+                "failed_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_error_type": "handler_target_missing",
+          "caller_observed_error_type": "handler_target_missing",
+          "typed_error_message": "Activity binding has no activity class or type.",
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": null,
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": "Activity binding has no activity class or type.",
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": {
+            "max_attempts": 3,
+            "non_retryable_error_types": [
+              "handler_target_missing"
+            ]
+          },
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|broken-noretry",
+            "failure_reason": "handler_failure",
+            "failure_type": "handler_target_missing",
+            "service_error_type": "handler_target_missing",
+            "caller_observed_error_type": "handler_target_missing",
+            "typed_error_message": "Activity binding has no activity class or type.",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "failed",
+                "outcome": "handler_failed",
+                "outcome_reason": "handler_target_missing",
+                "failure_type": "handler_target_missing",
+                "failure_message": "Activity binding has no activity class or type.",
+                "started_at": "{µs}",
+                "failed_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "failed",
+              "outcome": "handler_failed",
+              "outcome_reason": "handler_target_missing",
+              "failure_type": "handler_target_missing",
+              "failure_message": "Activity binding has no activity class or type.",
+              "started_at": "{µs}",
+              "failed_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": "{µs}",
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:broken no retry}",
+          "error_type": "handler_target_missing",
+          "failure_type": "handler_target_missing",
+          "message": "Activity binding has no activity class or type.",
+          "accepted": false,
+          "idempotent_replay": false,
+          "handler": {
+            "accepted": false,
+            "kind": "activity_execution",
+            "reason": "handler_target_missing",
+            "message": "Activity binding has no activity class or type.",
+            "error_type": "handler_target_missing",
+            "failure_type": "handler_target_missing",
+            "service_error_type": "handler_target_missing",
+            "retry_scheduled": false
+          },
+          "reason": "handler_target_missing"
+        }
+      ],
+      "notify broken": [
+        409,
+        {
+          "id": "{id:notify broken}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register notify-broken}",
+          "operation_name": "notify-broken",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "failed",
+          "outcome": "handler_failed",
+          "outcome_category": "handler",
+          "outcome_reason": "handler_target_missing",
+          "outcome_message": "Invocable carrier binding has no endpoint or carrier reference.",
+          "outcome_metadata": {
+            "failure_reason": "handler_failure",
+            "failure_type": "handler_target_missing",
+            "service_error_type": "handler_target_missing",
+            "caller_observed_error_type": "handler_target_missing",
+            "typed_error_message": "Invocable carrier binding has no endpoint or carrier reference.",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "failed",
+                "outcome": "handler_failed",
+                "outcome_reason": "handler_target_missing",
+                "failure_type": "handler_target_missing",
+                "failure_message": "Invocable carrier binding has no endpoint or carrier reference.",
+                "started_at": "{µs}",
+                "failed_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_error_type": "handler_target_missing",
+          "caller_observed_error_type": "handler_target_missing",
+          "typed_error_message": "Invocable carrier binding has no endpoint or carrier reference.",
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "invocable_carrier_request",
+          "resolved_target_reference": null,
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": "Invocable carrier binding has no endpoint or carrier reference.",
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|notify-broken",
+            "failure_reason": "handler_failure",
+            "failure_type": "handler_target_missing",
+            "service_error_type": "handler_target_missing",
+            "caller_observed_error_type": "handler_target_missing",
+            "typed_error_message": "Invocable carrier binding has no endpoint or carrier reference.",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "failed",
+                "outcome": "handler_failed",
+                "outcome_reason": "handler_target_missing",
+                "failure_type": "handler_target_missing",
+                "failure_message": "Invocable carrier binding has no endpoint or carrier reference.",
+                "started_at": "{µs}",
+                "failed_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "failed",
+              "outcome": "handler_failed",
+              "outcome_reason": "handler_target_missing",
+              "failure_type": "handler_target_missing",
+              "failure_message": "Invocable carrier binding has no endpoint or carrier reference.",
+              "started_at": "{µs}",
+              "failed_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": "{µs}",
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:notify broken}",
+          "error_type": "handler_target_missing",
+          "failure_type": "handler_target_missing",
+          "message": "Invocable carrier binding has no endpoint or carrier reference.",
+          "accepted": false,
+          "idempotent_replay": false,
+          "handler": {
+            "accepted": false,
+            "kind": "invocable_carrier_request",
+            "reason": "handler_target_missing",
+            "message": "Invocable carrier binding has no endpoint or carrier reference.",
+            "error_type": "handler_target_missing",
+            "failure_type": "handler_target_missing",
+            "service_error_type": "handler_target_missing",
+            "retry_scheduled": false
+          },
+          "reason": "handler_target_missing"
+        }
+      ],
+      "timed": [
+        200,
+        {
+          "id": "{id:timed}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register timed}",
+          "operation_name": "timed",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "accepted",
+          "outcome": "accepted",
+          "outcome_category": "accepted",
+          "outcome_reason": "accepted",
+          "outcome_message": null,
+          "outcome_metadata": {
+            "boundary_key": "@own|@own|pay|billing|timed"
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:timed}",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": null,
+          "idempotency_key": null,
+          "deadline_policy": {
+            "timeout_seconds": 3600
+          },
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|timed",
+            "activity_execution_id": "{ULID:timed}",
+            "activity_class": "t",
+            "activity_type": "t",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": "{µs}",
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:timed}",
+          "accepted": true,
+          "idempotent_replay": false,
+          "handler": {
+            "accepted": true,
+            "kind": "activity_execution",
+            "activity_execution_id": "{ULID:timed}",
+            "activity_class": "t",
+            "activity_type": "t"
+          },
+          "reason": null
+        }
+      ],
+      "expired": [
+        200,
+        {
+          "id": "{id:expired}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register expired}",
+          "operation_name": "expired",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "failed",
+          "outcome": "timed_out",
+          "outcome_category": "handler",
+          "outcome_reason": "timed_out",
+          "outcome_message": "Service call deadline expired.",
+          "outcome_metadata": {
+            "service_error_type": "ServiceCallTimedOut",
+            "caller_observed_error_type": "ServiceCallTimedOut",
+            "typed_error_message": "Service call deadline expired.",
+            "call_deadline_at": "2001-02-03T03:05:06.500000Z"
+          },
+          "service_error_type": "ServiceCallTimedOut",
+          "caller_observed_error_type": "ServiceCallTimedOut",
+          "typed_error_message": "Service call deadline expired.",
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "t",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": "Service call deadline expired.",
+          "idempotency_key": null,
+          "deadline_policy": {
+            "deadline_at": "2001-02-03T04:05:06.5+01:00"
+          },
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|expired"
+          },
+          "service_call_attempts": [],
+          "retry_attempt_count": 0,
+          "accepted_at": "{µs}",
+          "call_deadline_at": "2001-02-03T03:05:06.500000Z",
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": "{µs}",
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:expired}",
+          "error_type": "ServiceCallTimedOut",
+          "failure_type": "ServiceCallTimedOut",
+          "message": "Service call deadline expired.",
+          "accepted": true,
+          "idempotent_replay": false,
+          "reason": "timed_out"
+        }
+      ],
+      "cancel expired": [
+        409,
+        {
+          "id": "{id:expired}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register expired}",
+          "operation_name": "expired",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "failed",
+          "outcome": "timed_out",
+          "outcome_category": "handler",
+          "outcome_reason": "timed_out",
+          "outcome_message": "Service call deadline expired.",
+          "outcome_metadata": {
+            "service_error_type": "ServiceCallTimedOut",
+            "caller_observed_error_type": "ServiceCallTimedOut",
+            "typed_error_message": "Service call deadline expired.",
+            "call_deadline_at": "2001-02-03T03:05:06.500000Z"
+          },
+          "service_error_type": "ServiceCallTimedOut",
+          "caller_observed_error_type": "ServiceCallTimedOut",
+          "typed_error_message": "Service call deadline expired.",
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "t",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": "Service call deadline expired.",
+          "idempotency_key": null,
+          "deadline_policy": {
+            "deadline_at": "2001-02-03T04:05:06.5+01:00"
+          },
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|expired"
+          },
+          "service_call_attempts": [],
+          "retry_attempt_count": 0,
+          "accepted_at": "{µs}",
+          "call_deadline_at": "2001-02-03T03:05:06.500000Z",
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": "{µs}",
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:expired}",
+          "error_type": "ServiceCallTimedOut",
+          "failure_type": "ServiceCallTimedOut",
+          "message": "Service call deadline expired.",
+          "accepted": false,
+          "reason": "service_call_terminal"
+        }
+      ],
+      "show expired": [
+        200,
+        {
+          "id": "{id:expired}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register expired}",
+          "operation_name": "expired",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "failed",
+          "outcome": "timed_out",
+          "outcome_category": "handler",
+          "outcome_reason": "timed_out",
+          "outcome_message": "Service call deadline expired.",
+          "outcome_metadata": {
+            "service_error_type": "ServiceCallTimedOut",
+            "caller_observed_error_type": "ServiceCallTimedOut",
+            "typed_error_message": "Service call deadline expired.",
+            "call_deadline_at": "2001-02-03T03:05:06.500000Z"
+          },
+          "service_error_type": "ServiceCallTimedOut",
+          "caller_observed_error_type": "ServiceCallTimedOut",
+          "typed_error_message": "Service call deadline expired.",
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "t",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": "Service call deadline expired.",
+          "idempotency_key": null,
+          "deadline_policy": {
+            "deadline_at": "2001-02-03T04:05:06.5+01:00"
+          },
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|expired"
+          },
+          "service_call_attempts": [],
+          "retry_attempt_count": 0,
+          "accepted_at": "{µs}",
+          "call_deadline_at": "2001-02-03T03:05:06.500000Z",
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": "{µs}",
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "found": true,
+          "service_call_id": "{id:expired}",
+          "error_type": "ServiceCallTimedOut",
+          "failure_type": "ServiceCallTimedOut",
+          "message": "Service call deadline expired."
+        }
+      ],
+      "cancel charge": [
+        200,
+        {
+          "id": "{id:charge}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register charge}",
+          "operation_name": "charge",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "cancelled",
+          "outcome": "cancelled",
+          "outcome_category": "handler",
+          "outcome_reason": "cancelled_by_request",
+          "outcome_message": "operator stop",
+          "outcome_metadata": {
+            "failure_reason": "cancellation"
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:charge}",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": "operator stop",
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|charge",
+            "activity_execution_id": "{ULID:charge}",
+            "activity_class": "charge-activity",
+            "activity_type": "charge-activity",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": "{µs}",
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:charge}",
+          "accepted": true,
+          "reason": null
+        }
+      ],
+      "cancel charge again": [
+        409,
+        {
+          "id": "{id:charge}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register charge}",
+          "operation_name": "charge",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "cancelled",
+          "outcome": "cancelled",
+          "outcome_category": "handler",
+          "outcome_reason": "cancelled_by_request",
+          "outcome_message": "operator stop",
+          "outcome_metadata": {
+            "failure_reason": "cancellation"
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:charge}",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": "operator stop",
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|charge",
+            "activity_execution_id": "{ULID:charge}",
+            "activity_class": "charge-activity",
+            "activity_type": "charge-activity",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": "{µs}",
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:charge}",
+          "accepted": false,
+          "reason": "service_call_terminal"
+        }
+      ],
+      "cancel long reason": [
+        422,
+        {
+          "message": "The reason field must not be greater than 1000 characters.",
+          "reason": "validation_failed",
+          "errors": {
+            "reason": [
+              "The reason field must not be greater than 1000 characters."
+            ]
+          },
+          "validation_errors": {
+            "reason": [
+              "The reason field must not be greater than 1000 characters."
+            ]
+          }
+        }
+      ],
+      "cancel unknown call": [
+        404,
+        {
+          "message": "Service call [01nosuchcall00000000000000] not found under operation [charge] for service [billing] at endpoint [pay] in namespace [@own].",
+          "reason": "service_call_not_found",
+          "namespace": "@own",
+          "endpoint_name": "pay",
+          "service_name": "billing",
+          "operation_name": "charge",
+          "service_call_id": "01nosuchcall00000000000000"
+        }
+      ],
+      "nocancel": [
+        200,
+        {
+          "id": "{id:nocancel}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register nocancel}",
+          "operation_name": "nocancel",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "accepted",
+          "outcome": "accepted",
+          "outcome_category": "accepted",
+          "outcome_reason": "accepted",
+          "outcome_message": null,
+          "outcome_metadata": {
+            "boundary_key": "@own|@own|pay|billing|nocancel"
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:nocancel}",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": null,
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": {
+            "mode": "none"
+          },
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|nocancel",
+            "activity_execution_id": "{ULID:nocancel}",
+            "activity_class": "t",
+            "activity_type": "t",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:nocancel}",
+          "accepted": true,
+          "idempotent_replay": false,
+          "handler": {
+            "accepted": true,
+            "kind": "activity_execution",
+            "activity_execution_id": "{ULID:nocancel}",
+            "activity_class": "t",
+            "activity_type": "t"
+          },
+          "reason": null
+        }
+      ],
+      "cancel nocancel": [
+        409,
+        {
+          "id": "{id:nocancel}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register nocancel}",
+          "operation_name": "nocancel",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "accepted",
+          "outcome": "accepted",
+          "outcome_category": "accepted",
+          "outcome_reason": "accepted",
+          "outcome_message": null,
+          "outcome_metadata": {
+            "boundary_key": "@own|@own|pay|billing|nocancel"
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:nocancel}",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": null,
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": {
+            "mode": "none"
+          },
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|nocancel",
+            "activity_execution_id": "{ULID:nocancel}",
+            "activity_class": "t",
+            "activity_type": "t",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:nocancel}",
+          "accepted": false,
+          "reason": "cancellation_not_allowed"
+        }
+      ],
+      "need role": [
+        403,
+        {
+          "accepted": false,
+          "service_call_id": "{id:need role}",
+          "namespace": "@own",
+          "status": "failed",
+          "outcome": "rejected_forbidden",
+          "error_type": "rejected_forbidden",
+          "outcome_category": "rejected",
+          "reason": "missing_required_role",
+          "message": "Nexus operation is not permitted for this caller.",
+          "retry_after_seconds": null,
+          "policy_name": "workflow.default-service-boundary",
+          "outcome_metadata": {
+            "failure_reason": "policy_rejection"
+          },
+          "caller_namespace": "@own",
+          "caller_principal_subject": "legacy-token",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null
+        }
+      ],
+      "show need role": [
+        200,
+        {
+          "id": "{id:need role}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register need-role}",
+          "operation_name": "need-role",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "failed",
+          "outcome": "rejected_forbidden",
+          "outcome_category": "rejected",
+          "outcome_reason": "missing_required_role",
+          "outcome_message": "Caller [legacy-token] is missing one of the required roles for service-boundary admission.",
+          "outcome_metadata": {
+            "failure_reason": "policy_rejection",
+            "forbidden_axis": "operation"
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "workflow.default-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "t",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": "Caller [legacy-token] is missing one of the required roles for service-boundary admission.",
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": {
+            "required_roles": [
+              "nexus-caller"
+            ]
+          },
+          "metadata": {
+            "failure_reason": "policy_rejection",
+            "forbidden_axis": "operation"
+          },
+          "service_call_attempts": [],
+          "retry_attempt_count": 0,
+          "accepted_at": null,
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": "{µs}",
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "found": true,
+          "service_call_id": "{id:need role}",
+          "message": "Caller [legacy-token] is missing one of the required roles for service-boundary admission."
+        }
+      ],
+      "deny caller": [
+        403,
+        {
+          "accepted": false,
+          "service_call_id": "{id:deny caller}",
+          "namespace": "@own",
+          "status": "failed",
+          "outcome": "rejected_forbidden",
+          "error_type": "rejected_forbidden",
+          "outcome_category": "rejected",
+          "reason": "caller_namespace_denied",
+          "message": "Nexus operation is not permitted for this caller.",
+          "retry_after_seconds": null,
+          "policy_name": "workflow.default-service-boundary",
+          "outcome_metadata": {
+            "failure_reason": "policy_rejection"
+          },
+          "caller_namespace": "blocked",
+          "caller_principal_subject": "legacy-token",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null
+        }
+      ],
+      "allow list": [
+        403,
+        {
+          "accepted": false,
+          "service_call_id": "{id:allow list}",
+          "namespace": "@own",
+          "status": "failed",
+          "outcome": "rejected_forbidden",
+          "error_type": "rejected_forbidden",
+          "outcome_category": "rejected",
+          "reason": "caller_namespace_not_allowed",
+          "message": "Nexus operation is not permitted for this caller.",
+          "retry_after_seconds": null,
+          "policy_name": "workflow.default-service-boundary",
+          "outcome_metadata": {
+            "failure_reason": "policy_rejection"
+          },
+          "caller_namespace": "@own",
+          "caller_principal_subject": "legacy-token",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null
+        }
+      ],
+      "circuit": [
+        503,
+        {
+          "accepted": false,
+          "service_call_id": "{id:circuit}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register circuit}",
+          "operation_name": "circuit",
+          "operation_mode": "async",
+          "status": "failed",
+          "outcome": "rejected_circuit_open",
+          "error_type": "rejected_circuit_open",
+          "outcome_category": "rejected",
+          "reason": "circuit_open",
+          "message": "Service-boundary circuit is open for target [@own|pay|billing|circuit].",
+          "retry_after_seconds": 30,
+          "policy_name": "workflow.default-service-boundary",
+          "outcome_metadata": {
+            "failure_reason": "policy_rejection",
+            "target_key": "@own|pay|billing|circuit"
+          },
+          "caller_namespace": "@own",
+          "caller_principal_subject": "legacy-token",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null
+        }
+      ],
+      "misconfigured": [
+        503,
+        {
+          "accepted": false,
+          "service_call_id": "{id:misconfigured}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register misconfigured}",
+          "operation_name": "misconfigured",
+          "operation_mode": "async",
+          "status": "failed",
+          "outcome": "rejected_throttled",
+          "error_type": "rejected_throttled",
+          "outcome_category": "rejected",
+          "reason": "service_boundary_admission_unavailable",
+          "message": "Shared service-call admission could not be evaluated.",
+          "retry_after_seconds": 1,
+          "policy_name": "server.shared-service-boundary",
+          "outcome_metadata": {
+            "failure_reason": "policy_rejection",
+            "admission_scope": "shared_cache"
+          },
+          "caller_namespace": "@own",
+          "caller_principal_subject": "legacy-token",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null
+        }
+      ],
+      "replay first": [
+        200,
+        {
+          "id": "{id:replay first}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register replay-target}",
+          "operation_name": "replay-target",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "accepted",
+          "outcome": "accepted",
+          "outcome_category": "accepted",
+          "outcome_reason": "accepted",
+          "outcome_message": null,
+          "outcome_metadata": {
+            "boundary_key": "@own|@own|pay|billing|replay-target"
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:replay first}",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": null,
+          "idempotency_key": "k1",
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|replay-target",
+            "activity_execution_id": "{ULID:replay first}",
+            "activity_class": "charge-activity",
+            "activity_type": "charge-activity",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:replay first}",
+          "accepted": true,
+          "idempotent_replay": false,
+          "handler": {
+            "accepted": true,
+            "kind": "activity_execution",
+            "activity_execution_id": "{ULID:replay first}",
+            "activity_class": "charge-activity",
+            "activity_type": "charge-activity"
+          },
+          "reason": null
+        }
+      ],
+      "replay again": [
+        200,
+        {
+          "accepted": true,
+          "idempotent_replay": true,
+          "reason": null,
+          "found": true,
+          "service_call_id": "{id:replay first}",
+          "namespace": "@own",
+          "caller_namespace": "@own",
+          "target_namespace": "@own",
+          "endpoint_name": "pay",
+          "service_name": "billing",
+          "operation_name": "replay-target",
+          "operation_mode": "async",
+          "status": "accepted",
+          "outcome": "accepted",
+          "outcome_category": "accepted",
+          "outcome_reason": "accepted",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:replay first}",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": null,
+          "failure_message": null
+        }
+      ],
+      "replay other caller": [
+        200,
+        {
+          "id": "{id:replay other caller}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register replay-target}",
+          "operation_name": "replay-target",
+          "caller_namespace": "other",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "accepted",
+          "outcome": "accepted",
+          "outcome_category": "accepted",
+          "outcome_reason": "accepted",
+          "outcome_message": null,
+          "outcome_metadata": {
+            "boundary_key": "other|@own|pay|billing|replay-target"
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:replay other caller}",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": null,
+          "idempotency_key": "k1",
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "other|@own|pay|billing|replay-target",
+            "activity_execution_id": "{ULID:replay other caller}",
+            "activity_class": "charge-activity",
+            "activity_type": "charge-activity",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:replay other caller}",
+          "accepted": true,
+          "idempotent_replay": false,
+          "handler": {
+            "accepted": true,
+            "kind": "activity_execution",
+            "activity_execution_id": "{ULID:replay other caller}",
+            "activity_class": "charge-activity",
+            "activity_type": "charge-activity"
+          },
+          "reason": null
+        }
+      ],
+      "cancel replayed": [
+        200,
+        {
+          "id": "{id:replay first}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register replay-target}",
+          "operation_name": "replay-target",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "cancelled",
+          "outcome": "cancelled",
+          "outcome_category": "handler",
+          "outcome_reason": "cancelled_by_request",
+          "outcome_message": null,
+          "outcome_metadata": {
+            "failure_reason": "cancellation"
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:replay first}",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": null,
+          "idempotency_key": "k1",
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|replay-target",
+            "activity_execution_id": "{ULID:replay first}",
+            "activity_class": "charge-activity",
+            "activity_type": "charge-activity",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": "{µs}",
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:replay first}",
+          "accepted": true,
+          "reason": null
+        }
+      ],
+      "replay cancelled": [
+        409,
+        {
+          "accepted": false,
+          "idempotent_replay": true,
+          "reason": null,
+          "found": true,
+          "service_call_id": "{id:replay first}",
+          "namespace": "@own",
+          "caller_namespace": "@own",
+          "target_namespace": "@own",
+          "endpoint_name": "pay",
+          "service_name": "billing",
+          "operation_name": "replay-target",
+          "operation_mode": "async",
+          "status": "cancelled",
+          "outcome": "cancelled",
+          "outcome_category": "handler",
+          "outcome_reason": "cancelled_by_request",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:replay first}",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": "{µs}",
+          "failure_message": null
+        }
+      ],
+      "replay second key": [
+        200,
+        {
+          "id": "{id:replay second key}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register replay-target}",
+          "operation_name": "replay-target",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "accepted",
+          "outcome": "accepted",
+          "outcome_category": "accepted",
+          "outcome_reason": "accepted",
+          "outcome_message": null,
+          "outcome_metadata": {
+            "boundary_key": "@own|@own|pay|billing|replay-target"
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:replay second key}",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": null,
+          "idempotency_key": "k2",
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|replay-target",
+            "activity_execution_id": "{ULID:replay second key}",
+            "activity_class": "charge-activity",
+            "activity_type": "charge-activity",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:replay second key}",
+          "accepted": true,
+          "idempotent_replay": false,
+          "handler": {
+            "accepted": true,
+            "kind": "activity_execution",
+            "activity_execution_id": "{ULID:replay second key}",
+            "activity_class": "charge-activity",
+            "activity_type": "charge-activity"
+          },
+          "reason": null
+        }
+      ],
+      "require a role": [
+        200,
+        {
+          "id": "{id:register replay-target}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_name": "replay-target",
+          "description": null,
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "charge-activity",
+          "handler_binding": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": {
+            "required_roles": [
+              "nexus-caller"
+            ]
+          },
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "replay forbidden": [
+        403,
+        {
+          "accepted": false,
+          "service_call_id": "{id:replay forbidden}",
+          "namespace": "@own",
+          "status": "failed",
+          "outcome": "rejected_forbidden",
+          "error_type": "rejected_forbidden",
+          "outcome_category": "rejected",
+          "reason": "missing_required_role",
+          "message": "Nexus operation is not permitted for this caller.",
+          "retry_after_seconds": null,
+          "policy_name": "workflow.default-service-boundary",
+          "outcome_metadata": {
+            "failure_reason": "policy_rejection"
+          },
+          "caller_namespace": "@own",
+          "caller_principal_subject": "legacy-token",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null
+        }
+      ],
+      "show replayed second": [
+        200,
+        {
+          "id": "{id:replay second key}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register replay-target}",
+          "operation_name": "replay-target",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "accepted",
+          "outcome": "accepted",
+          "outcome_category": "accepted",
+          "outcome_reason": "accepted",
+          "outcome_message": null,
+          "outcome_metadata": {
+            "boundary_key": "@own|@own|pay|billing|replay-target"
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:replay second key}",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": null,
+          "idempotency_key": "k2",
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|replay-target",
+            "activity_execution_id": "{ULID:replay second key}",
+            "activity_class": "charge-activity",
+            "activity_type": "charge-activity",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "found": true,
+          "service_call_id": "{id:replay second key}"
+        }
+      ]
+    }
+  }
+}

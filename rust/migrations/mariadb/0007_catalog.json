@@ -20,6 +20,10 @@
         "CREATE TABLE `dw_server_schema` (\n  `engine` varchar(64) NOT NULL,\n  `version` bigint(20) NOT NULL,\n  `bootstrap_checksum` varbinary(48) NOT NULL,\n  PRIMARY KEY (`engine`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"
     ],
     [
+        "dw_service_call_deadlines",
+        "CREATE TABLE `dw_service_call_deadlines` (\n  `service_call_id` varchar(26) NOT NULL,\n  `namespace` varchar(128) NOT NULL,\n  `call_deadline_at` datetime(6) NOT NULL,\n  PRIMARY KEY (`service_call_id`),\n  KEY `dw_service_call_deadlines_due` (`call_deadline_at`,`service_call_id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    ],
+    [
         "dw_stream_reclaims",
         "CREATE TABLE `dw_stream_reclaims` (\n  `stream_id` bigint(20) unsigned NOT NULL,\n  `namespace` varchar(128) NOT NULL,\n  `workflow_run_id` varchar(26) NOT NULL,\n  `reclaim_at` datetime(6) NOT NULL,\n  PRIMARY KEY (`stream_id`),\n  KEY `dw_stream_reclaims_due` (`namespace`,`reclaim_at`,`stream_id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
     ],

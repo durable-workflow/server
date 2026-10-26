@@ -15,9 +15,23 @@ use GuzzleHttp\HandlerStack;
 // "@own" is the fixture's namespace.
 function finishHttpServiceEndpoints(Client $admin, array $fixture, string $workflowId, string $url): array
 {
-    $definition = $fixture['service_endpoints'];
     $own = strtolower($workflowId.'-endpoints');
     $admin->createNamespace($own, 'service endpoints λ', 30);
+
+    return ['applicable' => true, 'namespace' => $own,
+        'responses' => serviceCatalogRequests($fixture['service_endpoints']['requests'], $own, $url)];
+}
+
+/**
+ * Sends each request in order and keeps every answer by label. A path may
+ * name a field of an earlier answer as "{label.field}"; "@own" is the
+ * fixture's namespace.
+ *
+ * @param  list<array<string, mixed>>  $requests
+ * @return array<string, array{0: int, 1: mixed}>
+ */
+function serviceCatalogRequests(array $requests, string $own, string $url): array
+{
     $token = getenv('DW_PARITY_TOKEN') ?: null;
     // The SQLite reference shares its database with a one-second maintenance
     // loop; retry its retryable lock-pressure refusals, as the other probes do.
@@ -25,10 +39,10 @@ function finishHttpServiceEndpoints(Client $admin, array $fixture, string $workf
     $stack->push(LockPressurePollRetries::middleware(), 'lock_pressure_poll_retry');
     $http = new ServiceEndpointsHttp(['base_uri' => rtrim($url, '/').'/api/', 'http_errors' => false,
         'connect_timeout' => 1, 'timeout' => 30, 'handler' => $stack]);
-    $state = ['applicable' => true, 'namespace' => $own, 'responses' => []];
-    foreach ($definition['requests'] as $request) {
-        $path = preg_replace_callback('/\{([^{}.]+)\.([a-z_]+)\}/', static function (array $match) use (&$state): string {
-            $value = $state['responses'][$match[1]][1][$match[2]] ?? null;
+    $responses = [];
+    foreach ($requests as $request) {
+        $path = preg_replace_callback('/\{([^{}.]+)\.([a-z_]+)\}/', static function (array $match) use (&$responses): string {
+            $value = $responses[$match[1]][1][$match[2]] ?? null;
             if (! is_string($value)) {
                 throw new RuntimeException("No {$match[1]}.{$match[2]} for a later path.");
             }
@@ -47,9 +61,9 @@ function finishHttpServiceEndpoints(Client $admin, array $fixture, string $workf
             $options['body'] = json_encode($request['body'], JSON_THROW_ON_ERROR);
         }
         $response = $http->request($request['method'] ?? 'GET', $path, $options);
-        $state['responses'][$request['label']] = [$response->getStatusCode(),
+        $responses[$request['label']] = [$response->getStatusCode(),
             json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR)];
     }
 
-    return $state;
+    return $responses;
 }

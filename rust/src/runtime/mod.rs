@@ -129,6 +129,7 @@ mod search_attributes;
 mod selection_summary;
 mod selections;
 mod service_catalog;
+mod service_calls;
 mod service_endpoints;
 mod sqlite;
 mod start_definition;

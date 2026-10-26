@@ -9,7 +9,7 @@ use sqlx::{
 };
 use std::{collections::BTreeMap, sync::OnceLock, time::Duration};
 
-pub const VERSION: i64 = 6;
+pub const VERSION: i64 = 7;
 type Catalog = Vec<(String, String)>;
 
 pub const MARKER_SQL: &str = "CREATE TABLE dw_server_schema (engine VARCHAR(64) NOT NULL PRIMARY KEY,version BIGINT NOT NULL,bootstrap_checksum VARBINARY(48) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin";
@@ -48,7 +48,9 @@ impl Flavor {
                     "\n",
                     include_str!("../../migrations/mysql/0005_worker_session_holders.sql"),
                 "\n",
-                include_str!("../../migrations/mysql/0006_stream_reclaims.sql")
+                include_str!("../../migrations/mysql/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0007_service_call_deadlines.sql")
                 ),
             ),
             Self::MariaDb => (
@@ -60,14 +62,16 @@ impl Flavor {
                     "\n",
                     include_str!("../../migrations/mariadb/0005_worker_session_holders.sql"),
                 "\n",
-                include_str!("../../migrations/mariadb/0006_stream_reclaims.sql")
+                include_str!("../../migrations/mariadb/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0007_service_call_deadlines.sql")
                 ),
             ),
         };
         slot.get_or_init(|| {
             let mut migrations = Migrator::with_migrations(vec![Migration::new(
                 VERSION,
-                "full frozen PHP schema, native worker incarnations, session holders and stream reclaim deadlines".into(),
+                "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines and service call deadlines".into(),
                 MigrationType::Simple,
                 sql.into_sql_str(),
                 false,
@@ -80,8 +84,8 @@ impl Flavor {
     }
     fn expected(self) -> Result<Catalog> {
         Ok(serde_json::from_str(&canonical(match self {
-            Self::MySql => include_str!("../../migrations/mysql/0006_catalog.json"),
-            Self::MariaDb => include_str!("../../migrations/mariadb/0006_catalog.json"),
+            Self::MySql => include_str!("../../migrations/mysql/0007_catalog.json"),
+            Self::MariaDb => include_str!("../../migrations/mariadb/0007_catalog.json"),
         }))?)
     }
     /// The single native migration, which a takeover records as applied.
@@ -100,7 +104,9 @@ impl Flavor {
                     "\n",
                     include_str!("../../migrations/mysql/0005_worker_session_holders.sql"),
                 "\n",
-                include_str!("../../migrations/mysql/0006_stream_reclaims.sql")
+                include_str!("../../migrations/mysql/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0007_service_call_deadlines.sql")
                 ),
             ),
             Self::MariaDb => (
@@ -110,7 +116,9 @@ impl Flavor {
                     "\n",
                     include_str!("../../migrations/mariadb/0005_worker_session_holders.sql"),
                 "\n",
-                include_str!("../../migrations/mariadb/0006_stream_reclaims.sql")
+                include_str!("../../migrations/mariadb/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0007_service_call_deadlines.sql")
                 ),
             ),
         };
@@ -130,6 +138,10 @@ impl Flavor {
         .replace(
             "CREATE TABLE dw_stream_reclaims",
             "CREATE TABLE IF NOT EXISTS dw_stream_reclaims",
+        )
+        .replace(
+            "CREATE TABLE dw_service_call_deadlines",
+            "CREATE TABLE IF NOT EXISTS dw_service_call_deadlines",
         ))
     }
     pub(super) fn checksum(self) -> &'static [u8] {

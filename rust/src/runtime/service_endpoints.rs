@@ -153,6 +153,21 @@ pub(crate) fn deadline_policy_error(policy: &Value) -> Option<&'static str> {
     (!(1970..=9999).contains(&year)).then_some("Service call deadlines must resolve within UTC years 1970 through 9999.")
 }
 
+/// `ServiceCallDeadlinePolicy::resolve`: the deadline a valid policy sets
+/// for a call accepted at `accepted_at`, or none. An invalid policy has none;
+/// operation writes refuse one before any call can carry it.
+pub(crate) fn deadline_instant(policy: &Value, accepted_at: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    if deadline_policy_error(policy).is_some() {
+        return None;
+    }
+    let fields = policy.as_object()?;
+    if let Some(seconds) = fields.get("timeout_seconds").and_then(Value::as_i64) {
+        return Some(accepted_at + chrono::Duration::seconds(seconds));
+    }
+    let text = fields.get("deadline_at")?.as_str()?;
+    rfc3339_instant(text).ok().map(|instant| instant.and_utc())
+}
+
 /// The `deadline_at` shape and calendar checks: the pattern
 /// `\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]([01]\d|2[0-3]):[0-5]\d)\z`,
 /// then `createFromFormat`, which warns on a date or time out of range.
@@ -243,7 +258,7 @@ fn operation_payload(input: &Value, partial: bool) -> Result<Map<String, Value>>
 
 /// A JSON column as PHP's array cast reads it: `json_decode($text, true)`,
 /// encoded again as the response does.
-fn php_document(value: Value) -> Value {
+pub(crate) fn php_document(value: Value) -> Value {
     match value {
         Value::Null => Value::Null,
         value => super::php_value::decode(value.to_string().as_bytes()).map_or(Value::Null, |decoded| decoded.to_json()),
@@ -271,7 +286,7 @@ fn conflict(response: Value) -> RuntimeError {
 #[derive(Clone, Debug)]
 pub(crate) struct Row {
     pub(crate) id: String,
-    namespace: Option<String>,
+    pub(crate) namespace: Option<String>,
     pub(crate) name: String,
     description: Option<String>,
     created_at: Option<DateTime<Utc>>,
@@ -282,6 +297,8 @@ pub(crate) struct Row {
 pub(crate) struct Endpoint {
     pub(crate) row: Row,
     metadata: Value,
+    /// Not settable over the API; a taken-over PHP database may hold one.
+    pub(crate) boundary_policy: Value,
 }
 
 #[derive(Clone, Debug)]
@@ -289,6 +306,8 @@ pub(crate) struct Service {
     pub(crate) row: Row,
     pub(crate) endpoint_id: String,
     metadata: Value,
+    /// Not settable over the API; a taken-over PHP database may hold one.
+    pub(crate) boundary_policy: Value,
 }
 
 #[derive(Clone, Debug)]
@@ -304,8 +323,21 @@ pub(crate) struct Operation {
 }
 
 impl Operation {
-    fn document(&self, field: &str) -> &Value {
+    /// A JSON document column as PHP's array cast reads it, or null.
+    pub(crate) fn document(&self, field: &str) -> &Value {
         DOCUMENTS.iter().position(|name| *name == field).map_or(&Value::Null, |index| &self.documents[index])
+    }
+
+    pub(crate) fn mode(&self) -> &str {
+        &self.mode
+    }
+
+    pub(crate) fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    pub(crate) fn target(&self) -> Option<&str> {
+        self.target.as_deref()
     }
 }
 
@@ -419,7 +451,11 @@ store_methods! {
     }
 
     pub(crate) fn endpoint_row(row: &DB::Row) -> Result<Endpoint> {
-        Ok(Endpoint { row: Self::catalog_row(row, "endpoint_name")?, metadata: Self::catalog_document(row, "metadata")? })
+        Ok(Endpoint {
+            row: Self::catalog_row(row, "endpoint_name")?,
+            metadata: Self::catalog_document(row, "metadata")?,
+            boundary_policy: Self::catalog_document(row, "boundary_policy")?,
+        })
     }
 
     pub(crate) fn service_row(row: &DB::Row) -> Result<Service> {
@@ -427,6 +463,7 @@ store_methods! {
             row: Self::catalog_row(row, "service_name")?,
             endpoint_id: DB::string(row, "workflow_service_endpoint_id")?,
             metadata: Self::catalog_document(row, "metadata")?,
+            boundary_policy: Self::catalog_document(row, "boundary_policy")?,
         })
     }
 
@@ -487,7 +524,7 @@ store_methods! {
     }
 
     /// The endpoint, service and operation, or PHP's 404 for the first one missing.
-    async fn required_operation(&self, connection: &mut DB::Connection, names: [&str; 3]) -> Result<(Endpoint, Service, Operation)> {
+    pub(crate) async fn required_operation(&self, connection: &mut DB::Connection, names: [&str; 3]) -> Result<(Endpoint, Service, Operation)> {
         let (endpoint, service) = self.required_service(connection, names[0], names[1]).await?;
         let name = lower(names[2]);
         match self.catalog_operation(connection, &service, &name).await? {
@@ -527,6 +564,7 @@ store_methods! {
                 description: fields.get("description").and_then(Value::as_str).map(str::to_owned),
                 created_at: Some(at), updated_at: Some(at) },
             metadata: php_document(fields.get("metadata").cloned().unwrap_or(Value::Null)),
+            boundary_policy: Value::Null,
         };
         Self::query("INSERT INTO workflow_service_endpoints(id,namespace,endpoint_name,description,metadata,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7)")
             .bind(endpoint.row.id.as_str()).bind(self.namespace.as_ref()).bind(endpoint.row.name.as_str())
@@ -625,6 +663,7 @@ store_methods! {
                 created_at: Some(at), updated_at: Some(at) },
             endpoint_id: endpoint.row.id.clone(),
             metadata: php_document(fields.get("metadata").cloned().unwrap_or(Value::Null)),
+            boundary_policy: Value::Null,
         };
         Self::query("INSERT INTO workflow_services(id,workflow_service_endpoint_id,namespace,service_name,description,metadata,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
             .bind(service.row.id.as_str()).bind(service.endpoint_id.as_str()).bind(service.row.namespace.as_deref())
