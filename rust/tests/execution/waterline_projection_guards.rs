@@ -252,6 +252,12 @@ async fn release(lock: TransitionLock) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_append_cannot_cross_a_projection_install_waiting_on_the_lock() {
     let database = TestDatabase::new().await;
+    if matches!(database, TestDatabase::Sqlite(_)) {
+        // SQLite's writer waits where no other connection can see it; the
+        // library control an_append_cannot_cross_an_install_waiting_on_the_sqlite_lock
+        // observes the install reaching the lock through a test probe.
+        return;
+    }
     let app = router(database.open().await.unwrap());
     let (status, dry) = request(&app, "POST", ROUTE, json!({"source_id": "barrier-src", "workflow": running(1), "dry_run": true})).await;
     assert_eq!(status, StatusCode::OK, "{dry}");
@@ -266,9 +272,7 @@ async fn an_append_cannot_cross_a_projection_install_waiting_on_the_lock() {
     });
     // On PostgreSQL and MySQL the install is seen waiting on the lock; on
     // SQLite it cannot commit while the lock is held, wherever it is.
-    if !lock_waiter_observed(&database).await {
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    }
+    assert!(lock_waiter_observed(&database).await);
     let (status, body) = request(&app, "POST", &path, json!({"message_id": "m-pending", "input": ["x"]})).await;
     assert_eq!((status, &body["reason"]), (StatusCode::NOT_FOUND, &json!("instance_not_found")), "{body}");
     assert!(!install.is_finished(), "the install committed while the transition lock was held");
