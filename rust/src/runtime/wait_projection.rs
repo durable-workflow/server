@@ -174,6 +174,11 @@ where
         ) {
             return Ok(());
         }
+        // A recorded local activity opens no wait: it ran inside the
+        // workflow task that reports it.
+        if payload["local_activity"] == true {
+            return Ok(());
+        }
         let activity_id = super::text(payload, "activity_execution_id")?;
         let wait_id = format!("activity:{activity_id}");
         if event_type == "ActivityRetryScheduled" {
@@ -267,7 +272,8 @@ where
     ) -> Result<()> {
         if event_type == "ConditionWaitOpened" {
             let wait_id = super::text(payload, "condition_wait_id")?;
-            let key = super::text(payload, "condition_key")?;
+            // PHP records a condition wait without a key when none was given.
+            let key = payload["condition_key"].as_str();
             let sequence = wait_sequence(payload)?;
             let projection_id = projection_id(run_id, wait_id);
             let summary = payload["timeout_seconds"].as_i64().map_or_else(

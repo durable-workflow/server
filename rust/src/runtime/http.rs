@@ -67,6 +67,8 @@ pub fn router(runtime: Runtime) -> Router {
             delete(delete_search_attribute),
         )
         .route("/api/workflows", get(list_workflows).post(start))
+        .route("/api/workflows/import/embedded-v2", post(import_embedded_v2))
+        .route("/api/workflows/import/waterline-v1", post(import_waterline_v1))
         .route("/api/activities", get(list_activities).post(start_activity))
         .route("/api/activities/{activity_id}", get(show_activity))
         .route(
@@ -109,6 +111,8 @@ pub fn router(runtime: Runtime) -> Router {
             get(super::run_observation::selected),
         )
         .route("/api/workflows/{workflow_id}/runs", get(list_runs))
+        .route("/api/workflows/{workflow_id}/nexus-operations", get(nexus_operations_current))
+        .route("/api/workflows/{workflow_id}/runs/{run_id}/nexus-operations", get(nexus_operations_run))
         .route("/api/workflows/{workflow_id}/cancel", post(cancel_current))
         .route(
             "/api/workflows/{workflow_id}/terminate",
@@ -120,6 +124,12 @@ pub fn router(runtime: Runtime) -> Router {
             post(repair_run),
         )
         .route("/api/workflows/{workflow_id}/debug", get(debug_current))
+        .route("/api/workflows/{workflow_id}/message-streams", get(list_message_streams))
+        .route("/api/workflows/{workflow_id}/message-streams/{stream_name}", get(show_message_stream))
+        .route(
+            "/api/workflows/{workflow_id}/message-streams/{stream_name}/messages",
+            post(append_message),
+        )
         .route(
             "/api/workflows/{workflow_id}/runs/{run_id}/debug",
             get(debug_run),
@@ -201,6 +211,11 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route("/api/worker/register", post(register))
         .route("/api/worker/heartbeat", post(worker_heartbeat))
+        .route("/api/worker/sessions", post(create_worker_session))
+        .route("/api/worker/sessions/{session_id}", delete(close_worker_session))
+        .route("/api/worker/sessions/{session_id}/heartbeat", post(heartbeat_worker_session))
+        .route("/api/worker-sessions", get(list_worker_sessions))
+        .route("/api/worker-sessions/{session_id}", get(show_worker_session))
         .route("/api/worker/registrations/{worker_id}", delete(deregister))
         .route(
             "/api/worker/registrations/{worker_id}/deregister",
@@ -250,6 +265,18 @@ pub fn router(runtime: Runtime) -> Router {
             post(heartbeat_task),
         )
         .route(
+            "/api/worker/workflow-tasks/{task_id}/cancellation-scopes/open",
+            post(open_cancellation_scope),
+        )
+        .route(
+            "/api/worker/workflow-tasks/{task_id}/cancellation-scopes/prepare",
+            post(prepare_cancellation_scope),
+        )
+        .route(
+            "/api/worker/workflow-tasks/{task_id}/cancellation-scopes/deliver",
+            post(deliver_cancellation_scope),
+        )
+        .route(
             "/api/worker/workflow-tasks/{task_id}/complete",
             post(complete_workflow),
         )
@@ -269,6 +296,10 @@ pub fn router(runtime: Runtime) -> Router {
         .route(
             "/api/worker/activity-tasks/{task_id}/renew-lease",
             post(renew_activity_lease),
+        )
+        .route(
+            "/api/worker/activity-tasks/{task_id}/acknowledge-cancellation",
+            post(acknowledge_activity_cancellation),
         )
         .route(
             "/api/worker/activity-tasks/{task_id}/fail",
@@ -292,8 +323,18 @@ pub fn router(runtime: Runtime) -> Router {
             post(complete_query),
         )
         .route("/api/worker/query-tasks/{task_id}/fail", post(fail_query))
+        .route("/api/worker/update-validation-tasks/poll", post(poll_update_validation))
+        .route(
+            "/api/worker/update-validation-tasks/{task_id}/approve",
+            post(approve_update_validation),
+        )
+        .route(
+            "/api/worker/update-validation-tasks/{task_id}/reject",
+            post(reject_update_validation),
+        )
         .fallback(route_fallback)
         .method_not_allowed_fallback(route_fallback)
+        .layer(middleware::from_fn(super::waterline_import::read_only_guard))
         .layer(middleware::from_fn(empty_list_body))
         // `payload_limits` reads and bounds every body first.
         .layer(DefaultBodyLimit::disable())
@@ -434,6 +475,8 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         || path.starts_with("/api/system/")
         || path == "/api/runtime-credentials"
         || path.starts_with("/api/runtime-credentials/")
+        // History import writes runs into the store; PHP serves it to admins.
+        || path.starts_with("/api/workflows/import/")
     {
         &["admin"]
     } else {
@@ -626,7 +669,7 @@ enum Rest {
 }
 
 /// Route families a named namespace may use, by prefix.
-const NAMESPACE_FAMILIES: [(&str, Rest, Allowed); 8] = [
+const NAMESPACE_FAMILIES: [(&str, Rest, Allowed); 9] = [
     // Runtime credentials are server-wide; the namespace only scopes a tenant.
     ("/api/runtime-credentials/", Rest::Anything, Allowed::Any),
     ("/api/external-payloads/v1/", Rest::Anything, READ),
@@ -642,6 +685,8 @@ const NAMESPACE_FAMILIES: [(&str, Rest, Allowed); 8] = [
     ("/api/workers/", Rest::OneSegment, Allowed::Only(&["GET", "DELETE"])),
     // Deployments are the namespace's own build-id rollouts.
     ("/api/deployments/", Rest::NonEmpty, READ_WRITE),
+    // Worker session visibility reads the namespace's own sessions.
+    ("/api/worker-sessions/", Rest::OneSegment, READ),
 ];
 
 fn named_namespace_operation(method: &str, path: &str) -> bool {
@@ -679,10 +724,13 @@ fn exact_namespace_route(path: &str) -> Option<Allowed> {
         "/api/workflows" | "/api/activities" | "/api/search-attributes" => READ_WRITE,
         // The metrics describe the namespace's own state, read by GET or POST.
         "/api/system/metrics" => READ_WRITE,
-        "/api/external-payloads/v1" | "/api/storage/test" => WRITE,
+        // An import writes into the requested namespace.
+        "/api/external-payloads/v1" | "/api/storage/test" | "/api/workflows/import/embedded-v2"
+        | "/api/workflows/import/waterline-v1" => WRITE,
         "/api/task-queues"
         | "/api/deployments"
         | "/api/workers"
+        | "/api/worker-sessions"
         | "/api/system/operator-metrics"
         | "/api/system/health"
         | "/api/system/operator-dashboard"
@@ -729,7 +777,9 @@ fn workflow_route(rest: &str) -> Option<Allowed> {
         | [_, "runs", _, "history", "export"]
         | [_, "runs", _, "streams"]
         | [_, "runs", _, "streams", _]
-        | [_, "runs", _, "streams", _, "items"] => Some(READ),
+        | [_, "runs", _, "streams", _, "items"]
+        | [_, "nexus-operations"]
+        | [_, "runs", _, "nexus-operations"] => Some(READ),
         [_, "signal" | "query" | "update", _]
         | [_, "runs", _, "signal" | "query" | "update", _]
         | [_, "repair" | "request-cancellation"]
@@ -748,11 +798,17 @@ fn worker_route(rest: &str) -> Option<Allowed> {
         ["register" | "heartbeat"]
             | ["registrations", _]
             | ["registrations", _, "deregister"]
+            | ["sessions"]
+            | ["sessions", _]
+            | ["sessions", _, "heartbeat"]
             | ["workflow-tasks" | "activity-tasks", "poll"]
             | ["query-tasks", "poll"]
             | ["query-tasks", _, "complete" | "fail" | "status"]
-            | ["workflow-tasks", _, "complete" | "fail" | "history" | "heartbeat"]
-            | ["activity-tasks", _, "complete" | "fail" | "heartbeat" | "status" | "renew-lease"]
+            | ["update-validation-tasks", "poll"]
+            | ["update-validation-tasks", _, "approve" | "reject"]
+            | ["workflow-tasks", _, "complete" | "fail" | "history" | "heartbeat" | "deliver-cancellation"]
+            | ["workflow-tasks", _, "cancellation-scopes", "open" | "prepare" | "deliver"]
+            | ["activity-tasks", _, "complete" | "fail" | "heartbeat" | "status" | "renew-lease" | "acknowledge-cancellation"]
     )
     .then_some(Allowed::Any)
 }
@@ -942,6 +998,7 @@ async fn cluster(
         "auth_composition_contract": auth_composition,
         "principal_attribution_contract": principal_attribution,
         "service_catalog_read_contract": service_catalog,
+        "message_streams_contract": super::message_streams::manifest(),
         "payload_codec": "avro", "qualified_for_php_takeover": false}),
     ))
 }
@@ -981,6 +1038,39 @@ fn metadata(fields: &[(&str, Option<Value>)]) -> Value {
 
 fn present(body: &Value, field: &str) -> Option<Value> {
     body.get(field).filter(|value| !value.is_null()).cloned()
+}
+
+/// `POST /api/workflows/{workflow_id}/message-streams/{stream_name}/messages`.
+async fn append_message(
+    Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
+    Path((workflow_id, stream)): Path<(String, String)>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let normalized = super::laravel_rules::normalize(&body);
+    let context = request.context(&body, &workflow_id, "message_stream_append", metadata(&[
+        ("stream_name", Some(json!(stream))),
+        ("message_id", present(&normalized, "message_id")),
+        ("request_id", present(&normalized, "request_id")),
+    ]));
+    let (status, response) = runtime.append_message(&workflow_id, &stream, body, context).await?;
+    Ok((status, Json(response)))
+}
+
+/// `GET /api/workflows/{workflow_id}/message-streams`.
+async fn list_message_streams(
+    Extension(runtime): Extension<Runtime>,
+    Path(workflow_id): Path<String>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.message_streams(&workflow_id, None).await?))
+}
+
+/// `GET /api/workflows/{workflow_id}/message-streams/{stream_name}`.
+async fn show_message_stream(
+    Extension(runtime): Extension<Runtime>,
+    Path((workflow_id, stream)): Path<(String, String)>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.message_streams(&workflow_id, Some(&stream)).await?))
 }
 
 fn signal_context(request: &CommandRequest, body: &Value, workflow_id: &str, name: &str) -> Value {
@@ -1024,6 +1114,30 @@ async fn start(
         _ => StatusCode::OK,
     };
     Ok((status, Json(super::control_plane::Operation::Start.response(result))))
+}
+
+/// `POST /api/workflows/import/embedded-v2`. The controller reads the body
+/// and the query string itself, as Laravel's request input.
+async fn import_embedded_v2(
+    Extension(runtime): Extension<Runtime>,
+    uri: axum::http::Uri,
+    body: axum::body::Bytes,
+) -> Result<(StatusCode, Json<Value>)> {
+    let query: Vec<(String, String)> = uri
+        .query()
+        .map(|query| form_urlencoded::parse(query.as_bytes()).into_owned().collect())
+        .unwrap_or_default();
+    let (status, answer) = runtime.import_embedded_v2(&body, &query).await?;
+    Ok((status, Json(answer)))
+}
+
+/// `POST /api/workflows/import/waterline-v1`.
+async fn import_waterline_v1(
+    Extension(runtime): Extension<Runtime>,
+    body: axum::body::Bytes,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, answer) = runtime.import_waterline_v1(&body).await?;
+    Ok((status, Json(answer)))
 }
 
 /// `POST /api/activities`: a standalone activity in its own host run.
@@ -1079,6 +1193,35 @@ async fn describe_current(
     Ok(Json(
         super::control_plane::Operation::Describe.response(body),
     ))
+}
+
+/// `GET /api/workflows/{workflow_id}/nexus-operations`.
+async fn nexus_operations_current(
+    Extension(runtime): Extension<Runtime>,
+    Path(workflow_id): Path<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Value>> {
+    nexus_operations(runtime, &workflow_id, None, query).await
+}
+
+/// `GET /api/workflows/{workflow_id}/runs/{run_id}/nexus-operations`.
+async fn nexus_operations_run(
+    Extension(runtime): Extension<Runtime>,
+    Path((workflow_id, run_id)): Path<(String, String)>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Value>> {
+    nexus_operations(runtime, &workflow_id, Some(&run_id), query).await
+}
+
+async fn nexus_operations(
+    runtime: Runtime,
+    workflow_id: &str,
+    run_id: Option<&str>,
+    query: std::collections::HashMap<String, String>,
+) -> Result<Json<Value>> {
+    let limit = super::nexus_operations::list_limit(query.get("limit").map(String::as_str));
+    let calls = runtime.nexus_operations(workflow_id, run_id, limit).await?;
+    Ok(Json(super::nexus_operations::listing(workflow_id, run_id, runtime.namespace(), limit, calls)))
 }
 
 async fn list_runs(
@@ -1543,6 +1686,61 @@ fn worker_response(mut body: Value) -> Value {
     body["server_capabilities"] = capabilities();
     body
 }
+/// A worker session answer: PHP's status, its body repeating it, and the
+/// worker protocol envelope.
+fn session_answer(answer: super::worker_sessions::Answer) -> Response {
+    (answer.status, Json(worker_response(answer.body))).into_response()
+}
+
+async fn create_worker_session(
+    Extension(runtime): Extension<Runtime>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Response> {
+    let protocol = request_protocol(&headers)?;
+    runtime.create_worker_session(body, protocol).await.map(session_answer).map_err(worker_refusal)
+}
+
+async fn heartbeat_worker_session(
+    Extension(runtime): Extension<Runtime>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Response> {
+    let protocol = request_protocol(&headers)?;
+    runtime.heartbeat_worker_session(&session_id, body, protocol).await.map(session_answer).map_err(worker_refusal)
+}
+
+/// The holder may name itself in the JSON body or as `?worker_id=`.
+async fn close_worker_session(
+    Extension(runtime): Extension<Runtime>,
+    Path(session_id): Path<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Response> {
+    let protocol = request_protocol(&headers)?;
+    let mut fields = if body.is_empty() {
+        json!({})
+    } else {
+        serde_json::from_slice::<Value>(&body).ok().filter(Value::is_object).unwrap_or_else(|| json!({}))
+    };
+    if let Some(worker_id) = query.get("worker_id")
+        && fields.get("worker_id").is_none()
+    {
+        fields["worker_id"] = json!(worker_id);
+    }
+    runtime.close_worker_session(&session_id, fields, protocol).await.map(session_answer).map_err(worker_refusal)
+}
+
+async fn list_worker_sessions(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    runtime.list_worker_sessions().await.map(Json)
+}
+
+async fn show_worker_session(Extension(runtime): Extension<Runtime>, Path(session_id): Path<String>) -> Result<Json<Value>> {
+    runtime.show_worker_session(&session_id).await.map(Json)
+}
+
 async fn worker_heartbeat(
     Extension(runtime): Extension<Runtime>,
     headers: HeaderMap,
@@ -1820,12 +2018,46 @@ async fn poll_workflow(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    let pages = runtime.history_pages();
-    let wait = runtime.worker_poll_wait();
     runtime
-        .poll_with_pages(body, "workflow", request_protocol(&headers)?, pages, wait)
+        .poll_workflow_tasks(body, request_protocol(&headers)?)
         .await
         .map(Json)
+        .map_err(worker_refusal)
+}
+
+async fn poll_update_validation(
+    Extension(runtime): Extension<Runtime>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    request_protocol(&headers)?;
+    runtime
+        .poll_update_validation(body)
+        .await
+        .map(|body| Json(worker_response(body)))
+        .map_err(worker_refusal)
+}
+
+async fn approve_update_validation(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    request_protocol(&headers)?;
+    let (status, body) = runtime.complete_update_validation(&task_id, body, false).await.map_err(worker_refusal)?;
+    Ok((status, Json(worker_response(body))))
+}
+
+async fn reject_update_validation(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    request_protocol(&headers)?;
+    let (status, body) = runtime.complete_update_validation(&task_id, body, true).await.map_err(worker_refusal)?;
+    Ok((status, Json(worker_response(body))))
 }
 async fn poll_activity(
     Extension(runtime): Extension<Runtime>,
@@ -1862,8 +2094,10 @@ async fn deliver_cancellation(
     runtime
         .deliver_cancellation(&task_id, body, request_protocol(&headers)?)
         .await
-        // `WorkerProtocol::json`: every answer carries the worker envelope.
+        // `WorkerProtocol::json`: every answer carries the worker envelope,
+        // the bridge's refused deliveries included.
         .map(|body| Json(worker_response(body)))
+        .map_err(worker_refusal)
 }
 async fn complete_workflow(
     Extension(runtime): Extension<Runtime>,
@@ -1872,7 +2106,9 @@ async fn complete_workflow(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    // PHP's transport rules come before every guard, ownership included.
+    // PHP validates the message-stream fields first, then its transport
+    // rules, before every guard, ownership included.
+    super::message_streams::check_completion_fields(&body).map_err(worker_refusal)?;
     let body = super::completion_rules::checked(body).map_err(worker_refusal)?;
     if body["commands"].as_array().is_some_and(|commands| {
         commands
@@ -1895,6 +2131,16 @@ async fn complete_workflow(
                 "outcome":"rejected","recorded":false,"reason":"typed_search_attributes_unavailable",
                 "requested_version":request_protocol(&headers)?,"minimum_protocol_version":minimum,
                 "remediation":format!("Complete typed search-attribute updates only through server nodes advertising worker protocol {minimum} or newer.")}),
+        });
+    }
+    if !super::message_streams::Completion::of(&body).is_empty() && !protocol_at_least(&headers, 15)? {
+        let minimum = super::message_streams::MINIMUM_PROTOCOL_VERSION;
+        return Err(super::RuntimeError::Protocol {
+            status: StatusCode::CONFLICT,
+            response: json!({"task_id":task_id,"workflow_task_attempt":body["workflow_task_attempt"],
+                "outcome":"rejected","reason":"message_streams_unavailable",
+                "requested_version":request_protocol(&headers)?,"minimum_protocol_version":minimum,
+                "remediation":format!("Send the X-Durable-Workflow-Protocol-Version header with worker protocol {minimum} or newer.")}),
         });
     }
     let attempt = body["workflow_task_attempt"].clone();
@@ -2030,6 +2276,50 @@ async fn renew_activity_lease(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     runtime.renew_activity_lease(&task_id, body).await.map(Json)
+}
+
+/// POST …/cancellation-scopes/open, prepare and deliver: each answer is
+/// the route's own body and status, in the worker envelope.
+async fn open_cancellation_scope(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, body) = runtime.open_cancellation_scope(&task_id, body, request_protocol(&headers)?).await?;
+    Ok((status, Json(body)))
+}
+
+async fn prepare_cancellation_scope(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, body) = runtime.prepare_cancellation_scope(&task_id, body, request_protocol(&headers)?).await?;
+    Ok((status, Json(body)))
+}
+
+async fn deliver_cancellation_scope(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, body) = runtime.deliver_cancellation_scope(&task_id, body, request_protocol(&headers)?).await?;
+    Ok((status, Json(body)))
+}
+
+async fn acknowledge_activity_cancellation(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    runtime
+        .acknowledge_activity_cancellation(&task_id, body, request_protocol(&headers)?)
+        .await
+        .map(Json)
 }
 
 async fn activity_status(

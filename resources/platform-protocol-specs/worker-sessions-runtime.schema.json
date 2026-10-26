@@ -223,9 +223,9 @@
           "items": { "type": "string", "minLength": 1, "maxLength": 255 },
           "uniqueItems": true
         },
-        "lease_seconds": { "type": "integer", "minimum": 1, "default": 120 },
-        "ttl_seconds": { "type": "integer", "minimum": 1, "default": 1800 },
-        "max_concurrent_activities": { "type": "integer", "minimum": 1, "default": 1 },
+        "lease_seconds": { "type": "integer", "minimum": 1, "maximum": 86400, "default": 120 },
+        "ttl_seconds": { "type": "integer", "minimum": 1, "maximum": 2592000, "default": 1800 },
+        "max_concurrent_activities": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 1 },
         "create_if_missing": { "type": "boolean", "default": true },
         "allow_reacquire_after_failure": { "type": "boolean", "default": true }
       }
@@ -238,10 +238,16 @@
           "required": ["worker_id"],
           "additionalProperties": true,
           "properties": {
-            "worker_id": { "type": "string", "minLength": 1, "maxLength": 255 }
+            "worker_id": { "type": "string", "minLength": 1, "maxLength": 255 },
+            "registration_token": { "$ref": "#/$defs/workerRegistrationToken" }
           }
         }
       ]
+    },
+    "workerRegistrationToken": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{32}$",
+      "description": "The token worker registration returned. When sent, it must be the worker's current registration, otherwise the request is refused with stale_worker_registration and changes nothing. A worker whose current registration declared the worker_session_registration_token capability must send it on every explicit create, heartbeat and close: without it the request is refused the same way, so a replaced process can neither reuse, renew nor close its replacement's session. Without that capability a request without a token acts for the worker ID's current registration, as before the token existed. A same-ID re-registration orphans the sessions the previous registration held (worker_registration_replaced) until they are reacquired. Session-bound activity claims and their heartbeats keep their own attempt leases."
     },
     "workerSessionHeartbeatRequest": {
       "type": "object",
@@ -249,7 +255,8 @@
       "additionalProperties": true,
       "properties": {
         "worker_id": { "type": "string", "minLength": 1, "maxLength": 255 },
-        "lease_seconds": { "type": "integer", "minimum": 1 }
+        "lease_seconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+        "registration_token": { "$ref": "#/$defs/workerRegistrationToken" }
       }
     },
     "workerSessionCloseRequest": {
@@ -257,7 +264,8 @@
       "required": ["worker_id"],
       "additionalProperties": true,
       "properties": {
-        "worker_id": { "type": "string", "minLength": 1, "maxLength": 255 }
+        "worker_id": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "registration_token": { "$ref": "#/$defs/workerRegistrationToken" }
       }
     },
     "workerSessionOperationResult": {
@@ -289,7 +297,8 @@
             "session_owned_by_another_worker",
             "session_activity_limit_exceeded",
             "session_closed",
-            "session_reacquire_disallowed"
+            "session_reacquire_disallowed",
+            "stale_worker_registration"
           ]
         },
         "error": { "type": "string" },
@@ -425,7 +434,7 @@
     },
     "workerSessionFailureReason": {
       "type": ["string", "null"],
-      "enum": [null, "ttl_expired", "lease_expired", "worker_heartbeat_stale"]
+      "enum": [null, "ttl_expired", "lease_expired", "worker_heartbeat_stale", "worker_registration_replaced"]
     }
   }
 }

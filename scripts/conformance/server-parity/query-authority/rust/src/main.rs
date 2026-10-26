@@ -169,6 +169,13 @@ async fn main() -> Result<()> {
         let query = client.query_workflow(&namespace, "value", json!([])).await;
         if mode == "timely" {
             assert_eq!(query?, expected());
+            // The independent caller can observe the commit before the Worker
+            // receives its acknowledgement. Wait inside the original budget
+            // before stopping it, as worker.php does.
+            wait(until, || {
+                !named(&events(Path::new(journal)), "acknowledgement").is_empty()
+            })
+            .await?;
         } else {
             match query {
                 Err(Error::QueryFailed(failure)) => {

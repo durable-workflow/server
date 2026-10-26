@@ -1,0 +1,1323 @@
+{
+ "recorded_from": "published Server 2.11.1 (ghcr.io/durable-workflow/server@sha256:bf8bed13f5f809ee3425233180a581353eac4683adbee5c4ecbf63bb18bbd102) on SQLite, workflow id probe-5",
+ "message_streams": {
+  "applicable": true,
+  "workflow_id": "probe-5-ms",
+  "cluster_contract": {
+   "schema": "durable-workflow.v2.message-streams.contract",
+   "version": 1,
+   "capability_flag": "message_streams",
+   "minimum_worker_protocol_version": "1.15",
+   "scope": "workflow_instance",
+   "transport": {
+    "append_path": "/api/workflows/{workflow_id}/message-streams/{stream_name}/messages",
+    "diagnostics_path": "/api/workflows/{workflow_id}/message-streams",
+    "internal_signal": "__durable_workflow_message_stream",
+    "message_schema": "durable-workflow.v2.message-stream.message",
+    "cursor_schema": "durable-workflow.v2.message-stream.cursor",
+    "payload_envelope": "inline_avro_at_the_server_to_worker_delivery_boundary",
+    "durable_payload": "exact_inline_avro_bytes_or_the_verified_external_storage_reference",
+    "payload_visibility": "payload_is_present_only_in_durable_signal_history_and_is_omitted_from_stream_diagnostics"
+   },
+   "identity": {
+    "producer_key": "message_id",
+    "order_key": "position",
+    "first_position": 1,
+    "duplicate_same_payload": "return_existing_position_without_redelivery",
+    "duplicate_different_payload": "reject_message_identity_conflict"
+   },
+   "cursor": {
+    "ownership": "server",
+    "worker_completion_field": "message_stream_cursors",
+    "monotonic": true,
+    "advancement": "highest_contiguous_consumed_position",
+    "history_event": "MessageCursorAdvanced",
+    "continue_as_new": "a_payload_free_cursor_checkpoint_and_unconsumed_messages_are_delivered_to_the_current_run"
+   },
+   "waiting": {
+    "worker_completion_field": "message_stream_waits",
+    "durable_wakeup": "runtime_reserved_signal_task_resume",
+    "pending_wait_is_diagnostic": true
+   },
+   "batch": {
+    "minimum": 1,
+    "maximum": 100,
+    "waits_for": "first_message",
+    "returns": "up_to_maximum_currently_available_messages"
+   },
+   "replay": {
+    "ordering_source": "server_assigned_position",
+    "deduplication_source": "message_id_and_instance_cursor",
+    "worker_replacement": "history_replay_reconstructs_pending_messages_and_cursor_acknowledgement_is_idempotent",
+    "server_restart": "stream_items_cursor_and_wait_state_are_database_durable",
+    "external_payloads": "references_remain_reference_backed_at_rest_and_are_resolved_for_worker_delivery_then_removed_with_namespace_retention"
+   },
+   "sdk_handoffs": {
+    "php": "WorkflowContext::messageStream(string)->receive(int)",
+    "python": "WorkflowContext.message_stream(str).receive(max_items)",
+    "rust": "WorkflowContext::message_stream(name).receive(max_items).await"
+   },
+   "conformance": {
+    "runtimes": [
+     "php",
+     "python",
+     "rust"
+    ],
+    "targets": [
+     "server",
+     "cloud"
+    ],
+    "required_scenarios": [
+     "repeated_messages_are_observed_in_position_order_exactly_once",
+     "duplicate_delivery_preserves_one_logical_message",
+     "worker_is_replaced_mid_stream",
+     "continue_as_new_retains_cursor_and_pending_messages",
+     "server_restart_retains_cursor_wait_and_order"
+    ],
+    "artifacts": "published"
+   }
+  },
+  "worker_capability": {
+   "schema": "durable-workflow.v2.message-streams.contract",
+   "version": 1,
+   "capability_flag": "message_streams",
+   "minimum_worker_protocol_version": "1.15",
+   "scope": "workflow_instance",
+   "transport": {
+    "append_path": "/api/workflows/{workflow_id}/message-streams/{stream_name}/messages",
+    "diagnostics_path": "/api/workflows/{workflow_id}/message-streams",
+    "internal_signal": "__durable_workflow_message_stream",
+    "message_schema": "durable-workflow.v2.message-stream.message",
+    "cursor_schema": "durable-workflow.v2.message-stream.cursor",
+    "payload_envelope": "inline_avro_at_the_server_to_worker_delivery_boundary",
+    "durable_payload": "exact_inline_avro_bytes_or_the_verified_external_storage_reference",
+    "payload_visibility": "payload_is_present_only_in_durable_signal_history_and_is_omitted_from_stream_diagnostics"
+   },
+   "identity": {
+    "producer_key": "message_id",
+    "order_key": "position",
+    "first_position": 1,
+    "duplicate_same_payload": "return_existing_position_without_redelivery",
+    "duplicate_different_payload": "reject_message_identity_conflict"
+   },
+   "cursor": {
+    "ownership": "server",
+    "worker_completion_field": "message_stream_cursors",
+    "monotonic": true,
+    "advancement": "highest_contiguous_consumed_position",
+    "history_event": "MessageCursorAdvanced",
+    "continue_as_new": "a_payload_free_cursor_checkpoint_and_unconsumed_messages_are_delivered_to_the_current_run"
+   },
+   "waiting": {
+    "worker_completion_field": "message_stream_waits",
+    "durable_wakeup": "runtime_reserved_signal_task_resume",
+    "pending_wait_is_diagnostic": true
+   },
+   "batch": {
+    "minimum": 1,
+    "maximum": 100,
+    "waits_for": "first_message",
+    "returns": "up_to_maximum_currently_available_messages"
+   },
+   "replay": {
+    "ordering_source": "server_assigned_position",
+    "deduplication_source": "message_id_and_instance_cursor",
+    "worker_replacement": "history_replay_reconstructs_pending_messages_and_cursor_acknowledgement_is_idempotent",
+    "server_restart": "stream_items_cursor_and_wait_state_are_database_durable",
+    "external_payloads": "references_remain_reference_backed_at_rest_and_are_resolved_for_worker_delivery_then_removed_with_namespace_retention"
+   },
+   "sdk_handoffs": {
+    "php": "WorkflowContext::messageStream(string)->receive(int)",
+    "python": "WorkflowContext.message_stream(str).receive(max_items)",
+    "rust": "WorkflowContext::message_stream(name).receive(max_items).await"
+   },
+   "conformance": {
+    "runtimes": [
+     "php",
+     "python",
+     "rust"
+    ],
+    "targets": [
+     "server",
+     "cloud"
+    ],
+    "required_scenarios": [
+     "repeated_messages_are_observed_in_position_order_exactly_once",
+     "duplicate_delivery_preserves_one_logical_message",
+     "worker_is_replaced_mid_stream",
+     "continue_as_new_retains_cursor_and_pending_messages",
+     "server_restart_retains_cursor_wait_and_order"
+    ],
+    "artifacts": "published"
+   },
+   "supported": true
+  },
+  "run_id": "01m5n2d2gpbkqp605f4w699nfy",
+  "list_before": {
+   "status": 200,
+   "response": {
+    "workflow_id": "probe-5-ms",
+    "count": 0,
+    "streams": []
+   }
+  },
+  "show_before": {
+   "status": 404,
+   "response": {
+    "workflow_id": "probe-5-ms",
+    "stream_name": "orders",
+    "reason": "message_stream_not_found"
+   }
+  },
+  "show_bad_name": {
+   "status": 422,
+   "response": {
+    "message": "The stream name must contain 1-128 letters, numbers, periods, underscores, colons, or hyphens.",
+    "reason": "validation_failed",
+    "errors": {
+     "stream_name": [
+      "The stream name must contain 1-128 letters, numbers, periods, underscores, colons, or hyphens."
+     ]
+    },
+    "validation_errors": {
+     "stream_name": [
+      "The stream name must contain 1-128 letters, numbers, periods, underscores, colons, or hyphens."
+     ]
+    }
+   }
+  },
+  "list_unknown": {
+   "status": 404,
+   "response": {
+    "message": "Workflow not found.",
+    "reason": "instance_not_found"
+   }
+  },
+  "poll1": {
+   "run_id": "01m5n2d2gpbkqp605f4w699nfy",
+   "history": []
+  },
+  "complete1_refusals": {
+   "wait_ahead": {
+    "status": 422,
+    "response": {
+     "message": "The pending wait must start after the durable stream cursor.",
+     "reason": "validation_failed",
+     "errors": {
+      "message_stream_waits.0.after_position": [
+       "The pending wait must start after the durable stream cursor."
+      ]
+     },
+     "validation_errors": {
+      "message_stream_waits.0.after_position": [
+       "The pending wait must start after the durable stream cursor."
+      ]
+     }
+    }
+   },
+   "cursor_ahead": {
+    "status": 422,
+    "response": {
+     "message": "The cursor cannot advance beyond the last accepted stream position.",
+     "reason": "validation_failed",
+     "errors": {
+      "message_stream_cursors.0.through_position": [
+       "The cursor cannot advance beyond the last accepted stream position."
+      ]
+     },
+     "validation_errors": {
+      "message_stream_cursors.0.through_position": [
+       "The cursor cannot advance beyond the last accepted stream position."
+      ]
+     }
+    }
+   },
+   "bad_name": {
+    "status": 422,
+    "response": {
+     "message": "The stream_name must contain 1-128 letters, numbers, periods, underscores, colons, or hyphens.",
+     "reason": "validation_failed",
+     "errors": {
+      "message_stream_waits.0.stream_name": [
+       "The stream_name must contain 1-128 letters, numbers, periods, underscores, colons, or hyphens."
+      ]
+     },
+     "validation_errors": {
+      "message_stream_waits.0.stream_name": [
+       "The stream_name must contain 1-128 letters, numbers, periods, underscores, colons, or hyphens."
+      ]
+     }
+    }
+   },
+   "repeated_wait": {
+    "status": 422,
+    "response": {
+     "message": "A stream may have only one pending wait per workflow task completion.",
+     "reason": "validation_failed",
+     "errors": {
+      "message_stream_waits.1.stream_name": [
+       "A stream may have only one pending wait per workflow task completion."
+      ]
+     },
+     "validation_errors": {
+      "message_stream_waits.1.stream_name": [
+       "A stream may have only one pending wait per workflow task completion."
+      ]
+     }
+    }
+   },
+   "old_protocol": {
+    "status": 409,
+    "response": {
+     "task_id": "01m5n2d2h1y9p7kk8qea67rxxj",
+     "workflow_task_attempt": 1,
+     "outcome": "rejected",
+     "reason": "message_streams_unavailable",
+     "requested_version": "1.14",
+     "minimum_protocol_version": "1.15",
+     "remediation": "Send the X-Durable-Workflow-Protocol-Version header with worker protocol 1.15 or newer."
+    }
+   }
+  },
+  "complete1": {
+   "status": 200,
+   "response": {
+    "task_id": "01m5n2d2h1y9p7kk8qea67rxxj",
+    "workflow_task_attempt": 1,
+    "outcome": "completed",
+    "recorded": true,
+    "run_id": "01m5n2d2gpbkqp605f4w699nfy",
+    "run_status": "waiting",
+    "created_task_ids": [],
+    "reason": null
+   }
+  },
+  "list_waiting": {
+   "status": 200,
+   "response": {
+    "workflow_id": "probe-5-ms",
+    "count": 1,
+    "streams": [
+     {
+      "stream_name": "orders",
+      "last_position": 0,
+      "cursor_position": 0,
+      "pending_count": 0,
+      "pending_wait": {
+       "run_id": "01m5n2d2gpbkqp605f4w699nfy",
+       "after_position": 0,
+       "since": "2026-10-23T19:04:33.000000Z"
+      },
+      "duplicate_count": 0,
+      "malformed_count": 0,
+      "last_input_outcome": null,
+      "last_input_message_id": null,
+      "last_input_at": null
+     }
+    ]
+   }
+  },
+  "appends": {
+   "m1": {
+    "status": 202,
+    "response": {
+     "accepted": true,
+     "duplicate": false,
+     "workflow_id": "probe-5-ms",
+     "run_id": "01m5n2d2gpbkqp605f4w699nfy",
+     "stream_name": "orders",
+     "message_id": "m1",
+     "position": 1,
+     "cursor_position": 0,
+     "outcome": "accepted",
+     "reason": null
+    }
+   },
+   "m1_duplicate": {
+    "status": 200,
+    "response": {
+     "accepted": true,
+     "duplicate": true,
+     "workflow_id": "probe-5-ms",
+     "stream_name": "orders",
+     "message_id": "m1",
+     "position": 1,
+     "cursor_position": 0,
+     "outcome": "duplicate",
+     "reason": null
+    }
+   },
+   "m1_conflict": {
+    "status": 409,
+    "response": {
+     "accepted": false,
+     "duplicate": false,
+     "workflow_id": "probe-5-ms",
+     "stream_name": "orders",
+     "message_id": "m1",
+     "position": 1,
+     "cursor_position": 0,
+     "outcome": "rejected",
+     "reason": "message_identity_conflict"
+    }
+   },
+   "m2_sdk": {
+    "status": null,
+    "response": {
+     "accepted": true,
+     "duplicate": false,
+     "workflow_id": "probe-5-ms",
+     "run_id": "01m5n2d2gpbkqp605f4w699nfy",
+     "stream_name": "orders",
+     "message_id": "m2",
+     "position": 2,
+     "cursor_position": 0,
+     "outcome": "accepted",
+     "reason": null
+    }
+   },
+   "no_id": {
+    "status": 422,
+    "response": {
+     "message": "The message id field is required.",
+     "reason": "validation_failed",
+     "errors": {
+      "message_id": [
+       "The message id field is required."
+      ]
+     },
+     "validation_errors": {
+      "message_id": [
+       "The message id field is required."
+      ]
+     }
+    }
+   },
+   "bad_id": {
+    "status": 422,
+    "response": {
+     "message": "The message id field format is invalid.",
+     "reason": "validation_failed",
+     "errors": {
+      "message_id": [
+       "The message id field format is invalid."
+      ]
+     },
+     "validation_errors": {
+      "message_id": [
+       "The message id field format is invalid."
+      ]
+     }
+    }
+   },
+   "long_id": {
+    "status": 422,
+    "response": {
+     "message": "The message id field must not be greater than 191 characters.",
+     "reason": "validation_failed",
+     "errors": {
+      "message_id": [
+       "The message id field must not be greater than 191 characters."
+      ]
+     },
+     "validation_errors": {
+      "message_id": [
+       "The message id field must not be greater than 191 characters."
+      ]
+     }
+    }
+   },
+   "bad_input": {
+    "status": 422,
+    "response": {
+     "message": "The input field must be an array.",
+     "reason": "validation_failed",
+     "errors": {
+      "input": [
+       "The input field must be an array."
+      ]
+     },
+     "validation_errors": {
+      "input": [
+       "The input field must be an array."
+      ]
+     }
+    }
+   },
+   "bad_stream": {
+    "status": 422,
+    "response": {
+     "message": "The stream name must contain 1-128 letters, numbers, periods, underscores, colons, or hyphens.",
+     "reason": "validation_failed",
+     "errors": {
+      "stream_name": [
+       "The stream name must contain 1-128 letters, numbers, periods, underscores, colons, or hyphens."
+      ]
+     },
+     "validation_errors": {
+      "stream_name": [
+       "The stream name must contain 1-128 letters, numbers, periods, underscores, colons, or hyphens."
+      ]
+     }
+    }
+   },
+   "unknown_workflow": {
+    "status": 404,
+    "response": {
+     "accepted": false,
+     "workflow_id": "probe-5-ms-missing",
+     "stream_name": "orders",
+     "outcome": "rejected",
+     "reason": "instance_not_found"
+    }
+   },
+   "other_stream": {
+    "status": 202,
+    "response": {
+     "accepted": true,
+     "duplicate": false,
+     "workflow_id": "probe-5-ms",
+     "run_id": "01m5n2d2gpbkqp605f4w699nfy",
+     "stream_name": "audit",
+     "message_id": "a1",
+     "position": 1,
+     "cursor_position": 0,
+     "outcome": "accepted",
+     "reason": null
+    }
+   },
+   "reserved_signal": {
+    "status": 422,
+    "response": {
+     "workflow_id": "probe-5-ms",
+     "signal_name": "__durable_workflow_message_stream",
+     "outcome": "rejected",
+     "reason": "runtime_reserved_signal",
+     "message": "This signal name is reserved for the durable runtime transport.",
+     "accepted": false,
+     "control_plane": {
+      "schema": "durable-workflow.v2.control-plane-response",
+      "version": 1,
+      "operation": "signal",
+      "workflow_id": "probe-5-ms",
+      "contract": {
+       "schema": "durable-workflow.v2.control-plane-response.contract",
+       "version": 1,
+       "legacy_field_policy": "reject_non_canonical",
+       "legacy_fields": {
+        "query": "query_name",
+        "signal": "signal_name",
+        "update": "update_name",
+        "wait_policy": "wait_for"
+       },
+       "required_fields": [
+        "workflow_id",
+        "operation_name",
+        "operation_name_field"
+       ],
+       "success_fields": [
+        "outcome"
+       ],
+       "rejection_fields": [
+        "workflow_id",
+        "run_id",
+        "signal_name",
+        "command_status",
+        "command_source",
+        "target_scope",
+        "outcome",
+        "reason",
+        "rejection_reason",
+        "rejection_category",
+        "message",
+        "command_contract_source",
+        "command_contract_backfill_needed",
+        "command_contract_backfill_available",
+        "declared_signals",
+        "signal_admission",
+        "retryable",
+        "error_id"
+       ],
+       "rejection_reasons": [
+        "instance_not_found",
+        "historical_run_command_rejected",
+        "unknown_signal",
+        "invalid_signal_arguments",
+        "run_not_active",
+        "instance_not_started",
+        "selected_run_not_current",
+        "configured_workflow_type_invalid",
+        "v1_projection_read_only",
+        "backend_lock_pressure",
+        "control_plane_internal_error"
+       ]
+      },
+      "operation_name": "__durable_workflow_message_stream",
+      "operation_name_field": "signal_name",
+      "outcome": "rejected",
+      "reason": "runtime_reserved_signal",
+      "message": "This signal name is reserved for the durable runtime transport."
+     }
+    }
+   },
+   "m3": {
+    "status": 202,
+    "response": {
+     "accepted": true,
+     "duplicate": false,
+     "workflow_id": "probe-5-ms",
+     "run_id": "01m5n2d2gpbkqp605f4w699nfy",
+     "stream_name": "orders",
+     "message_id": "m3",
+     "position": 3,
+     "cursor_position": 1,
+     "outcome": "accepted",
+     "reason": null
+    }
+   },
+   "closed": {
+    "status": 409,
+    "response": {
+     "accepted": false,
+     "duplicate": false,
+     "workflow_id": "probe-5-ms",
+     "stream_name": "orders",
+     "message_id": "m4",
+     "position": null,
+     "outcome": "rejected",
+     "reason": "run_not_active"
+    }
+   },
+   "closed_duplicate": {
+    "status": 409,
+    "response": {
+     "accepted": false,
+     "duplicate": false,
+     "workflow_id": "probe-5-ms",
+     "stream_name": "orders",
+     "message_id": "m1",
+     "position": null,
+     "outcome": "rejected",
+     "reason": "run_not_active"
+    }
+   }
+  },
+  "list_after_appends": {
+   "status": 200,
+   "response": {
+    "workflow_id": "probe-5-ms",
+    "count": 2,
+    "streams": [
+     {
+      "stream_name": "audit",
+      "last_position": 1,
+      "cursor_position": 0,
+      "pending_count": 1,
+      "pending_wait": null,
+      "duplicate_count": 0,
+      "malformed_count": 0,
+      "last_input_outcome": "accepted",
+      "last_input_message_id": "a1",
+      "last_input_at": "2026-10-23T19:04:34.000000Z"
+     },
+     {
+      "stream_name": "orders",
+      "last_position": 2,
+      "cursor_position": 0,
+      "pending_count": 2,
+      "pending_wait": null,
+      "duplicate_count": 2,
+      "malformed_count": 4,
+      "last_input_outcome": "malformed",
+      "last_input_message_id": "m3",
+      "last_input_at": "2026-10-23T19:04:34.000000Z"
+     }
+    ]
+   }
+  },
+  "show_after_appends": {
+   "status": 200,
+   "response": {
+    "workflow_id": "probe-5-ms",
+    "stream": {
+     "stream_name": "orders",
+     "last_position": 2,
+     "cursor_position": 0,
+     "pending_count": 2,
+     "pending_wait": null,
+     "duplicate_count": 2,
+     "malformed_count": 4,
+     "last_input_outcome": "malformed",
+     "last_input_message_id": "m3",
+     "last_input_at": "2026-10-23T19:04:34.000000Z"
+    }
+   }
+  },
+  "poll2": {
+   "run_id": "01m5n2d2gpbkqp605f4w699nfy",
+   "history": [
+    {
+     "event_type": "SignalReceived",
+     "deliveries": [
+      {
+       "schema": "durable-workflow.v2.message-stream.message",
+       "stream_name": "orders",
+       "message_id": "m1",
+       "position": 1,
+       "payload_envelope": [
+        "blob",
+        "codec"
+       ],
+       "payload": [
+        {
+         "n": 1
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "event_type": "SignalReceived",
+     "deliveries": [
+      {
+       "schema": "durable-workflow.v2.message-stream.message",
+       "stream_name": "orders",
+       "message_id": "m2",
+       "position": 2,
+       "payload_envelope": [
+        "blob",
+        "codec"
+       ],
+       "payload": [
+        {
+         "n": 2
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "event_type": "SignalReceived",
+     "deliveries": [
+      {
+       "schema": "durable-workflow.v2.message-stream.message",
+       "stream_name": "audit",
+       "message_id": "a1",
+       "position": 1,
+       "payload_envelope": [
+        "blob",
+        "codec"
+       ],
+       "payload": []
+      }
+     ]
+    }
+   ]
+  },
+  "complete2_refusals": {
+   "beyond": {
+    "status": 422,
+    "response": {
+     "message": "The cursor cannot advance beyond the last accepted stream position.",
+     "reason": "validation_failed",
+     "errors": {
+      "message_stream_cursors.0.through_position": [
+       "The cursor cannot advance beyond the last accepted stream position."
+      ]
+     },
+     "validation_errors": {
+      "message_stream_cursors.0.through_position": [
+       "The cursor cannot advance beyond the last accepted stream position."
+      ]
+     }
+    }
+   },
+   "negative": {
+    "status": 422,
+    "response": {
+     "message": "The message_stream_cursors.0.through_position field must be at least 0.",
+     "reason": "validation_failed",
+     "errors": {
+      "message_stream_cursors.0.through_position": [
+       "The message_stream_cursors.0.through_position field must be at least 0."
+      ]
+     },
+     "validation_errors": {
+      "message_stream_cursors.0.through_position": [
+       "The message_stream_cursors.0.through_position field must be at least 0."
+      ]
+     }
+    }
+   },
+   "wait_behind": {
+    "status": 422,
+    "response": {
+     "message": "The pending wait must start after the durable stream cursor.",
+     "reason": "validation_failed",
+     "errors": {
+      "message_stream_waits.0.after_position": [
+       "The pending wait must start after the durable stream cursor."
+      ]
+     },
+     "validation_errors": {
+      "message_stream_waits.0.after_position": [
+       "The pending wait must start after the durable stream cursor."
+      ]
+     }
+    }
+   }
+  },
+  "complete2": {
+   "status": 200,
+   "response": {
+    "task_id": "01m5n2d3eb25p3d5t00y35nhhk",
+    "workflow_task_attempt": 1,
+    "outcome": "completed",
+    "recorded": true,
+    "run_id": "01m5n2d2gpbkqp605f4w699nfy",
+    "run_status": "waiting",
+    "created_task_ids": [
+     "01m5n2d516v62fqj8j4dzkb82t"
+    ],
+    "reason": null
+   }
+  },
+  "history_after2": [
+   {
+    "event_type": "SignalReceived",
+    "deliveries": [
+     {
+      "schema": "durable-workflow.v2.message-stream.message",
+      "stream_name": "orders",
+      "message_id": "m1",
+      "position": 1,
+      "payload_envelope": [
+       "blob",
+       "codec"
+      ],
+      "payload": [
+       {
+        "n": 1
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "event_type": "SignalReceived",
+    "deliveries": [
+     {
+      "schema": "durable-workflow.v2.message-stream.message",
+      "stream_name": "orders",
+      "message_id": "m2",
+      "position": 2,
+      "payload_envelope": [
+       "blob",
+       "codec"
+      ],
+      "payload": [
+       {
+        "n": 2
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "event_type": "SignalReceived",
+    "deliveries": [
+     {
+      "schema": "durable-workflow.v2.message-stream.message",
+      "stream_name": "audit",
+      "message_id": "a1",
+      "position": 1,
+      "payload_envelope": [
+       "blob",
+       "codec"
+      ],
+      "payload": []
+     }
+    ]
+   },
+   {
+    "event_type": "MessageCursorAdvanced",
+    "stream_key": "instance",
+    "previous_position": 0,
+    "new_position": 1,
+    "task_status": "leased"
+   },
+   {
+    "event_type": "MessageCursorAdvanced",
+    "stream_key": "orders",
+    "previous_position": 0,
+    "new_position": 1,
+    "task_status": "completed"
+   }
+  ],
+  "list_after2": {
+   "status": 200,
+   "response": {
+    "workflow_id": "probe-5-ms",
+    "count": 2,
+    "streams": [
+     {
+      "stream_name": "audit",
+      "last_position": 1,
+      "cursor_position": 0,
+      "pending_count": 1,
+      "pending_wait": null,
+      "duplicate_count": 0,
+      "malformed_count": 0,
+      "last_input_outcome": "accepted",
+      "last_input_message_id": "a1",
+      "last_input_at": "2026-10-23T19:04:34.000000Z"
+     },
+     {
+      "stream_name": "orders",
+      "last_position": 2,
+      "cursor_position": 1,
+      "pending_count": 1,
+      "pending_wait": null,
+      "duplicate_count": 2,
+      "malformed_count": 4,
+      "last_input_outcome": "malformed",
+      "last_input_message_id": "m3",
+      "last_input_at": "2026-10-23T19:04:34.000000Z"
+     }
+    ]
+   }
+  },
+  "poll3": {
+   "run_id": "01m5n2d2gpbkqp605f4w699nfy",
+   "history": [
+    {
+     "event_type": "SignalReceived",
+     "deliveries": [
+      {
+       "schema": "durable-workflow.v2.message-stream.message",
+       "stream_name": "orders",
+       "message_id": "m1",
+       "position": 1,
+       "payload_envelope": [
+        "blob",
+        "codec"
+       ],
+       "payload": [
+        {
+         "n": 1
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "event_type": "SignalReceived",
+     "deliveries": [
+      {
+       "schema": "durable-workflow.v2.message-stream.message",
+       "stream_name": "orders",
+       "message_id": "m2",
+       "position": 2,
+       "payload_envelope": [
+        "blob",
+        "codec"
+       ],
+       "payload": [
+        {
+         "n": 2
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "event_type": "SignalReceived",
+     "deliveries": [
+      {
+       "schema": "durable-workflow.v2.message-stream.message",
+       "stream_name": "audit",
+       "message_id": "a1",
+       "position": 1,
+       "payload_envelope": [
+        "blob",
+        "codec"
+       ],
+       "payload": []
+      }
+     ]
+    },
+    {
+     "event_type": "MessageCursorAdvanced",
+     "stream_key": "instance",
+     "previous_position": 0,
+     "new_position": 1,
+     "task_status": "leased"
+    },
+    {
+     "event_type": "MessageCursorAdvanced",
+     "stream_key": "orders",
+     "previous_position": 0,
+     "new_position": 1,
+     "task_status": "completed"
+    },
+    {
+     "event_type": "SignalReceived",
+     "deliveries": [
+      {
+       "schema": "durable-workflow.v2.message-stream.message",
+       "stream_name": "orders",
+       "message_id": "m3",
+       "position": 3,
+       "payload_envelope": [
+        "blob",
+        "codec"
+       ],
+       "payload": [
+        {
+         "n": 3
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "complete3": {
+   "status": 200,
+   "response": {
+    "task_id": "01m5n2d516v62fqj8j4dzkb82t",
+    "workflow_task_attempt": 1,
+    "outcome": "completed",
+    "recorded": true,
+    "run_id": "01m5n2d2gpbkqp605f4w699nfy",
+    "run_status": "completed",
+    "created_task_ids": [
+     "01m5n2d5gnm3yatnb4jaqtvfnk"
+    ],
+    "reason": null
+   }
+  },
+  "list_after_continue": {
+   "status": 200,
+   "response": {
+    "workflow_id": "probe-5-ms",
+    "count": 2,
+    "streams": [
+     {
+      "stream_name": "audit",
+      "last_position": 1,
+      "cursor_position": 0,
+      "pending_count": 1,
+      "pending_wait": null,
+      "duplicate_count": 0,
+      "malformed_count": 0,
+      "last_input_outcome": "accepted",
+      "last_input_message_id": "a1",
+      "last_input_at": "2026-10-23T19:04:34.000000Z"
+     },
+     {
+      "stream_name": "orders",
+      "last_position": 3,
+      "cursor_position": 2,
+      "pending_count": 1,
+      "pending_wait": null,
+      "duplicate_count": 2,
+      "malformed_count": 4,
+      "last_input_outcome": "accepted",
+      "last_input_message_id": "m3",
+      "last_input_at": "2026-10-23T19:04:35.000000Z"
+     }
+    ]
+   }
+  },
+  "poll4": {
+   "run_id": "01m5n2d5g530fnzmcjg1mtmffs",
+   "history": [
+    {
+     "event_type": "SignalReceived",
+     "deliveries": [
+      {
+       "schema": "durable-workflow.v2.message-stream.cursor",
+       "stream_name": "orders",
+       "through_position": 2
+      }
+     ]
+    },
+    {
+     "event_type": "SignalReceived",
+     "deliveries": [
+      {
+       "schema": "durable-workflow.v2.message-stream.message",
+       "stream_name": "audit",
+       "message_id": "a1",
+       "position": 1,
+       "payload_envelope": [
+        "blob",
+        "codec"
+       ],
+       "payload": []
+      }
+     ]
+    },
+    {
+     "event_type": "SignalReceived",
+     "deliveries": [
+      {
+       "schema": "durable-workflow.v2.message-stream.message",
+       "stream_name": "orders",
+       "message_id": "m3",
+       "position": 3,
+       "payload_envelope": [
+        "blob",
+        "codec"
+       ],
+       "payload": [
+        {
+         "n": 3
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "complete4": {
+   "status": 200,
+   "response": {
+    "task_id": "01m5n2d5gnm3yatnb4jaqtvfnk",
+    "workflow_task_attempt": 1,
+    "outcome": "completed",
+    "recorded": true,
+    "run_id": "01m5n2d5g530fnzmcjg1mtmffs",
+    "run_status": "completed",
+    "created_task_ids": [],
+    "reason": null
+   }
+  },
+  "continued_run_id": "01m5n2d5g530fnzmcjg1mtmffs",
+  "list_final": {
+   "status": 200,
+   "response": {
+    "workflow_id": "probe-5-ms",
+    "count": 2,
+    "streams": [
+     {
+      "stream_name": "audit",
+      "last_position": 1,
+      "cursor_position": 0,
+      "pending_count": 1,
+      "pending_wait": null,
+      "duplicate_count": 0,
+      "malformed_count": 0,
+      "last_input_outcome": "accepted",
+      "last_input_message_id": "a1",
+      "last_input_at": "2026-10-23T19:04:34.000000Z"
+     },
+     {
+      "stream_name": "orders",
+      "last_position": 3,
+      "cursor_position": 3,
+      "pending_count": 0,
+      "pending_wait": null,
+      "duplicate_count": 2,
+      "malformed_count": 4,
+      "last_input_outcome": "accepted",
+      "last_input_message_id": "m3",
+      "last_input_at": "2026-10-23T19:04:35.000000Z"
+     }
+    ]
+   }
+  },
+  "first_run_events": [
+   "StartAccepted",
+   "WorkflowStarted",
+   "ConditionWaitOpened",
+   "SignalReceived",
+   "SignalReceived",
+   "SignalReceived",
+   "MessageCursorAdvanced",
+   "ConditionWaitSatisfied",
+   "ConditionWaitOpened",
+   "MessageCursorAdvanced",
+   "SignalReceived",
+   "MessageCursorAdvanced",
+   "ConditionWaitSatisfied",
+   "WorkflowContinuedAsNew",
+   "SignalRejected",
+   "SignalRejected",
+   "MessageCursorAdvanced"
+  ],
+  "first_run_streams": [
+   {
+    "event_type": "SignalReceived",
+    "deliveries": [
+     {
+      "schema": "durable-workflow.v2.message-stream.message",
+      "stream_name": "orders",
+      "message_id": "m1",
+      "position": 1,
+      "payload_envelope": [
+       "blob",
+       "codec"
+      ],
+      "payload": [
+       {
+        "n": 1
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "event_type": "SignalReceived",
+    "deliveries": [
+     {
+      "schema": "durable-workflow.v2.message-stream.message",
+      "stream_name": "orders",
+      "message_id": "m2",
+      "position": 2,
+      "payload_envelope": [
+       "blob",
+       "codec"
+      ],
+      "payload": [
+       {
+        "n": 2
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "event_type": "SignalReceived",
+    "deliveries": [
+     {
+      "schema": "durable-workflow.v2.message-stream.message",
+      "stream_name": "audit",
+      "message_id": "a1",
+      "position": 1,
+      "payload_envelope": [
+       "blob",
+       "codec"
+      ],
+      "payload": []
+     }
+    ]
+   },
+   {
+    "event_type": "MessageCursorAdvanced",
+    "stream_key": "instance",
+    "previous_position": 0,
+    "new_position": 1,
+    "task_status": "leased"
+   },
+   {
+    "event_type": "MessageCursorAdvanced",
+    "stream_key": "orders",
+    "previous_position": 0,
+    "new_position": 1,
+    "task_status": "completed"
+   },
+   {
+    "event_type": "SignalReceived",
+    "deliveries": [
+     {
+      "schema": "durable-workflow.v2.message-stream.message",
+      "stream_name": "orders",
+      "message_id": "m3",
+      "position": 3,
+      "payload_envelope": [
+       "blob",
+       "codec"
+      ],
+      "payload": [
+       {
+        "n": 3
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "event_type": "MessageCursorAdvanced",
+    "stream_key": "instance",
+    "previous_position": 1,
+    "new_position": 2,
+    "task_status": "leased"
+   },
+   {
+    "event_type": "MessageCursorAdvanced",
+    "stream_key": "orders",
+    "previous_position": 1,
+    "new_position": 2,
+    "task_status": "completed"
+   }
+  ],
+  "continued_run_events": [
+   "WorkflowStarted",
+   "SignalReceived",
+   "SignalReceived",
+   "SignalReceived",
+   "WorkflowCompleted",
+   "SignalRejected",
+   "SignalRejected",
+   "SignalRejected",
+   "MessageCursorAdvanced"
+  ],
+  "continued_run_streams": [
+   {
+    "event_type": "SignalReceived",
+    "deliveries": [
+     {
+      "schema": "durable-workflow.v2.message-stream.cursor",
+      "stream_name": "orders",
+      "through_position": 2
+     }
+    ]
+   },
+   {
+    "event_type": "SignalReceived",
+    "deliveries": [
+     {
+      "schema": "durable-workflow.v2.message-stream.message",
+      "stream_name": "audit",
+      "message_id": "a1",
+      "position": 1,
+      "payload_envelope": [
+       "blob",
+       "codec"
+      ],
+      "payload": []
+     }
+    ]
+   },
+   {
+    "event_type": "SignalReceived",
+    "deliveries": [
+     {
+      "schema": "durable-workflow.v2.message-stream.message",
+      "stream_name": "orders",
+      "message_id": "m3",
+      "position": 3,
+      "payload_envelope": [
+       "blob",
+       "codec"
+      ],
+      "payload": [
+       {
+        "n": 3
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "event_type": "MessageCursorAdvanced",
+    "stream_key": "orders",
+    "previous_position": 2,
+    "new_position": 3,
+    "task_status": "completed"
+   }
+  ]
+ }
+}

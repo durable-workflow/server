@@ -1,0 +1,205 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "nexus-operations",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "lease renewal λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "lease renewal λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "nexus_operations": {
+    "expected": {
+      "applicable": true,
+      "namespace": "{id}-nxo",
+      "workflow": {
+        "status": 200,
+        "response": {
+          "workflow_id": "{id}",
+          "caller_namespace": "default",
+          "count": 0,
+          "limit": 200,
+          "nexus_operations": []
+        }
+      },
+      "run": {
+        "status": 200,
+        "response": {
+          "workflow_id": "{id}",
+          "workflow_run_id": "{run}",
+          "caller_namespace": "default",
+          "count": 0,
+          "limit": 200,
+          "nexus_operations": []
+        }
+      },
+      "unknown_workflow": {
+        "status": 200,
+        "response": {
+          "workflow_id": "{id}-nxo-missing",
+          "caller_namespace": "default",
+          "count": 0,
+          "limit": 200,
+          "nexus_operations": []
+        }
+      },
+      "unknown_run": {
+        "status": 200,
+        "response": {
+          "workflow_id": "{id}",
+          "workflow_run_id": "01NOSUCHRUN000000000000000",
+          "caller_namespace": "default",
+          "count": 0,
+          "limit": 200,
+          "nexus_operations": []
+        }
+      },
+      "other_namespace": {
+        "status": 200,
+        "response": {
+          "workflow_id": "{id}",
+          "caller_namespace": "{id}-nxo",
+          "count": 0,
+          "limit": 200,
+          "nexus_operations": []
+        }
+      },
+      "other_namespace_run": {
+        "status": 200,
+        "response": {
+          "workflow_id": "{id}",
+          "workflow_run_id": "{run}",
+          "caller_namespace": "{id}-nxo",
+          "count": 0,
+          "limit": 200,
+          "nexus_operations": []
+        }
+      },
+      "limit_five": {
+        "status": 200,
+        "response": {
+          "workflow_id": "{id}",
+          "caller_namespace": "default",
+          "count": 0,
+          "limit": 5,
+          "nexus_operations": []
+        }
+      },
+      "limit_zero": {
+        "status": 200,
+        "response": {
+          "workflow_id": "{id}",
+          "caller_namespace": "default",
+          "count": 0,
+          "limit": 1,
+          "nexus_operations": []
+        }
+      },
+      "limit_negative": {
+        "status": 200,
+        "response": {
+          "workflow_id": "{id}",
+          "caller_namespace": "default",
+          "count": 0,
+          "limit": 1,
+          "nexus_operations": []
+        }
+      },
+      "limit_text": {
+        "status": 200,
+        "response": {
+          "workflow_id": "{id}",
+          "caller_namespace": "default",
+          "count": 0,
+          "limit": 200,
+          "nexus_operations": []
+        }
+      },
+      "limit_above_cap": {
+        "status": 200,
+        "response": {
+          "workflow_id": "{id}",
+          "caller_namespace": "default",
+          "count": 0,
+          "limit": 200,
+          "nexus_operations": []
+        }
+      },
+      "limit_fraction": {
+        "status": 200,
+        "response": {
+          "workflow_id": "{id}",
+          "caller_namespace": "default",
+          "count": 0,
+          "limit": 2,
+          "nexus_operations": []
+        }
+      },
+      "limit_empty": {
+        "status": 200,
+        "response": {
+          "workflow_id": "{id}",
+          "caller_namespace": "default",
+          "count": 0,
+          "limit": 200,
+          "nexus_operations": []
+        }
+      },
+      "limit_exponent": {
+        "status": 200,
+        "response": {
+          "workflow_id": "{id}",
+          "caller_namespace": "default",
+          "count": 0,
+          "limit": 100,
+          "nexus_operations": []
+        }
+      },
+      "limit_padded": {
+        "status": 200,
+        "response": {
+          "workflow_id": "{id}",
+          "caller_namespace": "default",
+          "count": 0,
+          "limit": 7,
+          "nexus_operations": []
+        }
+      },
+      "run_limit_five": {
+        "status": 200,
+        "response": {
+          "workflow_id": "{id}",
+          "workflow_run_id": "{run}",
+          "caller_namespace": "default",
+          "count": 0,
+          "limit": 5,
+          "nexus_operations": []
+        }
+      }
+    }
+  },
+  "contract": "Caller-indexed Nexus operation reads (ServiceCatalogController::nexusOperationsForWorkflow and nexusOperationsForRun) as published Server 2.11.1 serves them: the workflow's and one run's outbound service calls in the request's namespace, newest first, with no check that the workflow or run exists; the caller namespace, count and resolved limit (the configured 200 unless a numeric `limit` asks for less, cast like PHP's (int), at least 1). Nothing starts a Nexus operation here, so every list is empty. Embedded applications have no HTTP surface."
+}

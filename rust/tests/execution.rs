@@ -87,6 +87,10 @@ mod rejected_updates;
 mod continue_messages;
 #[path = "execution/update_wait.rs"]
 mod update_wait;
+#[path = "execution/update_validation.rs"]
+mod update_validation;
+#[path = "execution/keyless_condition_waits.rs"]
+mod keyless_condition_waits;
 #[path = "execution/payload_limits.rs"]
 mod payload_limits;
 #[path = "execution/start_definition.rs"]
@@ -103,6 +107,10 @@ mod child_policies;
 mod definition_routing;
 #[path = "execution/worker_admission.rs"]
 mod worker_admission;
+#[path = "execution/local_activities.rs"]
+mod local_activities;
+#[path = "execution/completion_budget.rs"]
+mod completion_budget;
 /// `WorkflowDefinitionRouting::ENTRY_VALIDATION_CAPABILITY`.
 const ENTRY_VALIDATION: &str = "workflow_entry_arguments_validation";
 #[path = "execution/parent_close_policies.rs"]
@@ -113,6 +121,8 @@ mod history_pages;
 mod declared_signals;
 #[path = "execution/worker_history_presentation.rs"]
 mod worker_history_presentation;
+#[path = "execution/message_streams.rs"]
+mod message_streams;
 #[path = "execution/poll_waits.rs"]
 mod poll_waits;
 #[path = "execution/child_cascade.rs"]
@@ -198,10 +208,14 @@ mod command_requests;
 mod describe_actions;
 #[path = "execution/run_deadlines.rs"]
 mod run_deadlines;
+#[path = "execution/waterline_projection_guards.rs"]
+mod waterline_projection_guards;
 #[path = "execution/operator_dashboard.rs"]
 mod operator_dashboard;
 #[path = "execution/waterline_reads.rs"]
 mod waterline_reads;
+#[path = "execution/nexus_operations.rs"]
+mod nexus_operations;
 #[path = "execution/task_queue_build_ids.rs"]
 mod task_queue_build_ids;
 #[path = "execution/start_timeouts.rs"]
@@ -287,6 +301,23 @@ mod external_payloads;
 #[path = "execution/trace_carriers.rs"]
 mod trace_carriers;
 
+#[path = "execution/workflow_poll_requests.rs"]
+mod workflow_poll_requests;
+
+#[path = "execution/worker_poll_fence.rs"]
+mod worker_poll_fence;
+#[path = "execution/activity_cancellation_ack.rs"]
+mod activity_cancellation_ack;
+
+#[path = "execution/route_coverage.rs"]
+mod route_coverage;
+
+#[path = "execution/worker_sessions.rs"]
+mod worker_sessions;
+
+#[path = "execution/workflow_import_fences.rs"]
+mod workflow_import_fences;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {
@@ -297,6 +328,44 @@ enum TestDatabase {
         options: Box<MySqlConnectOptions>,
         url: String,
     },
+}
+
+/// The rows of a two-column text query, written for each backend.
+async fn text_rows(database: &TestDatabase, sqlite: &str, postgres: &str, mysql: &str) -> Vec<(String, String)> {
+    match database {
+        TestDatabase::Sqlite(dir) => {
+            let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", dir.path().join("runtime.sqlite").display())).await.unwrap();
+            let rows = sqlx::query_as(sqlx::AssertSqlSafe(sqlite.to_owned())).fetch_all(&pool).await.unwrap();
+            pool.close().await;
+            rows
+        }
+        TestDatabase::Postgres { options, .. } => {
+            let pool = sqlx::postgres::PgPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap();
+            let rows = sqlx::query_as(sqlx::AssertSqlSafe(postgres.to_owned())).fetch_all(&pool).await.unwrap();
+            pool.close().await;
+            rows
+        }
+        TestDatabase::MySql { options, .. } => {
+            let pool = sqlx::mysql::MySqlPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap();
+            let rows = sqlx::query_as(sqlx::AssertSqlSafe(mysql.to_owned())).fetch_all(&pool).await.unwrap();
+            pool.close().await;
+            rows
+        }
+    }
+}
+
+/// Every table of the test database, by name, with its row count.
+async fn table_counts(database: &TestDatabase) -> Vec<(String, i64)> {
+    let tables = text_rows(database,
+        "SELECT name, name FROM sqlite_master WHERE type='table' ORDER BY name",
+        "SELECT table_name::text, table_name::text FROM information_schema.tables WHERE table_schema='public' ORDER BY 1",
+        "SELECT CAST(table_name AS CHAR), CAST(table_name AS CHAR) FROM information_schema.tables WHERE table_schema=DATABASE() ORDER BY 1").await;
+    let mut counts = Vec::with_capacity(tables.len());
+    for (table, _) in tables {
+        let sql: &'static str = Box::leak(format!("SELECT COUNT(*) FROM {table}").into_boxed_str());
+        counts.push((table, task_retry::rows(database, sql).await));
+    }
+    counts
 }
 
 impl TestDatabase {
@@ -1400,6 +1469,10 @@ async fn child_lease_expiry_and_fresh_pool_recovery_preserve_original_parent_res
         .unwrap_or_default()
         + std::time::Duration::from_millis(100);
     tokio::time::sleep(delay).await;
+    // The lease outlasts the 30-second stale window; a registration that has
+    // not heartbeated since cannot poll (`WorkerPollFence::isFresh`).
+    let (status, body) = request(&app, "POST", "/api/worker/heartbeat", json!({"worker_id":"replacement"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         finish_task(&app, &old, commands.clone()).await.0,
         StatusCode::CONFLICT
@@ -4533,10 +4606,12 @@ async fn reported_activity_failure_commits_one_persistent_retry_and_fences_old_o
     conflicting["failure"]["message"] = json!("different");
     let refused = request(&app_b, "POST", &fail_path, conflicting).await;
     assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
+    let mut receipt = refused.1.clone();
+    assert!(receipt.as_object_mut().unwrap().remove("server_capabilities").is_some(), "worker protocol fields");
     assert_eq!(
-        refused.1,
+        receipt,
         json!({"task_id":first["task_id"],"activity_attempt_id":first["activity_attempt_id"],
-            "outcome":"failed","recorded":false,"reason":"stale_attempt","next_task_id":null})
+            "outcome":"failed","recorded":false,"reason":"stale_attempt","next_task_id":null,"protocol_version":"1.20"})
     );
     let old_complete_path = format!(
         "/api/worker/activity-tasks/{}/complete",
@@ -4582,11 +4657,14 @@ async fn reported_activity_failure_commits_one_persistent_retry_and_fences_old_o
     // stale receipt PHP returns to that attempt's owner.
     let refused = request(&app_b, "POST", &old_complete_path, old_complete.clone()).await;
     assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
+    let mut receipt = refused.1.clone();
+    assert!(receipt.as_object_mut().unwrap().remove("server_capabilities").is_some(), "worker protocol fields");
     assert_eq!(
-        refused.1,
+        receipt,
         json!({"task_id":first["task_id"],"activity_attempt_id":first["activity_attempt_id"],
             "outcome":"completed","recorded":false,"reason":"stale_attempt","next_task_id":null,
-            "lease_owner":"worker","activity_status":"running","attempt_status":"failed","task_status":"completed"})
+            "lease_owner":"worker","activity_status":"running","attempt_status":"failed","task_status":"completed",
+            "protocol_version":"1.20"})
     );
     assert_eq!(
         request(&app_b, "POST", &old_complete_path, old_complete)

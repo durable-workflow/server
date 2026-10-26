@@ -142,6 +142,35 @@ class WorkflowUpdateValidationLockPressureTest extends TestCase
         $this->assertSame(0, DB::transactionLevel());
     }
 
+    public function test_registration_replaced_during_lock_retry_cannot_claim_the_task(): void
+    {
+        [, $task] = $this->validationTask(false);
+        $worker = WorkerRegistration::query()->where('worker_id', 'validator')->firstOrFail();
+        $this->holdWriter($task);
+        $transactions = 0;
+        DB::connection()->beforeStartingTransaction(function () use (&$transactions): void {
+            if (++$transactions === 2) {
+                $this->releaseWriter();
+                WorkerRegistration::query()->where('worker_id', 'validator')->update([
+                    'registration_token' => 'replacement-validation-fixture',
+                ]);
+            }
+        });
+
+        $poll = app(WorkflowUpdateValidationTaskBroker::class)->pollResult('default', $worker, 0);
+
+        $this->assertGreaterThanOrEqual(2, $transactions);
+        $this->assertSame(['task' => null, 'poll_status' => 'stale_worker_registration'], $poll);
+        $this->assertSame(WorkflowUpdateValidationTask::STATUS_PENDING, $task->fresh()->status);
+        $this->assertSame(0, $task->attempt_count);
+        $this->assertNull($task->lease_owner);
+        $this->assertNull($task->lease_expires_at);
+        $replacement = WorkerRegistration::query()->where('worker_id', 'validator')->firstOrFail();
+        $delivery = app(WorkflowUpdateValidationTaskBroker::class)->poll('default', $replacement, 0);
+        $this->assertSame($task->id, $delivery['update_validation_task_id']);
+        $this->assertSame(1, $task->fresh()->attempt_count);
+    }
+
     public function test_validation_timeout_retries_real_lock_pressure_and_is_terminal(): void
     {
         [$run, $task] = $this->validationTask(true);

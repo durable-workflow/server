@@ -13,7 +13,7 @@ use sqlx::{
 
 use super::{Result, refuse};
 
-pub const VERSION: i64 = 4;
+pub const VERSION: i64 = 5;
 pub const CATALOG_QUERY: &str = include_str!("postgres-catalog.sql");
 type Catalog = Vec<(String, String, Json<Value>)>;
 
@@ -22,12 +22,14 @@ fn migrator() -> &'static Migrator {
     MIGRATOR.get_or_init(|| {
         let mut migrations = Migrator::with_migrations(vec![Migration::new(
             VERSION,
-            "full frozen PHP PostgreSQL schema and native worker incarnations".into(),
+            "full frozen PHP PostgreSQL schema, native worker incarnations and session holders".into(),
             MigrationType::Simple,
             concat!(
                 include_str!("../../migrations/postgres/0003_full_schema.sql"),
                 "\n",
-                include_str!("../../migrations/postgres/0004_worker_incarnations.sql")
+                include_str!("../../migrations/postgres/0004_worker_incarnations.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0005_worker_session_holders.sql")
             )
             .into_sql_str(),
             false,
@@ -52,7 +54,11 @@ pub(super) fn native_relations_sql() -> Result<String> {
     super::upgrade::native_relations(
         include_str!("../../migrations/postgres/0003_full_schema.sql"),
         "CREATE TABLE public.dw_server_schema ",
-        include_str!("../../migrations/postgres/0004_worker_incarnations.sql"),
+        concat!(
+            include_str!("../../migrations/postgres/0004_worker_incarnations.sql"),
+            "\n",
+            include_str!("../../migrations/postgres/0005_worker_session_holders.sql")
+        ),
     )
 }
 
@@ -85,7 +91,7 @@ pub(super) async fn php_source_catalog(connection: &mut PgConnection) -> Result<
         ));
     }
     let native: Catalog =
-        serde_json::from_str(include_str!("../../migrations/postgres/0004_catalog.json"))?;
+        serde_json::from_str(include_str!("../../migrations/postgres/0005_catalog.json"))?;
     let expected: Catalog = native
         .into_iter()
         .filter(|(kind, name, _)| {
@@ -180,7 +186,7 @@ pub(super) async fn verify(connection: &mut PgConnection) -> Result<()> {
     // from SQL text. It retains types, precision, defaults, indexes, foreign
     // keys and sequence ownership while excluding live rows/sequence values.
     let expected: Catalog =
-        serde_json::from_str(include_str!("../../migrations/postgres/0004_catalog.json"))?;
+        serde_json::from_str(include_str!("../../migrations/postgres/0005_catalog.json"))?;
     let actual = catalog(connection).await?;
     if actual != expected {
         return Err(refuse(
@@ -342,10 +348,56 @@ mod tests {
         }
     }
 
+    /// A request dropped while its transaction's `BEGIN` is in flight must not
+    /// leave the pooled connection inside a transaction. With published SQLx
+    /// 0.9.0 it did (vendor/sqlx-postgres/DURABLE-PATCH.md): the next borrower's
+    /// probe ran inside it, native's read snapshot `BEGIN` then failed with
+    /// 25001, and every later statement on that connection with 25P02.
+    #[tokio::test]
+    #[ignore = "requires a disposable PostgreSQL; run the qualification_ tests explicitly"]
+    async fn qualification_a_begin_cancelled_in_flight_leaves_no_transaction_behind() {
+        let db = Database::new().await;
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .min_connections(0)
+            .connect_with(db.options.clone())
+            .await
+            .unwrap();
+        let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&pool).await.unwrap();
+        // The sleep holds the BEGIN's round trip open so the cancellation lands inside it.
+        let cancelled = tokio::time::timeout(Duration::from_millis(300), pool.begin_with("BEGIN; SELECT pg_sleep(2)")).await;
+        assert!(cancelled.is_err(), "the begin must still be in flight when it is cancelled");
+        // The queued ROLLBACK leaves once the abandoned statement has answered.
+        tokio::time::sleep(Duration::from_millis(3500)).await;
+
+        let mut observer = db.connection().await;
+        let state: Option<String> = sqlx::query_scalar("SELECT state FROM pg_stat_activity WHERE pid=$1")
+            .bind(pid)
+            .fetch_optional(&mut observer)
+            .await
+            .unwrap();
+        assert_eq!(state.as_deref(), Some("idle"), "the pooled connection is still inside a transaction");
+
+        // The scheduler's order on the same connection: a pooled probe, then a
+        // read snapshot, then a pooled statement.
+        let same: i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&pool).await.unwrap();
+        assert_eq!(same, pid);
+        let mut read = pool.begin_with(<Postgres as super::super::backend::Backend>::READ_SNAPSHOT_BEGIN).await.unwrap();
+        let one: i32 = sqlx::query_scalar("SELECT 1").fetch_one(&mut *read).await.unwrap();
+        assert_eq!(one, 1);
+        read.rollback().await.unwrap();
+        let one: i32 = sqlx::query_scalar("SELECT 1").fetch_one(&pool).await.unwrap();
+        assert_eq!(one, 1);
+
+        observer.close().await.unwrap();
+        pool.close().await;
+        db.remove().await;
+    }
+
     #[test]
     fn compiled_catalog_preserves_long_object_identities_and_int64_limits() {
         let rows: Catalog =
-            serde_json::from_str(include_str!("../../migrations/postgres/0004_catalog.json"))
+            serde_json::from_str(include_str!("../../migrations/postgres/0005_catalog.json"))
                 .unwrap();
         let identities: std::collections::BTreeSet<_> =
             rows.iter().map(|(kind, name, _)| (kind, name)).collect();

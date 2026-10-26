@@ -474,9 +474,10 @@ fi
 python3 -m venv "$run_root/.venv"
 # shellcheck disable=SC1091
 . "$run_root/.venv/bin/activate"
-python -m pip install --upgrade pip > "$result_dir/pip-upgrade.log" 2>&1
+sh "$script_dir/../ci/bootstrap-patched-pip.sh" "$run_root/.venv/bin/python" > "$result_dir/pip-upgrade.log" 2>&1 \
+  || fail_blocked "the patched pip bootstrap failed; see pip-upgrade.log"
 mkdir -p "$run_root/python-distributions"
-python -m pip download --no-deps --dest "$run_root/python-distributions" \
+python -I -m pip download --no-deps --dest "$run_root/python-distributions" \
   "durable-workflow==$python_version" > "$result_dir/python-sdk-download.log" 2>&1 \
   || fail_blocked "PyPI durable-workflow==$python_version download failed"
 python3 "$script_dir/distribution_identities.py" record-unique \
@@ -484,7 +485,7 @@ python3 "$script_dir/distribution_identities.py" record-unique \
   "$run_root/python-distributions" '*' \
   || fail_blocked "PyPI durable-workflow==$python_version did not retain one consumed distribution file"
 python_distribution="$(find "$run_root/python-distributions" -maxdepth 1 -type f -print -quit)"
-python -m pip install "$python_distribution" > "$result_dir/python-sdk-install.log" 2>&1 \
+python -I -m pip install "$python_distribution" > "$result_dir/python-sdk-install.log" 2>&1 \
   || fail_blocked "PyPI durable-workflow==$python_version install failed"
 
 if ! curl -fsSL --retry 3 -o "$run_root/cli/install.sh" "$cli_installer_url"; then
@@ -523,7 +524,7 @@ write_prerelease_composer_manifest "$run_root/artifacts/workflow" "python-confor
 docker run --rm --user "$(id -u):$(id -g)" \
   -e COMPOSER_HOME=/tmp/composer-home \
   -e COMPOSER_CACHE_DIR=/app/.composer-cache \
-  -v "$run_root/artifacts/workflow:/app" composer:2 \
+  -v "$run_root/artifacts/workflow:/app" composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \
   composer require --no-interaction --no-progress --prefer-dist --no-scripts \
     "durable-workflow/workflow:$workflow_version" > "$result_dir/workflow-artifact-install.log" 2>&1 \
   || fail_blocked "published workflow artifact install failed for durable-workflow/workflow:$workflow_version"
@@ -536,7 +537,7 @@ write_prerelease_composer_manifest "$run_root/artifacts/waterline" "python-confo
 docker run --rm --user "$(id -u):$(id -g)" \
   -e COMPOSER_HOME=/tmp/composer-home \
   -e COMPOSER_CACHE_DIR=/app/.composer-cache \
-  -v "$run_root/artifacts/waterline:/app" composer:2 \
+  -v "$run_root/artifacts/waterline:/app" composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \
   composer require --no-interaction --no-progress --prefer-dist --no-scripts \
     "durable-workflow/workflow:$workflow_version" \
     "durable-workflow/waterline:$waterline_version" > "$result_dir/waterline-artifact-install.log" 2>&1 \

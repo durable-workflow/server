@@ -31,8 +31,12 @@ fn max_payload_bytes() -> i64 {
 }
 
 /// `oversizedPayloadPreview`: an external payload larger than the limit.
-fn oversized(envelope: &Value) -> bool {
-    envelope["external_storage"]["size_bytes"].as_i64().is_some_and(|size| size > max_payload_bytes())
+/// PHP's stored envelope names its reference `external_storage`; native's
+/// names it `external_payload`.
+pub(super) fn oversized(envelope: &Value) -> bool {
+    ["external_storage", "external_payload"]
+        .iter()
+        .any(|key| envelope[key]["size_bytes"].as_i64().is_some_and(|size| size > max_payload_bytes()))
 }
 
 /// Carbon's `toIso8601String()`, which PHP's run description uses.
@@ -218,6 +222,25 @@ where
         Ok(updates)
     }
 
+    /// A run's compatibility marker and whether the live fleet supports it,
+    /// as describe and history report them.
+    pub(super) async fn compatibility_fields(&self, run: &DB::Row) -> Result<Map<String, Value>> {
+        let compatibility = DB::optional_string(run, "compatibility")?;
+        let queue = DB::optional_string(run, "queue")?;
+        let snapshots = self.fleet_snapshots(now()).await?;
+        let (supported, fleet_reason) = super::run_diagnostics::fleet_supports(
+            &snapshots,
+            compatibility.as_deref().map(str::trim).filter(|value| !value.is_empty()),
+            queue.as_deref(),
+        );
+        Ok(Map::from_iter([
+            ("compatibility".into(), json!(compatibility)),
+            ("compatibility_status".into(), json!(if supported { "compatible" } else { "no_compatible_worker" })),
+            ("compatibility_supported_in_fleet".into(), json!(supported)),
+            ("compatibility_fleet_reason".into(), json!(fleet_reason)),
+        ]))
+    }
+
     /// The fields `formatRun` adds for a described run row.
     pub(super) async fn describe_fields(
         &self,
@@ -245,14 +268,7 @@ where
             Some(row) => (DB::optional_string(&row, "wait_kind")?, DB::optional_string(&row, "wait_reason")?),
             None => (None, None),
         };
-        let compatibility = DB::optional_string(run, "compatibility")?;
-        let queue = DB::optional_string(run, "queue")?;
-        let snapshots = self.fleet_snapshots(now()).await?;
-        let (supported, fleet_reason) = super::run_diagnostics::fleet_supports(
-            &snapshots,
-            compatibility.as_deref().map(str::trim).filter(|value| !value.is_empty()),
-            queue.as_deref(),
-        );
+        let compatibility = self.compatibility_fields(run).await?;
         // `canServeQuery`: failed, cancelled and terminated runs refuse
         // queries; others need a registered route.
         let query_servable = current
@@ -268,14 +284,18 @@ where
         if started["recovery_kind"] == "redrive" && started["continued_from_run_id"].is_string() {
             fields.insert("continued_from_run_id".into(), started["continued_from_run_id"].clone());
         }
-        fields.insert("compatibility".into(), json!(compatibility));
-        fields.insert("compatibility_status".into(), json!(if supported { "compatible" } else { "no_compatible_worker" }));
-        fields.insert("compatibility_supported_in_fleet".into(), json!(supported));
-        fields.insert("compatibility_fleet_reason".into(), json!(fleet_reason));
+        fields.extend(compatibility);
         // `ServerWorkflowControlPlane::withDefinitionRouting`.
-        let mut tx = self.begin_read().await?;
-        let routing = self.definition_inspect(&mut tx, run, None).await?;
-        tx.commit().await?;
+        // A Waterline v1 projection has no standalone routing, and may have
+        // no task queue at all.
+        let routing = if DB::optional_string(run, "import_source")?.as_deref() == Some(super::waterline_import::IMPORT_SOURCE) {
+            Value::Null
+        } else {
+            let mut tx = self.begin_read().await?;
+            let routing = self.definition_inspect(&mut tx, run, None).await?;
+            tx.commit().await?;
+            routing
+        };
         fields.insert("definition_routing".into(), routing);
         fields.insert("payload_previews".into(), json!({"input_omitted":input_omitted,"output_omitted":output_omitted,
             "max_encoded_bytes":max_payload_bytes()}));
@@ -315,6 +335,8 @@ mod tests {
         assert!(oversized(&json!({"external_storage":{"size_bytes":2 * 1024 * 1024 + 1}})));
         assert!(!oversized(&json!({"external_storage":{"size_bytes":2 * 1024 * 1024}})));
         assert!(!oversized(&json!({"codec":"avro","blob":"AA=="})));
+        assert!(oversized(&json!({"codec":"avro","external_payload":{"size_bytes":2 * 1024 * 1024 + 1}})));
+        assert!(!oversized(&json!({"codec":"avro","external_payload":{"size_bytes":2 * 1024 * 1024}})));
         assert_eq!(without_empty(json!({"a":null,"b":[],"c":{},"d":0})), json!({"c":{},"d":0}));
         let time = DateTime::parse_from_rfc3339("2026-10-21T07:38:51.123Z").unwrap().with_timezone(&Utc);
         assert_eq!(iso8601(Some(time)), json!("2026-10-21T07:38:51+00:00"));

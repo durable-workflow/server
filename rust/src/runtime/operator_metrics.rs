@@ -270,7 +270,7 @@ where
             "projections": self.projection_metrics(now).await?,
             "schedules": self.schedule_metrics(now).await?,
             "workers": self.worker_metrics().await?,
-            "backend": backend_capabilities(now, DB::PHP_CONNECTION),
+            "backend": backend_capabilities(now, DB::PHP_CONNECTION, &config.structural, self.memo_size_limit),
             "structural_limits": structural_limits(DB::PHP_CONNECTION, &config.structural, self.memo_size_limit),
             "update_wait": {"completion_timeout_seconds": 10, "poll_interval_milliseconds": 50},
             "repair_policy": repair_policy(),
@@ -283,8 +283,7 @@ where
     /// server adds.
     pub(super) async fn operator_metrics(&self, config: &MetricsConfig) -> Result<Value> {
         let mut metrics = self.operator_metrics_snapshot(config).await?;
-        metrics["worker_sessions"] =
-            json!({"total": 0, "active": 0, "closed": 0, "expired": 0, "failed": 0, "orphaned": 0});
+        metrics["worker_sessions"] = self.worker_session_metrics().await?;
         metrics["capacity_evidence"] =
             json!({"available": false, "reason": "native_capacity_evidence_unavailable"});
         metrics["runtime_external_payload_cleanup"] =
@@ -309,8 +308,7 @@ where
             metrics["capacity_evidence"] =
                 json!({"available": false, "reason": "native_capacity_evidence_unavailable"});
         }
-        metrics["worker_sessions"] =
-            json!({"total": 0, "active": 0, "closed": 0, "expired": 0, "failed": 0, "orphaned": 0});
+        metrics["worker_sessions"] = self.worker_session_metrics().await?;
         metrics["runtime_external_payload_cleanup"] = self.external_payload_cleanup_metrics(config).await?;
         let filter = types.map(|types| Value::from(types.to_vec()).to_string());
         let filter = filter.as_deref();
@@ -1361,6 +1359,8 @@ where
             }
             deleted.insert((*key).into(), json!(DB::affected(query.execute(&mut *tx).await?)));
         }
+        // The run's history is gone; no cached read of it may survive.
+        tx.scope_history = None;
         Self::query("UPDATE workflow_runs SET details_pruned_at=$1 WHERE id=$2 AND details_pruned_at IS NULL")
             .bind(DB::bind_time(now()))
             .bind(run_id)
@@ -1493,7 +1493,9 @@ fn structural_limits(connection: &str, limits: &super::StructuralLimits, memo: O
         "payload_size_bytes": shown(limits.payload_bytes),
         "memo_size_bytes": shown(memo),
         "search_attribute_size_bytes": 40960,
-        "history_transaction_size": 5000,
+        "history_transaction_size": shown(limits.history_events),
+        "history_transaction_bytes": shown(limits.history_bytes),
+        "history_transaction_rows": shown(limits.history_rows),
         "warning_threshold_percent": 80,
     });
     let sqlite = connection == "sqlite";
@@ -1510,9 +1512,9 @@ fn structural_limits(connection: &str, limits: &super::StructuralLimits, memo: O
 }
 
 /// What this runtime needs from its backends, in PHP's capability shape.
-fn backend_capabilities(now: DateTime<Utc>, connection: &str) -> Value {
-    // Only the backend's issues are reported here, which no ceiling changes.
-    let limits = structural_limits(connection, &super::StructuralLimits::default(), None);
+fn backend_capabilities(now: DateTime<Utc>, connection: &str, structural: &super::StructuralLimits, memo: Option<usize>) -> Value {
+    // The active ceilings, with the backend's adjustments and issues.
+    let limits = structural_limits(connection, structural, memo);
     let issues = limits["issues"].clone();
     let severity = if issues.as_array().is_some_and(|issues| !issues.is_empty()) {
         "info"

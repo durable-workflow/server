@@ -568,7 +568,7 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'when no Waterline URL is supplied, the skew runner must create a disposable Laravel app for the published Waterline package',
         );
         $this->assertStringContainsString(
-            'composer:2 php artisan serve --host=0.0.0.0 --port "$waterline_port"',
+            'composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan serve --host=0.0.0.0 --port "$waterline_port"',
             $shell,
             'the skew runner must boot the disposable Waterline app before reporting Waterline render evidence',
         );
