@@ -80,8 +80,9 @@ async fn update_wait_timeout_is_bounded_before_admission() {
 }
 
 // Server #775: a service operation bound to a workflow update hands its wait
-// to the update admission. Native runs no service operation, so neither the
-// execute route nor the workflow-task command can carry a longer wait here.
+// to the update admission. Native dispatches no workflow-bound handler yet, so
+// neither the execute route nor the workflow-task command can carry a longer
+// wait here.
 #[tokio::test]
 async fn service_operations_cannot_carry_an_update_wait_past_the_ceiling() {
     let database = TestDatabase::new().await;
@@ -93,7 +94,16 @@ async fn service_operations_cannot_carry_an_update_wait_past_the_ceiling() {
         "service_name":"approvals","operation_name":"approve","wait_for":"completed","wait_timeout_seconds":86400}])).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
     assert_eq!(refused["reason"], "unsupported_workflow_command", "{refused}");
+    for (path, body) in [
+        ("/api/service-endpoints", json!({"endpoint_name": "billing"})),
+        ("/api/service-endpoints/billing/services", json!({"service_name": "approvals"})),
+        ("/api/service-endpoints/billing/services/approvals/operations", json!({"operation_name": "approve",
+            "operation_mode": "sync", "handler_binding_kind": "update_workflow", "handler_target_reference": "approve"})),
+    ] {
+        let (status, created) = request(&app, "POST", path, body).await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+    }
     let (status, unserved) = request(&app, "POST", "/api/service-endpoints/billing/services/approvals/operations/approve/execute",
         json!({"wait_timeout_seconds":61})).await;
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{unserved}");
+    assert_eq!((status, unserved["reason"].clone()), (StatusCode::NOT_IMPLEMENTED, json!("rust_capability_not_implemented")), "{unserved}");
 }

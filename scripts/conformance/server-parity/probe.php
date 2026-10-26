@@ -443,6 +443,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $cancellationScopes = isset($fixture['cancellation_scopes']) ? finishHttpCancellationScopes($client, $fixture, $workflowId, $url) : null;
     $serviceCatalog = isset($fixture['service_catalog']) ? finishHttpServiceCatalog($client, $fixture, $workflowId, $url) : null;
     $serviceEndpoints = isset($fixture['service_endpoints']) ? finishHttpServiceEndpoints($client, $fixture, $workflowId, $url) : null;
+    $serviceCalls = isset($fixture['service_calls']) ? finishHttpServiceCalls($client, $fixture, $workflowId, $url) : null;
     $workflowImport = isset($fixture['workflow_import']) ? finishHttpWorkflowImport($client, $fixture, $workflowId, $url) : null;
     $waterlineImport = isset($fixture['waterline_import']) ? finishHttpWaterlineImport($client, $fixture, $workflowId, $url) : null;
     $systemMetrics = isset($fixture['system_metrics']) ? finishHttpSystemMetrics($client, $fixture, $workflowId, $url) : null;
@@ -566,6 +567,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'cancellation_scopes' => $cancellationScopes,
         'service_catalog' => $serviceCatalog,
         'service_endpoints' => $serviceEndpoints,
+        'service_calls' => $serviceCalls,
         'workflow_import' => $workflowImport,
         'waterline_import' => $waterlineImport,
         'system_metrics' => $systemMetrics,
@@ -893,6 +895,7 @@ try {
     require __DIR__.'/cancellation-scopes-probe.php';
     require __DIR__.'/service-catalog-probe.php';
     require __DIR__.'/service-endpoints-probe.php';
+    require __DIR__.'/service-calls-probe.php';
     require __DIR__.'/workflow-import-probe.php';
     require __DIR__.'/waterline-import-probe.php';
     require __DIR__.'/system-metrics-probe.php';
@@ -1098,6 +1101,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['service_endpoints'])) {
         $observation['service_endpoints'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_service_endpoints'];
+    }
+    if ($mode === 'embedded' && isset($fixture['service_calls'])) {
+        $observation['service_calls'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_service_calls'];
     }
     if ($mode === 'embedded' && isset($fixture['workflow_import'])) {
         $observation['workflow_import'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_workflow_import'];

@@ -161,31 +161,47 @@ any other unknown path or method answers PHP's own 404 or 405
     ([checkpoint](rust-server-port-checkpoints/2026-10-23-message-streams.md)),
     except external payload references as input, stream retention cleanup
     and takeover of PHP data with streams.
-  - Service operation execution, service-call reads and cancellation, and
-    takeover of a PHP database that holds service calls. (Service catalog
-    administration is served, and takeover keeps a PHP database's endpoints,
-    services and operations: the 15 admin routes under `/api/service-endpoints`
-    create, read, update and delete a namespace's endpoints, services and
-    operations as `ServiceCatalogController` does, with the `service-endpoints`
-    fixture's 72 cases. The `/api/service-catalog` reads render those rows by
-    page and identity; the `service-catalog` fixture checks the empty
-    namespace's 37 cases. Native records no service calls, so a calls list is
-    PHP's empty page. Three differences from published 2.11.1:
-    - Native JSON documents don't keep object key order. An update that only
-      reorders a document's keys writes nothing, where PHP's strict comparison
-      writes it and moves `updated_at`.
-    - PHP checks a name and then inserts without a lock, so concurrent creates
-      of one name can end in a unique-index 500 and a delete can race a
-      child's create. Native writes under its serialized transaction: the
-      second create gets 409.
-    - Laravel also reads a write's fields from the query string. Native reads
-      a field from it only when the body lacks that field, and only under its
-      exact name, not PHP's `metadata[a]=1` array syntax.
-    Native neither executes service operations nor accepts the workflow-task
-    `start_service_operation` command, which it refuses as
-    `unsupported_workflow_command`. When it does, an operation bound to a
-    workflow update must refuse a `wait_timeout_seconds` above the update
-    ceiling of 60 before it runs, as PHP does (Server #775).)
+  - Workflow-bound service handlers (start, signal, update and query
+    workflow), the shared admission limits, the workflow-task
+    `start_service_operation` command, and takeover of a PHP database that
+    holds service calls. Each of these still answers 501 or refuses. When the
+    workflow-bound handlers come, an operation bound to a workflow update must
+    refuse a `wait_timeout_seconds` above the update ceiling of 60 before it
+    runs, as PHP does (Server #775).
+    - Service catalog administration is served, and takeover keeps a PHP
+      database's endpoints, services and operations. The 15 admin routes under
+      `/api/service-endpoints` create, read, update and delete a namespace's
+      endpoints, services and operations as `ServiceCatalogController` does,
+      with the `service-endpoints` fixture's 72 cases. The `/api/service-catalog`
+      reads render those rows by page and identity; the `service-catalog`
+      fixture checks the empty namespace's 37 cases.
+    - Service-call execution, show and cancel are served for the handler kinds
+      that stay accepted (`activity_execution`, `invocable_http`), with the
+      `service-calls` fixture's 71 cases. That covers admission and its audit
+      row, the boundary's authorization and circuit refusals, the 503 for an
+      invalid limit, handler failures retried in the request, deadlines,
+      idempotent replays, and cancellation. A workflow-bound kind and an
+      operation with a valid rate or concurrency limit answer 501 before
+      anything is written.
+    - Differences from published 2.11.1:
+      - Native JSON documents don't keep object key order. An update that
+        only reorders a document's keys writes nothing, where PHP's strict
+        comparison writes it and moves `updated_at`.
+      - PHP checks a name and then inserts without a lock, so concurrent
+        creates of one name can end in a unique-index 500, and a delete can
+        race a child's create. Native writes under its serialized transaction,
+        so the second create gets 409.
+      - Laravel also reads a write's fields from the query string. Native reads
+        a field from it only when the body lacks that field, and only under its
+        exact name, not PHP's `metadata[a]=1` array syntax.
+      - A call's deadline lives in the native-owned `dw_service_call_deadlines`
+        (schema version 7), not in 2.11.1's
+        `workflow_service_calls.call_deadline_at`. Native keeps the frozen PHP
+        tables plus its own relations, so takeover layouts stay recognisable;
+        accepting a source with service calls will copy their deadlines.
+      - Native commits a call's admission and dispatch in one serialized
+        transaction, where PHP commits each step on its own. The rows end the
+        same.
   - (Bridge adapter webhooks are served: `POST /api/bridge-adapters/webhook/{adapter}`,
     with the `bridge-adapters` fixture. Native admits bridge updates as the
     regular update route does; published 2.11.1 skips that admission, Server #747.
