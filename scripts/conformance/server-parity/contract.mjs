@@ -19,6 +19,7 @@ import {checkWorkerPollFence} from './worker-poll-fence-contract.mjs';
 import {checkWorkerSessions} from './worker-sessions-contract.mjs';
 import {checkWorkerSessionActivities} from './worker-session-activities-contract.mjs';
 import {checkActivityCancellationAcknowledgement} from './activity-cancellation-ack-contract.mjs';
+import {checkCancellationScopes} from './cancellation-scopes-contract.mjs';
 import {checkServiceCatalog} from './service-catalog-contract.mjs';
 import {checkWorkflowImport} from './workflow-import-contract.mjs';
 import {checkWaterlineImport} from './waterline-import-contract.mjs';
@@ -169,6 +170,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const workerSessionActivities = fixture.worker_session_activities ? checkWorkerSessionActivities(fixture, observation, workflowId) : null;
   const activityCancellationAcknowledgement = fixture.activity_cancellation_acknowledgement
     ? checkActivityCancellationAcknowledgement(fixture, observation, workflowId) : null;
+  const cancellationScopes = fixture.cancellation_scopes ? checkCancellationScopes(fixture, observation, workflowId) : null;
   const serviceCatalog = fixture.service_catalog ? checkServiceCatalog(fixture, observation, workflowId) : null;
   const workflowImport = fixture.workflow_import ? checkWorkflowImport(fixture, observation, workflowId) : null;
   const waterlineImport = fixture.waterline_import ? checkWaterlineImport(fixture, observation, workflowId) : null;
@@ -735,6 +737,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(workerSessions ? {worker_sessions: workerSessions} : {}),
     ...(workerSessionActivities ? {worker_session_activities: workerSessionActivities} : {}),
     ...(activityCancellationAcknowledgement ? {activity_cancellation_acknowledgement: activityCancellationAcknowledgement} : {}),
+    ...(cancellationScopes ? {cancellation_scopes: cancellationScopes} : {}),
     ...(serviceCatalog ? {service_catalog: serviceCatalog} : {}),
     ...(workflowImport ? {workflow_import: workflowImport} : {}),
     ...(waterlineImport ? {waterline_import: waterlineImport} : {}),

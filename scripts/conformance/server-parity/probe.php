@@ -438,6 +438,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $workerSessionActivities = isset($fixture['worker_session_activities']) ? finishHttpWorkerSessionActivities($client, $fixture, $workflowId, $url) : null;
     $activityCancellationAcknowledgement = isset($fixture['activity_cancellation_acknowledgement'])
         ? finishHttpActivityCancellationAcknowledgement($client, $fixture, $workflowId, $url) : null;
+    $cancellationScopes = isset($fixture['cancellation_scopes']) ? finishHttpCancellationScopes($client, $fixture, $workflowId, $url) : null;
     $serviceCatalog = isset($fixture['service_catalog']) ? finishHttpServiceCatalog($client, $fixture, $workflowId, $url) : null;
     $workflowImport = isset($fixture['workflow_import']) ? finishHttpWorkflowImport($client, $fixture, $workflowId, $url) : null;
     $waterlineImport = isset($fixture['waterline_import']) ? finishHttpWaterlineImport($client, $fixture, $workflowId, $url) : null;
@@ -557,6 +558,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'worker_sessions' => $workerSessions,
         'worker_session_activities' => $workerSessionActivities,
         'activity_cancellation_acknowledgement' => $activityCancellationAcknowledgement,
+        'cancellation_scopes' => $cancellationScopes,
         'service_catalog' => $serviceCatalog,
         'workflow_import' => $workflowImport,
         'waterline_import' => $waterlineImport,
@@ -880,6 +882,7 @@ try {
     require __DIR__.'/worker-sessions-probe.php';
     require __DIR__.'/worker-session-activities-probe.php';
     require __DIR__.'/activity-cancellation-ack-probe.php';
+    require __DIR__.'/cancellation-scopes-probe.php';
     require __DIR__.'/service-catalog-probe.php';
     require __DIR__.'/workflow-import-probe.php';
     require __DIR__.'/waterline-import-probe.php';
@@ -1071,6 +1074,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['activity_cancellation_acknowledgement'])) {
         $observation['activity_cancellation_acknowledgement'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
+    }
+    if ($mode === 'embedded' && isset($fixture['cancellation_scopes'])) {
+        $observation['cancellation_scopes'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
     }
     if ($mode === 'embedded' && isset($fixture['service_catalog'])) {
         $observation['service_catalog'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_service_catalog'];

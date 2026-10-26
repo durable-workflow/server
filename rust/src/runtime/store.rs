@@ -1113,6 +1113,19 @@ where
             .unwrap_or(0);
         let children = Self::query("SELECT sequence FROM workflow_child_calls WHERE parent_workflow_run_id=$1 ORDER BY sequence DESC LIMIT 1")
             .bind(run_id).fetch_optional(&mut **tx).await?.map(|row| DB::number(&row,"sequence")).transpose()?.unwrap_or(0);
+        // `nextDurableCommandSequence`: a scope opening consumes its sequence,
+        // and a delivered scope boundary its whole span, as a delivered run
+        // request does.
+        let mut scoped = 0;
+        for row in Self::query("SELECT event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('CancellationScopeOpened','CancellationScopeDelivered')")
+            .bind(run_id).fetch_all(&mut **tx).await?
+        {
+            let payload = DB::document_row(&row, "payload")?;
+            if let Some(sequence) = payload["sequence"].as_i64() {
+                let span = payload["sequence_span"].as_i64().filter(|span| *span > 1 && DB::string(&row, "event_type").is_ok_and(|kind| kind == "CancellationScopeDelivered"));
+                scoped = scoped.max(span.and_then(|span| sequence.checked_add(span - 1)).unwrap_or(sequence));
+            }
+        }
         let run =
             Self::query("SELECT cancellation_delivery_sequence,run_number FROM workflow_runs WHERE id=$1")
                 .bind(run_id)
@@ -1135,6 +1148,7 @@ where
             .max(timers)
             .max(wait_sequence)
             .max(children)
+            .max(scoped)
             .max(reused)
             .max(DB::optional_number(&run, "cancellation_delivery_sequence")?.unwrap_or(0)))
     }
@@ -2554,6 +2568,24 @@ where
         // Validate the entire batch before mutation. Unknown commands and
         // options cannot be silently accepted as unsupported durable effects.
         for (index, command) in commands.iter().enumerate() {
+            // `cancellation_scope_id` is checked by the scope admission guard
+            // after ownership, before PHP's normalizer reads field scopes.
+            // Native records activity and timer membership only, so a scoped
+            // child or wait keeps its field refusal.
+            let unscoped;
+            let scoped = command.get("cancellation_scope_id").is_some();
+            let command = if scoped
+                && !matches!(command["type"].as_str(), Some("start_child_workflow" | "open_signal_wait" | "open_condition_wait"))
+            {
+                let mut stripped = command.clone();
+                if let Some(fields) = stripped.as_object_mut() {
+                    fields.remove("cancellation_scope_id");
+                }
+                unscoped = stripped;
+                &unscoped
+            } else {
+                command
+            };
             // The command normalizer's field scopes and value rules, with
             // PHP's messages, before native's own refusals. A local activity
             // record meets the normalizer after the ownership guards, as in PHP.
@@ -2561,6 +2593,14 @@ where
                 super::completion_rules::normalizer_checks(index, command)?;
             }
             let command_type = text(command, "type")?;
+            // A non-member command naming a scope is refused by the admission
+            // guard after ownership, before PHP reads its payload.
+            if scoped
+                && matches!(command_type, "fail_workflow" | "complete_workflow" | "continue_as_new" | "record_version_marker"
+                    | "record_side_effect" | "upsert_search_attributes" | "upsert_memo" | "complete_update" | "fail_update")
+            {
+                continue;
+            }
             match command_type {
                 "record_local_activity" => {}
                 "fail_workflow" => {
@@ -2699,8 +2739,10 @@ where
             );
         }
         Self::workflow_task_guard(&mut tx, &task, &body).await?;
+        // PHP admits cancellation scopes before it guards worker-session
+        // commands, and guards both before validating streams.
+        Self::cancellation_scope_admission(&mut tx, &task, &body, commands, protocol).await?;
         self.guard_worker_session_commands(&mut tx, &task, task_id, &body, protocol, commands).await?;
-        // PHP guards worker-session commands before validating streams.
         // `MessageStreamService::validateCompletion`, before anything changes.
         let streams = super::message_streams::Completion::of(&body);
         let stream_instance = Self::query("SELECT workflow_instance_id FROM workflow_runs WHERE id=$1")
@@ -2820,6 +2862,18 @@ where
                 "development_selection_cancellation_unqualified",
             ));
         }
+        // `validateCancellationScopeMembership` in the bridge's completion: a
+        // prepared scope admits no new member, and an undelivered preparation
+        // reserves its boundary for every command.
+        let non_terminal: Vec<&Value> = commands.iter().filter(|command| !is_terminal(command)).collect();
+        if let Some(reason) = Self::cancellation_scope_completion_refusal(&mut tx, &run_id, &non_terminal).await? {
+            return Err(super::RuntimeError::Protocol {
+                status: StatusCode::CONFLICT,
+                response: super::cancellation_scopes::enveloped(json!({"task_id": task_id,
+                    "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed", "recorded": false,
+                    "run_id": run_id, "run_status": DB::string(&run, "status")?, "created_task_ids": [], "reason": reason})),
+            });
+        }
         Self::validate_update_commands(&mut tx, &run_id, &task, commands).await?;
         let mut sequence = Self::authored_sequence(&mut tx, &run_id).await?;
         // The tasks this batch's commands create, in order, as PHP reports them.
@@ -2921,6 +2975,13 @@ where
                     "schedule_to_close_timeout",
                     scheduled_at,
                 )?;
+                // PHP keeps an activity's scope in its options, after the
+                // worker session; its snapshot and the scope's members read it
+                // from there.
+                let mut activity_options = activity_options;
+                if let Some(scope) = command.get("cancellation_scope_id") {
+                    activity_options.get_or_insert_with(|| json!({}))["cancellation_scope_id"] = scope.clone();
+                }
                 // The preserved SQL schema defaults this counter to one.
                 // Published authored scheduling explicitly starts at zero;
                 // only the original worker claim consumes its first attempt.
@@ -2981,8 +3042,13 @@ where
                 let scheduled_at = now();
                 Self::query("INSERT INTO workflow_run_timers(id,workflow_run_id,sequence,status,delay_seconds,fire_at) VALUES ($1,$2,$3,'pending',$4,$5)")
                     .bind(&timer_id).bind(&run_id).bind(sequence).bind(delay).bind(DB::bind_time(fire_at)).execute(&mut *tx).await?;
-                let mut timer_payload = json!({"timer_id":timer_id,"sequence":sequence,"delay_seconds":delay,"fire_at":fire_at,
-                    "task":Self::task_snapshot(&task)?});
+                // PHP records the fire time with `toJSON` (microseconds); a
+                // scoped timer's descriptor reads it back exactly.
+                let mut timer_payload = json!({"timer_id":timer_id,"sequence":sequence,"delay_seconds":delay,
+                    "fire_at":super::cancellation_scopes::iso(fire_at),"task":Self::task_snapshot(&task)?});
+                if let Some(scope) = command.get("cancellation_scope_id") {
+                    timer_payload["cancellation_scope_id"] = scope.clone();
+                }
                 super::selections::merge(&mut timer_payload, &metadata);
                 Self::append_at(
                     &mut tx,
@@ -2995,6 +3061,9 @@ where
                 )
                 .await?;
                 let mut timer_task_payload = json!({"timer_id":timer_id});
+                if let Some(scope) = command.get("cancellation_scope_id") {
+                    timer_task_payload["cancellation_scope_id"] = scope.clone();
+                }
                 super::selections::merge(&mut timer_task_payload, &metadata);
                 let timer_task = Self::create_task(
                     &mut tx,
@@ -3159,8 +3228,9 @@ where
             .bind(task_id)
             .execute(&mut *tx)
             .await?;
-        Self::resume_undelivered_cancellation(&mut tx, &run_id, &DB::string(&run, "queue")?)
-            .await?;
+        if let Some(successor) = Self::resume_undelivered_cancellation(&mut tx, &run_id, &task, &DB::string(&run, "queue")?).await? {
+            created.push(successor);
+        }
         // PHP reports the run's next message task with the tasks the
         // commands created.
         if let Some(next) = Self::next_message_task(&mut tx, &run_id, &DB::string(&run, "queue")?).await? {
@@ -3508,7 +3578,7 @@ where
             let task_id = DB::string(&task, "id")?;
             let task_payload = DB::document_row(&task, "payload")?;
             let metadata = super::selections::metadata(&task_payload, "timer")?;
-            let mut payload = json!({"timer_id":timer_id,"sequence":DB::number(&timer,"sequence")?,"delay_seconds":DB::number(&timer,"delay_seconds")?,"fire_at":fire_at,"fired_at":fired_at});
+            let mut payload = json!({"timer_id":timer_id,"sequence":DB::number(&timer,"sequence")?,"delay_seconds":DB::number(&timer,"delay_seconds")?,"fire_at":super::cancellation_scopes::iso(fire_at),"fired_at":fired_at});
             if task_payload.get("signal_wait_id").is_some() {
                 payload["timer_kind"] = json!("signal_timeout");
                 payload["signal_wait_id"] = task_payload["signal_wait_id"].clone();
@@ -3850,7 +3920,20 @@ where
         command_id: Option<&str>,
         recorded_at: Option<DateTime<Utc>>,
     ) -> Result<()> {
-        Self::record(tx, run_id, event_type, payload, task_id, command_id, recorded_at, true).await
+        Self::record(tx, run_id, event_type, payload, task_id, command_id, recorded_at, true).await.map(|_| ())
+    }
+
+    /// Records an event and returns its id. A command id names the command
+    /// without copying its snapshot, as PHP does for a bare id string.
+    pub(super) async fn append_returning(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        event_type: &str,
+        payload: Value,
+        task_id: Option<&str>,
+        command_id: Option<&str>,
+    ) -> Result<String> {
+        Self::record(tx, run_id, event_type, payload, task_id, command_id, None, false).await
     }
 
     /// Records an event linked to a command by id only, as PHP does when it
@@ -3864,7 +3947,7 @@ where
         task_id: Option<&str>,
         command_id: &str,
     ) -> Result<()> {
-        Self::record(tx, run_id, event_type, payload, task_id, Some(command_id), None, false).await
+        Self::record(tx, run_id, event_type, payload, task_id, Some(command_id), None, false).await.map(|_| ())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3877,7 +3960,7 @@ where
         command_id: Option<&str>,
         recorded_at: Option<DateTime<Utc>>,
         command_snapshot: bool,
-    ) -> Result<()> {
+    ) -> Result<String> {
         // The backend transition lock protects this read and write together.
         // MySQL has no UPDATE RETURNING; all adapters use this same allocation.
         let row = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
@@ -3917,8 +4000,9 @@ where
         }
         // A metered completion (Workflow #930) charges the event as stored.
         tx.charge_event(event_type, &payload)?;
+        let event_id = id();
         Self::query("INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,workflow_task_id,workflow_command_id,recorded_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
-        .bind(id()).bind(run_id).bind(sequence).bind(event_type).bind(DB::document(&payload)).bind(task_id).bind(command_id).bind(DB::bind_time(recorded_at)).execute(&mut **tx).await?;
+        .bind(&event_id).bind(run_id).bind(sequence).bind(event_type).bind(DB::document(&payload)).bind(task_id).bind(command_id).bind(DB::bind_time(recorded_at)).execute(&mut **tx).await?;
         Self::project_activity_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         Self::project_timer_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         Self::project_signal_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
@@ -3930,7 +4014,7 @@ where
             Box::pin(Self::reject_received_signals(tx, run_id, reason, task_id, task)).await?;
         }
         tx.summary_changed(run_id);
-        Ok(())
+        Ok(event_id)
     }
 
     /// `PendingSignalCloser::closeForTerminalEvent`: once a run closes, each
@@ -3989,6 +4073,8 @@ where
         // The event was charged as recorded; the attribution's growth is
         // charged before the update (Workflow #930).
         tx.charge_bytes(super::history_meter::php_json_len(&payload).saturating_sub(recorded))?;
+        // The only in-place history change: a cached read would miss it.
+        tx.scope_history = None;
         Self::query("UPDATE workflow_history_events SET payload=$1 WHERE id=$2")
             .bind(DB::document(&payload))
             .bind(DB::string(&event, "id")?)
@@ -4062,6 +4148,15 @@ where
             "parallel_group_path",
         )?)?;
         super::selections::merge(&mut payload, &metadata);
+        // `ActivitySnapshot::fromExecution` names the options' cancellation
+        // policy and scope when set.
+        if let Some(options) = DB::optional_document_row(activity, "activity_options")? {
+            for field in ["cancellation_policy", "cancellation_scope_id"] {
+                if let Some(value) = options[field].as_str() {
+                    payload["activity"][field] = json!(value);
+                }
+            }
+        }
         // Released history readers retain the first claim and heartbeat across
         // a retry even while the next attempt has not produced new progress.
         for field in ["started_at", "last_heartbeat_at"] {

@@ -206,6 +206,8 @@ store_methods! {
                 deleted.insert((*key).into(), json!(count));
             }
         }
+        // The namespace's histories are gone; no cached read may survive.
+        tx.scope_history = None;
         for sql in NATIVE_CLEANUP {
             Self::query(sql).bind(&name).execute(&mut *tx).await?;
         }
