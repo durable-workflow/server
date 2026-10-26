@@ -145,7 +145,11 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route(
             "/api/workflows/{workflow_id}/runs/{run_id}/streams/{stream_name}/items",
-            get(super::workflow_streams::items),
+            get(super::workflow_streams::items).post(super::workflow_streams::append),
+        )
+        .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/streams/{stream_name}/close",
+            post(super::workflow_streams::close),
         )
         .route(
             "/api/workflows/{workflow_id}/request-cancellation",
@@ -793,9 +797,11 @@ fn workflow_route(rest: &str) -> Option<Allowed> {
         | [_, "runs", _, "history", "export"]
         | [_, "runs", _, "streams"]
         | [_, "runs", _, "streams", _]
-        | [_, "runs", _, "streams", _, "items"]
         | [_, "nexus-operations"]
         | [_, "runs", _, "nexus-operations"] => Some(READ),
+        // A run's durable streams are rows in the request's namespace.
+        [_, "runs", _, "streams", _, "items"] => Some(READ_WRITE),
+        [_, "runs", _, "streams", _, "close"] => Some(WRITE),
         [_, "signal" | "query" | "update", _]
         | [_, "runs", _, "signal" | "query" | "update", _]
         | [_, "repair" | "request-cancellation"]

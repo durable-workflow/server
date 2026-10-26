@@ -73,17 +73,28 @@ const REFERENCES_SQL: &str = concat!(
     "+(SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$5 AND (", reference!("arguments"), " OR ", reference!("result"), "))",
 );
 
+/// The run's durable workflow streams, deleted with it as PHP's
+/// `HistoryRetentionEnforcer::pruneRun` deletes them (Server #774): report
+/// key, if any, and statement binding the run id once.
+pub(super) const DURABLE_STREAMS: &[(Option<&str>, &str)] = &[
+    (Some("durable_stream_items_deleted"), "DELETE FROM workflow_durable_stream_items WHERE workflow_run_id=$1"),
+    (None, "DELETE FROM dw_stream_reclaims WHERE workflow_run_id=$1"),
+    (Some("durable_streams_deleted"), "DELETE FROM workflow_durable_streams WHERE workflow_run_id=$1"),
+];
+
 /// `MessageStreamRetentionCleanup::apply`'s counts in the prune report.
 pub(super) const STREAM_COUNTS: [&str; 3] =
     ["message_streams_deleted", "message_stream_items_deleted", "message_stream_items_compacted"];
 
 /// Counts that hold a run's details, the run-id binds of each, and the
 /// skip reason. An abandoned activity's hold is read from history. A run
-/// whose instance has inbound message streams is held too: native does not
-/// compact or remove stream state as PHP's MessageStreamRetentionCleanup
-/// does yet, so it keeps the run rather than orphan the streams.
+/// with messages or whose instance has inbound message streams is held too:
+/// native does not compact or remove that state as PHP's
+/// MessageStreamRetentionCleanup does yet, so it keeps the run rather than
+/// orphan it. Durable workflow streams go with the run (`DURABLE_STREAMS`)
+/// unless they hold an external reference (`Backend::RUN_STREAM_REFERENCES`).
 pub(super) const HOLDS: &[(&str, usize, &str)] = &[
-    ("SELECT (SELECT COUNT(*) FROM workflow_durable_streams WHERE workflow_run_id=$1)+(SELECT COUNT(*) FROM workflow_messages WHERE workflow_run_id=$2)+(SELECT COUNT(*) FROM workflow_inbound_streams WHERE workflow_instance_id IN (SELECT workflow_instance_id FROM workflow_runs WHERE id=$3))", 3, "message_stream_cleanup_unavailable"),
+    ("SELECT (SELECT COUNT(*) FROM workflow_messages WHERE workflow_run_id=$1)+(SELECT COUNT(*) FROM workflow_inbound_streams WHERE workflow_instance_id IN (SELECT workflow_instance_id FROM workflow_runs WHERE id=$2))", 2, "message_stream_cleanup_unavailable"),
     (REFERENCES_SQL, 5, "external_payload_cleanup_unavailable"),
 ];
 
@@ -217,6 +228,21 @@ pub(super) fn report(outcomes: Vec<(String, Outcome)>) -> Map<String, Value> {
 /// `runInlinePass`'s throttle: at most one inline pass per namespace a
 /// minute in this process.
 pub(super) fn inline_pass_due(namespace: &str) -> bool {
+    static LAST: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    let mut last = LAST.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let now = Instant::now();
+    match last.get(namespace) {
+        Some(at) if now.duration_since(*at).as_secs() < INLINE_THROTTLE_SECONDS => false,
+        _ => {
+            last.insert(namespace.to_owned(), now);
+            true
+        }
+    }
+}
+
+/// `WorkflowStreamRetention::runInlinePass`'s throttle: at most one stream
+/// pass a minute per namespace in this process.
+pub(super) fn inline_stream_pass_due(namespace: &str) -> bool {
     static LAST: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
     let mut last = LAST.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let now = Instant::now();

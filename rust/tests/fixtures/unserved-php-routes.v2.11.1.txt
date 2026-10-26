@@ -20,5 +20,3 @@ POST /api/service-endpoints/{endpointName}/services/{serviceName}/operations/{op
 GET /api/service-endpoints/{endpointName}/services/{serviceName}/operations/{operationName}/service-calls/{serviceCallId}
 POST /api/service-endpoints/{endpointName}/services/{serviceName}/operations/{operationName}/service-calls/{serviceCallId}/cancel
 POST /api/worker/workflow-tasks/{taskId}/cancellation-scopes/checkpoint
-POST /api/workflows/{workflowId}/runs/{runId}/streams/{streamName}/close
-POST /api/workflows/{workflowId}/runs/{runId}/streams/{streamName}/items
