@@ -1339,6 +1339,19 @@ class WorkflowControlPlaneTest extends TestCase
                 'The wait timeout seconds field must not be greater than 60.',
             );
 
+        // The run-targeted alias applies the same rule before admission.
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-update-wait-bound/runs/'.$start->json('run_id').'/update/approve', [
+                'input' => [true, 'api'],
+                'wait_for' => 'completed',
+                'wait_timeout_seconds' => 61,
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath(
+                'validation_errors.wait_timeout_seconds.0',
+                'The wait timeout seconds field must not be greater than 60.',
+            );
+
         $this->assertSame(0, WorkflowCommand::query()
             ->where('workflow_instance_id', 'wf-update-wait-bound')
             ->where('command_type', 'update')
