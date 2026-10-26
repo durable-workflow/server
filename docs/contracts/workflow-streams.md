@@ -87,11 +87,16 @@ The contract names two distinct flows:
 - **Slow consumer.** Each append increments `pending_items`. Each
   successful read with `next_offset > last_offset` (consumer caught
   up) advisory-decrements pending back toward zero. When
-  `pending_items >= max_pending_items`, the next append returns
-  `429` with `reason=stream_full`. The default
-  `max_pending_items` per stream is 10000; producers may pass an
-  explicit `max_pending_items` per request to negotiate a lower or
-  higher cap on a per-stream basis.
+  `pending_items` plus the new items of an append would exceed
+  `max_pending_items`, the append returns `429` with
+  `reason=stream_full`. The whole batch is refused before any item
+  is written, so a plain retry cannot duplicate part of it. Items
+  whose `idempotency_key` is already in the stream (or earlier in the
+  same batch) take no capacity, and a batch made only of such items
+  still answers with their existing offsets. The default and the
+  maximum `max_pending_items` per stream are both 10000. A producer
+  may pass a lower `max_pending_items` per request; a value above
+  10000 is refused with `422`.
 - **Fast producer / idle consumer.** A subscriber may pass
   `wait_seconds` (default 0, max 60) to long-poll. When no items
   are available within the window the request returns an empty
@@ -103,6 +108,8 @@ Per-request limits:
 
 - `max_items` on subscribe: default 100, max 500.
 - `items` on append: max 500 per request.
+- `max_pending_items` on append: 1 to 10000.
+- `retention_seconds` on close: 1 to 2592000 (30 days).
 - `wait_seconds` on subscribe: max 60.
 
 ## Observability
@@ -134,8 +141,44 @@ responses.
 - An `open` stream is retained until close.
 - A `closed` or `errored` stream is retained for
   `retention_seconds` after `closed_at`. Default is 3600 seconds.
-  The producer may override on close. The namespace retention
-  sweep removes expired closed streams.
+  The producer may override on close, up to 2592000 seconds (30
+  days); a larger value is refused with `422`.
+- Once `closed_at + retention_seconds` has passed, the stream reads
+  as not found from that instant: list omits it, and describe,
+  subscribe, append and close answer `404 stream_not_found`.
+- The expired stream's name stays taken for the rest of its run: an
+  append never opens it again at offset 0. Its row, without items,
+  is removed when the run itself is pruned.
+- A bounded retention pass removes the expired stream's items,
+  whatever the namespace's history retention mode. It runs from the
+  throttled inline retention pass on worker heartbeats, from
+  `history:prune`, and from a general operator retention pass
+  (`POST /api/system/retention/pass` without `run_ids`).
+  - Each pass reads a capped number of a namespace's due streams in
+    deadline order from an index on the stream's reclaim deadline,
+    so its reads stop at that cap.
+  - It deletes a capped number of items in small transactions, and
+    the next pass resumes where it stopped.
+  - Before deleting a batch it settles the batch's external
+    payloads as run retention does: an object no other retained row
+    references is deleted (honoring backup holds), and an object
+    another row still references is kept.
+  - If the namespace's external payload storage is unavailable, or a
+    deletion fails, the batch's items stay and a later pass retries
+    them.
+- When a run is pruned, its streams and their items are removed with
+  it, after the same external payload handling. Pruning takes the
+  run's lock before anything else, so an append to the run that
+  arrives meanwhile waits, then answers `404 stream_not_found` and
+  writes nothing.
+- Appends and cleanup decide each external payload object under that
+  object's lock. An admitted append claims its items' references in
+  its own transaction. Cleanup asks again, under the lock, whether
+  any retained row references the object before deleting it. If
+  cleanup deleted the object first, the append is refused and writes
+  nothing; over HTTP it answers `422 external_payload_unsupported`,
+  and the producer uploads the payload again. Otherwise the object
+  stays.
 
 ## SDK implementation notes
 

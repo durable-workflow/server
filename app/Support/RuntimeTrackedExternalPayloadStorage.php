@@ -57,8 +57,57 @@ class RuntimeTrackedExternalPayloadStorage implements RuntimeExternalPayloadStor
 
     public function get(string $uri): string
     {
+        $data = $this->fetch($uri);
+
+        app(RuntimeExternalPayloadRegistry::class)->verifyFetchedBytesAndClaim(
+            $this->namespace,
+            $uri,
+            $data,
+        );
+
+        return $data;
+    }
+
+    /**
+     * Fetches and verifies the bytes behind $uri without claiming it. Claim
+     * it with claimVerified() in the transaction that records the reference.
+     *
+     * @return array{size_bytes: int, sha256: string}
+     */
+    public function verify(string $uri): array
+    {
+        return app(RuntimeExternalPayloadRegistry::class)->verifyFetchedBytes(
+            $this->namespace,
+            $uri,
+            $this->fetch($uri),
+        );
+    }
+
+    public function claimVerified(string $uri, int $sizeBytes, string $sha256): void
+    {
+        app(RuntimeExternalPayloadRegistry::class)->claimVerified($this->namespace, $uri, $sizeBytes, $sha256);
+    }
+
+    public function claimRegistered(string $uri): void
+    {
+        app(RuntimeExternalPayloadRegistry::class)->claimRegistered($this->namespace, $uri);
+    }
+
+    /**
+     * Deletes $uri unless `$isReferenced`, asked under the object's lock,
+     * finds a reference to it. Returns false when one kept it.
+     *
+     * @param  callable(): bool  $isReferenced
+     */
+    public function deleteUnlessReferenced(string $uri, callable $isReferenced): bool
+    {
+        return app(RuntimeExternalPayloadRegistry::class)->deleteUriUnlessReferenced($this->namespace, $uri, $this->inner, $isReferenced);
+    }
+
+    private function fetch(string $uri): string
+    {
         try {
-            $data = $this->inner->get($uri);
+            return $this->inner->get($uri);
         } catch (ExternalPayloadObjectOversized $exception) {
             throw new RuntimeExternalPayloadException(
                 'external_payload_oversized',
@@ -84,14 +133,6 @@ class RuntimeTrackedExternalPayloadStorage implements RuntimeExternalPayloadStor
                 $exception,
             );
         }
-
-        app(RuntimeExternalPayloadRegistry::class)->verifyFetchedBytesAndClaim(
-            $this->namespace,
-            $uri,
-            $data,
-        );
-
-        return $data;
     }
 
     public function delete(string $uri): void

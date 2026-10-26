@@ -10,6 +10,7 @@ use App\Support\MigrationAdoption;
 use App\Support\PayloadCodecDeploymentPreflight;
 use App\Support\RuntimeExternalPayloadCleanup;
 use App\Support\StoragePressure;
+use App\Support\WorkflowStreamRetention;
 use Illuminate\Database\Migrations\Migrator;
 use Illuminate\Support\Facades\Artisan;
 use Workflow\V2\Enums\RunStatus;
@@ -340,6 +341,31 @@ Artisan::command('history:prune {--limit=100 : Maximum expired runs to prune per
         $this->components->info('No namespaces found.');
 
         return 0;
+    }
+
+    // Closed workflow streams past their own retention, in any retention
+    // mode (Server #774): at most $limit streams and $limit * 100 items per
+    // namespace per pass. A namespace whose payload cleanup is blocked or
+    // fails keeps its items for the next pass.
+    foreach ($namespaces as $ns) {
+        try {
+            $streams = WorkflowStreamRetention::pruneExpired($ns->name, $limit, $limit * 100);
+        } catch (Throwable $e) {
+            $this->components->error(sprintf('Namespace [%s]: stream retention failed: %s', $ns->name, $e->getMessage()));
+
+            continue;
+        }
+
+        if ($streams['streams_reclaimed'] > 0 || $streams['items_removed'] > 0 || $streams['blocked_reason'] !== null) {
+            $this->components->info(sprintf(
+                'Namespace [%s]: %d expired stream(s) reclaimed, %d stream item(s) deleted%s%s.',
+                $ns->name,
+                $streams['streams_reclaimed'],
+                $streams['items_removed'],
+                $streams['budget_exhausted'] ? '; more remain for the next pass' : '',
+                $streams['blocked_reason'] !== null ? '; blocked: '.$streams['blocked_reason'] : '',
+            ));
+        }
     }
 
     $totalPruned = 0;

@@ -212,9 +212,11 @@ const COMMAND: &[(&str, &[Check])] = &[
     ("workflow_stream.items.*.idempotency_key", &[NUL, STR, max(191)]),
     ("workflow_stream.items.*.item_type", &[NUL, STR, max(64)]),
     ("workflow_stream.items.*.content_type", &[NUL, STR, max(191)]),
-    ("workflow_stream.max_pending_items", &[NUL, INT, min(1)]),
+    // `WorkflowStreamService::MAX_PENDING_ITEMS_MAX` and
+    // `RETENTION_SECONDS_MAX` (Server #774).
+    ("workflow_stream.max_pending_items", &[NUL, INT, min(1), max(10_000)]),
     ("workflow_stream.error_reason", &[NUL, STR, max(191)]),
-    ("workflow_stream.retention_seconds", &[NUL, INT, min(1)]),
+    ("workflow_stream.retention_seconds", &[NUL, INT, min(1), max(2_592_000)]),
 ];
 
 /// `WORKFLOW_TASK_COMMAND_VALIDATION_BATCH_SIZE`.
@@ -764,6 +766,15 @@ mod tests {
         assert_eq!(refusal(base(json!(["x"])))["message"], "The commands.0.type field is required.");
         assert_eq!(refusal(json!({"workflow_task_attempt":"x","commands":[{"type":"a"}]}))["message"],
             "The lease owner field is required. (and 1 more error)");
+        // Server #774: a workflow stream's producer controls are bounded.
+        let stream = |field: &str, value: i64| base(json!([{"type":"record_side_effect","workflow_stream":{"operation":"append",
+            "stream_name":"tokens","command_identity":"c","command_ordinal":0,field:value}}]));
+        assert_eq!(refusal(stream("max_pending_items", 10_001))["errors"]["commands.0.workflow_stream.max_pending_items"],
+            json!(["The commands.0.workflow_stream.max_pending_items field must not be greater than 10000."]));
+        assert_eq!(refusal(stream("retention_seconds", 2_592_001))["errors"]["commands.0.workflow_stream.retention_seconds"],
+            json!(["The commands.0.workflow_stream.retention_seconds field must not be greater than 2592000."]));
+        assert!(checked(stream("max_pending_items", 10_000)).is_ok());
+        assert!(checked(stream("retention_seconds", 2_592_000)).is_ok());
     }
 
     #[test]

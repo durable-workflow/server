@@ -13,12 +13,12 @@
         {
           "type": "server-verify",
           "line": "&& server-verify-trust final",
-          "distance": 75
+          "distance": 87
         },
         {
           "type": "server-verify",
           "line": "&& server-verify-trust final",
-          "distance": 75
+          "distance": 87
         }
       ]
     },

@@ -136,12 +136,17 @@ final class WorkflowStreamsContract
                 'max_items_per_subscribe_default' => 100,
                 'max_items_per_append_max' => 500,
                 'max_pending_items_per_stream_default' => 10000,
+                'max_pending_items_per_stream_max' => WorkflowStreamService::MAX_PENDING_ITEMS_MAX,
+                'capacity_refusal' => 'whole_batch_refused_before_any_item_is_written',
             ],
             'retention' => [
                 'open_stream' => 'kept_until_close',
                 'closed_stream_default_retention_seconds' => 3600,
                 'errored_stream_default_retention_seconds' => 3600,
                 'retention_override_field' => 'retention_seconds',
+                'retention_seconds_max' => WorkflowStreamService::RETENTION_SECONDS_MAX,
+                'expired_stream_reads' => 'not_found',
+                'expired_stream_reclaim' => 'bounded_retention_pass',
             ],
             'observability_surface' => [
                 'list_streams_route' => 'GET /api/workflows/{workflowId}/runs/{runId}/streams',

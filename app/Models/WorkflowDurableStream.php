@@ -31,6 +31,7 @@ class WorkflowDurableStream extends Model
         'opened_at' => 'datetime',
         'last_appended_at' => 'datetime',
         'closed_at' => 'datetime',
+        'reclaim_at' => 'datetime',
         'metadata' => 'array',
     ];
 

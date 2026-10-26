@@ -1177,6 +1177,64 @@ class RuntimeExternalPayloadTransportTest extends TestCase
             ->count());
     }
 
+    public function test_stream_reference_is_claimed_only_by_an_admitted_append(): void
+    {
+        Queue::fake();
+        $start = $this->withHeaders($this->controlHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'runtime-reference-stream-claim',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'input' => ['stream'],
+            ])
+            ->assertCreated();
+        $route = fn (string $stream): string => sprintf(
+            '/api/workflows/runtime-reference-stream-claim/runs/%s/streams/%s/items',
+            $start->json('run_id'),
+            $stream,
+        );
+        $reference = $this->upload(Serializer::serializeWithCodec('avro', ['claimed item']))->json('reference');
+        $item = ['payload_reference' => $reference, 'payload_codec' => 'avro'];
+        $unclaimed = function () use ($reference): void {
+            $row = RuntimeExternalPayload::query()->whereKey($reference['reference_id'])->firstOrFail();
+            $this->assertNull($row->retained_at);
+            $this->assertNotNull($row->expires_at);
+        };
+        $unclaimed();
+
+        // A batch refused at capacity writes nothing and claims nothing.
+        $this->withHeaders($this->controlHeaders())
+            ->postJson($route('full'), ['items' => [['payload' => 'first']], 'max_pending_items' => 1])
+            ->assertOk();
+        $this->withHeaders($this->controlHeaders())
+            ->postJson($route('full'), ['items' => [$item], 'max_pending_items' => 1])
+            ->assertStatus(429)
+            ->assertJsonPath('reason', 'stream_full');
+        $unclaimed();
+
+        // So does an append refused by a closed stream.
+        $this->withHeaders($this->controlHeaders())
+            ->postJson($route('closed'), ['items' => [['payload' => 'first']]])
+            ->assertOk();
+        $this->withHeaders($this->controlHeaders())
+            ->postJson(sprintf('/api/workflows/runtime-reference-stream-claim/runs/%s/streams/closed/close', $start->json('run_id')), [])
+            ->assertOk();
+        $this->withHeaders($this->controlHeaders())
+            ->postJson($route('closed'), ['items' => [$item]])
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'stream_closed');
+        $unclaimed();
+        $this->assertDatabaseCount('workflow_durable_stream_items', 2);
+
+        // An admitted append claims it with the item it writes.
+        $this->withHeaders($this->controlHeaders())
+            ->postJson($route('admitted'), ['items' => [$item]])
+            ->assertOk();
+        $row = RuntimeExternalPayload::query()->whereKey($reference['reference_id'])->firstOrFail();
+        $this->assertNotNull($row->retained_at);
+        $this->assertNull($row->expires_at);
+        $this->assertDatabaseCount('workflow_durable_stream_items', 3);
+    }
+
     public function test_stream_reference_is_verified_before_commit_and_returns_opaque(): void
     {
         Queue::fake();
