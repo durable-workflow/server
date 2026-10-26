@@ -13,8 +13,9 @@ use App\Support\RuntimeLocalExternalPayloadStorage;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowHistoryPageToken;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
@@ -33,7 +34,9 @@ use Workflow\V2\Support\MemoPayload;
 
 class RuntimeExternalPayloadTransportTest extends TestCase
 {
-    use RefreshDatabase;
+    // Reference lifetime reaches the outer commit; a test transaction would
+    // hide that boundary behind savepoints for every HTTP writer.
+    use DatabaseMigrations;
     use StoragePressureFixture;
 
     private string $storageDirectory;
@@ -41,6 +44,7 @@ class RuntimeExternalPayloadTransportTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        $this->assertSame(0, DB::connection()->transactionLevel(), 'HTTP writers must reach real commits.');
 
         $this->storageDirectory = storage_path('framework/testing/runtime-external-payloads');
         File::deleteDirectory($this->storageDirectory);

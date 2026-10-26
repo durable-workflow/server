@@ -62,7 +62,7 @@ final class MessageStreamController
 
         $storage = $this->externalPayloadStorage->driverFor($namespace);
         try {
-            $envelope = AvroPayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input', $storage);
+            $envelope = AvroPayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input', $storage, retainExternal: true);
         } catch (ValidationException $exception) {
             $this->streams->recordMalformed(
                 $namespace,

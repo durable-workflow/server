@@ -7,9 +7,11 @@ use App\Models\WorkflowDurableStream;
 use App\Models\WorkflowDurableStreamItem;
 use App\Models\WorkflowNamespace;
 use App\Support\HistoryRetentionEnforcer;
+use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\RuntimeExternalPayloadException;
 use App\Support\RuntimeExternalPayloadObjectLock;
 use App\Support\RuntimeExternalPayloadRegistry;
+use App\Support\RuntimeExternalPayloadWriteClaims;
 use App\Support\WorkflowRunStreamLock;
 use App\Support\WorkflowStreamCommandProcessor;
 use App\Support\WorkflowStreamRetention;
@@ -24,8 +26,10 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\RunSummaryProjector;
 
 /**
@@ -245,6 +249,119 @@ class WorkflowStreamPayloadRaceTest extends TestCase
         }
         $this->assertObjectKept($a);
         $this->assertObjectKept($b);
+    }
+
+    /**
+     * A workflow start previously claimed its external input
+     * in its own committed step, before the transaction that writes the run
+     * referencing it. Run retention that runs between the two finds no
+     * retained reference and deletes the object, and the start then commits
+     * a run whose arguments reference a deleted object. The final claim must
+     * now refuse that start and roll back all its reference-writing state.
+     */
+    #[DataProvider('drivers')]
+    public function test_a_workflow_start_and_run_pruning_decide_a_shared_object(string $driver): void
+    {
+        $this->initializeDatabase($driver);
+        $object = $this->registerObject('start-input');
+        $oldRunId = $this->summarizedRun('wf-claim-race-old', RunStatus::Completed);
+        $this->addStream($oldRunId, 'old', [$object['uri']]);
+
+        // The start has verified and claimed the object under its lock and
+        // committed that step; it has not yet written its run.
+        $start = $this->startActor(fn (): array => $this->httpStart('wf-claim-race-new', $object['reference']), self::afterVerification());
+        $this->runUntilPaused($start);
+        $pruned = HistoryRetentionEnforcer::pruneRun('default', $oldRunId);
+        $this->assertTrue($pruned['pruned'], json_encode($pruned));
+        $this->resume($start);
+        $started = $this->finishActor($start);
+
+        // Either the start is refused, or the object its run references
+        // still exists.
+        if ($started['status'] === 201) {
+            $arguments = (string) WorkflowRun::query()->where('workflow_instance_id', 'wf-claim-race-new')->value('arguments');
+            $this->assertSame($object['uri'], ExternalPayloads::storedEnvelope($arguments)['external_storage']['uri']);
+            $this->assertObjectKept($object);
+        } else {
+            $this->assertContains($started['status'], [404, 410, 422], json_encode($started));
+            $this->assertContains($started['reason'], [
+                'external_payload_not_found', 'external_payload_expired', 'external_payload_unsupported',
+            ]);
+            $this->assertFalse(WorkflowRun::query()->where('workflow_instance_id', 'wf-claim-race-new')->exists());
+            $this->assertFalse(WorkflowInstance::query()->whereKey('wf-claim-race-new')->exists());
+            $this->assertObjectDeleted($object);
+        }
+    }
+
+    #[DataProvider('drivers')]
+    public function test_a_workflow_start_holds_its_final_claim_until_its_reference_is_visible(string $driver): void
+    {
+        $this->initializeDatabase($driver);
+        $object = $this->registerObject('start-wins');
+        $oldRunId = $this->summarizedRun('wf-claim-wins-old', RunStatus::Completed);
+        $this->addStream($oldRunId, 'old', [$object['uri']]);
+        $written = false;
+        $finalClaim = static function (string $sql, string $driver, int $level) use (&$written): bool {
+            if (str_starts_with($sql, 'insert') && str_contains($sql, 'workflow_runs')) {
+                $written = true;
+            }
+
+            return $written && $level >= 1 && str_starts_with($sql, 'select')
+                && str_contains($sql, 'runtime_external_payloads');
+        };
+
+        $start = $this->startActor(fn (): array => $this->httpStart('wf-claim-wins-new', $object['reference']), $finalClaim);
+        $this->runUntilPaused($start);
+        $cleanup = $this->startActor(fn (): array => HistoryRetentionEnforcer::pruneRun('default', $oldRunId));
+        $this->release($cleanup);
+        $this->awaitWait($cleanup, 'runtime_external_payload_object_locks');
+        $this->resume($start);
+        $this->assertSame(201, $this->finishActor($start)['status']);
+        $this->assertTrue($this->finishActor($cleanup)['pruned']);
+        DB::purge();
+        DB::reconnect();
+        $arguments = (string) WorkflowRun::query()->where('workflow_instance_id', 'wf-claim-wins-new')->value('arguments');
+        $this->assertSame($object['uri'], ExternalPayloads::storedEnvelope($arguments)['external_storage']['uri']);
+        $this->assertObjectKept($object);
+    }
+
+    private function httpStart(string $workflowId, array $reference): array
+    {
+        $response = $this->withHeaders($this->apiHeaders())->postJson('/api/workflows', [
+            'workflow_id' => $workflowId,
+            'workflow_type' => 'remote.claim-race',
+            'task_queue' => 'claim-race',
+            'input' => ['codec' => 'avro', 'external_payload' => $reference],
+        ]);
+
+        return ['status' => $response->status(), 'reason' => $response->json('reason')];
+    }
+
+    #[DataProvider('drivers')]
+    public function test_materialized_input_can_commit_inline_after_its_source_object_is_pruned(string $driver): void
+    {
+        $this->initializeDatabase($driver);
+        $object = $this->registerObject('materialized-input');
+        $oldRunId = $this->summarizedRun('wf-inline-old', RunStatus::Completed);
+        $this->addStream($oldRunId, 'old', [$object['uri']]);
+
+        $writer = $this->startActor(fn (): string => app(RuntimeExternalPayloadWriteClaims::class)->transport(function () use ($object): string {
+            $bytes = app(NamespaceExternalPayloadStorage::class)->driverFor('default')->get($object['uri']);
+
+            return DB::transaction(function () use ($bytes): string {
+                $runId = $this->createRun('wf-inline-new');
+                WorkflowRun::query()->whereKey($runId)->update(['arguments' => $bytes, 'payload_codec' => 'avro']);
+
+                return $runId;
+            });
+        }), self::afterVerification());
+        $this->runUntilPaused($writer);
+        $this->assertTrue(HistoryRetentionEnforcer::pruneRun('default', $oldRunId)['pruned']);
+        $this->resume($writer);
+        $runId = $this->finishActor($writer);
+        $arguments = WorkflowRun::query()->whereKey($runId)->value('arguments');
+        $this->assertSame(['materialized-input'], Serializer::unserializeWithCodec('avro', $arguments));
+        $this->assertObjectDeleted($object);
     }
 
     private function initializeDatabase(string $driver): void
