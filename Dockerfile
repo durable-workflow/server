@@ -11,6 +11,11 @@ ARG PHPREDIS_COMMIT=df4fab2de7fc327c54c94a13af2b9542e4fbd720
 COPY docker/trust/ /usr/local/lib/server-trust/
 RUN sh /usr/local/lib/server-trust/verify-trust.sh system
 
+# git clones through libcurl, whose Brotli decoder must carry the
+# CVE-2026-111497 fix: Alpine's signed brotli-libs 1.2.1-r0 or later.
+RUN apk add --no-cache --upgrade "brotli-libs>=1.2.1-r0" \
+    && apk info -e "brotli-libs>=1.2.1-r0"
+
 RUN git clone --depth 1 --branch "${PHPREDIS_VERSION}" https://github.com/phpredis/phpredis.git /phpredis \
     && cd /phpredis \
     && RESOLVED_COMMIT="$(git rev-parse HEAD)" \
@@ -31,6 +36,10 @@ COPY --from=phpredis-source /phpredis /usr/src/php/ext/redis
 
 # The image's trust checks; `server-verify-trust` reruns them on any image.
 COPY docker/trust/ /usr/local/lib/server-trust/
+# The Brotli decoder check, `server-verify-brotli`. Debian's signed
+# libbrotli1 1.1.0-2+deb13u1 (trixie-security) carries the CVE-2026-111497
+# fix; the package list below takes it over the base image's 1.1.0-2+b7.
+COPY docker/brotli/ /usr/local/lib/server-brotli/
 
 # Published conformance runners execute from the exact Server image.
 # Keep their Node and Python runtimes available alongside the service. Node
@@ -41,6 +50,7 @@ RUN chmod 0755 /usr/local/lib/server-trust/verify-trust.sh \
     && server-verify-trust system \
     && apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    libbrotli1 \
     libpq-dev \
     libstdc++6 \
     libzip-dev \
@@ -48,6 +58,7 @@ RUN chmod 0755 /usr/local/lib/server-trust/verify-trust.sh \
     python3-venv \
     unzip \
     util-linux \
+    && ln -s /usr/local/lib/server-brotli/verify-brotli.sh /usr/local/bin/server-verify-brotli \
     && docker-php-ext-install opcache redis pdo pdo_mysql pdo_pgsql pcntl zip bcmath \
     && groupmod --gid 1000 www-data \
     && usermod --uid 1000 --gid 1000 www-data \
@@ -56,8 +67,10 @@ RUN chmod 0755 /usr/local/lib/server-trust/verify-trust.sh \
 COPY --from=composer /usr/bin/composer /usr/bin/composer
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 
-# Every store the image's runtimes use, before the production stage downloads.
-RUN server-verify-trust final
+# Every store the image's runtimes use, and every Brotli decoder they load,
+# before the production stage downloads.
+RUN server-verify-trust final \
+    && server-verify-brotli
 
 # Source qualification exercises the actual startup path from this base too.
 COPY --chmod=0755 docker/ensure-sqlite-database.sh /usr/local/bin/server-ensure-sqlite
@@ -102,7 +115,8 @@ RUN apt-get update \
     && rm -rf /workflow/.git \
     && apt-get purge -y git \
     && apt-get autoremove -y --purge \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && server-verify-brotli
 
 RUN php scripts/ci/prepare-release-workflow-composer-metadata.php \
     && composer update durable-workflow/workflow --no-dev --no-scripts --no-autoloader --prefer-dist --no-interaction --no-progress \

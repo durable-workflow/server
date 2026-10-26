@@ -152,6 +152,7 @@ if ! curl --fail --silent --max-time 2 "$BASE_URL/api/ready" >/dev/null; then
 fi
 
 python3 -m venv "$VENV"
+sh "$ROOT_DIR/scripts/ci/bootstrap-patched-pip.sh" "$VENV/bin/python"
 "$VENV/bin/pip" install --quiet --disable-pip-version-check "durable-workflow==$SDK_VERSION"
 "$VENV/bin/python" "$ROOT_DIR/scripts/perf/namespace_isolation.py" \
   --base-url "$BASE_URL" \

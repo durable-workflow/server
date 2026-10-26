@@ -1009,9 +1009,9 @@ SH;
             'Waterline visibility must come from the published Waterline shard, not a placeholder.',
         );
         $this->assertStringNotContainsString(
-            "image: composer:2\n    working_dir: /app",
+            "image: composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee\n    working_dir: /app",
             $shell,
-            'the disposable Waterline service must not run under composer:2 because it lacks pdo_mysql',
+            'the disposable Waterline service must not run under composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee because it lacks pdo_mysql',
         );
         $this->assertStringNotContainsString(
             'waterline_runtime_image="${DW_WV_WATERLINE_RUNTIME_IMAGE:-$server_image}"',
@@ -1660,7 +1660,7 @@ if [ "${1:-}" = "run" ]; then
       printf '%s\n%s\n' 'PDO' 'pdo_mysql'
       exit 0
       ;;
-    *" composer:2 "*)
+    *" composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee "*)
       exit 0
       ;;
   esac

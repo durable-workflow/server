@@ -308,6 +308,11 @@ where
         Ok(open.then_some(run))
     }
 
+    /// Whether the run is a read-only Waterline v1 projection.
+    fn projected(run: &DB::Row) -> Result<bool> {
+        Ok(DB::optional_string(run, "import_source")?.as_deref() == Some(super::waterline_import::IMPORT_SOURCE))
+    }
+
     /// `MessageStreamService::append`, in one transaction.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn append_message(
@@ -330,6 +335,10 @@ where
         let Some(run) = Self::active_current_run(&mut tx, workflow_id).await? else {
             return Err(rejection(StatusCode::CONFLICT, "run_not_active", workflow_id, stream, message_id, json!({})));
         };
+        if Self::projected(&run)? {
+            return Err(RuntimeError::Protocol { status: StatusCode::CONFLICT,
+                response: super::waterline_import::read_only_append(workflow_id, &DB::string(&run, "id")?, stream) });
+        }
         let row = self.locked_stream(&mut tx, workflow_id, stream).await?;
         let stream_id = DB::number(&row, "id")?;
         let cursor = DB::number(&row, "cursor_position")?;
@@ -388,8 +397,10 @@ where
         let mut tx = self.begin().await?;
         let bound = Self::query("SELECT id FROM workflow_instances WHERE id=$1 AND namespace=$2")
             .bind(workflow_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?;
-        if bound.is_none() || Self::active_current_run(&mut tx, workflow_id).await?.is_none() {
-            return Ok(());
+        // A read-only projection keeps no stream state, malformed or not.
+        match Self::active_current_run(&mut tx, workflow_id).await? {
+            Some(run) if bound.is_some() && !Self::projected(&run)? => {}
+            _ => return Ok(()),
         }
         let row = self.locked_stream(&mut tx, workflow_id, stream).await?;
         let at = now();

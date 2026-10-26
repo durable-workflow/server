@@ -2,6 +2,9 @@ x-sdk: &sdk
   image: ${COMPOSE_PROJECT_NAME}-sdk
   build:
     context: ./sdk
+    # The patched-pip bootstrap (GHSA-6q48-6c7w-9gw2).
+    additional_contexts:
+      ci: ../../../scripts/ci
     args:
       SERVER_IMAGE: ${SERVER_IMAGE:?Set the exact published Server image digest}
       PHP_SDK_VERSION: ${PHP_SDK_VERSION:?Load versions.env}

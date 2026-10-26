@@ -25,9 +25,9 @@ jq -n --arg scope "$RESOURCE_SCOPE" --arg backend "$backend" --arg revision "$(g
   > "$evidence/identity.json"
 # The workflow's always-step retires partial setup and every admitted original.
 trap 'printf "%s\n" "$?" > "$evidence/profile-status.txt"' EXIT
-docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
-  --entrypoint composer -e COMPOSER_HOME=/tmp/query-composer \
-  -v "$PWD/$sdk:/sdk" -w /sdk "$image" install --no-dev --no-scripts --no-interaction --prefer-dist \
+bash scripts/ci/run-composer.sh --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
+  -e COMPOSER_HOME=/tmp/query-composer -v "$PWD/$sdk:/sdk" -w /sdk -- \
+  install --no-dev --no-scripts --no-interaction --prefer-dist \
   > "$evidence/sdk-install.txt" 2>&1
 case "$backend" in
   mysql) db=(-e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password) ;;

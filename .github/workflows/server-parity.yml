@@ -10,11 +10,13 @@ on:
       - .github/workflows/server-parity.yml
       - scripts/conformance/server-parity*
       - scripts/conformance/server-parity/**
+      - scripts/ci/pull-images.sh
       - tests/Fixtures/ServerParity/**
       - tests/Fixtures/ServerParityBaselines/**
       - tests/Fixtures/ServerParityNormalization/**
       - tests/Unit/ServerParityRunnerTest.mjs
       - tests/Unit/ServerParitySdkDirectionLanesTest.mjs
+      - tests/Unit/ServerParityCodecDeadlineCellsTest.mjs
       - tests/Unit/ServerParityArtifactSummaryTest.mjs
       - tests/Unit/ServerParityQueryObserverTest.mjs
       - tests/Unit/ServerParityCodecDeadlineLoadTest.mjs
@@ -40,9 +42,12 @@ on:
       - tests/Unit/ServerParityWorkerReplacementContractTest.mjs
       - tests/Unit/ServerParityOperatorMetricsContractTest.mjs
       - tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs
+      - tests/Unit/ServerParityRecordLocalActivityContractTest.mjs
       - tests/Unit/ServerParityWorkflowPollRequestContractTest.mjs
       - tests/Unit/ServerParityActivityCancellationAckContractTest.mjs
       - tests/Unit/ServerParityServiceCatalogContractTest.mjs
+      - tests/Unit/ServerParityWorkflowImportContractTest.mjs
+      - tests/Unit/ServerParityWaterlineImportContractTest.mjs
       - tests/Unit/ServerParitySystemMetricsContractTest.mjs
       - tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs
       - tests/Unit/ServerParityPrometheusMetricsContractTest.mjs
@@ -54,6 +59,9 @@ on:
       - tests/Unit/ServerParityWorkerSessionActivitiesContractTest.mjs
       - tests/Unit/ServerParityUpdateValidationContractTest.mjs
       - tests/Unit/ServerParityFixtureSelectionTest.mjs
+      - tests/Unit/ServerParityUpdateValidationRetryTest.mjs
+      - tests/Unit/ServerParityKilledAuthorPollTest.mjs
+      - tests/Unit/ServerParityImagePullTest.mjs
       - tests/Unit/ServerParityMessageStreamsContractTest.mjs
       - tests/Unit/ServerParityWorkflowStreamWritesContractTest.mjs
       - tests/Unit/ServerParityWaitingHistoryContractTest.mjs
@@ -116,37 +124,21 @@ jobs:
       RESOURCE_SCOPE: dw-codec-build-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - name: Build the locked published SDK adapter once
+      # A registry briefly answering "unknown blob" once failed every job at its
+      # first container; pull this job's common images with bounded retries.
+      - name: Pull the pinned images, retrying registry errors
         run: |
           set -euo pipefail
-          mkdir -p sdk-cargo sdk-target published-sdk-adapters/python-packages
-          docker run --rm --user="$(id -u):$(id -g)" --cpus=2 --memory=2g --memory-swap=2g \
-            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
-            -e CARGO_INCREMENTAL=0 -e CARGO_PROFILE_DEV_DEBUG=0 \
-            -v "$PWD:/source:ro" -v "$PWD/sdk-cargo:/cargo" -v "$PWD/sdk-target:/target" \
-            -w /source/scripts/conformance/server-parity/published-sdk-patch/rust \
+          baseline() {
+            jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' \
+              "tests/Fixtures/ServerParityBaselines/$1.json"
+          }
+          bash scripts/ci/pull-images.sh \
             mirror.gcr.io/library/rust@sha256:300ec56abce8cc9448ddea2172747d048ed902a3090e6b57babb2bf19f754081 \
-            cargo build --locked > published-sdk-adapters/rust-sdk-build.txt 2>&1
-          cp sdk-target/debug/server-parity-published-rust-patch published-sdk-adapters/rust-worker
-          cp scripts/conformance/server-parity/published-sdk-patch/rust/Cargo.lock published-sdk-adapters/Cargo.lock
-          docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=512m --memory-swap=512m \
-            -v "$PWD:/source:ro" -v "$PWD/published-sdk-adapters:/adapters" \
             mirror.gcr.io/library/python@sha256:bf44cdfcb76cd3b41e879bc058fc37ec5872002ccfde7fcb765e218cde0cd79c \
-            python -m pip install --disable-pip-version-check --no-cache-dir --no-compile --only-binary=:all: --require-hashes \
-            --target /adapters/python-packages --report /adapters/python-install-report.json \
-            -r /source/scripts/conformance/server-parity/published-sdk-patch/requirements.txt \
-            > published-sdk-adapters/python-install.txt 2>&1
-          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityProfiles/published-sdk-patch-replay/artifacts.json)
-          docker run --rm --user="$(id -u):$(id -g)" --network=none --entrypoint node \
-            -v "$PWD:/source:ro" -v "$PWD/published-sdk-adapters:/adapters" -w /source "$image" \
-            scripts/conformance/server-parity/published-sdk-patch/identity.mjs /adapters \
-            tests/Fixtures/ServerParityProfiles/published-sdk-patch-replay/artifacts.json
-          printf '%s\n' "$GITHUB_SHA" > published-sdk-adapters/runner-revision.txt
-          sha256sum scripts/conformance/server-parity/published-sdk-patch/rust/{Cargo.toml,Cargo.lock,src/main.rs} \
-            scripts/conformance/server-parity/published-sdk-patch/{python.py,requirements.txt} > published-sdk-adapters/source-hashes.sha256
-          cd published-sdk-adapters
-          find . -type f ! -path ./SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
-          sha256sum -c SHA256SUMS >/dev/null
+            "$(baseline php-2.11.1)"
+      - name: Build the locked published SDK adapter once
+        run: bash scripts/conformance/server-parity/published-sdk-patch-adapters.sh
       - name: Build genuine legacy-marker adapters with the existing cache
         run: bash scripts/conformance/server-parity/legacy-marker-adapters.sh
       - name: Build fresh published SDK direction adapters with the existing cache
@@ -245,16 +237,15 @@ jobs:
           build_container="$RESOURCE_SCOPE-build"
           docker rm -f "$build_container" >/dev/null 2>&1 || true
 
+  # The six deadline-health cells take about a minute each, beside database
+  # parts that take half an hour, so one runner runs them in turn: a failed
+  # cell still lets the others run, and the job fails after all of them.
   codec-deadline-health:
     needs: [published-sdk-adapters, codec-native-build]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        database: [sqlite, postgres-16, postgres-17, mysql-8.0, mysql-8.4, mariadb-10.11]
+    timeout-minutes: 25
     env:
-      RESOURCE_SCOPE: dw-codec-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.database }}
+      RESOURCE_SCOPE: dw-codec-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Fetch this run's optimized native binary
@@ -274,47 +265,46 @@ jobs:
           set -euo pipefail
           (cd codec-native-build; sha256sum -c SHA256SUMS)
           chmod +x codec-native-build/server
-          bash scripts/conformance/server-parity/codec-operations-cell.sh \
-            '${{ matrix.database }}' cpu-cell codec-native-build corrected-marker-adapters/php codec-evidence
-      - name: Retire this cell's exact owned resources
+          bash scripts/conformance/server-parity/codec-deadline-cells.sh
+      - name: Retire every cell's exact owned resources
         if: always()
         run: |
-          scope="$RESOURCE_SCOPE"
-          native_server="$scope-native"
-          db="$scope-db"
-          probe="$scope-ready"
-          observer="$RESOURCE_SCOPE-native-codec-observer"
-          docker rm -f "$observer" "$probe" "$native_server" >/dev/null 2>&1 || true
-          docker stop --time 10 "$db" >/dev/null 2>&1 || true
-          docker rm "$db" >/dev/null 2>&1 || true
-          docker network rm "$scope" >/dev/null 2>&1 || true
-          if test -d codec-evidence/state; then rm -r -- codec-evidence/state; fi
-      - name: Publish the bounded outcome
+          for database in sqlite postgres-16 postgres-17 mysql-8.0 mysql-8.4 mariadb-10.11; do
+            scope="$RESOURCE_SCOPE-$database"
+            docker rm -f "$scope-native-codec-observer" "$scope-ready" "$scope-native" >/dev/null 2>&1 || true
+            docker stop --time 10 "$scope-db" >/dev/null 2>&1 || true
+            docker rm "$scope-db" >/dev/null 2>&1 || true
+            docker network rm "$scope" >/dev/null 2>&1 || true
+          done
+      - name: Publish the bounded outcomes
         if: always()
         run: |
-          if test -f codec-evidence/database-audit.json; then
-            printf 'Database: %s\n\n' '${{ matrix.database }}' >> "$GITHUB_STEP_SUMMARY"
-            cat codec-evidence/database-audit.json >> "$GITHUB_STEP_SUMMARY"
-          else
-            printf 'CPU/deadline original did not qualify. See this job diagnostics.\n' >> "$GITHUB_STEP_SUMMARY"
-          fi
+          for database in sqlite postgres-16 postgres-17 mysql-8.0 mysql-8.4 mariadb-10.11; do
+            if test -f "codec-evidence/$database/database-audit.json"; then
+              printf 'Database: %s\n\n' "$database" >> "$GITHUB_STEP_SUMMARY"
+              cat "codec-evidence/$database/database-audit.json" >> "$GITHUB_STEP_SUMMARY"
+            else
+              printf 'Database: %s: the CPU/deadline original did not qualify. See this job diagnostics.\n\n' "$database" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
       - name: Keep small outcomes and failure diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: codec-deadline-health-${{ matrix.database }}
+          name: codec-deadline-health
           path: |
-            codec-evidence/build.json
-            codec-evidence/database*.json
-            codec-evidence/database-version.txt
-            codec-evidence/codec-*-contract.txt
-            codec-evidence/codec-*-controls.txt
-            codec-evidence/limits.json
-            codec-evidence/*state.json
-            codec-evidence/server-log.txt
-            codec-evidence/server-ready-errors.txt
-            codec-evidence/profile.txt
-            codec-evidence/failed.json
+            codec-evidence/*.status
+            codec-evidence/*/build.json
+            codec-evidence/*/database*.json
+            codec-evidence/*/database-version.txt
+            codec-evidence/*/codec-*-contract.txt
+            codec-evidence/*/codec-*-controls.txt
+            codec-evidence/*/limits.json
+            codec-evidence/*/*state.json
+            codec-evidence/*/server-log.txt
+            codec-evidence/*/server-ready-errors.txt
+            codec-evidence/*/profile.txt
+            codec-evidence/*/failed.json
           retention-days: 1
           if-no-files-found: warn
 
@@ -378,6 +368,20 @@ jobs:
       DB_MEMORY: ${{ matrix.memory }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      # A registry briefly answering "unknown blob" once failed every job at its
+      # first container; pull this job's common images with bounded retries.
+      - name: Pull the pinned images, retrying registry errors
+        run: |
+          set -euo pipefail
+          baseline() {
+            jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' \
+              "tests/Fixtures/ServerParityBaselines/$1.json"
+          }
+          bash scripts/ci/pull-images.sh \
+            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "$MYSQL_IMAGE" \
+            "$(baseline php-2.11.1)" \
+            "$(baseline php-2.5.14)"
       - name: Fetch this run's published SDK adapters
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -525,8 +529,8 @@ jobs:
           }
           trap container_log_tails ERR
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          # Composer runs confined in the pinned image, never in the published image under test.
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run -d --name "$RESOURCE_SCOPE-php" --network "$RESOURCE_SCOPE" --network-alias=parity-php \
             --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --tmpfs /state \
@@ -748,8 +752,7 @@ jobs:
           }
           trap container_log_tails ERR
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           # Each profile brings its own published PHP and embedded databases and
           # shares its lane's native node, as the profiles shared the corpus's.
@@ -797,8 +800,7 @@ jobs:
         run: |
           set -euo pipefail
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run -d --name "$RESOURCE_SCOPE-native-b" --network "$RESOURCE_SCOPE" --network-alias=parity-native-b \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
@@ -850,8 +852,7 @@ jobs:
         run: |
           set -euo pipefail
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run -d --name "$RESOURCE_SCOPE-native-b" --network "$RESOURCE_SCOPE" --network-alias=parity-native-b \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
@@ -1020,6 +1021,20 @@ jobs:
       POSTGRES_IMAGE: ${{ matrix.image }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      # A registry briefly answering "unknown blob" once failed every job at its
+      # first container; pull this job's common images with bounded retries.
+      - name: Pull the pinned images, retrying registry errors
+        run: |
+          set -euo pipefail
+          baseline() {
+            jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' \
+              "tests/Fixtures/ServerParityBaselines/$1.json"
+          }
+          bash scripts/ci/pull-images.sh \
+            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "$POSTGRES_IMAGE" \
+            "$(baseline php-2.11.1)" \
+            "$(baseline php-2.5.14)"
       - name: Fetch this run's published SDK adapters
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -1144,8 +1159,8 @@ jobs:
           }
           trap container_log_tails ERR
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          # Composer runs confined in the pinned image, never in the published image under test.
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run -d --name "$RESOURCE_SCOPE-php" --network "$RESOURCE_SCOPE" --network-alias=parity-php \
             --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --tmpfs /state \
@@ -1370,8 +1385,7 @@ jobs:
           }
           trap container_log_tails ERR
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           # Each profile brings its own published PHP and embedded databases and
           # shares its lane's native node, as the profiles shared the corpus's.
@@ -1418,8 +1432,7 @@ jobs:
         run: |
           set -euo pipefail
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run -d --name "$RESOURCE_SCOPE-native-b" --network "$RESOURCE_SCOPE" --network-alias=parity-native-b \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
@@ -1473,8 +1486,7 @@ jobs:
         run: |
           set -euo pipefail
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run -d --name "$RESOURCE_SCOPE-native-b" --network "$RESOURCE_SCOPE" --network-alias=parity-native-b \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
@@ -1677,6 +1689,19 @@ jobs:
       DW_PARITY_PART: ${{ matrix.part }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      # A registry briefly answering "unknown blob" once failed every job at its
+      # first container; pull this job's common images with bounded retries.
+      - name: Pull the pinned images, retrying registry errors
+        run: |
+          set -euo pipefail
+          baseline() {
+            jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' \
+              "tests/Fixtures/ServerParityBaselines/$1.json"
+          }
+          bash scripts/ci/pull-images.sh \
+            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "$(baseline php-2.11.1)" \
+            "$(baseline php-2.5.14)"
       - name: Fetch this run's published SDK adapters
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -1775,11 +1800,11 @@ jobs:
           chmod 0777 parity-state parity-evidence
           touch parity-state/php.sqlite parity-state/embedded.sqlite parity-state/php-layout.sqlite
           chmod 0666 parity-state/*.sqlite
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          # Composer runs confined in the pinned image, never in the published image under test.
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
-            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParitySdkDirectionLanesTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityFailureLocationTest.mjs tests/Unit/ServerParityFailureExcerptTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs tests/Unit/ServerParityActivityCancellationAckContractTest.mjs tests/Unit/ServerParityServiceCatalogContractTest.mjs tests/Unit/ServerParitySystemMetricsContractTest.mjs tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs tests/Unit/ServerParityPrometheusMetricsContractTest.mjs tests/Unit/ServerParityPayloadCleanupContractTest.mjs tests/Unit/ServerParityRepairPassContractTest.mjs tests/Unit/ServerParityClusterInfoContractTest.mjs tests/Unit/ServerParityNamespaceDeleteContractTest.mjs tests/Unit/ServerParityMessageStreamsContractTest.mjs tests/Unit/ServerParityWorkflowStreamWritesContractTest.mjs tests/Unit/ServerParityWorkflowPollRequestContractTest.mjs tests/Unit/ServerParityUpdateValidationContractTest.mjs tests/Unit/ServerParityFixtureSelectionTest.mjs tests/Unit/ServerParityWorkerSessionsContractTest.mjs tests/Unit/ServerParityWorkerSessionActivitiesContractTest.mjs > parity-evidence/comparator-tests.txt
+            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParitySdkDirectionLanesTest.mjs tests/Unit/ServerParityCodecDeadlineCellsTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityFailureLocationTest.mjs tests/Unit/ServerParityFailureExcerptTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs tests/Unit/ServerParityRecordLocalActivityContractTest.mjs tests/Unit/ServerParityActivityCancellationAckContractTest.mjs tests/Unit/ServerParityServiceCatalogContractTest.mjs tests/Unit/ServerParityWorkflowImportContractTest.mjs tests/Unit/ServerParityWaterlineImportContractTest.mjs tests/Unit/ServerParitySystemMetricsContractTest.mjs tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs tests/Unit/ServerParityPrometheusMetricsContractTest.mjs tests/Unit/ServerParityPayloadCleanupContractTest.mjs tests/Unit/ServerParityRepairPassContractTest.mjs tests/Unit/ServerParityClusterInfoContractTest.mjs tests/Unit/ServerParityNamespaceDeleteContractTest.mjs tests/Unit/ServerParityMessageStreamsContractTest.mjs tests/Unit/ServerParityWorkflowPollRequestContractTest.mjs tests/Unit/ServerParityUpdateValidationContractTest.mjs tests/Unit/ServerParityFixtureSelectionTest.mjs tests/Unit/ServerParityUpdateValidationRetryTest.mjs tests/Unit/ServerParityKilledAuthorPollTest.mjs tests/Unit/ServerParityImagePullTest.mjs tests/Unit/ServerParityWorkerSessionsContractTest.mjs tests/Unit/ServerParityWorkerSessionActivitiesContractTest.mjs tests/Unit/ServerParityWorkflowStreamWritesContractTest.mjs > parity-evidence/comparator-tests.txt
           docker run --rm --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
             --network=none --entrypoint node -v "$PWD:/source:ro" -w /source \
             "$image" --test tests/Unit/ServerParityCodecDeadlineLoadTest.mjs > parity-evidence/codec-load-tests.txt
@@ -1999,8 +2024,7 @@ jobs:
           }
           trap container_log_tails ERR
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           mkdir -p parity-state parity-evidence
           # The profiles' published PHP containers run as 1000:1000; grant that
@@ -2044,8 +2068,7 @@ jobs:
         run: |
           set -euo pipefail
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           mkdir -p parity-state parity-evidence
           # The cohorts' published PHP containers run as 1000:1000; grant that
@@ -2112,8 +2135,7 @@ jobs:
         run: |
           set -euo pipefail
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
-          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
-            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+          bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           mkdir -p parity-state parity-evidence
           # The cohorts' published PHP containers run as 1000:1000; grant that

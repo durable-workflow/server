@@ -1000,6 +1000,12 @@ where
         if run_id != current {
             return Err(refuse(StatusCode::CONFLICT, "selected_run_not_current"));
         }
+        // A Waterline v1 projection is read-only; its v1 runtime owns execution.
+        if DB::optional_string(&run, "import_source")?.as_deref() == Some(super::waterline_import::IMPORT_SOURCE) {
+            return Err(super::RuntimeError::Protocol { status: StatusCode::CONFLICT, response: json!({
+                "reason": "legacy_v1_operation_not_supported",
+                "message": "Imported legacy workflows do not support cooperative cancellation."}) });
+        }
         let run_status = DB::string(&run, "status")?;
         let response = |duplicate: bool, pending: Value| {
             json!({"workflow_id":workflow_id,"run_id":run_id,

@@ -1102,11 +1102,11 @@ cp "$result_dir/server-image-digest.txt" "$run_root/server-image-digest.txt"
 python3 -m venv "$run_root/.venv"
 # shellcheck disable=SC1091
 . "$run_root/.venv/bin/activate"
-python -m pip install --upgrade pip
-python -m pip install "durable-workflow==$python_version" httpx
+sh "$script_dir/../ci/bootstrap-patched-pip.sh" "$run_root/.venv/bin/python"
+python -I -m pip install "durable-workflow==$python_version" httpx
 
 mkdir -p "$run_root/php-worker" "$run_root/cli/bin" "$run_root/waterline-app" "$run_root/logs"
-docker run --rm -v "$run_root/php-worker:/app" composer:2 \
+docker run --rm -v "$run_root/php-worker:/app" composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \
   composer require --no-interaction --no-progress \
     "durable-workflow/workflow:${workflow_version}@beta" \
     "durable-workflow/sdk:${php_sdk_version}@beta"
@@ -1126,7 +1126,7 @@ if [[ ! -x "$run_root/cli/bin/dw" ]]; then
   blocked_result "official CLI installer did not create an executable dw binary for release $cli_version" "$started_at"
   exit 1
 fi
-if ! docker run --rm -v "$run_root/waterline-app:/app" composer:2 sh -lc "
+if ! docker run --rm -v "$run_root/waterline-app:/app" composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee sh -lc "
   composer create-project --no-interaction --no-progress laravel/laravel . &&
   composer require --no-interaction --no-progress \
     'durable-workflow/waterline:${waterline_version}@beta' \
@@ -1214,7 +1214,7 @@ services:
         condition: service_healthy
 
   waterline:
-    image: composer:2
+    image: composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee
     working_dir: /app
     command: ["php", "artisan", "serve", "--host=0.0.0.0", "--port=8090"]
     environment:
@@ -3380,7 +3380,7 @@ def restart_php_worker(reason: str = "restart_requested") -> datetime:
             f"{RUN_ROOT / 'php-worker'}:/work",
             "-w",
             "/work",
-            "composer:2",
+            "composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee",
             "php",
             "worker.php",
         ],
@@ -3976,7 +3976,7 @@ async def main() -> None:
         "topology": {
             "server": f"published Docker image exposed at {metadata.get('server_url')}",
             "server_queue_worker": "same published Docker image running php artisan queue:work against the shared database queue",
-            "php_worker": "composer:2 container with durable-workflow/workflow package",
+            "php_worker": "composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee container with durable-workflow/workflow package",
             "python_worker": "venv with durable-workflow PyPI package",
             "cli": "official GitHub release installer and standalone dw binary",
             "waterline": f"generated Laravel host app with durable-workflow/waterline package exposed at {metadata.get('waterline_url')} against the shared saga run database",
@@ -4092,7 +4092,7 @@ docker run -d --name "$php_worker_container" --network host \
   -v "$run_root:/run-root" \
   -v "$run_root/php-worker:/work" \
   -w /work \
-  composer:2 php worker.php
+  composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php worker.php
 
 # shellcheck disable=SC1091
 . "$run_root/.venv/bin/activate"

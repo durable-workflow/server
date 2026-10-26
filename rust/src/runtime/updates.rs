@@ -146,7 +146,8 @@ fn update_argument_errors(contract: &Value, name: &str, values: &[crate::codec::
     }
     Value::Object(errors)
 }
-const UPDATE_ROW: &str = "SELECT u.*,c.workflow_type,c.message_sequence,c.context AS command_context FROM workflow_updates u JOIN workflow_commands c ON c.id=u.workflow_command_id WHERE u.id=$1";
+// An update reads only its own workflow's command (Server #765).
+const UPDATE_ROW: &str = "SELECT u.*,c.workflow_type,c.message_sequence,c.context AS command_context FROM workflow_updates u JOIN workflow_commands c ON c.id=u.workflow_command_id AND c.workflow_instance_id=u.workflow_instance_id WHERE u.id=$1";
 
 #[derive(Clone, Copy)]
 enum UpdateLookup {
@@ -414,7 +415,7 @@ where
             return Ok((status, validation_response(failure, wait_for, context.as_ref(), name)));
         }
         let existing = if let Some(request_id) = request_id {
-            Self::query("SELECT u.id,u.update_name,u.workflow_run_id FROM workflow_updates u JOIN workflow_commands c ON c.id=u.workflow_command_id WHERE c.workflow_instance_id=$1 AND c.command_type='update' AND c.request_id=$2")
+            Self::query("SELECT u.id,u.update_name,u.workflow_run_id FROM workflow_updates u JOIN workflow_commands c ON c.id=u.workflow_command_id AND c.workflow_instance_id=u.workflow_instance_id WHERE c.workflow_instance_id=$1 AND c.command_type='update' AND c.request_id=$2")
                 .bind(workflow_id).bind(request_id).fetch_optional(&mut *tx).await?
         } else {
             None
@@ -1046,8 +1047,9 @@ where
         let run_id = DB::string(run, "id")?;
         let update = Self::query(UPDATE_ROW)
             .bind(update_id)
-            .fetch_one(&mut **tx)
-            .await?;
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or_else(|| refuse(StatusCode::CONFLICT, "update_command_unavailable"))?;
         if DB::string(&update, "workflow_run_id")? != run_id
             || DB::string(&update, "status")? != "accepted"
         {
@@ -1123,10 +1125,11 @@ where
                 .bind(sequence).bind(&failure_id).bind(failure.message).bind(DB::bind_time(closed_at))
                 .bind(DB::bind_time(closed_at)).bind(update_id).execute(&mut **tx).await?;
             Self::query(
-                "UPDATE workflow_commands SET outcome='update_failed',applied_at=$1 WHERE id=$2",
+                "UPDATE workflow_commands SET outcome='update_failed',applied_at=$1 WHERE id=$2 AND workflow_instance_id=$3",
             )
             .bind(DB::bind_time(closed_at))
             .bind(&command_id)
+            .bind(&workflow_id)
             .execute(&mut **tx)
             .await?;
         } else {
@@ -1157,10 +1160,11 @@ where
             Self::query("UPDATE workflow_updates SET status='completed',outcome='update_completed',workflow_sequence=$1,result=$2,applied_at=$3,closed_at=$4 WHERE id=$5")
             .bind(sequence).bind(result).bind(DB::bind_time(applied_at)).bind(DB::bind_time(applied_at)).bind(update_id).execute(&mut **tx).await?;
             Self::query(
-                "UPDATE workflow_commands SET outcome='update_completed',applied_at=$1 WHERE id=$2",
+                "UPDATE workflow_commands SET outcome='update_completed',applied_at=$1 WHERE id=$2 AND workflow_instance_id=$3",
             )
             .bind(DB::bind_time(applied_at))
             .bind(&command_id)
+            .bind(&workflow_id)
             .execute(&mut **tx)
             .await?;
         }

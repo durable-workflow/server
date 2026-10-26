@@ -1,6 +1,6 @@
-ARG COMPOSER_IMAGE=composer:2
 ARG PHP_IMAGE=php:8.3-cli
-FROM ${COMPOSER_IMAGE} AS dependencies
+# The pinned image's CA store is checked (GHSA-6q48-6c7w-9gw2).
+FROM composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee AS dependencies
 WORKDIR /sdk
 COPY scripts/perf/sdk-php/composer.json scripts/perf/sdk-php/composer.lock ./
 RUN composer install --no-dev --no-interaction --no-progress --prefer-dist
