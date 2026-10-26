@@ -431,6 +431,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $searchAttributes = isset($fixture['search_attributes']) ? finishHttpSearchAttributes($client, $fixture, $workflowId, $url) : null;
     $storageTest = isset($fixture['storage_test']) ? finishHttpStorageTest($client, $fixture, $workflowId, $url) : null;
     $activityLeaseRenewal = isset($fixture['activity_lease_renewal']) ? finishHttpActivityLeaseRenewal($client, $fixture, $workflowId, $url) : null;
+    $bridgeAdapters = isset($fixture['bridge_adapters']) ? finishHttpBridgeAdapters($client, $fixture, $workflowId, $url) : null;
     $nexusOperations = isset($fixture['nexus_operations']) ? finishHttpNexusOperations($client, $fixture, $workflowId, $url) : null;
     $recordLocalActivity = isset($fixture['record_local_activity']) ? finishHttpRecordLocalActivity($client, $fixture, $workflowId, $url) : null;
     $workflowPollRequest = isset($fixture['workflow_poll_request']) ? finishHttpWorkflowPollRequest($client, $fixture, $workflowId, $url) : null;
@@ -552,6 +553,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'search_attributes' => $searchAttributes,
         'storage_test' => $storageTest,
         'activity_lease_renewal' => $activityLeaseRenewal,
+        'bridge_adapters' => $bridgeAdapters,
         'nexus_operations' => $nexusOperations,
         'record_local_activity' => $recordLocalActivity,
         'workflow_poll_request' => $workflowPollRequest,
@@ -876,6 +878,7 @@ try {
     require __DIR__.'/search-attribute-probe.php';
     require __DIR__.'/storage-test-probe.php';
     require __DIR__.'/activity-lease-renewal-probe.php';
+    require __DIR__.'/bridge-adapters-probe.php';
     require __DIR__.'/nexus-operations-probe.php';
     require __DIR__.'/record-local-activity-probe.php';
     require __DIR__.'/workflow-poll-request-probe.php';
@@ -1056,6 +1059,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['activity_lease_renewal'])) {
         $observation['activity_lease_renewal'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
+    }
+    if ($mode === 'embedded' && isset($fixture['bridge_adapters'])) {
+        $observation['bridge_adapters'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_bridge_adapters'];
     }
     if ($mode === 'embedded' && isset($fixture['nexus_operations'])) {
         $observation['nexus_operations'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_nexus_operations'];
