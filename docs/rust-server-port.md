@@ -177,9 +177,9 @@ any other unknown path or method answers PHP's own 404 or 405
     except external payload references as input, stream retention cleanup
     and takeover of PHP data with streams.
   - Workflow-bound service handlers (start, signal, update and query
-    workflow), the workflow-task `start_service_operation` command, and
-    takeover of a PHP database that holds service calls. Each of these still
-    answers 501 or refuses. When the
+    workflow) and the workflow-task `start_service_operation` command. Each
+    still answers 501 or refuses; published PHP's handlers are unusable for
+    SDK-worker workflows (Server #794), so native waits for that contract. When the
     workflow-bound handlers come, an operation bound to a workflow update must
     refuse a `wait_timeout_seconds` above the update ceiling of 60 before it
     runs, as PHP does (Server #775).
@@ -248,9 +248,10 @@ any other unknown path or method answers PHP's own 404 or 405
     - The regular signal and update routes refuse caller request ids that
       start with `dw-bridge:`.)
   - (Caller-indexed Nexus operation reads are served, with the
-    `nexus-operations` fixture. Native writes no service calls and takeover
-    refuses a source that holds any, so every list is PHP's empty answer; an
-    execution test seeds rows for the row shape and newest-first order.)
+    `nexus-operations` fixture. The fixture's lists are empty, because an HTTP
+    execute records no caller run; an execution test seeds rows for the row
+    shape and newest-first order. Native now records service calls, and
+    takeover keeps PHP's.)
 
 ## Known gaps found in review
 
