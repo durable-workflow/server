@@ -695,7 +695,7 @@ class RuntimeExternalPayloadTransportTest extends TestCase
             ])
             ->assertStatus(422)
             ->assertJsonPath('reason', 'external_payload_unsupported');
-        $this->assertDatabaseMissing('workflow_instances', ['workflow_id' => 'provider-reference-rejected']);
+        $this->assertDatabaseMissing('workflow_instances', ['id' => 'provider-reference-rejected']);
     }
 
     public function test_large_workflow_input_keeps_the_verified_reference_without_materializing_bytes(): void
