@@ -82,11 +82,12 @@ Updated October 24, 2026.
     ([#737](https://github.com/durable-workflow/server/issues/737)).
 
   No expectation is edited to make native pass.
-- **Parity surface.** Native serves 143 of the 175 API route methods in
+- **Parity surface.** Native serves 145 of the 175 API route methods in
   published 2.11.1's route table, with message streams, update validation,
   activity cancellation acknowledgement, worker sessions, workflow-task
-  cancellation scopes, and embedded v2 and Waterline v1 workflow import. An
-  execution test sends each one through the native router, and the ones
+  cancellation scopes, caller-indexed Nexus operation reads, and embedded v2
+  and Waterline v1 workflow import. An execution test sends each one through
+  the native router, and the ones
   still answering `501 rust_capability_not_implemented` must match
   [`unserved-php-routes.v2.11.1.txt`](../rust/tests/fixtures/unserved-php-routes.v2.11.1.txt).
   Unlike published PHP, native's embedded v2 import refuses a bundle whose
@@ -163,8 +164,11 @@ any other unknown path or method answers PHP's own 404 or 405
   - Service endpoints. (The service catalog reads from Server 2.11 are served:
     native never holds catalog rows, so every list is PHP's empty page and every
     identity its not-found answer; the `service-catalog` fixture checks 37 cases.)
-  - Nexus operations.
   - Bridge adapters.
+  - (Caller-indexed Nexus operation reads are served, with the
+    `nexus-operations` fixture. Native writes no service calls and takeover
+    refuses a source that holds any, so every list is PHP's empty answer; an
+    execution test seeds rows for the row shape and newest-first order.)
 
 ## Known gaps found in review
 

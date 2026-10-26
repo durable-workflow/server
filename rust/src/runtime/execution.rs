@@ -1607,6 +1607,7 @@ impl Runtime {
     delegate!(heartbeat_activity(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     delegate!(activity_status(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     delegate!(renew_activity_lease(task_id: &str, body: Value) -> Result<Value>);
+    delegate!(nexus_operations(workflow_id: &str, run_id: Option<&str>, limit: i64) -> Result<Vec<Value>>);
     delegate!(import_existing_run(run_id: &str) -> Result<Option<super::workflow_import::ExistingRun>>);
     delegate!(import_write(plan: &super::workflow_import::Plan) -> std::result::Result<super::workflow_import::Rows, String>);
     delegate!(waterline_existing(workflow_id: &str, run_id: &str) -> Result<super::waterline_import::Existing>);

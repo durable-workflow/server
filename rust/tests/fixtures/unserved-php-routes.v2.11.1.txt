@@ -29,7 +29,5 @@ POST /api/worker/workflow-tasks/{taskId}/local-activities/{attemptId}/acknowledg
 POST /api/worker/workflow-tasks/{taskId}/local-activities/{attemptId}/control
 POST /api/worker/workflow-tasks/{taskId}/local-activities/{attemptId}/heartbeat
 POST /api/worker/workflow-tasks/{taskId}/local-activities/{attemptId}/outcome
-GET /api/workflows/{workflowId}/nexus-operations
-GET /api/workflows/{workflowId}/runs/{runId}/nexus-operations
 POST /api/workflows/{workflowId}/runs/{runId}/streams/{streamName}/close
 POST /api/workflows/{workflowId}/runs/{runId}/streams/{streamName}/items
