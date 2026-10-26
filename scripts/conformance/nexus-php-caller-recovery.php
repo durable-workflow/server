@@ -142,6 +142,8 @@ foreach (['shared', 'tenant-a'] as $namespace) {
             && count($eventsOfType($row['history'], 'ServiceCallCompleted')) === 1;
     } catch (Throwable $failure) {
         $row['failure'] = ['type' => $failure::class, 'message' => $failure->getMessage()];
+        $row['last_observed_caller_event_types'] = array_column($history['events'] ?? [], 'event_type');
+        $row['last_observed_service_event_types'] = array_column($serviceHistory['events'] ?? [], 'event_type');
         $row['recovery_qualified'] = false;
     } finally {
         if (is_resource($worker)) {

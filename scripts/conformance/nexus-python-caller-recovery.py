@@ -140,6 +140,8 @@ async def execute(input_data, namespace):
                     and len(events(row["history"], "ServiceCallCompleted")) == 1
         except Exception as failure:
             row["failure"] = {"type": type(failure).__name__, "message": str(failure)}
+            row["last_observed_caller_event_types"] = [event.get("event_type") for event in locals().get("history", {}).get("events", [])]
+            row["last_observed_service_event_types"] = [event.get("event_type") for event in locals().get("service_history", {}).get("events", [])]
         finally:
             if worker is not None and worker.poll() is None:
                 worker.terminate()
