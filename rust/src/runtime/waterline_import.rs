@@ -292,8 +292,12 @@ pub(crate) struct Normalized {
 pub(crate) enum Outcome {
     Invalid { errors: Vec<Php> },
     /// Larger than one transaction may write. `built` is how many events
-    /// were built first: 0 for a refusal by count.
-    TooLarge { error: Php, built: usize },
+    /// were built first: 0 for a refusal by count. Only the controls read it.
+    TooLarge {
+        error: Php,
+        #[cfg_attr(not(test), allow(dead_code))]
+        built: usize,
+    },
     Valid(Box<Normalized>),
 }
 
@@ -1018,6 +1022,8 @@ store_methods! {
     /// The projection's instance, run, history and summary in one
     /// transaction. `Err(true)` when the identity was claimed meanwhile.
     pub(crate) async fn waterline_write(&self, projection: &Normalized, imported_at: DateTime<Utc>) -> std::result::Result<(), bool> {
+        #[cfg(test)]
+        install_probe::reached(&projection.workflow_id);
         let mut tx = self.begin().await.map_err(|_| false)?;
         let claimed = Self::query("SELECT id FROM workflow_instances WHERE id=$1")
             .bind(&projection.workflow_id).fetch_optional(&mut *tx).await.map_err(|_| false)?.is_some()
@@ -1076,6 +1082,35 @@ store_methods! {
     }
 }
 
+/// The point where a projection's install asks for the transition lock,
+/// for the controls that prove an append cannot cross an install waiting on
+/// it. Keyed by workflow id, so tests running in parallel do not see each
+/// other's installs.
+#[cfg(test)]
+mod install_probe {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    use tokio::sync::Notify;
+
+    fn watched() -> &'static Mutex<HashMap<String, Arc<Notify>>> {
+        static WATCHED: OnceLock<Mutex<HashMap<String, Arc<Notify>>>> = OnceLock::new();
+        WATCHED.get_or_init(Mutex::default)
+    }
+
+    /// Notified once the install of `workflow_id` reaches the transition lock.
+    pub(super) fn watch(workflow_id: &str) -> Arc<Notify> {
+        let notify = Arc::new(Notify::new());
+        watched().lock().unwrap().insert(workflow_id.to_owned(), notify.clone());
+        notify
+    }
+
+    pub(super) fn reached(workflow_id: &str) {
+        if let Some(notify) = watched().lock().unwrap().get(workflow_id) {
+            notify.notify_one();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1130,6 +1165,80 @@ mod tests {
         runtime.record_malformed_message(&workflow_id, "orders", &json!("m-3")).await.unwrap();
 
         assert_eq!(snapshot().await, before);
+        runtime.close().await;
+    }
+
+    /// SQLite's writer waits inside its own busy handler, which no other
+    /// connection can see; the install probe shows it reached the transition
+    /// lock instead. With `BEGIN IMMEDIATE` held, an append finds no instance
+    /// and writes nothing; once the install commits, an append is refused.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_append_cannot_cross_an_install_waiting_on_the_sqlite_lock() {
+        use sqlx::Connection;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("barrier.sqlite");
+        let runtime = super::super::Runtime::open(path.to_str().unwrap(), "test-token".into()).await.unwrap();
+        let source = json!({"id": "v1:4201", "legacy_id": "4201", "engine_source": "v1", "class": "App\\Workflows\\Legacy\\Subscription",
+            "status": "running", "arguments": "a:0:{}", "logs": [{"id": 9101, "index": 0, "class": "App\\Activities\\Bill",
+                "result": "i:42;", "created_at": "2026-09-30T09:00:02.000000Z"}], "created_at": "2026-09-30T09:00:00.000000Z"});
+        let body = |dry_run: bool| serde_json::to_vec(&json!({"source_id": "barrier-src", "workflow": source, "dry_run": dry_run})).unwrap();
+        let (status, dry) = runtime.import_waterline_v1(&body(true)).await.unwrap();
+        assert_eq!(status, StatusCode::OK, "{dry}");
+        let workflow_id = dry["identity"]["standalone"]["workflow_id"].as_str().unwrap().to_owned();
+        let pool = runtime.sqlite_pool().clone();
+        let counts = || async {
+            let tables: Vec<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                .fetch_all(&pool).await.unwrap();
+            let mut counts = Vec::new();
+            for table in tables {
+                let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}"))).fetch_one(&pool).await.unwrap();
+                counts.push((table, count));
+            }
+            counts
+        };
+        let before = counts().await;
+        let append = |message: &str| json!({"message_id": message, "input": ["x"]});
+
+        let reached = install_probe::watch(&workflow_id);
+        let mut holder = sqlx::SqliteConnection::connect(&format!("sqlite://{}", path.display())).await.unwrap();
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut holder).await.unwrap();
+        let install = tokio::spawn({
+            let runtime = runtime.clone();
+            let body = body(false);
+            async move { runtime.import_waterline_v1(&body).await }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(10), reached.notified()).await
+            .expect("the install never reached the transition lock");
+
+        // The install is at its transaction and cannot commit.
+        match runtime.append_message(&workflow_id, "orders", append("m-pending"), json!({})).await {
+            Err(super::super::RuntimeError::Protocol { status, response }) => {
+                assert_eq!((status, &response["reason"]), (StatusCode::NOT_FOUND, &json!("instance_not_found")), "{response}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(!install.is_finished(), "the install committed while BEGIN IMMEDIATE was held");
+        sqlx::query("ROLLBACK").execute(&mut holder).await.unwrap();
+
+        let (status, report) = install.await.unwrap().unwrap();
+        assert_eq!(status, StatusCode::CREATED, "{report}");
+        match runtime.append_message(&workflow_id, "orders", append("m-after"), json!({})).await {
+            Err(super::super::RuntimeError::Protocol { status, response }) => {
+                assert_eq!((status, &response["reason"]), (StatusCode::CONFLICT, &json!("v1_projection_read_only")), "{response}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // Only the projection's rows were written.
+        let after = counts().await;
+        assert_eq!(before.len(), after.len());
+        for ((table, was), (_, now)) in before.iter().zip(&after) {
+            let grew = match table.as_str() {
+                "workflow_instances" | "workflow_runs" | "workflow_run_summaries" => 1,
+                "workflow_history_events" => 2,
+                _ => 0,
+            };
+            assert_eq!(*now, was + grew, "{table}");
+        }
         runtime.close().await;
     }
 
