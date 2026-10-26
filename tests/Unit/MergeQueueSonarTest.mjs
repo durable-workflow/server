@@ -96,5 +96,6 @@ test('queue scanning uses trusted controls and a separate candidate without runn
   assert.equal((queue.match(/SONAR_TOKEN: /g) ?? []).length, 1);
   assert.ok(queue.includes('-Dsonar.scm.revision=${{ steps.candidate.outputs.sha }}'));
   assert.ok(queue.includes('-Dsonar.rust.clippy.enabled=false'));
+  assert.ok(queue.includes('-Dsonar.qualitygate.wait=false'));
   assert.ok(queue.includes('-Dsonar.working.directory=${{ runner.temp }}/queue-sonar-work'));
 });
