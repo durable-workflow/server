@@ -717,7 +717,7 @@ A completion wait holds the request open, so the server bounds it. An update's
 on bridge `update_workflow` targets. A larger value is refused with HTTP 422
 (`validation_failed`) before the update is admitted, and nothing is recorded.
 When the field is absent, the wait lasts
-`DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS`. If the update is still
+`DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS`, which is also capped at 60. If the update is still
 incomplete when the wait ends, the response reports `wait_timed_out: true`;
 the update itself continues, and its status can be read later. The control-plane
 request contract publishes the bound as
@@ -1917,7 +1917,7 @@ inside the package's `config/workflows.php` via
 | `DW_V2_HISTORY_FAN_OUT_WARNING_THRESHOLD` | `160` | Largest recorded parallel group size at which history pressure becomes `approaching`. |
 | `DW_V2_HISTORY_EXPORT_SIGNING_KEY` | (unset) | Optional HMAC key authenticating history export archives. |
 | `DW_V2_HISTORY_EXPORT_SIGNING_KEY_ID` | (unset) | Optional key identifier recorded alongside signed exports. |
-| `DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS` | `10` | Seconds the server waits for an update to reach a terminal stage when the request omits `wait_timeout_seconds`. A request may ask for 1 to 60 seconds. |
+| `DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS` | `10` | Seconds the server waits for an update to reach a terminal stage when the request omits `wait_timeout_seconds`. Values above 60 are treated as 60; a request may ask for 1 to 60 seconds. |
 | `DW_V2_UPDATE_WAIT_POLL_INTERVAL_MS` | `50` | Milliseconds between update-stage polls. |
 | `DW_V2_GUARDRAILS_BOOT` | `warn` | Boot-time structural guardrail mode: `warn`, `fail`, or `silent`. |
 | `DW_V2_LIMIT_PENDING_ACTIVITIES` | `2000` | Package-level pending-activity ceiling per run. |

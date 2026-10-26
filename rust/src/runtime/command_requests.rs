@@ -15,7 +15,7 @@ const SIGNAL_RULES: &[(&str, &[Rule])] = &[
 /// `ControlPlaneRequestContract::UPDATE_WAIT_TIMEOUT_SECONDS_MAX`: the
 /// longest completion wait an update caller may ask for (Server #775). A
 /// longer request is refused before the update is admitted.
-pub(super) const UPDATE_WAIT_TIMEOUT_SECONDS_MAX: i64 = 60;
+pub(super) const UPDATE_WAIT_TIMEOUT_SECONDS_MAX: i64 = crate::config_audit::UPDATE_WAIT_TIMEOUT_SECONDS_MAX;
 
 const UPDATE_RULES: &[(&str, &[Rule])] = &[
     ("input", &[Nullable, Array]),

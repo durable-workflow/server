@@ -60,6 +60,13 @@ async fn update_wait_timeout_is_bounded_before_admission() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
     assert_eq!(refused["errors"]["wait_timeout_seconds"],
         json!(["The wait timeout seconds field must not be greater than 60."]));
+    // The run-targeted alias applies the same rule before admission.
+    let run_path = format!("/api/workflows/bounded-wait/runs/{}/update/set", started["run_id"].as_str().unwrap());
+    let (status, refused) = request(&app, "POST", &run_path,
+        json!({"input":[5],"wait_for":"completed","wait_timeout_seconds":61})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["errors"]["wait_timeout_seconds"],
+        json!(["The wait timeout seconds field must not be greater than 60."]));
     let accepted = |history: &Value| history.as_array().unwrap().iter().filter(|event| event["event_type"] == "UpdateAccepted").count();
     assert_eq!(accepted(&run_history(&app, &started["workflow_id"], &started["run_id"]).await), 0, "refused before admission");
     let (status, update) = request(&app, "POST", "/api/workflows/bounded-wait/update/set",
