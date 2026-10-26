@@ -82,13 +82,13 @@ Updated October 24, 2026.
     ([#737](https://github.com/durable-workflow/server/issues/737)).
 
   No expectation is edited to make native pass.
-- **Parity surface.** Native serves 145 of the 175 API route methods in
+- **Parity surface.** Native serves 146 of the 175 API route methods in
   published 2.11.1's route table, with message streams, update validation,
   activity cancellation acknowledgement, worker sessions, workflow-task
-  cancellation scopes, caller-indexed Nexus operation reads, and embedded v2
-  and Waterline v1 workflow import. An execution test sends each one through
-  the native router, and the ones
-  still answering `501 rust_capability_not_implemented` must match
+  cancellation scopes, caller-indexed Nexus operation reads, bridge adapter
+  webhooks, and embedded v2 and Waterline v1 workflow import. An execution
+  test sends each one through the native router, and the ones still
+  answering `501 rust_capability_not_implemented` must match
   [`unserved-php-routes.v2.11.1.txt`](../rust/tests/fixtures/unserved-php-routes.v2.11.1.txt).
   Unlike published PHP, native's embedded v2 import refuses a bundle whose
   rows reference rows outside it, links only runs of one namespace, and reads
@@ -163,8 +163,29 @@ any other unknown path or method answers PHP's own 404 or 405
   - Durable workflow stream items and close.
   - Service endpoints. (The service catalog reads from Server 2.11 are served:
     native never holds catalog rows, so every list is PHP's empty page and every
-    identity its not-found answer; the `service-catalog` fixture checks 37 cases.)
-  - Bridge adapters.
+    identity its not-found answer; the `service-catalog` fixture checks 37 cases.
+    Native neither executes service operations nor accepts the workflow-task
+    `start_service_operation` command, which it refuses as
+    `unsupported_workflow_command`. When it does, an operation bound to a
+    workflow update must refuse a `wait_timeout_seconds` above the update
+    ceiling of 60 before it runs, as PHP does (Server #775).)
+  - (Bridge adapter webhooks are served: `POST /api/bridge-adapters/webhook/{adapter}`,
+    with the `bridge-adapters` fixture. Native admits bridge updates as the
+    regular update route does; published 2.11.1 skips that admission, Server #747.
+    Four further differences from published 2.11.1, all tracked in Server #777:
+    - A start for an id that another namespace holds is refused as unavailable,
+      naming neither the type nor the namespace. The draining gate and the
+      instance reservation are decided under the transition lock, before
+      anything is written.
+    - The adapter name is at most 64 bytes.
+    - Signals and updates are deduplicated inside their own transaction under
+      the transition lock. Each one is recorded with a fixed-length
+      `dw-bridge:v1:` identity as its request id, and the commands PHP
+      recorded before takeover are matched by their metadata. A command
+      under an identity, accepted or rejected, that records another tuple is
+      refused `409 bridge_identity_conflict`.
+    - The regular signal and update routes refuse caller request ids that
+      start with `dw-bridge:`.)
   - (Caller-indexed Nexus operation reads are served, with the
     `nexus-operations` fixture. Native writes no service calls and takeover
     refuses a source that holds any, so every list is PHP's empty answer; an

@@ -4,14 +4,14 @@ use std::time::{Duration, Instant};
 
 // An independent physical connection holds the actual native transition lock.
 // No injected sqlx errors, shortened production timeouts or mocked storage.
-enum ShutdownWriteLock {
+pub(super) enum ShutdownWriteLock {
     Sqlite(sqlx::Transaction<'static, sqlx::Sqlite>, sqlx::SqlitePool),
     Postgres(sqlx::Transaction<'static, sqlx::Postgres>, sqlx::PgPool),
     MySql(sqlx::Transaction<'static, sqlx::MySql>, sqlx::MySqlPool),
 }
 
 impl ShutdownWriteLock {
-    async fn release(self) {
+    pub(super) async fn release(self) {
         match self {
             Self::Sqlite(tx, pool) => {
                 tx.commit().await.unwrap();
@@ -29,44 +29,60 @@ impl ShutdownWriteLock {
     }
 }
 
+enum LockTarget {
+    Sqlite(String),
+    Postgres(PgConnectOptions),
+    MySql(MySqlConnectOptions),
+}
+
 impl TestDatabase {
-    async fn hold_shutdown_write(&self) -> ShutdownWriteLock {
-        match self {
-            Self::Sqlite(dir) => {
-                let pool = sqlx::sqlite::SqlitePoolOptions::new()
-                    .max_connections(1)
-                    .connect(&format!(
-                        "sqlite://{}",
-                        dir.path().join("runtime.sqlite").display()
-                    ))
-                    .await
-                    .unwrap();
-                let tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
-                ShutdownWriteLock::Sqlite(tx, pool)
-            }
-            Self::Postgres { options, .. } => {
-                let pool = sqlx::postgres::PgPoolOptions::new()
-                    .max_connections(1)
-                    .connect_with(options.as_ref().clone())
-                    .await
-                    .unwrap();
-                let mut tx = pool.begin().await.unwrap();
-                sqlx::query("SELECT pg_advisory_xact_lock(4924501473315676163)")
-                    .execute(&mut *tx)
-                    .await
-                    .unwrap();
-                ShutdownWriteLock::Postgres(tx, pool)
-            }
-            Self::MySql { options, .. } => {
-                let pool = sqlx::mysql::MySqlPoolOptions::new()
-                    .max_connections(1)
-                    .connect_with(options.as_ref().clone())
-                    .await
-                    .unwrap();
-                let mut tx = pool.begin().await.unwrap();
-                sqlx::query("SELECT engine FROM dw_server_schema WHERE engine='rust-development' FOR UPDATE")
-                    .fetch_one(&mut *tx).await.unwrap();
-                ShutdownWriteLock::MySql(tx, pool)
+    pub(super) async fn hold_shutdown_write(&self) -> ShutdownWriteLock {
+        self.transition_lock().await
+    }
+
+    /// The transition lock taken on its own connection, as an owned future
+    /// a test can spawn and queue behind other waiters.
+    pub(super) fn transition_lock(&self) -> impl std::future::Future<Output = ShutdownWriteLock> + Send + 'static {
+        let target = match self {
+            Self::Sqlite(dir) => LockTarget::Sqlite(format!("sqlite://{}", dir.path().join("runtime.sqlite").display())),
+            Self::Postgres { options, .. } => LockTarget::Postgres(options.as_ref().clone()),
+            Self::MySql { options, .. } => LockTarget::MySql(options.as_ref().clone()),
+        };
+        async move {
+            match target {
+                LockTarget::Sqlite(url) => {
+                    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                        .max_connections(1)
+                        .connect(&url)
+                        .await
+                        .unwrap();
+                    let tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+                    ShutdownWriteLock::Sqlite(tx, pool)
+                }
+                LockTarget::Postgres(options) => {
+                    let pool = sqlx::postgres::PgPoolOptions::new()
+                        .max_connections(1)
+                        .connect_with(options)
+                        .await
+                        .unwrap();
+                    let mut tx = pool.begin().await.unwrap();
+                    sqlx::query("SELECT pg_advisory_xact_lock(4924501473315676163)")
+                        .execute(&mut *tx)
+                        .await
+                        .unwrap();
+                    ShutdownWriteLock::Postgres(tx, pool)
+                }
+                LockTarget::MySql(options) => {
+                    let pool = sqlx::mysql::MySqlPoolOptions::new()
+                        .max_connections(1)
+                        .connect_with(options)
+                        .await
+                        .unwrap();
+                    let mut tx = pool.begin().await.unwrap();
+                    sqlx::query("SELECT engine FROM dw_server_schema WHERE engine='rust-development' FOR UPDATE")
+                        .fetch_one(&mut *tx).await.unwrap();
+                    ShutdownWriteLock::MySql(tx, pool)
+                }
             }
         }
     }
