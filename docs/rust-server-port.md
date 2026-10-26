@@ -82,11 +82,13 @@ Updated October 24, 2026.
     ([#737](https://github.com/durable-workflow/server/issues/737)).
 
   No expectation is edited to make native pass.
-- **Parity surface.** Native serves 146 of the 175 API route methods in
+- **Parity surface.** Native answers 154 of the 175 API route methods in
   published 2.11.1's route table, with message streams, update validation,
   activity cancellation acknowledgement, worker sessions, workflow-task
   cancellation scopes, caller-indexed Nexus operation reads, bridge adapter
-  webhooks, and embedded v2 and Waterline v1 workflow import. An execution
+  webhooks, and embedded v2 and Waterline v1 workflow import. Eight of those
+  are the prepared local-activity routes, which it answers with PHP's
+  refusal for a bridge without the prepared role. An execution
   test sends each one through the native router, and the ones still
   answering `501 rust_capability_not_implemented` must match
   [`unserved-php-routes.v2.11.1.txt`](../rust/tests/fixtures/unserved-php-routes.v2.11.1.txt).
@@ -138,8 +140,20 @@ any other unknown path or method answers PHP's own 404 or 405
   `repair-pass` fixture; a recovery native does not perform yet is
   reported as its candidate's failure, with 207.
 - **Worker protocol features.**
-  - Local activities (prepare, checkpoint, recover, heartbeat, control,
-    outcome and cancellation acknowledgement).
+  - Prepared local activities (prepare, checkpoint, group checkpoint,
+    recover, heartbeat, control, outcome and cancellation acknowledgement)
+    are answered as a PHP server whose bridge lacks the prepared role answers
+    them. Native advertises `prepared_local_activities: false`, no groups and
+    no policies, so SDKs record local activities with `record_local_activity`.
+    A worker that calls one anyway gets PHP's 409
+    `prepared_local_activity[_groups]_not_supported`, listing
+    `request_protocol` below 1.20 and `installed_runtime_prepared_local_activity`
+    (plus `…_groups` for the group checkpoint), before any task is read.
+    No recorded fixture: published 2.11.1 has the role, so its answers can't
+    be recorded. `prepared_local_routes_are_refused_without_the_prepared_role`
+    pins the answers to `PreparedLocalActivityController::refused`. Serving
+    them is planned in
+    [#325 comment 6423707058](https://github.com/durable-workflow/server/issues/325#issuecomment-6423707058).
   - Cancellation scope checkpoints. (Open, prepare and deliver are served,
     with the `cancellation-scopes` fixture.)
   - (Worker sessions are served: create, heartbeat, close, list and detail,
