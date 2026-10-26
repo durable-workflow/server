@@ -238,3 +238,41 @@ async fn the_byte_limit_admits_its_exact_value_and_refuses_one_more() {
     admits_exactly(&database, "bytes", only(None, Some(bytes), None), only(None, Some(bytes - 1), None),
         commands, "history_transaction_limit_exceeded").await;
 }
+
+/// A terminal event is rewritten after it is recorded, to name the worker
+/// that completed or failed the run; that growth is charged too, so the
+/// stored terminal history is admitted at its exact size and refused one
+/// byte short.
+async fn terminal_admits_exactly(database: &TestDatabase, tag: &str, terminal: Value) {
+    let commands = json!([large(5), terminal]);
+    let probe = budgeted(database, only(None, None, None)).await;
+    local_worker(&probe).await;
+    let run = start(&probe, &format!("{tag}-probe")).await;
+    let run_id = run["run_id"].as_str().unwrap().to_owned();
+    let task = poll(&probe, "local", "workflow").await;
+    let before = stored_history(database, &run_id).await;
+    let (status, body) = complete(&probe, &task, commands.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let after = stored_history(database, &run_id).await;
+    let terminal = after.last().unwrap();
+    // The stored terminal event names the worker.
+    let payload: Value = serde_json::from_str(&terminal.1).unwrap();
+    assert_eq!(payload["command"]["source"], "worker_protocol", "{payload}");
+    assert!(payload["command"]["principal_id"].is_string(), "{payload}");
+    let bytes = charged_bytes(&after[before.len()..]);
+
+    admits_exactly(database, tag, only(None, Some(bytes), None), only(None, Some(bytes - 1), None),
+        commands, "history_transaction_limit_exceeded").await;
+}
+
+#[tokio::test]
+async fn a_completed_run_s_attributed_terminal_event_is_charged() {
+    let database = TestDatabase::new().await;
+    terminal_admits_exactly(&database, "done", json!({"type": "complete_workflow", "result": envelope(Payload::Long(1))})).await;
+}
+
+#[tokio::test]
+async fn a_failed_run_s_attributed_terminal_event_is_charged() {
+    let database = TestDatabase::new().await;
+    terminal_admits_exactly(&database, "fail", json!({"type": "fail_workflow", "message": "boom"})).await;
+}

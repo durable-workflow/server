@@ -39,6 +39,14 @@ impl<'a, DB: Backend> Transaction<'a, DB> {
         }
     }
 
+    /// History bytes a stored event grows by, charged to a metered completion.
+    pub(super) fn charge_bytes(&mut self, bytes: usize) -> Result<()> {
+        match self.meter.as_mut() {
+            Some(meter) => meter.charge_bytes(bytes),
+            None => Ok(()),
+        }
+    }
+
     /// One history event about to be stored, charged to a metered completion.
     pub(super) fn charge_event(&mut self, event_type: &str, payload: &serde_json::Value) -> Result<()> {
         match self.meter.as_mut() {

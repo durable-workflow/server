@@ -3984,7 +3984,11 @@ where
             return Ok(());
         };
         let mut payload = DB::document_row(&event, "payload")?;
+        let recorded = super::history_meter::php_json_len(&payload);
         super::command_context::worker_terminal(&mut payload, &DB::string(&event, "event_type")?, worker);
+        // The event was charged as recorded; the attribution's growth is
+        // charged before the update (Workflow #930).
+        tx.charge_bytes(super::history_meter::php_json_len(&payload).saturating_sub(recorded))?;
         Self::query("UPDATE workflow_history_events SET payload=$1 WHERE id=$2")
             .bind(DB::document(&payload))
             .bind(DB::string(&event, "id")?)

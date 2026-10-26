@@ -49,6 +49,12 @@ impl Meter {
         self.charge(2, rows)
     }
 
+    /// History bytes an already charged event grows by before it is
+    /// rewritten, charged before the update.
+    pub(super) fn charge_bytes(&mut self, bytes: usize) -> Result<(), RuntimeError> {
+        self.charge(1, bytes)
+    }
+
     fn charge(&mut self, dimension: usize, amount: usize) -> Result<(), RuntimeError> {
         if self.tripped {
             return Err(self.refused());
