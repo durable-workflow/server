@@ -27,6 +27,20 @@ test('the intended clearing of failure_reason on reacquire is accepted too', () 
   })), {scope: 'worker_sessions'});
 });
 
+test('a ttl_span one second short, as PHP stamps created_at in the next second, is accepted', () => {
+  assert.deepStrictEqual(check(observation(state => {
+    state.reacquire_terminal.response.session.ttl_span -= 1;
+  })), {scope: 'worker_sessions'});
+});
+
+test('a ttl_span two seconds short or one second long is still refused', () => {
+  for (const change of [-2, 1]) {
+    assert.throws(() => check(observation(state => {
+      state.reacquire_terminal.response.session.ttl_span += change;
+    })), /worker sessions reacquire_terminal/);
+  }
+});
+
 test('embedded applications are explicitly inapplicable', () => {
   assert.deepStrictEqual(check({mode: 'embedded', worker_sessions:
     {applicable: false, reason: 'embedded_has_no_worker_protocol'}}), {scope: 'worker_sessions'});
