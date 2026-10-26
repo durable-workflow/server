@@ -1236,9 +1236,12 @@ where
     pub(super) async fn retention_pass(&self, limit: i64, run_ids: Vec<String>) -> Result<(Value, bool)> {
         // A general pass also reclaims closed workflow streams past their own
         // retention (Server #774), at most `limit` streams and `limit` * 100
-        // items. The report is the run pass's.
-        if run_ids.is_empty() {
-            self.prune_expired_streams(limit, limit * 100).await?;
+        // items. The report is the run pass's; a stream failure leaves its
+        // items for the next pass and does not stop the run pass.
+        if run_ids.is_empty()
+            && let Err(error) = self.prune_expired_streams(limit, limit * 100).await
+        {
+            eprintln!("workflow_stream_retention_failed: {error}");
         }
         let policy = self.retention_policy().await?;
         let report = self.prune_runs(&policy, limit, run_ids).await?;
@@ -1291,7 +1294,9 @@ where
         // throttle and is not part of this report.
         if retention::inline_stream_pass_due(self.namespace.as_ref()) {
             let (streams, items) = super::workflow_streams::INLINE_SWEEP;
-            self.prune_expired_streams(streams, items).await?;
+            if let Err(error) = self.prune_expired_streams(streams, items).await {
+                eprintln!("workflow_stream_retention_failed: {error}");
+            }
         }
         let policy = self.retention_policy().await?;
         if policy.forever {
@@ -1372,6 +1377,12 @@ where
             }
             deleted.insert((*key).into(), json!(DB::affected(query.execute(&mut *tx).await?)));
         }
+        for (key, sql) in retention::DURABLE_STREAMS {
+            let affected = DB::affected(Self::query(sql).bind(run_id).execute(&mut *tx).await?);
+            if let Some(key) = key {
+                deleted.insert((*key).into(), json!(affected));
+            }
+        }
         // The run's history is gone; no cached read of it may survive.
         tx.scope_history = None;
         Self::query("UPDATE workflow_runs SET details_pruned_at=$1 WHERE id=$2 AND details_pruned_at IS NULL")
@@ -1398,6 +1409,9 @@ where
             if query.fetch_one(&self.pool).await? > 0 {
                 return Ok(Some(reason));
             }
+        }
+        if Self::scalar(DB::RUN_STREAM_REFERENCES).bind(run_id).bind(run_id).fetch_one(&self.pool).await? > 0 {
+            return Ok(Some("external_payload_cleanup_unavailable"));
         }
         Ok(None)
     }

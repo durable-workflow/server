@@ -53,9 +53,13 @@ const MAX_PENDING_ITEMS_MAX: i64 = 10_000;
 /// `WorkflowStreamService::RETENTION_SECONDS_MAX` (30 days).
 const RETENTION_SECONDS_MAX: i64 = 2_592_000;
 /// `WorkflowStreamRetention::ITEM_BATCH`: items deleted per transaction.
-const SWEEP_ITEM_BATCH: i64 = 500;
+const SWEEP_ITEM_BATCH: i64 = 100;
 /// `WorkflowStreamRetention::INLINE_STREAM_LIMIT` and `INLINE_ITEM_BUDGET`.
-pub(super) const INLINE_SWEEP: (i64, i64) = (10, 1000);
+pub(super) const INLINE_SWEEP: (i64, i64) = (10, 500);
+/// A namespace's due streams in deadline order, read from the
+/// `(namespace, reclaim_at, stream_id)` index of `dw_stream_reclaims`.
+pub(super) const DUE_STREAMS: &str =
+    "SELECT stream_id FROM dw_stream_reclaims WHERE namespace=$1 AND reclaim_at<=$2 ORDER BY reclaim_at,stream_id LIMIT $3";
 /// `LegacyV1ProjectionContract::IMPORT_SOURCE`.
 const PROJECTION_SOURCE: &str = "waterline_v1_projection";
 /// `readWithWait` checks again every 250 ms.
@@ -119,10 +123,25 @@ pub(crate) enum Appended {
         accepted: usize,
         deduped: usize,
     },
-    /// The cap stopped the batch after committing the items before it.
+    /// The batch would pass the cap, so none of it was written.
     Full { pending_items: i64 },
     Closed,
     Errored,
+    /// Past its retention the stream reads as not found, append included.
+    Expired,
+    /// The run is gone, or retention has pruned its details: it has no
+    /// streams to write (Server #774).
+    RunPruned,
+}
+
+/// One retention pass over a namespace's due streams.
+#[derive(Default)]
+pub(crate) struct StreamReclaim {
+    pub(crate) streams_reclaimed: i64,
+    pub(crate) items_removed: i64,
+    pub(crate) budget_exhausted: bool,
+    /// Why the pass stopped short of a due stream.
+    pub(crate) blocked_reason: Option<&'static str>,
 }
 
 /// One `read()` window.
@@ -271,6 +290,18 @@ where
     ) -> Result<Appended> {
         let at = now().trunc_subsecs(0);
         let mut tx = self.begin().await?;
+        // Run retention deletes a run's streams and marks its details pruned
+        // under the same transition lock, so an append after it must not open
+        // a stream on the pruned run, as PHP's `lockStream` refuses it.
+        let pruned = Self::query("SELECT details_pruned_at FROM workflow_runs WHERE id=$1 AND namespace=$2")
+            .bind(run_id)
+            .bind(self.namespace.as_ref())
+            .fetch_optional(&mut *tx)
+            .await?;
+        match pruned {
+            Some(row) if DB::optional_instant(&row, "details_pruned_at")?.is_none() => {}
+            _ => return Ok(Appended::RunPruned),
+        }
         let found = Self::query(STREAM_BY_NAME)
             .bind(self.namespace.as_ref())
             .bind(run_id)
@@ -298,6 +329,12 @@ where
                     .await?
             }
         };
+        // From the expiry instant a stream reads as not found for append
+        // too. Its row stays until its run is pruned, so the name is never
+        // opened again at offset 0 (Server #774).
+        if Self::stream_expired(&row, at)? {
+            return Ok(Appended::Expired);
+        }
         match DB::string(&row, "status")?.as_str() {
             "closed" => return Ok(Appended::Closed),
             "errored" => return Ok(Appended::Errored),
@@ -385,37 +422,47 @@ where
         Ok(Appended::Accepted { stream: Self::stream_json(&row)?, offsets, accepted, deduped })
     }
 
-    /// `WorkflowStreamRetention::pruneExpired` for this namespace: at most
-    /// `stream_limit` expired streams, oldest close first, and at most
-    /// `item_budget` items, deleted in transactions of at most 500 under the
-    /// transition lock. A stream row goes in the transaction that finds it
-    /// empty, and the next pass resumes with the same oldest streams. Returns
-    /// the streams removed, the items deleted and whether the budget ran out.
-    pub(super) async fn prune_expired_streams(&self, stream_limit: i64, item_budget: i64) -> Result<(i64, i64, bool)> {
+    /// `WorkflowStreamRetention::pruneExpired` for this namespace (Server
+    /// #774). It reads at most `stream_limit` due streams in deadline order
+    /// from `dw_stream_reclaims` and deletes at most `item_budget` of their
+    /// items, in transactions of at most SWEEP_ITEM_BATCH under the
+    /// transition lock. A stream with no items left leaves
+    /// `dw_stream_reclaims`; its row stays until its run is pruned. Native
+    /// settles no external payloads, so a stream whose items hold an
+    /// external reference stops the pass, blocked, with its items kept.
+    pub(super) async fn prune_expired_streams(&self, stream_limit: i64, item_budget: i64) -> Result<StreamReclaim> {
         let at = now();
-        let candidates = Self::query(DB::EXPIRED_STREAMS)
+        let due = Self::query(DUE_STREAMS)
             .bind(self.namespace.as_ref())
             .bind(DB::bind_time(at))
             .bind(stream_limit.max(1))
             .fetch_all(&self.pool)
             .await?
             .iter()
-            .map(|row| DB::number(row, "id"))
+            .map(|row| DB::number(row, "stream_id"))
             .collect::<Result<Vec<_>>>()?;
         let budget = item_budget.max(1);
-        let (mut streams, mut items) = (0, 0);
-        for stream_id in candidates {
+        let mut report = StreamReclaim::default();
+        for stream_id in due {
             loop {
-                if items >= budget {
-                    return Ok((streams, items, true));
+                if report.items_removed >= budget {
+                    report.budget_exhausted = true;
+                    return Ok(report);
                 }
-                let take = SWEEP_ITEM_BATCH.min(budget - items);
+                let take = SWEEP_ITEM_BATCH.min(budget - report.items_removed);
                 let mut tx = self.begin().await?;
                 let Some(row) = Self::query(STREAM_BY_ID).bind(stream_id).fetch_optional(&mut *tx).await? else {
+                    // The stream went with its run; its deadline goes too.
+                    Self::query("DELETE FROM dw_stream_reclaims WHERE stream_id=$1").bind(stream_id).execute(&mut *tx).await?;
+                    tx.commit().await?;
                     break;
                 };
                 if !Self::stream_expired(&row, at)? {
                     break;
+                }
+                if Self::scalar(DB::STREAM_ITEM_REFERENCES).bind(stream_id).fetch_one(&mut *tx).await? > 0 {
+                    report.blocked_reason = Some("external_payload_cleanup_unavailable");
+                    return Ok(report);
                 }
                 // The offset of the `take`th item, when that many remain.
                 let through = Self::scalar(DB::STREAM_SWEEP_BOUNDARY)
@@ -426,21 +473,23 @@ where
                 if let Some(offset) = through {
                     let deleted = Self::query(DB::STREAM_SWEEP_THROUGH).bind(stream_id).bind(offset).execute(&mut *tx).await?;
                     tx.commit().await?;
-                    items += DB::affected(deleted) as i64;
+                    report.items_removed += DB::affected(deleted) as i64;
                     continue;
                 }
                 let deleted = Self::query("DELETE FROM workflow_durable_stream_items WHERE stream_id=$1")
                     .bind(stream_id)
                     .execute(&mut *tx)
                     .await?;
-                Self::query("DELETE FROM workflow_durable_streams WHERE id=$1").bind(stream_id).execute(&mut *tx).await?;
+                // The terminal row keeps the name; without a deadline the
+                // pass no longer reads it.
+                Self::query("DELETE FROM dw_stream_reclaims WHERE stream_id=$1").bind(stream_id).execute(&mut *tx).await?;
                 tx.commit().await?;
-                items += DB::affected(deleted) as i64;
-                streams += 1;
+                report.items_removed += DB::affected(deleted) as i64;
+                report.streams_reclaimed += 1;
                 break;
             }
         }
-        Ok((streams, items, false))
+        Ok(report)
     }
 
     /// `WorkflowStreamService::read` for a valid name and offset.
@@ -532,6 +581,14 @@ where
             .bind(retention)
             .bind(DB::bind_time(at))
             .bind(stream_id)
+            .execute(&mut *tx)
+            .await?;
+        // The retention pass's deadline: the instant the stream expires.
+        Self::query("INSERT INTO dw_stream_reclaims(stream_id,namespace,workflow_run_id,reclaim_at) VALUES ($1,$2,$3,$4)")
+            .bind(stream_id)
+            .bind(self.namespace.as_ref())
+            .bind(run_id)
+            .bind(DB::bind_time(at + chrono::Duration::seconds(retention)))
             .execute(&mut *tx)
             .await?;
         let row = Self::query(STREAM_BY_ID).bind(stream_id).fetch_one(&mut *tx).await?;
@@ -800,6 +857,7 @@ pub(super) async fn append(
             "pending_items": pending_items,
             "max_pending_items": max_pending,
         }))),
+        Appended::Expired | Appended::RunPruned => Err(stream_not_found()),
         Appended::Closed => Err(protocol(StatusCode::CONFLICT, json!({"message":"Stream is closed.","reason":"stream_closed"}))),
         Appended::Errored => Err(protocol(StatusCode::CONFLICT, json!({"message":"Stream is errored.","reason":"stream_errored"}))),
     }

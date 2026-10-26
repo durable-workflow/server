@@ -106,6 +106,7 @@ pub(super) fn native_relation(name: &str) -> bool {
             | "dw_query_cache"
             | "dw_worker_registration_incarnations"
             | "dw_worker_session_holders"
+            | "dw_stream_reclaims"
     )
 }
 
@@ -122,6 +123,8 @@ pub(super) fn native_object(name: &str) -> bool {
                 | "dw_worker_incarnation_authority"
                 | "dw_worker_incarnation_retention"
                 | "dw_worker_session_holders_pkey"
+                | "dw_stream_reclaims_pkey"
+                | "dw_stream_reclaims_due"
         )
 }
 
