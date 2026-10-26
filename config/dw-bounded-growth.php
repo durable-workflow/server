@@ -18,6 +18,7 @@ use App\Support\WorkerCompatibilityHeartbeatRecorder;
 use App\Support\WorkerPollClaimGate;
 use App\Support\WorkerPollDiagnostics;
 use App\Support\WorkflowQueryTaskBroker;
+use App\Support\WorkflowStreamRetention;
 use App\Support\WorkflowTaskFailureMetrics;
 use App\Support\WorkflowTaskPoller;
 use App\Support\WorkflowTaskPollRequestStore;
@@ -285,6 +286,18 @@ return [
             'bound' => 'One short-lived throttle key per namespace receiving worker heartbeats during the TTL window.',
             'admission' => 'Cache add elects at most one worker heartbeat per namespace per minute to run a one-run retention pass.',
             'eviction' => 'Cache TTL only. Expired run discovery stays in SQL and no cache index is retained.',
+        ],
+
+        'stream_retention_inline' => [
+            'owner' => WorkflowStreamRetention::class,
+            'prefix' => 'server:stream-retention-inline:',
+            'dimensions' => [
+                'namespace_hash',
+            ],
+            'ttl' => '60 seconds.',
+            'bound' => 'One short-lived throttle key per namespace receiving worker heartbeats during the TTL window.',
+            'admission' => 'Cache add elects at most one worker heartbeat per namespace per minute to run a bounded expired-stream pass.',
+            'eviction' => 'Cache TTL only. Expired stream discovery stays in SQL and no cache index is retained.',
         ],
 
         'worker_compatibility_heartbeat' => [

@@ -426,7 +426,8 @@ final class WorkflowStreamService
             ->first();
 
         if ($stream === null || $stream->namespace !== $namespace) {
-            throw new RuntimeException('Stream row could not be opened for this run and namespace');
+            // The run's stream is not visible in this namespace.
+            throw new StreamNotFoundException($run, $streamName);
         }
 
         return $stream;

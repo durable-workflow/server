@@ -54,52 +54,76 @@ final class WorkflowStreamRetention
         $items = 0;
 
         foreach ($candidates as $streamId) {
-            while (true) {
-                if ($items >= $itemBudget) {
-                    return ['streams_removed' => $streams, 'items_removed' => $items, 'budget_exhausted' => true];
-                }
+            $pruned = self::pruneStream($streamId, $itemBudget - $items, $now);
+            $items += $pruned['deleted'];
 
-                $take = min(self::ITEM_BATCH, $itemBudget - $items);
-                $step = DB::transaction(static function () use ($streamId, $take, $now): array {
-                    $stream = WorkflowDurableStream::query()->whereKey($streamId)->lockForUpdate()->first();
+            if ($pruned['removed']) {
+                $streams++;
+            }
 
-                    if ($stream === null || ! WorkflowStreamService::isExpired($stream, $now)) {
-                        return ['deleted' => 0, 'done' => true, 'removed' => false];
-                    }
-
-                    $ids = WorkflowDurableStreamItem::query()
-                        ->where('stream_id', $streamId)
-                        ->orderBy('offset')
-                        ->limit($take)
-                        ->pluck('id')
-                        ->all();
-
-                    if ($ids !== []) {
-                        WorkflowDurableStreamItem::query()->whereKey($ids)->delete();
-                    }
-
-                    if (count($ids) < $take) {
-                        $stream->delete();
-
-                        return ['deleted' => count($ids), 'done' => true, 'removed' => true];
-                    }
-
-                    return ['deleted' => count($ids), 'done' => false, 'removed' => false];
-                });
-
-                $items += $step['deleted'];
-
-                if ($step['removed']) {
-                    $streams++;
-                }
-
-                if ($step['done']) {
-                    break;
-                }
+            if ($pruned['budget_exhausted']) {
+                return ['streams_removed' => $streams, 'items_removed' => $items, 'budget_exhausted' => true];
             }
         }
 
         return ['streams_removed' => $streams, 'items_removed' => $items, 'budget_exhausted' => false];
+    }
+
+    /**
+     * Deletes one expired stream's items in batches until the stream row is
+     * gone or `$budget` items have been deleted.
+     *
+     * @return array{deleted: int, removed: bool, budget_exhausted: bool}
+     */
+    private static function pruneStream(int|string $streamId, int $budget, Carbon $now): array
+    {
+        $deleted = 0;
+
+        while ($deleted < $budget) {
+            $take = min(self::ITEM_BATCH, $budget - $deleted);
+            $step = DB::transaction(static fn (): array => self::pruneBatch($streamId, $take, $now));
+            $deleted += $step['deleted'];
+
+            if ($step['done']) {
+                return ['deleted' => $deleted, 'removed' => $step['removed'], 'budget_exhausted' => false];
+            }
+        }
+
+        return ['deleted' => $deleted, 'removed' => false, 'budget_exhausted' => true];
+    }
+
+    /**
+     * One transaction: under the stream row's lock, delete up to `$take` of
+     * an expired stream's items, and the stream row once none are left.
+     *
+     * @return array{deleted: int, done: bool, removed: bool}
+     */
+    private static function pruneBatch(int|string $streamId, int $take, Carbon $now): array
+    {
+        $stream = WorkflowDurableStream::query()->whereKey($streamId)->lockForUpdate()->first();
+
+        if ($stream === null || ! WorkflowStreamService::isExpired($stream, $now)) {
+            return ['deleted' => 0, 'done' => true, 'removed' => false];
+        }
+
+        $ids = WorkflowDurableStreamItem::query()
+            ->where('stream_id', $streamId)
+            ->orderBy('offset')
+            ->limit($take)
+            ->pluck('id')
+            ->all();
+
+        if ($ids !== []) {
+            WorkflowDurableStreamItem::query()->whereKey($ids)->delete();
+        }
+
+        if (count($ids) < $take) {
+            $stream->delete();
+
+            return ['deleted' => count($ids), 'done' => true, 'removed' => true];
+        }
+
+        return ['deleted' => count($ids), 'done' => false, 'removed' => false];
     }
 
     /**
@@ -110,7 +134,7 @@ final class WorkflowStreamRetention
      */
     public static function runInlinePass(string $namespace): ?array
     {
-        if (! Cache::add(self::INLINE_CACHE_PREFIX.sha1($namespace), '1', now()->addSeconds(self::INLINE_THROTTLE_SECONDS))) {
+        if (! Cache::add(self::INLINE_CACHE_PREFIX.hash('sha256', $namespace), '1', now()->addSeconds(self::INLINE_THROTTLE_SECONDS))) {
             return null;
         }
 
