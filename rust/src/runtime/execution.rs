@@ -508,6 +508,14 @@ impl Runtime {
     }
 
     pub(crate) async fn start(&self, body: Value, context: Option<Value>) -> Result<Value> {
+        self.start_command(body, context, false).await
+    }
+    /// A bridge adapter's start: the store decides the draining queue and the
+    /// instance reservation under the transition lock (`Store::bridge_start`).
+    pub(crate) async fn bridge_start(&self, body: Value, context: Value) -> Result<Value> {
+        self.start_command(body, Some(context), true).await
+    }
+    async fn start_command(&self, body: Value, context: Option<Value>, bridge: bool) -> Result<Value> {
         // PHP validates the request before it reads the memo or the input.
         let mut body = super::start_request::normalized(body);
         super::input_envelope::transport(&body)?;
@@ -526,10 +534,13 @@ impl Runtime {
         let memo =
             super::memos::prepare_initial(self.signal_codec.clone(), body["memo"].clone()).await?;
         let external = self.prepare_external(&body["input"]).await?;
-        match &*self.storage {
-            Storage::Sqlite(store) => store.start(body, memo, external, context).await,
-            Storage::Postgres(store) => store.start(body, memo, external, context).await,
-            Storage::MySql(store) => store.start(body, memo, external, context).await,
+        match (&*self.storage, bridge) {
+            (Storage::Sqlite(store), false) => store.start(body, memo, external, context).await,
+            (Storage::Postgres(store), false) => store.start(body, memo, external, context).await,
+            (Storage::MySql(store), false) => store.start(body, memo, external, context).await,
+            (Storage::Sqlite(store), true) => store.bridge_start(body, memo, external, context).await,
+            (Storage::Postgres(store), true) => store.bridge_start(body, memo, external, context).await,
+            (Storage::MySql(store), true) => store.bridge_start(body, memo, external, context).await,
         }
     }
     /// `ActivityController::start`: validates like PHP, then starts the
@@ -1647,15 +1658,6 @@ impl Runtime {
     delegate!(activity_status(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     delegate!(renew_activity_lease(task_id: &str, body: Value) -> Result<Value>);
     delegate!(workflow_in_namespace(workflow_id: &str) -> Result<bool>);
-    delegate!(instance_reservation(workflow_id: &str) -> Result<Option<(String, Option<String>)>>);
-    delegate!(bridge_start_block(task_queue: &str) -> Result<Option<serde_json::Map<String, Value>>>);
-    pub(crate) fn is_namespace(&self, namespace: &str) -> bool {
-        match &*self.storage {
-            Storage::Sqlite(store) => store.is_namespace(namespace),
-            Storage::Postgres(store) => store.is_namespace(namespace),
-            Storage::MySql(store) => store.is_namespace(namespace),
-        }
-    }
     delegate!(bridge_identity_receipt(workflow_id: &str, kind: &str, identity: &str) -> Result<Option<(String, Value)>>);
     delegate!(nexus_operations(workflow_id: &str, run_id: Option<&str>, limit: i64) -> Result<Vec<Value>>);
     delegate!(import_existing_run(run_id: &str) -> Result<Option<super::workflow_import::ExistingRun>>);

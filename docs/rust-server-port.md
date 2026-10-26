@@ -174,12 +174,16 @@ any other unknown path or method answers PHP's own 404 or 405
     regular update route does; published 2.11.1 skips that admission, Server #747.
     Four further differences from published 2.11.1, all tracked in Server #777:
     - A start for an id that another namespace holds is refused as unavailable,
-      naming neither the type nor the namespace.
+      naming neither the type nor the namespace. The draining gate and the
+      instance reservation are decided under the transition lock, before
+      anything is written.
     - The adapter name is at most 64 bytes.
     - Signals and updates are deduplicated inside their own transaction under
       the transition lock. Each one is recorded with a fixed-length
       `dw-bridge:v1:` identity as its request id, and the commands PHP
-      recorded before takeover are matched by their metadata.
+      recorded before takeover are matched by their metadata. A command
+      under an identity, accepted or rejected, that records another tuple is
+      refused `409 bridge_identity_conflict`.
     - The regular signal and update routes refuse caller request ids that
       start with `dw-bridge:`.)
   - (Caller-indexed Nexus operation reads are served, with the

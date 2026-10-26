@@ -421,11 +421,18 @@ where
             return Ok((status, validation_response(failure, wait_for, context.as_ref(), name)));
         }
         let existing = if let Some(request_id) = request_id {
-            Self::query("SELECT u.id,u.update_name,u.workflow_run_id FROM workflow_updates u JOIN workflow_commands c ON c.id=u.workflow_command_id AND c.workflow_instance_id=u.workflow_instance_id WHERE c.workflow_instance_id=$1 AND c.command_type='update' AND c.request_id=$2")
+            Self::query("SELECT u.id,u.update_name,u.workflow_run_id,c.context FROM workflow_updates u JOIN workflow_commands c ON c.id=u.workflow_command_id AND c.workflow_instance_id=u.workflow_instance_id WHERE c.workflow_instance_id=$1 AND c.command_type='update' AND c.request_id=$2")
                 .bind(workflow_id).bind(request_id).fetch_optional(&mut *tx).await?
         } else {
             None
         };
+        // An update under a bridge identity, accepted or rejected, is this
+        // bridge command's only when it records the same adapter, action,
+        // raw key and target; anything else fails closed before its receipt
+        // is answered or replayed.
+        if let (Some(key), Some(existing)) = (bridge, &existing) {
+            key.verify(DB::optional_document_row(existing, "context")?.as_ref())?;
+        }
         // A bridge update already accepted is answered, under the transition
         // lock, as the bridge's duplicate. A rejected one keeps the ordinary
         // receipt below, as PHP replays it.

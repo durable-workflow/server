@@ -334,24 +334,70 @@ where
         external: Option<super::external_resolution::PreparedExternal>,
         context: Option<Value>,
     ) -> Result<Value> {
+        self.start_command(body, memo, external, context, false).await
+    }
+
+    /// A bridge adapter's start (Server #776). Under the transition lock and
+    /// before anything is written, in the bridge's order: a draining queue,
+    /// then an instance another namespace holds, then one reserved for
+    /// another type. Each is refused as a `Protocol` whose `bridge` field
+    /// names the decision, so no state change between a read and the write
+    /// can turn into another answer.
+    pub(crate) async fn bridge_start(
+        &self,
+        body: Value,
+        memo: super::memos::PreparedMemo,
+        external: Option<super::external_resolution::PreparedExternal>,
+        context: Option<Value>,
+    ) -> Result<Value> {
+        self.start_command(body, memo, external, context, true).await
+    }
+
+    async fn start_command(
+        &self,
+        body: Value,
+        memo: super::memos::PreparedMemo,
+        external: Option<super::external_resolution::PreparedExternal>,
+        context: Option<Value>,
+        bridge: bool,
+    ) -> Result<Value> {
         let mut tx = self.begin().await?;
         let arguments = external.as_ref().map(|prepared| prepared.stored());
         if let Some(prepared) = &external {
             self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
                 .await?;
         }
+        let request = super::start_request::validate(&body)?;
+        if bridge {
+            let refusal = |decision: Value| super::RuntimeError::Protocol { status: StatusCode::CONFLICT,
+                response: json!({"reason":"bridge_start_refused","bridge":decision}) };
+            if let Some(block) = Self::routing_block(&mut tx, &self.namespace, &request.task_queue, self.worker_stale_after_seconds).await? {
+                return Err(refusal(json!({"refusal":"task_queue_draining","block":block})));
+            }
+            if let Some(workflow_id) = &request.workflow_id
+                && let Some(instance) = Self::query("SELECT workflow_type,namespace FROM workflow_instances WHERE id=$1")
+                    .bind(workflow_id.as_str()).fetch_optional(&mut *tx).await?
+            {
+                if DB::optional_string(&instance, "namespace")?.as_deref() != Some(self.namespace.as_ref()) {
+                    return Err(refusal(json!({"refusal":"instance_unavailable"})));
+                }
+                let reserved_type = DB::string(&instance, "workflow_type")?;
+                if reserved_type != request.workflow_type {
+                    return Err(refusal(json!({"refusal":"instance_reserved_for_type","reserved_type":reserved_type})));
+                }
+            }
+        }
         // `TaskQueueRoutingGate`: a queue whose live workers all drain takes
         // no new start. A workflow id reserved in another namespace is
         // refused for that first.
-        let request = super::start_request::validate(&body)?;
         let reserved = match &request.workflow_id {
-            Some(workflow_id) => Self::query("SELECT namespace FROM workflow_instances WHERE id=$1")
+            Some(workflow_id) if !bridge => Self::query("SELECT namespace FROM workflow_instances WHERE id=$1")
                 .bind(workflow_id.as_str()).fetch_optional(&mut *tx).await?
                 .map(|instance| DB::optional_string(&instance, "namespace")).transpose()?.flatten()
                 .is_some_and(|reserved| reserved != self.namespace.as_ref()),
-            None => false,
+            _ => false,
         };
-        if !reserved && let Some(block) = Self::routing_block(&mut tx, &self.namespace, &request.task_queue, self.worker_stale_after_seconds).await? {
+        if !bridge && !reserved && let Some(block) = Self::routing_block(&mut tx, &self.namespace, &request.task_queue, self.worker_stale_after_seconds).await? {
             let mut response = json!({"workflow_id":request.workflow_id,"command_status":"rejected","command_source":"control_plane",
                 "outcome":"rejected_task_queue_draining","reason":"task_queue_draining","rejection_reason":"task_queue_draining",
                 "message":format!("Task queue [{}] is draining and cannot accept new workflow starts until an active worker cohort is available.", request.task_queue),

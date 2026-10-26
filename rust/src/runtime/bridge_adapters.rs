@@ -10,6 +10,9 @@
 //!   update route does.
 //! - A start for an instance id another namespace holds is refused without
 //!   naming that instance's type or namespace. PHP names the reserved type.
+//!   The draining gate and the instance reservation are decided under the
+//!   transition lock, before anything is written; PHP's gate reads outside
+//!   its transaction.
 //! - The adapter name is at most 64 bytes, so a derived workflow id fits the
 //!   128-byte workflow id contract.
 //! - Signals and updates are deduplicated atomically (Server #777). A
@@ -18,7 +21,9 @@
 //!   inside the command's transaction, under the transition lock: the
 //!   identity first, then the command metadata PHP recorded before takeover.
 //!   The unique (instance, command type, request id) index backs it, and
-//!   callers cannot send a `dw-bridge:` request id. PHP checks once, outside
+//!   callers cannot send a `dw-bridge:` request id. Any command under an
+//!   identity, accepted or rejected, must record the same tuple, or the
+//!   bridge answers 409 `bridge_identity_conflict`. PHP checks once, outside
 //!   its transaction, and uses the raw key as an update's request id.
 use super::command_context::CommandRequest;
 use super::execution::Runtime;
@@ -189,12 +194,25 @@ impl<'a> BridgeKey<'a> {
         metadata["adapter"] == self.adapter && metadata["action"] == self.action
             && metadata["idempotency_key"] == self.key && metadata[self.field] == self.name
     }
+
+    /// Any command found under this identity, accepted or rejected, must
+    /// record this exact tuple; anything else fails closed before its
+    /// receipt is answered.
+    pub(crate) fn verify(&self, context: Option<&Value>) -> Result<()> {
+        if context.is_some_and(|context| self.recorded_in(context)) { Ok(()) } else { Err(identity_conflict()) }
+    }
 }
+
+const IDENTITY_CONFLICT: &str = "bridge_identity_conflict";
 
 /// A bridge identity whose command records another tuple: refused, not
 /// answered with that command.
 fn identity_conflict() -> RuntimeError {
-    super::refuse(StatusCode::CONFLICT, "bridge_identity_conflict")
+    super::refuse(StatusCode::CONFLICT, IDENTITY_CONFLICT)
+}
+
+fn is_identity_conflict(error: &RuntimeError) -> bool {
+    matches!(error, RuntimeError::Refused { reason, .. } if *reason == IDENTITY_CONFLICT)
 }
 
 /// Whether a write lost to the unique (instance, command type, request id)
@@ -235,40 +253,44 @@ impl Event<'_> {
         // `resolveTaskQueue`: a requested queue, or the default one.
         let task_queue = target["task_queue"].as_str().map_or("default", str::trim).to_owned();
         let policy = if target["duplicate_policy"] == "reject_duplicate" { "fail" } else { "use-existing" };
-        // `TaskQueueRoutingGate::workflowStartBlock`, before the start.
-        if let Some(block) = self.runtime.bridge_start_block(&task_queue).await? {
-            let mut extra = json!({"message":format!("Task queue [{task_queue}] is draining and cannot accept new workflow starts until an active worker cohort is available."),
-                "target":redacted(&with_workflow_id(target, &workflow_id)),"correlation":self.correlation,"workflow_id":workflow_id,
-                "workflow_type":workflow_type,"task_queue":task_queue,"rejection_reason":"task_queue_draining",
-                "control_plane_outcome":"rejected_task_queue_draining"});
-            extra.as_object_mut().expect("object").extend(block);
-            return self.rejected(action, "task_queue_draining", extra);
-        }
-        // `DefaultWorkflowControlPlane::reserveInstance`, namespace first: an
-        // instance another namespace holds is unavailable, and its type and
-        // namespace stay unnamed. PHP checks the type first and names it.
-        if let Some((reserved_type, namespace)) = self.runtime.instance_reservation(&workflow_id).await? {
-            let message = if !namespace.as_deref().is_some_and(|namespace| self.runtime.is_namespace(namespace)) {
-                Some(format!("Workflow instance [{workflow_id}] is unavailable."))
-            } else if reserved_type != workflow_type {
-                Some(format!("Workflow instance [{workflow_id}] is reserved for durable type [{reserved_type}] and cannot be reused for [{workflow_type}]."))
-            } else {
-                None
-            };
-            if let Some(message) = message {
-                return self.rejected(action, "unknown_target", json!({"message":message,"target":redacted(target),"correlation":self.correlation}));
-            }
-        }
         let mut start = json!({"workflow_id":workflow_id,"workflow_type":workflow_type,"task_queue":target["task_queue"],
             "business_key":target["business_key"],"input":self.body.get("input"),"duplicate_policy":policy});
         start.as_object_mut().expect("object").retain(|_, value| !value.is_null());
         let context = self.context(&workflow_id, "bridge.start_workflow",
             json!({"adapter":self.adapter,"action":action,"idempotency_key":self.key,"task_queue":task_queue}));
-        let started = match self.runtime.start(start, Some(context)).await {
+        // `TaskQueueRoutingGate::workflowStartBlock`, then
+        // `DefaultWorkflowControlPlane::reserveInstance` namespace first, all
+        // decided by the store under the transition lock with nothing written
+        // (`Store::bridge_start`). An instance another namespace holds is
+        // unavailable, its type and namespace unnamed; PHP checks the type
+        // first and names it.
+        let started = match self.runtime.bridge_start(start, context).await {
             Ok(started) => started,
             Err(RuntimeError::Protocol { response, .. }) if response["reason"] == "validation_failed" => {
                 return self.rejected(action, "malformed_payload", json!({"message":response["message"],
                     "target":redacted(target),"correlation":self.correlation}));
+            }
+            Err(RuntimeError::Protocol { response, .. }) if response["reason"] == "bridge_start_refused" => {
+                let decision = &response["bridge"];
+                return match decision["refusal"].as_str() {
+                    Some("task_queue_draining") => {
+                        let mut extra = json!({"message":format!("Task queue [{task_queue}] is draining and cannot accept new workflow starts until an active worker cohort is available."),
+                            "target":redacted(&with_workflow_id(target, &workflow_id)),"correlation":self.correlation,"workflow_id":workflow_id,
+                            "workflow_type":workflow_type,"task_queue":task_queue,"rejection_reason":"task_queue_draining",
+                            "control_plane_outcome":"rejected_task_queue_draining"});
+                        if let (Some(fields), Some(block)) = (extra.as_object_mut(), decision["block"].as_object()) {
+                            fields.extend(block.clone());
+                        }
+                        self.rejected(action, "task_queue_draining", extra)
+                    }
+                    Some("instance_reserved_for_type") => {
+                        let reserved_type = decision["reserved_type"].as_str().unwrap_or_default();
+                        self.rejected(action, "unknown_target", json!({"message":format!("Workflow instance [{workflow_id}] is reserved for durable type [{reserved_type}] and cannot be reused for [{workflow_type}]."),
+                            "target":redacted(target),"correlation":self.correlation}))
+                    }
+                    _ => self.rejected(action, "unknown_target", json!({"message":format!("Workflow instance [{workflow_id}] is unavailable."),
+                        "target":redacted(target),"correlation":self.correlation})),
+                };
             }
             Err(error) => return Err(error),
         };
@@ -313,6 +335,15 @@ impl Event<'_> {
             "workflow_id":workflow_id,"run_id":run_id,"control_plane_outcome":"deduped_existing_command"}))
     }
 
+    /// A bridge identity whose stored command records another tuple: a 409
+    /// in the bridge envelope, with only the caller's own fields.
+    fn identity_conflict(&self, action: &str) -> Result<(StatusCode, Value)> {
+        answer(StatusCode::CONFLICT, json!({"adapter":self.adapter,"action":action,"accepted":false,"outcome":"rejected",
+            "reason":IDENTITY_CONFLICT,"idempotency_key":self.key,
+            "message":"The bridge command's identity is recorded for another command.",
+            "target":redacted(&self.target),"correlation":self.correlation}))
+    }
+
     /// A write that lost to the unique index. It is this command's duplicate
     /// only when the accepted command under the identity records the same
     /// adapter, action, key and target; anything else fails closed.
@@ -320,7 +351,7 @@ impl Event<'_> {
         let workflow_id = self.target["workflow_id"].as_str().unwrap_or_default();
         match self.runtime.bridge_identity_receipt(workflow_id, kind, &key.identity).await? {
             Some((run, context)) if key.recorded_in(&context) => self.duplicate(action, workflow_id, &json!(run)),
-            _ => Err(identity_conflict()),
+            _ => self.identity_conflict(action),
         }
     }
 
@@ -368,6 +399,7 @@ impl Event<'_> {
         match self.runtime.bridge_signal(workflow_id, name, body, context, &key).await {
             Ok(result) if result["outcome"] == "deduped_existing_command" => self.duplicate(action, workflow_id, &result["run_id"]),
             Ok(result) => self.command_outcome(action, StatusCode::ACCEPTED, &result),
+            Err(error) if is_identity_conflict(&error) => self.identity_conflict(action),
             Err(error) if duplicate_write(&error) => self.lost_race(action, "signal", &key).await,
             Err(error) => self.refused(action, error, super::control_plane::Operation::Signal(name), workflow_id),
         }
@@ -392,6 +424,7 @@ impl Event<'_> {
         match self.runtime.bridge_update(workflow_id, name, body, context, &key).await {
             Ok((_, result)) if result["outcome"] == "deduped_existing_command" => self.duplicate(action, workflow_id, &result["run_id"]),
             Ok((status, result)) => self.command_outcome(action, status, &result),
+            Err(error) if is_identity_conflict(&error) => self.identity_conflict(action),
             Err(error) if duplicate_write(&error) => self.lost_race(action, "update", &key).await,
             Err(error) => self.refused(action, error, super::control_plane::Operation::Update(name), workflow_id),
         }
@@ -422,31 +455,6 @@ pub(crate) async fn webhook(runtime: &Runtime, request: &CommandRequest, adapter
 }
 
 store_methods! {
-    /// The type and namespace an instance id is reserved for, in any namespace.
-    pub(crate) async fn instance_reservation(&self, workflow_id: &str) -> Result<Option<(String, Option<String>)>> {
-        let Some(row) = Self::query("SELECT workflow_type,namespace FROM workflow_instances WHERE id=$1")
-            .bind(workflow_id)
-            .fetch_optional(&self.pool)
-            .await?
-        else {
-            return Ok(None);
-        };
-        Ok(Some((DB::string(&row, "workflow_type")?, DB::optional_string(&row, "namespace")?)))
-    }
-
-    /// Whether `namespace` is the one this store serves.
-    pub(crate) fn is_namespace(&self, namespace: &str) -> bool {
-        namespace == self.namespace.as_ref()
-    }
-
-    /// `TaskQueueRoutingGate::workflowStartBlock` for this namespace's queue.
-    pub(crate) async fn bridge_start_block(&self, task_queue: &str) -> Result<Option<Map<String, Value>>> {
-        let mut tx = self.begin().await?;
-        let block = Self::routing_block(&mut tx, &self.namespace, task_queue, self.worker_stale_after_seconds).await?;
-        tx.rollback().await?;
-        Ok(block)
-    }
-
     /// `NamespaceWorkflowScope::workflowBound`.
     pub(crate) async fn workflow_in_namespace(&self, workflow_id: &str) -> Result<bool> {
         let found = Self::scalar("SELECT COUNT(*) FROM workflow_instances WHERE id=$1 AND namespace=$2")
@@ -472,16 +480,16 @@ store_methods! {
     /// the transition lock: the run of this bridge command's accepted
     /// command, found by its identity, or else by the metadata PHP recorded
     /// before takeover. PHP's commands carry no identity: a signal has no
-    /// request id and an update has the raw key. An identity whose command
-    /// records another tuple fails closed.
+    /// request id and an update has the raw key. A command of any status
+    /// under the identity must record this tuple, or the request fails
+    /// closed; a rejected one keeps its own receipt (the update path replays
+    /// it), so only an accepted one is answered here.
     pub(super) async fn bridge_receipt(tx: &mut Transaction<'_, DB>, workflow_id: &str, kind: &str, key: &BridgeKey<'_>) -> Result<Option<String>> {
-        if let Some(row) = Self::query("SELECT workflow_run_id,resolved_workflow_run_id,context FROM workflow_commands WHERE workflow_instance_id=$1 AND command_type=$2 AND status='accepted' AND request_id=$3")
+        if let Some(row) = Self::query("SELECT status,workflow_run_id,resolved_workflow_run_id,context FROM workflow_commands WHERE workflow_instance_id=$1 AND command_type=$2 AND request_id=$3")
             .bind(workflow_id).bind(kind).bind(key.identity.as_str()).fetch_optional(&mut **tx).await?
         {
-            if !key.recorded_in(&DB::document_row(&row, "context")?) {
-                return Err(identity_conflict());
-            }
-            return Ok(Some(Self::bridge_run(&row)?));
+            key.verify(DB::optional_document_row(&row, "context")?.as_ref())?;
+            return if DB::string(&row, "status")? == "accepted" { Ok(Some(Self::bridge_run(&row)?)) } else { Ok(None) };
         }
         // PHP orders by `created_at`, which native never writes; an accepted
         // command's `accepted_at` is that same instant.
