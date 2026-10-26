@@ -599,6 +599,7 @@ mod pool_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::FutureExt;
     use serde_json::{Value, json};
     use sqlx::{ConnectOptions, MySql, migrate::MigrateDatabase, types::Json};
     use std::{process::Command, str::FromStr};
@@ -847,28 +848,61 @@ mod tests {
         assert_eq!(row, (timestamp, Json(payload)));
         let role = format!("dw_ro_{}", ulid::Ulid::new().to_string().to_lowercase());
         let database = db.options.get_database().unwrap();
-        // These identifiers contain only a fixed prefix and a ULID alphabet.
-        connection.execute(AssertSqlSafe(format!("CREATE USER '{role}'@'%' IDENTIFIED BY 'parity-disposable-password'; GRANT SELECT ON `{database}`.* TO '{role}'@'%'"))).await.unwrap();
-        let reader = db
-            .options
-            .clone()
-            .username(&role)
-            .password("parity-disposable-password");
-        MySqlStorage::check(reader.clone()).await.unwrap();
-        let mut read = MySqlConnection::connect_with(&reader).await.unwrap();
-        assert!(
-            sqlx::query("DELETE FROM workflow_instances")
-                .execute(&mut read)
-                .await
-                .is_err()
-        );
-        read.close().await.unwrap();
-        connection
-            .execute(AssertSqlSafe(format!("DROP USER '{role}'@'%'")))
+        // A fresh password for every run, from the operating system's secure
+        // source (Server #779). It is hex, so it cannot leave the quoted
+        // literal below, and the connection that sends it logs no statements.
+        let mut secret = [0_u8; 32];
+        getrandom::fill(&mut secret).unwrap();
+        let password: String = secret.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert!(password.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        let mut admin = MySqlConnection::connect_with(&db.options.clone().disable_statement_logging())
             .await
             .unwrap();
-        connection.close().await.unwrap();
-        db.remove().await;
+        // These identifiers contain only a fixed prefix and a ULID alphabet.
+        admin
+            .execute(AssertSqlSafe(format!("CREATE USER '{role}'@'%' IDENTIFIED BY '{password}'")))
+            .await
+            .unwrap();
+        let reader = db.options.clone().username(&role).password(&password);
+        // The user's removal is attempted whether or not the grant and the
+        // checks pass: MySQL commits CREATE USER on its own.
+        let checked = std::panic::AssertUnwindSafe(async {
+            admin
+                .execute(AssertSqlSafe(format!("GRANT SELECT ON `{database}`.* TO '{role}'@'%'")))
+                .await
+                .unwrap();
+            MySqlStorage::check(reader.clone()).await.unwrap();
+            let mut read = MySqlConnection::connect_with(&reader).await.unwrap();
+            assert!(
+                sqlx::query("DELETE FROM workflow_instances")
+                    .execute(&mut read)
+                    .await
+                    .is_err()
+            );
+            read.close().await.unwrap();
+        })
+        .catch_unwind()
+        .await;
+        let dropped = admin
+            .execute(AssertSqlSafe(format!("DROP USER '{role}'@'%'")))
+            .await
+            .is_ok();
+        let admin_closed = admin.close().await.is_ok();
+        let closed = connection.close().await.is_ok() && admin_closed;
+        let removed = std::panic::AssertUnwindSafe(db.remove())
+            .catch_unwind()
+            .await
+            .is_ok();
+        // Every cleanup step has run. A failed one is reported before a failed
+        // check, without its error text, so the check cannot hide it.
+        assert!(
+            dropped && closed && removed,
+            "cleanup failed (user dropped {dropped}, connections closed {closed}, database removed {removed}); checks passed {}",
+            checked.is_ok()
+        );
+        if let Err(panic) = checked {
+            std::panic::resume_unwind(panic);
+        }
     }
 
     #[tokio::test]
