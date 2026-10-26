@@ -1310,6 +1310,62 @@ class WorkflowControlPlaneTest extends TestCase
             ->assertJsonPath('reason', 'instance_not_found');
     }
 
+    public function test_update_wait_timeout_seconds_is_bounded_before_admission(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-update-wait-bound',
+                'workflow_type' => 'tests.interactive-command-workflow',
+            ]);
+
+        $start->assertCreated();
+        $this->runReadyWorkflowTask((string) $start->json('run_id'));
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-update-wait-bound/update/approve', [
+                'input' => [true, 'api'],
+                'wait_for' => 'completed',
+                'wait_timeout_seconds' => 61,
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('control_plane.operation', 'update')
+            ->assertJsonPath(
+                'validation_errors.wait_timeout_seconds.0',
+                'The wait timeout seconds field must not be greater than 60.',
+            );
+
+        $this->assertSame(0, WorkflowCommand::query()
+            ->where('workflow_instance_id', 'wf-update-wait-bound')
+            ->where('command_type', 'update')
+            ->count());
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-update-wait-bound/update/approve', [
+                'input' => [true, 'api'],
+                'wait_for' => 'accepted',
+                'wait_timeout_seconds' => 60,
+            ])
+            ->assertStatus(202)
+            ->assertJsonPath('wait_for', 'accepted');
+
+        $this->assertSame(1, WorkflowCommand::query()
+            ->where('workflow_instance_id', 'wf-update-wait-bound')
+            ->where('command_type', 'update')
+            ->count());
+
+        $this->getJson('/api/cluster/info', $this->apiHeaders())
+            ->assertOk()
+            ->assertJsonPath('control_plane.request_contract.operations.update.fields.wait_timeout_seconds', [
+                'minimum' => 1,
+                'maximum' => 60,
+            ]);
+    }
+
     public function test_control_plane_requests_require_an_explicit_v2_header_and_reject_legacy_wait_policy_fields(): void
     {
         Queue::fake();
