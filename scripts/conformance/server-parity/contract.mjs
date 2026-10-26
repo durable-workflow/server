@@ -14,6 +14,7 @@ import {checkSearchAttributes} from './search-attribute-contract.mjs';
 import {checkStorageTest} from './storage-test-contract.mjs';
 import {checkActivityLeaseRenewal} from './activity-lease-renewal-contract.mjs';
 import {checkNexusOperations} from './nexus-operations-contract.mjs';
+import {checkRecordLocalActivity} from './record-local-activity-contract.mjs';
 import {checkWorkflowPollRequest} from './workflow-poll-request-contract.mjs';
 import {checkWorkerPollFence} from './worker-poll-fence-contract.mjs';
 import {checkWorkerSessions} from './worker-sessions-contract.mjs';
@@ -162,6 +163,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const storageTest = fixture.storage_test ? checkStorageTest(fixture, observation, workflowId) : null;
   const activityLeaseRenewal = fixture.activity_lease_renewal ? checkActivityLeaseRenewal(fixture, observation, workflowId) : null;
   const nexusOperations = fixture.nexus_operations ? checkNexusOperations(fixture, observation, workflowId) : null;
+  const recordLocalActivity = fixture.record_local_activity ? checkRecordLocalActivity(fixture, observation, workflowId) : null;
   const workflowPollRequest = fixture.workflow_poll_request ? checkWorkflowPollRequest(fixture, observation, workflowId) : null;
   const workerPollFence = fixture.worker_poll_fence ? checkWorkerPollFence(fixture, observation, workflowId) : null;
   const workerSessions = fixture.worker_sessions ? checkWorkerSessions(fixture, observation, workflowId) : null;
@@ -728,6 +730,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(storageTest ? {storage_test: storageTest} : {}),
     ...(activityLeaseRenewal ? {activity_lease_renewal: activityLeaseRenewal} : {}),
     ...(nexusOperations ? {nexus_operations: nexusOperations} : {}),
+    ...(recordLocalActivity ? {record_local_activity: recordLocalActivity} : {}),
     ...(workflowPollRequest ? {workflow_poll_request: workflowPollRequest} : {}),
     ...(workerPollFence ? {worker_poll_fence: workerPollFence} : {}),
     ...(workerSessions ? {worker_sessions: workerSessions} : {}),

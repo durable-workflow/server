@@ -107,6 +107,10 @@ mod child_policies;
 mod definition_routing;
 #[path = "execution/worker_admission.rs"]
 mod worker_admission;
+#[path = "execution/local_activities.rs"]
+mod local_activities;
+#[path = "execution/completion_budget.rs"]
+mod completion_budget;
 /// `WorkflowDefinitionRouting::ENTRY_VALIDATION_CAPABILITY`.
 const ENTRY_VALIDATION: &str = "workflow_entry_arguments_validation";
 #[path = "execution/parent_close_policies.rs"]
