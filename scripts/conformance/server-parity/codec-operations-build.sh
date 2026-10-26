@@ -19,9 +19,11 @@ cleanup() {
 }
 trap cleanup EXIT
 started=$SECONDS
-# The optimized compile of the server crate peaks near 2 GiB, so a 2 GiB
-# limit intermittently OOM-killed rustc (exit 101), as it did for the tests.
-if ! docker run --rm --name "$build_container" --user="$(id -u):$(id -g)" --cpus=1 --memory=4g --memory-swap=4g \
+# The optimized compile of the server crate, one job at a time, now peaks
+# near 3.8 GiB of cgroup memory (page cache included) on main (Server #781),
+# and a 4 GiB limit lost rustc to SIGKILL on a hosted runner. 6 GiB keeps
+# the bound with headroom on the runner's 16 GB.
+if ! docker run --rm --name "$build_container" --user="$(id -u):$(id -g)" --cpus=1 --memory=6g --memory-swap=6g \
   -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=1 \
   -e CARGO_INCREMENTAL=0 -e CARGO_PROFILE_RELEASE_DEBUG=0 \
   -v "$root:/source:ro" -v "$output/cargo:/cargo" -v "$output/target:/target" \
@@ -38,7 +40,7 @@ jq -n --arg revision "$(git rev-parse HEAD)" --arg tree "$(git rev-parse HEAD:ru
   --arg compiler "$compiler" --argjson duration "$((SECONDS-started))" \
   '{source_revision:$revision,native_tree:$tree,binary_sha256:$sha,cargo_lock_sha256:$lock,compiler_image:$image,
     compiler:$compiler,profile:"release",locked:true,build_duration_seconds:$duration,
-    resources:{nano_cpus:1000000000,memory_bytes:4294967296,memory_swap_bytes:4294967296},jobs:1,incremental:false}' \
+    resources:{nano_cpus:1000000000,memory_bytes:6442450944,memory_swap_bytes:6442450944},jobs:1,incremental:false}' \
   > "$output/build.json"
 (cd "$output"; sha256sum server build.json > SHA256SUMS)
 cat "$output/build.json"
