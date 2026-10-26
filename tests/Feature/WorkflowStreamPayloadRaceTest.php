@@ -26,6 +26,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\RunSummaryProjector;
 
 /**
@@ -245,6 +246,55 @@ class WorkflowStreamPayloadRaceTest extends TestCase
         }
         $this->assertObjectKept($a);
         $this->assertObjectKept($b);
+    }
+
+    /**
+     * REPRODUCTION (not a fix): a workflow start claims its external input
+     * in its own committed step, before the transaction that writes the run
+     * referencing it. Run retention that runs between the two finds no
+     * retained reference and deletes the object, and the start then commits
+     * a run whose arguments reference a deleted object. Expected to fail
+     * until non-stream writers claim inside the transaction that records the
+     * reference.
+     */
+    #[DataProvider('drivers')]
+    public function test_a_workflow_start_and_run_pruning_decide_a_shared_object(string $driver): void
+    {
+        $this->initializeDatabase($driver);
+        $object = $this->registerObject('start-input');
+        $oldRunId = $this->summarizedRun('wf-claim-race-old', RunStatus::Completed);
+        $this->addStream($oldRunId, 'old', [$object['uri']]);
+
+        // The start has verified and claimed the object under its lock and
+        // committed that step; it has not yet written its run.
+        $start = $this->startActor(fn (): array => $this->httpStart('wf-claim-race-new', $object['reference']), self::afterVerification());
+        $this->runUntilPaused($start);
+        $pruned = HistoryRetentionEnforcer::pruneRun('default', $oldRunId);
+        $this->assertTrue($pruned['pruned'], json_encode($pruned));
+        $this->resume($start);
+        $started = $this->finishActor($start);
+
+        // Either the start is refused, or the object its run references
+        // still exists.
+        if ($started['status'] === 201) {
+            $arguments = (string) WorkflowRun::query()->where('workflow_instance_id', 'wf-claim-race-new')->value('arguments');
+            $this->assertSame($object['uri'], ExternalPayloads::storedEnvelope($arguments)['external_storage']['uri']);
+            $this->assertObjectKept($object);
+        } else {
+            $this->assertObjectDeleted($object);
+        }
+    }
+
+    private function httpStart(string $workflowId, array $reference): array
+    {
+        $response = $this->withHeaders($this->apiHeaders())->postJson('/api/workflows', [
+            'workflow_id' => $workflowId,
+            'workflow_type' => 'remote.claim-race',
+            'task_queue' => 'claim-race',
+            'input' => ['codec' => 'avro', 'external_payload' => $reference],
+        ]);
+
+        return ['status' => $response->status(), 'reason' => $response->json('reason')];
     }
 
     private function initializeDatabase(string $driver): void
