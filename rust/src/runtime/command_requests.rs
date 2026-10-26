@@ -12,11 +12,16 @@ const SIGNAL_RULES: &[(&str, &[Rule])] = &[
     ("dry_run", &[Nullable, Boolean]),
 ];
 
+/// `ControlPlaneRequestContract::UPDATE_WAIT_TIMEOUT_SECONDS_MAX`: the
+/// longest completion wait an update caller may ask for (Server #775). A
+/// longer request is refused before the update is admitted.
+pub(super) const UPDATE_WAIT_TIMEOUT_SECONDS_MAX: i64 = 60;
+
 const UPDATE_RULES: &[(&str, &[Rule])] = &[
     ("input", &[Nullable, Array]),
     ("request_id", &[Nullable, Rule::String, Max(255)]),
     ("wait_for", &[Nullable, Rule::String, In(&["accepted", "completed"])]),
-    ("wait_timeout_seconds", &[Nullable, Integer, Min(1)]),
+    ("wait_timeout_seconds", &[Nullable, Integer, Min(1), Max(UPDATE_WAIT_TIMEOUT_SECONDS_MAX)]),
 ];
 
 fn defaults(_: &str, _: Rule) -> Option<&'static str> {
@@ -79,6 +84,11 @@ mod tests {
             errors(update(&json!({"wait_for":"done","wait_timeout_seconds":0}))),
             json!({"wait_for":["The selected wait for is invalid."],
                 "wait_timeout_seconds":["The wait timeout seconds field must be at least 1."]})
+        );
+        assert!(update(&json!({"wait_for":"completed","wait_timeout_seconds":UPDATE_WAIT_TIMEOUT_SECONDS_MAX})).is_ok());
+        assert_eq!(
+            errors(update(&json!({"wait_for":"completed","wait_timeout_seconds":UPDATE_WAIT_TIMEOUT_SECONDS_MAX + 1}))),
+            json!({"wait_timeout_seconds":["The wait timeout seconds field must not be greater than 60."]})
         );
         assert_eq!(
             errors(update(&json!({"wait_policy":"accepted"}))),

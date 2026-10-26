@@ -45,3 +45,29 @@ async fn updates_take_plain_input_and_return_at_acceptance() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
     assert_eq!(refused["errors"]["wait_policy"], json!(["The wait_policy field is no longer supported. Use wait_for."]));
 }
+
+// Server #775: a completion wait holds the request open, so the server bounds
+// the caller's wait_timeout_seconds and refuses a longer one before admission.
+#[tokio::test]
+async fn update_wait_timeout_is_bounded_before_admission() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    update_worker(&app, "update-worker").await;
+    let started = start(&app, "bounded-wait").await;
+    open_update_wait(&app, "update-worker").await;
+    let (status, refused) = request(&app, "POST", "/api/workflows/bounded-wait/update/set",
+        json!({"input":[5],"wait_for":"completed","wait_timeout_seconds":61})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["errors"]["wait_timeout_seconds"],
+        json!(["The wait timeout seconds field must not be greater than 60."]));
+    let accepted = |history: &Value| history.as_array().unwrap().iter().filter(|event| event["event_type"] == "UpdateAccepted").count();
+    assert_eq!(accepted(&run_history(&app, &started["workflow_id"], &started["run_id"]).await), 0, "refused before admission");
+    let (status, update) = request(&app, "POST", "/api/workflows/bounded-wait/update/set",
+        json!({"input":[5],"wait_for":"accepted","wait_timeout_seconds":60})).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{update}");
+    assert_eq!(accepted(&run_history(&app, &started["workflow_id"], &started["run_id"]).await), 1);
+    let (status, cluster) = request(&app, "GET", "/api/cluster/info", Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cluster["control_plane"]["request_contract"]["operations"]["update"]["fields"]["wait_timeout_seconds"],
+        json!({"minimum":1,"maximum":60}));
+}

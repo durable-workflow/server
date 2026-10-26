@@ -712,6 +712,18 @@ requests the retained completion result. This PHP admission correction is
 tracked in [#493](https://github.com/durable-workflow/server/issues/493); older
 affected releases can return HTTP 500 when a key is reused for another name.
 
+A completion wait holds the request open, so the server bounds it. An update's
+`wait_timeout_seconds` must be an integer from 1 to 60, on the update route and
+on bridge `update_workflow` targets. A larger value is refused with HTTP 422
+(`validation_failed`) before the update is admitted, and nothing is recorded.
+When the field is absent, the wait lasts
+`DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS`. If the update is still
+incomplete when the wait ends, the response reports `wait_timed_out: true`;
+the update itself continues, and its status can be read later. The control-plane
+request contract publishes the bound as
+`operations.update.fields.wait_timeout_seconds.maximum`
+([#775](https://github.com/durable-workflow/server/issues/775)).
+
 Workflow starts fail closed with `409` / `reason: "task_queue_draining"`
 when the requested task queue has been explicitly drained and no active worker
 cohort remains to claim new work. The response includes
@@ -1905,7 +1917,7 @@ inside the package's `config/workflows.php` via
 | `DW_V2_HISTORY_FAN_OUT_WARNING_THRESHOLD` | `160` | Largest recorded parallel group size at which history pressure becomes `approaching`. |
 | `DW_V2_HISTORY_EXPORT_SIGNING_KEY` | (unset) | Optional HMAC key authenticating history export archives. |
 | `DW_V2_HISTORY_EXPORT_SIGNING_KEY_ID` | (unset) | Optional key identifier recorded alongside signed exports. |
-| `DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS` | `10` | Seconds the server waits for an update to reach a terminal stage. |
+| `DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS` | `10` | Seconds the server waits for an update to reach a terminal stage when the request omits `wait_timeout_seconds`. A request may ask for 1 to 60 seconds. |
 | `DW_V2_UPDATE_WAIT_POLL_INTERVAL_MS` | `50` | Milliseconds between update-stage polls. |
 | `DW_V2_GUARDRAILS_BOOT` | `warn` | Boot-time structural guardrail mode: `warn`, `fail`, or `silent`. |
 | `DW_V2_LIMIT_PENDING_ACTIVITIES` | `2000` | Package-level pending-activity ceiling per run. |

@@ -9,6 +9,13 @@ final class ControlPlaneRequestContract
     public const VERSION = 1;
 
     /**
+     * The longest `wait_timeout_seconds` an update caller may request. A
+     * completion wait holds the request open, so the server bounds it; a
+     * longer request is refused before the update is admitted.
+     */
+    public const UPDATE_WAIT_TIMEOUT_SECONDS_MAX = 60;
+
+    /**
      * @return array{
      *     schema: string,
      *     version: int,
@@ -90,6 +97,10 @@ final class ControlPlaneRequestContract
                     'fields' => [
                         'wait_for' => [
                             'canonical_values' => ['accepted', 'completed'],
+                        ],
+                        'wait_timeout_seconds' => [
+                            'minimum' => 1,
+                            'maximum' => self::UPDATE_WAIT_TIMEOUT_SECONDS_MAX,
                         ],
                     ],
                     'removed_fields' => [
