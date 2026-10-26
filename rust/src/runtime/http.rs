@@ -264,6 +264,18 @@ pub fn router(runtime: Runtime) -> Router {
             post(heartbeat_task),
         )
         .route(
+            "/api/worker/workflow-tasks/{task_id}/cancellation-scopes/open",
+            post(open_cancellation_scope),
+        )
+        .route(
+            "/api/worker/workflow-tasks/{task_id}/cancellation-scopes/prepare",
+            post(prepare_cancellation_scope),
+        )
+        .route(
+            "/api/worker/workflow-tasks/{task_id}/cancellation-scopes/deliver",
+            post(deliver_cancellation_scope),
+        )
+        .route(
             "/api/worker/workflow-tasks/{task_id}/complete",
             post(complete_workflow),
         )
@@ -794,6 +806,7 @@ fn worker_route(rest: &str) -> Option<Allowed> {
             | ["update-validation-tasks", "poll"]
             | ["update-validation-tasks", _, "approve" | "reject"]
             | ["workflow-tasks", _, "complete" | "fail" | "history" | "heartbeat" | "deliver-cancellation"]
+            | ["workflow-tasks", _, "cancellation-scopes", "open" | "prepare" | "deliver"]
             | ["activity-tasks", _, "complete" | "fail" | "heartbeat" | "status" | "renew-lease" | "acknowledge-cancellation"]
     )
     .then_some(Allowed::Any)
@@ -2246,6 +2259,38 @@ async fn renew_activity_lease(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     runtime.renew_activity_lease(&task_id, body).await.map(Json)
+}
+
+/// POST …/cancellation-scopes/open, prepare and deliver: each answer is
+/// the route's own body and status, in the worker envelope.
+async fn open_cancellation_scope(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, body) = runtime.open_cancellation_scope(&task_id, body, request_protocol(&headers)?).await?;
+    Ok((status, Json(body)))
+}
+
+async fn prepare_cancellation_scope(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, body) = runtime.prepare_cancellation_scope(&task_id, body, request_protocol(&headers)?).await?;
+    Ok((status, Json(body)))
+}
+
+async fn deliver_cancellation_scope(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, body) = runtime.deliver_cancellation_scope(&task_id, body, request_protocol(&headers)?).await?;
+    Ok((status, Json(body)))
 }
 
 async fn acknowledge_activity_cancellation(

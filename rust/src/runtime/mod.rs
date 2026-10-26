@@ -40,6 +40,7 @@ mod bridge_adapters;
 mod bundle_verifier;
 mod cancellation;
 mod cancellation_cascade;
+mod cancellation_scopes;
 mod child_summary;
 mod child_cancellation;
 mod children;

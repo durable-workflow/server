@@ -82,12 +82,13 @@ Updated October 24, 2026.
     ([#737](https://github.com/durable-workflow/server/issues/737)).
 
   No expectation is edited to make native pass.
-- **Parity surface.** Native serves 141 of the 175 API route methods in
+- **Parity surface.** Native serves 144 of the 175 API route methods in
   published 2.11.1's route table, with message streams, update validation,
-  activity cancellation acknowledgement, worker sessions, bridge adapter
-  webhooks, and embedded v2 and Waterline v1 workflow import. An execution
-  test sends each one through the native router, and the ones still
-  answering `501 rust_capability_not_implemented` must match
+  activity cancellation acknowledgement, worker sessions, workflow-task
+  cancellation scopes, bridge adapter webhooks, and embedded v2 and
+  Waterline v1 workflow import. An execution test sends each one through
+  the native router, and the ones still answering
+  `501 rust_capability_not_implemented` must match
   [`unserved-php-routes.v2.11.1.txt`](../rust/tests/fixtures/unserved-php-routes.v2.11.1.txt).
   Unlike published PHP, native's embedded v2 import refuses a bundle whose
   rows reference rows outside it, links only runs of one namespace, and reads
@@ -139,7 +140,8 @@ any other unknown path or method answers PHP's own 404 or 405
 - **Worker protocol features.**
   - Local activities (prepare, checkpoint, recover, heartbeat, control,
     outcome and cancellation acknowledgement).
-  - Cancellation scopes.
+  - Cancellation scope checkpoints. (Open, prepare and deliver are served,
+    with the `cancellation-scopes` fixture.)
   - (Worker sessions are served: create, heartbeat, close, list and detail,
     with the `worker-sessions` and `worker-session-activities` fixtures.)
   - (Activity cancellation acknowledgement is served:
