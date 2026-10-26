@@ -47,13 +47,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
-      DW_SERVER_IMAGE: durableworkflow/server@sha256:1631181c266cc74d70713e16b0688ea08b579cf2ed0e28f0ef5a3f3d786bc3d6
-      DW_SERVER_VERSION: 2.9.1
-      DW_WORKFLOW_PHP_VERSION: 2.6.1
-      DW_PHP_SDK_VERSION: 2.5.0
-      DW_PYTHON_SDK_VERSION: 2.6.0
+      DW_SERVER_IMAGE: durableworkflow/server:2.11.3
+      DW_SERVER_VERSION: 2.11.3
+      DW_WORKFLOW_PHP_VERSION: 2.14.2
+      DW_PHP_SDK_VERSION: 3.5.1
+      DW_PYTHON_SDK_VERSION: 2.11.2
       DW_CLI_VERSION: 2.3.0
-      DW_WATERLINE_VERSION: 2.11.2
+      DW_WATERLINE_VERSION: 2.13.0
       DW_NEXUS_EXTERNAL_PAYLOAD_PROBES: '1'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
