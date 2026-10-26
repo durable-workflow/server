@@ -190,6 +190,49 @@ async fn hold_transition_lock(database: &TestDatabase) -> TransitionLock {
     }
 }
 
+/// Wait until another transaction waits on the transition lock, where the
+/// backend shows it: PostgreSQL's ungranted advisory lock, or an InnoDB
+/// transaction in LOCK WAIT, in this test's database only (other tests run
+/// in parallel). One connection polls, so the observer adds no connection
+/// churn. SQLite's writer waits inside its own busy handler, which no other
+/// connection can see; returns false there.
+async fn lock_waiter_observed(database: &TestDatabase) -> bool {
+    use sqlx::Connection;
+    const POSTGRES: &str = "SELECT COUNT(*) FROM pg_locks WHERE locktype='advisory' AND NOT granted \
+        AND database=(SELECT oid FROM pg_database WHERE datname=current_database())";
+    const MYSQL: &str = "SELECT COUNT(*) FROM information_schema.innodb_trx t \
+        JOIN information_schema.processlist p ON p.id=t.trx_mysql_thread_id WHERE t.trx_state='LOCK WAIT' AND p.db=DATABASE()";
+    let pause = || tokio::time::sleep(std::time::Duration::from_millis(50));
+    match database {
+        TestDatabase::Sqlite(_) => return false,
+        TestDatabase::Postgres { options, .. } => {
+            let mut connection = sqlx::PgConnection::connect_with(options).await.unwrap();
+            for _ in 0..200 {
+                let waiting: i64 = sqlx::query_scalar(POSTGRES).fetch_one(&mut connection).await.unwrap();
+                if waiting > 0 {
+                    return true;
+                }
+                pause().await;
+            }
+        }
+        TestDatabase::MySql { options, .. } => {
+            // On MariaDB the install did not reach its lock wait while this
+            // observer polled information_schema from the start; it waits
+            // a moment first, then still requires the wait to be seen.
+            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+            let mut connection = sqlx::MySqlConnection::connect_with(options).await.unwrap();
+            for _ in 0..200 {
+                let waiting: i64 = sqlx::query_scalar(MYSQL).fetch_one(&mut connection).await.unwrap();
+                if waiting > 0 {
+                    return true;
+                }
+                pause().await;
+            }
+        }
+    }
+    panic!("no transaction waited on the transition lock within ten seconds");
+}
+
 async fn release(lock: TransitionLock) {
     match lock {
         TransitionLock::Sqlite(mut connection) => { sqlx::query("ROLLBACK").execute(&mut connection).await.unwrap(); }
@@ -221,8 +264,11 @@ async fn an_append_cannot_cross_a_projection_install_waiting_on_the_lock() {
         let app = app.clone();
         async move { import(&app, "barrier-src", running(1)).await }
     });
-    // Give the install time to reach its transaction; it cannot commit.
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // On PostgreSQL and MySQL the install is seen waiting on the lock; on
+    // SQLite it cannot commit while the lock is held, wherever it is.
+    if !lock_waiter_observed(&database).await {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
     let (status, body) = request(&app, "POST", &path, json!({"message_id": "m-pending", "input": ["x"]})).await;
     assert_eq!((status, &body["reason"]), (StatusCode::NOT_FOUND, &json!("instance_not_found")), "{body}");
     assert!(!install.is_finished(), "the install committed while the transition lock was held");
