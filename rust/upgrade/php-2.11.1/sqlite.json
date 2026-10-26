@@ -1,0 +1,42 @@
+{
+  "remove": [
+    [
+      "table",
+      "workflow_commands",
+      "workflow_commands",
+      "CREATE TABLE \"workflow_commands\" (\"id\" varchar not null, \"workflow_instance_id\" varchar, \"workflow_run_id\" varchar, \"requested_workflow_run_id\" varchar, \"resolved_workflow_run_id\" varchar, \"command_type\" varchar not null, \"target_scope\" varchar not null default 'instance', \"source\" varchar not null default 'php', \"context\" text, \"request_id\" varchar, \"status\" varchar not null, \"outcome\" varchar, \"workflow_class\" varchar, \"workflow_type\" varchar, \"payload_codec\" varchar, \"payload\" text, \"rejection_reason\" varchar, \"command_sequence\" integer, \"message_sequence\" integer, \"accepted_at\" datetime, \"applied_at\" datetime, \"rejected_at\" datetime, \"created_at\" datetime, \"updated_at\" datetime, primary key (\"id\"))"
+    ],
+    [
+      "table",
+      "workflow_runs",
+      "workflow_runs",
+      "CREATE TABLE \"workflow_runs\" (\"id\" varchar not null, \"workflow_instance_id\" varchar not null, \"run_number\" integer not null, \"workflow_class\" varchar not null, \"workflow_type\" varchar not null, \"namespace\" varchar, \"business_key\" varchar, \"visibility_labels\" text, \"status\" varchar not null, \"closed_reason\" varchar, \"compatibility\" varchar, \"payload_codec\" varchar, \"arguments\" text, \"output\" text, \"output_payload_codec\" varchar, \"connection\" varchar, \"queue\" varchar, \"sticky_worker_id\" varchar, \"sticky_until\" datetime, \"last_history_sequence\" integer not null default '0', \"last_command_sequence\" integer not null default '0', \"message_cursor_position\" integer not null default '0', \"run_timeout_seconds\" integer, \"execution_deadline_at\" datetime, \"run_deadline_at\" datetime, \"started_at\" datetime, \"closed_at\" datetime, \"archived_at\" datetime, \"archive_command_id\" varchar, \"archive_reason\" varchar, \"last_progress_at\" datetime, \"created_at\" datetime, \"updated_at\" datetime, \"import_source\" varchar, \"import_id\" varchar, \"import_dedupe_key\" varchar, \"import_contract_version\" integer, \"imported_at\" datetime, \"priority\" integer not null default '5', \"fairness_key\" varchar, \"fairness_weight\" integer not null default '1', \"cancellation_request_command_id\" varchar, \"cancellation_requested_at\" datetime, \"cancellation_deadline_at\" datetime, \"cancellation_delivery_sequence\" integer, \"cancellation_delivered_at\" datetime, \"details_pruned_at\" datetime, \"cancellation_scope_recovery_until\" datetime, primary key (\"id\"))"
+    ],
+    [
+      "table",
+      "workflow_tasks",
+      "workflow_tasks",
+      "CREATE TABLE \"workflow_tasks\" (\"id\" varchar not null, \"workflow_run_id\" varchar not null, \"namespace\" varchar, \"task_type\" varchar not null, \"status\" varchar not null, \"compatibility\" varchar, \"payload\" text, \"connection\" varchar, \"queue\" varchar, \"sticky_worker_id\" varchar, \"sticky_until\" datetime, \"sticky_replay_mode\" varchar, \"sticky_claimed_at\" datetime, \"available_at\" datetime, \"leased_at\" datetime, \"lease_owner\" varchar, \"lease_expires_at\" datetime, \"attempt_count\" integer not null default '0', \"last_dispatch_attempt_at\" datetime, \"last_dispatched_at\" datetime, \"last_dispatch_error\" text, \"last_claim_failed_at\" datetime, \"last_claim_error\" text, \"repair_count\" integer not null default '0', \"repair_available_at\" datetime, \"last_error\" text, \"created_at\" datetime, \"updated_at\" datetime, \"priority\" integer not null default '5', \"fairness_key\" varchar, \"fairness_weight\" integer not null default '1', \"queue_delivery_reference\" text, primary key (\"id\"))"
+    ]
+  ],
+  "add": [
+    [
+      "table",
+      "workflow_commands",
+      "workflow_commands",
+      "CREATE TABLE \"workflow_commands\" (\"id\" varchar not null, \"workflow_instance_id\" varchar, \"workflow_run_id\" varchar, \"requested_workflow_run_id\" varchar, \"resolved_workflow_run_id\" varchar, \"command_type\" varchar not null, \"target_scope\" varchar not null default 'instance', \"source\" varchar not null default 'php', \"context\" text, \"request_id\" varchar, \"status\" varchar not null, \"outcome\" varchar, \"workflow_class\" varchar, \"workflow_type\" varchar, \"payload_codec\" varchar, \"payload\" text, \"rejection_reason\" varchar, \"command_sequence\" integer, \"message_sequence\" integer, \"accepted_at\" datetime, \"applied_at\" datetime, \"rejected_at\" datetime, \"created_at\" datetime, \"updated_at\" datetime, \"observability_context\" text, primary key (\"id\"))"
+    ],
+    [
+      "table",
+      "workflow_runs",
+      "workflow_runs",
+      "CREATE TABLE \"workflow_runs\" (\"id\" varchar not null, \"workflow_instance_id\" varchar not null, \"run_number\" integer not null, \"workflow_class\" varchar not null, \"workflow_type\" varchar not null, \"namespace\" varchar, \"business_key\" varchar, \"visibility_labels\" text, \"status\" varchar not null, \"closed_reason\" varchar, \"compatibility\" varchar, \"payload_codec\" varchar, \"arguments\" text, \"output\" text, \"output_payload_codec\" varchar, \"connection\" varchar, \"queue\" varchar, \"sticky_worker_id\" varchar, \"sticky_until\" datetime, \"last_history_sequence\" integer not null default '0', \"last_command_sequence\" integer not null default '0', \"message_cursor_position\" integer not null default '0', \"run_timeout_seconds\" integer, \"execution_deadline_at\" datetime, \"run_deadline_at\" datetime, \"started_at\" datetime, \"closed_at\" datetime, \"archived_at\" datetime, \"archive_command_id\" varchar, \"archive_reason\" varchar, \"last_progress_at\" datetime, \"created_at\" datetime, \"updated_at\" datetime, \"import_source\" varchar, \"import_id\" varchar, \"import_dedupe_key\" varchar, \"import_contract_version\" integer, \"imported_at\" datetime, \"priority\" integer not null default '5', \"fairness_key\" varchar, \"fairness_weight\" integer not null default '1', \"cancellation_request_command_id\" varchar, \"cancellation_requested_at\" datetime, \"cancellation_deadline_at\" datetime, \"cancellation_delivery_sequence\" integer, \"cancellation_delivered_at\" datetime, \"details_pruned_at\" datetime, \"cancellation_scope_recovery_until\" datetime, \"observability_context\" text, primary key (\"id\"))"
+    ],
+    [
+      "table",
+      "workflow_tasks",
+      "workflow_tasks",
+      "CREATE TABLE \"workflow_tasks\" (\"id\" varchar not null, \"workflow_run_id\" varchar not null, \"namespace\" varchar, \"task_type\" varchar not null, \"status\" varchar not null, \"compatibility\" varchar, \"payload\" text, \"connection\" varchar, \"queue\" varchar, \"sticky_worker_id\" varchar, \"sticky_until\" datetime, \"sticky_replay_mode\" varchar, \"sticky_claimed_at\" datetime, \"available_at\" datetime, \"leased_at\" datetime, \"lease_owner\" varchar, \"lease_expires_at\" datetime, \"attempt_count\" integer not null default '0', \"last_dispatch_attempt_at\" datetime, \"last_dispatched_at\" datetime, \"last_dispatch_error\" text, \"last_claim_failed_at\" datetime, \"last_claim_error\" text, \"repair_count\" integer not null default '0', \"repair_available_at\" datetime, \"last_error\" text, \"created_at\" datetime, \"updated_at\" datetime, \"priority\" integer not null default '5', \"fairness_key\" varchar, \"fairness_weight\" integer not null default '1', \"observability_context\" text, \"queue_delivery_reference\" text, primary key (\"id\"))"
+    ]
+  ]
+}

@@ -341,7 +341,7 @@ where
 fn php_incarnations(layout: &str) -> Result<bool> {
     match layout.trim_end_matches("+mariadb-driver") {
         "frozen" => Ok(false),
-        "php-2.8.0" | "php-2.9.7" => Ok(true),
+        "php-2.8.0" | "php-2.9.7" | "php-2.11.1" | "php-2.11.1-from-2.9.7" => Ok(true),
         _ => Err(refuse(
             StatusCode::CONFLICT,
             "upgrade_source_layout_unconverted",
@@ -384,7 +384,7 @@ where
         .execute(&mut *tx)
         .await?;
     }
-    let delivery_references = if layout == "php-2.9.7" {
+    let delivery_references = if matches!(layout, "php-2.9.7" | "php-2.11.1" | "php-2.11.1-from-2.9.7") {
         // PHP's own queue delivery lookup metadata; native does not use PHP's
         // queue, and the queue inspection bound every job to its task row.
         let references = count::<DB>(tx, DELIVERY_REFERENCES).await?;
@@ -395,11 +395,34 @@ where
     } else {
         0
     };
+    let observability_contexts = if matches!(layout, "php-2.11.1" | "php-2.11.1-from-2.9.7") {
+        // Core 2.10's trace carriers on runs, commands and tasks (decided on
+        // #325). Native has no carrier; they are not business state or
+        // history, and the verified backup keeps them.
+        let mut contexts = 0;
+        for (table, sql) in OBSERVABILITY_CONTEXTS {
+            contexts += count::<DB>(tx, sql).await?;
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!("ALTER TABLE {table} DROP COLUMN observability_context")))
+                .execute(&mut *tx)
+                .await?;
+        }
+        contexts
+    } else {
+        0
+    };
     Ok(json!({
         "incarnations_copied":copied, "incarnations_created":created,
-        "queue_delivery_references_removed":delivery_references
+        "queue_delivery_references_removed":delivery_references,
+        "observability_contexts_removed":observability_contexts
     }))
 }
+
+/// The tables Core 2.10 gave a trace carrier, with the count of carried values.
+pub(super) const OBSERVABILITY_CONTEXTS: [(&str, &str); 3] = [
+    ("workflow_runs", "SELECT COUNT(*) AS n FROM workflow_runs WHERE observability_context IS NOT NULL"),
+    ("workflow_commands", "SELECT COUNT(*) AS n FROM workflow_commands WHERE observability_context IS NOT NULL"),
+    ("workflow_tasks", "SELECT COUNT(*) AS n FROM workflow_tasks WHERE observability_context IS NOT NULL"),
+];
 
 const DELIVERY_REFERENCES: &str =
     "SELECT COUNT(*) AS n FROM workflow_tasks WHERE queue_delivery_reference IS NOT NULL";

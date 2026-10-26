@@ -846,6 +846,8 @@ fn source_layout_names_the_release_each_recorded_delta_reaches() {
     let deltas = [
         r#"{"remove":[["a","1"]],"add":[["a","1 changed"]]}"#,
         r#"{"remove":[],"add":[["c","3"]]}"#,
+        r#"{"remove":[["c","3"]],"add":[["c","3 changed"]]}"#,
+        r#"{"remove":[["b","2"]],"add":[["b","2 reordered"]]}"#,
     ];
     let layout = |actual: &[(&str, &str)]| {
         source_layout(&rows(actual), frozen.clone(), deltas, |row| row.0.clone())
@@ -856,6 +858,14 @@ fn source_layout_names_the_release_each_recorded_delta_reaches() {
     assert_eq!(
         layout(&[("c", "3"), ("a", "1 changed"), ("b", "2")]).unwrap(),
         "php-2.9.7"
+    );
+    assert_eq!(
+        layout(&[("c", "3 changed"), ("a", "1 changed"), ("b", "2")]).unwrap(),
+        "php-2.11.1"
+    );
+    assert_eq!(
+        layout(&[("c", "3 changed"), ("a", "1 changed"), ("b", "2 reordered")]).unwrap(),
+        "php-2.11.1-from-2.9.7"
     );
     // A later release's addition without the earlier change is no recorded layout.
     reason(
@@ -878,19 +888,34 @@ async fn frozen_layout_is_reported_by_inspection_and_fingerprint() {
 /// The frozen test layout moved to PHP 2.9.7's, by the same column, table and
 /// index changes PHP's migrations make. Inspection must call it php-2.9.7.
 async fn php297_layout() -> (tempfile::TempDir, String) {
+    php_release_layout(&[PHP_280_CHANGES, QUEUE_DELIVERY]).await
+}
+
+/// PHP 2.8.0's changes to the frozen test layout.
+const PHP_280_CHANGES: &[&str] = &[
+    // The frozen test layout's private job is not a recognized delivery.
+    "DELETE FROM jobs",
+    r#"ALTER TABLE "workflow_worker_registrations" ADD COLUMN "registration_token" varchar"#,
+    r#"CREATE TABLE "workflow_worker_registration_incarnations" ("token" varchar not null, "namespace" varchar not null, "worker_id" varchar not null, "status" varchar not null, "recovered_workflow_task_count" integer not null default '0', "finished_at" datetime, "created_at" datetime, "updated_at" datetime, primary key ("token"))"#,
+    r#"CREATE INDEX "workflow_worker_registration_incarnations_finished_at_index" on "workflow_worker_registration_incarnations" ("finished_at")"#,
+    r#"CREATE INDEX "dw_worker_incarnation_scope_idx" on "workflow_worker_registration_incarnations" ("namespace", "worker_id")"#,
+    r#"ALTER TABLE "workflow_service_calls" ADD COLUMN "call_deadline_at" datetime"#,
+    r#"CREATE INDEX "wf_service_calls_deadline_idx" on "workflow_service_calls" ("status", "call_deadline_at")"#,
+];
+/// Core 2.7.2's queue delivery reference (PHP 2.9.7).
+const QUEUE_DELIVERY: &[&str] = &[r#"ALTER TABLE "workflow_tasks" ADD COLUMN "queue_delivery_reference" text"#];
+/// Core 2.10's trace carriers (PHP 2.11.1), in its migrations' order.
+const TRACE_CARRIERS: &[&str] = &[
+    r#"ALTER TABLE "workflow_runs" ADD COLUMN "observability_context" text"#,
+    r#"ALTER TABLE "workflow_commands" ADD COLUMN "observability_context" text"#,
+    r#"ALTER TABLE "workflow_tasks" ADD COLUMN "observability_context" text"#,
+];
+
+/// The frozen test layout with a release's changes applied in order.
+async fn php_release_layout(changes: &[&[&'static str]]) -> (tempfile::TempDir, String) {
     let (directory, path) = php_layout().await;
-    for statement in [
-        // The frozen test layout's private job is not a recognized delivery.
-        "DELETE FROM jobs",
-        r#"ALTER TABLE "workflow_worker_registrations" ADD COLUMN "registration_token" varchar"#,
-        r#"CREATE TABLE "workflow_worker_registration_incarnations" ("token" varchar not null, "namespace" varchar not null, "worker_id" varchar not null, "status" varchar not null, "recovered_workflow_task_count" integer not null default '0', "finished_at" datetime, "created_at" datetime, "updated_at" datetime, primary key ("token"))"#,
-        r#"CREATE INDEX "workflow_worker_registration_incarnations_finished_at_index" on "workflow_worker_registration_incarnations" ("finished_at")"#,
-        r#"CREATE INDEX "dw_worker_incarnation_scope_idx" on "workflow_worker_registration_incarnations" ("namespace", "worker_id")"#,
-        r#"ALTER TABLE "workflow_service_calls" ADD COLUMN "call_deadline_at" datetime"#,
-        r#"CREATE INDEX "wf_service_calls_deadline_idx" on "workflow_service_calls" ("status", "call_deadline_at")"#,
-        r#"ALTER TABLE "workflow_tasks" ADD COLUMN "queue_delivery_reference" text"#,
-    ] {
-        mutate(&path, statement).await;
+    for statement in changes.iter().flat_map(|change| change.iter()) {
+        mutate(&path, *statement).await;
     }
     (directory, path)
 }
@@ -956,6 +981,53 @@ async fn takeover_converts_a_php_297_database_that_native_then_opens() {
         .unwrap();
     assert_eq!(marker, ("rust-development".to_owned(), super::super::schema::VERSION));
     connection.close().await.unwrap();
+}
+
+/// PHP 2.11.1, fresh and as a 2.9.7 database upgrades to it: Core 2.10's
+/// trace carriers on runs, commands and tasks, before or after 2.9.7's
+/// delivery reference. Takeover counts the carried values and drops them.
+#[tokio::test]
+async fn takeover_converts_php_2111_databases_and_drops_their_trace_carriers() {
+    for (release, changes) in [
+        ("php-2.11.1", [PHP_280_CHANGES, TRACE_CARRIERS, QUEUE_DELIVERY]),
+        ("php-2.11.1-from-2.9.7", [PHP_280_CHANGES, QUEUE_DELIVERY, TRACE_CARRIERS]),
+    ] {
+        takeover_converts_a_php_2111_database(release, &changes).await;
+    }
+}
+
+async fn takeover_converts_a_php_2111_database(release: &str, changes: &[&[&'static str]]) {
+    let (_directory, path) = php_release_layout(changes).await;
+    assert_eq!(inspect_sqlite(&path).await.unwrap()["source_layout"], release);
+    assert_eq!(fingerprint::fingerprint_sqlite(&path).await.unwrap()["source_layout"], release);
+    for statement in [
+        "INSERT INTO workflow_instances(id,workflow_class,workflow_type,namespace,current_run_id,run_count) VALUES ('traced','Traced','traced','default','01jrun0000000000000000000a',1)",
+        "INSERT INTO workflow_runs(id,workflow_instance_id,run_number,workflow_class,workflow_type,namespace,status,observability_context) VALUES ('01jrun0000000000000000000a','traced',1,'Traced','traced','default','completed','{\"traceparent\":\"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01\"}')",
+        "INSERT INTO workflow_tasks(id,workflow_run_id,namespace,task_type,status,observability_context) VALUES ('01jtask000000000000000000a','01jrun0000000000000000000a','default','workflow','completed','{\"traceparent\":\"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01\"}')",
+        "INSERT INTO workflow_tasks(id,workflow_run_id,namespace,task_type,status) VALUES ('01jtask000000000000000000b','01jrun0000000000000000000a','default','workflow','completed')",
+    ] {
+        mutate(&path, statement).await;
+    }
+    let fingerprint = backup_fingerprint(&path).await;
+    let report = takeover::take_over_sqlite(&path, &fingerprint, &queue_config())
+        .await
+        .unwrap();
+    assert_eq!(report["status"], "taken_over", "{report}");
+    assert_eq!(report["source_layout"], release);
+    assert_eq!(report["converted"]["observability_contexts_removed"], 2, "{report}");
+    assert_eq!(report["converted"]["queue_delivery_references_removed"], 0, "{report}");
+    let mut connection = SqliteConnection::connect(&format!("sqlite://{path}")).await.unwrap();
+    let columns: i64 = sqlx::query_scalar(concat!(
+        "SELECT (SELECT COUNT(*) FROM pragma_table_info('workflow_tasks') WHERE name IN ('observability_context','queue_delivery_reference'))",
+        "+(SELECT COUNT(*) FROM pragma_table_info('workflow_runs') WHERE name='observability_context')",
+        "+(SELECT COUNT(*) FROM pragma_table_info('workflow_commands') WHERE name='observability_context')"))
+        .fetch_one(&mut connection).await.unwrap();
+    assert_eq!(columns, 0, "the PHP-only task columns are gone");
+    let tasks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workflow_tasks").fetch_one(&mut connection).await.unwrap();
+    assert_eq!(tasks, 2, "every task row stays");
+    connection.close().await.unwrap();
+    let runtime = crate::runtime::Runtime::open(&path, "test-token".into()).await.unwrap();
+    runtime.close().await;
 }
 
 #[tokio::test]

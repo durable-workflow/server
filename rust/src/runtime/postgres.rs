@@ -117,6 +117,8 @@ pub(super) async fn php_source_catalog(connection: &mut PgConnection) -> Result<
         [
             include_str!("../../upgrade/php-2.8.0/postgres.json"),
             include_str!("../../upgrade/php-2.9.7/postgres.json"),
+            include_str!("../../upgrade/php-2.11.1/postgres.json"),
+            include_str!("../../upgrade/php-2.11.1-from-2.9.7/postgres.json"),
         ],
         |row| (row.0.clone(), row.1.clone()),
     )?;
@@ -828,23 +830,72 @@ mod tests {
     /// migrations make (rust/upgrade/php-2.8.0 and php-2.9.7). Inspection
     /// must call it php-2.9.7.
     async fn php_297(db: &Database) -> PgConnection {
+        php_release(db, &[PHP_280_CHANGES, QUEUE_DELIVERY]).await
+    }
+
+    /// PHP 2.8.0's changes to the frozen layout.
+    const PHP_280_CHANGES: &str = "ALTER TABLE workflow_worker_registrations ADD COLUMN registration_token varchar(32);
+         CREATE TABLE workflow_worker_registration_incarnations (token varchar(32) NOT NULL, namespace varchar(255) NOT NULL, worker_id varchar(255) NOT NULL, status varchar(32) NOT NULL, recovered_workflow_task_count integer NOT NULL DEFAULT 0, finished_at timestamp(6) without time zone, created_at timestamp(6) without time zone, updated_at timestamp(6) without time zone, PRIMARY KEY (token));
+         CREATE INDEX workflow_worker_registration_incarnations_finished_at_index ON workflow_worker_registration_incarnations (finished_at);
+         CREATE INDEX dw_worker_incarnation_scope_idx ON workflow_worker_registration_incarnations (namespace, worker_id);
+         ALTER TABLE workflow_service_calls ADD COLUMN call_deadline_at timestamp(6) without time zone;
+         CREATE INDEX wf_service_calls_deadline_idx ON workflow_service_calls (status, call_deadline_at);";
+    /// Core 2.7.2's queue delivery reference (PHP 2.9.7).
+    const QUEUE_DELIVERY: &str = "ALTER TABLE workflow_tasks ADD COLUMN queue_delivery_reference json;";
+    /// Core 2.10's trace carriers (PHP 2.11.1), in its migrations' order.
+    const TRACE_CARRIERS: &str = "ALTER TABLE workflow_runs ADD COLUMN observability_context json;
+         ALTER TABLE workflow_commands ADD COLUMN observability_context json;
+         ALTER TABLE workflow_tasks ADD COLUMN observability_context json;";
+
+    /// The frozen PHP layout with a release's changes applied in order.
+    async fn php_release(db: &Database, changes: &[&'static str]) -> PgConnection {
         let frozen = include_str!("../../migrations/postgres/0003_full_schema.sql");
         let php = &frozen[..frozen.find("-- Native bookkeeping").unwrap()];
         let mut connection = db.connection().await;
         sqlx::raw_sql(php).execute(&mut connection).await.unwrap();
-        sqlx::raw_sql(
-            "ALTER TABLE workflow_worker_registrations ADD COLUMN registration_token varchar(32);
-             CREATE TABLE workflow_worker_registration_incarnations (token varchar(32) NOT NULL, namespace varchar(255) NOT NULL, worker_id varchar(255) NOT NULL, status varchar(32) NOT NULL, recovered_workflow_task_count integer NOT NULL DEFAULT 0, finished_at timestamp(6) without time zone, created_at timestamp(6) without time zone, updated_at timestamp(6) without time zone, PRIMARY KEY (token));
-             CREATE INDEX workflow_worker_registration_incarnations_finished_at_index ON workflow_worker_registration_incarnations (finished_at);
-             CREATE INDEX dw_worker_incarnation_scope_idx ON workflow_worker_registration_incarnations (namespace, worker_id);
-             ALTER TABLE workflow_service_calls ADD COLUMN call_deadline_at timestamp(6) without time zone;
-             CREATE INDEX wf_service_calls_deadline_idx ON workflow_service_calls (status, call_deadline_at);
-             ALTER TABLE workflow_tasks ADD COLUMN queue_delivery_reference json;",
-        )
-        .execute(&mut connection)
-        .await
-        .unwrap();
+        for change in changes {
+            sqlx::raw_sql(*change).execute(&mut connection).await.unwrap();
+        }
         connection
+    }
+
+    /// PHP 2.11.1, fresh and as a 2.9.7 database upgrades to it: the trace
+    /// carriers before or after 2.9.7's delivery reference.
+    #[tokio::test]
+    #[ignore = "requires a disposable PostgreSQL; run the qualification_ tests explicitly"]
+    async fn qualification_takeover_converts_php_2111_and_native_opens_it() {
+        for (release, changes) in [
+            ("php-2.11.1", [PHP_280_CHANGES, TRACE_CARRIERS, QUEUE_DELIVERY]),
+            ("php-2.11.1-from-2.9.7", [PHP_280_CHANGES, QUEUE_DELIVERY, TRACE_CARRIERS]),
+        ] {
+            let db = Database::new().await;
+            let mut connection = php_release(&db, &changes).await;
+            sqlx::raw_sql(
+                "INSERT INTO workflow_instances(id,workflow_class,workflow_type,namespace,current_run_id,run_count) VALUES ('traced','Traced','traced','default','01jrun0000000000000000000a',1);
+                 INSERT INTO workflow_runs(id,workflow_instance_id,run_number,workflow_class,workflow_type,namespace,status,observability_context) VALUES ('01jrun0000000000000000000a','traced',1,'Traced','traced','default','completed','{\"traceparent\":\"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01\"}');
+                 INSERT INTO workflow_tasks(id,workflow_run_id,namespace,task_type,status,observability_context) VALUES ('01jtask000000000000000000a','01jrun0000000000000000000a','default','workflow','completed','{\"traceparent\":\"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01\"}');",
+            )
+            .execute(&mut connection)
+            .await
+            .unwrap();
+            connection.close().await.unwrap();
+            let fingerprint = backup_fingerprint(&db).await;
+            let report = takeover::take_over_postgres(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES)
+                .await
+                .unwrap();
+            assert_eq!(report["status"], "taken_over", "{report}");
+            assert_eq!(report["source_layout"], release);
+            assert_eq!(report["converted"]["observability_contexts_removed"], 2, "{report}");
+            let mut connection = db.connection().await;
+            let carriers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND column_name IN ('observability_context','queue_delivery_reference')")
+                .fetch_one(&mut connection).await.unwrap();
+            assert_eq!(carriers, 0, "{release}: the PHP-only columns are gone");
+            connection.close().await.unwrap();
+            let storage = PostgresStorage::open(db.options.clone()).await.unwrap();
+            storage.close().await;
+            PostgresStorage::check(db.options.clone()).await.unwrap();
+            db.remove().await;
+        }
     }
 
     async fn backup_fingerprint(db: &Database) -> String {

@@ -27,7 +27,7 @@ const MARKED: i64 = 0;
 /// Sessions rechecked and the source fingerprinted again after the marker:
 /// nothing PHP wrote can be missing from the backup.
 const FENCED: i64 = 1;
-const LAST: i64 = 8;
+const LAST: i64 = 9;
 
 /// One takeover run: what its steps need and what its report says.
 struct Run<'a> {
@@ -359,6 +359,27 @@ async fn perform(connection: &mut MySqlConnection, run: &mut Run<'_>, step: i64)
                 // Laravel's mariadb connection made the backup hold owner a uuid.
                 connection
                     .execute("ALTER TABLE runtime_external_payload_backup_hold MODIFY owner char(36) DEFAULT NULL")
+                    .await?;
+            }
+        }
+        9 => {
+            // Count every carrier before dropping any column, so a step
+            // repeated after an interruption still drops each one.
+            let mut contexts = 0;
+            let mut carriers = Vec::new();
+            for (table, sql) in super::OBSERVABILITY_CONTEXTS {
+                if column_exists(connection, table, "observability_context").await? {
+                    contexts += count::<MySql>(connection, sql).await?;
+                    carriers.push(table);
+                }
+            }
+            if !carriers.is_empty() {
+                run.converted
+                    .insert("observability_contexts_removed".into(), json!(contexts));
+            }
+            for table in carriers {
+                sqlx::raw_sql(sqlx::AssertSqlSafe(format!("ALTER TABLE {table} DROP COLUMN observability_context")))
+                    .execute(&mut *connection)
                     .await?;
             }
         }

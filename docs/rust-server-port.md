@@ -479,14 +479,15 @@ contract fixture before its correction.
   streams, the run has service calls, or a query is live
   (`continue_as_new_transfer_unqualified`); PHP continues it. A new workflow
   type or queue on the command now applies, as in PHP.
-- **Trace context (Workflow #773 / workflow#788, not yet published).** A
-  Workflow minor will add nullable `observability_context` columns on runs,
-  commands and tasks, plus an entry in schedule metadata. Native-owned
-  databases are unaffected. A Server release carrying the columns is a new
-  takeover source layout, which native refuses with
-  `upgrade_source_catalog_unqualified` until its recipe lands. The recipe must
-  also refuse rows that carry trace context until native implements the
-  contract. The boundary is agreed on #325.
+- **Trace context (Core 2.10, published in Server 2.11.1).** Core adds
+  nullable `observability_context` columns on runs, commands and tasks.
+  Native has no carrier: it accepts and ignores a top-level carrier on
+  business operations, as a PHP server with the feature disabled does.
+  Takeover recognizes both published 2.11.1 layouts, fresh and migrated from
+  2.9.x. It counts the carried values (`observability_contexts_removed`) and
+  drops the three columns; the verified backup keeps them
+  ([#325 decision](https://github.com/durable-workflow/server/issues/325#issuecomment-6306545520),
+  [checkpoint](rust-server-port-checkpoints/2026-10-26-php-2111-takeover.md)).
 - **Stop signal in the published image.** The published Server image declares
   `STOPSIGNAL SIGWINCH`, Apache's graceful stop. Native stops gracefully on
   `SIGTERM` or `SIGINT` and ignores `SIGWINCH`, so `docker stop` on the

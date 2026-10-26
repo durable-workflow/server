@@ -1,0 +1,71 @@
+{
+  "remove": [
+    [
+      "column",
+      "workflow_tasks.32",
+      {
+        "collation": null,
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "queue_delivery_reference",
+        "not_null": false,
+        "type": "json"
+      }
+    ]
+  ],
+  "add": [
+    [
+      "column",
+      "workflow_commands.25",
+      {
+        "collation": null,
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "observability_context",
+        "not_null": false,
+        "type": "json"
+      }
+    ],
+    [
+      "column",
+      "workflow_runs.49",
+      {
+        "collation": null,
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "observability_context",
+        "not_null": false,
+        "type": "json"
+      }
+    ],
+    [
+      "column",
+      "workflow_tasks.32",
+      {
+        "collation": null,
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "observability_context",
+        "not_null": false,
+        "type": "json"
+      }
+    ],
+    [
+      "column",
+      "workflow_tasks.33",
+      {
+        "collation": null,
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "queue_delivery_reference",
+        "not_null": false,
+        "type": "json"
+      }
+    ]
+  ]
+}
