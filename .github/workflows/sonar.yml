@@ -5,23 +5,18 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  # This event uses the default-branch workflow, rather than queue-controlled
-  # workflow source. The queue job below treats the candidate only as data.
-  workflow_run:
-    workflows: [PHPUnit Feature]
-    types: [completed]
 
 permissions:
   contents: read
 
 concurrency:
-  group: sonar-${{ github.event_name }}-${{ github.event.workflow_run.head_sha || github.ref }}
+  group: sonar-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   analysis:
     name: SonarQube analysis
-    if: github.event_name != 'workflow_run' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -34,51 +29,3 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: -Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=300
-
-  queue-analysis:
-    name: SonarQube merge queue analysis
-    if: >-
-      github.event_name == 'workflow_run' &&
-      github.event.workflow_run.event == 'merge_group' &&
-      github.event.workflow_run.conclusion == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Check out trusted scanner controls
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          ref: ${{ github.workflow_sha }}
-          path: .sonar-control
-          persist-credentials: false
-
-      - name: Validate the merge queue source identity
-        id: candidate
-        run: node .sonar-control/scripts/ci/merge-queue-sonar.mjs validate
-
-      - name: Check out the synthetic commit as analysis data
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          ref: ${{ steps.candidate.outputs.sha }}
-          path: .sonar-candidate
-          fetch-depth: 0
-          persist-credentials: false
-          submodules: false
-          lfs: false
-
-      - name: Apply trusted scanner configuration
-        run: node .sonar-control/scripts/ci/merge-queue-sonar.mjs prepare
-
-      # No candidate command, dependency installation or scanner configuration
-      # executes with this token. Only the pinned static scanner receives it.
-      - uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        with:
-          projectBaseDir: .sonar-candidate
-          args: >-
-            -Dsonar.branch.name=${{ steps.candidate.outputs.branch }}
-            -Dsonar.scm.revision=${{ steps.candidate.outputs.sha }}
-            -Dsonar.scm.exclusions.disabled=true
-            -Dsonar.working.directory=${{ runner.temp }}/queue-sonar-work
-            -Dsonar.qualitygate.wait=true
-            -Dsonar.qualitygate.timeout=300

@@ -80,11 +80,11 @@ test('refuses submodule entries even though checkout does not populate them', t 
 });
 
 test('queue scanning uses trusted controls and a separate candidate without running its commands', () => {
-  const text = readFileSync('.github/workflows/sonar.yml', 'utf8');
-  const analysis = text.split('  analysis:\n')[1].split('  queue-analysis:\n')[0];
+  const text = readFileSync('.github/workflows/queue-sonar.yml', 'utf8');
   const queue = text.split('  queue-analysis:\n')[1];
-  assert.ok(analysis.includes("github.event_name != 'workflow_run'"));
   assert.ok(text.includes('workflows: [PHPUnit Feature]'));
+  assert.ok(!text.includes('  pull_request:'));
+  assert.ok(!text.includes('  push:'));
   assert.ok(queue.includes("github.event.workflow_run.event == 'merge_group'"));
   assert.ok(queue.includes("github.event.workflow_run.conclusion == 'success'"));
   assert.ok(queue.includes('ref: ${{ github.workflow_sha }}'));

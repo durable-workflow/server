@@ -1,0 +1,63 @@
+name: Merge queue Sonar
+
+# workflow_run uses the default-branch controller, never candidate workflow source.
+on:
+  workflow_run:
+    workflows: [PHPUnit Feature]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: queue-sonar-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  queue-analysis:
+    name: SonarQube merge queue analysis
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'merge_group' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out trusted scanner controls
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .sonar-control
+          persist-credentials: false
+
+      - name: Validate the merge queue source identity
+        id: candidate
+        run: node .sonar-control/scripts/ci/merge-queue-sonar.mjs validate
+
+      - name: Check out the synthetic commit as analysis data
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ steps.candidate.outputs.sha }}
+          path: .sonar-candidate
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: false
+          lfs: false
+
+      - name: Apply trusted scanner configuration
+        run: node .sonar-control/scripts/ci/merge-queue-sonar.mjs prepare
+
+      # No candidate command, dependency installation or scanner configuration
+      # executes with this token. Only the pinned static scanner receives it.
+      - uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          projectBaseDir: .sonar-candidate
+          args: >-
+            -Dsonar.branch.name=${{ steps.candidate.outputs.branch }}
+            -Dsonar.scm.revision=${{ steps.candidate.outputs.sha }}
+            -Dsonar.scm.exclusions.disabled=true
+            -Dsonar.working.directory=${{ runner.temp }}/queue-sonar-work
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=300
