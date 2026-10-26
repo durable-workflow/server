@@ -20,6 +20,7 @@ use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\ProtocolAwareWorkflowTaskBridge;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\HistoryEventType;
@@ -2433,8 +2434,10 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $this->instance(
             WorkflowTaskBridge::class,
-            \Mockery::mock(WorkflowTaskBridge::class, static function (MockInterface $mock) {
-                $mock->shouldReceive('complete')
+            \Mockery::mock(ProtocolAwareWorkflowTaskBridge::class, static function (MockInterface $mock) use ($taskId) {
+                $mock->shouldReceive('completeForProtocol')
+                    ->once()
+                    ->with($taskId, \Mockery::type('array'), WorkerProtocol::VERSION)
                     ->andThrow(
                         StructuralLimitExceededException::pendingActivityCount(2000, 2000),
                     );

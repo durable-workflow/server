@@ -1087,7 +1087,8 @@ class ClusterInfoCompatibilityTest extends TestCase
         ));
         $response = $this->getJson('/api/cluster/info')->assertOk();
 
-        $this->assertSame(WorkerProtocolVersion::VERSION, WorkerProtocol::VERSION);
+        $this->assertSame('1.20', WorkerProtocol::VERSION);
+        $this->assertTrue(version_compare(WorkerProtocolVersion::VERSION, WorkerProtocol::VERSION, '>='));
         $this->assertSame(WorkerProtocol::VERSION, (string) config('server.worker_protocol.version'));
         $this->assertSame($expectedCommands, WorkerProtocol::supportedWorkflowTaskCommands());
         $this->assertContains('cancel_selection_operation', WorkerProtocol::supportedWorkflowTaskCommands());

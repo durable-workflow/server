@@ -68,6 +68,7 @@ use Workflow\V2\Contracts\CancellationScopeTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\PreparedLocalActivityGroupTaskBridge;
 use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
+use Workflow\V2\Contracts\ProtocolAwareWorkflowTaskBridge;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\HistoryEventType;
@@ -1860,6 +1861,12 @@ class WorkerController
         $commands = $this->promoteWorkflowFailureExceptionPayload($commands);
         /** @var WorkflowTaskBridge $bridge */
         $bridge = app(WorkflowTaskBridge::class);
+        if (! $bridge instanceof ProtocolAwareWorkflowTaskBridge) {
+            return WorkerProtocol::json([
+                'error' => 'workflow_bridge_protocol_unavailable',
+                'message' => 'The workflow task bridge must support authenticated worker protocol completion.',
+            ], 503);
+        }
         $workflowTaskQueue = WorkflowTask::query()
             ->whereKey($taskId)
             ->value('queue');
@@ -2007,7 +2014,7 @@ class WorkerController
                             $outcome['completed'] = false;
                         } else {
                             $outcome = WorkflowObservability::completion($request, $claimedTask,
-                                fn (): array => $bridge->complete($taskId, $commands));
+                                fn (): array => $bridge->completeForProtocol($taskId, $commands, WorkerProtocol::requestVersion($request)));
                         }
                         if (($outcome[$checkpoint ? 'checkpointed' : 'completed'] ?? false) === true) {
                             app(WorkflowStreamCommandProcessor::class)->process($taskId, (string) $namespace, $streamCommands);
@@ -3212,15 +3219,11 @@ class WorkerController
                 );
             }
 
-            // A worker owns command intent, not the authenticated caller identity.
+            // Principal authority travels through the request-bound authorizer,
+            // never through worker command fields.
             $commands[$index] = array_replace($command, [
                 'namespace' => $targetNamespace,
                 'caller_namespace' => $namespace,
-                'principal_subject' => $principal->subject(),
-                'principal_method' => $principal->method(),
-                'principal_roles' => $principal->roles(),
-                'principal_tenant' => $principal->tenant(),
-                'principal_claims' => $principal->claims(),
             ]);
         }
 
@@ -3253,23 +3256,38 @@ class WorkerController
                     ->where('idempotency_key', trim($key))
                     ->oldest('created_at')->oldest('id');
             }
-            $call = $query->first();
+            $call = $query->lockForUpdate()->first();
             if ($call === null && $callId === null) {
                 continue;
             }
 
             $runId = WorkflowTask::query()->whereKey($taskId)->value('workflow_run_id');
+            $instanceId = WorkflowRun::query()->whereKey($runId)->value('workflow_instance_id');
             $principal = Authenticate::principal($request);
             abort_unless($call !== null && $principal !== null
                 && $call->caller_namespace === $namespace
                 && $call->caller_workflow_run_id === $runId
+                && $call->caller_workflow_instance_id === $instanceId
                 && $call->endpoint_name === strtolower(trim($command['endpoint_name']))
                 && $call->service_name === strtolower(trim($command['service_name']))
                 && $call->operation_name === strtolower(trim($command['operation_name'])), 403);
 
             // Existing call IDs and idempotency keys must not skip current boundary policy.
-            $operation = $call->operation;
-            abort_unless($operation !== null && $call->endpoint !== null && $call->service !== null, 403);
+            // Hold the catalog rows through Core replay so a concurrent policy
+            // change cannot race between this decision and the early return.
+            $endpoint = $call->endpoint()->lockForUpdate()->first();
+            $service = $call->service()->lockForUpdate()->first();
+            $operation = $call->operation()->lockForUpdate()->first();
+            abort_unless($operation !== null && $endpoint !== null && $service !== null, 403);
+            abort_unless($endpoint->namespace === $call->target_namespace
+                && $service->namespace === $call->target_namespace
+                && $operation->namespace === $call->target_namespace
+                && $endpoint->endpoint_name === $call->endpoint_name
+                && $service->service_name === $call->service_name
+                && $operation->operation_name === $call->operation_name
+                && $service->workflow_service_endpoint_id === $endpoint->id
+                && $operation->workflow_service_endpoint_id === $endpoint->id
+                && $operation->workflow_service_id === $service->id, 403);
             $rejection = app(ServiceCallBoundary::class)->replayRejectionFor(
                 principal: $principal,
                 callerNamespace: $namespace,
@@ -3280,8 +3298,8 @@ class WorkerController
                 callerWorkflowRunId: $runId,
                 idempotencyKey: $key,
                 operationModeOverride: $command['mode_override'] ?? null,
-                endpointBoundaryPolicy: $call->endpoint->boundary_policy ?? [],
-                serviceBoundaryPolicy: $call->service->boundary_policy ?? [],
+                endpointBoundaryPolicy: $endpoint->boundary_policy ?? [],
+                serviceBoundaryPolicy: $service->boundary_policy ?? [],
                 operationBoundaryPolicy: $operation->boundary_policy ?? [],
             );
             abort_if($rejection !== null, 403);

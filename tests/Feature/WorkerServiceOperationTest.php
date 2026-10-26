@@ -6,15 +6,18 @@ namespace Tests\Feature;
 
 use App\Models\RuntimeExternalPayload;
 use App\Models\WorkflowNamespace;
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Foundation\Testing\DatabaseMigrations;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Testing\TestResponse;
+use Mockery;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
 use Workflow\Serializers\Avro;
 use Workflow\V2\Contracts\ServiceControlPlane;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowService;
@@ -25,12 +28,13 @@ use Workflow\V2\Models\WorkflowTask;
 
 final class WorkerServiceOperationTest extends TestCase
 {
-    use RefreshDatabase;
+    use DatabaseMigrations;
     use ServerTestHelpers;
 
     protected function setUp(): void
     {
         parent::setUp();
+        $this->assertSame(0, DB::connection()->transactionLevel(), 'Service admissions must reach real commits.');
         Queue::fake();
         $this->createNamespace('default');
         $this->registerWorker('nexus-worker', 'nexus', supportedWorkflowTypes: ['tests.nexus-caller', 'tests.nexus-target']);
@@ -58,6 +62,7 @@ final class WorkerServiceOperationTest extends TestCase
         $this->assertSame([['invoice' => 42]], Avro::unserialize($target->arguments));
         $this->assertDatabaseHas('workflow_tasks', ['workflow_run_id' => $target->id, 'status' => 'ready']);
         $this->assertDatabaseHas('workflow_history_events', ['workflow_run_id' => $task['run_id'], 'event_type' => 'ServiceCallStarted']);
+        $this->assertDatabaseMissing('workflow_history_events', ['workflow_run_id' => $task['run_id'], 'event_type' => 'ServiceOperationScheduled']);
         $this->assertSame('completed', WorkflowTask::query()->findOrFail($task['task_id'])->status->value);
 
         $this->registerWorker('invoice-worker', 'invoices', supportedWorkflowTypes: ['tests.nexus-target']);
@@ -70,6 +75,27 @@ final class WorkerServiceOperationTest extends TestCase
         ])->assertOk();
         $this->assertSame('completed', $target->fresh()->status->value);
         $this->assertSame(['invoice' => 42, 'accepted' => true], Avro::unserialize($target->fresh()->output));
+    }
+
+    public function test_a_bridge_without_protocol_context_cannot_complete_the_task(): void
+    {
+        $this->seedCatalog();
+        $task = $this->leaseWorkflow();
+        $this->authenticateWorker();
+        $status = app(WorkflowTaskBridge::class)->status($task['task_id']);
+        $legacyBridge = Mockery::mock(WorkflowTaskBridge::class);
+        $legacyBridge->shouldReceive('status')->with($task['task_id'])->andReturn($status);
+        $legacyBridge->shouldNotReceive('complete');
+        $this->app->instance(WorkflowTaskBridge::class, $legacyBridge);
+
+        $this->complete($task, $this->command())->assertStatus(503)
+            ->assertJsonPath('error', 'workflow_bridge_protocol_unavailable');
+
+        $this->assertSame('leased', WorkflowTask::query()->findOrFail($task['task_id'])->status->value);
+        $this->assertDatabaseCount('workflow_service_calls', 0);
+        $this->assertDatabaseMissing('workflow_history_events', [
+            'workflow_run_id' => $task['run_id'], 'event_type' => 'ServiceCallStarted',
+        ]);
     }
 
     public function test_supported_options_reach_the_service_control_plane(): void
@@ -97,8 +123,10 @@ final class WorkerServiceOperationTest extends TestCase
                 }
                 $this->assertSame([['invoice' => 42]], $actual['arguments']);
                 $this->assertSame('avro', $actual['payload_codec']);
-                $this->assertSame('nexus-test-principal', $actual['principal_subject']);
-                $this->assertSame(['worker'], $actual['principal_roles']);
+                $this->assertSame('nexus-test-principal', $actual['principal']->subject);
+                $this->assertSame(['worker'], $actual['principal']->roles);
+                $this->assertArrayNotHasKey('principal_subject', $actual);
+                $this->assertArrayNotHasKey('principal_roles', $actual);
                 $this->assertSame($task['run_id'], $actual['caller_workflow_run_id']);
 
                 return true;
@@ -306,6 +334,28 @@ final class WorkerServiceOperationTest extends TestCase
         $this->complete($task, $this->command([$selector => $selector === 'service_call_id' ? $call->id : 'invoice-42']))->assertForbidden();
 
         $this->assertSame($history, WorkflowHistoryEvent::query()->count());
+        $this->assertDatabaseCount('workflow_runs', 2);
+    }
+
+    #[DataProvider('replaySelectors')]
+    public function test_service_call_replay_requires_the_exact_caller_instance(string $selector): void
+    {
+        $this->seedCatalog();
+        $task = $this->leaseWorkflow();
+        $this->authenticateWorker();
+        $this->complete($task, $this->command(['idempotency_key' => 'invoice-42']))->assertOk();
+        $call = WorkflowServiceCall::query()->sole();
+        $call->update(['caller_workflow_instance_id' => 'another-instance']);
+        $task = $this->pollWorkflow();
+        $before = $call->getRawOriginal();
+        $history = WorkflowHistoryEvent::query()->count();
+
+        $this->complete($task, $this->command([$selector => $selector === 'service_call_id' ? $call->id : 'invoice-42']))
+            ->assertForbidden();
+
+        $this->assertSame($before, $call->fresh()->getRawOriginal());
+        $this->assertSame($history, WorkflowHistoryEvent::query()->count());
+        $this->assertSame('leased', WorkflowTask::query()->findOrFail($task['task_id'])->status->value);
         $this->assertDatabaseCount('workflow_runs', 2);
     }
 

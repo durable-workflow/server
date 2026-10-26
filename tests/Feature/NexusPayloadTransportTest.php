@@ -5,7 +5,8 @@ namespace Tests\Feature;
 use App\Models\RuntimeExternalPayload;
 use App\Models\WorkflowNamespace;
 use App\Support\RuntimeExternalPayloadRegistry;
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Foundation\Testing\DatabaseMigrations;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
@@ -19,7 +20,7 @@ use Workflow\V2\Support\ExternalPayloads;
 
 class NexusPayloadTransportTest extends TestCase
 {
-    use RefreshDatabase;
+    use DatabaseMigrations;
     use ServerTestHelpers;
 
     private const EXECUTE_PATH = '/api/service-endpoints/greeter/services/shared/operations/greet/execute';
@@ -27,6 +28,7 @@ class NexusPayloadTransportTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        $this->assertSame(0, DB::connection()->transactionLevel(), 'HTTP writers must reach real commits.');
         $this->createNamespace('default');
         $this->createNamespace('other');
         foreach (['default', 'other'] as $namespace) {
@@ -135,6 +137,10 @@ class NexusPayloadTransportTest extends TestCase
                 $this->assertSame('avro', $options['payload_codec']);
 
                 return true;
-            })->andReturn(['accepted' => true, 'status' => 'started']);
+            })->andReturnUsing(static fn (): array => DB::transaction(
+                // The dispatch double models the real admission transaction,
+                // including its commit-time input claim.
+                static fn (): array => ['accepted' => true, 'status' => 'started'],
+            ));
     }
 }

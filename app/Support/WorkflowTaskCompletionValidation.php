@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Support;
 
+use Workflow\V2\Support\UpdateWaitPolicy;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 
 /** Transport rules retain the package command grammar before semantic normalization. */
@@ -115,7 +116,7 @@ final class WorkflowTaskCompletionValidation
             'commands.*.idempotency_key' => ['nullable', 'string', 'max:191'],
             'commands.*.mode_override' => ['nullable', 'string', 'in:sync,async'],
             'commands.*.wait_for' => ['nullable', 'string', 'in:accepted,completed'],
-            'commands.*.wait_timeout_seconds' => ['nullable', 'integer', 'min:0'],
+            'commands.*.wait_timeout_seconds' => ['nullable', 'integer', 'min:0', 'max:'.UpdateWaitPolicy::MAX_COMPLETION_TIMEOUT_SECONDS],
             'commands.*.target_workflow_instance_id' => ['nullable', 'string', 'max:191'],
             'commands.*.target_workflow_run_id' => ['nullable', 'string', 'max:191'],
             'commands.*.business_key' => ['nullable', 'string', 'max:191'],
