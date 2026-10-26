@@ -537,7 +537,7 @@ class WorkflowController
 
         $validated = $request->validate([
             'input' => ['nullable', 'array'],
-            'request_id' => ['nullable', 'string', 'max:255'],
+            'request_id' => ['nullable', 'string', 'max:255', BridgeAdapterController::UNRESERVED_REQUEST_ID],
             'dry_run' => ['nullable', 'boolean'],
         ]);
 
@@ -749,7 +749,7 @@ class WorkflowController
 
         $validated = $request->validate([
             'input' => ['nullable', 'array'],
-            'request_id' => ['nullable', 'string', 'max:255'],
+            'request_id' => ['nullable', 'string', 'max:255', BridgeAdapterController::UNRESERVED_REQUEST_ID],
             'wait_for' => ['nullable', 'string', 'in:accepted,completed'],
             'wait_timeout_seconds' => ['nullable', 'integer', 'min:1', 'max:'.ControlPlaneRequestContract::UPDATE_WAIT_TIMEOUT_SECONDS_MAX],
         ]);

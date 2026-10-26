@@ -14,7 +14,8 @@ const observation = (change = () => {}, base = recorded) => {
   return {mode: 'http', bridge_adapters: state};
 };
 const check = state => checkBridgeAdapters(fixture, state, id);
-// The intended answers: the bridge update admitted like the regular route.
+// The intended answers: the bridge update admitted like the regular route,
+// and a foreign instance refused as unavailable.
 const intended = JSON.parse(JSON.stringify(fixture.bridge_adapters.expected).replaceAll('{id}', id));
 
 test('the published 2.11.1 recording satisfies the contract', () => {
@@ -25,6 +26,16 @@ test('the intended update acceptance and deduplication are accepted too', () => 
   assert.deepStrictEqual(check(observation(() => {}, intended)), {scope: 'bridge_adapters'});
   assert.equal(intended.update.status, 202);
   assert.equal(intended.update_again.response.control_plane_outcome, 'deduped_existing_command');
+});
+
+test('the intended foreign-instance refusal is accepted with either update answer', () => {
+  const foreign = state => {
+    state.start_other_type = structuredClone(intended.start_other_type);
+    state.start_other_namespace = structuredClone(intended.start_other_namespace);
+  };
+  assert.deepStrictEqual(check(observation(foreign)), {scope: 'bridge_adapters'});
+  assert.equal(intended.start_other_type.response.message, `Workflow instance [${id}] is unavailable.`);
+  assert.doesNotMatch(JSON.stringify(intended.start_other_type), /parity\.v1\.echo/);
 });
 
 test('embedded applications are explicitly inapplicable', () => {
@@ -59,9 +70,12 @@ for (const [label, change, message] of [
   ['reject_duplicate treated as use_existing', state => {
     state.start_reject_duplicate = structuredClone(state.start_again);
   }, /bridge adapters start_reject_duplicate/],
-  ['the namespace check before the type check', state => {
-    state.start_other_type.response.message = state.start_other_namespace.response.message;
-  }, /bridge adapters start_other_type/],
+  ['only part of the published foreign-instance defect', state => {
+    state.start_other_type = structuredClone(intended.start_other_type);
+  }, /bridge adapters start_other_namespace/],
+  ['a foreign instance refused with its type named', state => {
+    state.start_other_namespace.response.message = state.start_other_type.response.message;
+  }, /bridge adapters start_other_type|bridge adapters start_other_namespace/],
   ['a missing step', state => {
     delete state.signal_bad_target;
   }, /bridge adapters signal_bad_target/],

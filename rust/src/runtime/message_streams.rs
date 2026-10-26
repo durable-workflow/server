@@ -650,7 +650,8 @@ where
         let message_sequence = DB::number(&instance, "last_message_sequence")? + 1;
         let workflow_type = DB::string(&run, "workflow_type")?;
         let write = SignalWrite { workflow_id, run_id: &run_id, workflow_type: &workflow_type, name: INTERNAL_SIGNAL,
-            command_id: &command_id, signal_id: &signal_id, command_sequence, message_sequence, context };
+            command_id: &command_id, signal_id: &signal_id, command_sequence, message_sequence, context,
+            request_id: None };
         let pending = Self::scalar("SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received'")
             .bind(&run_id).fetch_one(&mut **tx).await?;
         let exceeded = super::memo_limits::Exceeded::pending_signals(limits.pending_signals, pending)

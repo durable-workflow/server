@@ -3,13 +3,27 @@
 //! updates a workflow through one idempotent event, and every answer is a
 //! `durable-workflow.v2.bridge-adapter-outcome.contract` envelope.
 //!
-//! One published defect is not copied (Server #747): PHP's bridge update
-//! skips external update admission, so an update to a workflow served by an
-//! SDK worker is always refused `workflow_definition_unavailable`. Native
-//! admits it as the regular update route does.
+//! Published defects not copied:
+//! - Server #747: PHP's bridge update skips external update admission, so an
+//!   update to a workflow served by an SDK worker is always refused
+//!   `workflow_definition_unavailable`. Native admits it as the regular
+//!   update route does.
+//! - A start for an instance id another namespace holds is refused without
+//!   naming that instance's type or namespace. PHP names the reserved type.
+//! - The adapter name is at most 64 bytes, so a derived workflow id fits the
+//!   128-byte workflow id contract.
+//! - Signals and updates are deduplicated atomically (Server #777). A
+//!   fixed-length bridge identity, derived from the adapter, action, raw key
+//!   and target, is the command's `request_id`. The duplicate check runs
+//!   inside the command's transaction, under the transition lock: the
+//!   identity first, then the command metadata PHP recorded before takeover.
+//!   The unique (instance, command type, request id) index backs it, and
+//!   callers cannot send a `dw-bridge:` request id. PHP checks once, outside
+//!   its transaction, and uses the raw key as an update's request id.
 use super::command_context::CommandRequest;
 use super::execution::Runtime;
 use super::laravel_validation::{Rule, rule_errors};
+use super::transaction::Transaction;
 use super::{Result, RuntimeError};
 use axum::http::StatusCode;
 use serde_json::{Map, Value, json};
@@ -42,8 +56,13 @@ const UPDATE_RULES: &[(&str, &[Rule])] = &[
     ("workflow_id", &[Rule::Required, Rule::String, Rule::Max(128), Rule::Pattern(routing_name)]),
     ("update_name", &[Rule::Required, Rule::String, Rule::Max(255)]),
     ("wait_for", &[Rule::Nullable, Rule::String, Rule::In(&["accepted", "completed"])]),
-    ("wait_timeout_seconds", &[Rule::Nullable, Rule::Integer, Rule::Min(1)]),
+    ("wait_timeout_seconds", &[Rule::Nullable, Rule::Integer, Rule::Min(1),
+        Rule::Max(super::command_requests::UPDATE_WAIT_TIMEOUT_SECONDS_MAX)]),
 ];
+
+/// The longest adapter name: `bridge-<adapter>-<32 hex>` then fits the
+/// 128-byte workflow id contract.
+const ADAPTER_MAX_BYTES: usize = 64;
 
 /// `/^[a-zA-Z0-9._:-]+$/`, for adapter names and workflow ids.
 fn routing_name(text: &str) -> bool {
@@ -129,12 +148,59 @@ fn empty(value: &Value) -> bool {
     }
 }
 
+fn hex(digest: &[u8]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 /// `workflowIdFor`: `bridge-<adapter slug>-<sha256(key) prefix>`. A valid
 /// adapter name is its own slug.
 fn derived_workflow_id(adapter: &str, key: &str) -> String {
-    let digest = Sha256::digest(key.as_bytes());
-    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-    format!("bridge-{adapter}-{}", &hex[..32])
+    format!("bridge-{adapter}-{}", &hex(&Sha256::digest(key.as_bytes()))[..32])
+}
+
+/// One bridge command: its identity and the metadata it is recorded with.
+pub(crate) struct BridgeKey<'a> {
+    /// `dw-bridge:v1:` and sha256 over the length-prefixed adapter, action,
+    /// raw key, target field and target name: fixed length, and distinct for
+    /// any other tuple. It is the command's `request_id`.
+    pub(crate) identity: String,
+    pub(crate) adapter: &'a str,
+    pub(crate) action: &'a str,
+    pub(crate) key: &'a str,
+    pub(crate) field: &'static str,
+    pub(crate) name: &'a str,
+}
+
+impl<'a> BridgeKey<'a> {
+    fn new(adapter: &'a str, action: &'a str, key: &'a str, field: &'static str, name: &'a str) -> Self {
+        let mut digest = Sha256::new();
+        for part in [adapter, action, key, field, name] {
+            digest.update((part.len() as u64).to_be_bytes());
+            digest.update(part.as_bytes());
+        }
+        let identity = format!("dw-bridge:v1:{}", hex(&digest.finalize()));
+        Self { identity, adapter, action, key, field, name }
+    }
+
+    /// Whether a command's context names this adapter, action, key and
+    /// target.
+    fn recorded_in(&self, context: &Value) -> bool {
+        let metadata = &context["server"]["metadata"];
+        metadata["adapter"] == self.adapter && metadata["action"] == self.action
+            && metadata["idempotency_key"] == self.key && metadata[self.field] == self.name
+    }
+}
+
+/// A bridge identity whose command records another tuple: refused, not
+/// answered with that command.
+fn identity_conflict() -> RuntimeError {
+    super::refuse(StatusCode::CONFLICT, "bridge_identity_conflict")
+}
+
+/// Whether a write lost to the unique (instance, command type, request id)
+/// index: another request recorded the same bridge command first.
+fn duplicate_write(error: &RuntimeError) -> bool {
+    matches!(error, RuntimeError::Database(sqlx::Error::Database(error)) if error.is_unique_violation())
 }
 
 /// The event that reached a route, after Laravel's request normalization.
@@ -178,14 +244,14 @@ impl Event<'_> {
             extra.as_object_mut().expect("object").extend(block);
             return self.rejected(action, "task_queue_draining", extra);
         }
-        // `DefaultWorkflowControlPlane::reserveInstance` throws a LogicException
-        // for an instance reserved for another type, then for one in another
-        // namespace.
+        // `DefaultWorkflowControlPlane::reserveInstance`, namespace first: an
+        // instance another namespace holds is unavailable, and its type and
+        // namespace stay unnamed. PHP checks the type first and names it.
         if let Some((reserved_type, namespace)) = self.runtime.instance_reservation(&workflow_id).await? {
-            let message = if reserved_type != workflow_type {
+            let message = if !namespace.as_deref().is_some_and(|namespace| self.runtime.is_namespace(namespace)) {
+                Some(format!("Workflow instance [{workflow_id}] is unavailable."))
+            } else if reserved_type != workflow_type {
                 Some(format!("Workflow instance [{workflow_id}] is reserved for durable type [{reserved_type}] and cannot be reused for [{workflow_type}]."))
-            } else if !namespace.as_deref().is_some_and(|namespace| self.runtime.is_namespace(namespace)) {
-                Some(format!("Workflow instance [{workflow_id}] cannot be reused with a different namespace."))
             } else {
                 None
             };
@@ -225,9 +291,9 @@ impl Event<'_> {
     }
 
     /// The target of a signal or update, refused when malformed or not a
-    /// workflow of this namespace, or answered as a duplicate of an accepted
-    /// bridge command. `None` lets the command run.
-    async fn command_guard(&self, action: &str, kind: &str, field: &str, rules: &[(&str, &[Rule])], noun: &str) -> Result<Option<(StatusCode, Value)>> {
+    /// workflow of this namespace. `None` lets the command run; its own
+    /// transaction answers a duplicate.
+    async fn command_guard(&self, action: &str, rules: &[(&str, &[Rule])], noun: &str) -> Result<Option<(StatusCode, Value)>> {
         let target = &self.target;
         if let Some(errors) = errors(target, rules) {
             return self.rejected(action, "malformed_payload", json!({"message":format!("Bridge {noun} target is malformed."),
@@ -237,13 +303,30 @@ impl Event<'_> {
         if !self.runtime.workflow_in_namespace(workflow_id).await? {
             return self.rejected(action, "unknown_target", json!({"target":redacted(target),"correlation":self.correlation})).map(Some);
         }
-        let name = target[field].as_str().unwrap_or_default();
-        let Some(command) = self.runtime.bridge_command(workflow_id, kind, self.adapter, action, self.key, field, name).await? else {
-            return Ok(None);
-        };
+        Ok(None)
+    }
+
+    /// The answer for a command this adapter already recorded.
+    fn duplicate(&self, action: &str, workflow_id: &str, run_id: &Value) -> Result<(StatusCode, Value)> {
         answer(StatusCode::OK, json!({"adapter":self.adapter,"action":action,"accepted":false,"outcome":"duplicate",
-            "idempotency_key":self.key,"target":redacted(target),"correlation":self.correlation,
-            "workflow_id":workflow_id,"run_id":command,"control_plane_outcome":"deduped_existing_command"})).map(Some)
+            "idempotency_key":self.key,"target":redacted(&self.target),"correlation":self.correlation,
+            "workflow_id":workflow_id,"run_id":run_id,"control_plane_outcome":"deduped_existing_command"}))
+    }
+
+    /// A write that lost to the unique index. It is this command's duplicate
+    /// only when the accepted command under the identity records the same
+    /// adapter, action, key and target; anything else fails closed.
+    async fn lost_race(&self, action: &str, kind: &str, key: &BridgeKey<'_>) -> Result<(StatusCode, Value)> {
+        let workflow_id = self.target["workflow_id"].as_str().unwrap_or_default();
+        match self.runtime.bridge_identity_receipt(workflow_id, kind, &key.identity).await? {
+            Some((run, context)) if key.recorded_in(&context) => self.duplicate(action, workflow_id, &json!(run)),
+            _ => Err(identity_conflict()),
+        }
+    }
+
+    /// The command's bridge key.
+    fn bridge_key<'k>(&'k self, action: &'k str, field: &'static str) -> BridgeKey<'k> {
+        BridgeKey::new(self.adapter, action, self.key, field, self.target[field].as_str().unwrap_or_default())
     }
 
     /// `commandOutcome`: the control plane's answer in the envelope.
@@ -273,7 +356,7 @@ impl Event<'_> {
 
     async fn signal(&self) -> Result<(StatusCode, Value)> {
         let action = "signal_workflow";
-        if let Some(answer) = self.command_guard(action, "signal", "signal_name", SIGNAL_RULES, "signal").await? {
+        if let Some(answer) = self.command_guard(action, SIGNAL_RULES, "signal").await? {
             return Ok(answer);
         }
         let workflow_id = self.target["workflow_id"].as_str().unwrap_or_default();
@@ -281,15 +364,18 @@ impl Event<'_> {
         let context = self.context(workflow_id, "bridge.signal_workflow", json!({"adapter":self.adapter,"action":action,
             "idempotency_key":self.key,"request_id":self.key,"signal_name":name}));
         let body = json!({"input":self.body.get("input")});
-        match self.runtime.signal(workflow_id, None, name, body, Some(context)).await {
+        let key = self.bridge_key(action, "signal_name");
+        match self.runtime.bridge_signal(workflow_id, name, body, context, &key).await {
+            Ok(result) if result["outcome"] == "deduped_existing_command" => self.duplicate(action, workflow_id, &result["run_id"]),
             Ok(result) => self.command_outcome(action, StatusCode::ACCEPTED, &result),
+            Err(error) if duplicate_write(&error) => self.lost_race(action, "signal", &key).await,
             Err(error) => self.refused(action, error, super::control_plane::Operation::Signal(name), workflow_id),
         }
     }
 
     async fn update(&self) -> Result<(StatusCode, Value)> {
         let action = "update_workflow";
-        if let Some(answer) = self.command_guard(action, "update", "update_name", UPDATE_RULES, "update").await? {
+        if let Some(answer) = self.command_guard(action, UPDATE_RULES, "update").await? {
             return Ok(answer);
         }
         let workflow_id = self.target["workflow_id"].as_str().unwrap_or_default();
@@ -297,13 +383,16 @@ impl Event<'_> {
         let wait_for = self.target["wait_for"].as_str().unwrap_or("accepted");
         let context = self.context(workflow_id, "bridge.update_workflow", json!({"adapter":self.adapter,"action":action,
             "idempotency_key":self.key,"request_id":self.key,"update_name":name,"wait_for":wait_for}));
-        // As `WorkflowController::update` admits it: the idempotency key is
-        // the update's request id.
-        let mut body = json!({"input":self.body.get("input"),"request_id":self.key,"wait_for":wait_for,
+        // As `WorkflowController::update` admits it. The bridge identity is
+        // the update's request id; the raw key stays in the metadata.
+        let mut body = json!({"input":self.body.get("input"),"wait_for":wait_for,
             "wait_timeout_seconds":self.target.get("wait_timeout_seconds")});
         body.as_object_mut().expect("object").retain(|_, value| !value.is_null());
-        match self.runtime.update_workflow(workflow_id, None, name, body, Some(context)).await {
+        let key = self.bridge_key(action, "update_name");
+        match self.runtime.bridge_update(workflow_id, name, body, context, &key).await {
+            Ok((_, result)) if result["outcome"] == "deduped_existing_command" => self.duplicate(action, workflow_id, &result["run_id"]),
             Ok((status, result)) => self.command_outcome(action, status, &result),
+            Err(error) if duplicate_write(&error) => self.lost_race(action, "update", &key).await,
             Err(error) => self.refused(action, error, super::control_plane::Operation::Update(name), workflow_id),
         }
     }
@@ -312,7 +401,7 @@ impl Event<'_> {
 /// `POST /api/bridge-adapters/webhook/{adapter}`.
 pub(crate) async fn webhook(runtime: &Runtime, request: &CommandRequest, adapter: &str, body: Value) -> Result<(StatusCode, Value)> {
     let adapter = adapter.trim();
-    if !routing_name(adapter) {
+    if !routing_name(adapter) || adapter.len() > ADAPTER_MAX_BYTES {
         return rejected(adapter, None, None, "unsupported_routing", json!({"message":"Bridge adapter route is unsupported."}));
     }
     let body = super::start_request::normalized(body);
@@ -368,30 +457,48 @@ store_methods! {
         Ok(found > 0)
     }
 
-    /// `duplicateBridgeCommand`: the run of the latest accepted command of
-    /// `kind` this adapter recorded for the same action, key and target name.
-    /// The database filters on the command context, as PHP's JSON-path query
-    /// does, so one request reads at most one row. PHP orders by
-    /// `created_at`, which native never writes; an accepted command's
-    /// `accepted_at` is that same instant.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn bridge_command(&self, workflow_id: &str, kind: &str, adapter: &str, action: &str, key: &str, field: &str, name: &str) -> Result<Option<String>> {
-        let Some(row) = Self::query(DB::BRIDGE_COMMAND)
-            .bind(workflow_id)
-            .bind(kind)
-            .bind(adapter)
-            .bind(action)
-            .bind(key)
-            .bind(field)
-            .bind(name)
-            .fetch_optional(&self.pool)
-            .await?
+    /// The accepted command recorded under a bridge identity: its run and
+    /// its context.
+    pub(crate) async fn bridge_identity_receipt(&self, workflow_id: &str, kind: &str, identity: &str) -> Result<Option<(String, Value)>> {
+        let Some(row) = Self::query("SELECT workflow_run_id,resolved_workflow_run_id,context FROM workflow_commands WHERE workflow_instance_id=$1 AND command_type=$2 AND status='accepted' AND request_id=$3")
+            .bind(workflow_id).bind(kind).bind(identity).fetch_optional(&self.pool).await?
         else {
             return Ok(None);
         };
-        Ok(Some(match DB::optional_string(&row, "resolved_workflow_run_id")? {
-            Some(run) => run,
-            None => DB::string(&row, "workflow_run_id")?,
-        }))
+        Ok(Some((Self::bridge_run(&row)?, DB::document_row(&row, "context")?)))
     }
+
+    /// `duplicateBridgeCommand`, inside the command's transaction and under
+    /// the transition lock: the run of this bridge command's accepted
+    /// command, found by its identity, or else by the metadata PHP recorded
+    /// before takeover. PHP's commands carry no identity: a signal has no
+    /// request id and an update has the raw key. An identity whose command
+    /// records another tuple fails closed.
+    pub(super) async fn bridge_receipt(tx: &mut Transaction<'_, DB>, workflow_id: &str, kind: &str, key: &BridgeKey<'_>) -> Result<Option<String>> {
+        if let Some(row) = Self::query("SELECT workflow_run_id,resolved_workflow_run_id,context FROM workflow_commands WHERE workflow_instance_id=$1 AND command_type=$2 AND status='accepted' AND request_id=$3")
+            .bind(workflow_id).bind(kind).bind(key.identity.as_str()).fetch_optional(&mut **tx).await?
+        {
+            if !key.recorded_in(&DB::document_row(&row, "context")?) {
+                return Err(identity_conflict());
+            }
+            return Ok(Some(Self::bridge_run(&row)?));
+        }
+        // PHP orders by `created_at`, which native never writes; an accepted
+        // command's `accepted_at` is that same instant.
+        let Some(row) = Self::query(DB::BRIDGE_COMMAND)
+            .bind(workflow_id).bind(kind).bind(key.adapter).bind(key.action).bind(key.key).bind(key.field).bind(key.name).bind(key.key)
+            .fetch_optional(&mut **tx).await?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(Self::bridge_run(&row)?))
+    }
+
+    fn bridge_run(row: &DB::Row) -> Result<String> {
+        match DB::optional_string(row, "resolved_workflow_run_id")? {
+            Some(run) => Ok(run),
+            None => DB::string(row, "workflow_run_id"),
+        }
+    }
+
 }

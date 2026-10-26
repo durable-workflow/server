@@ -86,6 +86,8 @@ pub(super) struct SignalWrite<'a> {
     pub(super) command_sequence: i64,
     pub(super) message_sequence: i64,
     pub(super) context: &'a Value,
+    /// A bridge command's identity, as its `request_id`.
+    pub(super) request_id: Option<&'a str>,
 }
 /// The runtime-owned message-stream delivery signal (`WorkflowStub::MESSAGE_STREAM_RUNTIME_SIGNAL`).
 const MESSAGE_STREAM_SIGNAL: &str = super::message_streams::INTERNAL_SIGNAL;
@@ -808,6 +810,7 @@ where
         context: Option<Value>,
         limits: super::memo_limits::StructuralLimits,
         external: Option<&super::external_resolution::PreparedExternal>,
+        bridge: Option<&super::bridge_adapters::BridgeKey<'_>>,
     ) -> Result<Value> {
         // The authenticated request's context; a direct call records only
         // the request id and signal name.
@@ -837,6 +840,13 @@ where
         let instance = Self::query("SELECT current_run_id,last_message_sequence FROM workflow_instances WHERE id=$1 AND namespace=$2")
             .bind(workflow_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?.ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
         let current_run = DB::string(&instance, "current_run_id")?;
+        // A bridge signal already accepted is answered, under the transition
+        // lock, before anything else is admitted.
+        if let Some(key) = bridge
+            && let Some(run) = Self::bridge_receipt(&mut tx, workflow_id, "signal", key).await?
+        {
+            return Ok(json!({"workflow_id":workflow_id,"run_id":run,"outcome":"deduped_existing_command"}));
+        }
         if run_id.is_some_and(|selected| selected != current_run) {
             return Err(refuse(
                 StatusCode::CONFLICT,
@@ -979,7 +989,8 @@ where
             )
             .await?;
             let write = SignalWrite { workflow_id, run_id: &current_run, workflow_type: &workflow_type, name,
-                command_id: &command_id, signal_id: &signal_id, command_sequence, message_sequence, context: &context };
+                command_id: &command_id, signal_id: &signal_id, command_sequence, message_sequence, context: &context,
+                request_id: None };
             Self::record_rejected_signal(&mut tx, &write, outcome, reason, &prepared.command, &row_arguments, &row_errors).await?;
             tx.commit().await?;
             let mut response = json!({"workflow_id":workflow_id,"run_id":current_run,"resolved_run_id":current_run,
@@ -997,7 +1008,8 @@ where
         }
         let workflow_type = DB::string(&run, "workflow_type")?;
         let write = SignalWrite { workflow_id, run_id: &current_run, workflow_type: &workflow_type, name,
-            command_id: &command_id, signal_id: &signal_id, command_sequence, message_sequence, context: &context };
+            command_id: &command_id, signal_id: &signal_id, command_sequence, message_sequence, context: &context,
+            request_id: bridge.map(|key| key.identity.as_str()) };
         Self::record_accepted_signal(&mut tx, &write, &prepared.command, &prepared.arguments, &DB::string(&run, "queue")?).await?;
         tx.commit().await?;
         self.wake.notify_waiters();
@@ -1051,10 +1063,10 @@ where
             }
         }
         let accepted_at = now();
-        Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,source,status,outcome,workflow_type,payload_codec,payload,command_sequence,message_sequence,accepted_at,context) VALUES ($1,$2,$3,$4,'signal','control_plane','accepted','signal_received',$5,'avro',$6,$7,$8,$9,$10)")
+        Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,source,status,outcome,workflow_type,payload_codec,payload,command_sequence,message_sequence,accepted_at,context,request_id) VALUES ($1,$2,$3,$4,'signal','control_plane','accepted','signal_received',$5,'avro',$6,$7,$8,$9,$10,$11)")
             .bind(write.command_id).bind(write.workflow_id).bind(write.run_id).bind(write.run_id).bind(write.workflow_type)
             .bind(command).bind(write.command_sequence).bind(write.message_sequence).bind(DB::bind_time(accepted_at))
-            .bind(DB::document(write.context)).execute(&mut **tx).await?;
+            .bind(DB::document(write.context)).bind(write.request_id).execute(&mut **tx).await?;
         Self::query("INSERT INTO workflow_signal_records(id,workflow_command_id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,signal_name,signal_wait_id,status,outcome,command_sequence,payload_codec,arguments,received_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'received','signal_received',$8,'avro',$9,$10)")
             .bind(write.signal_id).bind(write.command_id).bind(write.workflow_id).bind(write.run_id).bind(write.run_id).bind(write.name).bind(&wait_id)
             .bind(write.command_sequence).bind(arguments).bind(DB::bind_time(accepted_at)).execute(&mut **tx).await?;

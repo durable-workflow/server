@@ -166,7 +166,17 @@ any other unknown path or method answers PHP's own 404 or 405
     identity its not-found answer; the `service-catalog` fixture checks 37 cases.)
   - (Bridge adapter webhooks are served: `POST /api/bridge-adapters/webhook/{adapter}`,
     with the `bridge-adapters` fixture. Native admits bridge updates as the
-    regular update route does; published 2.11.1 skips that admission, Server #747.)
+    regular update route does; published 2.11.1 skips that admission, Server #747.
+    Four further differences from published 2.11.1, all tracked in Server #777:
+    - A start for an id that another namespace holds is refused as unavailable,
+      naming neither the type nor the namespace.
+    - The adapter name is at most 64 bytes.
+    - Signals and updates are deduplicated inside their own transaction under
+      the transition lock. Each one is recorded with a fixed-length
+      `dw-bridge:v1:` identity as its request id, and the commands PHP
+      recorded before takeover are matched by their metadata.
+    - The regular signal and update routes refuse caller request ids that
+      start with `dw-bridge:`.)
   - (Caller-indexed Nexus operation reads are served, with the
     `nexus-operations` fixture. Native writes no service calls and takeover
     refuses a source that holds any, so every list is PHP's empty answer; an

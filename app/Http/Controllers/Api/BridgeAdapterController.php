@@ -21,6 +21,13 @@ use Workflow\V2\Models\WorkflowCommand;
 
 class BridgeAdapterController
 {
+    /**
+     * Bridge commands' identities own the `dw-bridge:` request id namespace
+     * (Server #777), so a caller's signal or update request id may not use
+     * it. MySQL compares request ids without regard to case.
+     */
+    public const UNRESERVED_REQUEST_ID = 'not_regex:/^\s*dw-bridge:/i';
+
     public function __construct(
         private readonly WorkflowStartService $workflowStartService,
         private readonly WorkflowControlPlane $workflowControlPlane,

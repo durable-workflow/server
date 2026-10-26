@@ -4,11 +4,18 @@ use super::laravel_validation::{Rule, failure_messages, rule_errors};
 use super::{Result, refuse};
 use axum::http::StatusCode;
 use serde_json::Value;
-use Rule::{Array, Boolean, In, Integer, Max, Min, Nullable};
+use Rule::{Array, Boolean, In, Integer, Max, Min, Nullable, Pattern};
+
+/// Whether a caller's request id stays out of the `dw-bridge:` namespace,
+/// which bridge commands' identities own (Server #777). MySQL compares
+/// request ids without regard to case, so neither does this.
+pub(super) fn unreserved_request_id(request_id: &str) -> bool {
+    !request_id.trim_start().get(..10).is_some_and(|prefix| prefix.eq_ignore_ascii_case("dw-bridge:"))
+}
 
 const SIGNAL_RULES: &[(&str, &[Rule])] = &[
     ("input", &[Nullable, Array]),
-    ("request_id", &[Nullable, Rule::String, Max(255)]),
+    ("request_id", &[Nullable, Rule::String, Max(255), Pattern(unreserved_request_id)]),
     ("dry_run", &[Nullable, Boolean]),
 ];
 
@@ -19,7 +26,7 @@ pub(super) const UPDATE_WAIT_TIMEOUT_SECONDS_MAX: i64 = 60;
 
 const UPDATE_RULES: &[(&str, &[Rule])] = &[
     ("input", &[Nullable, Array]),
-    ("request_id", &[Nullable, Rule::String, Max(255)]),
+    ("request_id", &[Nullable, Rule::String, Max(255), Pattern(unreserved_request_id)]),
     ("wait_for", &[Nullable, Rule::String, In(&["accepted", "completed"])]),
     ("wait_timeout_seconds", &[Nullable, Integer, Min(1), Max(UPDATE_WAIT_TIMEOUT_SECONDS_MAX)]),
 ];
@@ -90,6 +97,13 @@ mod tests {
             errors(update(&json!({"wait_for":"completed","wait_timeout_seconds":UPDATE_WAIT_TIMEOUT_SECONDS_MAX + 1}))),
             json!({"wait_timeout_seconds":["The wait timeout seconds field must not be greater than 60."]})
         );
+        for reserved in ["dw-bridge:v1:00", "DW-Bridge:anything", " dw-bridge:"] {
+            let refused = json!({"request_id":["The request id field format is invalid."]});
+            assert_eq!(errors(update(&json!({"request_id":reserved}))), refused, "{reserved}");
+            assert_eq!(errors(signal(&json!({"request_id":reserved}))), refused, "{reserved}");
+        }
+        assert!(update(&json!({"request_id":"dw-bridge"})).is_ok());
+        assert!(update(&json!({"request_id":"my-dw-bridge:key"})).is_ok());
         assert_eq!(
             errors(update(&json!({"wait_policy":"accepted"}))),
             json!({"wait_policy":["The wait_policy field is no longer supported. Use wait_for."]})

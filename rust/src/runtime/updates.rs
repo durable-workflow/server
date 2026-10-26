@@ -345,8 +345,9 @@ where
         codec: Arc<Semaphore>,
         limits: super::memo_limits::StructuralLimits,
         external: Option<&super::external_resolution::PreparedExternal>,
+        bridge: Option<&super::bridge_adapters::BridgeKey<'_>>,
     ) -> Result<(StatusCode, Value)> {
-        self.admit_update(workflow_id, selected_run, name, body, prepared, context, codec, limits, external, None)
+        self.admit_update(workflow_id, selected_run, name, body, prepared, context, codec, limits, external, None, bridge)
             .await
     }
 
@@ -365,6 +366,7 @@ where
         limits: super::memo_limits::StructuralLimits,
         external: Option<&super::external_resolution::PreparedExternal>,
         approval: Option<Approval>,
+        bridge: Option<&super::bridge_adapters::BridgeKey<'_>>,
     ) -> Result<(StatusCode, Value)> {
         // PHP's update_name column holds 255 bytes, one fewer than its
         // validation allows; native refuses what it cannot store.
@@ -377,7 +379,8 @@ where
         // `WorkflowController::update`'s rules, on the trimmed request.
         let request = super::start_request::normalized(body.clone());
         let rules: &[(&str, &[Rule])] = &[
-            ("request_id", &[Rule::Nullable, Rule::String, Rule::Max(255)]),
+            ("request_id", &[Rule::Nullable, Rule::String, Rule::Max(255),
+                Rule::Pattern(super::command_requests::unreserved_request_id)]),
             ("wait_for", &[Rule::Nullable, Rule::String, Rule::In(&["accepted", "completed"])]),
             ("wait_timeout_seconds", &[Rule::Nullable, Rule::Integer, Rule::Min(1),
                 Rule::Max(super::command_requests::UPDATE_WAIT_TIMEOUT_SECONDS_MAX)]),
@@ -385,7 +388,9 @@ where
         if let Some(error) = failure_messages(rule_errors(&request, rules, |_, _| None)) {
             return Err(error);
         }
-        let request_id = request["request_id"].as_str();
+        // A bridge update's request id is its bridge identity, which no
+        // caller may send.
+        let request_id = bridge.map(|key| key.identity.as_str()).or_else(|| request["request_id"].as_str());
         // PHP waits for acceptance unless the request asks for completion.
         let wait_for = request["wait_for"].as_str().unwrap_or("accepted");
         let timeout = super::laravel_validation::integer(&request["wait_timeout_seconds"]);
@@ -421,6 +426,14 @@ where
         } else {
             None
         };
+        // A bridge update already accepted is answered, under the transition
+        // lock, as the bridge's duplicate. A rejected one keeps the ordinary
+        // receipt below, as PHP replays it.
+        if let Some(key) = bridge
+            && let Some(run) = Self::bridge_receipt(&mut tx, workflow_id, "update", key).await?
+        {
+            return Ok((StatusCode::OK, json!({"workflow_id":workflow_id,"run_id":run,"outcome":"deduped_existing_command"})));
+        }
         let update_id = if let Some(existing) = existing {
             // Look up the original receipt before validating changed arguments
             // or admitting another mutation. No result or event is rewritten.
@@ -525,7 +538,7 @@ where
                             }
                             let approval = Approval { task_id, run_id: run_id.clone(), input_hash };
                             Box::pin(self.admit_update(workflow_id, selected_run, name, body, prepared, context, codec,
-                                limits, external, Some(approval)))
+                                limits, external, Some(approval), bridge))
                                 .await
                         }
                         super::update_validation::Validation::Rejected { failure, validation_errors } => {
