@@ -14,13 +14,17 @@ class RuntimeTrackedExternalPayloadStorage implements RuntimeExternalPayloadStor
 
     public function put(string $data, string $sha256, string $codec): string
     {
-        return app(RuntimeExternalPayloadRegistry::class)->storeRetained(
+        $claims = app(RuntimeExternalPayloadWriteClaims::class);
+        $uri = $claims->prepare(fn (): string => app(RuntimeExternalPayloadRegistry::class)->storeRetained(
             $this->namespace,
             $this->inner,
             $data,
             $codec,
             strtolower($sha256),
-        );
+        ));
+        $claims->verified($this->namespace, $uri, strlen($data), strtolower($sha256));
+
+        return $uri;
     }
 
     public function uriFor(string $sha256, string $codec): string
@@ -45,8 +49,11 @@ class RuntimeTrackedExternalPayloadStorage implements RuntimeExternalPayloadStor
             if ($validationField !== null) {
                 AvroExternalPayloadValidator::validate($result['data'], $validationField);
             }
-            $registry->verifyFetchedBytesAndClaim(
+            app(RuntimeExternalPayloadWriteClaims::class)->prepare(fn () => $registry->verifyFetchedBytesAndClaim(
                 $this->namespace, $envelope['external_storage']['uri'], $result['data'],
+            ));
+            app(RuntimeExternalPayloadWriteClaims::class)->verified(
+                $this->namespace, $envelope['external_storage']['uri'], $result['data']->sizeBytes, $result['data']->sha256,
             );
 
             return ExternalPayloads::encodeStoredEnvelope($envelope);
@@ -59,11 +66,12 @@ class RuntimeTrackedExternalPayloadStorage implements RuntimeExternalPayloadStor
     {
         $data = $this->fetch($uri);
 
-        app(RuntimeExternalPayloadRegistry::class)->verifyFetchedBytesAndClaim(
+        $claims = app(RuntimeExternalPayloadWriteClaims::class);
+        $claims->prepare(fn () => app(RuntimeExternalPayloadRegistry::class)->verifyFetchedBytesAndClaim(
             $this->namespace,
             $uri,
             $data,
-        );
+        ));
 
         return $data;
     }
@@ -76,11 +84,11 @@ class RuntimeTrackedExternalPayloadStorage implements RuntimeExternalPayloadStor
      */
     public function verify(string $uri): array
     {
-        return app(RuntimeExternalPayloadRegistry::class)->verifyFetchedBytes(
+        return app(RuntimeExternalPayloadWriteClaims::class)->prepare(fn (): array => app(RuntimeExternalPayloadRegistry::class)->verifyFetchedBytes(
             $this->namespace,
             $uri,
             $this->fetch($uri),
-        );
+        ));
     }
 
     public function claimVerified(string $uri, int $sizeBytes, string $sha256): void

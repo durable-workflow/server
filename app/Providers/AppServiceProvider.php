@@ -24,6 +24,7 @@ use App\Support\DispatchObservability;
 use App\Support\ExternalWorkflowUpdateAdmission;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\RemoteScheduleStarter;
+use App\Support\RuntimeExternalPayloadWriteClaims;
 use App\Support\ServerPollingCache;
 use App\Support\ServerWorkflowControlPlane;
 use App\Support\ServiceCallBoundary;
@@ -40,6 +41,9 @@ use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
 use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Database\Connection;
+use Illuminate\Database\Events\TransactionCommitted;
+use Illuminate\Database\Events\TransactionCommitting;
+use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Queue\Events\Looping;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\ServiceProvider;
@@ -66,6 +70,17 @@ class AppServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
+        $this->app->scoped(RuntimeExternalPayloadWriteClaims::class);
+        $this->app->make('events')->listen(TransactionCommitting::class, static function (TransactionCommitting $event): void {
+            app(RuntimeExternalPayloadWriteClaims::class)->beforeCommit($event->connection);
+        });
+        $this->app->make('events')->listen(TransactionCommitted::class, static function (TransactionCommitted $event): void {
+            app(RuntimeExternalPayloadWriteClaims::class)->afterCommit($event->connection);
+        });
+        $this->app->make('events')->listen(TransactionRolledBack::class, static function (TransactionRolledBack $event): void {
+            app(RuntimeExternalPayloadWriteClaims::class)->afterRollback($event->connection);
+        });
+
         Connection::resolverFor('sqlite', static fn ($pdo, $database, $prefix, $config) => new GuardedSqliteConnection($pdo, $database, $prefix, $config));
         // Install before package boot callbacks or commands can open a database.
         foreach ([
