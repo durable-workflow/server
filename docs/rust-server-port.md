@@ -163,7 +163,12 @@ any other unknown path or method answers PHP's own 404 or 405
   - Durable workflow stream items and close.
   - Service endpoints. (The service catalog reads from Server 2.11 are served:
     native never holds catalog rows, so every list is PHP's empty page and every
-    identity its not-found answer; the `service-catalog` fixture checks 37 cases.)
+    identity its not-found answer; the `service-catalog` fixture checks 37 cases.
+    Native neither executes service operations nor accepts the workflow-task
+    `start_service_operation` command, which it refuses as
+    `unsupported_workflow_command`. When it does, an operation bound to a
+    workflow update must refuse a `wait_timeout_seconds` above the update
+    ceiling of 60 before it runs, as PHP does (Server #775).)
   - Bridge adapters.
   - (Caller-indexed Nexus operation reads are served, with the
     `nexus-operations` fixture. Native writes no service calls and takeover

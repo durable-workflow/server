@@ -1,0 +1,177 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Feature;
+
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
+use Tests\Feature\Concerns\ServerTestHelpers;
+use Tests\Fixtures\InteractiveCommandWorkflow;
+use Tests\TestCase;
+use Workflow\Serializers\Avro;
+use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowService;
+use Workflow\V2\Models\WorkflowServiceCall;
+use Workflow\V2\Models\WorkflowServiceEndpoint;
+use Workflow\V2\Models\WorkflowServiceOperation;
+
+/**
+ * Server #775: a service operation bound to a workflow update hands its
+ * wait_timeout_seconds to the update admission, so both service-operation
+ * ingresses refuse a wait above the update ceiling before the operation runs.
+ * Other bindings keep the service operation's own wait contract.
+ */
+final class ServiceOperationUpdateWaitTest extends TestCase
+{
+    use RefreshDatabase;
+    use ServerTestHelpers;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        Queue::fake();
+        $this->createNamespace('default');
+        $this->configureWorkflowTypes([
+            'tests.interactive-command-workflow' => InteractiveCommandWorkflow::class,
+        ]);
+        $start = $this->withHeaders($this->apiHeaders())->postJson('/api/workflows', [
+            'workflow_id' => 'wf-update-target',
+            'workflow_type' => 'tests.interactive-command-workflow',
+        ])->assertCreated();
+        $this->runReadyWorkflowTask((string) $start->json('run_id'));
+    }
+
+    public function test_the_execute_route_bounds_an_update_bound_operations_wait(): void
+    {
+        $this->seedOperation('update_workflow');
+        $route = '/api/service-endpoints/billing/services/approvals/operations/approve/execute';
+        $body = fn (int $seconds): array => [
+            'arguments' => [true, 'service'],
+            'mode_override' => 'async',
+            'wait_for' => 'completed',
+            'wait_timeout_seconds' => $seconds,
+        ];
+
+        $this->withHeaders($this->apiHeaders())->postJson($route, $body(61))
+            ->assertStatus(422)
+            ->assertJsonPath('errors.wait_timeout_seconds.0', 'The wait timeout seconds field must not be greater than 60.');
+        $this->assertNothingAdmitted();
+
+        $this->withHeaders($this->apiHeaders())->postJson($route, [...$body(60), 'wait_for' => 'accepted'])
+            ->assertSuccessful()
+            ->assertJsonPath('accepted', true);
+        $this->assertSame(1, WorkflowServiceCall::query()->count());
+        $this->assertSame(1, $this->targetUpdates());
+    }
+
+    public function test_the_workflow_task_command_bounds_an_update_bound_operations_wait(): void
+    {
+        $this->seedOperation('update_workflow');
+        $this->registerWorker('caller-worker', 'callers', supportedWorkflowTypes: ['tests.service-caller']);
+        $this->withHeaders($this->apiHeaders())->postJson('/api/workflows', [
+            'workflow_id' => 'wf-service-caller', 'workflow_type' => 'tests.service-caller',
+            'task_queue' => 'callers', 'input' => [],
+        ])->assertCreated();
+        $task = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'caller-worker', 'task_queue' => 'callers',
+        ], $this->workerHeaders())->assertOk()->json('task');
+        $this->authenticateWorker();
+
+        $refused = $this->complete($task, 61)->assertStatus(422);
+        $this->assertSame(['The commands.0.wait_timeout_seconds field must not be greater than 60.'],
+            $refused->json('errors')['commands.0.wait_timeout_seconds'] ?? null);
+        $this->assertNothingAdmitted();
+
+        $this->complete($task, 60)->assertOk();
+        $this->assertSame(1, WorkflowServiceCall::query()->count());
+        $this->assertSame(1, $this->targetUpdates());
+    }
+
+    public function test_other_bindings_keep_the_service_operation_wait_contract(): void
+    {
+        $this->seedOperation('start_workflow');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/service-endpoints/billing/services/approvals/operations/approve/execute', [
+                'arguments' => Avro::envelope(['approved' => true, 'source' => 'service']),
+                'mode_override' => 'async',
+                'wait_for' => 'accepted',
+                'wait_timeout_seconds' => 600,
+            ])
+            ->assertSuccessful();
+        $this->assertSame(1, WorkflowServiceCall::query()->count());
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/service-endpoints/billing/services/approvals/operations/approve/execute', [
+                'wait_timeout_seconds' => 86401,
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('errors.wait_timeout_seconds.0', 'The wait timeout seconds field must not be greater than 86400.');
+    }
+
+    private function assertNothingAdmitted(): void
+    {
+        $this->assertSame(0, WorkflowServiceCall::query()->count());
+        $this->assertSame(0, $this->targetUpdates());
+        $this->assertSame(0, WorkflowHistoryEvent::query()
+            ->whereIn('event_type', ['UpdateAccepted', 'UpdateRejected', 'ServiceCallStarted'])
+            ->count());
+    }
+
+    private function targetUpdates(): int
+    {
+        return WorkflowCommand::query()
+            ->where('workflow_instance_id', 'wf-update-target')
+            ->where('command_type', 'update')
+            ->count();
+    }
+
+    private function seedOperation(string $binding): void
+    {
+        $endpoint = WorkflowServiceEndpoint::query()->create(['namespace' => 'default', 'endpoint_name' => 'billing']);
+        $service = WorkflowService::query()->create([
+            'workflow_service_endpoint_id' => $endpoint->id, 'namespace' => 'default', 'service_name' => 'approvals',
+        ]);
+        WorkflowServiceOperation::query()->create([
+            'workflow_service_endpoint_id' => $endpoint->id, 'workflow_service_id' => $service->id,
+            'namespace' => 'default', 'operation_name' => 'approve', 'operation_mode' => 'async',
+            'handler_binding_kind' => $binding,
+            'handler_target_reference' => $binding === 'update_workflow' ? 'approve' : 'tests.interactive-command-workflow',
+            'handler_binding' => $binding === 'update_workflow'
+                ? ['workflow_instance_id' => 'wf-update-target', 'update_name' => 'approve']
+                : ['workflow_type' => 'tests.interactive-command-workflow', 'queue' => 'targets'],
+        ]);
+    }
+
+    private function complete(array $task, int $seconds)
+    {
+        return $this->postJson('/api/worker/workflow-tasks/'.$task['task_id'].'/complete', [
+            'lease_owner' => $task['lease_owner'],
+            'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'commands' => [[
+                'type' => 'start_service_operation',
+                'endpoint_name' => 'billing',
+                'service_name' => 'approvals',
+                'operation_name' => 'approve',
+                'request_payload' => Avro::envelope(['approved' => true, 'source' => 'service']),
+                'mode_override' => 'async',
+                'wait_for' => 'accepted',
+                'wait_timeout_seconds' => $seconds,
+            ]],
+        ], $this->workerHeaders());
+    }
+
+    private function authenticateWorker(): void
+    {
+        config([
+            'server.auth.driver' => 'token', 'server.auth.backward_compatible' => false,
+            'server.auth.principal_tokens' => json_encode([[
+                'token' => 'update-wait-token', 'subject' => 'update-wait-principal',
+                'roles' => ['worker'], 'tenant' => 'default',
+            ]]),
+        ]);
+        $this->withHeader('Authorization', 'Bearer update-wait-token');
+    }
+}
