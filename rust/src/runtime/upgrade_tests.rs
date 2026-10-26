@@ -1196,6 +1196,28 @@ async fn takeover_keeps_php_catalog_rows_that_native_then_serves() {
     runtime.close().await;
 }
 
+/// Custom search attribute definitions as PHP's SearchAttributeController
+/// stores them. Native reads the same rows to list them, type upserts and
+/// filter visibility, so takeover keeps them.
+#[tokio::test]
+async fn takeover_keeps_php_search_attribute_definitions_that_native_then_lists() {
+    let (_directory, path) = php_release_layout(&[PHP_280_CHANGES, TRACE_CARRIERS, QUEUE_DELIVERY]).await;
+    for statement in [
+        "INSERT INTO search_attribute_definitions(namespace,name,type,created_at,updated_at) VALUES ('default','CustomerId','keyword','2026-10-26 10:00:00','2026-10-26 10:00:00')",
+        "INSERT INTO search_attribute_definitions(namespace,name,type,created_at,updated_at) VALUES ('default','OrderTotal','float','2026-10-26 10:00:01','2026-10-26 10:00:01')",
+        "INSERT INTO search_attribute_definitions(namespace,name,type,created_at,updated_at) VALUES ('other','Region','keyword','2026-10-26 10:00:02','2026-10-26 10:00:02')",
+    ] {
+        mutate(&path, statement).await;
+    }
+    let fingerprint = backup_fingerprint(&path).await;
+    let report = takeover::take_over_sqlite(&path, &fingerprint, &queue_config()).await.unwrap();
+    assert_eq!(report["status"], "taken_over", "{report}");
+    let runtime = crate::runtime::Runtime::open(&path, "test-token".into()).await.unwrap();
+    let listed = runtime.list_search_attributes().await.unwrap();
+    assert_eq!(listed["custom_attributes"], json!({"CustomerId": "keyword", "OrderTotal": "float"}), "{listed}");
+    runtime.close().await;
+}
+
 /// The frozen layout in PHP Server's default WAL mode, copied while its
 /// writer was still open: one committed row is only in the WAL, as a crashed
 /// PHP would leave it.

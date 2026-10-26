@@ -1,6 +1,7 @@
 //! Custom search attribute definitions per namespace, as PHP's
-//! SearchAttributeController registers them. Native start and upsert do not
-//! accept search attribute values yet, so a definition is registry state only.
+//! SearchAttributeController registers them. Native reads the same rows to
+//! type `upsert_search_attributes` values, filter visibility and list
+//! schedules, so takeover keeps a PHP database's definitions.
 use super::{
     Result, RuntimeError,
     backend::Backend,
