@@ -18,6 +18,7 @@ final class WorkflowStreamCommandProcessor
 {
     public function __construct(
         private readonly WorkflowStreamService $streams,
+        private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
     ) {}
 
     /**
@@ -136,6 +137,7 @@ final class WorkflowStreamCommandProcessor
                     isset($directive['max_pending_items'])
                         ? (int) $directive['max_pending_items']
                         : WorkflowStreamService::DEFAULT_MAX_PENDING_ITEMS,
+                    $this->claimReferences($namespace),
                 );
             } elseif ($operation === 'close' || $operation === 'error') {
                 $errorReason = $operation === 'error'
@@ -168,6 +170,35 @@ final class WorkflowStreamCommandProcessor
         }
 
         return array_values($commands);
+    }
+
+    /**
+     * Claims the references of the items an append will write, as the HTTP
+     * append does, under each object's lock inside the append's transaction
+     * (Server #774). The runtime transport already resolved each one to this
+     * namespace's registration; the claim checks it again and keeps it from
+     * expiring, and stream or run retention cannot delete it meanwhile.
+     *
+     * @return callable(list<string>): void
+     */
+    private function claimReferences(string $namespace): callable
+    {
+        return function (array $uris) use ($namespace): void {
+            $driver = $this->externalPayloadStorage->driverFor($namespace);
+
+            if (! $driver instanceof RuntimeTrackedExternalPayloadStorage) {
+                throw new RuntimeExternalPayloadException(
+                    'external_payload_unavailable',
+                    503,
+                    true,
+                    'External payload storage is unavailable for this namespace.',
+                );
+            }
+
+            foreach ($uris as $uri) {
+                $driver->claimRegistered($uri);
+            }
+        };
     }
 
     private function nonEmptyString(mixed $value): ?string

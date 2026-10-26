@@ -528,6 +528,14 @@ class WorkflowStreamsTest extends TestCase
 
     public function test_due_stream_discovery_reads_the_deadline_index(): void
     {
+        if (DB::connection()->getDriverName() !== 'sqlite') {
+            // The query runs here; WorkflowStreamCapacityRaceTest reads the
+            // MySQL, MariaDB and PostgreSQL plans over realistic data.
+            $this->assertSame([], WorkflowStreamRetention::dueStreamsQuery('default', 10, now())->pluck('id')->all());
+
+            return;
+        }
+
         $plan = collect(DB::select('EXPLAIN QUERY PLAN '.WorkflowStreamRetention::dueStreamsQuery('default', 10, now())->toRawSql()))
             ->pluck('detail')->implode("\n");
 

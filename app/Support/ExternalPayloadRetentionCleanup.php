@@ -193,11 +193,19 @@ class ExternalPayloadRetentionCleanup
         }
 
         $deleted = 0;
+        $lockOrder = array_flip(RuntimeExternalPayloadObjectLock::inLockOrder(array_column($deletable, 'uri')));
+        usort($deletable, static fn (array $left, array $right): int => [$lockOrder[$left['uri']], $left['namespace']] <=> [$lockOrder[$right['uri']], $right['namespace']]);
 
         foreach ($deletable as $reference) {
             try {
-                $drivers[$reference['namespace']]->delete($reference['uri']);
-                $deleted++;
+                $driver = $drivers[$reference['namespace']];
+                $uri = $reference['uri'];
+                if (! $driver instanceof RuntimeTrackedExternalPayloadStorage) {
+                    $driver->delete($uri);
+                    $deleted++;
+                } elseif ($driver->deleteUnlessReferenced($uri, static fn (): bool => $isRetained($uri))) {
+                    $deleted++;
+                }
             } catch (ExternalPayloadStorageUnavailable $e) {
                 throw $e;
             } catch (\Throwable $e) {
@@ -260,10 +268,18 @@ class ExternalPayloadRetentionCleanup
 
         $deleted = 0;
 
-        foreach ($deletable as $uri) {
+        // The retained-reference check is asked again under each object's
+        // lock, where writers claim, so a reference committed after the scan
+        // above keeps its object. Objects are locked in one canonical order
+        // because an enclosing transaction holds every lock until it commits.
+        foreach (RuntimeExternalPayloadObjectLock::inLockOrder($deletable) as $uri) {
             try {
-                $driver->delete($uri);
-                $deleted++;
+                if (! $driver instanceof RuntimeTrackedExternalPayloadStorage) {
+                    $driver->delete($uri);
+                    $deleted++;
+                } elseif ($driver->deleteUnlessReferenced($uri, static fn (): bool => $isRetained($uri))) {
+                    $deleted++;
+                }
             } catch (ExternalPayloadStorageUnavailable $e) {
                 throw $e;
             } catch (\Throwable $e) {

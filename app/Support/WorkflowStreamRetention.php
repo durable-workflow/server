@@ -7,7 +7,6 @@ use App\Models\WorkflowDurableStreamItem;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\DB;
 
 /**
  * Reclaims the items of closed and errored workflow streams past their
@@ -20,12 +19,13 @@ use Illuminate\Support\Facades\DB;
  * Discovery reads one namespace's due streams in deadline order from the
  * (namespace, reclaim_at, id) index, at most `$streamLimit` of them. A pass
  * deletes at most `$itemBudget` items, in batches of at most ITEM_BATCH. Each
- * batch first settles its items' external payloads through
- * ExternalPayloadRetentionCleanup, with run retention's shared-reference,
- * backup-hold, blocked-driver and failure handling, and deletes the items
- * only after that succeeds. A blocked or failed batch leaves its items for
- * the next pass. Once a stream has no items its `reclaim_at` is cleared, so
- * discovery no longer reads it.
+ * batch is one transaction under the run and stream locks: it first settles
+ * its items' external payloads through ExternalPayloadRetentionCleanup, with
+ * run retention's shared-reference, backup-hold, blocked-driver and failure
+ * handling and each object's reference check asked again under that object's
+ * lock, then deletes the items. A blocked or failed batch leaves its items
+ * for the next pass. Once a stream has no items its `reclaim_at` is cleared,
+ * so discovery no longer reads it.
  */
 final class WorkflowStreamRetention
 {
@@ -117,30 +117,17 @@ final class WorkflowStreamRetention
         $deleted = 0;
 
         while ($deleted < $budget) {
-            $ids = WorkflowDurableStreamItem::query()
-                ->where('stream_id', $stream->id)
-                ->orderBy('offset')
-                ->limit(min(self::ITEM_BATCH, $budget - $deleted))
-                ->pluck('id')
-                ->map(static fn (mixed $id): int => (int) $id)
-                ->all();
-
-            if ($ids !== []) {
-                // Failures propagate before any item is deleted.
-                $payloads = app(ExternalPayloadRetentionCleanup::class)->deleteForDurableStreamItems($namespace, $ids);
-
-                if ($payloads['blocked']) {
-                    return [
-                        'deleted' => $deleted,
-                        'reclaimed' => false,
-                        'budget_exhausted' => false,
-                        'blocked_reason' => $payloads['reason'] ?? 'external_payload_cleanup_blocked',
-                    ];
-                }
-            }
-
-            $step = DB::transaction(static fn (): array => self::deleteBatch($stream, $ids, $now));
+            $step = ReadCommittedTransaction::run(static fn (): array => self::reclaimBatch(
+                $namespace,
+                $stream,
+                min(self::ITEM_BATCH, $budget - $deleted),
+                $now,
+            ));
             $deleted += $step['deleted'];
+
+            if ($step['blocked_reason'] !== null) {
+                return ['deleted' => $deleted, 'reclaimed' => false, 'budget_exhausted' => false, 'blocked_reason' => $step['blocked_reason']];
+            }
 
             if ($step['done'] || $step['deleted'] === 0) {
                 return ['deleted' => $deleted, 'reclaimed' => $step['reclaimed'], 'budget_exhausted' => false, 'blocked_reason' => null];
@@ -151,33 +138,54 @@ final class WorkflowStreamRetention
     }
 
     /**
-     * One transaction: under the run and stream locks, delete the batch's
-     * items, and clear the stream's deadline once none are left.
+     * One transaction, under the run and stream locks taken before anything
+     * else: settle a batch's external payloads, delete its items, and clear
+     * the stream's deadline once none are left. A blocked or failed payload
+     * cleanup deletes no item; the failure rolls the transaction back.
      *
-     * @param  list<int>  $ids
-     * @return array{deleted: int, done: bool, reclaimed: bool}
+     * @return array{deleted: int, done: bool, reclaimed: bool, blocked_reason: string|null}
      */
-    private static function deleteBatch(WorkflowDurableStream $due, array $ids, Carbon $now): array
+    private static function reclaimBatch(string $namespace, WorkflowDurableStream $due, int $take, Carbon $now): array
     {
         WorkflowRunStreamLock::acquire((string) $due->workflow_run_id);
         $stream = WorkflowDurableStream::query()->whereKey($due->id)->lockForUpdate()->first();
 
         if ($stream === null || $stream->reclaim_at === null || ! WorkflowStreamService::isExpired($stream, $now)) {
-            return ['deleted' => 0, 'done' => true, 'reclaimed' => false];
+            return ['deleted' => 0, 'done' => true, 'reclaimed' => false, 'blocked_reason' => null];
         }
 
-        $deleted = $ids === []
-            ? 0
-            : WorkflowDurableStreamItem::query()->where('stream_id', $stream->id)->whereKey($ids)->delete();
+        $ids = WorkflowDurableStreamItem::query()
+            ->where('stream_id', $stream->id)
+            ->orderBy('offset')
+            ->limit($take)
+            ->pluck('id')
+            ->map(static fn (mixed $id): int => (int) $id)
+            ->all();
+        $deleted = 0;
+
+        if ($ids !== []) {
+            $payloads = app(ExternalPayloadRetentionCleanup::class)->deleteForDurableStreamItems($namespace, $ids);
+
+            if ($payloads['blocked']) {
+                return [
+                    'deleted' => 0,
+                    'done' => false,
+                    'reclaimed' => false,
+                    'blocked_reason' => $payloads['reason'] ?? 'external_payload_cleanup_blocked',
+                ];
+            }
+
+            $deleted = WorkflowDurableStreamItem::query()->where('stream_id', $stream->id)->whereKey($ids)->delete();
+        }
 
         if (WorkflowDurableStreamItem::query()->where('stream_id', $stream->id)->exists()) {
-            return ['deleted' => $deleted, 'done' => false, 'reclaimed' => false];
+            return ['deleted' => $deleted, 'done' => false, 'reclaimed' => false, 'blocked_reason' => null];
         }
 
         // The terminal row keeps the stream's identity until its run is
         // pruned; without a deadline discovery no longer reads it.
         $stream->forceFill(['reclaim_at' => null])->save();
 
-        return ['deleted' => $deleted, 'done' => true, 'reclaimed' => true];
+        return ['deleted' => $deleted, 'done' => true, 'reclaimed' => true, 'blocked_reason' => null];
     }
 }

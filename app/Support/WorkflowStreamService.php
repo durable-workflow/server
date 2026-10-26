@@ -171,7 +171,10 @@ final class WorkflowStreamService
                 }
 
                 if ($references !== []) {
-                    $claimReferences(array_keys($references));
+                    // Each claim holds its object's lock until the append
+                    // commits; one canonical order keeps two appends with
+                    // shared references from waiting on each other.
+                    $claimReferences(RuntimeExternalPayloadObjectLock::inLockOrder(array_map('strval', array_keys($references))));
                 }
             }
 
@@ -421,8 +424,10 @@ final class WorkflowStreamService
         string $streamName,
         bool $openIfMissing,
     ): ?WorkflowDurableStream {
-        // A run pruned since it was located has no streams to write.
-        if (! WorkflowRunStreamLock::acquire($run->id)) {
+        // A run pruned since it was located, or whose details retention has
+        // pruned, has no streams to write.
+        if (! WorkflowRunStreamLock::acquire($run->id)
+            || $run->newQuery()->whereKey($run->getKey())->whereNotNull('details_pruned_at')->exists()) {
             throw new StreamNotFoundException($run, $streamName);
         }
 
