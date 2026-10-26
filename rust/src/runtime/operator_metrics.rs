@@ -1359,6 +1359,8 @@ where
             }
             deleted.insert((*key).into(), json!(DB::affected(query.execute(&mut *tx).await?)));
         }
+        // The run's history is gone; no cached read of it may survive.
+        tx.scope_history = None;
         Self::query("UPDATE workflow_runs SET details_pruned_at=$1 WHERE id=$2 AND details_pruned_at IS NULL")
             .bind(DB::bind_time(now()))
             .bind(run_id)
