@@ -1234,6 +1234,12 @@ where
 
     /// `POST /api/system/retention/pass`: the report, and whether any run failed.
     pub(super) async fn retention_pass(&self, limit: i64, run_ids: Vec<String>) -> Result<(Value, bool)> {
+        // A general pass also reclaims closed workflow streams past their own
+        // retention (Server #774), at most `limit` streams and `limit` * 100
+        // items. The report is the run pass's.
+        if run_ids.is_empty() {
+            self.prune_expired_streams(limit, limit * 100).await?;
+        }
         let policy = self.retention_policy().await?;
         let report = self.prune_runs(&policy, limit, run_ids).await?;
         let failed = report["failed"].as_i64().is_some_and(|failed| failed > 0);
@@ -1280,6 +1286,13 @@ where
 
     /// `runInlinePass`, reported on the worker heartbeat.
     pub(super) async fn retention_inline_pass(&self) -> Result<Value> {
+        // Closed workflow streams carry their own retention, whatever the
+        // history retention mode (Server #774); the stream pass has its own
+        // throttle and is not part of this report.
+        if retention::inline_stream_pass_due(self.namespace.as_ref()) {
+            let (streams, items) = super::workflow_streams::INLINE_SWEEP;
+            self.prune_expired_streams(streams, items).await?;
+        }
         let policy = self.retention_policy().await?;
         if policy.forever {
             return Ok(retention::inline_report(false, None));

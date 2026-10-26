@@ -912,8 +912,17 @@ October 21, Waterline reads:
 - **Durable streams.** The run's stream list, stream description, item
   reads, appends and closes answer as PHP does, with the
   `workflow-stream-writes` fixture recorded from published 2.11.1: offsets
-  from 0, idempotent retries, the pending-items cap with its partial commit,
-  bounded waits, final closes, whole-second times and every refusal body.
+  from 0, idempotent retries, bounded waits, final closes, whole-second times
+  and every refusal body. The shared contract fix of Server #774 is native
+  too:
+  - `max_pending_items` is at most 10000 and `retention_seconds` at most
+    2592000, both refused with 422;
+  - a batch whose fresh items would pass the cap is refused whole, so
+    nothing of it is written (published 2.11.1 committed the items before the
+    cap; the fixture bounds that answer as a published defect);
+  - a closed stream past its retention reads as not found;
+  - a bounded pass reclaims expired streams from the worker-heartbeat
+    retention pass and from a general `POST /api/system/retention/pass`.
   A continued run keeps its streams, as in PHP. Native differs in three
   places, documented in `rust/src/runtime/workflow_streams.rs`:
   - a batch whose items hold no item fields gets 400, not PHP's 500;

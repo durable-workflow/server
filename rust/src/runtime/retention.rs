@@ -229,6 +229,21 @@ pub(super) fn inline_pass_due(namespace: &str) -> bool {
     }
 }
 
+/// `WorkflowStreamRetention::runInlinePass`'s throttle: at most one stream
+/// pass a minute per namespace in this process.
+pub(super) fn inline_stream_pass_due(namespace: &str) -> bool {
+    static LAST: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    let mut last = LAST.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let now = Instant::now();
+    match last.get(namespace) {
+        Some(at) if now.duration_since(*at).as_secs() < INLINE_THROTTLE_SECONDS => false,
+        _ => {
+            last.insert(namespace.to_owned(), now);
+            true
+        }
+    }
+}
+
 /// `runInlinePass`'s heartbeat report.
 pub(super) fn inline_report(throttled: bool, report: Option<&Map<String, Value>>) -> Value {
     let count = |key: &str| report.and_then(|report| report.get(key)).cloned().unwrap_or(json!(0));

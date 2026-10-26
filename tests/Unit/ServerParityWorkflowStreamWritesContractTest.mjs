@@ -19,6 +19,27 @@ test('the published 2.11.1 recording satisfies the contract', () => {
   assert.deepStrictEqual(check(observation()), {scope: 'workflow_stream_writes'});
 });
 
+// The same run under Server #774: the over-cap batch is refused whole, so the
+// tokens stream keeps its three items through every later step.
+const three = stream => Object.assign(stream, {last_offset: 2, total_items: 3});
+const wholeBatch = state => {
+  state.append_full.response.pending_items = 0;
+  three(state.show_after_full.response.stream).pending_items = 0;
+  Object.assign(state.items_after_full.response, {items: [], next_offset: 3});
+  three(state.items_after_full.response.stream);
+  three(state.list_after_refusals.response.streams[0]);
+  three(state.close.response.stream);
+  three(state.close_again.response.stream);
+  three(state.items_closed_tail.response.stream);
+  Object.assign(state.items_closed_head.response, {items: [], next_offset: 4});
+  three(state.items_closed_head.response.stream);
+  three(state.list_final.response.streams.find(entry => entry.stream_name === 'tokens'));
+};
+
+test('a whole-batch capacity refusal (Server #774) satisfies the contract', () => {
+  assert.deepStrictEqual(check(observation(wholeBatch)), {scope: 'workflow_stream_writes'});
+});
+
 test('embedded applications are explicitly inapplicable', () => {
   assert.deepStrictEqual(check({mode: 'embedded', workflow_stream_writes:
     {applicable: false, reason: 'embedded_has_no_http_workflow_streams'}}), {scope: 'workflow_stream_writes'});
@@ -42,10 +63,14 @@ for (const [label, change, message] of [
   ['a read at the head that leaves pending items', state => {
     state.items_all.response.stream.pending_items = 3;
   }, /items_all stream/],
-  ['a cap that rejects the whole batch', state => {
-    state.show_after_full.response.stream.last_offset = 2;
-    state.show_after_full.response.stream.total_items = 3;
-  }, /show_after_full stream/],
+  ['a whole refusal that reports the published pending count', state => {
+    wholeBatch(state);
+    state.append_full.response.pending_items = 2;
+  }, /append_full body/],
+  ['a whole refusal whose later reads still show the capped items', state => {
+    wholeBatch(state);
+    state.items_closed_head.response.next_offset = 5;
+  }, /items_closed_head next_offset/],
   ['a cap answered as accepted', state => { state.append_full.status = 200; }, /append_full status/],
   ['a repeated close that replaces the first', state => {
     state.close_again.response.stream.error_reason = 'late error';

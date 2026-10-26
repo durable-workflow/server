@@ -121,15 +121,21 @@ export function checkWorkflowStreamWrites(fixture, observation, workflowId) {
   items(state.items_wait_empty, ids, {...three, pending_items: 0}, [], 3, false, label('items_wait_empty'));
   assert.equal(state.items_wait_returned_after_wait, true, label('a bounded wait on an open stream waits'));
 
-  // The cap commits the items before it and then refuses the rest.
+  // Server #774 refuses the over-cap batch whole: nothing is written, so the
+  // stream keeps its three items. Published 2.11.1 committed the items before
+  // the cap and then refused the rest (a published defect, bounded here): its
+  // answers are accepted as a set, and every later step follows the branch
+  // the observation took.
+  const whole = state.show_after_full?.response?.stream?.total_items === 3;
   exact(state.append_full, 429, {message: 'Stream pending-items cap reached; consumer is draining too slowly.',
-    reason: 'stream_full', pending_items: spec.max_pending_items, max_pending_items: spec.max_pending_items},
+    reason: 'stream_full', pending_items: whole ? 0 : spec.max_pending_items, max_pending_items: spec.max_pending_items},
     label('append_full'));
-  const five = {...open, last_offset: 4, total_items: 5};
-  const full = streamRead(state.show_after_full, ids, {...five, pending_items: 2}, label('show_after_full'));
-  assert.ok(full.appended >= first.appended, label('the capped append moved last_appended_at forward'));
+  const five = whole ? three : {...open, last_offset: 4, total_items: 5};
+  const full = streamRead(state.show_after_full, ids, {...five, pending_items: whole ? 0 : 2}, label('show_after_full'));
+  assert.ok(full.appended >= first.appended, label('the capped append kept last_appended_at in order'));
   items(state.items_after_full, ids, {...five, pending_items: 0},
-    [item(3, {...batch.over_cap[0]}), item(4, {...batch.over_cap[1]})], 5, false, label('items_after_full'));
+    whole ? [] : [item(3, {...batch.over_cap[0]}), item(4, {...batch.over_cap[1]})], whole ? 3 : 5, false,
+    label('items_after_full'));
 
   const r = state.refusals;
   const refusal = name => label(`refusal ${name}`);
@@ -179,7 +185,8 @@ export function checkWorkflowStreamWrites(fixture, observation, workflowId) {
   assert.equal(again.closed, firstClose.closed, label('a repeated close keeps closed_at'));
   exact(state.append_closed, 409, {message: 'Stream is closed.', reason: 'stream_closed'}, label('append_closed'));
   items(state.items_closed_tail, ids, closed, [], 5, true, label('items_closed_tail'));
-  items(state.items_closed_head, ids, closed, [item(4, {...batch.over_cap[1]})], 5, true, label('items_closed_head'));
+  items(state.items_closed_head, ids, closed, whole ? [] : [item(4, {...batch.over_cap[1]})], whole ? 4 : 5, true,
+    label('items_closed_head'));
 
   const other = {stream_name: audit, status: 'open', last_offset: 0, total_items: 1, pending_items: 1};
   appended(state.append_other, ids, other, [0], 1, 0, label('append_other'));

@@ -2,10 +2,11 @@
 //! and `WorkflowStreamService` serve them. A producer appends ordered items
 //! to a named, run-scoped stream, which the first append opens. Offsets
 //! start at 0, a repeated idempotency key returns the item it already
-//! names, and the pending-items cap keeps the items before it and then
-//! answers 429. A close records a clean or errored end once. Readers page
-//! by offset and may wait, and a read that reaches the head resets
-//! `pending_items`.
+//! names, and a batch whose fresh items would pass the pending-items cap is
+//! refused whole with 429 (Server #774). A close records a clean or errored
+//! end once. Readers page by offset and may wait, and a read that reaches
+//! the head resets `pending_items`. A closed stream past its retention
+//! reads as not found, and a bounded pass reclaims its rows.
 //!
 //! PHP's models write these times in Eloquent's `Y-m-d H:i:s` format, so
 //! every stored time is a whole second. Native differs in three places:
@@ -46,6 +47,15 @@ const DEFAULT_MAX_ITEMS_PER_SUBSCRIBE: i64 = 100;
 const SUBSCRIBE_MAX_ITEMS: i64 = 500;
 /// `WorkflowStreamService::DEFAULT_CLOSED_RETENTION_SECONDS`.
 const DEFAULT_CLOSED_RETENTION_SECONDS: i64 = 3600;
+/// `WorkflowStreamService::MAX_PENDING_ITEMS_MAX`: a producer may lower its
+/// cap, not raise it.
+const MAX_PENDING_ITEMS_MAX: i64 = 10_000;
+/// `WorkflowStreamService::RETENTION_SECONDS_MAX` (30 days).
+const RETENTION_SECONDS_MAX: i64 = 2_592_000;
+/// `WorkflowStreamRetention::ITEM_BATCH`: items deleted per transaction.
+const SWEEP_ITEM_BATCH: i64 = 500;
+/// `WorkflowStreamRetention::INLINE_STREAM_LIMIT` and `INLINE_ITEM_BUDGET`.
+pub(super) const INLINE_SWEEP: (i64, i64) = (10, 1000);
 /// `LegacyV1ProjectionContract::IMPORT_SOURCE`.
 const PROJECTION_SOURCE: &str = "waterline_v1_projection";
 /// `readWithWait` checks again every 250 ms.
@@ -67,13 +77,13 @@ const APPEND_RULES: &laravel_rules::Rules = &[
     ("items.*.origin_reference", &[Rule::Nullable, Rule::String, Rule::Max(191)]),
     ("items.*.item_type", &[Rule::Nullable, Rule::String, Rule::Max(64)]),
     ("items.*.content_type", &[Rule::Nullable, Rule::String, Rule::Max(191)]),
-    ("max_pending_items", &[Rule::Nullable, Rule::Integer, Rule::Min(1)]),
+    ("max_pending_items", &[Rule::Nullable, Rule::Integer, Rule::Min(1), Rule::Max(MAX_PENDING_ITEMS_MAX)]),
 ];
 
 /// `close()`'s Laravel rules.
 const CLOSE_RULES: &laravel_rules::Rules = &[
     ("error_reason", &[Rule::Nullable, Rule::String, Rule::Max(191)]),
-    ("retention_seconds", &[Rule::Nullable, Rule::Integer, Rule::Min(1)]),
+    ("retention_seconds", &[Rule::Nullable, Rule::Integer, Rule::Min(1), Rule::Max(RETENTION_SECONDS_MAX)]),
 ];
 
 /// The item fields `append()` validates, which are all its validated data
@@ -173,6 +183,19 @@ where
     }
 
     /// `formatStream`.
+    /// `WorkflowStreamService::isExpired`: a closed or errored stream past
+    /// `closed_at` plus its retention (3600 seconds when none was recorded).
+    fn stream_expired(row: &DB::Row, at: DateTime<Utc>) -> Result<bool> {
+        if DB::string(row, "status")? == "open" {
+            return Ok(false);
+        }
+        let Some(closed) = DB::optional_instant(row, "closed_at")? else {
+            return Ok(false);
+        };
+        let retention = DB::optional_number(row, "retention_seconds")?.unwrap_or(DEFAULT_CLOSED_RETENTION_SECONDS);
+        Ok(closed + chrono::Duration::seconds(retention) <= at)
+    }
+
     fn stream_json(row: &DB::Row) -> Result<Value> {
         let time = |field: &str| Ok::<_, RuntimeError>(DB::optional_instant(row, field)?.map(carbon_json));
         Ok(json!({
@@ -207,14 +230,19 @@ where
 
     /// `listForRun`: the run's streams by name, in the database's order.
     pub(super) async fn list_workflow_streams(&self, run_id: &str) -> Result<Vec<Value>> {
-        Self::query("SELECT * FROM workflow_durable_streams WHERE namespace=$1 AND workflow_run_id=$2 ORDER BY stream_name")
+        let at = now();
+        let mut streams = Vec::new();
+        for row in Self::query("SELECT * FROM workflow_durable_streams WHERE namespace=$1 AND workflow_run_id=$2 ORDER BY stream_name")
             .bind(self.namespace.as_ref())
             .bind(run_id)
             .fetch_all(&self.pool)
             .await?
-            .iter()
-            .map(Self::stream_json)
-            .collect()
+        {
+            if !Self::stream_expired(&row, at)? {
+                streams.push(Self::stream_json(&row)?);
+            }
+        }
+        Ok(streams)
     }
 
     /// `describe` for a valid name.
@@ -225,7 +253,10 @@ where
             .bind(name)
             .fetch_optional(&self.pool)
             .await?;
-        row.as_ref().map(Self::stream_json).transpose()
+        match row {
+            Some(row) if !Self::stream_expired(&row, now())? => Ok(Some(Self::stream_json(&row)?)),
+            _ => Ok(None),
+        }
     }
 
     /// `WorkflowStreamService::append` for a valid name and a non-empty
@@ -276,23 +307,37 @@ where
         let mut last_offset = DB::number(&row, "last_offset")?;
         let mut total = DB::number(&row, "total_items")?;
         let mut pending = DB::number(&row, "pending_items")?;
+        // The whole batch is admitted or refused before any item is written
+        // (Server #774). An item whose key is already stored, or earlier in
+        // this batch, takes no capacity.
+        let mut stored: HashMap<&str, Option<i64>> = HashMap::new();
+        let mut fresh = 0;
+        for item in &items {
+            match item.idempotency_key.as_deref() {
+                Some(key) if stored.contains_key(key) => {}
+                Some(key) => {
+                    let existing = Self::scalar(DB::STREAM_ITEM_BY_KEY).bind(stream_id).bind(key).fetch_optional(&mut *tx).await?;
+                    if existing.is_none() {
+                        fresh += 1;
+                    }
+                    stored.insert(key, existing);
+                }
+                None => fresh += 1,
+            }
+        }
+        if fresh > 0 && pending + fresh > max_pending {
+            // Dropping the transaction rolls back a stream this append opened.
+            return Ok(Appended::Full { pending_items: pending });
+        }
         let mut offsets = Vec::with_capacity(items.len());
-        let (mut accepted, mut deduped, mut full) = (0, 0, false);
+        let (mut accepted, mut deduped) = (0, 0);
         for item in &items {
             if let Some(key) = item.idempotency_key.as_deref()
-                && let Some(existing) = Self::scalar(DB::STREAM_ITEM_BY_KEY)
-                    .bind(stream_id)
-                    .bind(key)
-                    .fetch_optional(&mut *tx)
-                    .await?
+                && let Some(Some(existing)) = stored.get(key)
             {
-                offsets.push(existing);
+                offsets.push(*existing);
                 deduped += 1;
                 continue;
-            }
-            if pending >= max_pending {
-                full = true;
-                break;
             }
             last_offset += 1;
             Self::query(DB::STREAM_ITEM_INSERT)
@@ -314,6 +359,9 @@ where
                 .bind(DB::bind_time(at))
                 .execute(&mut *tx)
                 .await?;
+            if let Some(key) = item.idempotency_key.as_deref() {
+                stored.insert(key, Some(last_offset));
+            }
             total += 1;
             pending += 1;
             accepted += 1;
@@ -334,10 +382,65 @@ where
         }
         let row = Self::query(STREAM_BY_ID).bind(stream_id).fetch_one(&mut *tx).await?;
         tx.commit().await?;
-        if full {
-            return Ok(Appended::Full { pending_items: DB::number(&row, "pending_items")? });
-        }
         Ok(Appended::Accepted { stream: Self::stream_json(&row)?, offsets, accepted, deduped })
+    }
+
+    /// `WorkflowStreamRetention::pruneExpired` for this namespace: at most
+    /// `stream_limit` expired streams, oldest close first, and at most
+    /// `item_budget` items, deleted in transactions of at most 500 under the
+    /// transition lock. A stream row goes in the transaction that finds it
+    /// empty, and the next pass resumes with the same oldest streams. Returns
+    /// the streams removed, the items deleted and whether the budget ran out.
+    pub(super) async fn prune_expired_streams(&self, stream_limit: i64, item_budget: i64) -> Result<(i64, i64, bool)> {
+        let at = now();
+        let candidates = Self::query(DB::EXPIRED_STREAMS)
+            .bind(self.namespace.as_ref())
+            .bind(DB::bind_time(at))
+            .bind(stream_limit.max(1))
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(|row| DB::number(row, "id"))
+            .collect::<Result<Vec<_>>>()?;
+        let budget = item_budget.max(1);
+        let (mut streams, mut items) = (0, 0);
+        for stream_id in candidates {
+            loop {
+                if items >= budget {
+                    return Ok((streams, items, true));
+                }
+                let take = SWEEP_ITEM_BATCH.min(budget - items);
+                let mut tx = self.begin().await?;
+                let Some(row) = Self::query(STREAM_BY_ID).bind(stream_id).fetch_optional(&mut *tx).await? else {
+                    break;
+                };
+                if !Self::stream_expired(&row, at)? {
+                    break;
+                }
+                // The offset of the `take`th item, when that many remain.
+                let through = Self::scalar(DB::STREAM_SWEEP_BOUNDARY)
+                    .bind(stream_id)
+                    .bind(take - 1)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+                if let Some(offset) = through {
+                    let deleted = Self::query(DB::STREAM_SWEEP_THROUGH).bind(stream_id).bind(offset).execute(&mut *tx).await?;
+                    tx.commit().await?;
+                    items += DB::affected(deleted) as i64;
+                    continue;
+                }
+                let deleted = Self::query("DELETE FROM workflow_durable_stream_items WHERE stream_id=$1")
+                    .bind(stream_id)
+                    .execute(&mut *tx)
+                    .await?;
+                Self::query("DELETE FROM workflow_durable_streams WHERE id=$1").bind(stream_id).execute(&mut *tx).await?;
+                tx.commit().await?;
+                items += DB::affected(deleted) as i64;
+                streams += 1;
+                break;
+            }
+        }
+        Ok((streams, items, false))
     }
 
     /// `WorkflowStreamService::read` for a valid name and offset.
@@ -357,6 +460,9 @@ where
         else {
             return Ok(None);
         };
+        if Self::stream_expired(&row, now())? {
+            return Ok(None);
+        }
         let stream_id = DB::number(&row, "id")?;
         let rows = Self::query(DB::STREAM_ITEMS_WINDOW)
             .bind(stream_id)
@@ -407,6 +513,9 @@ where
         else {
             return Ok(None);
         };
+        if Self::stream_expired(&row, now())? {
+            return Ok(None);
+        }
         if DB::string(&row, "status")? != "open" {
             return Ok(Some(Self::stream_json(&row)?));
         }

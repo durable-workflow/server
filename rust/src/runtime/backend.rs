@@ -86,6 +86,12 @@ pub(super) trait Backend: Database {
     const STREAM_ITEM_BY_KEY: &str = "SELECT \"offset\" FROM workflow_durable_stream_items WHERE stream_id=$1 AND idempotency_key=$2 LIMIT 1";
     const STREAM_ITEM_INSERT: &str = "INSERT INTO workflow_durable_stream_items(stream_id,namespace,workflow_run_id,stream_name,\"offset\",idempotency_key,origin,origin_reference,payload,payload_reference,payload_codec,item_type,content_type,emitted_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)";
     const STREAM_ITEMS_WINDOW: &str = "SELECT * FROM workflow_durable_stream_items WHERE stream_id=$1 AND \"offset\">=$2 ORDER BY \"offset\" LIMIT $3";
+    // `WorkflowStreamRetention`: this namespace's closed or errored streams
+    // whose `closed_at` plus retention (3600 seconds when none was recorded)
+    // is no later than $2, oldest close first.
+    const EXPIRED_STREAMS: &str = "SELECT id FROM workflow_durable_streams WHERE namespace=$1 AND status IN ('closed','errored') AND closed_at IS NOT NULL AND closed_at<=$2-(COALESCE(retention_seconds,3600)*INTERVAL '1 second') ORDER BY closed_at,id LIMIT $3";
+    const STREAM_SWEEP_BOUNDARY: &str = "SELECT \"offset\" FROM workflow_durable_stream_items WHERE stream_id=$1 ORDER BY \"offset\" LIMIT 1 OFFSET $2";
+    const STREAM_SWEEP_THROUGH: &str = "DELETE FROM workflow_durable_stream_items WHERE stream_id=$1 AND \"offset\"<=$2";
     fn statement(sql: &'static str) -> Cow<'static, str> {
         Cow::Borrowed(sql)
     }
@@ -195,6 +201,8 @@ WHERE r.status IN ('pending','running','waiting')
 ORDER BY t.available_order,t.id LIMIT 100
 "#;
     const SELECTION_RESOLUTION_SQL: &str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SelectionResolved' AND json_extract(payload,'$.selection_group_id')=$2 ORDER BY sequence LIMIT 1";
+    // SQLite keeps times as text: closed_at against $2 less the retention.
+    const EXPIRED_STREAMS: &str = "SELECT id FROM workflow_durable_streams WHERE namespace=$1 AND status IN ('closed','errored') AND closed_at IS NOT NULL AND closed_at<=strftime('%Y-%m-%d %H:%M:%f',$2,'-'||COALESCE(retention_seconds,3600)||' seconds') ORDER BY closed_at,id LIMIT $3";
     const REPAIR_COUNTER_MAX: i64 = i64::MAX;
     const RANGE_REPAIR_TASK_SQL: &str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace=$2 AND task_type='workflow' AND status='failed' AND json_extract(payload,'$.replay_blocked')=1 ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
     const ACTIVITY_OPEN_TASK_SQL: &str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='activity' AND status IN ('ready','leased') AND json_extract(payload,'$.activity_execution_id')=$2 ORDER BY id LIMIT 1";
@@ -447,6 +455,9 @@ impl Backend for MySql {
     const STREAM_ITEM_BY_KEY: &str = "SELECT `offset` FROM workflow_durable_stream_items WHERE stream_id=$1 AND idempotency_key=$2 LIMIT 1";
     const STREAM_ITEM_INSERT: &str = "INSERT INTO workflow_durable_stream_items(stream_id,namespace,workflow_run_id,stream_name,`offset`,idempotency_key,origin,origin_reference,payload,payload_reference,payload_codec,item_type,content_type,emitted_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)";
     const STREAM_ITEMS_WINDOW: &str = "SELECT * FROM workflow_durable_stream_items WHERE stream_id=$1 AND `offset`>=$2 ORDER BY `offset` LIMIT $3";
+    const EXPIRED_STREAMS: &str = "SELECT id FROM workflow_durable_streams WHERE namespace=$1 AND status IN ('closed','errored') AND closed_at IS NOT NULL AND closed_at<=DATE_SUB($2,INTERVAL COALESCE(retention_seconds,3600) SECOND) ORDER BY closed_at,id LIMIT $3";
+    const STREAM_SWEEP_BOUNDARY: &str = "SELECT `offset` FROM workflow_durable_stream_items WHERE stream_id=$1 ORDER BY `offset` LIMIT 1 OFFSET $2";
+    const STREAM_SWEEP_THROUGH: &str = "DELETE FROM workflow_durable_stream_items WHERE stream_id=$1 AND `offset`<=$2";
     const READ_SNAPSHOT_BEGIN: &str = "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY";
     const ACTIVITY_METADATA_HISTORY: &str = "SELECT h.sequence,h.event_type,CASE WHEN page.projection_bytes<=8388608 THEN h.payload ELSE NULL END AS payload,h.workflow_task_id,h.recorded_at,page.projection_count FROM (SELECT id,sequence,COUNT(*) OVER () AS projection_count,SUM(payload_bytes) OVER (ORDER BY sequence) AS projection_bytes FROM (SELECT id,sequence,octet_length(CAST(payload AS CHAR CHARACTER SET utf8mb4)) AS payload_bytes FROM workflow_history_events FORCE INDEX (workflow_history_events_workflow_run_id_sequence_unique) WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled')) AS sizes ORDER BY sequence LIMIT 10001) AS page JOIN workflow_history_events h ON h.id=page.id ORDER BY page.sequence";
     const PHP_CONNECTION: &str = "mysql";

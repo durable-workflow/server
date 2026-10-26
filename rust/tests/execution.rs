@@ -210,6 +210,8 @@ mod describe_actions;
 mod run_deadlines;
 #[path = "execution/waterline_projection_guards.rs"]
 mod waterline_projection_guards;
+#[path = "execution/workflow_stream_bounds.rs"]
+mod workflow_stream_bounds;
 #[path = "execution/operator_dashboard.rs"]
 mod operator_dashboard;
 #[path = "execution/waterline_reads.rs"]
