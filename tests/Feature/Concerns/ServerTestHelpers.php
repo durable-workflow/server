@@ -8,7 +8,9 @@ use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowMetadataCapabilityPolicy;
+use Workflow\V2\Jobs\RunServiceCall;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\WorkflowServiceCallDispatch;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\WorkflowExecutor;
 
@@ -111,5 +113,23 @@ trait ServerTestHelpers
 
         $job = new RunWorkflowTask($taskId);
         $job->handle(app(WorkflowExecutor::class));
+    }
+
+    /**
+     * Runs the service calls committed completions scheduled, as the queue
+     * worker runs their RunServiceCall jobs: Workflow 2.14 dispatches a
+     * workflow-authored call's effect after its completion commits.
+     */
+    protected function runScheduledServiceCalls(): int
+    {
+        $callIds = WorkflowServiceCallDispatch::query()
+            ->where('state', 'scheduled')
+            ->orderBy('available_at')
+            ->pluck('service_call_id');
+        foreach ($callIds as $callId) {
+            $this->app->call([new RunServiceCall((string) $callId), 'handle']);
+        }
+
+        return $callIds->count();
     }
 }

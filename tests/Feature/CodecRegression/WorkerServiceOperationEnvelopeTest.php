@@ -50,12 +50,15 @@ final class WorkerServiceOperationEnvelopeTest extends TestCase
                     'request_payload' => ['codec' => 'avro', 'blob' => 'wwHioz3/VYAiNwwCChRpbnZvaWNlLTQyAA=='],
                 ]],
             ], $this->workerHeaders())->assertOk();
+            // Workflow 2.14 admits the call in the completion and starts its
+            // target when the scheduled effect runs after commit.
+            $this->assertDatabaseHas('workflow_history_events', [
+                'workflow_run_id' => $task['run_id'], 'event_type' => 'ServiceOperationScheduled',
+            ]);
+            $this->assertSame(1, $this->runScheduledServiceCalls());
             $call = WorkflowServiceCall::query()->sole();
             $this->assertSame('started', $call->status);
             $this->assertNotNull($call->linked_workflow_run_id);
-            $this->assertDatabaseHas('workflow_history_events', [
-                'workflow_run_id' => $task['run_id'], 'event_type' => 'ServiceCallStarted',
-            ]);
         });
     }
 }
