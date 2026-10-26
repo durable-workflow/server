@@ -112,13 +112,10 @@ where
         // timers, children and waits stay with the closed predecessor, and no
         // parent-close policy applies. Message streams pass to the next run
         // when the completion records its stream acknowledgements. Durable
-        // output streams, service calls and live queries are not transferred
-        // by native yet.
+        // output streams are rows of their run and stay with the predecessor;
+        // PHP's continue-as-new does not touch them either.
+        // Service calls and live queries are not transferred by native yet.
         for (sql, selected) in [
-            (
-                "SELECT COUNT(*) FROM workflow_durable_streams WHERE workflow_instance_id=$1",
-                workflow.as_str(),
-            ),
             (
                 "SELECT COUNT(*) FROM workflow_service_calls WHERE caller_workflow_run_id=$1",
                 old.as_str(),

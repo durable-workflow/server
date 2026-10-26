@@ -35,6 +35,7 @@ import {checkRepairPass} from './repair-pass-contract.mjs';
 import {checkNamespaceDelete} from './namespace-delete-contract.mjs';
 import {checkUpdateValidation} from './update-validation-contract.mjs';
 import {checkMessageStreams} from './message-streams-contract.mjs';
+import {checkWorkflowStreamWrites} from './workflow-stream-writes-contract.mjs';
 import {checkSchedulePolicies} from './schedule-policies-contract.mjs';
 import {checkScheduleCatalog} from './schedule-catalog-contract.mjs';
 import {checkSignalsBeforeWorker} from './signals-before-worker-contract.mjs';
@@ -188,6 +189,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const namespaceDelete = fixture.namespace_delete ? checkNamespaceDelete(fixture, observation, workflowId) : null;
   const updateValidation = fixture.update_validation ? checkUpdateValidation(fixture, observation, workflowId) : null;
   const messageStreams = fixture.message_streams ? checkMessageStreams(fixture, observation, workflowId) : null;
+  const workflowStreamWrites = fixture.workflow_stream_writes ? checkWorkflowStreamWrites(fixture, observation, workflowId) : null;
   const schedulePolicies = fixture.schedule_policies ? checkSchedulePolicies(fixture, observation, workflowId) : null;
   const scheduleCatalog = fixture.schedule_catalog ? checkScheduleCatalog(fixture, observation, workflowId) : null;
   const signalsBeforeWorker = fixture.signals_before_worker ? checkSignalsBeforeWorker(fixture, observation, workflowId) : null;
@@ -757,6 +759,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(namespaceDelete ? {namespace_delete: namespaceDelete} : {}),
     ...(updateValidation ? {update_validation: updateValidation} : {}),
     ...(messageStreams ? {message_streams: messageStreams} : {}),
+    ...(workflowStreamWrites ? {workflow_stream_writes: workflowStreamWrites} : {}),
     ...(schedulePolicies ? {schedule_policies: schedulePolicies} : {}),
     ...(scheduleCatalog ? {schedule_catalog: scheduleCatalog} : {}),
     ...(signalsBeforeWorker ? {signals_before_worker: signalsBeforeWorker} : {}),

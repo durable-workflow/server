@@ -768,6 +768,58 @@
     ],
     [
         "column",
+        "dw_stream_reclaims.1",
+        {
+            "collation": null,
+            "default": null,
+            "generated": "",
+            "identity": "",
+            "name": "stream_id",
+            "not_null": true,
+            "type": "bigint"
+        }
+    ],
+    [
+        "column",
+        "dw_stream_reclaims.2",
+        {
+            "collation": "default",
+            "default": null,
+            "generated": "",
+            "identity": "",
+            "name": "namespace",
+            "not_null": true,
+            "type": "text"
+        }
+    ],
+    [
+        "column",
+        "dw_stream_reclaims.3",
+        {
+            "collation": "default",
+            "default": null,
+            "generated": "",
+            "identity": "",
+            "name": "workflow_run_id",
+            "not_null": true,
+            "type": "text"
+        }
+    ],
+    [
+        "column",
+        "dw_stream_reclaims.4",
+        {
+            "collation": null,
+            "default": null,
+            "generated": "",
+            "identity": "",
+            "name": "reclaim_at",
+            "not_null": true,
+            "type": "timestamp(6) without time zone"
+        }
+    ],
+    [
+        "column",
         "dw_task_completions.1",
         {
             "name": "task_id",
@@ -11989,6 +12041,16 @@
     ],
     [
         "constraint",
+        "dw_stream_reclaims.dw_stream_reclaims_pkey",
+        {
+            "deferrable": false,
+            "deferred": false,
+            "definition": "PRIMARY KEY (stream_id)",
+            "validated": true
+        }
+    ],
+    [
+        "constraint",
         "dw_task_completions.dw_task_completions_pkey",
         {
             "deferred": false,
@@ -13080,6 +13142,28 @@
             "unique": true,
             "primary": true,
             "definition": "CREATE UNIQUE INDEX dw_query_cache_pkey ON public.dw_query_cache USING btree (key)"
+        }
+    ],
+    [
+        "index",
+        "dw_stream_reclaims_due",
+        {
+            "definition": "CREATE INDEX dw_stream_reclaims_due ON public.dw_stream_reclaims USING btree (namespace, reclaim_at, stream_id)",
+            "primary": false,
+            "ready": true,
+            "unique": false,
+            "valid": true
+        }
+    ],
+    [
+        "index",
+        "dw_stream_reclaims_pkey",
+        {
+            "definition": "CREATE UNIQUE INDEX dw_stream_reclaims_pkey ON public.dw_stream_reclaims USING btree (stream_id)",
+            "primary": true,
+            "ready": true,
+            "unique": true,
+            "valid": true
         }
     ],
     [
@@ -17306,6 +17390,21 @@
             "access_method": "heap",
             "partition_key": null,
             "force_row_security": false
+        }
+    ],
+    [
+        "relation",
+        "dw_stream_reclaims",
+        {
+            "access_method": "heap",
+            "force_row_security": false,
+            "kind": "r",
+            "options": null,
+            "partition": false,
+            "partition_key": null,
+            "persistence": "p",
+            "row_security": false,
+            "view": null
         }
     ],
     [

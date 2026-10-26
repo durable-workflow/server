@@ -1,0 +1,113 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "workflow-stream-writes",
+  "review_state": "reviewed",
+  "contract": "Published Server 2.11.1 durable workflow stream producer routes: POST runs/{run}/streams/{name}/items opens a stream on first append, assigns offsets from 0, returns an existing item for a repeated idempotency key, refuses a batch whose fresh items would pass the pending-items cap whole with 429 stream_full (Server #774; published 2.11.1 committed the items before the cap first, a bounded published defect), and refuses closed and errored streams with 409. POST .../close closes or errors a stream once, keeps a terminal stream unchanged and defaults retention to 3600 seconds. Reads report the rows, reset pending_items when a read reaches the head, and a bounded wait on an open stream returns empty. Every validation, name and unknown-run refusal is recorded.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "message streams λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "message streams λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "workflow_stream_writes": {
+    "workflow_type": "parity.v1.workflow_streams",
+    "stream": "tokens",
+    "other_stream": "audit",
+    "bad_stream": "bad name!",
+    "max_pending_items": 2,
+    "too_many_items": 501,
+    "too_many_read": 501,
+    "too_long_wait": 61,
+    "long_key_length": 192,
+    "bad_codec": "not-a-codec",
+    "unstored_reference": "dw-external-payload-reference-that-was-never-stored",
+    "error_reason": "producer crashed",
+    "retention_seconds": 60,
+    "batches": {
+      "first": [
+        {
+          "payload": {
+            "token": "Hello",
+            "count": 9007199254740993,
+            "unicode": "λ"
+          },
+          "idempotency_key": "k1",
+          "origin": "worker",
+          "origin_reference": "attempt-1",
+          "item_type": "token",
+          "content_type": "application/json"
+        },
+        {
+          "payload": "plain text",
+          "payload_codec": "avro",
+          "idempotency_key": "k2"
+        }
+      ],
+      "retry": [
+        {
+          "payload": {
+            "token": "changed"
+          },
+          "idempotency_key": "k1"
+        },
+        {
+          "payload": [
+            1,
+            2,
+            3
+          ]
+        }
+      ],
+      "over_cap": [
+        {
+          "payload": {
+            "n": 3
+          },
+          "idempotency_key": "k3"
+        },
+        {
+          "payload": {
+            "n": 4
+          }
+        },
+        {
+          "payload": {
+            "n": 5
+          },
+          "idempotency_key": "k5"
+        }
+      ],
+      "other": [
+        {
+          "payload": {
+            "audit": true
+          },
+          "item_type": "event"
+        }
+      ]
+    }
+  }
+}

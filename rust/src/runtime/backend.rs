@@ -82,6 +82,20 @@ pub(super) trait Backend: Database {
     const SEARCH_ATTRIBUTE_DELETE: &str = "DELETE FROM workflow_search_attributes WHERE workflow_run_id=$1 AND \"key\"=$2";
     const SEARCH_ATTRIBUTE_KEY_ROWS: &str = "SELECT a.workflow_run_id,a.\"key\" AS attribute_key,a.type,a.value_string,a.value_keyword,a.value_int,a.value_float,CASE WHEN a.value_bool IS NULL THEN NULL WHEN a.value_bool THEN 1 ELSE 0 END AS value_bool,a.value_datetime,a.value_keyword_list FROM workflow_search_attributes a JOIN workflow_runs r ON r.id=a.workflow_run_id WHERE r.namespace=$1 AND a.\"key\"=$2";
     const SEARCH_ATTRIBUTE_INHERIT: &str = "INSERT INTO workflow_search_attributes(workflow_run_id,workflow_instance_id,\"key\",type,value_string,value_keyword,value_keyword_list,value_int,value_float,value_bool,value_datetime,upserted_at_sequence,inherited_from_parent,created_at,updated_at) SELECT $1,$2,\"key\",type,value_string,value_keyword,value_keyword_list,value_int,value_float,value_bool,value_datetime,1,true,$3,$4 FROM workflow_search_attributes WHERE workflow_run_id=$5";
+    // Durable workflow stream items; `offset` is a reserved word.
+    const STREAM_ITEM_BY_KEY: &str = "SELECT \"offset\" FROM workflow_durable_stream_items WHERE stream_id=$1 AND idempotency_key=$2 LIMIT 1";
+    const STREAM_ITEM_INSERT: &str = "INSERT INTO workflow_durable_stream_items(stream_id,namespace,workflow_run_id,stream_name,\"offset\",idempotency_key,origin,origin_reference,payload,payload_reference,payload_codec,item_type,content_type,emitted_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)";
+    const STREAM_ITEMS_WINDOW: &str = "SELECT * FROM workflow_durable_stream_items WHERE stream_id=$1 AND \"offset\">=$2 ORDER BY \"offset\" LIMIT $3";
+    const STREAM_SWEEP_BOUNDARY: &str = "SELECT \"offset\" FROM workflow_durable_stream_items WHERE stream_id=$1 ORDER BY \"offset\" LIMIT 1 OFFSET $2";
+    const STREAM_SWEEP_THROUGH: &str = "DELETE FROM workflow_durable_stream_items WHERE stream_id=$1 AND \"offset\"<=$2";
+    // Durable stream items, and streams, holding an external payload
+    // reference, which native does not settle (Server #774). PostgreSQL
+    // stores these payloads as `json`, matched through its text.
+    const STREAM_ITEM_REFERENCES: &str = concat!("SELECT COUNT(*) FROM workflow_durable_stream_items WHERE stream_id=$1 AND (payload_reference IS NOT NULL OR ", super::retention::reference!("payload::text"), ")");
+    const RUN_STREAM_REFERENCES: &str = concat!(
+        "SELECT (SELECT COUNT(*) FROM workflow_durable_stream_items WHERE workflow_run_id=$1 AND (payload_reference IS NOT NULL OR ", super::retention::reference!("payload::text"), "))",
+        "+(SELECT COUNT(*) FROM workflow_durable_streams WHERE workflow_run_id=$2 AND ", super::retention::reference!("metadata::text"), ")"
+    );
     // `duplicateBridgeCommand`: the latest accepted command PHP recorded for
     // this adapter, action, key and target name ($6 names the target field),
     // filtered in the database as PHP's JSON-path query is. PHP's bridge
@@ -197,6 +211,11 @@ WHERE r.status IN ('pending','running','waiting')
 ORDER BY t.available_order,t.id LIMIT 100
 "#;
     const SELECTION_RESOLUTION_SQL: &str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SelectionResolved' AND json_extract(payload,'$.selection_group_id')=$2 ORDER BY sequence LIMIT 1";
+    const STREAM_ITEM_REFERENCES: &str = concat!("SELECT COUNT(*) FROM workflow_durable_stream_items WHERE stream_id=$1 AND (payload_reference IS NOT NULL OR ", super::retention::reference!("payload"), ")");
+    const RUN_STREAM_REFERENCES: &str = concat!(
+        "SELECT (SELECT COUNT(*) FROM workflow_durable_stream_items WHERE workflow_run_id=$1 AND (payload_reference IS NOT NULL OR ", super::retention::reference!("payload"), "))",
+        "+(SELECT COUNT(*) FROM workflow_durable_streams WHERE workflow_run_id=$2 AND ", super::retention::reference!("metadata"), ")"
+    );
     const BRIDGE_COMMAND: &str = "SELECT workflow_run_id,resolved_workflow_run_id FROM workflow_commands WHERE workflow_instance_id=$1 AND command_type=$2 AND status='accepted' AND json_extract(context,'$.server.metadata.adapter')=$3 AND json_extract(context,'$.server.metadata.action')=$4 AND json_extract(context,'$.server.metadata.idempotency_key')=$5 AND json_extract(context,'$.server.metadata.'||$6)=$7 AND (request_id IS NULL OR request_id=$8) ORDER BY accepted_at DESC,command_sequence DESC LIMIT 1";
     const REPAIR_COUNTER_MAX: i64 = i64::MAX;
     const RANGE_REPAIR_TASK_SQL: &str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace=$2 AND task_type='workflow' AND status='failed' AND json_extract(payload,'$.replay_blocked')=1 ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
@@ -447,6 +466,16 @@ impl Backend for MySql {
     const SEARCH_ATTRIBUTE_DELETE: &str = "DELETE FROM workflow_search_attributes WHERE workflow_run_id=$1 AND `key`=$2";
     const SEARCH_ATTRIBUTE_KEY_ROWS: &str = "SELECT a.workflow_run_id,a.`key` AS attribute_key,a.type,a.value_string,a.value_keyword,a.value_int,a.value_float,CASE WHEN a.value_bool IS NULL THEN NULL WHEN a.value_bool THEN 1 ELSE 0 END AS value_bool,a.value_datetime,a.value_keyword_list FROM workflow_search_attributes a JOIN workflow_runs r ON r.id=a.workflow_run_id WHERE r.namespace=$1 AND a.`key`=$2";
     const SEARCH_ATTRIBUTE_INHERIT: &str = "INSERT INTO workflow_search_attributes(workflow_run_id,workflow_instance_id,`key`,type,value_string,value_keyword,value_keyword_list,value_int,value_float,value_bool,value_datetime,upserted_at_sequence,inherited_from_parent,created_at,updated_at) SELECT $1,$2,`key`,type,value_string,value_keyword,value_keyword_list,value_int,value_float,value_bool,value_datetime,1,true,$3,$4 FROM workflow_search_attributes WHERE workflow_run_id=$5";
+    const STREAM_ITEM_BY_KEY: &str = "SELECT `offset` FROM workflow_durable_stream_items WHERE stream_id=$1 AND idempotency_key=$2 LIMIT 1";
+    const STREAM_ITEM_INSERT: &str = "INSERT INTO workflow_durable_stream_items(stream_id,namespace,workflow_run_id,stream_name,`offset`,idempotency_key,origin,origin_reference,payload,payload_reference,payload_codec,item_type,content_type,emitted_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)";
+    const STREAM_ITEMS_WINDOW: &str = "SELECT * FROM workflow_durable_stream_items WHERE stream_id=$1 AND `offset`>=$2 ORDER BY `offset` LIMIT $3";
+    const STREAM_SWEEP_BOUNDARY: &str = "SELECT `offset` FROM workflow_durable_stream_items WHERE stream_id=$1 ORDER BY `offset` LIMIT 1 OFFSET $2";
+    const STREAM_SWEEP_THROUGH: &str = "DELETE FROM workflow_durable_stream_items WHERE stream_id=$1 AND `offset`<=$2";
+    const STREAM_ITEM_REFERENCES: &str = concat!("SELECT COUNT(*) FROM workflow_durable_stream_items WHERE stream_id=$1 AND (payload_reference IS NOT NULL OR ", super::retention::reference!("payload"), ")");
+    const RUN_STREAM_REFERENCES: &str = concat!(
+        "SELECT (SELECT COUNT(*) FROM workflow_durable_stream_items WHERE workflow_run_id=$1 AND (payload_reference IS NOT NULL OR ", super::retention::reference!("payload"), "))",
+        "+(SELECT COUNT(*) FROM workflow_durable_streams WHERE workflow_run_id=$2 AND ", super::retention::reference!("metadata"), ")"
+    );
     const READ_SNAPSHOT_BEGIN: &str = "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY";
     const ACTIVITY_METADATA_HISTORY: &str = "SELECT h.sequence,h.event_type,CASE WHEN page.projection_bytes<=8388608 THEN h.payload ELSE NULL END AS payload,h.workflow_task_id,h.recorded_at,page.projection_count FROM (SELECT id,sequence,COUNT(*) OVER () AS projection_count,SUM(payload_bytes) OVER (ORDER BY sequence) AS projection_bytes FROM (SELECT id,sequence,octet_length(CAST(payload AS CHAR CHARACTER SET utf8mb4)) AS payload_bytes FROM workflow_history_events FORCE INDEX (workflow_history_events_workflow_run_id_sequence_unique) WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled')) AS sizes ORDER BY sequence LIMIT 10001) AS page JOIN workflow_history_events h ON h.id=page.id ORDER BY page.sequence";
     const PHP_CONNECTION: &str = "mysql";
