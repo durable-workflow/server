@@ -82,6 +82,37 @@ class ExternalPayloadRetentionCleanup
     }
 
     /**
+     * The external payloads of durable stream items the stream retention
+     * pass is about to delete (Server #774), except any another retained row
+     * still references. The items themselves count as released.
+     *
+     * @param  list<int>  $itemIds
+     * @return array{found: int, deleted: int, blocked: bool, reason: string|null}
+     */
+    public function deleteForDurableStreamItems(string $namespace, array $itemIds): array
+    {
+        $itemIds = array_values(array_unique(array_filter(
+            array_map(static fn (mixed $itemId): int => (int) $itemId, $itemIds),
+            static fn (int $itemId): bool => $itemId > 0,
+        )));
+        $references = [];
+
+        if ($itemIds !== []) {
+            $items = WorkflowDurableStreamItem::query()
+                ->where('namespace', $namespace)
+                ->whereIn('id', $itemIds);
+            $this->collectPayloadColumn(clone $items, 'payload', $references);
+            $this->collectReferenceColumn(clone $items, 'payload_reference', $references);
+        }
+
+        return $this->deleteReferences(
+            $namespace,
+            array_values(array_unique($references)),
+            fn (string $uri): bool => $this->isReferencedByRetainedRun($uri, [], [], $itemIds),
+        );
+    }
+
+    /**
      * @param  list<string>  $runIds
      * @param  list<string>  $instanceIds
      * @return array{found: int, deleted: int, blocked: bool, reason: string|null}
@@ -162,11 +193,19 @@ class ExternalPayloadRetentionCleanup
         }
 
         $deleted = 0;
+        $lockOrder = array_flip(RuntimeExternalPayloadObjectLock::inLockOrder(array_column($deletable, 'uri')));
+        usort($deletable, static fn (array $left, array $right): int => [$lockOrder[$left['uri']], $left['namespace']] <=> [$lockOrder[$right['uri']], $right['namespace']]);
 
         foreach ($deletable as $reference) {
             try {
-                $drivers[$reference['namespace']]->delete($reference['uri']);
-                $deleted++;
+                $driver = $drivers[$reference['namespace']];
+                $uri = $reference['uri'];
+                if (! $driver instanceof RuntimeTrackedExternalPayloadStorage) {
+                    $driver->delete($uri);
+                    $deleted++;
+                } elseif ($driver->deleteUnlessReferenced($uri, static fn (): bool => $isRetained($uri))) {
+                    $deleted++;
+                }
             } catch (ExternalPayloadStorageUnavailable $e) {
                 throw $e;
             } catch (\Throwable $e) {
@@ -229,10 +268,18 @@ class ExternalPayloadRetentionCleanup
 
         $deleted = 0;
 
-        foreach ($deletable as $uri) {
+        // The retained-reference check is asked again under each object's
+        // lock, where writers claim, so a reference committed after the scan
+        // above keeps its object. Objects are locked in one canonical order
+        // because an enclosing transaction holds every lock until it commits.
+        foreach (RuntimeExternalPayloadObjectLock::inLockOrder($deletable) as $uri) {
             try {
-                $driver->delete($uri);
-                $deleted++;
+                if (! $driver instanceof RuntimeTrackedExternalPayloadStorage) {
+                    $driver->delete($uri);
+                    $deleted++;
+                } elseif ($driver->deleteUnlessReferenced($uri, static fn (): bool => $isRetained($uri))) {
+                    $deleted++;
+                }
             } catch (ExternalPayloadStorageUnavailable $e) {
                 throw $e;
             } catch (\Throwable $e) {
@@ -551,6 +598,7 @@ class ExternalPayloadRetentionCleanup
         string $uri,
         array $deletedRunIds,
         array $releasedInboundStreamItemIds,
+        array $releasedDurableStreamItemIds = [],
     ): bool {
         $runColumns = [
             'arguments',
@@ -580,19 +628,36 @@ class ExternalPayloadRetentionCleanup
         foreach ($this->retainedPayloadColumns(
             $deletedRunIds,
             $releasedInboundStreamItemIds,
+            $releasedDurableStreamItemIds,
         ) as [$query, $column]) {
             if ($this->payloadColumnReferencesUri($query, $column, $uri)) {
                 return true;
             }
         }
 
-        foreach ($this->retainedReferenceColumns($deletedRunIds) as [$query, $column]) {
+        foreach ($this->retainedReferenceColumns($deletedRunIds, $releasedDurableStreamItemIds) as [$query, $column]) {
             if ($this->referenceColumnReferencesUri($query, $column, $uri)) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * @param  list<string>  $deletedRunIds
+     * @param  list<int>  $releasedItemIds
+     * @return Builder<WorkflowDurableStreamItem>
+     */
+    private function retainedDurableStreamItems(array $deletedRunIds, array $releasedItemIds): Builder
+    {
+        $items = WorkflowDurableStreamItem::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds));
+
+        if ($releasedItemIds !== []) {
+            $items->whereNotIn('id', $releasedItemIds);
+        }
+
+        return $items;
     }
 
     /**
@@ -610,8 +675,11 @@ class ExternalPayloadRetentionCleanup
      * @param  list<string>  $deletedRunIds
      * @return list<array{0: Builder<Model>, 1: string}>
      */
-    private function retainedPayloadColumns(array $deletedRunIds, array $releasedInboundStreamItemIds): array
-    {
+    private function retainedPayloadColumns(
+        array $deletedRunIds,
+        array $releasedInboundStreamItemIds,
+        array $releasedDurableStreamItemIds = [],
+    ): array {
         $retainedInboundStreamItems = WorkflowInboundStreamItem::query();
         if ($releasedInboundStreamItemIds !== []) {
             $retainedInboundStreamItems->whereNotIn('id', $releasedInboundStreamItemIds);
@@ -649,7 +717,7 @@ class ExternalPayloadRetentionCleanup
             [WorkflowServiceCall::query(), 'caller_principal_claims'],
             [WorkflowScheduleHistoryEvent::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
             [WorkflowDurableStream::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'metadata'],
-            [WorkflowDurableStreamItem::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
+            [$this->retainedDurableStreamItems($deletedRunIds, $releasedDurableStreamItemIds), 'payload'],
             [$retainedInboundStreamItems, 'payload_blob'],
             [WorkflowRunTimerEntry::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
             [WorkflowRunWait::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
@@ -667,11 +735,11 @@ class ExternalPayloadRetentionCleanup
      * @param  list<string>  $deletedRunIds
      * @return list<array{0: Builder<Model>, 1: string}>
      */
-    private function retainedReferenceColumns(array $deletedRunIds): array
+    private function retainedReferenceColumns(array $deletedRunIds, array $releasedDurableStreamItemIds = []): array
     {
         $columns = [
             [
-                WorkflowDurableStreamItem::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)),
+                $this->retainedDurableStreamItems($deletedRunIds, $releasedDurableStreamItemIds),
                 'payload_reference',
             ],
             [

@@ -7,13 +7,18 @@ namespace Tests\Feature;
 use App\Models\WorkflowDurableStream;
 use App\Models\WorkflowDurableStreamItem;
 use App\Models\WorkflowNamespace;
+use App\Support\HistoryRetentionEnforcer;
+use App\Support\NamespaceDurableStateException;
 use App\Support\RuntimeExternalPayloadRegistry;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowStreamCommandProcessor;
+use App\Support\WorkflowStreamRetention;
 use App\Support\WorkflowStreamService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Str;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
@@ -225,14 +230,319 @@ class WorkflowStreamsTest extends TestCase
             ->assertJsonPath('reason', 'stream_full')
             ->assertJsonPath('max_pending_items', 2);
 
-        // The first two items did land before the cap kicked in;
-        // ordering is preserved.
-        $this->assertSame(
-            2,
-            WorkflowDurableStreamItem::query()
-                ->where('workflow_run_id', $run->id)
-                ->count(),
-        );
+        // Server #774: the whole batch is refused before any item is
+        // written, and the stream this append would have opened is not
+        // created, so a plain retry duplicates nothing.
+        $this->assertSame(0, WorkflowDurableStreamItem::query()->where('workflow_run_id', $run->id)->count());
+        $this->assertSame(0, WorkflowDurableStream::query()->where('workflow_run_id', $run->id)->count());
+    }
+
+    public function test_capacity_is_decided_for_the_whole_batch_and_duplicates_take_none(): void
+    {
+        $run = $this->createRun('default', 'wf-streams-batch-cap');
+        $route = $this->itemsRoute('wf-streams-batch-cap', $run->id, 'tokens');
+        $append = fn (array $items) => $this->withHeaders($this->apiHeaders())
+            ->postJson($route, ['max_pending_items' => 3, 'items' => $items]);
+
+        $append([['payload' => ['n' => 0], 'idempotency_key' => 'k0']])->assertOk()->assertJsonPath('accepted', 1);
+        $append([['payload' => ['n' => 1]], ['payload' => ['n' => 2]]])->assertOk()->assertJsonPath('accepted', 2);
+
+        // At the cap: one more fresh item is refused with nothing written.
+        $append([['payload' => ['n' => 3]]])->assertStatus(429)->assertJsonPath('pending_items', 3);
+        // A batch that repeats a stored key and adds a fresh one is refused
+        // whole: the duplicate is not answered and the fresh item not written.
+        $append([['payload' => ['n' => 0], 'idempotency_key' => 'k0'], ['payload' => ['n' => 4]]])->assertStatus(429);
+        // A batch of duplicates only takes no capacity and answers its offsets.
+        $append([['payload' => ['n' => 0], 'idempotency_key' => 'k0'], ['payload' => ['n' => 0], 'idempotency_key' => 'k0']])
+            ->assertOk()
+            ->assertJsonPath('accepted', 0)
+            ->assertJsonPath('deduped', 2)
+            ->assertJsonPath('accepted_offsets', [0, 0]);
+
+        $this->assertSame([0, 1, 2], WorkflowDurableStreamItem::query()->where('workflow_run_id', $run->id)
+            ->orderBy('offset')->pluck('offset')->map(static fn ($offset): int => (int) $offset)->all());
+        $this->assertSame(3, (int) WorkflowDurableStream::query()->where('workflow_run_id', $run->id)->value('pending_items'));
+    }
+
+    public function test_producer_controls_are_bounded_at_every_ingress(): void
+    {
+        $run = $this->createRun('default', 'wf-streams-bounds');
+        $items = $this->itemsRoute('wf-streams-bounds', $run->id, 'tokens');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson($items, ['max_pending_items' => WorkflowStreamService::MAX_PENDING_ITEMS_MAX + 1, 'items' => [['payload' => 1]]])
+            ->assertStatus(422)
+            ->assertJsonPath('errors.max_pending_items.0', 'The max pending items field must not be greater than 10000.');
+        $this->assertSame(0, WorkflowDurableStream::query()->where('workflow_run_id', $run->id)->count());
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson($items, ['max_pending_items' => WorkflowStreamService::MAX_PENDING_ITEMS_MAX, 'items' => [['payload' => 1]]])
+            ->assertOk();
+
+        $close = $this->closeRoute('wf-streams-bounds', $run->id, 'tokens');
+        $this->withHeaders($this->apiHeaders())
+            ->postJson($close, ['retention_seconds' => WorkflowStreamService::RETENTION_SECONDS_MAX + 1])
+            ->assertStatus(422)
+            ->assertJsonPath('errors.retention_seconds.0', 'The retention seconds field must not be greater than 2592000.');
+        $this->assertSame('open', WorkflowDurableStream::query()->where('workflow_run_id', $run->id)->value('status'));
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson($close, ['retention_seconds' => WorkflowStreamService::RETENTION_SECONDS_MAX])
+            ->assertOk()
+            ->assertJsonPath('stream.retention_seconds', WorkflowStreamService::RETENTION_SECONDS_MAX);
+
+        // The service refuses the same values for callers that skip request
+        // validation.
+        $streams = app(WorkflowStreamService::class);
+        foreach ([0, WorkflowStreamService::MAX_PENDING_ITEMS_MAX + 1] as $cap) {
+            try {
+                $streams->append($run, 'default', 'other', [['payload' => 1]], $cap);
+                $this->fail("cap {$cap} accepted");
+            } catch (\InvalidArgumentException) {
+                $this->addToAssertionCount(1);
+            }
+        }
+        $this->expectException(\InvalidArgumentException::class);
+        $streams->close($run, 'default', 'tokens', null, WorkflowStreamService::RETENTION_SECONDS_MAX + 1);
+    }
+
+    public static function oversizedStreamCommands(): array
+    {
+        return [
+            'max_pending_items' => ['max_pending_items', WorkflowStreamService::MAX_PENDING_ITEMS_MAX + 1, 'append'],
+            'retention_seconds' => ['retention_seconds', WorkflowStreamService::RETENTION_SECONDS_MAX + 1, 'close'],
+        ];
+    }
+
+    #[DataProvider('oversizedStreamCommands')]
+    public function test_workflow_stream_commands_bound_producer_controls_before_admission(string $field, int $value, string $operation): void
+    {
+        $task = $this->claimStreamCompletionTask();
+        $command = $this->streamCompletionCommand($task);
+        $command['workflow_stream'][$field] = $value;
+        if ($operation === 'close') {
+            $command['workflow_stream']['operation'] = 'close';
+            unset($command['workflow_stream']['items']);
+        }
+
+        $this->withHeaders($this->workerHeaders())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/complete", [
+            'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'commands' => [$command],
+        ])->assertStatus(422);
+        $this->assertDatabaseCount('workflow_durable_streams', 0);
+        $this->assertDatabaseMissing('workflow_history_events', ['workflow_run_id' => $task['run_id'], 'event_type' => 'SideEffectRecorded']);
+    }
+
+    public function test_an_expired_stream_reads_as_not_found(): void
+    {
+        $run = $this->createRun('default', 'wf-streams-expiry');
+        $this->postItems($run->id, 'tokens', [['payload' => 1]], 'wf-streams-expiry');
+        $this->postItems($run->id, 'kept', [['payload' => 1]], 'wf-streams-expiry');
+        $this->withHeaders($this->apiHeaders())
+            ->postJson($this->closeRoute('wf-streams-expiry', $run->id, 'tokens'), ['retention_seconds' => 60])
+            ->assertOk();
+
+        $describe = sprintf('/api/workflows/%s/runs/%s/streams/%s', 'wf-streams-expiry', $run->id, 'tokens');
+        $this->withHeaders($this->apiHeaders())->getJson($describe)->assertOk();
+
+        $this->travel(61)->seconds();
+
+        $this->withHeaders($this->apiHeaders())->getJson($describe)->assertNotFound()->assertJsonPath('reason', 'stream_not_found');
+        $this->withHeaders($this->apiHeaders())->getJson($this->itemsRoute('wf-streams-expiry', $run->id, 'tokens'))
+            ->assertNotFound()->assertJsonPath('reason', 'stream_not_found');
+        $this->withHeaders($this->apiHeaders())->postJson($this->closeRoute('wf-streams-expiry', $run->id, 'tokens'), [])
+            ->assertNotFound()->assertJsonPath('reason', 'stream_not_found');
+        $this->withHeaders($this->apiHeaders())
+            ->getJson(sprintf('/api/workflows/%s/runs/%s/streams', 'wf-streams-expiry', $run->id))
+            ->assertOk()
+            ->assertJsonCount(1, 'streams')
+            ->assertJsonPath('streams.0.stream_name', 'kept');
+        // Append is not found too, and writes nothing: the terminal row stays
+        // until the run is pruned, so the name is never opened again.
+        $this->withHeaders($this->apiHeaders())
+            ->postJson($this->itemsRoute('wf-streams-expiry', $run->id, 'tokens'), ['items' => [['payload' => 2]]])
+            ->assertNotFound()->assertJsonPath('reason', 'stream_not_found');
+        $stream = WorkflowDurableStream::query()->where('workflow_run_id', $run->id)->where('stream_name', 'tokens')->sole();
+        $this->assertSame(WorkflowDurableStream::STATUS_CLOSED, $stream->status);
+        $this->assertSame(1, (int) $stream->total_items);
+        $this->assertSame(1, WorkflowDurableStreamItem::query()->where('stream_id', $stream->id)->count());
+    }
+
+    public function test_a_stream_expires_at_the_instant_its_retention_ends(): void
+    {
+        $run = $this->createRun('default', 'wf-streams-expiry-instant');
+        $this->postItems($run->id, 'tokens', [['payload' => 1]], 'wf-streams-expiry-instant');
+        $this->withHeaders($this->apiHeaders())
+            ->postJson($this->closeRoute('wf-streams-expiry-instant', $run->id, 'tokens'), ['retention_seconds' => 60])
+            ->assertOk();
+        $append = fn () => $this->withHeaders($this->apiHeaders())
+            ->postJson($this->itemsRoute('wf-streams-expiry-instant', $run->id, 'tokens'), ['items' => [['payload' => 2]]]);
+
+        $this->travel(59)->seconds();
+        $append()->assertStatus(409)->assertJsonPath('reason', 'stream_closed');
+
+        $this->travel(1)->seconds();
+        $append()->assertNotFound()->assertJsonPath('reason', 'stream_not_found');
+        $this->assertSame(1, WorkflowDurableStreamItem::query()->where('workflow_run_id', $run->id)->count());
+    }
+
+    public function test_an_append_that_opens_a_stream_counts_against_the_namespace_stream_quota(): void
+    {
+        $run = $this->createRun('default', 'wf-streams-quota');
+        $streams = app(WorkflowStreamService::class);
+        config(['server.namespace_durable_state.overrides' => [
+            'default' => ['max_workflow_streams' => 1],
+        ]]);
+
+        $streams->append($run, 'default', 'first', [['payload' => 1]]);
+        // An existing stream takes no more of the quota.
+        $streams->append($run, 'default', 'first', [['payload' => 2]]);
+
+        try {
+            $streams->append($run, 'default', 'second', [['payload' => 1]]);
+            $this->fail('Expected the namespace stream quota to refuse a second stream.');
+        } catch (NamespaceDurableStateException $exception) {
+            $this->assertSame('namespace_workflow_streams_exhausted', $exception->reason);
+        }
+
+        $this->assertSame(['first'], WorkflowDurableStream::query()->pluck('stream_name')->all());
+        $this->assertSame(2, WorkflowDurableStreamItem::query()->count());
+    }
+
+    public function test_the_retention_pass_reclaims_expired_streams_in_bounded_resumable_steps(): void
+    {
+        $run = $this->createRun('default', 'wf-streams-sweep');
+        $streams = app(WorkflowStreamService::class);
+        $streams->append($run, 'default', 'first', array_map(static fn (int $n): array => ['payload' => $n], range(1, 5)));
+        $streams->close($run, 'default', 'first', null, 60);
+        $this->travel(1)->seconds();
+        $streams->append($run, 'default', 'second', [['payload' => 1], ['payload' => 2]]);
+        $streams->close($run, 'default', 'second', 'failed', 60);
+        $streams->append($run, 'default', 'long', [['payload' => 1]]);
+        $streams->close($run, 'default', 'long', null, 3600);
+        $streams->append($run, 'default', 'open', [['payload' => 1]]);
+        $this->createNamespace('elsewhere');
+        $other = $this->createRun('elsewhere', 'wf-streams-sweep-other');
+        $streams->append($other, 'elsewhere', 'foreign', [['payload' => 1]]);
+        $streams->close($other, 'elsewhere', 'foreign', null, 60);
+
+        // Nothing is due yet.
+        $this->assertSame(['streams_reclaimed' => 0, 'items_removed' => 0, 'budget_exhausted' => false, 'blocked_reason' => null],
+            WorkflowStreamRetention::pruneExpired('default', 10, 1000));
+
+        $this->travel(120)->seconds();
+
+        // A pass deletes at most its item budget, earliest deadline first.
+        $this->assertSame(['streams_reclaimed' => 0, 'items_removed' => 3, 'budget_exhausted' => true, 'blocked_reason' => null],
+            WorkflowStreamRetention::pruneExpired('default', 10, 3));
+        $this->assertSame(2, WorkflowDurableStreamItem::query()->where('stream_name', 'first')->count());
+        $this->assertSame(2, WorkflowDurableStreamItem::query()->where('stream_name', 'second')->count());
+
+        // The next pass resumes: the rest of `first`, then `second`.
+        $this->assertSame(['streams_reclaimed' => 2, 'items_removed' => 4, 'budget_exhausted' => false, 'blocked_reason' => null],
+            WorkflowStreamRetention::pruneExpired('default', 10, 1000));
+        $this->assertSame(['long' => 1, 'open' => 1], WorkflowDurableStreamItem::query()->where('workflow_run_id', $run->id)
+            ->orderBy('stream_name')->pluck('stream_name')->countBy()->all());
+        // Reclaimed streams keep their rows, with no deadline left.
+        $this->assertSame(['first', 'long', 'open', 'second'], WorkflowDurableStream::query()
+            ->where('workflow_run_id', $run->id)->orderBy('stream_name')->pluck('stream_name')->all());
+        $this->assertSame(['first', 'open', 'second'], WorkflowDurableStream::query()
+            ->where('workflow_run_id', $run->id)->whereNull('reclaim_at')->orderBy('stream_name')->pluck('stream_name')->all());
+        // Nothing is left to read for `default`; another namespace's stream waits for its own pass.
+        $this->assertSame([], WorkflowStreamRetention::dueStreams('default', 10, now()));
+        $this->assertSame(1, WorkflowDurableStreamItem::query()->where('stream_name', 'foreign')->count());
+
+        // The stream-count bound: one stream per pass.
+        $this->assertSame(['streams_reclaimed' => 1, 'items_removed' => 1, 'budget_exhausted' => false, 'blocked_reason' => null],
+            WorkflowStreamRetention::pruneExpired('elsewhere', 1, 1000));
+    }
+
+    public function test_a_reclaimed_stream_keeps_its_identity_until_its_run_is_pruned(): void
+    {
+        $run = $this->createRun('default', 'wf-streams-tombstone');
+        $this->postItems($run->id, 'tokens', [['payload' => 1], ['payload' => 2]], 'wf-streams-tombstone');
+        $this->withHeaders($this->apiHeaders())
+            ->postJson($this->closeRoute('wf-streams-tombstone', $run->id, 'tokens'), ['retention_seconds' => 60])
+            ->assertOk();
+        $this->travel(60)->seconds();
+
+        WorkflowStreamRetention::pruneExpired('default', 10, 1000);
+
+        $this->assertSame(0, WorkflowDurableStreamItem::query()->where('workflow_run_id', $run->id)->count());
+        $stream = WorkflowDurableStream::query()->where('workflow_run_id', $run->id)->sole();
+        $this->assertNull($stream->reclaim_at);
+        // The name is not opened again: append, describe and close stay not found.
+        $this->withHeaders($this->apiHeaders())
+            ->postJson($this->itemsRoute('wf-streams-tombstone', $run->id, 'tokens'), ['items' => [['payload' => 3]]])
+            ->assertNotFound()->assertJsonPath('reason', 'stream_not_found');
+        $this->withHeaders($this->apiHeaders())
+            ->getJson(sprintf('/api/workflows/%s/runs/%s/streams/%s', 'wf-streams-tombstone', $run->id, 'tokens'))
+            ->assertNotFound();
+        $this->withHeaders($this->apiHeaders())
+            ->postJson($this->closeRoute('wf-streams-tombstone', $run->id, 'tokens'), [])
+            ->assertNotFound();
+        $this->assertSame(1, WorkflowDurableStream::query()->where('workflow_run_id', $run->id)->count());
+        $this->assertSame(0, WorkflowDurableStreamItem::query()->where('workflow_run_id', $run->id)->count());
+    }
+
+    public function test_worker_heartbeat_and_history_prune_run_the_stream_retention_pass(): void
+    {
+        $run = $this->createRun('default', 'wf-streams-inline');
+        $streams = app(WorkflowStreamService::class);
+        $streams->append($run, 'default', 'inline', [['payload' => 1]]);
+        $streams->close($run, 'default', 'inline', null, 60);
+        $streams->append($run, 'default', 'command', [['payload' => 1]]);
+        $streams->close($run, 'default', 'command', null, 120);
+        WorkflowNamespace::query()->where('name', 'default')->update(['retention_mode' => WorkflowNamespace::RETENTION_MODE_FOREVER]);
+
+        $this->travel(61)->seconds();
+        HistoryRetentionEnforcer::runInlinePass('default');
+        $this->assertSame(['command'], WorkflowDurableStreamItem::query()->pluck('stream_name')->all());
+
+        $this->travel(60)->seconds();
+        $this->artisan('history:prune', ['--namespace' => 'default'])->assertExitCode(0);
+        $this->assertSame(0, WorkflowDurableStreamItem::query()->count());
+        $this->assertSame(2, WorkflowDurableStream::query()->whereNull('reclaim_at')->count());
+    }
+
+    public function test_the_operator_retention_pass_reclaims_expired_streams_within_its_limit(): void
+    {
+        $run = $this->createRun('default', 'wf-streams-operator-pass');
+        $streams = app(WorkflowStreamService::class);
+        $streams->append($run, 'default', 'large', array_map(static fn (int $n): array => ['payload' => $n], range(1, 150)));
+        $streams->close($run, 'default', 'large', null, 60);
+        $streams->append($run, 'default', 'small', [['payload' => 1]]);
+        $streams->close($run, 'default', 'small', null, 60);
+        $this->travel(61)->seconds();
+
+        // limit 1: one stream and at most 100 items per pass, resumed by the next.
+        $pass = fn () => $this->withHeaders($this->apiHeaders())->postJson('/api/system/retention/pass', ['limit' => 1])->assertOk();
+        $pass();
+        $this->assertSame(50, WorkflowDurableStreamItem::query()->where('stream_name', 'large')->count());
+        $pass();
+        $this->assertSame(['small'], WorkflowDurableStreamItem::query()->pluck('stream_name')->all());
+        $pass();
+        $this->assertSame(0, WorkflowDurableStreamItem::query()->count());
+        $this->assertSame(2, WorkflowDurableStream::query()->whereNull('reclaim_at')->count());
+    }
+
+    public function test_due_stream_discovery_reads_the_deadline_index(): void
+    {
+        if (DB::connection()->getDriverName() !== 'sqlite') {
+            // The query runs here; WorkflowStreamCapacityRaceTest reads the
+            // MySQL, MariaDB and PostgreSQL plans over realistic data.
+            $this->assertSame([], WorkflowStreamRetention::dueStreamsQuery('default', 10, now())->pluck('id')->all());
+
+            return;
+        }
+
+        $plan = collect(DB::select('EXPLAIN QUERY PLAN '.WorkflowStreamRetention::dueStreamsQuery('default', 10, now())->toRawSql()))
+            ->pluck('detail')->implode("\n");
+
+        // A search on both index columns, namespace equal and deadline
+        // bounded, read in index order.
+        $this->assertStringContainsString('SEARCH workflow_durable_streams USING INDEX wf_durable_streams_ns_reclaim_idx (namespace=? AND reclaim_at<?)', $plan);
+        $this->assertStringNotContainsString('TEMP B-TREE', $plan);
     }
 
     public function test_close_marks_stream_terminal_and_rejects_further_appends(): void

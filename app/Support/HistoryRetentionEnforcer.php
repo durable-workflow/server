@@ -2,10 +2,11 @@
 
 namespace App\Support;
 
+use App\Models\WorkflowDurableStream;
+use App\Models\WorkflowDurableStreamItem;
 use App\Models\WorkflowNamespace;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowRunSummary;
@@ -139,6 +140,20 @@ class HistoryRetentionEnforcer
      */
     public static function runInlinePass(string $namespace): array
     {
+        // Closed workflow streams carry their own retention, whatever the
+        // namespace's history retention mode (Server #774). The stream pass
+        // has its own throttle and is not part of this report; a failure
+        // leaves its items for the next pass instead of failing the caller.
+        try {
+            WorkflowStreamRetention::runInlinePass($namespace);
+        } catch (\Throwable $exception) {
+            Log::warning('workflow_stream_retention_failed', [
+                'namespace' => $namespace,
+                'exception' => $exception::class,
+                'message' => $exception->getMessage(),
+            ]);
+        }
+
         if (self::retentionMode($namespace) === WorkflowNamespace::RETENTION_MODE_FOREVER) {
             return [
                 'throttled' => false,
@@ -212,19 +227,45 @@ class HistoryRetentionEnforcer
             (string) $summary->workflow_instance_id,
         );
 
+        // One transaction, fenced by the run row's lock before anything is
+        // deleted (Server #774). Stream writes take that lock first, so no
+        // append to this run can commit between the payload cleanup and the
+        // row deletes; a later one finds the run's details pruned. Each
+        // object's retained-reference check is asked again under its own
+        // lock, reading every reference committed before it.
         try {
-            $externalPayloads = app(ExternalPayloadRetentionCleanup::class)->deleteForRun(
-                $namespace,
-                $runId,
-                $streamPlan['releasable_item_ids'],
-            );
+            $outcome = ReadCommittedTransaction::run(static function () use ($namespace, $runId, $messageStreams, $streamPlan): array {
+                WorkflowRunStreamLock::acquire($runId);
+
+                $externalPayloads = app(ExternalPayloadRetentionCleanup::class)->deleteForRun(
+                    $namespace,
+                    $runId,
+                    $streamPlan['releasable_item_ids'],
+                );
+
+                if ($externalPayloads['blocked']) {
+                    return ['payloads' => $externalPayloads, 'report' => null];
+                }
+
+                return [
+                    'payloads' => $externalPayloads,
+                    'report' => array_merge(
+                        WorkflowRunRetentionCleanup::pruneRun($runId),
+                        $messageStreams->apply($streamPlan),
+                        self::pruneDurableStreams($runId),
+                    ),
+                ];
+            });
         } catch (\Throwable $exception) {
             $messageStreams->markBlocked($streamPlan, 'external_payload_cleanup_failed');
 
             throw $exception;
         }
 
-        if ($externalPayloads['blocked']) {
+        $externalPayloads = $outcome['payloads'];
+        $report = $outcome['report'];
+
+        if ($report === null) {
             $reason = $externalPayloads['reason'] ?? 'external_payload_cleanup_blocked';
             $messageStreams->markBlocked($streamPlan, $reason);
 
@@ -240,13 +281,6 @@ class HistoryRetentionEnforcer
             'closed_at' => $summary->closed_at?->toIso8601String(),
         ]);
 
-        $report = DB::transaction(static function () use ($runId, $messageStreams, $streamPlan): array {
-            return array_merge(
-                WorkflowRunRetentionCleanup::pruneRun($runId),
-                $messageStreams->apply($streamPlan),
-            );
-        });
-
         return [
             'pruned' => true,
             'reason' => null,
@@ -254,6 +288,20 @@ class HistoryRetentionEnforcer
             'tasks_deleted' => $report['tasks_deleted'] ?? 0,
             'external_payloads_deleted' => $externalPayloads['deleted'],
             'deleted' => $report,
+        ];
+    }
+
+    /**
+     * The run's durable workflow streams go with the run (Server #774). Their
+     * external payload references were settled by the payload cleanup.
+     *
+     * @return array{durable_stream_items_deleted: int, durable_streams_deleted: int}
+     */
+    private static function pruneDurableStreams(string $runId): array
+    {
+        return [
+            'durable_stream_items_deleted' => WorkflowDurableStreamItem::query()->where('workflow_run_id', $runId)->delete(),
+            'durable_streams_deleted' => WorkflowDurableStream::query()->where('workflow_run_id', $runId)->delete(),
         ];
     }
 

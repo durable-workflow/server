@@ -5,13 +5,19 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use App\Models\RuntimeExternalPayload;
+use App\Models\WorkflowDurableStream;
+use App\Models\WorkflowDurableStreamItem;
 use App\Models\WorkflowInboundStream;
 use App\Models\WorkflowInboundStreamItem;
 use App\Models\WorkflowNamespace;
 use App\Support\ExternalPayloadRetentionCleanup;
 use App\Support\MessageStreamService;
+use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\RuntimeExternalPayloadRegistry;
+use App\Support\RuntimeExternalPayloadStorageDriver;
+use App\Support\RuntimeTrackedExternalPayloadStorage;
+use App\Support\WorkflowStreamRetention;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -1282,6 +1288,320 @@ class HistoryRetentionTest extends TestCase
                 'status' => 'active',
             ],
         );
+    }
+
+    public function test_retention_pass_deletes_durable_streams_with_their_stream_only_payloads(): void
+    {
+        Queue::fake();
+        $storageDirectory = $this->localExternalPayloadStorage('retention-durable-streams');
+        $expiredRunId = $this->createExpiredClosedRun('default', 'wf-prune-durable-stream');
+        $retainedRunId = $this->createExpiredClosedRun('default', 'wf-retain-durable-stream', daysAgo: 1);
+        $path = $storageDirectory.'/payloads/stream-item.bin';
+        File::ensureDirectoryExists(dirname($path));
+        file_put_contents($path, 'stream item bytes');
+
+        $this->addDurableStream($expiredRunId, 'tokens', ['file://'.$path, null]);
+        $kept = $this->addDurableStream($retainedRunId, 'kept', [null]);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/system/retention/pass')
+            ->assertOk()
+            ->assertJsonPath('processed', 1)
+            ->assertJsonPath('pruned', 1)
+            ->assertJsonPath('results.0.external_payloads_deleted', 1)
+            ->assertJsonPath('results.0.deleted.durable_streams_deleted', 1)
+            ->assertJsonPath('results.0.deleted.durable_stream_items_deleted', 2);
+
+        $this->assertFileDoesNotExist($path);
+        $this->assertSame(0, WorkflowDurableStream::query()->where('workflow_run_id', $expiredRunId)->count());
+        $this->assertSame(0, WorkflowDurableStreamItem::query()->where('workflow_run_id', $expiredRunId)->count());
+        $this->assertNotNull($kept->fresh());
+        $this->assertSame(1, WorkflowDurableStreamItem::query()->where('workflow_run_id', $retainedRunId)->count());
+
+        File::deleteDirectory($storageDirectory);
+    }
+
+    public function test_retention_pass_keeps_a_stream_payload_shared_with_a_retained_run(): void
+    {
+        Queue::fake();
+        $storageDirectory = $this->localExternalPayloadStorage('retention-shared-durable-streams');
+        $expiredRunId = $this->createExpiredClosedRun('default', 'wf-prune-shared-durable-stream');
+        $retainedRunId = $this->createExpiredClosedRun('default', 'wf-retain-shared-durable-stream', daysAgo: 1);
+        $path = $storageDirectory.'/payloads/shared-stream-item.bin';
+        File::ensureDirectoryExists(dirname($path));
+        file_put_contents($path, 'shared stream item bytes');
+
+        $this->addDurableStream($expiredRunId, 'tokens', ['file://'.$path]);
+        $this->addDurableStream($retainedRunId, 'tokens', ['file://'.$path]);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/system/retention/pass')
+            ->assertOk()
+            ->assertJsonPath('pruned', 1)
+            ->assertJsonPath('results.0.external_payloads_deleted', 0)
+            ->assertJsonPath('results.0.deleted.durable_streams_deleted', 1);
+
+        $this->assertFileExists($path);
+        $this->assertSame(0, WorkflowDurableStream::query()->where('workflow_run_id', $expiredRunId)->count());
+        $this->assertSame(1, WorkflowDurableStreamItem::query()->where('workflow_run_id', $retainedRunId)->count());
+
+        File::deleteDirectory($storageDirectory);
+    }
+
+    public function test_retention_pass_keeps_durable_streams_when_their_payload_cleanup_is_blocked(): void
+    {
+        Queue::fake();
+        $this->createNamespace('default');
+        WorkflowNamespace::where('name', 'default')->update([
+            'external_payload_storage' => [
+                'driver' => 's3',
+                'enabled' => true,
+                'config' => ['bucket' => 'dw-payloads', 'prefix' => 'retention/'],
+            ],
+        ]);
+        $runId = $this->createExpiredClosedRun('default', 'wf-prune-durable-stream-blocked');
+        $stream = $this->addDurableStream($runId, 'tokens', ['s3://dw-payloads/retention/stream-item.bin']);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/system/retention/pass')
+            ->assertOk()
+            ->assertJsonPath('pruned', 0)
+            ->assertJsonPath('skipped', 1)
+            ->assertJsonPath('results.0.reason', 'external_payload_storage_driver_unavailable');
+
+        $this->assertNotNull(WorkflowRunSummary::find($runId));
+        $this->assertNotNull($stream->fresh());
+        $this->assertSame(1, WorkflowDurableStreamItem::query()->where('workflow_run_id', $runId)->count());
+    }
+
+    public function test_retention_pass_keeps_durable_streams_when_payload_deletion_fails_and_retries(): void
+    {
+        Queue::fake();
+        $this->createNamespace('default');
+        $runId = $this->createExpiredClosedRun('default', 'wf-prune-durable-stream-storage-failure');
+        $stream = $this->addDurableStream($runId, 'tokens', ['file:///unreachable/stream-item.bin']);
+        $failing = $this->failingExternalPayloadStorage();
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/system/retention/pass')
+            ->assertStatus(207)
+            ->assertJsonPath('pruned', 0)
+            ->assertJsonPath('failed', 1)
+            ->assertJsonPath('results.0.outcome', 'error');
+
+        $this->assertNotNull(WorkflowRunSummary::find($runId));
+        $this->assertNotNull($stream->fresh());
+        $this->assertSame(1, WorkflowDurableStreamItem::query()->where('workflow_run_id', $runId)->count());
+
+        // The next pass, with storage back, settles the reference and prunes.
+        $failing->fail = false;
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/system/retention/pass')
+            ->assertOk()
+            ->assertJsonPath('pruned', 1)
+            ->assertJsonPath('results.0.deleted.durable_streams_deleted', 1);
+
+        $this->assertSame(['file:///unreachable/stream-item.bin'], $failing->deleted);
+        $this->assertNull($stream->fresh());
+    }
+
+    public function test_stream_retention_reclaims_a_stream_only_payload_with_its_items(): void
+    {
+        Queue::fake();
+        $storageDirectory = $this->localExternalPayloadStorage('stream-retention-payloads');
+        $runId = $this->createExpiredClosedRun('default', 'wf-stream-retention-payload', daysAgo: 1);
+        $path = $storageDirectory.'/payloads/expired-stream-item.bin';
+        File::ensureDirectoryExists(dirname($path));
+        file_put_contents($path, 'expired stream item bytes');
+        $stream = $this->addDurableStream($runId, 'tokens', ['file://'.$path, null], due: true);
+
+        $this->assertSame(
+            ['streams_reclaimed' => 1, 'items_removed' => 2, 'budget_exhausted' => false, 'blocked_reason' => null],
+            WorkflowStreamRetention::pruneExpired('default', 10, 1000),
+        );
+
+        $this->assertFileDoesNotExist($path);
+        $this->assertSame(0, WorkflowDurableStreamItem::query()->where('stream_id', $stream->id)->count());
+        $this->assertNull($stream->fresh()->reclaim_at);
+        $this->assertNotNull(WorkflowRunSummary::find($runId));
+
+        File::deleteDirectory($storageDirectory);
+    }
+
+    public function test_stream_retention_keeps_a_payload_another_retained_row_references(): void
+    {
+        Queue::fake();
+        $storageDirectory = $this->localExternalPayloadStorage('stream-retention-shared-payloads');
+        $runId = $this->createExpiredClosedRun('default', 'wf-stream-retention-shared', daysAgo: 1);
+        $path = $storageDirectory.'/payloads/shared-stream-item.bin';
+        File::ensureDirectoryExists(dirname($path));
+        file_put_contents($path, 'shared stream item bytes');
+        $this->addDurableStream($runId, 'expired', ['file://'.$path], due: true);
+        // A stream that is not due references the same object.
+        $kept = $this->addDurableStream($runId, 'kept', ['file://'.$path]);
+
+        $this->assertSame(
+            ['streams_reclaimed' => 1, 'items_removed' => 1, 'budget_exhausted' => false, 'blocked_reason' => null],
+            WorkflowStreamRetention::pruneExpired('default', 10, 1000),
+        );
+
+        $this->assertFileExists($path);
+        $this->assertSame(1, WorkflowDurableStreamItem::query()->where('stream_id', $kept->id)->count());
+
+        File::deleteDirectory($storageDirectory);
+    }
+
+    public function test_stream_retention_keeps_items_when_payload_cleanup_is_blocked(): void
+    {
+        Queue::fake();
+        $this->createNamespace('default');
+        WorkflowNamespace::where('name', 'default')->update([
+            'external_payload_storage' => [
+                'driver' => 's3',
+                'enabled' => true,
+                'config' => ['bucket' => 'dw-payloads', 'prefix' => 'retention/'],
+            ],
+        ]);
+        $runId = $this->createExpiredClosedRun('default', 'wf-stream-retention-blocked', daysAgo: 1);
+        $stream = $this->addDurableStream($runId, 'tokens', ['s3://dw-payloads/retention/stream-item.bin', null], due: true);
+
+        $this->assertSame(
+            ['streams_reclaimed' => 0, 'items_removed' => 0, 'budget_exhausted' => false, 'blocked_reason' => 'external_payload_storage_driver_unavailable'],
+            WorkflowStreamRetention::pruneExpired('default', 10, 1000),
+        );
+
+        $this->assertSame(2, WorkflowDurableStreamItem::query()->where('stream_id', $stream->id)->count());
+        $this->assertNotNull($stream->fresh()->reclaim_at);
+    }
+
+    public function test_stream_retention_keeps_items_when_payload_deletion_fails_and_retries(): void
+    {
+        Queue::fake();
+        $this->createNamespace('default');
+        $runId = $this->createExpiredClosedRun('default', 'wf-stream-retention-failure', daysAgo: 1);
+        $stream = $this->addDurableStream($runId, 'tokens', ['file:///unreachable/expired-stream-item.bin'], due: true);
+        $failing = $this->failingExternalPayloadStorage();
+
+        try {
+            WorkflowStreamRetention::pruneExpired('default', 10, 1000);
+            $this->fail('Expected the payload deletion failure to stop the pass.');
+        } catch (\RuntimeException $exception) {
+            $this->assertStringContainsString('external payload', strtolower($exception->getMessage()));
+        }
+
+        $this->assertSame(1, WorkflowDurableStreamItem::query()->where('stream_id', $stream->id)->count());
+        $this->assertNotNull($stream->fresh()->reclaim_at);
+
+        // The next pass, with storage back, settles the reference and reclaims.
+        $failing->fail = false;
+        $this->assertSame(
+            ['streams_reclaimed' => 1, 'items_removed' => 1, 'budget_exhausted' => false, 'blocked_reason' => null],
+            WorkflowStreamRetention::pruneExpired('default', 10, 1000),
+        );
+        $this->assertSame(['file:///unreachable/expired-stream-item.bin'], $failing->deleted);
+    }
+
+    /**
+     * Binds a namespace storage whose provider fails deletes until `fail` is
+     * cleared, and records the deletes it then performs.
+     */
+    private function failingExternalPayloadStorage(): object
+    {
+        $failing = new class implements RuntimeExternalPayloadStorageDriver
+        {
+            public bool $fail = true;
+
+            /** @var list<string> */
+            public array $deleted = [];
+
+            public function put(string $data, string $sha256, string $codec): string
+            {
+                throw new \LogicException('not used');
+            }
+
+            public function get(string $uri): string
+            {
+                throw new \LogicException('not used');
+            }
+
+            public function delete(string $uri): void
+            {
+                if ($this->fail) {
+                    throw new \RuntimeException('object storage is down');
+                }
+                $this->deleted[] = $uri;
+            }
+
+            public function uriFor(string $sha256, string $codec): string
+            {
+                throw new \LogicException('not used');
+            }
+        };
+        $this->partialMock(NamespaceExternalPayloadStorage::class, function ($mock) use ($failing): void {
+            $mock->shouldReceive('driverFor')->andReturn(new RuntimeTrackedExternalPayloadStorage('default', $failing));
+        });
+
+        return $failing;
+    }
+
+    private function localExternalPayloadStorage(string $name): string
+    {
+        $storageDirectory = storage_path('framework/testing/'.$name);
+        File::deleteDirectory($storageDirectory);
+        $this->createNamespace('default');
+        WorkflowNamespace::where('name', 'default')->update([
+            'external_payload_storage' => [
+                'driver' => 'local',
+                'enabled' => true,
+                'config' => ['uri' => 'file://'.$storageDirectory],
+            ],
+        ]);
+
+        return $storageDirectory;
+    }
+
+    /**
+     * A closed durable stream on $runId with one item per entry of
+     * $references: a provider reference, or null for an inline payload.
+     *
+     * @param  list<string|null>  $references
+     */
+    private function addDurableStream(string $runId, string $streamName, array $references, bool $due = false): WorkflowDurableStream
+    {
+        $run = WorkflowRun::findOrFail($runId);
+
+        return DB::transaction(function () use ($run, $streamName, $references, $due): WorkflowDurableStream {
+            $stream = WorkflowDurableStream::query()->create([
+                'namespace' => $run->namespace,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'stream_name' => $streamName,
+                'status' => WorkflowDurableStream::STATUS_CLOSED,
+                'last_offset' => count($references) - 1,
+                'total_items' => count($references),
+                'opened_at' => now()->subDays(61),
+                'closed_at' => now()->subDays(61),
+                'retention_seconds' => 3600,
+                // Not due unless asked, so run retention tests see every item.
+                'reclaim_at' => $due ? now()->subDays(61)->addHour() : null,
+            ]);
+
+            foreach ($references as $offset => $reference) {
+                WorkflowDurableStreamItem::query()->create([
+                    'stream_id' => $stream->id,
+                    'namespace' => $run->namespace,
+                    'workflow_run_id' => $run->id,
+                    'stream_name' => $streamName,
+                    'offset' => $offset,
+                    'payload' => $reference === null ? ['inline' => $offset] : null,
+                    'payload_reference' => $reference,
+                    'payload_codec' => $reference === null ? null : 'avro',
+                    'emitted_at' => now()->subDays(61),
+                ]);
+            }
+
+            return $stream;
+        });
     }
 
     private function createExpiredClosedRun(string $namespace, string $workflowId, int $daysAgo = 60): string
