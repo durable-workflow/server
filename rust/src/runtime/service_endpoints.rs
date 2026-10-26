@@ -843,6 +843,47 @@ pub(crate) enum Level {
     Operation,
 }
 
+/// Catalog rows as published PHP writes them, for the takeover tests: lowercase
+/// ULIDs, microsecond UTC times and `json_encode` documents, with escaped
+/// slashes and `[]` for an empty map.
+#[cfg(test)]
+pub(crate) const PHP_CATALOG_ROWS: [&str; 3] = [
+    r#"INSERT INTO workflow_service_endpoints(id,namespace,endpoint_name,description,metadata,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05k7vey','default','billing','Payments λ','{"team":"core","docs":"https:\/\/example.test\/billing","empty":[]}','2026-10-26 19:45:31.123456','2026-10-26 19:45:32.654321')"#,
+    r#"INSERT INTO workflow_services(id,workflow_service_endpoint_id,namespace,service_name,description,metadata,created_at,updated_at) VALUES ('01m5wvy8takr150q5sh66c1xck','01m5wvy8d1j3dtr13es05k7vey','default','invoices',NULL,NULL,'2026-10-26 19:45:33.000001','2026-10-26 19:45:33.000001')"#,
+    r#"INSERT INTO workflow_service_operations(id,workflow_service_endpoint_id,workflow_service_id,namespace,operation_name,description,operation_mode,handler_binding_kind,handler_target_reference,handler_binding,deadline_policy,idempotency_policy,cancellation_policy,retry_policy,boundary_policy,metadata,created_at,updated_at) VALUES ('01m5wvy930w32awr226fys6rsj','01m5wvy8d1j3dtr13es05k7vey','01m5wvy8takr150q5sh66c1xck','default','charge',NULL,'sync','start_workflow','billing.charge',NULL,'{"timeout_seconds":30}',NULL,NULL,'{"max_attempts":3}',NULL,'[]','2026-10-26 19:45:34.5','2026-10-26 19:45:34.5')"#,
+];
+
+/// What native serves over `PHP_CATALOG_ROWS` after a takeover, and that it
+/// administers them as its own rows.
+#[cfg(test)]
+pub(crate) async fn assert_php_catalog_served(runtime: &super::Runtime) {
+    let endpoint = runtime.show_service_endpoint("Billing").await.unwrap();
+    assert_eq!(endpoint, json!({"id": "01m5wvy8d1j3dtr13es05k7vey", "namespace": "default", "endpoint_name": "billing",
+        "description": "Payments λ", "metadata": {"team": "core", "docs": "https://example.test/billing", "empty": []},
+        "created_at": "2026-10-26T19:45:31+00:00", "updated_at": "2026-10-26T19:45:32+00:00"}));
+    let operations = runtime.list_operations("billing", "invoices").await.unwrap();
+    let charge = &operations["operations"][0];
+    assert_eq!((charge["deadline_policy"].clone(), charge["retry_policy"].clone(), charge["metadata"].clone(), charge["created_at"].clone()),
+        (json!({"timeout_seconds": 30}), json!({"max_attempts": 3}), json!([]), json!("2026-10-26T19:45:34+00:00")));
+    // PHP's documents compare as PHP reads them: an unchanged update keeps updated_at.
+    let same = runtime.update_service_endpoint("billing",
+        json!({"metadata": {"team": "core", "docs": "https://example.test/billing", "empty": {}}})).await.unwrap();
+    assert_eq!(same["updated_at"], "2026-10-26T19:45:32+00:00");
+    // A native service follows PHP's in creation order.
+    runtime.create_service("billing", json!({"service_name": "accounts"})).await.unwrap();
+    let services = runtime.list_services("billing").await.unwrap();
+    let names: Vec<_> = services["services"].as_array().unwrap().iter().map(|service| service["service_name"].clone()).collect();
+    assert_eq!(names, [json!("invoices"), json!("accounts")]);
+    let page = runtime.service_catalog_list(&[], super::service_catalog::Catalog::Operations).await.unwrap();
+    assert_eq!((page["total"].clone(), page["data"][0]["id"].clone()), (json!(1), json!("01m5wvy930w32awr226fys6rsj")));
+    match runtime.delete_service_endpoint("billing").await {
+        Err(RuntimeError::Protocol { status, response }) => {
+            assert_eq!((status, response["reason"].clone()), (StatusCode::CONFLICT, json!("endpoint_has_services")));
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

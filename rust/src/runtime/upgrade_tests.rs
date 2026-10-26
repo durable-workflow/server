@@ -1106,6 +1106,20 @@ async fn takeover_refusals_leave_the_php_database_unchanged() {
     }
 }
 
+#[tokio::test]
+async fn takeover_keeps_php_catalog_rows_that_native_then_serves() {
+    let (_directory, path) = php297_layout().await;
+    for statement in crate::runtime::service_endpoints::PHP_CATALOG_ROWS {
+        mutate(&path, statement).await;
+    }
+    let fingerprint = backup_fingerprint(&path).await;
+    let report = takeover::take_over_sqlite(&path, &fingerprint, &queue_config()).await.unwrap();
+    assert_eq!(report["status"], "taken_over", "{report}");
+    let runtime = crate::runtime::Runtime::open(&path, "test-token".into()).await.unwrap();
+    crate::runtime::service_endpoints::assert_php_catalog_served(&runtime).await;
+    runtime.close().await;
+}
+
 /// The frozen layout in PHP Server's default WAL mode, copied while its
 /// writer was still open: one committed row is only in the WAL, as a crashed
 /// PHP would leave it.

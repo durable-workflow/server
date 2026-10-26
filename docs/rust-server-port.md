@@ -176,8 +176,9 @@ any other unknown path or method answers PHP's own 404 or 405
     except external payload references as input, stream retention cleanup
     and takeover of PHP data with streams.
   - Service operation execution, service-call reads and cancellation, and
-    takeover of a PHP database that holds catalog rows. (Service catalog
-    administration is served: the 15 admin routes under `/api/service-endpoints`
+    takeover of a PHP database that holds service calls. (Service catalog
+    administration is served, and takeover keeps a PHP database's endpoints,
+    services and operations: the 15 admin routes under `/api/service-endpoints`
     create, read, update and delete a namespace's endpoints, services and
     operations as `ServiceCatalogController` does, with the `service-endpoints`
     fixture's 72 cases. The `/api/service-catalog` reads render those rows by
