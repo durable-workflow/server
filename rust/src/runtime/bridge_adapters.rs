@@ -370,25 +370,28 @@ store_methods! {
 
     /// `duplicateBridgeCommand`: the run of the latest accepted command of
     /// `kind` this adapter recorded for the same action, key and target name.
-    /// PHP orders by `created_at`, which native never writes; an accepted
-    /// command's `accepted_at` is that same instant.
+    /// The database filters on the command context, as PHP's JSON-path query
+    /// does, so one request reads at most one row. PHP orders by
+    /// `created_at`, which native never writes; an accepted command's
+    /// `accepted_at` is that same instant.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn bridge_command(&self, workflow_id: &str, kind: &str, adapter: &str, action: &str, key: &str, field: &str, name: &str) -> Result<Option<String>> {
-        let rows = Self::query("SELECT workflow_run_id,resolved_workflow_run_id,context FROM workflow_commands WHERE workflow_instance_id=$1 AND command_type=$2 AND status='accepted' ORDER BY accepted_at DESC,command_sequence DESC")
+        let Some(row) = Self::query(DB::BRIDGE_COMMAND)
             .bind(workflow_id)
             .bind(kind)
-            .fetch_all(&self.pool)
-            .await?;
-        for row in rows {
-            let context = DB::optional_document_row(&row, "context")?.unwrap_or(Value::Null);
-            let metadata = &context["server"]["metadata"];
-            if metadata["adapter"] == adapter && metadata["action"] == action && metadata["idempotency_key"] == key && metadata[field] == name {
-                return Ok(Some(match DB::optional_string(&row, "resolved_workflow_run_id")? {
-                    Some(run) => run,
-                    None => DB::string(&row, "workflow_run_id")?,
-                }));
-            }
-        }
-        Ok(None)
+            .bind(adapter)
+            .bind(action)
+            .bind(key)
+            .bind(field)
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(match DB::optional_string(&row, "resolved_workflow_run_id")? {
+            Some(run) => run,
+            None => DB::string(&row, "workflow_run_id")?,
+        }))
     }
 }
