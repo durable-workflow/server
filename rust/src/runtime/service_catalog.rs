@@ -2,17 +2,26 @@
 //! (`ServiceCatalogReadController`): endpoints, services, operations and
 //! service calls, each listed by page or read by identity.
 //!
-//! Native never holds catalog rows. Takeover refuses a PHP database with
-//! services, endpoints, operations or service calls, and native has no path
-//! that writes them. Every list is therefore PHP's empty page and every
-//! identity PHP's not-found answer, after PHP's validation of the filters.
+//! Endpoints, services and operations are the namespace's rows
+//! (`service_endpoints`), in PHP's orders: by name, then id. A page counts
+//! the matches and reads only its window. An endpoint names up to 100 of its
+//! services and operations, a service up to 100 operations, each with a flag
+//! for more; an operation names its endpoint and service when they are in the
+//! namespace.
+//!
+//! Native records no service calls yet, and takeover refuses a PHP database
+//! that holds any, so a calls list is PHP's empty page and a call is PHP's
+//! not-found answer, after PHP's validation of the filters.
 use super::laravel_rules::{self, Rule};
 use super::laravel_validation;
+use super::service_endpoints::{endpoint_item, operation_item, service_item};
 use super::{Result, RuntimeError};
 use axum::http::StatusCode;
 use serde_json::{Map, Value, json};
 
 const DEFAULT_PAGE_SIZE: i64 = 50;
+/// `ServiceCatalogReadContract::RELATED_LIMIT`.
+const RELATED_LIMIT: i64 = 100;
 const SCOPES: &[&str] = &["relevant", "owned", "caller", "target"];
 const STATUSES: &[&str] = &["pending", "accepted", "started", "completed", "failed", "cancelled"];
 const OUTCOMES: &[&str] = &[
@@ -105,41 +114,178 @@ fn whole(value: &Value, default: i64) -> i64 {
     value.as_str().and_then(|text| text.parse().ok()).unwrap_or(default)
 }
 
-/// A page of the catalog: always empty in native.
-pub(crate) fn list(query: &[(String, String)], catalog: Catalog, namespace: &str) -> Result<Value> {
-    let filters = filters(query, catalog, false)?;
-    let mut page = json!({"data": [], "current_page": whole(&filters["page"], 1),
-        "per_page": whole(&filters["per_page"], DEFAULT_PAGE_SIZE), "total": 0, "last_page": 1, "namespace": namespace});
-    if catalog == Catalog::Calls {
-        let status_bucket = match &filters["status_bucket"] {
-            Value::Null => filters["bucket"].clone(),
-            bucket => bucket.clone(),
-        };
-        let buckets = |names: &[&str], members: &[&[&str]]| -> Value {
-            Value::Object(names.iter().zip(members).map(|(name, values)| ((*name).to_owned(), json!(values))).collect())
-        };
-        let extra = json!({
-            "scope": if filters["scope"].is_null() { json!("relevant") } else { filters["scope"].clone() },
-            "bucket": status_bucket, "status_bucket": status_bucket,
-            "outcome": filters["outcome"], "outcome_bucket": filters["outcome_bucket"],
-            "statuses": STATUSES, "outcomes": OUTCOMES,
-            "status_buckets": buckets(STATUS_BUCKETS, &[&["pending", "accepted", "started"], &["completed"], &["failed"], &["cancelled"]]),
-            "outcome_buckets": buckets(OUTCOME_BUCKETS, &[&["accepted"], &["completed", "degraded"], &["timed_out", "handler_failed"],
-                &["cancelled"], &["rejected_not_found", "rejected_forbidden", "rejected_throttled",
-                    "rejected_concurrency_limited", "rejected_circuit_open"]]),
-        });
-        page.as_object_mut().expect("page").extend(extra.as_object().expect("extra").clone());
-    }
-    Ok(page)
+/// The validated paging: the page, its size and the rows before it.
+fn paging(filters: &Value) -> (i64, i64, i64) {
+    let page = whole(&filters["page"], 1);
+    let per_page = whole(&filters["per_page"], DEFAULT_PAGE_SIZE);
+    (page, per_page, page.saturating_sub(1).saturating_mul(per_page))
 }
 
-/// One catalog object by identity: never present in native.
-pub(crate) fn show(query: &[(String, String)], catalog: Catalog) -> Result<Value> {
-    filters(query, catalog, true)?;
-    Err(RuntimeError::Protocol {
+/// Laravel's `LengthAwarePaginator` fields around a page of rows.
+fn page_body(data: Vec<Value>, filters: &Value, total: i64, namespace: &str) -> Value {
+    let (page, per_page, _) = paging(filters);
+    json!({"data": data, "current_page": page, "per_page": per_page, "total": total,
+        "last_page": ((total + per_page - 1) / per_page).max(1), "namespace": namespace})
+}
+
+/// A page of service calls: always empty in native.
+fn calls_page(filters: &Value, namespace: &str) -> Value {
+    let mut page = page_body(Vec::new(), filters, 0, namespace);
+    let status_bucket = match &filters["status_bucket"] {
+        Value::Null => filters["bucket"].clone(),
+        bucket => bucket.clone(),
+    };
+    let buckets = |names: &[&str], members: &[&[&str]]| -> Value {
+        Value::Object(names.iter().zip(members).map(|(name, values)| ((*name).to_owned(), json!(values))).collect())
+    };
+    let extra = json!({
+        "scope": if filters["scope"].is_null() { json!("relevant") } else { filters["scope"].clone() },
+        "bucket": status_bucket, "status_bucket": status_bucket,
+        "outcome": filters["outcome"], "outcome_bucket": filters["outcome_bucket"],
+        "statuses": STATUSES, "outcomes": OUTCOMES,
+        "status_buckets": buckets(STATUS_BUCKETS, &[&["pending", "accepted", "started"], &["completed"], &["failed"], &["cancelled"]]),
+        "outcome_buckets": buckets(OUTCOME_BUCKETS, &[&["accepted"], &["completed", "degraded"], &["timed_out", "handler_failed"],
+            &["cancelled"], &["rejected_not_found", "rejected_forbidden", "rejected_throttled",
+                "rejected_concurrency_limited", "rejected_circuit_open"]]),
+    });
+    page.as_object_mut().expect("page").extend(extra.as_object().expect("extra").clone());
+    page
+}
+
+/// PHP's 404 for an identity the namespace does not hold.
+fn object_not_found() -> RuntimeError {
+    RuntimeError::Protocol {
         status: StatusCode::NOT_FOUND,
         response: json!({"message": "Catalog object not found.", "reason": "catalog_object_not_found"}),
-    })
+    }
+}
+
+/// A filter's value, or null when the query leaves it out.
+fn identity<'a>(filters: &'a Value, key: &str) -> Option<&'a str> {
+    filters[key].as_str()
+}
+
+store_methods! {
+    /// `endpointsIndex`, `servicesIndex`, `operationsIndex` and `callsIndex`.
+    pub(crate) async fn service_catalog_list(&self, query: &[(String, String)], catalog: Catalog) -> Result<Value> {
+        let filters = filters(query, catalog, false)?;
+        let namespace = self.namespace.as_ref();
+        let (_, limit, offset) = paging(&filters);
+        let endpoint = identity(&filters, "endpoint_id");
+        let service = identity(&filters, "service_id");
+        let mut tx = self.begin_read().await?;
+        // Each optional filter binds twice: a null keeps every row.
+        let (count, rows) = match catalog {
+            Catalog::Calls => return Ok(calls_page(&filters, namespace)),
+            Catalog::Endpoints => (
+                Self::scalar("SELECT COUNT(*) FROM workflow_service_endpoints WHERE namespace=$1")
+                    .bind(namespace).fetch_one(&mut *tx).await?,
+                Self::query("SELECT * FROM workflow_service_endpoints WHERE namespace=$1 ORDER BY endpoint_name,id LIMIT $2 OFFSET $3")
+                    .bind(namespace).bind(limit).bind(offset).fetch_all(&mut *tx).await?,
+            ),
+            Catalog::Services => (
+                Self::scalar("SELECT COUNT(*) FROM workflow_services WHERE namespace=$1 AND ($2 IS NULL OR workflow_service_endpoint_id=$3)")
+                    .bind(namespace).bind(endpoint).bind(endpoint).fetch_one(&mut *tx).await?,
+                Self::query("SELECT * FROM workflow_services WHERE namespace=$1 AND ($2 IS NULL OR workflow_service_endpoint_id=$3) ORDER BY service_name,id LIMIT $4 OFFSET $5")
+                    .bind(namespace).bind(endpoint).bind(endpoint).bind(limit).bind(offset).fetch_all(&mut *tx).await?,
+            ),
+            Catalog::Operations => (
+                Self::scalar("SELECT COUNT(*) FROM workflow_service_operations WHERE namespace=$1 AND ($2 IS NULL OR workflow_service_endpoint_id=$3) AND ($4 IS NULL OR workflow_service_id=$5)")
+                    .bind(namespace).bind(endpoint).bind(endpoint).bind(service).bind(service).fetch_one(&mut *tx).await?,
+                Self::query("SELECT * FROM workflow_service_operations WHERE namespace=$1 AND ($2 IS NULL OR workflow_service_endpoint_id=$3) AND ($4 IS NULL OR workflow_service_id=$5) ORDER BY operation_name,id LIMIT $6 OFFSET $7")
+                    .bind(namespace).bind(endpoint).bind(endpoint).bind(service).bind(service).bind(limit).bind(offset)
+                    .fetch_all(&mut *tx).await?,
+            ),
+        };
+        tx.commit().await?;
+        // Laravel reads no rows when the count is zero.
+        let rows = if count == 0 { Vec::new() } else { rows };
+        let data = rows.iter().map(|row| match catalog {
+            Catalog::Endpoints => Self::endpoint_row(row).map(|endpoint| endpoint_item(&endpoint)),
+            Catalog::Services => Self::service_row(row).map(|service| service_item(&service)),
+            _ => Self::operation_row(row).map(|operation| operation_item(&operation)),
+        }).collect::<Result<Vec<_>>>()?;
+        Ok(page_body(data, &filters, count, namespace))
+    }
+
+    /// `endpointShow`, `serviceShow`, `operationShow` and `callShow`.
+    pub(crate) async fn service_catalog_show(&self, query: &[(String, String)], catalog: Catalog, id: &str) -> Result<Value> {
+        filters(query, catalog, true)?;
+        let namespace = self.namespace.as_ref();
+        let mut tx = self.begin_read().await?;
+        let body = match catalog {
+            Catalog::Calls => None,
+            Catalog::Endpoints => match self.catalog_endpoint_by_id(&mut tx, id).await? {
+                None => None,
+                Some(endpoint) => {
+                    let (services, more_services) = self.related(&mut tx,
+                        "SELECT * FROM workflow_services WHERE namespace=$1 AND workflow_service_endpoint_id=$2 ORDER BY service_name,id LIMIT $3", id).await?;
+                    let (operations, more_operations) = self.related(&mut tx,
+                        "SELECT * FROM workflow_service_operations WHERE namespace=$1 AND workflow_service_endpoint_id=$2 ORDER BY operation_name,id LIMIT $3", id).await?;
+                    let mut body = endpoint_item(&endpoint);
+                    body["services"] = services.iter().map(Self::service_row).map(|service| service.map(|service| service_item(&service)))
+                        .collect::<Result<Vec<_>>>()?.into();
+                    body["operations"] = operations.iter().map(Self::operation_row)
+                        .map(|operation| operation.map(|operation| operation_item(&operation))).collect::<Result<Vec<_>>>()?.into();
+                    body["related_has_more"] = json!({"services": more_services, "operations": more_operations});
+                    Some(body)
+                }
+            },
+            Catalog::Services => match Self::query("SELECT * FROM workflow_services WHERE id=$1 AND namespace=$2 LIMIT 1")
+                .bind(id).bind(namespace).fetch_optional(&mut *tx).await?
+            {
+                None => None,
+                Some(row) => {
+                    let service = Self::service_row(&row)?;
+                    let endpoint = self.catalog_endpoint_by_id(&mut tx, &service.endpoint_id).await?;
+                    let (operations, more) = self.related(&mut tx,
+                        "SELECT * FROM workflow_service_operations WHERE namespace=$1 AND workflow_service_id=$2 ORDER BY operation_name,id LIMIT $3", id).await?;
+                    let mut body = service_item(&service);
+                    body["endpoint"] = endpoint.as_ref().map_or(Value::Null, endpoint_item);
+                    body["operations"] = operations.iter().map(Self::operation_row)
+                        .map(|operation| operation.map(|operation| operation_item(&operation))).collect::<Result<Vec<_>>>()?.into();
+                    body["related_has_more"] = json!({"operations": more});
+                    Some(body)
+                }
+            },
+            Catalog::Operations => match Self::query("SELECT * FROM workflow_service_operations WHERE id=$1 AND namespace=$2 LIMIT 1")
+                .bind(id).bind(namespace).fetch_optional(&mut *tx).await?
+            {
+                None => None,
+                Some(row) => {
+                    // `ServiceOperationView::detail`: the endpoint and service
+                    // when the namespace holds them.
+                    let operation = Self::operation_row(&row)?;
+                    let endpoint = self.catalog_endpoint_by_id(&mut tx, &operation.endpoint_id).await?;
+                    let service = Self::query("SELECT * FROM workflow_services WHERE id=$1 AND namespace=$2 LIMIT 1")
+                        .bind(operation.service_id.as_str()).bind(namespace).fetch_optional(&mut *tx).await?
+                        .map(|row| Self::service_row(&row)).transpose()?;
+                    let mut body = operation_item(&operation);
+                    body["endpoint"] = endpoint.as_ref().map_or(Value::Null, endpoint_item);
+                    body["service"] = service.as_ref().map_or(Value::Null, service_item);
+                    Some(body)
+                }
+            },
+        };
+        tx.commit().await?;
+        body.ok_or_else(object_not_found)
+    }
+
+    /// `ServiceCatalog::findEndpoint`: an endpoint by id in the namespace.
+    async fn catalog_endpoint_by_id(&self, connection: &mut DB::Connection, id: &str) -> Result<Option<super::service_endpoints::Endpoint>> {
+        Self::query("SELECT * FROM workflow_service_endpoints WHERE id=$1 AND namespace=$2 LIMIT 1")
+            .bind(id).bind(self.namespace.as_ref()).fetch_optional(&mut *connection).await?
+            .map(|row| Self::endpoint_row(&row)).transpose()
+    }
+
+    /// `related`: up to `RELATED_LIMIT` rows and whether more exist.
+    async fn related(&self, connection: &mut DB::Connection, sql: &'static str, id: &str) -> Result<(Vec<DB::Row>, bool)> {
+        let mut rows = Self::query(sql).bind(self.namespace.as_ref()).bind(id).bind(RELATED_LIMIT + 1)
+            .fetch_all(&mut *connection).await?;
+        let more = rows.len() > RELATED_LIMIT as usize;
+        rows.truncate(RELATED_LIMIT as usize);
+        Ok((rows, more))
+    }
 }
 
 #[cfg(test)]
@@ -150,18 +296,19 @@ mod tests {
         pairs.iter().map(|(key, value)| ((*key).to_owned(), (*value).to_owned())).collect()
     }
 
-    fn refusal(result: Result<Value>) -> Value {
-        match result {
-            Err(RuntimeError::Protocol { status, response }) => json!([status.as_u16(), response]),
-            other => panic!("expected a refusal, got {other:?}"),
-        }
+    fn page(pairs: &[(&str, &str)], catalog: Catalog, total: i64) -> Result<Value> {
+        let filters = filters(&query(pairs), catalog, false)?;
+        Ok(if catalog == Catalog::Calls { calls_page(&filters, "second") } else { page_body(Vec::new(), &filters, total, "default") })
     }
 
     #[test]
-    fn lists_are_empty_pages_with_the_requested_paging() {
-        assert_eq!(list(&query(&[("page", "2"), ("per_page", "2")]), Catalog::Endpoints, "default").unwrap(),
+    fn pages_report_the_requested_paging_and_the_count() {
+        assert_eq!(page(&[("page", "2"), ("per_page", "2")], Catalog::Endpoints, 0).unwrap(),
             json!({"data":[],"current_page":2,"per_page":2,"total":0,"last_page":1,"namespace":"default"}));
-        let calls = list(&query(&[("bucket", "open")]), Catalog::Calls, "second").unwrap();
+        assert_eq!(page(&[("per_page", "2")], Catalog::Services, 5).unwrap()["last_page"], 3);
+        assert_eq!(page(&[], Catalog::Operations, 50).unwrap()["last_page"], 1);
+        assert_eq!(paging(&json!({"page": "3", "per_page": "20"})), (3, 20, 40));
+        let calls = page(&[("bucket", "open")], Catalog::Calls, 0).unwrap();
         assert_eq!([&calls["scope"], &calls["bucket"], &calls["status_bucket"], &calls["outcome"], &calls["namespace"]],
             [&json!("relevant"), &json!("open"), &json!("open"), &Value::Null, &json!("second")]);
         assert_eq!(calls["outcome_buckets"]["policy"].as_array().unwrap().len(), 5);
@@ -169,27 +316,31 @@ mod tests {
 
     #[test]
     fn filters_fail_like_laravel() {
-        assert_eq!(refusal(list(&query(&[("per_page", "0")]), Catalog::Endpoints, "default"))[1]["message"],
+        let fail = |pairs: &[(&str, &str)], catalog: Catalog, detail: bool| match filters(&query(pairs), catalog, detail) {
+            Err(RuntimeError::Protocol { status, response }) => json!([status.as_u16(), response]),
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        assert_eq!(fail(&[("per_page", "0")], Catalog::Endpoints, false)[1]["message"],
             "The per page field must be between 1 and 100.");
-        assert_eq!(refusal(list(&query(&[("page", "x")]), Catalog::Endpoints, "default"))[1]["message"],
-            "The page field must be an integer.");
-        let unknown = refusal(list(&query(&[("bogus", "1"), ("other", "2")]), Catalog::Endpoints, "default"));
+        assert_eq!(fail(&[("page", "x")], Catalog::Endpoints, false)[1]["message"], "The page field must be an integer.");
+        let unknown = fail(&[("bogus", "1"), ("other", "2")], Catalog::Endpoints, false);
         assert_eq!(unknown[1]["message"], "Unsupported catalog filter. (and 1 more error)");
-        assert_eq!(refusal(list(&query(&[("endpoint_id", "x")]), Catalog::Endpoints, "default"))[1]["errors"],
+        assert_eq!(fail(&[("endpoint_id", "x")], Catalog::Endpoints, false)[1]["errors"],
             json!({"endpoint_id":["Unsupported catalog filter."]}));
-        assert_eq!(refusal(list(&query(&[("endpoint_id", "")]), Catalog::Services, "default"))[1]["message"],
-            "The endpoint id field is required.");
-        assert_eq!(refusal(list(&query(&[("bucket", "open"), ("status_bucket", "failed")]), Catalog::Calls, "default"))[1],
+        assert_eq!(fail(&[("endpoint_id", "")], Catalog::Services, false)[1]["message"], "The endpoint id field is required.");
+        assert_eq!(fail(&[("bucket", "open"), ("status_bucket", "failed")], Catalog::Calls, false)[1],
             json!({"message":"Must match status_bucket when both are supplied.","reason":"validation_failed",
                 "errors":{"bucket":["Must match status_bucket when both are supplied."]},
                 "validation_errors":{"bucket":["Must match status_bucket when both are supplied."]}}));
-        assert_eq!(refusal(show(&query(&[("page", "2")]), Catalog::Endpoints))[1]["errors"],
-            json!({"page":["Unsupported catalog filter."]}));
+        assert_eq!(fail(&[("page", "2")], Catalog::Endpoints, true)[1]["errors"], json!({"page":["Unsupported catalog filter."]}));
     }
 
     #[test]
-    fn identities_are_not_found() {
-        assert_eq!(refusal(show(&query(&[("namespace", "default")]), Catalog::Calls)),
-            json!([404, {"message":"Catalog object not found.","reason":"catalog_object_not_found"}]));
+    fn identities_are_not_found_as_php_answers() {
+        match object_not_found() {
+            RuntimeError::Protocol { status, response } => assert_eq!(json!([status.as_u16(), response]),
+                json!([404, {"message":"Catalog object not found.","reason":"catalog_object_not_found"}])),
+            other => panic!("{other:?}"),
+        }
     }
 }
