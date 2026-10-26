@@ -2978,7 +2978,7 @@ function publicGuideAuditScenarioOutputs(
     case 'rollback_contract_verified':
       return {
         ...common,
-        rollback_steps: signals.rollback_procedure ? commands.filter((command) => /backup|restore|composer require|queue:restart|mysql|psql/i.test(command)) : [],
+        rollback_steps: signals.rollback_procedure ? commands.filter((command) => /backup|restore|composer\s+require|queue:restart|mysql|psql/i.test(command)) : [],
         rollback_supported_state: signals.rollback_procedure ? 'documented_but_not_executed' : 'not_documented_by_public_guide_audit',
         public_operator_signal: signals.rollback_procedure
           ? {

@@ -51,6 +51,8 @@ class CadenceObservationInfrastructureError extends PublishedStackInfrastructure
 }
 
 const modulePath = fileURLToPath(import.meta.url);
+// Python venvs start from the patched, bundle-only pip (GHSA-6q48-6c7w-9gw2).
+const PATCHED_PIP_BOOTSTRAP = path.join(path.dirname(modulePath), '..', 'ci', 'bootstrap-patched-pip.sh');
 const repoRoot = process.env.DW_SCHEDULES_REPO_ROOT
   ?? path.resolve(path.dirname(modulePath), '../..');
 const resultDir = process.env.DW_SCHEDULES_RESULT_DIR
@@ -1348,7 +1350,7 @@ async function resolveLatestPublishedPhpSdkVersion() {
   const command = [
     'run',
     '--rm',
-    'composer:2',
+    'composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee',
     'show',
     '--all',
     '--format=json',
@@ -2053,10 +2055,10 @@ async function installSchedulesPythonLifecycleArtifact(shardRoot, artifactVersio
 
   await execLogged('python3', ['-m', 'venv', venv], path.join(resultDir, 'schedules-python-lifecycle-venv.log'));
   const pythonBin = path.join(venv, 'bin', 'python');
-  await execLogged(pythonBin, ['-m', 'pip', 'install', '--upgrade', 'pip'], path.join(resultDir, 'schedules-python-lifecycle-pip-upgrade.log'));
+  await execLogged('sh', [PATCHED_PIP_BOOTSTRAP, pythonBin], path.join(resultDir, 'schedules-python-lifecycle-pip-upgrade.log'));
   await execLogged(
     pythonBin,
-    ['-m', 'pip', 'install', `durable-workflow==${pythonVersion}`],
+    ['-I', '-m', 'pip', 'install', `durable-workflow==${pythonVersion}`],
     path.join(resultDir, 'schedules-python-lifecycle-install.log'),
   );
   markArtifactSource(artifactSources, 'sdk-python', pythonPackageArtifactSource(pythonVersion), artifactVersions);
@@ -6694,10 +6696,10 @@ async function installSchedulesPythonArtifact(shardRoot, artifactVersions, artif
 
   await execLogged('python3', ['-m', 'venv', venv], path.join(resultDir, 'schedules-cross-language-python-venv.log'));
   const pythonBin = path.join(venv, 'bin', 'python');
-  await execLogged(pythonBin, ['-m', 'pip', 'install', '--upgrade', 'pip'], path.join(resultDir, 'schedules-cross-language-python-pip-upgrade.log'));
+  await execLogged('sh', [PATCHED_PIP_BOOTSTRAP, pythonBin], path.join(resultDir, 'schedules-cross-language-python-pip-upgrade.log'));
   await execLogged(
     pythonBin,
-    ['-m', 'pip', 'install', `durable-workflow==${pythonVersion}`],
+    ['-I', '-m', 'pip', 'install', `durable-workflow==${pythonVersion}`],
     path.join(resultDir, 'schedules-cross-language-python-install.log'),
   );
   markArtifactSource(artifactSources, 'sdk-python', pythonPackageArtifactSource(pythonVersion), artifactVersions);
@@ -6727,7 +6729,7 @@ async function installSchedulesPhpArtifact(
       `${phpRoot}:/app`,
       '-w',
       '/app',
-      'composer:2',
+      'composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee',
       'require',
       '--no-interaction',
       '--no-progress',
@@ -6748,7 +6750,7 @@ async function installSchedulesPhpArtifact(
       '/app',
       '--entrypoint',
       'php',
-      'composer:2',
+      'composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee',
       '-r',
       "require 'vendor/autoload.php'; echo Composer\\InstalledVersions::getPrettyVersion('durable-workflow/sdk') ?: '';",
     ],
@@ -6886,7 +6888,7 @@ async function runSchedulesPhpWorkerCapture(php, input) {
     '/app',
     '--entrypoint',
     'php',
-    'composer:2',
+    'composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee',
     '/app/schedules_worker.php',
     containerInput,
     containerOutput,
@@ -7889,7 +7891,7 @@ async function runSchedulesPhpSurfaceProbe(php, input) {
     '/app',
     '--entrypoint',
     'php',
-    'composer:2',
+    'composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee',
     '/app/schedules_php_surface.php',
     containerInput,
     containerOutput,

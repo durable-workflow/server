@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 #[derive(Default)]
 pub(super) struct ActivitySummaryHistory {
     open: BTreeMap<String, ExpectedActivity>,
+    /// Recorded local activities not yet closed by their terminal event.
+    local: BTreeMap<String, (i64, String)>,
 }
 
 struct ExpectedActivity {
@@ -50,14 +52,11 @@ impl ActivitySummaryHistory {
         {
             return false;
         }
-        // Local execution still requires its separately qualified history.
-        if snapshot["id"] != id
-            || payload["sequence"] != sequence
-            || payload["activity_type"] != kind
-            || snapshot["local_activity"] == true
-            || snapshot["execution_mode"] == "local"
-        {
+        if snapshot["id"] != id || payload["sequence"] != sequence || payload["activity_type"] != kind {
             return false;
+        }
+        if snapshot["local_activity"] == true || snapshot["execution_mode"] == "local" {
+            return self.apply_local(event, id, sequence, kind, attempts, payload);
         }
         let status = match event {
             "ActivityScheduled" | "ActivityRetryScheduled" => "pending",
@@ -127,6 +126,38 @@ impl ActivitySummaryHistory {
         }
         true
     }
+
+    /// A `record_local_activity` writes its whole history in the completion
+    /// that reports it: scheduled, then each attempt, then the terminal event,
+    /// which closes it without a wait. A local activity left open (a prepared
+    /// one) is not qualified here.
+    fn apply_local(&mut self, event: &str, id: &str, sequence: i64, kind: &str, attempts: i64, payload: &Value) -> bool {
+        let status = match event {
+            "ActivityScheduled" | "ActivityRetryScheduled" => "pending",
+            "ActivityStarted" | "ActivityHeartbeatRecorded" => "running",
+            "ActivityCompleted" => "completed",
+            "ActivityFailed" | "ActivityTimedOut" => "failed",
+            "ActivityCancelled" => "cancelled",
+            _ => return false,
+        };
+        if payload["execution_mode"] != "local" || payload["local_activity"] != true || payload["activity"]["status"] != status {
+            return false;
+        }
+        if event == "ActivityScheduled" {
+            if attempts != 0 || self.open.contains_key(id) || self.local.contains_key(id) {
+                return false;
+            }
+            self.local.insert(id.to_owned(), (sequence, kind.to_owned()));
+            return true;
+        }
+        if self.local.get(id) != Some(&(sequence, kind.to_owned())) {
+            return false;
+        }
+        if matches!(status, "completed" | "failed" | "cancelled") {
+            self.local.remove(id);
+        }
+        true
+    }
 }
 
 impl ExpectedActivity {
@@ -184,7 +215,7 @@ where
     ) -> Result<bool> {
         let rows = Self::query("SELECT w.*,a.id AS activity_id,a.sequence AS activity_sequence,a.activity_type,a.status AS activity_status,a.attempt_count,a.current_attempt_id,a.parallel_group_path AS activity_group_path,q.id AS matched_task_id,q.task_type AS matched_task_type,q.payload AS matched_task_payload FROM workflow_run_waits w LEFT JOIN activity_executions a ON a.id=w.resume_source_id AND a.workflow_run_id=w.workflow_run_id LEFT JOIN workflow_tasks q ON q.id=w.task_id AND q.workflow_run_id=w.workflow_run_id WHERE w.workflow_run_id=$1 AND w.kind='activity' AND w.status='open' ORDER BY w.sequence,w.opened_at,w.resume_source_id LIMIT 101")
             .bind(run_id).fetch_all(&mut **tx).await?;
-        if rows.len() != history.open.len() || rows.len() > 100 {
+        if rows.len() != history.open.len() || rows.len() > 100 || !history.local.is_empty() {
             return Ok(false);
         }
         let mut selected_activity_task = false;

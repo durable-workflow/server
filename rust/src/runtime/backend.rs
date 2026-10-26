@@ -39,7 +39,8 @@ pub(super) trait Backend: Database {
     const RUN_COMMANDS_SQL: &str =
         super::store::run_commands_sql!(
         "substr(s.arguments,1,30)='dw-native-external-payload-v1:'",
-        "substr(c.payload,1,30)='dw-native-external-payload-v1:'"
+        "substr(c.payload,1,30)='dw-native-external-payload-v1:'",
+        "substr(c.payload,1,23)='dw-external-payload:v1:'"
     );
     const SELECTION_RESOLUTION_SQL: &str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SelectionResolved' AND payload->>'selection_group_id'=$2 ORDER BY sequence LIMIT 1";
     // Frozen run command/task repair counters use each backend's actual width.
@@ -205,7 +206,8 @@ ORDER BY t.available_order,t.id LIMIT 100
     const RUN_COMMANDS_SQL: &str =
         super::store::run_commands_sql!(
         "substr(s.arguments,1,30) COLLATE BINARY='dw-native-external-payload-v1:'",
-        "substr(c.payload,1,30) COLLATE BINARY='dw-native-external-payload-v1:'"
+        "substr(c.payload,1,30) COLLATE BINARY='dw-native-external-payload-v1:'",
+        "substr(c.payload,1,23) COLLATE BINARY='dw-external-payload:v1:'"
     );
     const HISTORY_PAGE: &str = "SELECT * FROM (SELECT *,SUM(length(CAST(payload AS BLOB))) OVER (ORDER BY sequence) AS page_bytes FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence LIMIT $3) AS page WHERE page_bytes<=8388608 ORDER BY sequence";
     // Normalize only the two supported UTC storage shapes. Removing trailing
@@ -442,7 +444,10 @@ impl Backend for MySql {
     const ACTIVITY_METADATA_HISTORY: &str = "SELECT h.sequence,h.event_type,CASE WHEN page.projection_bytes<=8388608 THEN h.payload ELSE NULL END AS payload,h.workflow_task_id,h.recorded_at,page.projection_count FROM (SELECT id,sequence,COUNT(*) OVER () AS projection_count,SUM(payload_bytes) OVER (ORDER BY sequence) AS projection_bytes FROM (SELECT id,sequence,octet_length(CAST(payload AS CHAR CHARACTER SET utf8mb4)) AS payload_bytes FROM workflow_history_events FORCE INDEX (workflow_history_events_workflow_run_id_sequence_unique) WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled')) AS sizes ORDER BY sequence LIMIT 10001) AS page JOIN workflow_history_events h ON h.id=page.id ORDER BY page.sequence";
     const PHP_CONNECTION: &str = "mysql";
     const OPEN_WAIT_ORDER: &str = "WITH clocks AS (SELECT id,wait_id,opened_at,TIMESTAMPDIFF(MICROSECOND,'1970-01-01 00:00:00',opened_at) AS micros FROM workflow_run_waits WHERE workflow_run_id=? AND status='open') SELECT id FROM clocks ORDER BY CASE WHEN opened_at IS NULL THEN 1 ELSE 0 END,ROUND((CASE WHEN micros<0 THEN 2*FLOOR(micros/1000000)*1000000-micros ELSE micros END)/1000),wait_id LIMIT 100 OFFSET ?";
-    const SUMMARY_HISTORY_SQL: &str = "SELECT id,sequence,event_type,CAST(payload AS CHAR) AS payload_json FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence LIMIT 16";
+    // The run-and-sequence index keeps MySQL from sorting whole rows: a
+    // filesort of one large payload exceeds the default sort buffer and
+    // fails the transaction ("Out of sort memory").
+    const SUMMARY_HISTORY_SQL: &str = "SELECT id,sequence,event_type,CAST(payload AS CHAR) AS payload_json FROM workflow_history_events FORCE INDEX (workflow_history_events_workflow_run_id_sequence_unique) WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence LIMIT 16";
     const OBSERVATION_FAILURE_EVENT: &str = "SELECT id,sequence,event_type,recorded_at FROM workflow_history_events WHERE workflow_run_id=? AND CAST(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.failure_id')) AS BINARY)=CAST(? AS BINARY) AND event_type IN ('ActivityFailed','ActivityTimedOut','ChildRunFailed','ChildRunCancelled','ChildRunTerminated','WorkflowFailed','WorkflowTimedOut','WorkflowCancelled','WorkflowTerminated','UpdateCompleted') ORDER BY sequence DESC LIMIT 1";
     const OBSERVATION_ATTRIBUTES: &str = "SELECT `key` AS attribute_key,type,value_string,value_keyword,value_int,value_float,CASE WHEN value_bool IS NULL THEN NULL WHEN value_bool THEN 1 ELSE 0 END AS value_bool,value_datetime,value_keyword_list FROM workflow_search_attributes WHERE workflow_run_id=$1 AND workflow_instance_id=$2 AND `key` IN ($3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) ORDER BY `key` LIMIT 20";
     fn optional_float(row: &Self::Row, field: &str) -> Result<Option<f64>> {
@@ -487,7 +492,8 @@ impl Backend for MySql {
     const RUN_COMMANDS_SQL: &str =
         super::store::run_commands_sql!(
         "CAST(SUBSTRING(s.arguments,1,30) AS BINARY)='dw-native-external-payload-v1:'",
-        "CAST(SUBSTRING(c.payload,1,30) AS BINARY)='dw-native-external-payload-v1:'"
+        "CAST(SUBSTRING(c.payload,1,30) AS BINARY)='dw-native-external-payload-v1:'",
+        "CAST(SUBSTRING(c.payload,1,23) AS BINARY)='dw-external-payload:v1:'"
     );
     // First use the preserved run/sequence index to materialize only IDs and
     // byte counts for this bounded page. Sorting JSON payloads in the window

@@ -24,7 +24,6 @@ Optional overrides:
   DW_HEARTBEATS_NAMESPACE             Defaults to heartbeats-conformance.
   DW_HEARTBEATS_SHARED_SERVER_STATE   Reuse a verified wave bootstrap receipt;
                                        requires its prescribed PHP namespace.
-  DW_HEARTBEATS_PHP_IMAGE             Defaults to composer:2.
   DW_HEARTBEATS_SERVER_HOST           Host-side server address; defaults to 127.0.0.1.
   DW_HEARTBEATS_HEARTBEAT_SECONDS     Self-started server cadence; defaults to 2.
   DW_HEARTBEATS_STALE_AFTER_SECONDS   Self-started server stale window; defaults to 7.

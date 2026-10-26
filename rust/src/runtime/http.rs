@@ -68,6 +68,8 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route("/api/workflows", get(list_workflows).post(start))
         .route("/api/bridge-adapters/webhook/{adapter}", post(bridge_webhook))
+        .route("/api/workflows/import/embedded-v2", post(import_embedded_v2))
+        .route("/api/workflows/import/waterline-v1", post(import_waterline_v1))
         .route("/api/activities", get(list_activities).post(start_activity))
         .route("/api/activities/{activity_id}", get(show_activity))
         .route(
@@ -319,6 +321,7 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .fallback(route_fallback)
         .method_not_allowed_fallback(route_fallback)
+        .layer(middleware::from_fn(super::waterline_import::read_only_guard))
         .layer(middleware::from_fn(empty_list_body))
         // `payload_limits` reads and bounds every body first.
         .layer(DefaultBodyLimit::disable())
@@ -459,6 +462,8 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         || path.starts_with("/api/system/")
         || path == "/api/runtime-credentials"
         || path.starts_with("/api/runtime-credentials/")
+        // History import writes runs into the store; PHP serves it to admins.
+        || path.starts_with("/api/workflows/import/")
     {
         &["admin"]
     } else {
@@ -708,7 +713,9 @@ fn exact_namespace_route(path: &str) -> Option<Allowed> {
         "/api/workflows" | "/api/activities" | "/api/search-attributes" => READ_WRITE,
         // The metrics describe the namespace's own state, read by GET or POST.
         "/api/system/metrics" => READ_WRITE,
-        "/api/external-payloads/v1" | "/api/storage/test" => WRITE,
+        // An import writes into the requested namespace.
+        "/api/external-payloads/v1" | "/api/storage/test" | "/api/workflows/import/embedded-v2"
+        | "/api/workflows/import/waterline-v1" => WRITE,
         "/api/task-queues"
         | "/api/deployments"
         | "/api/workers"
@@ -1105,6 +1112,30 @@ async fn bridge_webhook(
 ) -> Result<(StatusCode, Json<Value>)> {
     let body = serde_json::from_slice::<Value>(&body).ok().filter(Value::is_object).unwrap_or_else(|| json!({}));
     let (status, answer) = super::bridge_adapters::webhook(&runtime, &command, &adapter, body).await?;
+    Ok((status, Json(answer)))
+}
+
+/// `POST /api/workflows/import/embedded-v2`. The controller reads the body
+/// and the query string itself, as Laravel's request input.
+async fn import_embedded_v2(
+    Extension(runtime): Extension<Runtime>,
+    uri: axum::http::Uri,
+    body: axum::body::Bytes,
+) -> Result<(StatusCode, Json<Value>)> {
+    let query: Vec<(String, String)> = uri
+        .query()
+        .map(|query| form_urlencoded::parse(query.as_bytes()).into_owned().collect())
+        .unwrap_or_default();
+    let (status, answer) = runtime.import_embedded_v2(&body, &query).await?;
+    Ok((status, Json(answer)))
+}
+
+/// `POST /api/workflows/import/waterline-v1`.
+async fn import_waterline_v1(
+    Extension(runtime): Extension<Runtime>,
+    body: axum::body::Bytes,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, answer) = runtime.import_waterline_v1(&body).await?;
     Ok((status, Json(answer)))
 }
 

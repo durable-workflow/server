@@ -3,6 +3,7 @@
 use super::Store;
 use crate::runtime::backend::Backend;
 use crate::runtime::external_resolution::STORED_PREFIX;
+use crate::runtime::history_presentation::PHP_EXTERNAL_REFERENCE;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -23,6 +24,12 @@ fn described_commands_read_only_the_exact_native_stored_prefix() {
         let expected = format!("CASE WHEN c.command_type='signal' AND {signal}{quoted} THEN s.arguments \
             WHEN c.command_type='start' AND {start}{quoted} THEN c.payload END");
         assert!(sql.contains(&expected), "{backend}: {sql}");
+        // An imported PHP reference is matched by its exact 23-byte prefix,
+        // and neither kind of reference is ever read as a command reason.
+        let php = format!("{}'{PHP_EXTERNAL_REFERENCE}'", start.replace(",1,30)", ",1,23)"));
+        assert!(sql.contains(&format!("CASE WHEN {php} THEN c.payload END AS php_payload_reference")), "{backend}: {sql}");
+        assert!(sql.contains(&format!("AND NOT ({start}{quoted}) AND NOT ({php}) THEN c.payload END AS reason_payload")),
+            "{backend}: {sql}");
         assert!(!sql.contains("LIKE"), "{backend}: {sql}");
     }
 }
@@ -128,7 +135,8 @@ async fn described_commands_select_no_inline_payload() {
             .await
             .unwrap();
         if let Some(arguments) = arguments {
-            Store::<sqlx::Sqlite>::query("INSERT INTO workflow_signal_records(id,workflow_command_id,signal_name,status,arguments) VALUES ($1,$2,'s','received',$3)")
+            // A signal record shares its command's instance, as every writer stores it.
+            Store::<sqlx::Sqlite>::query("INSERT INTO workflow_signal_records(id,workflow_command_id,workflow_instance_id,signal_name,status,arguments) VALUES ($1,$2,'instance','s','received',$3)")
                 .bind(format!("s-{id}"))
                 .bind(*id)
                 .bind(*arguments)

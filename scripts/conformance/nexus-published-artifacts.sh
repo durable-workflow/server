@@ -1730,7 +1730,7 @@ function publishedCrossLanguageWorkerExecution(versions, sources, verification, 
         role: 'sdk_php_remote_client',
         sdk_language: 'sdk-php',
         package_version: runtimeEvidence.php?.sdk_package_version || versions['sdk-php'],
-        container_image: runtimeEvidence.php?.container_image || 'composer:2',
+        container_image: runtimeEvidence.php?.container_image || 'composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee',
         service_started: phpServiceHealth.health_succeeded === true,
         public_service_call_surface: reflectedPublicServiceCallSurface(runtimeEvidence.php),
         caller_workflow_invocation: callerWorkflowInvocationEvidence('sdk-php', runtimeEvidence.php),
@@ -1739,7 +1739,7 @@ function publishedCrossLanguageWorkerExecution(versions, sources, verification, 
         role: 'workflow_php_runtime_service',
         sdk_language: 'workflow-php',
         package_version: runtimeEvidence.php?.package_version || versions.workflow,
-        container_image: runtimeEvidence.php?.container_image || 'composer:2',
+        container_image: runtimeEvidence.php?.container_image || 'composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee',
         service_started: phpServiceHealth.health_succeeded === true,
         service_health_succeeded: phpServiceHealth.health_succeeded === true,
         service_health: phpServiceHealth,
@@ -2256,6 +2256,13 @@ async function startPythonSdkService(compose, versions) {
   const scriptPath = path.join(compose.runRoot, 'nexus-python-sdk-service.py');
   const containerName = `${compose.project}-python-sdk-service`;
   fs.writeFileSync(scriptPath, pythonPublishedServiceScript());
+  // The service venv takes the hash-pinned pip and trusts only its verified
+  // bundle before installing the SDK (GHSA-6q48-6c7w-9gw2).
+  const pipHelpers = path.join(compose.runRoot, 'dw-ci');
+  fs.mkdirSync(pipHelpers, {recursive: true});
+  for (const helper of ['bootstrap-patched-pip.sh', 'blocked_roots.py']) {
+    fs.copyFileSync(path.join(path.dirname(process.argv[5]), '..', 'ci', helper), path.join(pipHelpers, helper));
+  }
   dockerRunDetached([
     '--name', containerName,
     '--network', dockerComposeNetwork(compose.project),
@@ -2266,7 +2273,7 @@ async function startPythonSdkService(compose, versions) {
     'python:3.12-slim',
     'sh',
     '-lc',
-    `python -m venv /tmp/dw-python && . /tmp/dw-python/bin/activate && pip install --no-cache-dir durable-workflow==${JSON.stringify(versions['sdk-python']).slice(1, -1)} >/tmp/dw-python-pip.log 2>&1 && python /work/nexus-python-sdk-service.py`,
+    `python -m venv /tmp/dw-python && sh /work/dw-ci/bootstrap-patched-pip.sh /tmp/dw-python/bin/python >/tmp/dw-python-pip.log 2>&1 && . /tmp/dw-python/bin/activate && pip install --no-cache-dir durable-workflow==${JSON.stringify(versions['sdk-python']).slice(1, -1)} >/tmp/dw-python-pip.log 2>&1 && python /work/nexus-python-sdk-service.py`,
   ], path.join(resultDir, 'nexus-python-sdk-service-start.log'));
 
   const health = await waitForJson(`http://127.0.0.1:${port}/health`, 120000);
@@ -2278,6 +2285,12 @@ async function startPhpWorkflowService(compose, versions) {
   const scriptPath = path.join(compose.runRoot, 'nexus-php-workflow-service.php');
   const containerName = `${compose.project}-php-workflow-service`;
   fs.writeFileSync(scriptPath, phpPublishedServiceScript());
+  // Composer in the published Server image trusts only a checked CA file and
+  // an empty directory, whatever that image's store holds (GHSA-6q48-6c7w-9gw2).
+  runLogged('sh', [
+    path.join(path.dirname(process.argv[5]), '..', 'ci', 'checked-ca.sh'),
+    path.join(compose.runRoot, 'composer-trust'),
+  ], path.join(resultDir, 'nexus-php-composer-trust.log'));
   dockerRunDetached([
     '--name', containerName,
     '--network', dockerComposeNetwork(compose.project),
@@ -2285,6 +2298,8 @@ async function startPhpWorkflowService(compose, versions) {
     '--user', '1000:1000',
     '--entrypoint', 'sh',
     '-e', 'COMPOSER_HOME=/tmp/dw-composer',
+    '-e', 'COMPOSER_CAFILE=/work/composer-trust/ca.pem',
+    '-e', 'COMPOSER_CAPATH=/work/composer-trust/no-ca-directory',
     '-p', `127.0.0.1:${port}:8092`,
     '-v', `${compose.runRoot}:/work:ro`,
     serverImage(),

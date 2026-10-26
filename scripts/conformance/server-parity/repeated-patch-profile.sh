@@ -46,8 +46,12 @@ esac
 runtime=(-v "$PWD/parity-repeated-state/embedded-app:/runtime" -e DW_MODE=embedded
   -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e LOG_CHANNEL=stderr
   -e DW_SERVER_KEY=base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=)
+# Composer in these frozen published images trusts only a checked CA file
+# (GHSA-6q48-6c7w-9gw2); their own stores hold a withdrawn root.
+sh scripts/ci/checked-ca.sh parity-composer-trust
 docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --entrypoint sh \
   -v "$PWD:/source:ro" "${runtime[@]}" -w /runtime -e COMPOSER_HOME=/tmp/composer \
+  -v "$PWD/parity-composer-trust:/composer-trust:ro" -e COMPOSER_CAFILE=/composer-trust/ca.pem -e COMPOSER_CAPATH=/composer-trust/no-ca-directory \
   -e DW_PARITY_EMBEDDED_PROFILE="/source/$profile/embedded" -e DW_PARITY_EMBEDDED_LOCK_SHA256="$lock" \
   "$image" /source/scripts/conformance/server-parity/repeated-patch-install.sh \
   > parity-evidence/repeated-patch/embedded-install.txt 2>&1

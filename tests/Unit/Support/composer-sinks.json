@@ -1,0 +1,1479 @@
+{
+  "schema": "durable-workflow.server.composer-sinks/v2",
+  "advisory": "GHSA-6q48-6c7w-9gw2",
+  "pinned_image": "composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee",
+  "review": "composer_trust_test.py fails on any Composer sink not listed here with the same count.",
+  "sinks": [
+    {
+      "path": ".github/workflows/phpunit-feature.yml",
+      "line": "-lc 'set -eu; tar --no-same-owner -xf - -C /app; cp -a /app/workflow-package /workflow; php scripts/ci/prepare-release-workflow-composer-metadata.php; composer update durable-workflow/workflow --with-dependencies --minimal-changes --no-install --no-scripts --no-autoloader --no-interaction --no-progress --prefer-dist; composer install --no-interaction --no-progress --prefer-dist; git --version; vendor/bin/phpunit --version; git rev-parse --verify \"$CORPUS_BASE_REF^{commit}\"; php scripts/ci/check-worker-openapi-evolution.php \"$CORPUS_BASE_REF\"; vendor/bin/phpunit tests/Feature tests/Unit/NexusContractTest.php tests/Unit/CodecRegressionCorpusTest.php tests/Unit/PhpunitFeatureWorkflowContractTest.php tests/Unit/OpenApiDocumentEvolutionTest.php tests/Unit/NamespaceConformanceRunnerContractTest.php tests/Unit/NamespaceRuntimeContractTest.php tests/Unit/SchedulesConformanceRunnerContractTest.php tests/Unit/SchedulesRuntimeContractTest.php tests/Unit/ServerParitySdkDirectionResponseSummaryTest.php tests/Unit/ServerParitySdkQueryTransportTest.php tests/Unit/ServerParitySdkUpdateTransportTest.php tests/Unit/ServerParityLockPressureRetryTest.php --no-progress --colors=never; vendor/bin/phpunit tests/Unit/ReleaseImageImmutabilityGuardTest.php --no-progress --colors=never; vendor/bin/phpunit tests/Unit/ReleaseImagePublishWorkflowContractTest.php --filter test_php_security_audits_fail_before_release_publication --no-progress --colors=never; python3 scripts/ci/validate-regression-corpus.py --base-ref \"$CORPUS_BASE_REF\" --verify-counterfactual'",
+      "count": 2,
+      "confinement": "Runs in this repository's Server base image; `server-verify-trust final` checks its system bundle, hashed directory and Composer selection at build. The corpus validator reruns it after adding git.",
+      "guards": [
+        {
+          "type": "server-verify",
+          "line": "&& server-verify-trust final",
+          "distance": 75
+        },
+        {
+          "type": "server-verify",
+          "line": "&& server-verify-trust final",
+          "distance": 75
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/phpunit-feature.yml",
+      "line": "-v \"$PWD:/app\" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/phpunit-feature.yml",
+      "line": "composer install --no-interaction --no-progress --prefer-dist",
+      "count": 1,
+      "confinement": "Runs in this repository's Server base image; `server-verify-trust final` checks its system bundle, hashed directory and Composer selection at build. (dw-server-prepared-local-base is `docker build --target base`.)",
+      "guards": [
+        {
+          "type": "server-base-build",
+          "line": "docker build --target base -t dw-server-prepared-local-base .",
+          "distance": 22
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/phpunit-feature.yml",
+      "line": "docker run --rm --user \"$(id -u):$(id -g)\" -e COMPOSER_HOME=/tmp/composer -v \"$PWD:/app:ro\" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee audit --locked --no-interaction",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/server-parity.yml",
+      "line": "bash scripts/ci/run-composer.sh --rm -v \"$PWD:/source\" -w /source -- \\",
+      "count": 12,
+      "confinement": "scripts/ci/run-composer.sh runs Composer in the pinned image after Alpine's fixed Brotli decoder (brotli-safe-composer.sh), never in the image under test. It sets COMPOSER_CAFILE to the checked store and COMPOSER_CAPATH to an empty directory after the caller's options, which may not name either, an entrypoint, an env file, /checked-ca or --volumes-from.",
+      "guards": [
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/server-perf.yml",
+      "line": "-v \"$PWD:/app\" -w /app/benchmarks/capacity/v1/bindings/php composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/server-perf.yml",
+      "line": "sh -lc 'tar -xf - -C /app && cp -a /app/workflow-package /workflow && php scripts/ci/prepare-release-workflow-composer-metadata.php && composer update durable-workflow/workflow --with-dependencies --minimal-changes --no-install --no-scripts --no-autoloader --no-interaction --no-progress --prefer-dist && composer install --no-interaction --no-progress --prefer-dist && vendor/bin/phpunit tests/Unit/BoundedGrowthPolicyTest.php tests/Unit/ServerPerfHarnessContractTest.php --colors=never'",
+      "count": 2,
+      "confinement": "Runs in the pinned Composer image of the preceding `docker run`; Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-image",
+          "line": "| docker run --rm -i -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+          "distance": 1
+        },
+        {
+          "type": "pinned-image",
+          "line": "| docker run --rm -i -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/server-perf.yml",
+      "line": "| docker run --rm -i -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "Dockerfile",
+      "line": "&& composer update durable-workflow/workflow --no-dev --no-scripts --no-autoloader --prefer-dist --no-interaction --no-progress \\",
+      "count": 1,
+      "confinement": "Runs in the pinned Composer 2.10.3 build stage; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "server-verify",
+          "line": "RUN server-verify-trust final \\",
+          "distance": 50
+        }
+      ]
+    },
+    {
+      "path": "Dockerfile",
+      "line": "FROM composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee AS composer",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/capacity/v1/README.md",
+      "line": "(cd benchmarks/capacity/v1/bindings/php && composer install --no-dev)",
+      "count": 1,
+      "confinement": "Documentation; not executed.",
+      "guards": [
+        {
+          "type": "documentation",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/capacity/v1/topologies/local-docker/compose.json",
+      "line": "\"command\": [\"composer\", \"install\", \"--no-dev\", \"--no-interaction\", \"--no-progress\", \"--prefer-dist\", \"--classmap-authoritative\"],",
+      "count": 1,
+      "confinement": "The service image is the pinned Composer image; Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-image",
+          "line": "\"image\": \"docker.io/library/composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee\",",
+          "distance": 4
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/capacity/v1/topologies/local-docker/compose.json",
+      "line": "\"image\": \"docker.io/library/composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee\",",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/capacity/v1/topologies/local-docker/topology.json",
+      "line": "\"composer\": \"docker.io/library/composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee\",",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/server-port/v1/README.md",
+      "line": "bash scripts/ci/run-composer.sh --rm -v \"$PWD:/source\" -w /source -- \\",
+      "count": 1,
+      "confinement": "Documentation of the run-composer.sh recipe.",
+      "guards": [
+        {
+          "type": "documentation"
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/brotli-safe-composer.sh",
+      "line": "base=composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee",
+      "count": 1,
+      "confinement": "The pinned digest the Brotli-floor image is built from.",
+      "guards": [
+        {
+          "type": "pinned-reference"
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/checked-ca.sh",
+      "line": "image=composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/qualify-database-tls.sh",
+      "line": "compose run --rm --no-deps php sh -c 'sh scripts/ci/composer-trust-guard.sh && composer install --no-dev --no-scripts --no-interaction --no-progress --prefer-dist'",
+      "count": 1,
+      "confinement": "composer-trust-guard.sh runs first and refuses a withdrawn root in COMPOSER_CAFILE, or in the system bundle and hashed directory when no CA file is set.",
+      "guards": [
+        {
+          "type": "trust-guard",
+          "line": "compose run --rm --no-deps php sh -c 'sh scripts/ci/composer-trust-guard.sh && composer install --no-dev --no-scripts --no-interaction --no-progress --prefer-dist'",
+          "distance": 0
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/run-composer.sh",
+      "line": "-v \"$ca:/checked-ca:ro\" --entrypoint composer \"$image\" \"$@\" || status=$?",
+      "count": 1,
+      "confinement": "The image comes from brotli-safe-composer.sh, which refuses it unless brotli-libs is at least 1.2.1-r0 and owns every Brotli decoder PHP links. The same command sets COMPOSER_CAFILE to the checked store and COMPOSER_CAPATH to an empty directory after the caller's options, which may not name either or an entrypoint.",
+      "guards": [
+        {
+          "type": "brotli-floor",
+          "line": "image=$(sh \"$here/brotli-safe-composer.sh\")",
+          "distance": 9
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/activities-published-artifacts.sh",
+      "line": "composer install --no-interaction --no-progress --prefer-dist --no-scripts",
+      "count": 1,
+      "confinement": "composer-trust-guard.sh runs first and refuses a withdrawn root in COMPOSER_CAFILE, or in the system bundle and hashed directory when no CA file is set. The published-image delegate also sets COMPOSER_CAFILE is the pinned image's checked store and COMPOSER_CAPATH an empty directory, set before the first package request.",
+      "guards": [
+        {
+          "type": "trust-guard",
+          "line": "sh \"$script_dir/../ci/composer-trust-guard.sh\" &&",
+          "distance": 3
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/activities-published-artifacts.sh",
+      "line": "composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/heartbeats-published-artifacts.mjs",
+      "line": "const PHP_IMAGE = 'composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee';",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/namespaces-published-artifacts.sh",
+      "line": "-v \"$waterline_app:/app\" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+      "count": 2,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        },
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/namespaces-published-artifacts.sh",
+      "line": "composer create-project laravel/laravel . --no-interaction --no-progress \\",
+      "count": 1,
+      "confinement": "Runs inside the pinned Composer image of the enclosing `docker run`; Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-image",
+          "line": "-v \"$waterline_app:/app\" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/namespaces-published-artifacts.sh",
+      "line": "composer require --no-interaction --no-progress \\",
+      "count": 1,
+      "confinement": "Runs inside the pinned Composer image of the enclosing `docker run`; Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-image",
+          "line": "-v \"$waterline_app:/app\" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/namespaces-published-artifacts.sh",
+      "line": "composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan key:generate --force \\",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/namespaces-published-artifacts.sh",
+      "line": "composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan migrate --force \\",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/namespaces-published-artifacts.sh",
+      "line": "composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan waterline:namespace-conformance \\",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/nexus-published-artifacts.sh",
+      "line": "`mkdir -p /tmp/dw-php && cd /tmp/dw-php && composer init --no-interaction --name=dw/nexus-conformance --require=durable-workflow/workflow:${JSON.stringify(versions.workflow).slice(1, -1)} --require=durable-workflow/sdk:${JSON.stringify(versions['sdk-php']).slice(1, -1)} >/tmp/dw-php-composer-init.log 2>&1 && composer update --no-interaction --prefer-dist --no-progress >/tmp/dw-php-composer-update.log 2>&1 && php -S 0.0.0.0:8092 /work/nexus-php-workflow-service.php`,",
+      "count": 2,
+      "confinement": "Runs in the published Server image; COMPOSER_CAFILE is the pinned image's checked store and COMPOSER_CAPATH an empty directory, set before the first package request.",
+      "guards": [
+        {
+          "type": "checked-ca",
+          "line": "'-e', 'COMPOSER_CAFILE=/work/composer-trust/ca.pem',",
+          "distance": 6
+        },
+        {
+          "type": "checked-ca",
+          "line": "'-e', 'COMPOSER_CAFILE=/work/composer-trust/ca.pem',",
+          "distance": 6
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/nexus-published-artifacts.sh",
+      "line": "container_image: runtimeEvidence.php?.container_image || 'composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee',",
+      "count": 2,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        },
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/principal-attribution-published-artifacts.sh",
+      "line": "\"composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee\",",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/principal-attribution-published-artifacts.sh",
+      "line": "composer create-project laravel/laravel . --no-interaction --no-progress \\",
+      "count": 1,
+      "confinement": "Runs inside the pinned Composer image of the enclosing `docker run`; Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-image",
+          "line": "if docker run --rm --user \"$(id -u):$(id -g)\" -v \"$waterline_app:/app\" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/principal-attribution-published-artifacts.sh",
+      "line": "composer require --no-interaction --no-progress \\",
+      "count": 1,
+      "confinement": "Runs inside the pinned Composer image of the enclosing `docker run`; Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-image",
+          "line": "if docker run --rm --user \"$(id -u):$(id -g)\" -v \"$waterline_app:/app\" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/principal-attribution-published-artifacts.sh",
+      "line": "composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan key:generate --force \\",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/principal-attribution-published-artifacts.sh",
+      "line": "composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan migrate --force \\",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/principal-attribution-published-artifacts.sh",
+      "line": "composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan waterline:principal-attribution-conformance \\",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/principal-attribution-published-artifacts.sh",
+      "line": "docker_command.extend([\"composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee\", \"php\", \"-r\", code])",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/principal-attribution-published-artifacts.sh",
+      "line": "if docker run --rm --user \"$(id -u):$(id -g)\" -v \"$waterline_app:/app\" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+      "count": 2,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        },
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/principal-attribution-published-artifacts.sh",
+      "line": "stdout=f\"PHP binary missing ({PHP_BIN}) and docker is unavailable for composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee fallback\",",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/python-published-artifacts.sh",
+      "line": "-v \"$run_root/artifacts/waterline:/app\" composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/python-published-artifacts.sh",
+      "line": "-v \"$run_root/artifacts/workflow:/app\" composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/python-published-artifacts.sh",
+      "line": "composer require --no-interaction --no-progress --prefer-dist --no-scripts \\",
+      "count": 2,
+      "confinement": "Runs inside the pinned Composer image of the enclosing `docker run`; Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-image",
+          "line": "-v \"$run_root/artifacts/workflow:/app\" composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+          "distance": 1
+        },
+        {
+          "type": "pinned-image",
+          "line": "-v \"$run_root/artifacts/waterline:/app\" composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/replay-published-artifacts.sh",
+      "line": "composer require --no-interaction --no-progress \\",
+      "count": 1,
+      "confinement": "Runs inside the pinned Composer image of the enclosing `docker run`; Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-image",
+          "line": "docker run --rm \"${composer_env_args[@]}\" -v \"$waterline_app:/app\" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/replay-published-artifacts.sh",
+      "line": "composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php /probe.php \\",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/replay-published-artifacts.sh",
+      "line": "docker run --rm \"${composer_env_args[@]}\" -v \"$waterline_app:/app\" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/sagas-published-artifacts.sh",
+      "line": "\"composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee\",",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/sagas-published-artifacts.sh",
+      "line": "\"php_worker\": \"composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee container with durable-workflow/workflow package\",",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/sagas-published-artifacts.sh",
+      "line": "composer create-project --no-interaction --no-progress laravel/laravel . &&",
+      "count": 1,
+      "confinement": "Runs inside the pinned Composer image of the enclosing `docker run`; Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-image",
+          "line": "if ! docker run --rm -v \"$run_root/waterline-app:/app\" composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee sh -lc \"",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/sagas-published-artifacts.sh",
+      "line": "composer require --no-interaction --no-progress \\",
+      "count": 2,
+      "confinement": "Runs inside the pinned Composer image of the enclosing `docker run`; Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-image",
+          "line": "docker run --rm -v \"$run_root/php-worker:/app\" composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+          "distance": 1
+        },
+        {
+          "type": "pinned-image",
+          "line": "if ! docker run --rm -v \"$run_root/waterline-app:/app\" composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee sh -lc \"",
+          "distance": 2
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/sagas-published-artifacts.sh",
+      "line": "composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php worker.php",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/sagas-published-artifacts.sh",
+      "line": "docker run --rm -v \"$run_root/php-worker:/app\" composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/sagas-published-artifacts.sh",
+      "line": "if ! docker run --rm -v \"$run_root/waterline-app:/app\" composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee sh -lc \"",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/sagas-published-artifacts.sh",
+      "line": "image: composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/schedules-published-artifacts.mjs",
+      "line": "'composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee',",
+      "count": 5,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        },
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        },
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        },
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        },
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/server-parity/README.md",
+      "line": "composer install --working-dir=scripts/conformance/server-parity --no-interaction",
+      "count": 1,
+      "confinement": "Documentation; not executed.",
+      "guards": [
+        {
+          "type": "documentation",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/server-parity/activity-result-inspection/README.md",
+      "line": "Install this directory's lock normally with `composer install --no-dev",
+      "count": 1,
+      "confinement": "Documentation; not executed.",
+      "guards": [
+        {
+          "type": "documentation",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/server-parity/corrected-marker-adapters.sh",
+      "line": "bash scripts/ci/run-composer.sh --rm --cpus=1 --memory=512m --memory-swap=512m \\",
+      "count": 2,
+      "confinement": "scripts/ci/run-composer.sh runs Composer in the pinned image after Alpine's fixed Brotli decoder (brotli-safe-composer.sh), never in the image under test. It sets COMPOSER_CAFILE to the checked store and COMPOSER_CAPATH to an empty directory after the caller's options, which may not name either or an entrypoint.",
+      "guards": [
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/server-parity/corrected-marker-embedded-install.sh",
+      "line": "composer install --no-dev --no-scripts --no-cache --no-interaction --no-progress --prefer-dist --optimize-autoloader",
+      "count": 1,
+      "confinement": "composer-trust-guard.sh runs first and refuses a withdrawn root in COMPOSER_CAFILE, or in the system bundle and hashed directory when no CA file is set. The profiles also set COMPOSER_CAFILE is the pinned image's checked store and COMPOSER_CAPATH an empty directory, set before the first package request.",
+      "guards": [
+        {
+          "type": "trust-guard",
+          "line": "sh \"$(dirname \"$0\")/../../ci/composer-trust-guard.sh\" >&2",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/server-parity/corrected-marker-embedded-install.sh",
+      "line": "composer show durable-workflow/workflow --format=json",
+      "count": 1,
+      "confinement": "Reads the installed package locally; no repository request.",
+      "guards": [
+        {
+          "type": "trust-guard",
+          "line": "sh \"$(dirname \"$0\")/../../ci/composer-trust-guard.sh\" >&2",
+          "distance": 7
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/server-parity/query-authority-cohort.sh",
+      "line": "bash scripts/ci/run-composer.sh --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \\",
+      "count": 1,
+      "confinement": "scripts/ci/run-composer.sh runs Composer in the pinned image after Alpine's fixed Brotli decoder (brotli-safe-composer.sh), never in the image under test. It sets COMPOSER_CAFILE to the checked store and COMPOSER_CAPATH to an empty directory after the caller's options, which may not name either or an entrypoint.",
+      "guards": [
+        {
+          "type": "composer-wrapper"
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/server-parity/range-repair-profile.sh",
+      "line": "bash scripts/ci/run-composer.sh --name \"$resource-sdk\" \"${limits[@]}\" -v \"$state/sdk:/sdk\" -w /sdk -- \\",
+      "count": 1,
+      "confinement": "scripts/ci/run-composer.sh runs Composer in the pinned image after Alpine's fixed Brotli decoder (brotli-safe-composer.sh), never in the image under test. It sets COMPOSER_CAFILE to the checked store and COMPOSER_CAPATH to an empty directory after the caller's options, which may not name either or an entrypoint.",
+      "guards": [
+        {
+          "type": "composer-wrapper"
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/server-parity/repeated-patch-install.sh",
+      "line": "composer install --no-dev --no-scripts --no-cache --no-interaction --no-progress --prefer-dist --optimize-autoloader",
+      "count": 1,
+      "confinement": "composer-trust-guard.sh runs first and refuses a withdrawn root in COMPOSER_CAFILE, or in the system bundle and hashed directory when no CA file is set. The profiles also set COMPOSER_CAFILE is the pinned image's checked store and COMPOSER_CAPATH an empty directory, set before the first package request.",
+      "guards": [
+        {
+          "type": "trust-guard",
+          "line": "sh \"$(dirname \"$0\")/../../ci/composer-trust-guard.sh\" >&2",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/server-parity/repeated-patch-install.sh",
+      "line": "composer show durable-workflow/workflow --format=json",
+      "count": 1,
+      "confinement": "Reads the installed package locally; no repository request.",
+      "guards": [
+        {
+          "type": "trust-guard",
+          "line": "sh \"$(dirname \"$0\")/../../ci/composer-trust-guard.sh\" >&2",
+          "distance": 4
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/server-parity/sdk-direction-profile.sh",
+      "line": "bash scripts/ci/run-composer.sh --name \"$resource-sdk\" \"${limits[@]}\" -v \"$state/sdk:/sdk\" -w /sdk -- \\",
+      "count": 1,
+      "confinement": "scripts/ci/run-composer.sh runs Composer in the pinned image after Alpine's fixed Brotli decoder (brotli-safe-composer.sh), never in the image under test. It sets COMPOSER_CAFILE to the checked store and COMPOSER_CAPATH to an empty directory after the caller's options, which may not name either or an entrypoint.",
+      "guards": [
+        {
+          "type": "composer-wrapper"
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/server-parity/worker-fencing-profile.sh",
+      "line": "bash scripts/ci/run-composer.sh --rm --user=1000:1000 -e COMPOSER_HOME=/tmp/parity-composer \\",
+      "count": 2,
+      "confinement": "scripts/ci/run-composer.sh runs Composer in the pinned image after Alpine's fixed Brotli decoder (brotli-safe-composer.sh), never in the image under test. It sets COMPOSER_CAFILE to the checked store and COMPOSER_CAPATH to an empty directory after the caller's options, which may not name either or an entrypoint.",
+      "guards": [
+        {
+          "type": "composer-wrapper"
+        },
+        {
+          "type": "composer-wrapper"
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/signals-queries-published-artifacts.sh",
+      "line": "\"composer\",",
+      "count": 1,
+      "confinement": "Waterline observer in the published Server image (docker_run_for_project); COMPOSER_CAFILE is the pinned image's checked store and COMPOSER_CAPATH an empty directory, set before the first package request.",
+      "guards": [
+        {
+          "type": "trusted-builder",
+          "line": "require_command = docker_run_for_project(",
+          "distance": 4
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/signals-queries-published-artifacts.sh",
+      "line": "[\"composer\", \"create-project\", \"laravel/laravel\", \".\", \"--no-interaction\", \"--no-progress\", \"--prefer-dist\"],",
+      "count": 1,
+      "confinement": "Waterline observer in the published Server image (docker_run_for_project); COMPOSER_CAFILE is the pinned image's checked store and COMPOSER_CAPATH an empty directory, set before the first package request.",
+      "guards": [
+        {
+          "type": "trusted-builder",
+          "line": "return docker_run_for_project(",
+          "distance": 3
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/signals-queries-published-artifacts.sh",
+      "line": "return \"composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee\"",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/skew-published-artifacts.mjs",
+      "line": "availability.phpImage || 'composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee',",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/skew-published-artifacts.mjs",
+      "line": "phpImage: envValue('DW_SKEW_PHP_IMAGE') || 'composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee',",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/skew-published-artifacts.mjs",
+      "line": "return { available: true, appDir, phpImage: envValue('DW_SKEW_PHP_IMAGE') || 'composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee' };",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/skew-published-artifacts.sh",
+      "line": "composer create-project laravel/laravel . --no-interaction --no-progress \\",
+      "count": 1,
+      "confinement": "Runs inside the pinned Composer image of the enclosing `docker run`; Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-image",
+          "line": "if docker run --rm -v \"$run_root/waterline:/app\" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/skew-published-artifacts.sh",
+      "line": "composer require --no-interaction --no-progress \"durable-workflow/sdk:${php_sdk_version}\" >\"$result_dir/php-sdk-composer-install.log\" 2>&1; then",
+      "count": 1,
+      "confinement": "Runs inside the pinned Composer image of the enclosing `docker run`; Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-image",
+          "line": "if docker run --rm -v \"$run_root/php-sdk-worker:/app\" composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/skew-published-artifacts.sh",
+      "line": "composer require --no-interaction --no-progress \\",
+      "count": 1,
+      "confinement": "Runs inside the pinned Composer image of the enclosing `docker run`; Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-image",
+          "line": "if docker run --rm -v \"$run_root/waterline:/app\" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/skew-published-artifacts.sh",
+      "line": "composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php /workspace/waterline-seed.php \\",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/skew-published-artifacts.sh",
+      "line": "composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan key:generate --force \\",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/skew-published-artifacts.sh",
+      "line": "composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan migrate --force \\",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/skew-published-artifacts.sh",
+      "line": "composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee php artisan serve --host=0.0.0.0 --port \"$waterline_port\" \\",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/skew-published-artifacts.sh",
+      "line": "if docker run --rm -v \"$run_root/php-sdk-worker:/app\" composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/skew-published-artifacts.sh",
+      "line": "if docker run --rm -v \"$run_root/waterline:/app\" -w /app composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee \\",
+      "count": 2,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        },
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/skew-published-artifacts.sh",
+      "line": "php_sdk_reason=\"docker is required to install the PHP SDK artifact through composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee\"",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/skew-published-artifacts.sh",
+      "line": "waterline_reason=\"docker is required to install the Waterline artifact through composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee\"",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/worker-versioning-mixed.Dockerfile",
+      "line": "&& composer require --update-no-dev --no-scripts --no-plugins --no-interaction --no-progress \"durable-workflow/sdk:${PHP_SDK_VERSION}\" \\",
+      "count": 1,
+      "confinement": "Runs in the pinned Composer 2.10.3 build stage; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "checked-ca",
+          "line": "ENV COMPOSER_CAFILE=/etc/composer-trust/ca.pem COMPOSER_CAPATH=/etc/composer-trust/no-ca-directory",
+          "distance": 6
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/worker-versioning-mixed.Dockerfile",
+      "line": "FROM composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee AS composer",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/worker-versioning-published-artifacts.sh",
+      "line": "composer create-project --no-interaction --no-progress laravel/laravel . &&",
+      "count": 1,
+      "confinement": "Runs inside the pinned Composer image of the enclosing `docker run`; Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-image",
+          "line": "if ! docker run --rm -v \"$run_root/waterline-app:/app\" composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee sh -lc \"",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/worker-versioning-published-artifacts.sh",
+      "line": "composer require --no-interaction --no-progress \\",
+      "count": 1,
+      "confinement": "Runs inside the pinned Composer image of the enclosing `docker run`; Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-image",
+          "line": "if ! docker run --rm -v \"$run_root/waterline-app:/app\" composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee sh -lc \"",
+          "distance": 2
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/worker-versioning-published-artifacts.sh",
+      "line": "if ! docker run --rm -v \"$run_root/waterline-app:/app\" composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee sh -lc \"",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/worker-versioning-published-workers.mjs",
+      "line": "command: `composer require durable-workflow/sdk:${sdkPhpVersion}`,",
+      "count": 2,
+      "confinement": "Evidence or report text; not executed.",
+      "guards": [
+        {
+          "type": "evidence-record",
+          "line": null,
+          "distance": null
+        },
+        {
+          "type": "evidence-record",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/worker-versioning-published-workers.mjs",
+      "line": "const COMPOSER_IMAGE = 'composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee';",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/workflow-updates-published-artifacts.sh",
+      "line": "composer create-project laravel/laravel . --no-interaction --no-progress --prefer-dist",
+      "count": 1,
+      "confinement": "composer-trust-guard.sh runs first and refuses a withdrawn root in COMPOSER_CAFILE, or in the system bundle and hashed directory when no CA file is set.",
+      "guards": [
+        {
+          "type": "trust-guard",
+          "line": "if ! sh \"$script_dir/../ci/composer-trust-guard.sh\" > \"$result_dir/operator-composer-trust.log\" 2>&1; then",
+          "distance": 171
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/workflow-updates-published-artifacts.sh",
+      "line": "composer require --no-interaction --no-progress --prefer-dist \\",
+      "count": 1,
+      "confinement": "composer-trust-guard.sh runs first and refuses a withdrawn root in COMPOSER_CAFILE, or in the system bundle and hashed directory when no CA file is set.",
+      "guards": [
+        {
+          "type": "trust-guard",
+          "line": "if ! sh \"$script_dir/../ci/composer-trust-guard.sh\" > \"$result_dir/operator-composer-trust.log\" 2>&1; then",
+          "distance": 180
+        }
+      ]
+    },
+    {
+      "path": "scripts/perf/Dockerfile.octane-frankenphp-experiment",
+      "line": "FROM composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee AS phpredis-source",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/perf/Dockerfile.octane-frankenphp-experiment",
+      "line": "RUN composer require 'laravel/octane:2.20.0' 'laminas/laminas-diactoros:3.8.0' \\",
+      "count": 1,
+      "confinement": "COMPOSER_CAFILE is the pinned image's checked store and COMPOSER_CAPATH an empty directory, set before the first package request.",
+      "guards": [
+        {
+          "type": "checked-ca",
+          "line": "ENV COMPOSER_CAFILE=/etc/composer-trust/ca.pem COMPOSER_CAPATH=/etc/composer-trust/no-ca-directory",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/perf/Dockerfile.octane-openswoole-experiment",
+      "line": "FROM composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee AS checked-ca",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/perf/Dockerfile.octane-openswoole-experiment",
+      "line": "RUN composer require 'laravel/octane:2.20.0' 'laminas/laminas-diactoros:3.8.0' \\",
+      "count": 1,
+      "confinement": "COMPOSER_CAFILE is the pinned image's checked store and COMPOSER_CAPATH an empty directory, set before the first package request.",
+      "guards": [
+        {
+          "type": "checked-ca",
+          "line": "ENV COMPOSER_CAFILE=/etc/composer-trust/ca.pem COMPOSER_CAPATH=/etc/composer-trust/no-ca-directory",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/perf/Dockerfile.octane-swoole-experiment",
+      "line": "FROM composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee AS checked-ca",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/perf/Dockerfile.octane-swoole-experiment",
+      "line": "RUN composer require 'laravel/octane:2.20.0' 'laminas/laminas-diactoros:3.8.0' \\",
+      "count": 1,
+      "confinement": "COMPOSER_CAFILE is the pinned image's checked store and COMPOSER_CAPATH an empty directory, set before the first package request.",
+      "guards": [
+        {
+          "type": "checked-ca",
+          "line": "ENV COMPOSER_CAFILE=/etc/composer-trust/ca.pem COMPOSER_CAPATH=/etc/composer-trust/no-ca-directory",
+          "distance": 1
+        }
+      ]
+    },
+    {
+      "path": "scripts/perf/Dockerfile.sdk",
+      "line": "FROM composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee AS dependencies",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/perf/Dockerfile.sdk",
+      "line": "RUN composer install --no-dev --no-interaction --no-progress --prefer-dist",
+      "count": 1,
+      "confinement": "Runs in the pinned Composer 2.10.3 build stage; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-stage",
+          "line": "FROM composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee AS dependencies",
+          "distance": 3
+        }
+      ]
+    },
+    {
+      "path": "scripts/perf/Dockerfile.sdk-current-experiment",
+      "line": "FROM composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee AS dependencies",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/perf/Dockerfile.sdk-current-experiment",
+      "line": "RUN composer require 'durable-workflow/sdk:2.1.1' \\",
+      "count": 1,
+      "confinement": "Runs in the pinned Composer 2.10.3 build stage; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-stage",
+          "line": "FROM composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee AS dependencies",
+          "distance": 3
+        }
+      ]
+    },
+    {
+      "path": "tests/Fixtures/PhpActivityLeaseConsumer/README.md",
+      "line": "Run `composer install` from this directory using the committed lock. It installs",
+      "count": 1,
+      "confinement": "Documentation; not executed.",
+      "guards": [
+        {
+          "type": "documentation",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "tests/Integration/StorageAdmission/sdk/Dockerfile",
+      "line": "FROM composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee AS checked-ca",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "tests/Integration/StorageAdmission/sdk/Dockerfile",
+      "line": "RUN composer require \"durable-workflow/sdk:${PHP_SDK_VERSION}\" --no-interaction --no-progress --prefer-dist \\",
+      "count": 1,
+      "confinement": "COMPOSER_CAFILE is the pinned image's checked store and COMPOSER_CAPATH an empty directory, set before the first package request.",
+      "guards": [
+        {
+          "type": "checked-ca",
+          "line": "ENV COMPOSER_CAFILE=/etc/composer-trust/ca.pem COMPOSER_CAPATH=/etc/composer-trust/no-ca-directory",
+          "distance": 4
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/audit-immutable-release.sh",
+      "line": "image=composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee",
+      "count": 1,
+      "confinement": "Pinned Composer digest; checked-ca.sh provides the validated file and empty directory. Inner helper installs and verifies the decoder floor before requests.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci/audit-immutable-release-container.sh",
+      "line": "exec su-exec \"$identity\" composer --no-plugins --no-scripts audit --locked --no-dev --no-interaction",
+      "count": 1,
+      "confinement": "Outer immutable-release helper binds the checked CA pair. The inner helper verifies brotli-libs>=1.2.1-r0 before the nonprivileged, plugins-disabled audit; release_composer_audit_test.py executes refusal and ordering controls.",
+      "guards": [
+        {
+          "type": "checked-ca",
+          "line": "test -s \"$COMPOSER_CAFILE\"",
+          "distance": 8
+        }
+      ]
+    }
+  ]
+}

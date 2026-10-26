@@ -3023,12 +3023,19 @@ run_python_sdk_shard() {
     write_python_sdk_shard_status runner_blocked "The Python SDK shard virtual environment did not expose a Python executable." python_venv_python true
     return 0
   fi
-  if ! "$venv_python" -m pip --version > "$result_dir/python-sdk-pip-version.log" 2>&1; then
+  if ! "$venv_python" -I -m pip --version > "$result_dir/python-sdk-pip-version.log" 2>&1; then
     write_python_sdk_shard_status runner_blocked "pip is required inside the disposable Python SDK shard environment; see python-sdk-pip-version.log." pip_unavailable true
     return 0
   fi
+  if ! sh "$script_dir/../ci/bootstrap-patched-pip.sh" "$venv_python" >> "$result_dir/python-sdk-pip-version.log" 2>&1; then
+    write_python_sdk_shard_status runner_blocked "The Python SDK shard could not install the patched pip; see python-sdk-pip-version.log." pip_unavailable true
+    return 0
+  fi
 
-  if ! PIP_CONFIG_FILE=/dev/null "$venv_python" -m pip --isolated install \
+  # --isolated skips the venv's pip.conf, so confine trust to pip's verified
+  # bundle here too.
+  if ! PIP_CONFIG_FILE=/dev/null "$venv_python" -I -m pip --isolated install \
+    --use-deprecated=legacy-certs \
     --disable-pip-version-check \
     --no-input \
     --index-url https://pypi.org/simple \
@@ -4252,6 +4259,10 @@ run_operator_diagnostics_shard() {
   fi
   if ! command -v composer >/dev/null 2>&1; then
     write_operator_diagnostics_shard_status runner_blocked "Composer is required to install the pinned Packagist durable-workflow/waterline package." composer_unavailable true
+    return 0
+  fi
+  if ! sh "$script_dir/../ci/composer-trust-guard.sh" > "$result_dir/operator-composer-trust.log" 2>&1; then
+    write_operator_diagnostics_shard_status runner_blocked "Composer's CA trust includes a root withdrawn under GHSA-6q48-6c7w-9gw2; see operator-composer-trust.log." composer_trust true
     return 0
   fi
 
