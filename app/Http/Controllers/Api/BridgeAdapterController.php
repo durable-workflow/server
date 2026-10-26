@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Support\AvroPayloadEnvelopeResolver;
 use App\Support\BridgeAdapterOutcomeContract;
 use App\Support\ControlPlaneProtocol;
+use App\Support\ControlPlaneRequestContract;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\TaskQueueRoutingGate;
@@ -332,7 +333,7 @@ class BridgeAdapterController
             'workflow_id' => ['required', 'string', 'max:128', 'regex:/^[a-zA-Z0-9._:-]+$/'],
             'update_name' => ['required', 'string', 'max:255'],
             'wait_for' => ['nullable', 'string', 'in:accepted,completed'],
-            'wait_timeout_seconds' => ['nullable', 'integer', 'min:1'],
+            'wait_timeout_seconds' => ['nullable', 'integer', 'min:1', 'max:'.ControlPlaneRequestContract::UPDATE_WAIT_TIMEOUT_SECONDS_MAX],
         ]);
 
         if ($targetValidator->fails()) {
