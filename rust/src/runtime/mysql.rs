@@ -859,10 +859,18 @@ mod tests {
             .await
             .unwrap();
         // These identifiers contain only a fixed prefix and a ULID alphabet.
-        admin.execute(AssertSqlSafe(format!("CREATE USER '{role}'@'%' IDENTIFIED BY '{password}'; GRANT SELECT ON `{database}`.* TO '{role}'@'%'"))).await.unwrap();
+        admin
+            .execute(AssertSqlSafe(format!("CREATE USER '{role}'@'%' IDENTIFIED BY '{password}'")))
+            .await
+            .unwrap();
         let reader = db.options.clone().username(&role).password(&password);
-        // The user is dropped whether or not the checks pass.
+        // The user's removal is attempted whether or not the grant and the
+        // checks pass: MySQL commits CREATE USER on its own.
         let checked = std::panic::AssertUnwindSafe(async {
+            admin
+                .execute(AssertSqlSafe(format!("GRANT SELECT ON `{database}`.* TO '{role}'@'%'")))
+                .await
+                .unwrap();
             MySqlStorage::check(reader.clone()).await.unwrap();
             let mut read = MySqlConnection::connect_with(&reader).await.unwrap();
             assert!(
@@ -875,14 +883,26 @@ mod tests {
         })
         .catch_unwind()
         .await;
-        let dropped = admin.execute(AssertSqlSafe(format!("DROP USER '{role}'@'%'"))).await;
-        admin.close().await.unwrap();
-        connection.close().await.unwrap();
-        db.remove().await;
+        let dropped = admin
+            .execute(AssertSqlSafe(format!("DROP USER '{role}'@'%'")))
+            .await
+            .is_ok();
+        let admin_closed = admin.close().await.is_ok();
+        let closed = connection.close().await.is_ok() && admin_closed;
+        let removed = std::panic::AssertUnwindSafe(db.remove())
+            .catch_unwind()
+            .await
+            .is_ok();
+        // Every cleanup step has run. A failed one is reported before a failed
+        // check, without its error text, so the check cannot hide it.
+        assert!(
+            dropped && closed && removed,
+            "cleanup failed (user dropped {dropped}, connections closed {closed}, database removed {removed}); checks passed {}",
+            checked.is_ok()
+        );
         if let Err(panic) = checked {
             std::panic::resume_unwind(panic);
         }
-        dropped.unwrap();
     }
 
     #[tokio::test]

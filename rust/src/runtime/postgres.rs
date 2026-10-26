@@ -580,7 +580,7 @@ mod tests {
             .await
             .unwrap();
         let reader = db.options.clone().username(&role).password(&password);
-        // The role is dropped whether or not the checks pass.
+        // The role's removal is attempted whether or not the checks pass.
         let checked = std::panic::AssertUnwindSafe(async {
             PostgresStorage::check(reader.clone()).await.unwrap();
             let mut read_connection = PgConnection::connect_with(&reader).await.unwrap();
@@ -597,14 +597,26 @@ mod tests {
         let cleanup = sqlx::AssertSqlSafe(format!(
             "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM {role}; REVOKE ALL ON SCHEMA public FROM {role}; DROP ROLE {role}"
         ));
-        let dropped = sqlx::raw_sql(cleanup.into_sql_str()).execute(&mut admin).await;
-        admin.close().await.unwrap();
-        connection.close().await.unwrap();
-        db.remove().await;
+        let dropped = sqlx::raw_sql(cleanup.into_sql_str())
+            .execute(&mut admin)
+            .await
+            .is_ok();
+        let admin_closed = admin.close().await.is_ok();
+        let closed = connection.close().await.is_ok() && admin_closed;
+        let removed = std::panic::AssertUnwindSafe(db.remove())
+            .catch_unwind()
+            .await
+            .is_ok();
+        // Every cleanup step has run. A failed one is reported before a failed
+        // check, without its error text, so the check cannot hide it.
+        assert!(
+            dropped && closed && removed,
+            "cleanup failed (role dropped {dropped}, connections closed {closed}, database removed {removed}); checks passed {}",
+            checked.is_ok()
+        );
         if let Err(panic) = checked {
             std::panic::resume_unwind(panic);
         }
-        dropped.unwrap();
     }
 
     #[tokio::test]
