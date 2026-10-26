@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\WorkflowDurableStream;
 use App\Models\WorkflowDurableStreamItem;
 use App\Support\StreamFullException;
+use App\Support\WorkflowStreamRetention;
 use App\Support\WorkflowStreamService;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\DB;
@@ -21,10 +22,15 @@ use Workflow\V2\Models\WorkflowRun;
 
 /**
  * Two near-cap appends to one stream on two real database connections
- * (Server #774). The first is paused inside its transaction, after it opens
- * or locks the stream row; the second must wait for it, then decide its whole
- * batch against the committed stream. Accepted items never exceed the cap,
- * and a refused batch writes nothing.
+ * (Server #774), on MySQL, MariaDB, PostgreSQL and file-backed SQLite. The
+ * first is paused inside its transaction, holding the run's stream lock,
+ * after it opens or locks the stream row; the second must wait for it, then
+ * decide its whole batch against the committed stream. Accepted items never
+ * exceed the cap, and a refused batch writes nothing.
+ *
+ * MySQL, MariaDB and PostgreSQL show the second append waiting on a row
+ * lock. SQLite has no row locks: its second append waits for the database
+ * write lock, which shows as it not finishing while the first is paused.
  */
 class WorkflowStreamCapacityRaceTest extends TestCase
 {
@@ -32,13 +38,22 @@ class WorkflowStreamCapacityRaceTest extends TestCase
 
     private const CAP = 5;
 
+    private const DRIVERS = ['mysql', 'mariadb', 'pgsql', 'sqlite'];
+
     private ?array $databaseAdmin = null;
 
     private string $databaseName;
 
+    private ?string $sqlitePath = null;
+
     public static function drivers(): array
     {
-        return ['mysql' => ['mysql'], 'pgsql' => ['pgsql']];
+        return array_combine(self::DRIVERS, array_map(static fn (string $driver): array => [$driver], self::DRIVERS));
+    }
+
+    public static function serverDrivers(): array
+    {
+        return ['mysql' => ['mysql'], 'mariadb' => ['mariadb'], 'pgsql' => ['pgsql']];
     }
 
     #[DataProvider('drivers')]
@@ -61,7 +76,7 @@ class WorkflowStreamCapacityRaceTest extends TestCase
     public static function contended(): array
     {
         $cases = [];
-        foreach (['mysql', 'pgsql'] as $driver) {
+        foreach (self::DRIVERS as $driver) {
             // 1 stored + 3 + 3 would pass the cap: the second batch is refused whole.
             $cases[$driver.' over'] = [$driver, 3, ['outcome' => 'full'], 4];
             // 1 stored + 3 + 1 meets the cap exactly: the second batch is admitted.
@@ -92,6 +107,91 @@ class WorkflowStreamCapacityRaceTest extends TestCase
     }
 
     /**
+     * The retention pass reads a namespace's due streams from the
+     * (namespace, reclaim_at, id) index: a range scan in deadline order with
+     * no sort, which stops at the limit. Each namespace here mostly holds
+     * rows the pass must not read: open streams and reclaimed terminal rows
+     * (no deadline) and streams not yet due. MySQL and MariaDB show the rows
+     * read in their handler counters. PostgreSQL's planner prefers a
+     * sequential scan of a small table, so its plan is read with sequential
+     * scans disabled, which shows the index serves predicate and order.
+     */
+    #[DataProvider('serverDrivers')]
+    public function test_due_stream_discovery_reads_the_deadline_index(string $driver): void
+    {
+        $this->initializeDatabase($driver);
+        $now = now()->startOfSecond();
+        foreach (['default', 'elsewhere'] as $namespace) {
+            $rows = [];
+            for ($n = 0; $n < 2400; $n++) {
+                // 1800 without a deadline, 570 not yet due, 30 due.
+                $reclaimAt = match (true) {
+                    $n < 1800 => null,
+                    $n < 2370 => $now->copy()->addSeconds($n),
+                    default => $now->copy()->subSeconds($n),
+                };
+                $rows[] = [
+                    'namespace' => $namespace,
+                    'workflow_instance_id' => 'plan-'.$namespace,
+                    'workflow_run_id' => sprintf('%s%08d', $namespace === 'default' ? 'D' : 'E', $n),
+                    'stream_name' => 'stream',
+                    'status' => $reclaimAt === null && $n % 2 === 0 ? 'open' : 'closed',
+                    'closed_at' => $reclaimAt === null && $n % 2 === 0 ? null : $now,
+                    'reclaim_at' => $reclaimAt,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ];
+            }
+            foreach (array_chunk($rows, 400) as $chunk) {
+                DB::table('workflow_durable_streams')->insert($chunk);
+            }
+        }
+
+        $query = WorkflowStreamRetention::dueStreamsQuery('default', 10, $now)->toBase();
+        $sql = $query->toSql();
+
+        if ($driver === 'pgsql') {
+            DB::statement('ANALYZE workflow_durable_streams');
+            $plan = DB::transaction(static function () use ($sql, $query): string {
+                DB::statement('SET LOCAL enable_seqscan = off');
+
+                return collect(DB::select('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) '.$sql, $query->getBindings()))
+                    ->map(static fn (object $row): string => (string) $row->{'QUERY PLAN'})->implode("\n");
+            });
+            $this->assertMatchesRegularExpression('/Index (Only )?Scan using wf_durable_streams_ns_reclaim_idx .*\(actual rows=10 loops=1\)/', $plan, $plan);
+            $this->assertStringNotContainsString('Sort', $plan, $plan);
+            $this->assertStringNotContainsString('Rows Removed', $plan, $plan);
+        } else {
+            DB::statement('ANALYZE TABLE workflow_durable_streams');
+            $plan = DB::select('EXPLAIN '.$sql, $query->getBindings());
+            $this->assertCount(1, $plan, json_encode($plan));
+            $this->assertSame('wf_durable_streams_ns_reclaim_idx', $plan[0]->key, json_encode($plan));
+            $this->assertSame('range', $plan[0]->type, json_encode($plan));
+            $this->assertStringNotContainsString('filesort', (string) ($plan[0]->Extra ?? ''), json_encode($plan));
+            // One PDO handle, so the counters are this session's own. MySQL
+            // also counts the data-dictionary reads of a table's or a status
+            // view's first use, so both run once before the counted read.
+            $pdo = DB::connection()->getPdo();
+            $statement = $pdo->prepare($sql);
+            $statement->execute(DB::connection()->prepareBindings($query->getBindings()));
+            $statement->fetchAll();
+            $pdo->query("SHOW SESSION STATUS LIKE 'Handler_read%'")->fetchAll();
+            $pdo->exec('FLUSH STATUS');
+            $statement->execute(DB::connection()->prepareBindings($query->getBindings()));
+            $this->assertCount(10, $statement->fetchAll());
+            $reads = collect($pdo->query("SHOW SESSION STATUS LIKE 'Handler_read%'")->fetchAll(PDO::FETCH_KEY_PAIR))
+                ->map(static fn (mixed $value): int => (int) $value);
+            // One seek and nine index steps: the limit, not the namespace.
+            $this->assertLessThanOrEqual(11, $reads['Handler_read_key'] + $reads['Handler_read_next'], json_encode($reads));
+            $this->assertSame(0, $reads['Handler_read_rnd_next'], json_encode($reads));
+            $plan = json_encode(['explain' => $plan, 'handler_reads' => $reads], JSON_PRETTY_PRINT);
+        }
+        fwrite(STDERR, sprintf("[%s due-stream plan]\n%s\n", $driver, $plan));
+
+        $this->assertCount(10, $query->get());
+    }
+
+    /**
      * @return array{0: array<string, mixed>, 1: array<string, mixed>}
      */
     private function race(string $runId, string $pause, int $firstItems, int $secondItems): array
@@ -107,7 +207,7 @@ class WorkflowStreamCapacityRaceTest extends TestCase
             $actors['second'] = $this->forkActor(fn (): array => $this->append($runId, $secondItems));
             $waiting = $this->readMessage($actors['second']);
             fwrite($actors['second']['socket'], "go\n");
-            $this->awaitLockWait($waiting['connection_id']);
+            $this->awaitWait($actors['second'], $waiting['connection_id']);
 
             fwrite($actors['first']['socket'], "continue\n");
             $first = $this->finishActor($actors['first']);
@@ -170,18 +270,41 @@ class WorkflowStreamCapacityRaceTest extends TestCase
 
     private function initializeDatabase(string $driver): void
     {
-        $prefix = $driver === 'pgsql' ? 'DW_TEST_COMPLETION_PGSQL_' : 'DW_TEST_COMPLETION_MYSQL_';
+        if (! function_exists('pcntl_fork') || ! function_exists('posix_kill') || ! function_exists('stream_socket_pair')) {
+            $this->markTestSkipped('Process control and local sockets are required.');
+        }
+
+        if ($driver === 'sqlite') {
+            $directory = is_dir('/dev/shm') && is_writable('/dev/shm') ? '/dev/shm' : sys_get_temp_dir();
+            $path = tempnam($directory, 'dw-stream-race-');
+            $this->assertIsString($path);
+            $this->sqlitePath = $path;
+            // The server's own SQLite settings: WAL and a five-second busy
+            // timeout. PHP 8.3 begins transactions DEFERRED whatever the
+            // configured mode, so the stream lock must hold without it.
+            config(['database.default' => 'sqlite', 'database.connections.sqlite.database' => $path,
+                'database.connections.sqlite.busy_timeout' => 5000, 'database.connections.sqlite.journal_mode' => 'WAL']);
+            DB::purge('sqlite');
+            $this->artisan('migrate:fresh', ['--force' => true])->assertExitCode(0);
+            $this->createNamespace('default');
+
+            return;
+        }
+
+        $prefix = [
+            'mysql' => 'DW_TEST_COMPLETION_MYSQL_',
+            'mariadb' => 'DW_TEST_COMPLETION_MARIADB_',
+            'pgsql' => 'DW_TEST_COMPLETION_PGSQL_',
+        ][$driver];
         $host = getenv($prefix.'HOST');
         if (! $host) {
             $this->markTestSkipped('Set '.$prefix.'HOST to a disposable database test server.');
         }
-        if (! function_exists('pcntl_fork') || ! function_exists('posix_kill') || ! function_exists('stream_socket_pair')) {
-            $this->markTestSkipped('Process control and local sockets are required.');
-        }
         $port = getenv($prefix.'PORT') ?: ($driver === 'pgsql' ? '5432' : '3306');
         $user = getenv($prefix.'USER') ?: ($driver === 'pgsql' ? 'postgres' : 'root');
         $password = getenv($prefix.'PASSWORD') ?: '';
-        $this->databaseAdmin = [$driver.':host='.$host.';port='.$port.($driver === 'pgsql' ? ';dbname=postgres' : ''), $user, $password];
+        $dsn = ($driver === 'pgsql' ? 'pgsql' : 'mysql').':host='.$host.';port='.$port.($driver === 'pgsql' ? ';dbname=postgres' : '');
+        $this->databaseAdmin = [$dsn, $user, $password];
         $this->databaseName = 'dw_stream_race_'.bin2hex(random_bytes(6));
         $admin = new PDO(...$this->databaseAdmin);
         $admin->exec('CREATE DATABASE '.$this->databaseName);
@@ -201,6 +324,14 @@ class WorkflowStreamCapacityRaceTest extends TestCase
             DB::disconnect();
             $admin = new PDO(...$this->databaseAdmin);
             $admin->exec('DROP DATABASE '.$this->databaseName);
+        }
+        if ($this->sqlitePath !== null) {
+            DB::disconnect('sqlite');
+            foreach ([$this->sqlitePath, $this->sqlitePath.'-wal', $this->sqlitePath.'-shm'] as $file) {
+                if (is_file($file)) {
+                    @unlink($file);
+                }
+            }
         }
         parent::tearDown();
     }
@@ -225,9 +356,12 @@ class WorkflowStreamCapacityRaceTest extends TestCase
             $ok = false;
             try {
                 DB::reconnect();
-                $idQuery = DB::connection()->getDriverName() === 'mysql'
-                    ? 'SELECT CONNECTION_ID() AS id' : 'SELECT pg_backend_pid() AS id';
-                fwrite($sockets[1], json_encode(['connection_id' => (int) DB::selectOne($idQuery)->id]).PHP_EOL);
+                $connectionId = match (DB::connection()->getDriverName()) {
+                    'mysql', 'mariadb' => (int) DB::selectOne('SELECT CONNECTION_ID() AS id')->id,
+                    'pgsql' => (int) DB::selectOne('SELECT pg_backend_pid() AS id')->id,
+                    default => getmypid(),
+                };
+                fwrite($sockets[1], json_encode(['connection_id' => $connectionId]).PHP_EOL);
                 if (fgets($sockets[1]) !== "go\n") {
                     throw new RuntimeException('Actor was not released.');
                 }
@@ -236,9 +370,13 @@ class WorkflowStreamCapacityRaceTest extends TestCase
                     DB::listen(static function (QueryExecuted $query) use (&$paused, $sockets, $pause): void {
                         $sql = strtolower($query->sql);
                         $stream = str_contains($sql, 'workflow_durable_streams') && ! str_contains($sql, 'workflow_durable_stream_items');
+                        // SQLite drops FOR UPDATE; its append holds the write
+                        // lock from the run lock's no-op write on.
                         $matches = $pause === 'insert'
                             ? str_starts_with(ltrim($sql), 'insert')
-                            : str_contains($sql, 'for update') || str_contains($sql, 'for no key update');
+                            : (DB::connection()->getDriverName() === 'sqlite'
+                                ? str_starts_with(ltrim($sql), 'select')
+                                : str_contains($sql, 'for update') || str_contains($sql, 'for no key update'));
                         if (! $paused && $stream && $matches) {
                             $paused = true;
                             fwrite($sockets[1], json_encode(['paused' => $pause]).PHP_EOL);
@@ -264,21 +402,52 @@ class WorkflowStreamCapacityRaceTest extends TestCase
         return ['pid' => $pid, 'socket' => $sockets[0]];
     }
 
-    private function awaitLockWait(int $connectionId): void
+    /**
+     * The second append is waiting on the first. MySQL and PostgreSQL report
+     * the lock wait itself. MariaDB has no lock-wait table that shows a wait
+     * taken while the optimizer reads a constant row, so there the second
+     * connection must be executing its run-lock statement and still be there
+     * a moment later. SQLite has no row locks: the second append must not
+     * have finished while the first holds the database write lock.
+     */
+    private function awaitWait(array $actor, int $connectionId): void
     {
-        $query = DB::connection()->getDriverName() === 'mysql'
-            ? 'SELECT COUNT(*) AS waiting FROM performance_schema.data_lock_waits w JOIN performance_schema.threads t ON t.THREAD_ID = w.REQUESTING_THREAD_ID WHERE t.PROCESSLIST_ID = ?'
-            : 'SELECT COUNT(*) AS waiting FROM pg_locks WHERE pid = ? AND NOT granted';
+        $driver = DB::connection()->getDriverName();
+
+        if ($driver === 'sqlite') {
+            $this->assertStillRunning($actor);
+
+            return;
+        }
+
+        $query = match ($driver) {
+            'mysql' => 'SELECT COUNT(*) AS waiting FROM performance_schema.data_lock_waits w JOIN performance_schema.threads t ON t.THREAD_ID = w.REQUESTING_THREAD_ID WHERE t.PROCESSLIST_ID = ?',
+            'mariadb' => "SELECT COUNT(*) AS waiting FROM information_schema.PROCESSLIST WHERE ID = ? AND COMMAND <> 'Sleep' AND LOWER(INFO) LIKE '%workflow_runs%for update%'",
+            default => 'SELECT COUNT(*) AS waiting FROM pg_locks WHERE pid = ? AND NOT granted',
+        };
         $until = microtime(true) + 5;
         do {
             if ((int) DB::selectOne($query, [$connectionId])->waiting > 0) {
+                if ($driver === 'mariadb') {
+                    $this->assertStillRunning($actor);
+                    $this->assertSame(1, (int) DB::selectOne($query, [$connectionId])->waiting,
+                        'The second append left its run-lock statement while the first held the lock.');
+                }
                 $this->addToAssertionCount(1);
 
                 return;
             }
             usleep(10_000);
         } while (microtime(true) < $until);
-        $this->fail('The second append did not wait on the first append\'s stream row, connection '.$connectionId.'.');
+        $this->fail('The second append did not wait on the first append\'s locks, connection '.$connectionId.'.');
+    }
+
+    private function assertStillRunning(array $actor): void
+    {
+        $read = [$actor['socket']];
+        $write = $except = null;
+        $this->assertSame(0, stream_select($read, $write, $except, 0, 300_000),
+            'The second append finished while the first held its locks.');
     }
 
     private function readMessage(array $actor): array

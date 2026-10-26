@@ -214,13 +214,56 @@ class RuntimeExternalPayloadRegistry
 
     public function verifyFetchedBytesAndClaim(string $namespace, string $uri, string|ExternalPayloadStream $data): void
     {
+        [$observedSize, $observedHash] = $this->observedBytes($data);
+        $this->checkRegisteredBytes($namespace, $uri, $observedSize, $observedHash, claim: true);
+    }
+
+    /**
+     * Checks fetched bytes against their registration without claiming the
+     * reference, so a caller can refuse early and claim later, inside the
+     * transaction that records the reference.
+     *
+     * @return array{size_bytes: int, sha256: string}
+     */
+    public function verifyFetchedBytes(string $namespace, string $uri, string|ExternalPayloadStream $data): array
+    {
+        [$observedSize, $observedHash] = $this->observedBytes($data);
+        $this->checkRegisteredBytes($namespace, $uri, $observedSize, $observedHash, claim: false);
+
+        return ['size_bytes' => $observedSize, 'sha256' => $observedHash];
+    }
+
+    /**
+     * Claims a reference whose bytes verifyFetchedBytes() checked, checking
+     * its registration again under the object lock. Inside a caller's
+     * transaction the claim rolls back with it.
+     */
+    public function claimVerified(string $namespace, string $uri, int $sizeBytes, string $sha256): void
+    {
+        $this->checkRegisteredBytes($namespace, $uri, $sizeBytes, strtolower($sha256), claim: true);
+    }
+
+    /** @return array{0: int, 1: string} */
+    private function observedBytes(string|ExternalPayloadStream $data): array
+    {
         $observedSize = $data instanceof ExternalPayloadStream ? $data->sizeBytes : strlen($data);
         $observedHash = $data instanceof ExternalPayloadStream ? $data->sha256 : hash('sha256', $data);
         $this->assertSize($observedSize);
+
+        return [$observedSize, $observedHash];
+    }
+
+    private function checkRegisteredBytes(
+        string $namespace,
+        string $uri,
+        int $observedSize,
+        string $observedHash,
+        bool $claim,
+    ): void {
         $namespace = $this->namespace($namespace);
 
         try {
-            $this->objectLock->transaction($uri, function () use ($namespace, $uri, $observedSize, $observedHash): void {
+            $this->objectLock->transaction($uri, function () use ($namespace, $uri, $observedSize, $observedHash, $claim): void {
                 $row = RuntimeExternalPayload::query()
                     ->where('namespace', $namespace)
                     ->where('storage_uri_sha256', hash('sha256', $uri))
@@ -244,6 +287,10 @@ class RuntimeExternalPayloadRegistry
 
                 if ($observedSize !== $row->size_bytes || ! hash_equals($row->sha256, $observedHash)) {
                     throw $this->integrityMismatch('Fetched external payload bytes failed runtime integrity verification.');
+                }
+
+                if (! $claim) {
+                    return;
                 }
 
                 $row->forceFill([

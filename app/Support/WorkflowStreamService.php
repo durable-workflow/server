@@ -54,7 +54,13 @@ final class WorkflowStreamService
     public const DEFAULT_CLOSED_RETENTION_SECONDS = 3600;
 
     /**
+     * `$claimReferences` receives the distinct `payload_reference` values of
+     * the items this append will write, after the whole batch is admitted and
+     * before any item is written, inside the append's transaction. A claim it
+     * records rolls back with a refused or failed append.
+     *
      * @param  list<array<string, mixed>>  $items
+     * @param  (callable(list<string>): void)|null  $claimReferences
      * @return array{stream: WorkflowDurableStream, items: list<WorkflowDurableStreamItem>, accepted: int, deduped: int}
      */
     public function append(
@@ -63,6 +69,7 @@ final class WorkflowStreamService
         string $streamName,
         array $items,
         int $maxPendingItems = self::DEFAULT_MAX_PENDING_ITEMS,
+        ?callable $claimReferences = null,
     ): array {
         $this->assertValidStreamName($streamName);
 
@@ -84,11 +91,19 @@ final class WorkflowStreamService
             ));
         }
 
-        return DB::transaction(function () use ($run, $namespace, $streamName, $items, $maxPendingItems) {
+        return DB::transaction(function () use ($run, $namespace, $streamName, $items, $maxPendingItems, $claimReferences) {
             $stream = $this->lockStream($run, $namespace, $streamName, openIfMissing: true);
 
             if ($stream === null) {
                 throw new RuntimeException('Stream lookup must return a row when openIfMissing is true');
+            }
+
+            // Past its retention a terminal stream reads as not found for
+            // every operation, append included, from the expiry instant on
+            // (Server #774). Its row stays until its run is pruned, so the
+            // name is never opened again inside the run.
+            if (self::isExpired($stream)) {
+                throw new StreamNotFoundException($run, $streamName);
             }
 
             if ($stream->status === WorkflowDurableStream::STATUS_CLOSED) {
@@ -142,6 +157,22 @@ final class WorkflowStreamService
                 // Rolls back the whole append, including a stream this
                 // request opened.
                 throw new StreamFullException($stream, $maxPendingItems);
+            }
+
+            if ($claimReferences !== null) {
+                $references = [];
+
+                foreach ($plan as $entry) {
+                    $reference = $entry['item']['payload_reference'] ?? null;
+
+                    if (! $entry['repeat'] && $entry['existing'] === null && is_string($reference) && $reference !== '') {
+                        $references[$reference] = true;
+                    }
+                }
+
+                if ($references !== []) {
+                    $claimReferences(array_keys($references));
+                }
             }
 
             $now = Carbon::now();
@@ -311,6 +342,11 @@ final class WorkflowStreamService
                 $stream->retention_seconds = self::DEFAULT_CLOSED_RETENTION_SECONDS;
             }
 
+            // The retention pass's deadline: the instant the stream expires,
+            // from the whole-second close time the row stores.
+            $stream->reclaim_at = $stream->closed_at->copy()->startOfSecond()
+                ->addSeconds((int) $stream->retention_seconds);
+
             $stream->save();
 
             return $stream->refresh();
@@ -385,6 +421,11 @@ final class WorkflowStreamService
         string $streamName,
         bool $openIfMissing,
     ): ?WorkflowDurableStream {
+        // A run pruned since it was located has no streams to write.
+        if (! WorkflowRunStreamLock::acquire($run->id)) {
+            throw new StreamNotFoundException($run, $streamName);
+        }
+
         $stream = WorkflowDurableStream::query()
             ->where('namespace', $namespace)
             ->where('workflow_run_id', $run->id)
@@ -392,20 +433,13 @@ final class WorkflowStreamService
             ->lockForUpdate()
             ->first();
 
-        if ($stream !== null) {
+        if ($stream !== null || ! $openIfMissing) {
             return $stream;
         }
 
-        if (! $openIfMissing) {
-            return null;
-        }
-
-        // Concurrent first appends both find no row. Each inserts it if it
-        // is still missing (a loser waits for the winner's commit, then
-        // inserts nothing) and then locks the one row, so the capacity
-        // decision always runs against the committed stream.
-        $now = Carbon::now();
-        WorkflowDurableStream::query()->insertOrIgnore([
+        // The run lock admits one opener at a time, so the stream is created
+        // through its model and the namespace stream quota applies.
+        return WorkflowDurableStream::query()->create([
             'namespace' => $namespace,
             'workflow_instance_id' => $run->workflow_instance_id,
             'workflow_run_id' => $run->id,
@@ -414,23 +448,8 @@ final class WorkflowStreamService
             'last_offset' => -1,
             'total_items' => 0,
             'pending_items' => 0,
-            'opened_at' => $now,
-            'created_at' => $now,
-            'updated_at' => $now,
+            'opened_at' => Carbon::now(),
         ]);
-
-        $stream = WorkflowDurableStream::query()
-            ->where('workflow_run_id', $run->id)
-            ->where('stream_name', $streamName)
-            ->lockForUpdate()
-            ->first();
-
-        if ($stream === null || $stream->namespace !== $namespace) {
-            // The run's stream is not visible in this namespace.
-            throw new StreamNotFoundException($run, $streamName);
-        }
-
-        return $stream;
     }
 
     private function assertValidStreamName(string $streamName): void
