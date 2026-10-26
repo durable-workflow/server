@@ -52,6 +52,15 @@ struct TimerScheduler {
     stop: watch::Sender<bool>,
     task: Mutex<Option<JoinHandle<()>>>,
     healthy: Arc<AtomicBool>,
+    /// Whether the ticker also runs the repair pass, as PHP's maintenance
+    /// loop does unless `DW_V2_MATCHING_ROLE_QUEUE_WAKE` is false or 0.
+    repair: Arc<AtomicBool>,
+}
+
+/// PHP's maintenance loop skips `workflow:v2:repair-pass` when
+/// `DW_V2_MATCHING_ROLE_QUEUE_WAKE` is `false` or `0`.
+fn maintenance_repair_enabled() -> bool {
+    !matches!(std::env::var("DW_V2_MATCHING_ROLE_QUEUE_WAKE").as_deref(), Ok("false" | "0"))
 }
 
 impl TimerScheduler {
@@ -61,11 +70,13 @@ impl TimerScheduler {
             stop,
             task: Mutex::new(None),
             healthy: Arc::new(AtomicBool::new(true)),
+            repair: Arc::new(AtomicBool::new(maintenance_repair_enabled())),
         }
     }
     fn start(&self, storage: Arc<Storage>) {
         let mut stop = self.stop.subscribe();
         let healthy = self.healthy.clone();
+        let repair = self.repair.clone();
         let task = tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -75,10 +86,15 @@ impl TimerScheduler {
                         // retried from durable state, without logging payloads.
                         // Timer and schedule transactions share the cross-node lock with
                         // completion. CPU/deadline performance is unqualified.
-                        let result = async { match &*storage {
-                            Storage::Sqlite(store) => { store.fire_due_timers().await?; store.fire_due_schedules().await },
-                            Storage::Postgres(store) => { store.fire_due_timers().await?; store.fire_due_schedules().await },
-                            Storage::MySql(store) => { store.fire_due_timers().await?; store.fire_due_schedules().await },
+                        // Then PHP's maintenance loop (`workflow:v2:repair-pass`),
+                        // at most once per repair throttle: run deadlines, task
+                        // repair, activity and service-call timeouts.
+                        let pass = repair.load(Ordering::Relaxed)
+                            .then(|| super::repair_pass::PassRequest { respect_throttle: true, ..Default::default() });
+                        let result: Result<()> = async { match &*storage {
+                            Storage::Sqlite(store) => { store.fire_due_timers().await?; store.fire_due_schedules().await?; if let Some(pass) = &pass { store.repair_pass(pass).await?; } Ok(()) },
+                            Storage::Postgres(store) => { store.fire_due_timers().await?; store.fire_due_schedules().await?; if let Some(pass) = &pass { store.repair_pass(pass).await?; } Ok(()) },
+                            Storage::MySql(store) => { store.fire_due_timers().await?; store.fire_due_schedules().await?; if let Some(pass) = &pass { store.repair_pass(pass).await?; } Ok(()) },
                         }}.await;
                         let success = result.is_ok();
                         if healthy.swap(success,Ordering::Relaxed) && !success {
@@ -186,6 +202,13 @@ impl Runtime {
             ));
         }
         Ok(())
+    }
+
+    /// Turns the maintenance loop's repair pass on or off for this runtime,
+    /// as `DW_V2_MATCHING_ROLE_QUEUE_WAKE` does at startup. Timers, schedules
+    /// and deadlines still fire.
+    pub fn set_maintenance_repair(&self, enabled: bool) {
+        self.scheduler.repair.store(enabled, Ordering::Relaxed);
     }
 
     pub async fn open(database: &str, token: String) -> Result<Self> {

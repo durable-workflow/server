@@ -102,7 +102,10 @@ async fn repair_pass_recovers_tasks_and_runs_like_php() {
 #[tokio::test]
 async fn repair_pass_creates_deadline_tasks_settles_leases_and_reports_failures() {
     let database = TestDatabase::new().await;
-    let app = router(database.open().await.unwrap());
+    let runtime = database.open().await.unwrap();
+    // This test counts what one requested pass repairs.
+    runtime.set_maintenance_repair(false);
+    let app = router(runtime);
     register(&app, "worker", json!(["echo"]), json!(["act"])).await;
 
     let deadline = started_on(&app, "deadline", "repair-d").await;
@@ -172,4 +175,27 @@ async fn repair_pass_creates_deadline_tasks_settles_leases_and_reports_failures(
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{invalid}");
     assert_eq!(invalid["errors"]["run_ids.0"], json!(["The run_ids.0 field must be a string.", "The run_ids.0 field must be at least 1 characters."]));
     assert_eq!(invalid["errors"]["queue"], json!(["The queue field must not be greater than 128 characters."]));
+}
+
+// PHP's maintenance loop runs the repair pass every few seconds; native's
+// ticker does the same unless the pass is turned off. An idle run past its
+// execution deadline gets the workflow task that closes it without anyone
+// asking for a pass.
+#[tokio::test]
+async fn the_maintenance_loop_gives_an_overdue_idle_run_its_deadline_task() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let deadline = started_on(&app, "maintained", "repair-m").await;
+    let deadline = deadline["run_id"].as_str().unwrap();
+    execute(&database, format!("UPDATE workflow_tasks SET status='completed' WHERE workflow_run_id='{deadline}'")).await;
+    execute(&database, format!("UPDATE workflow_runs SET execution_deadline_at={LONG_AGO} WHERE id='{deadline}'")).await;
+    let ready = format!("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id='{deadline}' AND status='ready'");
+    // The loop's throttle is five seconds; allow two turns.
+    for _ in 0..48 {
+        if count(&database, ready.clone()).await == 1 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    panic!("no deadline task after twelve seconds of maintenance");
 }
