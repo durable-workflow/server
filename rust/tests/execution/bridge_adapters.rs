@@ -420,6 +420,30 @@ async fn change_queued_behind_a_bridge_start(case: &'static str) {
             assert_eq!((status, &answer["schema"], &answer["outcome"], &answer["message"]),
                 (StatusCode::UNPROCESSABLE_ENTITY, &json!("durable-workflow.v2.bridge-adapter-outcome.contract"), &json!("rejected"), &json!(message)),
                 "{case}: {answer}");
+            // The competitor's own success is what stands, and the bridge
+            // recorded nothing.
+            let (shown_status, shown) = request(&app, "GET", &format!("/api/workflows/{workflow_id}"), Value::Null).await;
+            match case {
+                "namespace" => {
+                    assert_eq!((competitor_status, &competitor_answer["workflow_type"], &competitor_answer["namespace"]),
+                        (StatusCode::CREATED, &json!("echo"), &json!("other")), "{case}: {competitor_answer}");
+                    assert_eq!(shown_status, StatusCode::NOT_FOUND, "{case}: the default namespace cannot see it: {shown}");
+                    let (status, foreign) = namespaces::scoped(&app, "other", "GET", &format!("/api/workflows/{workflow_id}"), Value::Null).await;
+                    assert_eq!((status, &foreign["workflow_type"]), (StatusCode::OK, &json!("echo")), "{case}: {foreign}");
+                }
+                "type" => {
+                    assert_eq!((competitor_status, &competitor_answer["workflow_type"]),
+                        (StatusCode::CREATED, &json!("other.type")), "{case}: {competitor_answer}");
+                    assert_eq!((shown_status, &shown["workflow_type"]), (StatusCode::OK, &json!("other.type")), "{case}: {shown}");
+                }
+                _ => {
+                    assert_eq!((competitor_status, &competitor_answer["drain_intent"]),
+                        (StatusCode::OK, &json!("draining")), "{case}: {competitor_answer}");
+                    assert_eq!(shown_status, StatusCode::NOT_FOUND, "{case}: the bridge started nothing: {shown}");
+                }
+            }
+            let commands = count(&database, format!("SELECT COUNT(*) FROM workflow_commands WHERE workflow_instance_id='{workflow_id}'")).await;
+            assert_eq!(commands, if case == "drain" { 0 } else { 1 }, "{case}: only the competitor's start command");
         }
         eprintln!("queued {case}: bridge {status}, competitor {competitor_status}");
     }
