@@ -540,14 +540,12 @@ const FIELD_SCOPES: &[(&str, &[&str], &str)] = &[
     ("entries", &["upsert_memo"], "entries contains the non-indexed memo patch and only applies to an upsert_memo command."),
 ];
 
-/// The command normalizer's per-command checks native shares with PHP:
-/// `assertCommandFieldScope`, then the timer, version marker and wait rules.
-/// PHP collects these across the batch; native stops at the first command.
-pub(super) fn normalizer_checks(index: usize, command: &Value) -> Result<()> {
+/// `assertCommandFieldScope`: each field this command type does not take.
+pub(super) fn field_scope_errors(index: usize, command: &Value) -> Vec<(String, Vec<String>)> {
     let Some(kind) = command.get("type").and_then(Value::as_str) else {
-        return Ok(());
+        return Vec::new();
     };
-    let mut found: Vec<(String, Vec<String>)> = Vec::new();
+    let mut found = Vec::new();
     for (field, allowed, guidance) in FIELD_SCOPES {
         // A marker's wire shape is frozen; PHP drops its payload codec.
         if !has_value(command, field) || allowed.contains(&kind) || kind == "record_version_marker" && *field == "payload_codec" {
@@ -556,6 +554,17 @@ pub(super) fn normalizer_checks(index: usize, command: &Value) -> Result<()> {
         found.push((format!("commands.{index}.{field}"),
             vec![format!("Workflow task command field [{field}] is not valid on a {kind} command. {guidance}")]));
     }
+    found
+}
+
+/// The command normalizer's per-command checks native shares with PHP:
+/// `assertCommandFieldScope`, then the timer, version marker and wait rules.
+/// PHP collects these across the batch; native stops at the first command.
+pub(super) fn normalizer_checks(index: usize, command: &Value) -> Result<()> {
+    let Some(kind) = command.get("type").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let mut found = field_scope_errors(index, command);
     let whole = |field: &str| command.get(field).and_then(Value::as_i64);
     match kind {
         "start_timer" if !whole("delay_seconds").is_some_and(|delay| delay >= 0) => found.push((

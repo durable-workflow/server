@@ -1493,6 +1493,7 @@ fn structural_limits(connection: &str, limits: &super::StructuralLimits, memo: O
         "search_attribute_size_bytes": 40960,
         "history_transaction_size": shown(limits.history_events),
         "history_transaction_bytes": shown(limits.history_bytes),
+        "history_transaction_rows": shown(limits.history_rows),
         "warning_threshold_percent": 80,
     });
     let sqlite = connection == "sqlite";
