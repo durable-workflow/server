@@ -82,11 +82,12 @@ Updated October 24, 2026.
     ([#737](https://github.com/durable-workflow/server/issues/737)).
 
   No expectation is edited to make native pass.
-- **Parity surface.** Native serves 146 of the 175 API route methods in
+- **Parity surface.** Native serves 161 of the 175 API route methods in
   published 2.11.1's route table, with message streams, update validation,
   activity cancellation acknowledgement, worker sessions, workflow-task
-  cancellation scopes, caller-indexed Nexus operation reads, bridge adapter
-  webhooks, and embedded v2 and Waterline v1 workflow import. An execution
+  cancellation scopes, service catalog administration, caller-indexed Nexus
+  operation reads, bridge adapter webhooks, and embedded v2 and Waterline v1
+  workflow import. An execution
   test sends each one through the native router, and the ones still
   answering `501 rust_capability_not_implemented` must match
   [`unserved-php-routes.v2.11.1.txt`](../rust/tests/fixtures/unserved-php-routes.v2.11.1.txt).
@@ -161,9 +162,25 @@ any other unknown path or method answers PHP's own 404 or 405
     except external payload references as input, stream retention cleanup
     and takeover of PHP data with streams.
   - Durable workflow stream items and close.
-  - Service endpoints. (The service catalog reads from Server 2.11 are served:
-    native never holds catalog rows, so every list is PHP's empty page and every
-    identity its not-found answer; the `service-catalog` fixture checks 37 cases.
+  - Service operation execution, service-call reads and cancellation, and
+    takeover of a PHP database that holds catalog rows. (Service catalog
+    administration is served: the 15 admin routes under `/api/service-endpoints`
+    create, read, update and delete a namespace's endpoints, services and
+    operations as `ServiceCatalogController` does, with the `service-endpoints`
+    fixture's 72 cases. The `/api/service-catalog` reads render those rows by
+    page and identity; the `service-catalog` fixture checks the empty
+    namespace's 37 cases. Native records no service calls, so a calls list is
+    PHP's empty page. Three differences from published 2.11.1:
+    - Native JSON documents don't keep object key order. An update that only
+      reorders a document's keys writes nothing, where PHP's strict comparison
+      writes it and moves `updated_at`.
+    - PHP checks a name and then inserts without a lock, so concurrent creates
+      of one name can end in a unique-index 500 and a delete can race a
+      child's create. Native writes under its serialized transaction: the
+      second create gets 409.
+    - Laravel also reads a write's fields from the query string. Native reads
+      a field from it only when the body lacks that field, and only under its
+      exact name, not PHP's `metadata[a]=1` array syntax.
     Native neither executes service operations nor accepts the workflow-task
     `start_service_operation` command, which it refuses as
     `unsupported_workflow_command`. When it does, an operation bound to a
