@@ -1123,6 +1123,36 @@ where
         Self::enqueue_next_message(tx, write.run_id, queue).await
     }
 
+    /// `StructuralLimits::guardPendingActivities`, `guardPendingChildren` and
+    /// `guardPendingTimers` before the bridge writes one more (Workflow #933):
+    /// a run already holding the limit refuses the whole completion.
+    async fn guard_pending(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        kind: super::memo_limits::Pending,
+        limits: &super::memo_limits::StructuralLimits,
+        task_id: &str,
+        attempt: &Value,
+    ) -> Result<()> {
+        use super::memo_limits::Pending;
+        let (limit, sql) = match kind {
+            Pending::Activities => (limits.pending_activities,
+                "SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status IN ('pending','running')"),
+            Pending::Timers => (limits.pending_timers,
+                "SELECT COUNT(*) FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending'"),
+            Pending::Children => (limits.pending_children,
+                "SELECT COUNT(*) FROM workflow_links l JOIN workflow_runs r ON r.id=l.child_workflow_run_id WHERE l.parent_workflow_run_id=$1 AND l.link_type='child_workflow' AND r.status NOT IN ('completed','failed','cancelled','terminated')"),
+        };
+        if limit.is_none() {
+            return Ok(());
+        }
+        let count = Self::scalar(sql).bind(run_id).fetch_one(&mut **tx).await?;
+        match super::memo_limits::Exceeded::pending(kind, limit, count) {
+            Some(exceeded) => Err(exceeded.worker_refusal(task_id, attempt)),
+            None => Ok(()),
+        }
+    }
+
     async fn advance_signal_sequences(tx: &mut Transaction<'_, DB>, write: &SignalWrite<'_>) -> Result<()> {
         Self::query("UPDATE workflow_runs SET last_command_sequence=$1 WHERE id=$2")
             .bind(write.command_sequence)
@@ -2962,6 +2992,7 @@ where
                     created.push(self.continue_run(&mut tx, &run, &task, command, sequence).await?);
                 }
             } else if command["type"] == "start_child_workflow" {
+                Self::guard_pending(&mut tx, &run_id, super::memo_limits::Pending::Children, &limits, task_id, &body["workflow_task_attempt"]).await?;
                 sequence += 1;
                 created.push(Self::start_child(&mut tx, &run, task_id, command, sequence).await?);
             } else if command["type"] == super::local_activities::COMMAND {
@@ -2998,6 +3029,7 @@ where
                 self.upsert_search_attributes(&mut tx, &run, &task, command, index, sequence)
                     .await?;
             } else if command["type"] == "schedule_activity" {
+                Self::guard_pending(&mut tx, &run_id, super::memo_limits::Pending::Activities, &limits, task_id, &body["workflow_task_attempt"]).await?;
                 sequence += 1;
                 let metadata = super::selections::metadata(command, "activity")?;
                 super::selections::check_sequence(&metadata, sequence)?;
@@ -3091,6 +3123,7 @@ where
                     .execute(&mut *tx)
                     .await?;
             } else if command["type"] == "start_timer" {
+                Self::guard_pending(&mut tx, &run_id, super::memo_limits::Pending::Timers, &limits, task_id, &body["workflow_task_attempt"]).await?;
                 sequence += 1;
                 let metadata = super::selections::metadata(command, "timer")?;
                 super::selections::check_sequence(&metadata, sequence)?;

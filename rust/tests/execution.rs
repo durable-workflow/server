@@ -206,6 +206,8 @@ mod start_request;
 mod command_requests;
 #[path = "execution/bridge_adapters.rs"]
 mod bridge_adapters;
+#[path = "execution/pending_limits.rs"]
+mod pending_limits;
 #[path = "execution/describe_actions.rs"]
 mod describe_actions;
 #[path = "execution/run_deadlines.rs"]
