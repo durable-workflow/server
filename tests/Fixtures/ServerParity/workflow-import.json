@@ -1999,6 +1999,7 @@
     "published_defects": {
       "cross_namespace_duplicate": {
         "summary": "EmbeddedV2HistoryImport::existingRunOutcome finds the run in any namespace, so a bundle already imported into another namespace answers 200 already_imported for the requested namespace, which holds no such run. Native refuses it as a run_id conflict.",
+        "issue": "https://github.com/durable-workflow/server/issues/765",
         "published": {
           "duplicate_other_namespace": {
             "status": 200,
@@ -2105,6 +2106,7 @@
       },
       "cross_namespace_instance_attach": {
         "summary": "EmbeddedV2HistoryImport::writeBundle finds the workflow instance in any namespace and attaches the imported run to it, so a run imported into one namespace takes over the current run and run count of an instance in another. Native refuses the write and leaves the other namespace unchanged.",
+        "issue": "https://github.com/durable-workflow/server/issues/765",
         "published": {
           "attach": {
             "status": 201,

@@ -90,6 +90,13 @@ pub struct StructuralLimits {
     pub pending_updates: Option<usize>,
     /// Bytes of one serialized payload blob (DW_V2_LIMIT_PAYLOAD_SIZE_BYTES).
     pub payload_bytes: Option<usize>,
+    /// History events one transaction may write
+    /// (DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE; Workflow #930): here, a
+    /// Waterline v1 projection import.
+    pub history_events: Option<usize>,
+    /// History bytes one transaction may write, measured as PHP measures an
+    /// event (DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES).
+    pub history_bytes: Option<usize>,
 }
 
 impl Default for StructuralLimits {
@@ -98,6 +105,8 @@ impl Default for StructuralLimits {
             pending_signals: Some(5000),
             pending_updates: Some(500),
             payload_bytes: Some(2_097_152),
+            history_events: Some(5000),
+            history_bytes: Some(16_777_216),
         }
     }
 }
@@ -110,6 +119,8 @@ impl StructuralLimits {
             pending_signals: configured("PENDING_SIGNALS", defaults.pending_signals.unwrap(), invalid)?,
             pending_updates: configured("PENDING_UPDATES", defaults.pending_updates.unwrap(), invalid)?,
             payload_bytes: configured("PAYLOAD_SIZE_BYTES", defaults.payload_bytes.unwrap(), invalid)?,
+            history_events: configured("HISTORY_TRANSACTION_SIZE", defaults.history_events.unwrap(), invalid)?,
+            history_bytes: configured("HISTORY_TRANSACTION_BYTES", defaults.history_bytes.unwrap(), invalid)?,
         })
     }
 }

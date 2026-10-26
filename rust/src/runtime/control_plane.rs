@@ -21,6 +21,7 @@ pub(super) enum Operation<'a> {
     Signal(&'a str),
     Query(&'a str),
     ImportEmbeddedV2,
+    ImportWaterlineV1,
 }
 
 impl Operation<'_> {
@@ -139,6 +140,7 @@ impl Operation<'_> {
             ),
             // PHP defines no contract for the import, so its defaults apply.
             Self::ImportEmbeddedV2 => ("import_embedded_v2", &[], &[]),
+            Self::ImportWaterlineV1 => ("import_waterline_v1", &[], &["status", "identity"]),
         };
         let mut metadata = json!({"schema":"durable-workflow.v2.control-plane-response", "version":1,
             "operation":operation, "workflow_id":body.get("workflow_id"),
@@ -189,6 +191,14 @@ impl Operation<'_> {
                     "declared_signals",
                     "signal_admission",
                 ] {
+                    if let Some(value) = body.get(field) {
+                        metadata[field] = value.clone();
+                    }
+                }
+            }
+            // Its contract's success and rejection fields.
+            Self::ImportWaterlineV1 => {
+                for field in ["status", "identity"] {
                     if let Some(value) = body.get(field) {
                         metadata[field] = value.clone();
                     }
@@ -271,6 +281,13 @@ impl Operation<'_> {
                 "control_plane_internal_error",
             ),
             Self::Redrive => ("workflow_id continued_from_run_id run_id reason message", ""),
+            Self::ImportWaterlineV1 => (
+                "status reason message remediation identity",
+                "invalid_source_id unqualified_v1_identity v1_identity_mismatch unsupported_source_engine \
+                 missing_v1_workflow_class unsupported_v1_status v1_projection_changed \
+                 v1_projection_namespace_collision v1_projection_storage_inconsistent \
+                 native_v2_identity_collision target_write_failed",
+            ),
             Self::Cancel | Self::Terminate | Self::Archive | Self::Repair => {
                 ("workflow_id run_id reason message remediation", "v1_projection_read_only")
             }
@@ -319,6 +336,7 @@ pub(super) async fn admission_response(request: Request, mut body: Value) -> Val
     let segments: Vec<_> = path.trim_start_matches('/').split('/').collect();
     let operation = match (request.method().as_str(), segments.as_slice()) {
         ("POST", ["api", "workflows", "import", "embedded-v2"]) => Operation::ImportEmbeddedV2,
+        ("POST", ["api", "workflows", "import", "waterline-v1"]) => Operation::ImportWaterlineV1,
         ("POST", ["api", "workflows"]) => Operation::Start,
         ("POST", ["api", "workflows", _, "signal", name])
         | ("POST", ["api", "workflows", _, "runs", _, "signal", name]) => Operation::Signal(name),

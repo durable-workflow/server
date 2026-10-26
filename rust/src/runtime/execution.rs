@@ -600,6 +600,14 @@ impl Runtime {
                 response: json!({"accepted":false,"workflow_id":workflow_id,"stream_name":stream,"outcome":"rejected","reason":"instance_not_found"}),
             });
         }
+        // A read-only Waterline projection takes no messages, whatever the
+        // body; the store checks again under its lock.
+        if let Some(run_id) = self.projected_current_run(workflow_id).await? {
+            return Err(super::RuntimeError::Protocol {
+                status: StatusCode::CONFLICT,
+                response: super::waterline_import::read_only_append(workflow_id, &run_id, stream),
+            });
+        }
         let body = super::laravel_rules::normalize(&body);
         let blob = match self.message_payload(&body).await {
             Ok(blob) => blob,
@@ -616,6 +624,19 @@ impl Runtime {
             Storage::Sqlite(store) => store.append_message(workflow_id, stream, &message_id, "avro", &blob, &context, codec, structural).await,
             Storage::Postgres(store) => store.append_message(workflow_id, stream, &message_id, "avro", &blob, &context, codec, structural).await,
             Storage::MySql(store) => store.append_message(workflow_id, stream, &message_id, "avro", &blob, &context, codec, structural).await,
+        }
+    }
+
+    /// The store's append alone, without the service's checks: tests of the
+    /// store's own guard call it.
+    #[cfg(test)]
+    pub(crate) async fn store_append_message(&self, workflow_id: &str, stream: &str, message_id: &str, blob: &str)
+        -> Result<(StatusCode, Value)> {
+        let (codec, structural, context) = (self.signal_codec.clone(), self.structural, json!({}));
+        match &*self.storage {
+            Storage::Sqlite(store) => store.append_message(workflow_id, stream, message_id, "avro", blob, &context, codec, structural).await,
+            Storage::Postgres(store) => store.append_message(workflow_id, stream, message_id, "avro", blob, &context, codec, structural).await,
+            Storage::MySql(store) => store.append_message(workflow_id, stream, message_id, "avro", blob, &context, codec, structural).await,
         }
     }
 
@@ -1580,6 +1601,10 @@ impl Runtime {
     delegate!(renew_activity_lease(task_id: &str, body: Value) -> Result<Value>);
     delegate!(import_existing_run(run_id: &str) -> Result<Option<super::workflow_import::ExistingRun>>);
     delegate!(import_write(plan: &super::workflow_import::Plan) -> std::result::Result<super::workflow_import::Rows, String>);
+    delegate!(waterline_existing(workflow_id: &str, run_id: &str) -> Result<super::waterline_import::Existing>);
+    delegate!(projected_current_run(workflow_id: &str) -> Result<Option<String>>);
+    delegate!(projected_run(workflow_id: &str, run_id: &str) -> Result<Option<String>>);
+    delegate!(waterline_write(projection: &super::waterline_import::Normalized, imported_at: chrono::DateTime<chrono::Utc>) -> std::result::Result<(), bool>);
     /// The namespace this runtime's store serves.
     pub(crate) fn namespace_name(&self) -> String {
         match &*self.storage {

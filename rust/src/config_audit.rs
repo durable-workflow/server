@@ -474,7 +474,7 @@ pub fn audit(environment: &BTreeMap<String, String>) -> Report {
         .keys()
         .map(String::as_str)
         .filter(|name| name.starts_with("DW_"))
-        .filter(|name| !SETTINGS.iter().any(|setting| setting.name == *name))
+        .filter(|name| !SETTINGS.iter().chain(NATIVE_HONORED).any(|setting| setting.name == *name))
         .filter(|name| !native_only(name))
         .collect();
     if !unknown.is_empty() {
@@ -484,7 +484,7 @@ pub fn audit(environment: &BTreeMap<String, String>) -> Report {
         ));
     }
     for name in environment.keys() {
-        if let Some(setting) = SETTINGS.iter().find(|setting| setting.legacy == Some(name.as_str())) {
+        if let Some(setting) = SETTINGS.iter().chain(NATIVE_HONORED).find(|setting| setting.legacy == Some(name.as_str())) {
             report.warnings.push(format!(
                 "Legacy env var {name} is still honored but deprecated — rename to {}.",
                 setting.name
@@ -540,6 +540,14 @@ use Rule::{AnyCase, CastBool, DatabaseConnection, Empty, EmptyJson, EmptyObject,
 const UNLISTED: &[Setting] = &[
     Setting { name: "DW_STORAGE_CONNECTION", legacy: Some("WORKFLOW_STORAGE_CONNECTION"), disposition: Refused(DatabaseConnection, STORAGE_CONNECTION) },
     Setting { name: "DW_V2_LEGACY_SCHEDULE_STORAGE_TIMEZONE", legacy: Some("WORKFLOW_V2_LEGACY_SCHEDULE_STORAGE_TIMEZONE"), disposition: Refused(Empty, LEGACY_SCHEDULE_TIMEZONE) },
+];
+
+/// Settings native honors that PHP's contract does not list yet: the
+/// Workflow package reads them (Workflow #930), and PHP's contract gains them
+/// when the PHP Server takes that release. They are not unknown names, and
+/// their legacy names warn as the contract's do.
+pub const NATIVE_HONORED: &[Setting] = &[
+    Setting { name: "DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES", legacy: Some("WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_BYTES"), disposition: Honored },
 ];
 
 /// Every `vars` entry of `config/dw-contract.php`, with its contract legacy name.
@@ -664,7 +672,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting { name: "DW_V2_HISTORY_EXPORT_SIGNING_KEY", legacy: Some("WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY"), disposition: Honored },
     Setting { name: "DW_V2_HISTORY_EXPORT_SIGNING_KEY_ID", legacy: Some("WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY_ID"), disposition: Honored },
     Setting { name: "DW_V2_LIMIT_COMMAND_BATCH_SIZE", legacy: Some("WORKFLOW_V2_LIMIT_COMMAND_BATCH_SIZE"), disposition: Refused(Int(1000), STRUCTURAL) },
-    Setting { name: "DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE", legacy: Some("WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_SIZE"), disposition: Ignored },
+    Setting { name: "DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE", legacy: Some("WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_SIZE"), disposition: Honored },
     Setting { name: "DW_V2_LIMIT_MEMO_SIZE_BYTES", legacy: Some("WORKFLOW_V2_LIMIT_MEMO_SIZE_BYTES"), disposition: Honored },
     Setting { name: "DW_V2_LIMIT_PAYLOAD_SIZE_BYTES", legacy: Some("WORKFLOW_V2_LIMIT_PAYLOAD_SIZE_BYTES"), disposition: Honored },
     Setting { name: "DW_V2_LIMIT_PENDING_ACTIVITIES", legacy: Some("WORKFLOW_V2_LIMIT_PENDING_ACTIVITIES"), disposition: Refused(Int(2000), STRUCTURAL) },
@@ -1072,6 +1080,33 @@ mod tests {
         let report = audit(&environment(&[("DW_PRINCIPAL_TOKENS", secret), ("DW_AUTH_PROVIDER", secret)]));
         assert_eq!(report.refusals.len(), 2);
         assert!(report.refusal().is_some_and(|refusal| !refusal.contains(secret)));
+    }
+
+    #[test]
+    fn the_history_transaction_limits_are_honored_settings() {
+        let honored = |name: &str| SETTINGS.iter().chain(NATIVE_HONORED).find(|setting| setting.name == name)
+            .is_some_and(|setting| matches!(setting.disposition, Honored));
+        for name in ["DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE", "DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES"] {
+            assert!(honored(name), "{name}");
+        }
+        // NATIVE_HONORED names are outside PHP's contract and listed once.
+        for setting in NATIVE_HONORED {
+            assert!(!contract().iter().any(|(name, ..)| name == setting.name), "{} is now in the contract", setting.name);
+            assert!(!SETTINGS.iter().any(|listed| listed.name == setting.name));
+        }
+        // Strict mode starts with each primary name set.
+        let mut primary = environment(&[("DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE", "123"), ("DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES", "4567")]);
+        primary.insert("DW_ENV_AUDIT_STRICT".into(), "1".into());
+        let report = audit(&primary);
+        assert_eq!((report.warnings.as_slice(), report.refusal()), (&[] as &[String], None));
+        // A legacy name warns as deprecated, naming its primary, and nothing else.
+        let report = audit(&environment(&[("WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_SIZE", "123"),
+            ("WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_BYTES", "4567")]));
+        assert_eq!(report.warnings, [
+            "Legacy env var WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_BYTES is still honored but deprecated — rename to DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES.",
+            "Legacy env var WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_SIZE is still honored but deprecated — rename to DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE.",
+        ]);
+        assert_eq!(report.refusal(), None);
     }
 
     #[test]
