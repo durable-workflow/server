@@ -489,6 +489,16 @@ contract fixture before its correction.
   drops the three columns; the verified backup keeps them
   ([#325 decision](https://github.com/durable-workflow/server/issues/325#issuecomment-6306545520),
   [checkpoint](rust-server-port-checkpoints/2026-10-26-php-2111-takeover.md)).
+- **Server 2.11.3 (Core 2.14.2) takeover.** Takeover recognizes both
+  published 2.11.3 layouts, fresh and created by 2.9.x. It copies each active
+  session's recorded holder, drops full failure messages (counted; native
+  reads the labelled preview, as PHP's older readers do), the service-call
+  idempotency digest, completed dispatches and the stream reclaim deadline,
+  and refuses while a dispatch is pending
+  ([checkpoint](rust-server-port-checkpoints/2026-10-26-php-2113-takeover.md)).
+  The parity reference is still 2.11.1. Core 2.14's new behavior (full
+  failure-message storage, service-call scheduling and idempotency scope)
+  is native work for the move to 2.11.3.
 - **Stop signal in the published image.** The published Server image declares
   `STOPSIGNAL SIGWINCH`, Apache's graceful stop. Native stops gracefully on
   `SIGTERM` or `SIGINT` and ignores `SIGWINCH`, so `docker stop` on the

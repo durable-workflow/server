@@ -328,20 +328,20 @@ async fn source_layout(
             canonical(include_str!("../../upgrade/php-2.9.7/mysql.json")),
             canonical(include_str!("../../upgrade/php-2.11.1/mysql.json")),
             canonical(include_str!("../../upgrade/php-2.11.1-from-2.9.7/mysql.json")),
+            canonical(include_str!("../../upgrade/php-2.11.3/mysql.json")),
+            canonical(include_str!("../../upgrade/php-2.11.3-from-2.9.7/mysql.json")),
         ],
         Flavor::MariaDb => [
             canonical(include_str!("../../upgrade/php-2.8.0/mariadb.json")),
             canonical(include_str!("../../upgrade/php-2.9.7/mariadb.json")),
             canonical(include_str!("../../upgrade/php-2.11.1/mariadb.json")),
             canonical(include_str!("../../upgrade/php-2.11.1-from-2.9.7/mariadb.json")),
+            canonical(include_str!("../../upgrade/php-2.11.3/mariadb.json")),
+            canonical(include_str!("../../upgrade/php-2.11.3-from-2.9.7/mariadb.json")),
         ],
     };
-    let layout = super::upgrade::source_layout(
-        &actual,
-        expected.clone(),
-        [&deltas[0], &deltas[1], &deltas[2], &deltas[3]],
-        |row| row.0.clone(),
-    );
+    let deltas = deltas.each_ref().map(String::as_str);
+    let layout = super::upgrade::source_layout(&actual, expected.clone(), deltas, |row| row.0.clone());
     // Laravel's separate mariadb connection stores the backup hold owner as
     // uuid rather than char(36); every release layout is otherwise the same.
     let layout = match (layout, flavor) {
@@ -350,17 +350,14 @@ async fn source_layout(
                 &expected,
                 &canonical(include_str!("../../upgrade/mariadb-driver.json")),
             )?;
-            match super::upgrade::source_layout(
-                &actual,
-                driver,
-                [&deltas[0], &deltas[1], &deltas[2], &deltas[3]],
-                |row| row.0.clone(),
-            )? {
+            match super::upgrade::source_layout(&actual, driver, deltas, |row| row.0.clone())? {
                 "frozen" => "frozen+mariadb-driver",
                 "php-2.8.0" => "php-2.8.0+mariadb-driver",
                 "php-2.9.7" => "php-2.9.7+mariadb-driver",
                 "php-2.11.1" => "php-2.11.1+mariadb-driver",
                 "php-2.11.1-from-2.9.7" => "php-2.11.1-from-2.9.7+mariadb-driver",
+                "php-2.11.3" => "php-2.11.3+mariadb-driver",
+                "php-2.11.3-from-2.9.7" => "php-2.11.3-from-2.9.7+mariadb-driver",
                 _ => {
                     return Err(refuse(
                         StatusCode::CONFLICT,
@@ -1246,6 +1243,8 @@ mod tests {
                     include_str!("../../upgrade/php-2.9.7/mysql.json"),
                     include_str!("../../upgrade/php-2.11.1/mysql.json"),
                     include_str!("../../upgrade/php-2.11.1-from-2.9.7/mysql.json"),
+                    include_str!("../../upgrade/php-2.11.3/mysql.json"),
+                    include_str!("../../upgrade/php-2.11.3-from-2.9.7/mysql.json"),
                 ],
             ),
             Flavor::MariaDb => (
@@ -1255,6 +1254,8 @@ mod tests {
                     include_str!("../../upgrade/php-2.9.7/mariadb.json"),
                     include_str!("../../upgrade/php-2.11.1/mariadb.json"),
                     include_str!("../../upgrade/php-2.11.1-from-2.9.7/mariadb.json"),
+                    include_str!("../../upgrade/php-2.11.3/mariadb.json"),
+                    include_str!("../../upgrade/php-2.11.3-from-2.9.7/mariadb.json"),
                 ],
             ),
         };
@@ -1264,17 +1265,12 @@ mod tests {
             .execute("SET FOREIGN_KEY_CHECKS=1; ALTER TABLE workflow_tasks DROP KEY dw_workflow_tasks_poll")
             .await
             .unwrap();
-        let releases = match release {
-            None => 0,
-            Some("php-2.8.0") => 1,
-            Some("php-2.9.7") => 2,
-            Some("php-2.11.1") => 3,
-            Some(_) => 4,
-        };
+        let lineage = super::super::upgrade::layout_lineage(release.unwrap_or("frozen"));
+        assert_eq!(lineage.is_empty(), release.is_none(), "{release:?} is a recorded layout");
         // A replaced table can have inbound foreign keys (2.11.1's runs); they
         // name the table, so they hold again once it is recreated.
         connection.execute("SET FOREIGN_KEY_CHECKS=0").await.unwrap();
-        for delta in &deltas[..releases] {
+        for delta in lineage.into_iter().map(|index| deltas[index]) {
             let delta: Value = serde_json::from_str(delta).unwrap();
             for added in delta["add"].as_array().unwrap() {
                 let (table, ddl) = (added[0].as_str().unwrap(), added[1].as_str().unwrap());
@@ -1428,6 +1424,48 @@ mod tests {
             let runtime = crate::runtime::Runtime::open_mysql(db.options.clone(), "test-token".into()).await.unwrap();
             crate::runtime::runtime_credentials::assert_php_credentials_served(&runtime).await;
             runtime.close().await;
+            db.remove().await;
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an isolated MySQL/MariaDB create-database role"]
+    async fn qualification_takeover_converts_php_2113_and_native_opens_it() {
+        for release in ["php-2.11.3", "php-2.11.3-from-2.9.7"] {
+            let db = Database::new().await;
+            php_layout(&db, Some(release)).await;
+            registrations(&db).await;
+            let recorded = super::super::worker_sessions::incarnation_digest("0123456789abcdef0123456789abcdef");
+            let mut connection = db.connection().await;
+            for statement in [
+                format!("INSERT INTO workflow_worker_sessions(namespace,session_id,queue,status,lease_owner,lease_owner_incarnation,lease_expires_at,ttl_expires_at,created_at,updated_at) VALUES ('default','held','q','active','current','{recorded}','2030-01-01 00:00:00','2030-01-01 00:00:00','2026-10-20 09:00:00','2026-10-20 09:00:00')"),
+                "INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,exception_class,message,file,message_full,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kfail','01jrun0000000000000000000a','activity_execution','a','activity','RuntimeException','preview','','base64:ZnVsbA==','2026-10-26 10:00:00','2026-10-26 10:00:00')".to_owned(),
+                "INSERT INTO workflow_service_calls(id,namespace,endpoint_name,service_name,operation_name,caller_namespace,target_namespace,status,outcome,operation_mode,idempotency_key,idempotency_scope_hash,accepted_at,completed_at,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kcall','default','pay','billing','charge','default','default','completed','succeeded','async','order-1','0000000000000000000000000000000000000000000000000000000000000001','2026-10-26 10:00:00','2026-10-26 10:00:01','2026-10-26 10:00:00','2026-10-26 10:00:01')".to_owned(),
+                "INSERT INTO workflow_service_call_dispatches(service_call_id,state,dispatch_options,available_at,completed_at,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kcall','completed','{}','2026-10-26 10:00:00','2026-10-26 10:00:01','2026-10-26 10:00:00','2026-10-26 10:00:01')".to_owned(),
+            ] {
+                connection.execute(sqlx::AssertSqlSafe(statement)).await.unwrap();
+            }
+            connection.close().await.unwrap();
+            let fingerprint = backup_fingerprint(&db).await;
+            let report = takeover::take_over_mysql(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES)
+                .await
+                .unwrap();
+            assert_eq!(report["status"], "taken_over", "{report}");
+            assert_eq!(report["source_layout"], release);
+            assert_eq!(report["converted"]["session_holders_recorded"], 1, "{report}");
+            assert_eq!(report["converted"]["full_failure_messages_removed"], 1, "{report}");
+            assert_eq!(report["converted"]["service_call_dispatches_removed"], 1, "{report}");
+            converted(&db).await;
+            let mut connection = db.connection().await;
+            let holder: String = sqlx::query_scalar("SELECT incarnation FROM dw_worker_session_holders WHERE namespace='default' AND session_id='held'")
+                .fetch_one(&mut connection).await.unwrap();
+            assert_eq!(holder, recorded);
+            let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND (TABLE_NAME,COLUMN_NAME) IN (('workflow_failures','message_full'),('workflow_service_calls','idempotency_scope_hash'),('workflow_worker_sessions','lease_owner_incarnation'),('workflow_durable_streams','reclaim_at'))")
+                .fetch_one(&mut connection).await.unwrap();
+            let dispatches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='workflow_service_call_dispatches'")
+                .fetch_one(&mut connection).await.unwrap();
+            assert_eq!((left, dispatches), (0, 0), "{release}: PHP 2.11.3's additions are gone");
+            connection.close().await.unwrap();
             db.remove().await;
         }
     }
@@ -1596,14 +1634,16 @@ mod tests {
     #[ignore = "requires an isolated MySQL/MariaDB create-database role"]
     async fn qualification_takeover_killed_at_each_step_resumes_with_the_same_fingerprint() {
         use std::os::unix::process::ExitStatusExt;
-        for boundary in [
-            "before-marker-row",
-            "after-step-1",
-            "after-step-3",
-            "after-step-8",
+        for (release, boundary) in [
+            ("php-2.9.7", "before-marker-row"),
+            ("php-2.9.7", "after-step-1"),
+            ("php-2.9.7", "after-step-3"),
+            ("php-2.9.7", "after-step-8"),
+            // Killed before PHP 2.11.3's own step.
+            ("php-2.11.3", "after-step-9"),
         ] {
             let db = Database::new().await;
-            php_layout(&db, Some("php-2.9.7")).await;
+            php_layout(&db, Some(release)).await;
             registrations(&db).await;
             let fingerprint = backup_fingerprint(&db).await;
             let directory = tempfile::tempdir().unwrap();
@@ -1656,7 +1696,7 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(report["status"], "taken_over", "{boundary}: {report}");
-            assert_eq!(report["source_layout"], "php-2.9.7", "{boundary}");
+            assert_eq!(report["source_layout"], release, "{boundary}");
             converted(&db).await;
             db.remove().await;
         }

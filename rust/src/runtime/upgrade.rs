@@ -2,6 +2,7 @@
 pub mod external_reference;
 pub mod fingerprint;
 pub mod takeover;
+mod dispatch_scan;
 mod payload_scan;
 mod schedule_scan;
 mod storage_scan;
@@ -24,17 +25,54 @@ use tokio::time::{Instant, timeout, timeout_at};
 
 const BUDGET: Duration = Duration::from_secs(30);
 
-/// Published PHP layouts after the frozen one, oldest first. Each backend
-/// records one delta per layout, applied to the layout before it.
-pub(super) const SOURCE_LAYOUTS: [&str; 4] = ["php-2.8.0", "php-2.9.7", "php-2.11.1", "php-2.11.1-from-2.9.7"];
+/// Published PHP layouts after the frozen one, each with the layout its
+/// recorded delta applies to. A parent comes before its children. Each backend
+/// records one delta per layout, in this order.
+///
+/// A release can have several layouts: core migrations run in file order, so
+/// a database an older release created can order columns differently from a
+/// fresh one. Each such variant descends from the matching older variant.
+pub(super) const SOURCE_LAYOUTS: [(&str, &str); 6] = [
+    ("php-2.8.0", "frozen"),
+    ("php-2.9.7", "php-2.8.0"),
+    ("php-2.11.1", "php-2.9.7"),
+    ("php-2.11.1-from-2.9.7", "php-2.11.1"),
+    ("php-2.11.3", "php-2.11.1"),
+    ("php-2.11.3-from-2.9.7", "php-2.11.1-from-2.9.7"),
+];
+
+/// The number of recorded layouts after the frozen one.
+pub(super) const LAYOUTS: usize = SOURCE_LAYOUTS.len();
+
+/// The recorded layouts from the oldest ancestor down to `name`, as indexes
+/// into `SOURCE_LAYOUTS`; empty for the frozen layout or an unknown name.
+pub(super) fn layout_lineage(name: &str) -> Vec<usize> {
+    let mut lineage = Vec::new();
+    let mut current = name;
+    while let Some(index) = SOURCE_LAYOUTS.iter().position(|(layout, _)| *layout == current) {
+        lineage.insert(0, index);
+        current = SOURCE_LAYOUTS[index].1;
+    }
+    lineage
+}
+
+/// Whether `layout` (a recorded layout, with or without the MariaDB driver
+/// suffix) includes `release`'s schema changes: its lineage passes through
+/// that release or one of its variants.
+pub(super) fn has_release(layout: &str, release: &str) -> bool {
+    layout_lineage(layout.trim_end_matches("+mariadb-driver")).into_iter().any(|index| {
+        let name = SOURCE_LAYOUTS[index].0;
+        name == release || name.strip_prefix(release).is_some_and(|rest| rest.starts_with("-from-"))
+    })
+}
 
 /// Names the qualified layout `actual` matches exactly: the frozen layout, or
-/// one reached by applying the recorded deltas in order. Rows are compared in
+/// one reached by applying its lineage's recorded deltas. Rows are compared in
 /// `order`, so only presentation order, never a definition, is normalized.
 pub(super) fn source_layout<T, K: Ord>(
     actual: &[T],
     frozen: Vec<T>,
-    deltas: [&str; 4],
+    deltas: [&str; LAYOUTS],
     order: impl Fn(&T) -> K,
 ) -> Result<&'static str>
 where
@@ -46,15 +84,20 @@ where
         rows
     };
     let actual = sorted(actual);
-    let mut layout = sorted(&frozen);
-    if actual == layout {
+    let mut layouts = vec![sorted(&frozen)];
+    if actual == layouts[0] {
         return Ok("frozen");
     }
-    for (name, delta) in SOURCE_LAYOUTS.into_iter().zip(deltas) {
-        layout = sorted(&source_catalog_variant(&layout, delta)?);
+    for ((name, parent), delta) in SOURCE_LAYOUTS.into_iter().zip(deltas) {
+        let base = match SOURCE_LAYOUTS.iter().position(|(layout, _)| *layout == parent) {
+            Some(index) => &layouts[index + 1],
+            None => &layouts[0],
+        };
+        let layout = sorted(&source_catalog_variant(base, delta)?);
         if actual == layout {
             return Ok(name);
         }
+        layouts.push(layout);
     }
     Err(refuse(
         StatusCode::CONFLICT,
@@ -211,6 +254,7 @@ fn report(
     payload_inspection: Option<Value>,
     schedule_inspection: Value,
     storage_inspection: Value,
+    dispatch_inspection: Value,
 ) -> Result<Value> {
     let digest = Sha256::digest(serde_json::to_vec(catalog)?)
         .iter()
@@ -243,6 +287,10 @@ fn report(
         report["status"] = json!("unqualified");
     }
     report["storage_inspection"] = storage_inspection;
+    if dispatch_inspection["pending"] != 0 {
+        report["status"] = json!("unqualified");
+    }
+    report["service_call_dispatch_inspection"] = dispatch_inspection;
     Ok(report)
 }
 
@@ -417,6 +465,7 @@ pub(super) async fn sqlite_inventory(
     };
     let schedule_inspection = schedule_scan::inspect::<sqlx::Sqlite>(&mut *tx).await?;
     let storage_inspection = storage_scan::inspect::<sqlx::Sqlite>(&mut *tx).await?;
+    let dispatch_inspection = dispatch_scan::inspect::<sqlx::Sqlite>(&mut *tx, &counts).await?;
     report(
         "sqlite",
         &catalog,
@@ -426,6 +475,7 @@ pub(super) async fn sqlite_inventory(
         payload_inspection,
         schedule_inspection,
         storage_inspection,
+        dispatch_inspection,
     )
 }
 
@@ -690,6 +740,7 @@ pub(super) async fn mysql_inventory(
     };
     let schedule_inspection = schedule_scan::inspect::<sqlx::MySql>(&mut *tx).await?;
     let storage_inspection = storage_scan::inspect::<sqlx::MySql>(&mut *tx).await?;
+    let dispatch_inspection = dispatch_scan::inspect::<sqlx::MySql>(&mut *tx, &counts).await?;
     // MySQL's metadata is not an MVCC snapshot. Refuse a changed visible
     // catalog rather than joining counts to a different schema.
     if mysql_source_catalog(&mut *tx, fenced).await?.0 != catalog {
@@ -707,6 +758,7 @@ pub(super) async fn mysql_inventory(
         payload_inspection,
         schedule_inspection,
         storage_inspection,
+        dispatch_inspection,
     )
 }
 
@@ -775,6 +827,7 @@ pub(super) async fn postgres_inventory(
     };
     let schedule_inspection = schedule_scan::inspect::<sqlx::Postgres>(&mut *tx).await?;
     let storage_inspection = storage_scan::inspect::<sqlx::Postgres>(&mut *tx).await?;
+    let dispatch_inspection = dispatch_scan::inspect::<sqlx::Postgres>(&mut *tx, &counts).await?;
     report(
         "pgsql",
         &catalog,
@@ -784,6 +837,7 @@ pub(super) async fn postgres_inventory(
         payload_inspection,
         schedule_inspection,
         storage_inspection,
+        dispatch_inspection,
     )
 }
 
