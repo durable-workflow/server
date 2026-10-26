@@ -6,6 +6,7 @@ use App\Auth\Principal;
 use App\Http\Middleware\Authenticate;
 use App\Support\AvroPayloadEnvelopeResolver;
 use App\Support\ControlPlaneProtocol;
+use App\Support\ControlPlaneRequestContract;
 use App\Support\ControlPlaneResponseContract;
 use App\Support\ControlPlaneResultMapper;
 use App\Support\ExternalPayloadEnvelopeService;
@@ -750,7 +751,7 @@ class WorkflowController
             'input' => ['nullable', 'array'],
             'request_id' => ['nullable', 'string', 'max:255'],
             'wait_for' => ['nullable', 'string', 'in:accepted,completed'],
-            'wait_timeout_seconds' => ['nullable', 'integer', 'min:1'],
+            'wait_timeout_seconds' => ['nullable', 'integer', 'min:1', 'max:'.ControlPlaneRequestContract::UPDATE_WAIT_TIMEOUT_SECONDS_MAX],
         ]);
 
         $this->rejectLegacyUpdateFields($request);

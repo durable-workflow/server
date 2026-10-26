@@ -45,3 +45,55 @@ async fn updates_take_plain_input_and_return_at_acceptance() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
     assert_eq!(refused["errors"]["wait_policy"], json!(["The wait_policy field is no longer supported. Use wait_for."]));
 }
+
+// Server #775: a completion wait holds the request open, so the server bounds
+// the caller's wait_timeout_seconds and refuses a longer one before admission.
+#[tokio::test]
+async fn update_wait_timeout_is_bounded_before_admission() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    update_worker(&app, "update-worker").await;
+    let started = start(&app, "bounded-wait").await;
+    open_update_wait(&app, "update-worker").await;
+    let (status, refused) = request(&app, "POST", "/api/workflows/bounded-wait/update/set",
+        json!({"input":[5],"wait_for":"completed","wait_timeout_seconds":61})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["errors"]["wait_timeout_seconds"],
+        json!(["The wait timeout seconds field must not be greater than 60."]));
+    // The run-targeted alias applies the same rule before admission.
+    let run_path = format!("/api/workflows/bounded-wait/runs/{}/update/set", started["run_id"].as_str().unwrap());
+    let (status, refused) = request(&app, "POST", &run_path,
+        json!({"input":[5],"wait_for":"completed","wait_timeout_seconds":61})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["errors"]["wait_timeout_seconds"],
+        json!(["The wait timeout seconds field must not be greater than 60."]));
+    let accepted = |history: &Value| history.as_array().unwrap().iter().filter(|event| event["event_type"] == "UpdateAccepted").count();
+    assert_eq!(accepted(&run_history(&app, &started["workflow_id"], &started["run_id"]).await), 0, "refused before admission");
+    let (status, update) = request(&app, "POST", "/api/workflows/bounded-wait/update/set",
+        json!({"input":[5],"wait_for":"accepted","wait_timeout_seconds":60})).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{update}");
+    assert_eq!(accepted(&run_history(&app, &started["workflow_id"], &started["run_id"]).await), 1);
+    let (status, cluster) = request(&app, "GET", "/api/cluster/info", Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cluster["control_plane"]["request_contract"]["operations"]["update"]["fields"]["wait_timeout_seconds"],
+        json!({"minimum":1,"maximum":60}));
+}
+
+// Server #775: a service operation bound to a workflow update hands its wait
+// to the update admission. Native runs no service operation, so neither the
+// execute route nor the workflow-task command can carry a longer wait here.
+#[tokio::test]
+async fn service_operations_cannot_carry_an_update_wait_past_the_ceiling() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register(&app, "worker", json!(["echo"]), json!([])).await;
+    start(&app, "service-caller").await;
+    let task = poll(&app, "worker", "workflow").await;
+    let (status, refused) = finish_task(&app, &task, json!([{"type":"start_service_operation","endpoint_name":"billing",
+        "service_name":"approvals","operation_name":"approve","wait_for":"completed","wait_timeout_seconds":86400}])).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["reason"], "unsupported_workflow_command", "{refused}");
+    let (status, unserved) = request(&app, "POST", "/api/service-endpoints/billing/services/approvals/operations/approve/execute",
+        json!({"wait_timeout_seconds":61})).await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{unserved}");
+}

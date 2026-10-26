@@ -11,6 +11,7 @@ use App\Support\PayloadCodecContract;
 use App\Support\SearchAttributeValueValidator;
 use App\Support\ServiceCallAdmission;
 use App\Support\ServiceCallBoundary;
+use App\Support\ServiceOperationUpdateWait;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
@@ -655,6 +656,9 @@ class ServiceCatalogController
                 'in:reject_duplicate,return_existing_active',
             ],
         ]);
+
+        // An update-bound operation hands its wait to the update admission.
+        ServiceOperationUpdateWait::assertWithinCeiling($operation, $validated['wait_timeout_seconds'] ?? null);
 
         try {
             $validated['payload_codec'] = PayloadCodecContract::canonicalize(
