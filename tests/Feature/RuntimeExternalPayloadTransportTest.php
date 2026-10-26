@@ -624,7 +624,7 @@ class RuntimeExternalPayloadTransportTest extends TestCase
             ->assertJsonPath('retryable', false);
 
         $this->assertDatabaseMissing('workflow_instances', [
-            'workflow_id' => 'oversized-runtime-reference',
+            'id' => 'oversized-runtime-reference',
         ]);
         $this->assertNull($row->fresh()?->last_fetched_at);
     }
@@ -676,7 +676,7 @@ class RuntimeExternalPayloadTransportTest extends TestCase
             ])
             ->assertStatus(422)
             ->assertJsonPath('reason', 'external_payload_integrity_mismatch');
-        $this->assertDatabaseMissing('workflow_instances', ['workflow_id' => 'tampered-runtime-reference']);
+        $this->assertDatabaseMissing('workflow_instances', ['id' => 'tampered-runtime-reference']);
 
         $this->withHeaders($this->controlHeaders())
             ->postJson('/api/workflows', [
