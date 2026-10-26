@@ -942,9 +942,18 @@ October 21, Waterline reads:
   - a batch whose fresh items would pass the cap is refused whole, so
     nothing of it is written (published 2.11.1 committed the items before the
     cap; the fixture bounds that answer as a published defect);
-  - a closed stream past its retention reads as not found;
-  - a bounded pass reclaims expired streams from the worker-heartbeat
-    retention pass and from a general `POST /api/system/retention/pass`.
+  - a closed stream past its retention reads as not found, append
+    included, and keeps its row until its run is pruned, so the name is
+    never opened again;
+  - each deadline is a row in the native-owned `dw_stream_reclaims`
+    (schema 6), indexed `(namespace, reclaim_at, stream_id)`. A bounded pass
+    reads due streams from that index, from the worker-heartbeat retention
+    pass and from a general `POST /api/system/retention/pass`. It deletes
+    items in batches under the transition lock and stops blocked when
+    items hold external references, which native does not delete yet;
+  - run retention deletes a pruned run's streams unless they hold external
+    references, and an append to a run whose details are pruned answers
+    404 `stream_not_found`.
   A continued run keeps its streams, as in PHP. Native differs in three
   places, documented in `rust/src/runtime/workflow_streams.rs`:
   - a batch whose items hold no item fields gets 400, not PHP's 500;
