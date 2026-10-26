@@ -20,6 +20,8 @@ import {checkWorkerSessionActivities} from './worker-session-activities-contract
 import {checkActivityCancellationAcknowledgement} from './activity-cancellation-ack-contract.mjs';
 import {checkCancellationScopes} from './cancellation-scopes-contract.mjs';
 import {checkServiceCatalog} from './service-catalog-contract.mjs';
+import {checkWorkflowImport} from './workflow-import-contract.mjs';
+import {checkWaterlineImport} from './waterline-import-contract.mjs';
 import {checkSystemMetrics} from './system-metrics-contract.mjs';
 import {checkOperatorDashboardTypes} from './operator-dashboard-types-contract.mjs';
 import {checkPrometheusMetrics} from './prometheus-metrics-contract.mjs';
@@ -167,6 +169,8 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ? checkActivityCancellationAcknowledgement(fixture, observation, workflowId) : null;
   const cancellationScopes = fixture.cancellation_scopes ? checkCancellationScopes(fixture, observation, workflowId) : null;
   const serviceCatalog = fixture.service_catalog ? checkServiceCatalog(fixture, observation, workflowId) : null;
+  const workflowImport = fixture.workflow_import ? checkWorkflowImport(fixture, observation, workflowId) : null;
+  const waterlineImport = fixture.waterline_import ? checkWaterlineImport(fixture, observation, workflowId) : null;
   const systemMetrics = fixture.system_metrics ? checkSystemMetrics(fixture, observation, workflowId) : null;
   const operatorDashboardTypes = fixture.operator_dashboard_types ? checkOperatorDashboardTypes(fixture, observation, workflowId) : null;
   const prometheusMetrics = fixture.prometheus_metrics ? checkPrometheusMetrics(fixture, observation, workflowId) : null;
@@ -730,6 +734,8 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(activityCancellationAcknowledgement ? {activity_cancellation_acknowledgement: activityCancellationAcknowledgement} : {}),
     ...(cancellationScopes ? {cancellation_scopes: cancellationScopes} : {}),
     ...(serviceCatalog ? {service_catalog: serviceCatalog} : {}),
+    ...(workflowImport ? {workflow_import: workflowImport} : {}),
+    ...(waterlineImport ? {waterline_import: waterlineImport} : {}),
     ...(systemMetrics ? {system_metrics: systemMetrics} : {}),
     ...(operatorDashboardTypes ? {operator_dashboard_types: operatorDashboardTypes} : {}),
     ...(prometheusMetrics ? {prometheus_metrics: prometheusMetrics} : {}),

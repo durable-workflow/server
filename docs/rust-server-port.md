@@ -82,13 +82,17 @@ Updated October 24, 2026.
     ([#737](https://github.com/durable-workflow/server/issues/737)).
 
   No expectation is edited to make native pass.
-- **Parity surface.** Native serves 141 of the 175 API route methods in
+- **Parity surface.** Native serves 143 of the 175 API route methods in
   published 2.11.1's route table, with message streams, update validation,
-  activity cancellation acknowledgement, worker sessions and workflow-task
-  cancellation scopes. An execution test sends each one through the native
-  router, and the ones still answering `501 rust_capability_not_implemented`
-  must match
+  activity cancellation acknowledgement, worker sessions, workflow-task
+  cancellation scopes, and embedded v2 and Waterline v1 workflow import. An
+  execution test sends each one through the native router, and the ones
+  still answering `501 rust_capability_not_implemented` must match
   [`unserved-php-routes.v2.11.1.txt`](../rust/tests/fixtures/unserved-php-routes.v2.11.1.txt).
+  Unlike published PHP, native's embedded v2 import refuses a bundle whose
+  rows reference rows outside it, links only runs of one namespace, and reads
+  the signing key only from the request body
+  ([#765](https://github.com/durable-workflow/server/issues/765)).
 - **Next action.** Land the items above in order, keep porting the unserved
   routes fixture first, and package the native binary into the server image.
 
@@ -133,13 +137,16 @@ any other unknown path or method answers PHP's own 404 or 405
   `repair-pass` fixture; a recovery native does not perform yet is
   reported as its candidate's failure, with 207.
 - **Worker protocol features.**
-  - Worker sessions.
   - Local activities (prepare, checkpoint, recover, heartbeat, control,
     outcome and cancellation acknowledgement).
   - Cancellation scope checkpoints. (Open, prepare and deliver are served,
     with the `cancellation-scopes` fixture.)
-  - Activity cancellation acknowledgement. (Lease renewal, from Server 2.11,
-    is served: `POST /api/worker/activity-tasks/{task}/renew-lease`, with the
+  - (Worker sessions are served: create, heartbeat, close, list and detail,
+    with the `worker-sessions` and `worker-session-activities` fixtures.)
+  - (Activity cancellation acknowledgement is served:
+    `POST /api/worker/activity-tasks/{task}/acknowledge-cancellation`, with the
+    `activity-cancellation-acknowledgement` fixture. So is lease renewal, from
+    Server 2.11: `POST /api/worker/activity-tasks/{task}/renew-lease`, with the
     `activity_lease_renewal` capability and the `activity-lease-renewal` fixture.)
   - (Synchronous update validation is served: the validation task poll,
     approve and reject routes, the multiplexed workflow poll with
@@ -147,8 +154,6 @@ any other unknown path or method answers PHP's own 404 or 405
     `update-validation` fixture. Native does not replay a validation task by
     `poll_request_id` or bind a request id to its task kinds; see
     `docs/rust-server-port-checkpoints/2026-10-23-update-validation.md`.)
-- **Run operations.**
-  - Imports from embedded v2 and Waterline v1.
 - **Other families.**
   - Message streams are served
     ([checkpoint](rust-server-port-checkpoints/2026-10-23-message-streams.md)),
@@ -228,9 +233,28 @@ contract fixture before its correction.
   batch size, and still caps parallel groups at 100 members and a run at 64
   updates over its lifetime. #612 tracks the rest
   ([checkpoint](rust-server-port-checkpoints/2026-10-23-structural-limits.md)).
-- **Environment settings.** Of PHP's 166 contract settings, native honors
-  43 and ignores 57 that change nothing it serves. It refuses to start on a
-  non-default value of the other 66
+- **Waterline v1 projections, ahead of published PHP.**
+  - Native refuses a message stream append to a projection with
+    `409 v1_projection_read_only`, at the route before the body is read and
+    again under the store's lock. Published 2.11.1 accepts it and creates a
+    signal and a workflow task
+    ([#769](https://github.com/durable-workflow/server/issues/769)).
+  - Native refuses a projection that would write more history events or
+    bytes than one transaction may (`DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE`,
+    `_BYTES`) with `409 v1_projection_too_large`, before reading or writing
+    any row. The count is checked from the source's row counts before any
+    event is built; then each event is built and measured in turn, and the
+    first event past the byte limit stops the build. Published 2.11.1 has no limit
+    ([#770](https://github.com/durable-workflow/server/issues/770)).
+  - Operator metrics, the health snapshot and the backend capabilities
+    publish the active `history_transaction_size` and
+    `history_transaction_bytes` (0 when disabled), as Workflow #934's
+    `StructuralLimits::snapshot()` does.
+- **Environment settings.** Of PHP's 164 contract settings, native honors
+  49 and ignores 51 that change nothing it serves. It also honors
+  `DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES`, which the Workflow package reads
+  and PHP's contract does not list yet. It refuses to start on a
+  non-default value of the other 64
   ([checkpoint](rust-server-port-checkpoints/2026-10-22-environment-contract.md)).
   Several of those are cheap to honor: repair timing and the multi-node
   declaration.

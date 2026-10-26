@@ -26,7 +26,7 @@ const PHP_BASE64: GeneralPurpose = GeneralPurpose::new(
 
 /// Decodes a blob as published PHP does: ASCII whitespace is skipped, and
 /// any padding must be exactly what the final quantum needs.
-fn php_base64(blob: &str) -> Result<Vec<u8>, base64::DecodeError> {
+pub(crate) fn php_base64(blob: &str) -> Result<Vec<u8>, base64::DecodeError> {
     let compact: String = blob.chars().filter(|c| !matches!(c, ' ' | '\t' | '\n' | '\r')).collect();
     let unpadded = compact.trim_end_matches('=');
     let padding = compact.len() - unpadded.len();
