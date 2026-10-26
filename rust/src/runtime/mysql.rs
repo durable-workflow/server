@@ -1357,6 +1357,25 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires an isolated MySQL/MariaDB create-database role"]
+    async fn qualification_takeover_keeps_php_catalog_rows_that_native_then_serves() {
+        let db = Database::new().await;
+        php_layout(&db, Some("php-2.9.7")).await;
+        let mut connection = db.connection().await;
+        for statement in crate::runtime::service_endpoints::PHP_CATALOG_ROWS {
+            connection.execute(statement).await.unwrap();
+        }
+        connection.close().await.unwrap();
+        let fingerprint = backup_fingerprint(&db).await;
+        let report = takeover::take_over_mysql(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES).await.unwrap();
+        assert_eq!(report["status"], "taken_over", "{report}");
+        let runtime = crate::runtime::Runtime::open_mysql(db.options.clone(), "test-token".into()).await.unwrap();
+        crate::runtime::service_endpoints::assert_php_catalog_served(&runtime).await;
+        runtime.close().await;
+        db.remove().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an isolated MySQL/MariaDB create-database role"]
     async fn qualification_takeover_converts_the_mariadb_driver_layout() {
         let db = Database::new().await;
         if let Flavor::MySql = php_layout(&db, Some("php-2.9.7")).await {

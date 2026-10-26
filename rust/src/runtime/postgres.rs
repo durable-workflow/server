@@ -931,6 +931,24 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a disposable PostgreSQL; run the qualification_ tests explicitly"]
+    async fn qualification_takeover_keeps_php_catalog_rows_that_native_then_serves() {
+        let db = Database::new().await;
+        let mut connection = php_297(&db).await;
+        for statement in crate::runtime::service_endpoints::PHP_CATALOG_ROWS {
+            sqlx::raw_sql(statement).execute(&mut connection).await.unwrap();
+        }
+        connection.close().await.unwrap();
+        let fingerprint = backup_fingerprint(&db).await;
+        let report = takeover::take_over_postgres(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES).await.unwrap();
+        assert_eq!(report["status"], "taken_over", "{report}");
+        let runtime = crate::runtime::Runtime::open_postgres(db.options.clone(), "test-token".into()).await.unwrap();
+        crate::runtime::service_endpoints::assert_php_catalog_served(&runtime).await;
+        runtime.close().await;
+        db.remove().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable PostgreSQL; run the qualification_ tests explicitly"]
     async fn qualification_takeover_of_the_frozen_layout_adds_only_native_relations() {
         let db = Database::new().await;
         let frozen = include_str!("../../migrations/postgres/0003_full_schema.sql");
