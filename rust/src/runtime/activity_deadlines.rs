@@ -312,8 +312,10 @@ where
         let (Some(task), Some(execution_id)) = (task, execution_id) else {
             return Ok(Skipped("activity_execution_missing"));
         };
-        let Some(activity) = Self::query("SELECT * FROM activity_executions WHERE id=$1")
+        // Only the task's own run's activity (Server #765).
+        let Some(activity) = Self::query("SELECT * FROM activity_executions WHERE id=$1 AND workflow_run_id=$2")
             .bind(&execution_id)
+            .bind(DB::string(&task, "workflow_run_id")?)
             .fetch_optional(&mut **tx)
             .await?
         else {

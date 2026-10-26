@@ -270,7 +270,7 @@ where
             "projections": self.projection_metrics(now).await?,
             "schedules": self.schedule_metrics(now).await?,
             "workers": self.worker_metrics().await?,
-            "backend": backend_capabilities(now, DB::PHP_CONNECTION),
+            "backend": backend_capabilities(now, DB::PHP_CONNECTION, &config.structural, self.memo_size_limit),
             "structural_limits": structural_limits(DB::PHP_CONNECTION, &config.structural, self.memo_size_limit),
             "update_wait": {"completion_timeout_seconds": 10, "poll_interval_milliseconds": 50},
             "repair_policy": repair_policy(),
@@ -1491,7 +1491,8 @@ fn structural_limits(connection: &str, limits: &super::StructuralLimits, memo: O
         "payload_size_bytes": shown(limits.payload_bytes),
         "memo_size_bytes": shown(memo),
         "search_attribute_size_bytes": 40960,
-        "history_transaction_size": 5000,
+        "history_transaction_size": shown(limits.history_events),
+        "history_transaction_bytes": shown(limits.history_bytes),
         "warning_threshold_percent": 80,
     });
     let sqlite = connection == "sqlite";
@@ -1508,9 +1509,9 @@ fn structural_limits(connection: &str, limits: &super::StructuralLimits, memo: O
 }
 
 /// What this runtime needs from its backends, in PHP's capability shape.
-fn backend_capabilities(now: DateTime<Utc>, connection: &str) -> Value {
-    // Only the backend's issues are reported here, which no ceiling changes.
-    let limits = structural_limits(connection, &super::StructuralLimits::default(), None);
+fn backend_capabilities(now: DateTime<Utc>, connection: &str, structural: &super::StructuralLimits, memo: Option<usize>) -> Value {
+    // The active ceilings, with the backend's adjustments and issues.
+    let limits = structural_limits(connection, structural, memo);
     let issues = limits["issues"].clone();
     let severity = if issues.as_array().is_some_and(|issues| !issues.is_empty()) {
         "info"

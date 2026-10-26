@@ -241,7 +241,7 @@ jobs:
           docker run --detach \
             --name "dw-server-backup-mysql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
             --network "dw-server-feature-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
-            --memory 512m --memory-swap 512m \
+            --memory 1g --memory-swap 1g \
             --env MYSQL_ALLOW_EMPTY_PASSWORD=yes --env MYSQL_ROOT_HOST=% \
             --health-cmd='mysqladmin --silent --host=127.0.0.1 ping' \
             --health-interval=1s --health-start-period=20s --health-retries=30 \
@@ -343,6 +343,17 @@ jobs:
           docker rm -f "${DW_FIRST_RUN_SCOPE}-server" "${DW_FIRST_RUN_SCOPE}-bootstrap" >/dev/null 2>&1 || true
           docker volume rm -f "${DW_FIRST_RUN_SCOPE}-database" >/dev/null 2>&1 || true
           docker image rm durable-workflow-server-context-candidate >/dev/null 2>&1 || true
+
+      # The service containers stay until the cleanup below, so a failed
+      # suite records whether one was OOM-killed or exited, and its last log.
+      - name: Show test service state after a failure
+        if: failure()
+        run: |
+          for service in s3 backup-mysql backup-pgsql; do
+            name="dw-server-${service}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"
+            docker inspect --format "${name}: status={{.State.Status}} oom_killed={{.State.OOMKilled}} exit={{.State.ExitCode}} finished={{.State.FinishedAt}} error={{.State.Error}}" "$name" || true
+            docker logs --tail 40 "$name" 2>&1 || true
+          done
 
       - name: Clean up test services
         if: always()

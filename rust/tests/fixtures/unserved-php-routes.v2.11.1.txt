@@ -32,7 +32,5 @@ POST /api/worker/workflow-tasks/{taskId}/local-activities/{attemptId}/acknowledg
 POST /api/worker/workflow-tasks/{taskId}/local-activities/{attemptId}/control
 POST /api/worker/workflow-tasks/{taskId}/local-activities/{attemptId}/heartbeat
 POST /api/worker/workflow-tasks/{taskId}/local-activities/{attemptId}/outcome
-POST /api/workflows/import/embedded-v2
-POST /api/workflows/import/waterline-v1
 POST /api/workflows/{workflowId}/runs/{runId}/streams/{streamName}/close
 POST /api/workflows/{workflowId}/runs/{runId}/streams/{streamName}/items
