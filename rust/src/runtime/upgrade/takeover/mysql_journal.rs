@@ -316,12 +316,15 @@ async fn perform(connection: &mut MySqlConnection, run: &mut Run<'_>, step: i64)
             // Rows, unlike DDL, commit with the step that records them.
             let mut tx = connection.begin().await?;
             let (copied, created) = adopt_incarnations::<MySql>(&mut tx, php_incarnations).await?;
+            let holders = super::adopt_session_holders::<MySql>(&mut tx).await?;
             advance(&mut *tx, run, step).await?;
             tx.commit().await?;
             run.converted
                 .insert("incarnations_copied".into(), json!(copied));
             run.converted
                 .insert("incarnations_created".into(), json!(created));
+            run.converted
+                .insert("session_holders_recorded".into(), json!(holders));
             return Ok(());
         }
         4 => {

@@ -1218,6 +1218,34 @@ async fn takeover_keeps_php_search_attribute_definitions_that_native_then_lists(
     runtime.close().await;
 }
 
+/// An active PHP worker session keeps its holder: takeover records the lease
+/// owner's current registration incarnation, so native reads the session as
+/// still held rather than orphaning it as held by a replaced registration.
+#[tokio::test]
+async fn takeover_keeps_php_worker_sessions_held_by_their_current_registration() {
+    let (_directory, path) = php_release_layout(&[PHP_280_CHANGES, TRACE_CARRIERS, QUEUE_DELIVERY]).await;
+    let at = |offset: i64| (chrono::Utc::now() + chrono::Duration::seconds(offset)).format("%Y-%m-%d %H:%M:%S").to_string();
+    let statements = [
+        format!("INSERT INTO workflow_worker_registrations(worker_id,namespace,task_queue,runtime,registration_token,status,last_heartbeat_at,created_at,updated_at) VALUES ('worker-a','default','q','php','0123456789abcdef0123456789abcdef','active','{}','{}','{}')", at(0), at(-60), at(0)),
+        format!("INSERT INTO workflow_worker_registration_incarnations VALUES ('0123456789abcdef0123456789abcdef','default','worker-a','active',0,NULL,'{}','{}')", at(-60), at(-60)),
+        format!("INSERT INTO workflow_worker_sessions(namespace,session_id,queue,status,lease_owner,lease_expires_at,ttl_expires_at,last_heartbeat_at,created_at,updated_at) VALUES ('default','held','q','active','worker-a','{}','{}','{}','{}','{}')", at(600), at(1800), at(-5), at(-60), at(-5)),
+        format!("INSERT INTO workflow_worker_sessions(namespace,session_id,queue,status,closed_at,created_at,updated_at) VALUES ('default','done','q','closed','{}','{}','{}')", at(-30), at(-120), at(-30)),
+    ];
+    for statement in &statements {
+        mutate(&path, Box::leak(statement.clone().into_boxed_str())).await;
+    }
+    let fingerprint = backup_fingerprint(&path).await;
+    let report = takeover::take_over_sqlite(&path, &fingerprint, &queue_config()).await.unwrap();
+    assert_eq!(report["status"], "taken_over", "{report}");
+    assert_eq!(report["converted"]["session_holders_recorded"], 1, "{report}");
+    let runtime = crate::runtime::Runtime::open(&path, "test-token".into()).await.unwrap();
+    let held = runtime.show_worker_session("held").await.unwrap();
+    assert_eq!((held["session"]["status"].clone(), held["session"]["failure_reason"].clone()), (json!("active"), Value::Null), "{held}");
+    let done = runtime.show_worker_session("done").await.unwrap();
+    assert_eq!(done["session"]["status"], "closed", "{done}");
+    runtime.close().await;
+}
+
 /// The frozen layout in PHP Server's default WAL mode, copied while its
 /// writer was still open: one committed row is only in the WAL, as a crashed
 /// PHP would leave it.

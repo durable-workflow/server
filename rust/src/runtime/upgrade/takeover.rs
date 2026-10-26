@@ -221,7 +221,7 @@ fn report(backend: &str, layout: &str, digest: &Value, inventory: &Value, conver
 /// Published PHP features native does not implement yet. A source holding any
 /// of their rows is refused, rather than taken over without them. Derived
 /// projections and PHP's own queue and poll bookkeeping are left in place.
-const UNSUPPORTED_FEATURES: [(&str, &[&str]); 4] = [
+const UNSUPPORTED_FEATURES: [(&str, &[&str]); 3] = [
     ("upgrade_source_runtime_credentials_unsupported", &["runtime_credentials"]),
     (
         "upgrade_source_message_streams_unsupported",
@@ -234,7 +234,6 @@ const UNSUPPORTED_FEATURES: [(&str, &[&str]); 4] = [
         ],
     ),
     ("upgrade_source_update_validation_unsupported", &["workflow_update_validation_tasks"]),
-    ("upgrade_source_worker_sessions_unsupported", &["workflow_worker_sessions"]),
 ];
 
 /// Takeover needs every inspection result it relies on, and refuses what
@@ -370,6 +369,7 @@ where
     let php_incarnations = php_incarnations(layout)?;
     service_calls_absent::<DB>(tx).await?;
     let (copied, created) = adopt_incarnations::<DB>(tx, php_incarnations).await?;
+    let holders = adopt_session_holders::<DB>(tx).await?;
     if php_incarnations {
         sqlx::raw_sql(
             "DROP TABLE workflow_worker_registration_incarnations; \
@@ -408,6 +408,7 @@ where
     };
     Ok(json!({
         "incarnations_copied":copied, "incarnations_created":created,
+        "session_holders_recorded":holders,
         "queue_delivery_references_removed":delivery_references,
         "observability_contexts_removed":observability_contexts
     }))
@@ -422,6 +423,40 @@ pub(super) const OBSERVABILITY_CONTEXTS: [(&str, &str); 3] = [
 
 const DELIVERY_REFERENCES: &str =
     "SELECT COUNT(*) AS n FROM workflow_tasks WHERE queue_delivery_reference IS NOT NULL";
+
+/// Records each active PHP worker session's holder as native records one:
+/// the lease owner's current registration incarnation, which native compares
+/// on every read. Without it native would read the session as held by a
+/// replaced registration and orphan it. Returns how many were recorded.
+pub(super) async fn adopt_session_holders<DB: Backend>(tx: &mut DB::Connection) -> Result<usize>
+where
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+    for<'q> String: Encode<'q, DB> + Type<DB>,
+{
+    // Newest active incarnation first, as native's current-token read picks.
+    let rows = query::<DB>("SELECT s.namespace,s.session_id,i.token FROM workflow_worker_sessions s JOIN dw_worker_registration_incarnations i ON i.namespace=s.namespace AND i.worker_id=s.lease_owner AND i.status='active' WHERE s.status='active' AND s.lease_owner IS NOT NULL ORDER BY s.namespace,s.session_id,i.created_at DESC")
+        .fetch_all(&mut *tx)
+        .await?;
+    let now = super::super::store::now();
+    let mut recorded = std::collections::BTreeSet::new();
+    for row in &rows {
+        let key = (DB::string(row, "namespace")?, DB::string(row, "session_id")?);
+        if recorded.contains(&key) {
+            continue;
+        }
+        let incarnation = super::super::worker_sessions::incarnation_digest(&DB::string(row, "token")?);
+        query::<DB>("INSERT INTO dw_worker_session_holders(namespace,session_id,incarnation,updated_at) VALUES ($1,$2,$3,$4)")
+            .bind(key.0.clone())
+            .bind(key.1.clone())
+            .bind(incarnation)
+            .bind(DB::bind_time(now))
+            .execute(&mut *tx)
+            .await?;
+        recorded.insert(key);
+    }
+    Ok(recorded.len())
+}
 
 /// Gives every registration the incarnation native expects. PHP's own
 /// incarnations and tokens are copied, so a running SDK worker's fenced
