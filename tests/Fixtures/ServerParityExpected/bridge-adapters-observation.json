@@ -1,0 +1,449 @@
+{
+  "applicable": true,
+  "namespace": "pr1-bridge-adapters-bra",
+  "bad_adapter": {
+    "status": 422,
+    "response": {
+      "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+      "version": 1,
+      "adapter": "bad adapter!",
+      "accepted": false,
+      "outcome": "rejected",
+      "reason": "unsupported_routing",
+      "message": "Bridge adapter route is unsupported."
+    }
+  },
+  "malformed": {
+    "status": 422,
+    "response": {
+      "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+      "version": 1,
+      "adapter": "acme.crm:v1",
+      "accepted": false,
+      "outcome": "rejected",
+      "reason": "malformed_payload",
+      "message": "Bridge event payload is malformed.",
+      "errors": {
+        "action": [
+          "The action field must be a string."
+        ],
+        "idempotency_key": [
+          "The idempotency key field is required."
+        ],
+        "target": [
+          "The target field must be an array."
+        ]
+      }
+    }
+  },
+  "unsupported_action": {
+    "status": 422,
+    "response": {
+      "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+      "version": 1,
+      "adapter": "acme.crm:v1",
+      "action": "cancel_workflow",
+      "accepted": false,
+      "outcome": "rejected",
+      "reason": "unsupported_action",
+      "idempotency_key": "k-0",
+      "message": "Bridge action is unsupported.",
+      "target": {
+        "workflow_id": "pr1-bridge-adapters-bra-order"
+      },
+      "correlation": {
+        "trace": "λ-1"
+      }
+    }
+  },
+  "start_bad_target": {
+    "status": 422,
+    "response": {
+      "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+      "version": 1,
+      "adapter": "acme.crm:v1",
+      "action": "start_workflow",
+      "accepted": false,
+      "outcome": "rejected",
+      "reason": "malformed_payload",
+      "idempotency_key": "k-1",
+      "message": "Bridge start target is malformed.",
+      "errors": {
+        "workflow_id": [
+          "The workflow id field format is invalid."
+        ],
+        "duplicate_policy": [
+          "The selected duplicate policy is invalid."
+        ]
+      },
+      "target": {
+        "workflow_id": "bad id!",
+        "workflow_type": "parity.v1.bridge"
+      }
+    }
+  },
+  "start_unknown_type": {
+    "status": 202,
+    "response": {
+      "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+      "version": 1,
+      "adapter": "acme.crm:v1",
+      "action": "start_workflow",
+      "accepted": true,
+      "outcome": "accepted",
+      "idempotency_key": "pr1-bridge-adapters-k-2",
+      "target": {
+        "workflow_id": "{derived-k-2}",
+        "workflow_type": "parity.v1.unconfigured"
+      },
+      "workflow_id": "{derived-k-2}",
+      "run_id": "run-1",
+      "workflow_type": "parity.v1.unconfigured",
+      "control_plane_outcome": "started_new"
+    }
+  },
+  "start_other_type": {
+    "status": 422,
+    "response": {
+      "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+      "version": 1,
+      "adapter": "acme.crm:v1",
+      "action": "start_workflow",
+      "accepted": false,
+      "outcome": "rejected",
+      "reason": "unknown_target",
+      "idempotency_key": "k-6",
+      "message": "Workflow instance [pr1-bridge-adapters] is reserved for durable type [parity.v1.echo] and cannot be reused for [parity.v1.bridge].",
+      "target": {
+        "workflow_id": "pr1-bridge-adapters",
+        "workflow_type": "parity.v1.bridge",
+        "task_queue": "pr1-bridge-adapters-bra-queue"
+      }
+    }
+  },
+  "start_other_namespace": {
+    "status": 422,
+    "response": {
+      "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+      "version": 1,
+      "adapter": "acme.crm:v1",
+      "action": "start_workflow",
+      "accepted": false,
+      "outcome": "rejected",
+      "reason": "unknown_target",
+      "idempotency_key": "k-7",
+      "message": "Workflow instance [pr1-bridge-adapters] cannot be reused with a different namespace.",
+      "target": {
+        "workflow_id": "pr1-bridge-adapters",
+        "workflow_type": "parity.v1.echo",
+        "task_queue": "pr1-bridge-adapters-bra-queue"
+      }
+    }
+  },
+  "start": {
+    "status": 202,
+    "response": {
+      "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+      "version": 1,
+      "adapter": "acme.crm:v1",
+      "action": "start_workflow",
+      "accepted": true,
+      "outcome": "accepted",
+      "idempotency_key": "k-3",
+      "target": {
+        "workflow_id": "pr1-bridge-adapters-bra-order",
+        "workflow_type": "parity.v1.bridge",
+        "task_queue": "pr1-bridge-adapters-bra-queue",
+        "business_key": "order-1"
+      },
+      "correlation": {
+        "trace": "λ-1"
+      },
+      "workflow_id": "pr1-bridge-adapters-bra-order",
+      "run_id": "run-2",
+      "workflow_type": "parity.v1.bridge",
+      "control_plane_outcome": "started_new"
+    }
+  },
+  "start_again": {
+    "status": 200,
+    "response": {
+      "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+      "version": 1,
+      "adapter": "acme.crm:v1",
+      "action": "start_workflow",
+      "accepted": false,
+      "outcome": "duplicate",
+      "reason": "duplicate_start",
+      "idempotency_key": "k-4",
+      "target": {
+        "workflow_id": "pr1-bridge-adapters-bra-order",
+        "workflow_type": "parity.v1.bridge",
+        "task_queue": "pr1-bridge-adapters-bra-queue"
+      },
+      "workflow_id": "pr1-bridge-adapters-bra-order",
+      "run_id": "run-2",
+      "workflow_type": "parity.v1.bridge",
+      "control_plane_outcome": "returned_existing_active"
+    }
+  },
+  "start_reject_duplicate": {
+    "status": 422,
+    "response": {
+      "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+      "version": 1,
+      "adapter": "acme.crm:v1",
+      "action": "start_workflow",
+      "accepted": false,
+      "outcome": "rejected",
+      "reason": "instance_already_started",
+      "idempotency_key": "k-5",
+      "target": {
+        "workflow_id": "pr1-bridge-adapters-bra-order",
+        "workflow_type": "parity.v1.bridge",
+        "task_queue": "pr1-bridge-adapters-bra-queue"
+      },
+      "workflow_id": "pr1-bridge-adapters-bra-order",
+      "run_id": "run-2",
+      "workflow_type": "parity.v1.bridge",
+      "rejection_reason": "instance_already_started",
+      "control_plane_outcome": "rejected_duplicate"
+    }
+  },
+  "start_derived": {
+    "status": 202,
+    "response": {
+      "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+      "version": 1,
+      "adapter": "acme.crm:v1",
+      "action": "start_workflow",
+      "accepted": true,
+      "outcome": "accepted",
+      "idempotency_key": "pr1-bridge-adapters-derive-λ",
+      "target": {
+        "workflow_id": "{derived-derive-λ}",
+        "workflow_type": "parity.v1.bridge",
+        "task_queue": "pr1-bridge-adapters-bra-queue"
+      },
+      "workflow_id": "{derived-derive-λ}",
+      "run_id": "run-3",
+      "workflow_type": "parity.v1.bridge",
+      "control_plane_outcome": "started_new"
+    }
+  },
+  "idled": 200,
+  "signal_unknown": {
+    "status": 422,
+    "response": {
+      "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+      "version": 1,
+      "adapter": "acme.crm:v1",
+      "action": "signal_workflow",
+      "accepted": false,
+      "outcome": "rejected",
+      "reason": "unknown_target",
+      "idempotency_key": "s-0",
+      "target": {
+        "workflow_id": "pr1-bridge-adapters-bra-missing",
+        "signal_name": "ping"
+      }
+    }
+  },
+  "signal_bad_target": {
+    "status": 422,
+    "response": {
+      "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+      "version": 1,
+      "adapter": "acme.crm:v1",
+      "action": "signal_workflow",
+      "accepted": false,
+      "outcome": "rejected",
+      "reason": "malformed_payload",
+      "idempotency_key": "s-1",
+      "message": "Bridge signal target is malformed.",
+      "errors": {
+        "signal_name": [
+          "The signal name field is required."
+        ]
+      },
+      "target": {
+        "workflow_id": "pr1-bridge-adapters-bra-order"
+      }
+    }
+  },
+  "signal": {
+    "status": 202,
+    "response": {
+      "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+      "version": 1,
+      "adapter": "acme.crm:v1",
+      "action": "signal_workflow",
+      "accepted": true,
+      "outcome": "accepted",
+      "idempotency_key": "s-2",
+      "target": {
+        "workflow_id": "pr1-bridge-adapters-bra-order",
+        "signal_name": "ping"
+      },
+      "correlation": {
+        "trace": "λ-1"
+      },
+      "workflow_id": "pr1-bridge-adapters-bra-order",
+      "run_id": "run-2",
+      "control_plane_outcome": "signal_received"
+    }
+  },
+  "signal_again": {
+    "status": 200,
+    "response": {
+      "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+      "version": 1,
+      "adapter": "acme.crm:v1",
+      "action": "signal_workflow",
+      "accepted": false,
+      "outcome": "duplicate",
+      "idempotency_key": "s-2",
+      "target": {
+        "workflow_id": "pr1-bridge-adapters-bra-order",
+        "signal_name": "ping"
+      },
+      "workflow_id": "pr1-bridge-adapters-bra-order",
+      "run_id": "run-2",
+      "control_plane_outcome": "deduped_existing_command"
+    }
+  },
+  "signal_other_adapter": {
+    "status": 202,
+    "response": {
+      "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+      "version": 1,
+      "adapter": "other",
+      "action": "signal_workflow",
+      "accepted": true,
+      "outcome": "accepted",
+      "idempotency_key": "s-2",
+      "target": {
+        "workflow_id": "pr1-bridge-adapters-bra-order",
+        "signal_name": "ping"
+      },
+      "workflow_id": "pr1-bridge-adapters-bra-order",
+      "run_id": "run-2",
+      "control_plane_outcome": "signal_received"
+    }
+  },
+  "update_unknown": {
+    "status": 422,
+    "response": {
+      "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+      "version": 1,
+      "adapter": "acme.crm:v1",
+      "action": "update_workflow",
+      "accepted": false,
+      "outcome": "rejected",
+      "reason": "unknown_target",
+      "idempotency_key": "u-0",
+      "target": {
+        "workflow_id": "pr1-bridge-adapters-bra-missing",
+        "update_name": "bump"
+      }
+    }
+  },
+  "update_bad_target": {
+    "status": 422,
+    "response": {
+      "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+      "version": 1,
+      "adapter": "acme.crm:v1",
+      "action": "update_workflow",
+      "accepted": false,
+      "outcome": "rejected",
+      "reason": "malformed_payload",
+      "idempotency_key": "u-1",
+      "message": "Bridge update target is malformed.",
+      "errors": {
+        "wait_for": [
+          "The selected wait for is invalid."
+        ],
+        "wait_timeout_seconds": [
+          "The wait timeout seconds field must be at least 1."
+        ]
+      },
+      "target": {
+        "workflow_id": "pr1-bridge-adapters-bra-order",
+        "update_name": "bump"
+      }
+    }
+  },
+  "update": {
+    "status": 422,
+    "response": {
+      "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+      "version": 1,
+      "adapter": "acme.crm:v1",
+      "action": "update_workflow",
+      "accepted": false,
+      "outcome": "rejected",
+      "reason": "workflow_definition_unavailable",
+      "idempotency_key": "u-2",
+      "target": {
+        "workflow_id": "pr1-bridge-adapters-bra-order",
+        "update_name": "bump"
+      },
+      "workflow_id": "pr1-bridge-adapters-bra-order",
+      "run_id": "run-2",
+      "control_plane_outcome": "rejected_workflow_definition_unavailable"
+    }
+  },
+  "update_again": {
+    "status": 422,
+    "response": {
+      "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+      "version": 1,
+      "adapter": "acme.crm:v1",
+      "action": "update_workflow",
+      "accepted": false,
+      "outcome": "rejected",
+      "reason": "workflow_definition_unavailable",
+      "idempotency_key": "u-2",
+      "target": {
+        "workflow_id": "pr1-bridge-adapters-bra-order",
+        "update_name": "bump"
+      },
+      "workflow_id": "pr1-bridge-adapters-bra-order",
+      "run_id": "run-2",
+      "control_plane_outcome": "rejected_workflow_definition_unavailable"
+    }
+  },
+  "update_undeclared": {
+    "status": 422,
+    "response": {
+      "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+      "version": 1,
+      "adapter": "acme.crm:v1",
+      "action": "update_workflow",
+      "accepted": false,
+      "outcome": "rejected",
+      "reason": "unknown_update",
+      "idempotency_key": "u-3",
+      "target": {
+        "workflow_id": "pr1-bridge-adapters-bra-order",
+        "update_name": "not_declared"
+      },
+      "workflow_id": "pr1-bridge-adapters-bra-order",
+      "run_id": "run-2",
+      "control_plane_outcome": "rejected_unknown_update"
+    }
+  },
+  "history_event_types": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "StartAccepted",
+    "StartRejected",
+    "SignalWaitOpened",
+    "SignalReceived",
+    "SignalReceived",
+    "UpdateRejected",
+    "UpdateRejected",
+    "UpdateRejected"
+  ]
+}

@@ -508,6 +508,14 @@ impl Runtime {
     }
 
     pub(crate) async fn start(&self, body: Value, context: Option<Value>) -> Result<Value> {
+        self.start_command(body, context, false).await
+    }
+    /// A bridge adapter's start: the store decides the draining queue and the
+    /// instance reservation under the transition lock (`Store::bridge_start`).
+    pub(crate) async fn bridge_start(&self, body: Value, context: Value) -> Result<Value> {
+        self.start_command(body, Some(context), true).await
+    }
+    async fn start_command(&self, body: Value, context: Option<Value>, bridge: bool) -> Result<Value> {
         // PHP validates the request before it reads the memo or the input.
         let mut body = super::start_request::normalized(body);
         super::input_envelope::transport(&body)?;
@@ -526,10 +534,13 @@ impl Runtime {
         let memo =
             super::memos::prepare_initial(self.signal_codec.clone(), body["memo"].clone()).await?;
         let external = self.prepare_external(&body["input"]).await?;
-        match &*self.storage {
-            Storage::Sqlite(store) => store.start(body, memo, external, context).await,
-            Storage::Postgres(store) => store.start(body, memo, external, context).await,
-            Storage::MySql(store) => store.start(body, memo, external, context).await,
+        match (&*self.storage, bridge) {
+            (Storage::Sqlite(store), false) => store.start(body, memo, external, context).await,
+            (Storage::Postgres(store), false) => store.start(body, memo, external, context).await,
+            (Storage::MySql(store), false) => store.start(body, memo, external, context).await,
+            (Storage::Sqlite(store), true) => store.bridge_start(body, memo, external, context).await,
+            (Storage::Postgres(store), true) => store.bridge_start(body, memo, external, context).await,
+            (Storage::MySql(store), true) => store.bridge_start(body, memo, external, context).await,
         }
     }
     /// `ActivityController::start`: validates like PHP, then starts the
@@ -793,6 +804,24 @@ impl Runtime {
         body: Value,
         context: Option<Value>,
     ) -> Result<Value> {
+        self.signal_command(workflow_id, run_id, name, body, context, None).await
+    }
+    /// A bridge adapter's signal, recorded under its bridge identity. A
+    /// command already recorded under it is answered as
+    /// `deduped_existing_command`.
+    pub(crate) async fn bridge_signal(&self, workflow_id: &str, name: &str, body: Value, context: Value,
+        key: &super::bridge_adapters::BridgeKey<'_>) -> Result<Value> {
+        self.signal_command(workflow_id, None, name, body, Some(context), Some(key)).await
+    }
+    async fn signal_command(
+        &self,
+        workflow_id: &str,
+        run_id: Option<&str>,
+        name: &str,
+        body: Value,
+        context: Option<Value>,
+        bridge: Option<&super::bridge_adapters::BridgeKey<'_>>,
+    ) -> Result<Value> {
         let body = super::start_request::normalized(body);
         super::input_envelope::transport(&body)?;
         super::laravel_validation::operation_name(name, "signal")?;
@@ -828,6 +857,7 @@ impl Runtime {
                         context,
                         self.structural,
                         external.as_ref(),
+                        bridge,
                     )
                     .await
             }
@@ -843,6 +873,7 @@ impl Runtime {
                         context,
                         self.structural,
                         external.as_ref(),
+                        bridge,
                     )
                     .await
             }
@@ -858,6 +889,7 @@ impl Runtime {
                         context,
                         self.structural,
                         external.as_ref(),
+                        bridge,
                     )
                     .await
             }
@@ -943,6 +975,24 @@ impl Runtime {
         body: Value,
         context: Option<Value>,
     ) -> Result<(StatusCode, Value)> {
+        self.update_command(workflow_id, run_id, name, body, context, None).await
+    }
+    /// A bridge adapter's update, whose request id is its bridge identity.
+    /// An accepted command already recorded under it is answered as
+    /// `deduped_existing_command`.
+    pub(crate) async fn bridge_update(&self, workflow_id: &str, name: &str, body: Value, context: Value,
+        key: &super::bridge_adapters::BridgeKey<'_>) -> Result<(StatusCode, Value)> {
+        self.update_command(workflow_id, None, name, body, Some(context), Some(key)).await
+    }
+    async fn update_command(
+        &self,
+        workflow_id: &str,
+        run_id: Option<&str>,
+        name: &str,
+        body: Value,
+        context: Option<Value>,
+        bridge: Option<&super::bridge_adapters::BridgeKey<'_>>,
+    ) -> Result<(StatusCode, Value)> {
         let body = super::start_request::normalized(body);
         super::input_envelope::transport(&body)?;
         super::laravel_validation::operation_name(name, "update")?;
@@ -967,17 +1017,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone(), self.structural, external.as_ref())
+                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone(), self.structural, external.as_ref(), bridge)
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone(), self.structural, external.as_ref())
+                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone(), self.structural, external.as_ref(), bridge)
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone(), self.structural, external.as_ref())
+                    .update_workflow(workflow_id, run_id, name, body, prepared, context, self.signal_codec.clone(), self.structural, external.as_ref(), bridge)
                     .await
             }
         }
@@ -1625,6 +1675,8 @@ impl Runtime {
     delegate!(heartbeat_activity(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     delegate!(activity_status(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     delegate!(renew_activity_lease(task_id: &str, body: Value) -> Result<Value>);
+    delegate!(workflow_in_namespace(workflow_id: &str) -> Result<bool>);
+    delegate!(bridge_identity_receipt(workflow_id: &str, kind: &str, identity: &str) -> Result<Option<(String, Value)>>);
     delegate!(nexus_operations(workflow_id: &str, run_id: Option<&str>, limit: i64) -> Result<Vec<Value>>);
     delegate!(import_existing_run(run_id: &str) -> Result<Option<super::workflow_import::ExistingRun>>);
     delegate!(import_write(plan: &super::workflow_import::Plan) -> std::result::Result<super::workflow_import::Rows, String>);

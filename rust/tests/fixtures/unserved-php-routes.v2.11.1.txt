@@ -1,7 +1,6 @@
 # Published Server 2.11.1 API routes that native answers with 501
 # rust_capability_not_implemented, in route-table order. Checked by
 # rust/tests/execution/route_coverage.rs.
-POST /api/bridge-adapters/webhook/{adapter}
 GET /api/service-endpoints
 POST /api/service-endpoints
 GET /api/service-endpoints/{endpointName}

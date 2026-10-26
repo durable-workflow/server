@@ -304,6 +304,7 @@ impl PostgresStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::FutureExt;
     use sqlx::{
         ConnectOptions, SqlSafeStr,
         migrate::{Migrate, MigrateDatabase},
@@ -560,37 +561,62 @@ mod tests {
             "dw_readonly_{}",
             ulid::Ulid::new().to_string().to_lowercase()
         );
-        // Names are generated solely from the fixed prefix and ULID alphabet.
-        let grant = sqlx::AssertSqlSafe(format!(
-            "CREATE ROLE {role} LOGIN PASSWORD 'parity-disposable-password'; GRANT USAGE ON SCHEMA public TO {role}; GRANT SELECT ON ALL TABLES IN SCHEMA public TO {role}"
-        ));
-        sqlx::raw_sql(grant.into_sql_str())
-            .execute(&mut connection)
+        // A fresh password for every run, from the operating system's secure
+        // source (Server #779). It is hex, so it cannot leave the quoted
+        // literal below, and the connection that sends it logs no statements.
+        let mut secret = [0_u8; 32];
+        getrandom::fill(&mut secret).unwrap();
+        let password: String = secret.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert!(password.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        let mut admin = PgConnection::connect_with(&db.options.clone().disable_statement_logging())
             .await
             .unwrap();
-        let reader = db
-            .options
-            .clone()
-            .username(&role)
-            .password("parity-disposable-password");
-        PostgresStorage::check(reader.clone()).await.unwrap();
-        let mut read_connection = PgConnection::connect_with(&reader).await.unwrap();
-        assert!(
-            sqlx::query("DELETE FROM workflow_instances")
-                .execute(&mut read_connection)
-                .await
-                .is_err()
-        );
-        read_connection.close().await.unwrap();
+        // Names are generated solely from the fixed prefix and ULID alphabet.
+        let grant = sqlx::AssertSqlSafe(format!(
+            "CREATE ROLE {role} LOGIN PASSWORD '{password}'; GRANT USAGE ON SCHEMA public TO {role}; GRANT SELECT ON ALL TABLES IN SCHEMA public TO {role}"
+        ));
+        sqlx::raw_sql(grant.into_sql_str())
+            .execute(&mut admin)
+            .await
+            .unwrap();
+        let reader = db.options.clone().username(&role).password(&password);
+        // The role's removal is attempted whether or not the checks pass.
+        let checked = std::panic::AssertUnwindSafe(async {
+            PostgresStorage::check(reader.clone()).await.unwrap();
+            let mut read_connection = PgConnection::connect_with(&reader).await.unwrap();
+            assert!(
+                sqlx::query("DELETE FROM workflow_instances")
+                    .execute(&mut read_connection)
+                    .await
+                    .is_err()
+            );
+            read_connection.close().await.unwrap();
+        })
+        .catch_unwind()
+        .await;
         let cleanup = sqlx::AssertSqlSafe(format!(
             "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM {role}; REVOKE ALL ON SCHEMA public FROM {role}; DROP ROLE {role}"
         ));
-        sqlx::raw_sql(cleanup.into_sql_str())
-            .execute(&mut connection)
+        let dropped = sqlx::raw_sql(cleanup.into_sql_str())
+            .execute(&mut admin)
             .await
-            .unwrap();
-        connection.close().await.unwrap();
-        db.remove().await;
+            .is_ok();
+        let admin_closed = admin.close().await.is_ok();
+        let closed = connection.close().await.is_ok() && admin_closed;
+        let removed = std::panic::AssertUnwindSafe(db.remove())
+            .catch_unwind()
+            .await
+            .is_ok();
+        // Every cleanup step has run. A failed one is reported before a failed
+        // check, without its error text, so the check cannot hide it.
+        assert!(
+            dropped && closed && removed,
+            "cleanup failed (role dropped {dropped}, connections closed {closed}, database removed {removed}); checks passed {}",
+            checked.is_ok()
+        );
+        if let Err(panic) = checked {
+            std::panic::resume_unwind(panic);
+        }
     }
 
     #[tokio::test]

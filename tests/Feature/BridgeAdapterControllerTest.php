@@ -215,6 +215,85 @@ class BridgeAdapterControllerTest extends TestCase
             ->count());
     }
 
+    public function test_webhook_bridge_bounds_update_wait_timeout_before_admission(): void
+    {
+        Queue::fake();
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-bridge-update-wait-bound',
+                'workflow_type' => 'tests.interactive-command-workflow',
+            ]);
+
+        $start->assertCreated();
+        $this->runReadyWorkflowTask((string) $start->json('run_id'));
+
+        $event = static fn (string $key, int $seconds): array => [
+            'action' => 'update_workflow',
+            'idempotency_key' => $key,
+            'target' => [
+                'workflow_id' => 'wf-bridge-update-wait-bound',
+                'update_name' => 'approve',
+                'wait_timeout_seconds' => $seconds,
+            ],
+            'input' => [true, 'pagerduty'],
+        ];
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/bridge-adapters/webhook/pagerduty', $event('pagerduty-wait-61', 61))
+            ->assertStatus(422)
+            ->assertJsonPath('outcome', 'rejected')
+            ->assertJsonPath('reason', 'malformed_payload')
+            ->assertJsonPath('errors.wait_timeout_seconds.0', 'The wait timeout seconds field must not be greater than 60.');
+
+        $this->assertSame(0, WorkflowCommand::query()
+            ->where('workflow_instance_id', 'wf-bridge-update-wait-bound')
+            ->where('command_type', 'update')
+            ->count());
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/bridge-adapters/webhook/pagerduty', $event('pagerduty-wait-60', 60))
+            ->assertStatus(202)
+            ->assertJsonPath('accepted', true);
+
+        $this->assertSame(1, WorkflowCommand::query()
+            ->where('workflow_instance_id', 'wf-bridge-update-wait-bound')
+            ->where('command_type', 'update')
+            ->count());
+    }
+
+    public function test_regular_routes_refuse_the_bridge_request_id_namespace(): void
+    {
+        Queue::fake();
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-bridge-preclaim',
+                'workflow_type' => 'tests.interactive-command-workflow',
+            ]);
+
+        $start->assertCreated();
+        $this->runReadyWorkflowTask((string) $start->json('run_id'));
+        $runId = (string) $start->json('run_id');
+
+        foreach ([
+            ['/api/workflows/wf-bridge-preclaim/update/approve', 'dw-bridge:v1:0000'],
+            ["/api/workflows/wf-bridge-preclaim/runs/{$runId}/update/approve", 'DW-BRIDGE:v1:0000'],
+            ['/api/workflows/wf-bridge-preclaim/signal/advance', 'dw-bridge:v1:0000'],
+            ["/api/workflows/wf-bridge-preclaim/runs/{$runId}/signal/advance", 'dw-bridge:'],
+        ] as [$path, $requestId]) {
+            $this->withHeaders($this->apiHeaders())
+                ->postJson($path, ['input' => [true, 'api'], 'request_id' => $requestId])
+                ->assertStatus(422)
+                ->assertJsonPath('errors.request_id.0', 'The request id field format is invalid.');
+        }
+
+        $this->assertSame(0, WorkflowCommand::query()
+            ->where('workflow_instance_id', 'wf-bridge-preclaim')
+            ->whereIn('command_type', ['signal', 'update'])
+            ->count());
+    }
+
     public function test_webhook_bridge_rejects_json_tagged_update_before_returning_duplicate_outcome(): void
     {
         Queue::fake();

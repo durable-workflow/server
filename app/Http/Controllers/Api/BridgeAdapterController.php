@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Support\AvroPayloadEnvelopeResolver;
 use App\Support\BridgeAdapterOutcomeContract;
 use App\Support\ControlPlaneProtocol;
+use App\Support\ControlPlaneRequestContract;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\TaskQueueRoutingGate;
@@ -20,6 +21,13 @@ use Workflow\V2\Models\WorkflowCommand;
 
 class BridgeAdapterController
 {
+    /**
+     * Bridge commands' identities own the `dw-bridge:` request id namespace
+     * (Server #777), so a caller's signal or update request id may not use
+     * it. MySQL compares request ids without regard to case.
+     */
+    public const UNRESERVED_REQUEST_ID = 'not_regex:/^\s*dw-bridge:/i';
+
     public function __construct(
         private readonly WorkflowStartService $workflowStartService,
         private readonly WorkflowControlPlane $workflowControlPlane,
@@ -332,7 +340,7 @@ class BridgeAdapterController
             'workflow_id' => ['required', 'string', 'max:128', 'regex:/^[a-zA-Z0-9._:-]+$/'],
             'update_name' => ['required', 'string', 'max:255'],
             'wait_for' => ['nullable', 'string', 'in:accepted,completed'],
-            'wait_timeout_seconds' => ['nullable', 'integer', 'min:1'],
+            'wait_timeout_seconds' => ['nullable', 'integer', 'min:1', 'max:'.ControlPlaneRequestContract::UPDATE_WAIT_TIMEOUT_SECONDS_MAX],
         ]);
 
         if ($targetValidator->fails()) {

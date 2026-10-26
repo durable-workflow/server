@@ -92,6 +92,12 @@ pub(super) trait Backend: Database {
     const EXPIRED_STREAMS: &str = "SELECT id FROM workflow_durable_streams WHERE namespace=$1 AND status IN ('closed','errored') AND closed_at IS NOT NULL AND closed_at<=$2-(COALESCE(retention_seconds,3600)*INTERVAL '1 second') ORDER BY closed_at,id LIMIT $3";
     const STREAM_SWEEP_BOUNDARY: &str = "SELECT \"offset\" FROM workflow_durable_stream_items WHERE stream_id=$1 ORDER BY \"offset\" LIMIT 1 OFFSET $2";
     const STREAM_SWEEP_THROUGH: &str = "DELETE FROM workflow_durable_stream_items WHERE stream_id=$1 AND \"offset\"<=$2";
+    // `duplicateBridgeCommand`: the latest accepted command PHP recorded for
+    // this adapter, action, key and target name ($6 names the target field),
+    // filtered in the database as PHP's JSON-path query is. PHP's bridge
+    // commands carry no identity: no request id for a signal, the raw key
+    // ($8) for an update.
+    const BRIDGE_COMMAND: &str = "SELECT workflow_run_id,resolved_workflow_run_id FROM workflow_commands WHERE workflow_instance_id=$1 AND command_type=$2 AND status='accepted' AND context->'server'->'metadata'->>'adapter'=$3 AND context->'server'->'metadata'->>'action'=$4 AND context->'server'->'metadata'->>'idempotency_key'=$5 AND context->'server'->'metadata'->>$6=$7 AND (request_id IS NULL OR request_id=$8) ORDER BY accepted_at DESC,command_sequence DESC LIMIT 1";
     fn statement(sql: &'static str) -> Cow<'static, str> {
         Cow::Borrowed(sql)
     }
@@ -203,6 +209,7 @@ ORDER BY t.available_order,t.id LIMIT 100
     const SELECTION_RESOLUTION_SQL: &str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SelectionResolved' AND json_extract(payload,'$.selection_group_id')=$2 ORDER BY sequence LIMIT 1";
     // SQLite keeps times as text: closed_at against $2 less the retention.
     const EXPIRED_STREAMS: &str = "SELECT id FROM workflow_durable_streams WHERE namespace=$1 AND status IN ('closed','errored') AND closed_at IS NOT NULL AND closed_at<=strftime('%Y-%m-%d %H:%M:%f',$2,'-'||COALESCE(retention_seconds,3600)||' seconds') ORDER BY closed_at,id LIMIT $3";
+    const BRIDGE_COMMAND: &str = "SELECT workflow_run_id,resolved_workflow_run_id FROM workflow_commands WHERE workflow_instance_id=$1 AND command_type=$2 AND status='accepted' AND json_extract(context,'$.server.metadata.adapter')=$3 AND json_extract(context,'$.server.metadata.action')=$4 AND json_extract(context,'$.server.metadata.idempotency_key')=$5 AND json_extract(context,'$.server.metadata.'||$6)=$7 AND (request_id IS NULL OR request_id=$8) ORDER BY accepted_at DESC,command_sequence DESC LIMIT 1";
     const REPAIR_COUNTER_MAX: i64 = i64::MAX;
     const RANGE_REPAIR_TASK_SQL: &str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace=$2 AND task_type='workflow' AND status='failed' AND json_extract(payload,'$.replay_blocked')=1 ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
     const ACTIVITY_OPEN_TASK_SQL: &str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='activity' AND status IN ('ready','leased') AND json_extract(payload,'$.activity_execution_id')=$2 ORDER BY id LIMIT 1";
@@ -482,6 +489,7 @@ impl Backend for MySql {
     const MEMO_INHERIT_INSERT: &str = "INSERT INTO workflow_memos(workflow_run_id,workflow_instance_id,`key`,value,upserted_at_sequence,inherited_from_parent,created_at,updated_at,portable_value,portable_value_sequence) VALUES ($1,$2,$3,$4,1,true,$5,$6,$7,1)";
     const MEMO_READ: &str = "SELECT `key`,value,portable_value,portable_value_sequence,upserted_at_sequence FROM workflow_memos WHERE workflow_run_id=$1 ORDER BY `key`,id LIMIT 101";
     const SELECTION_RESOLUTION_SQL: &str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=? AND event_type='SelectionResolved' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.selection_group_id'))=? ORDER BY sequence LIMIT 1";
+    const BRIDGE_COMMAND: &str = "SELECT workflow_run_id,resolved_workflow_run_id FROM workflow_commands WHERE workflow_instance_id=? AND command_type=? AND status='accepted' AND BINARY JSON_UNQUOTE(JSON_EXTRACT(context,'$.server.metadata.adapter'))=BINARY ? AND BINARY JSON_UNQUOTE(JSON_EXTRACT(context,'$.server.metadata.action'))=BINARY ? AND BINARY JSON_UNQUOTE(JSON_EXTRACT(context,'$.server.metadata.idempotency_key'))=BINARY ? AND BINARY JSON_UNQUOTE(JSON_EXTRACT(context,CONCAT('$.server.metadata.',?)))=BINARY ? AND (request_id IS NULL OR BINARY request_id=BINARY ?) ORDER BY accepted_at DESC,command_sequence DESC LIMIT 1";
     const REPAIR_COUNTER_MAX: i64 = u32::MAX as i64;
     const RANGE_REPAIR_TASK_SQL: &str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=? AND namespace=? AND task_type='workflow' AND status='failed' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.replay_blocked'))='true' ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
     const ACTIVITY_OPEN_TASK_SQL: &str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=? AND task_type='activity' AND status IN ('ready','leased') AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.activity_execution_id'))=? ORDER BY id LIMIT 1";
@@ -527,6 +535,7 @@ impl Backend for MySql {
             || sql == Self::SIGNAL_RECEIVED_SEQUENCE_SQL
             || sql == Self::RANGE_REPAIR_TASK_SQL
             || sql == Self::SELECTION_RESOLUTION_SQL
+            || sql == Self::BRIDGE_COMMAND
             || sql == Self::ACTIVITY_OPEN_TASK_SQL
             || sql == Self::LOCAL_ACTIVITY_EXECUTIONS
             || sql == Self::LOCAL_ACTIVITY_ATTEMPTS

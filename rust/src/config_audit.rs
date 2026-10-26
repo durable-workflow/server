@@ -210,8 +210,14 @@ where
     }
 }
 
+/// The longest update completion wait, whether a caller asks for it or the
+/// operator configures the default (Server #775,
+/// `ControlPlaneRequestContract::UPDATE_WAIT_TIMEOUT_SECONDS_MAX`).
+pub const UPDATE_WAIT_TIMEOUT_SECONDS_MAX: i64 = 60;
+
 /// `UpdateWaitPolicy::completionTimeoutSeconds`: the package casts the
 /// setting with `(int)`, then takes at least one second; unset means 10.
+/// The server's `UpdateWaitConfiguration` caps it at 60.
 pub fn update_wait_completion_timeout_seconds<F>(lookup: F) -> i64
 where
     F: Fn(&str) -> Option<String>,
@@ -221,7 +227,7 @@ where
         "DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS",
         Some("WORKFLOW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS"),
     )
-    .map_or(10, |value| value.int().max(1))
+    .map_or(10, |value| value.int().clamp(1, UPDATE_WAIT_TIMEOUT_SECONDS_MAX))
 }
 
 /// `server.update_validation`: how long an update request waits for its
@@ -916,6 +922,9 @@ mod tests {
         assert_eq!(read(&[("DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS", "0")]), 1);
         assert_eq!(read(&[("DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS", "never")]), 1);
         assert_eq!(read(&[("DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS", "null")]), 10);
+        assert_eq!(read(&[("DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS", "60")]), 60);
+        assert_eq!(read(&[("DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS", "61")]), 60);
+        assert_eq!(read(&[("WORKFLOW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS", "600")]), 60);
     }
 
     #[test]

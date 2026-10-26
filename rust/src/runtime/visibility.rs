@@ -102,7 +102,8 @@ pub(super) fn request_contract() -> Value {
     json!({"schema":"durable-workflow.v2.control-plane-request.contract", "version":1,
         "operations":{"list":{"fields":{"status":{"canonical_values":["running","completed","failed"],
             "rejected_aliases":{"cancelled":"failed","terminated":"failed","pending":"running","waiting":"running"}}}},
-            "update":{"fields":{"wait_for":{"canonical_values":["accepted","completed"]}}}}})
+            "update":{"fields":{"wait_for":{"canonical_values":["accepted","completed"]},
+                "wait_timeout_seconds":{"minimum":1,"maximum":super::command_requests::UPDATE_WAIT_TIMEOUT_SECONDS_MAX}}}}})
 }
 
 fn response(body: Value) -> Value {

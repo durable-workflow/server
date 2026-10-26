@@ -204,6 +204,8 @@ mod activity_timeout_pass;
 mod start_request;
 #[path = "execution/command_requests.rs"]
 mod command_requests;
+#[path = "execution/bridge_adapters.rs"]
+mod bridge_adapters;
 #[path = "execution/describe_actions.rs"]
 mod describe_actions;
 #[path = "execution/run_deadlines.rs"]
