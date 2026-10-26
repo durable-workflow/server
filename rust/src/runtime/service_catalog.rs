@@ -9,9 +9,13 @@
 //! for more; an operation names its endpoint and service when they are in the
 //! namespace.
 //!
-//! Native records no service calls yet, and takeover refuses a PHP database
-//! that holds any, so a calls list is PHP's empty page and a call is PHP's
-//! not-found answer, after PHP's validation of the filters.
+//! Service calls are the ones the namespace can see (`ServiceCatalog`'s
+//! scopes: by default those it called or that target it), newest accepted
+//! first as PHP's `orderByDesc` reads them on each database (a rejected call
+//! has no `accepted_at`, so where it sorts follows the database's NULL
+//! order, as it does for PHP). A call read by identity is visible when the
+//! namespace called it or is its target; its payload references and Nexus
+//! result show only to the namespace that owns it.
 use super::laravel_rules::{self, Rule};
 use super::laravel_validation;
 use super::service_endpoints::{endpoint_item, operation_item, service_item};
@@ -128,9 +132,54 @@ fn page_body(data: Vec<Value>, filters: &Value, total: i64, namespace: &str) -> 
         "last_page": ((total + per_page - 1) / per_page).max(1), "namespace": namespace})
 }
 
-/// A page of service calls: always empty in native.
-fn calls_page(filters: &Value, namespace: &str) -> Value {
-    let mut page = page_body(Vec::new(), filters, 0, namespace);
+/// `ServiceCallStatus::buckets` and `ServiceCallOutcome::buckets`, by name.
+const STATUS_MEMBERS: &[&[&str]] = &[&["pending", "accepted", "started"], &["completed"], &["failed"], &["cancelled"]];
+const OUTCOME_MEMBERS: &[&[&str]] = &[&["accepted"], &["completed", "degraded"], &["timed_out", "handler_failed"], &["cancelled"],
+    &["rejected_not_found", "rejected_forbidden", "rejected_throttled", "rejected_concurrency_limited", "rejected_circuit_open"]];
+
+/// The values a calls list keeps for one column: the exact filter, else the
+/// bucket's members, else none (every value).
+fn allowed<'a>(exact: Option<&'a str>, bucket: Option<&str>, names: &[&str], members: &[&'a [&'a str]]) -> Option<Vec<&'a str>> {
+    match (exact, bucket) {
+        (Some(value), _) => Some(vec![value]),
+        (None, Some(bucket)) => names.iter().position(|name| *name == bucket).map(|index| members[index].to_vec()),
+        (None, None) => None,
+    }
+}
+
+/// `$n IS NULL OR column IN (...)` binds: a flag and `slots` values, the
+/// list padded with its last value.
+fn in_binds<'a>(values: &Option<Vec<&'a str>>, slots: usize) -> (Option<&'static str>, Vec<&'a str>) {
+    match values {
+        Some(values) => (Some("1"), (0..slots).map(|index| values[index.min(values.len() - 1)]).collect()),
+        None => (None, vec![""; slots]),
+    }
+}
+
+/// `serviceCallsQuery`'s scope with each filter after it, as a count and a
+/// page. Every scope takes the namespace twice, so the numbering is shared.
+macro_rules! calls_sql {
+    ($scope:literal) => {
+        (
+            concat!("SELECT COUNT(*) FROM workflow_service_calls c WHERE ", $scope, calls_sql!(@filters)),
+            concat!(
+                "SELECT c.*,d.call_deadline_at FROM workflow_service_calls c ",
+                "LEFT JOIN dw_service_call_deadlines d ON d.service_call_id=c.id WHERE ", $scope, calls_sql!(@filters),
+                " ORDER BY c.accepted_at DESC,c.created_at DESC,c.id LIMIT $19 OFFSET $20"
+            ),
+        )
+    };
+    (@filters) => {
+        concat!(
+            " AND ($3 IS NULL OR c.workflow_service_endpoint_id=$4) AND ($5 IS NULL OR c.workflow_service_id=$6)",
+            " AND ($7 IS NULL OR c.workflow_service_operation_id=$8) AND ($9 IS NULL OR c.status IN ($10,$11,$12))",
+            " AND ($13 IS NULL OR c.outcome IN ($14,$15,$16,$17,$18))"
+        )
+    };
+}
+
+/// The calls page's own fields after the paging.
+fn calls_extra(filters: &Value) -> Value {
     let status_bucket = match &filters["status_bucket"] {
         Value::Null => filters["bucket"].clone(),
         bucket => bucket.clone(),
@@ -143,12 +192,16 @@ fn calls_page(filters: &Value, namespace: &str) -> Value {
         "bucket": status_bucket, "status_bucket": status_bucket,
         "outcome": filters["outcome"], "outcome_bucket": filters["outcome_bucket"],
         "statuses": STATUSES, "outcomes": OUTCOMES,
-        "status_buckets": buckets(STATUS_BUCKETS, &[&["pending", "accepted", "started"], &["completed"], &["failed"], &["cancelled"]]),
-        "outcome_buckets": buckets(OUTCOME_BUCKETS, &[&["accepted"], &["completed", "degraded"], &["timed_out", "handler_failed"],
-            &["cancelled"], &["rejected_not_found", "rejected_forbidden", "rejected_throttled",
-                "rejected_concurrency_limited", "rejected_circuit_open"]]),
+        "status_buckets": buckets(STATUS_BUCKETS, STATUS_MEMBERS),
+        "outcome_buckets": buckets(OUTCOME_BUCKETS, OUTCOME_MEMBERS),
     });
-    page.as_object_mut().expect("page").extend(extra.as_object().expect("extra").clone());
+    extra
+}
+
+/// A calls page: the paging fields, then the calls list's own.
+fn calls_page(data: Vec<Value>, filters: &Value, total: i64, namespace: &str) -> Value {
+    let mut page = page_body(data, filters, total, namespace);
+    page.as_object_mut().expect("page").extend(calls_extra(filters).as_object().expect("extra").clone());
     page
 }
 
@@ -176,7 +229,10 @@ store_methods! {
         let mut tx = self.begin_read().await?;
         // Each optional filter binds twice: a null keeps every row.
         let (count, rows) = match catalog {
-            Catalog::Calls => return Ok(calls_page(&filters, namespace)),
+            Catalog::Calls => {
+                tx.commit().await?;
+                return self.catalog_calls(&filters).await;
+            }
             Catalog::Endpoints => (
                 Self::scalar("SELECT COUNT(*) FROM workflow_service_endpoints WHERE namespace=$1")
                     .bind(namespace).fetch_one(&mut *tx).await?,
@@ -214,7 +270,12 @@ store_methods! {
         let namespace = self.namespace.as_ref();
         let mut tx = self.begin_read().await?;
         let body = match catalog {
-            Catalog::Calls => None,
+            Catalog::Calls => Self::query(concat!(
+                "SELECT c.*,d.call_deadline_at FROM workflow_service_calls c LEFT JOIN dw_service_call_deadlines d ",
+                "ON d.service_call_id=c.id WHERE c.id=$1 AND (c.caller_namespace=$2 OR c.target_namespace=$3) LIMIT 1"))
+                .bind(id).bind(namespace).bind(namespace).fetch_optional(&mut *tx).await?
+                .map(|row| Self::service_call_row(&row).map(|call| super::service_calls::catalog_detail(&call, namespace)))
+                .transpose()?,
             Catalog::Endpoints => match self.catalog_endpoint_by_id(&mut tx, id).await? {
                 None => None,
                 Some(endpoint) => {
@@ -271,6 +332,55 @@ store_methods! {
         body.ok_or_else(object_not_found)
     }
 
+    /// `callsIndex`: the calls the namespace sees in the scope, filtered and
+    /// paged.
+    async fn catalog_calls(&self, filters: &Value) -> Result<Value> {
+        let namespace = self.namespace.as_ref();
+        let (_, limit, offset) = paging(filters);
+        let (count_sql, page_sql) = match filters["scope"].as_str().unwrap_or("relevant") {
+            "owned" => calls_sql!("(c.namespace=$1 OR c.namespace=$2)"),
+            "caller" => calls_sql!("(c.caller_namespace=$1 OR c.caller_namespace=$2)"),
+            "target" => calls_sql!("(c.target_namespace=$1 OR c.target_namespace=$2)"),
+            _ => calls_sql!("(c.caller_namespace=$1 OR c.target_namespace=$2)"),
+        };
+        let status_bucket = identity(filters, "status_bucket").or_else(|| identity(filters, "bucket"));
+        let statuses = allowed(identity(filters, "status"), status_bucket, STATUS_BUCKETS, STATUS_MEMBERS);
+        let outcomes = allowed(identity(filters, "outcome"), identity(filters, "outcome_bucket"), OUTCOME_BUCKETS, OUTCOME_MEMBERS);
+        let (status_flag, status_values) = in_binds(&statuses, 3);
+        let (outcome_flag, outcome_values) = in_binds(&outcomes, 5);
+        let ids = ["endpoint_id", "service_id", "operation_id"].map(|key| identity(filters, key));
+        // The same binds for the count and the page, in placeholder order.
+        macro_rules! bound {
+            ($query:expr) => {{
+                let mut query = $query.bind(namespace).bind(namespace);
+                for id in ids {
+                    query = query.bind(id).bind(id);
+                }
+                query = query.bind(status_flag);
+                for value in &status_values {
+                    query = query.bind(*value);
+                }
+                query = query.bind(outcome_flag);
+                for value in &outcome_values {
+                    query = query.bind(*value);
+                }
+                query
+            }};
+        }
+        let mut tx = self.begin_read().await?;
+        let total = bound!(Self::scalar(count_sql)).fetch_one(&mut *tx).await?;
+        // Laravel reads no rows when the count is zero.
+        let rows = if total == 0 {
+            Vec::new()
+        } else {
+            bound!(Self::query(page_sql)).bind(limit).bind(offset).fetch_all(&mut *tx).await?
+        };
+        tx.commit().await?;
+        let data = rows.iter().map(|row| Self::service_call_row(row).map(|call| super::service_calls::catalog_list_item(&call)))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(calls_page(data, filters, total, namespace))
+    }
+
     /// `ServiceCatalog::findEndpoint`: an endpoint by id in the namespace.
     async fn catalog_endpoint_by_id(&self, connection: &mut DB::Connection, id: &str) -> Result<Option<super::service_endpoints::Endpoint>> {
         Self::query("SELECT * FROM workflow_service_endpoints WHERE id=$1 AND namespace=$2 LIMIT 1")
@@ -298,7 +408,7 @@ mod tests {
 
     fn page(pairs: &[(&str, &str)], catalog: Catalog, total: i64) -> Result<Value> {
         let filters = filters(&query(pairs), catalog, false)?;
-        Ok(if catalog == Catalog::Calls { calls_page(&filters, "second") } else { page_body(Vec::new(), &filters, total, "default") })
+        Ok(if catalog == Catalog::Calls { calls_page(Vec::new(), &filters, total, "second") } else { page_body(Vec::new(), &filters, total, "default") })
     }
 
     #[test]

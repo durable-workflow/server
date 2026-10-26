@@ -733,6 +733,160 @@ fn failure_type(source: &Value) -> Option<String> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Catalog reads (`ServiceCatalogReadController::callsIndex` and `callShow`).
+
+/// `ServiceCallStatus::bucket`, for a known status.
+fn status_bucket(status: &str) -> Option<&'static str> {
+    match status {
+        "pending" | "accepted" | "started" => Some("open"),
+        "completed" => Some("completed"),
+        "failed" => Some("failed"),
+        "cancelled" => Some("cancelled"),
+        _ => None,
+    }
+}
+
+/// `ServiceCallOutcome::bucket`, for a known outcome.
+fn outcome_bucket(outcome: &str) -> Option<&'static str> {
+    match outcome {
+        "accepted" => Some("open"),
+        "completed" | "degraded" => Some("completed"),
+        "cancelled" => Some("cancelled"),
+        "timed_out" | "handler_failed" => Some("failed"),
+        "rejected_not_found" | "rejected_forbidden" | "rejected_throttled" | "rejected_concurrency_limited"
+        | "rejected_circuit_open" => Some("policy"),
+        _ => None,
+    }
+}
+
+/// `ServiceCallView::listItem`.
+pub(crate) fn catalog_list_item(call: &Call) -> Value {
+    let outcome = call.outcome.as_deref().filter(|outcome| outcome_bucket(outcome).is_some());
+    let attempts = call.attempts();
+    let pairs: Vec<(&str, Value)> = vec![
+        ("id", json!(call.id)),
+        ("workflow_service_endpoint_id", json!(call.endpoint_id)),
+        ("workflow_service_id", json!(call.service_id)),
+        ("workflow_service_operation_id", json!(call.operation_id)),
+        ("namespace", json!(call.namespace)),
+        ("endpoint_name", json!(call.endpoint_name)),
+        ("service_name", json!(call.service_name)),
+        ("operation_name", json!(call.operation_name)),
+        ("caller_namespace", json!(call.caller_namespace)),
+        ("caller_workflow_instance_id", json!(call.caller_instance)),
+        ("caller_workflow_run_id", json!(call.caller_run)),
+        ("caller_principal_subject", json!(call.principal_subject)),
+        ("caller_principal_method", json!(call.principal_method)),
+        ("caller_principal_roles", array_value(&call.principal_roles)),
+        ("caller_principal_tenant", json!(call.principal_tenant)),
+        ("target_namespace", json!(call.target_namespace)),
+        ("linked_workflow_instance_id", json!(call.linked_instance)),
+        ("linked_workflow_run_id", json!(call.linked_run)),
+        ("linked_workflow_update_id", json!(call.linked_update)),
+        ("status", json!(call.status)),
+        ("status_bucket", json!(status_bucket(&call.status))),
+        ("outcome", json!(outcome)),
+        ("outcome_bucket", json!(outcome.and_then(outcome_bucket))),
+        ("is_terminal", json!(call.is_terminal())),
+        ("is_policy_outcome", json!(outcome.and_then(outcome_bucket) == Some("policy"))),
+        ("operation_mode", json!(call.operation_mode)),
+        ("resolved_binding_kind", json!(call.binding_kind)),
+        ("resolved_target_reference", json!(call.target_reference)),
+        ("idempotency_key", json!(call.idempotency_key)),
+        ("retry_policy", array_value(&call.retry_policy)),
+        ("retry_attempt_count", json!(attempts.len())),
+        ("service_call_attempts", Value::Array(attempts)),
+        ("failure_message", json!(call.failure_message)),
+        ("accepted_at", micros(call.accepted_at)),
+        ("call_deadline_at", micros(call.call_deadline_at)),
+        ("started_at", micros(call.started_at)),
+        ("completed_at", micros(call.completed_at)),
+        ("failed_at", micros(call.failed_at)),
+        ("cancelled_at", micros(call.cancelled_at)),
+        ("created_at", micros(call.created_at)),
+        ("updated_at", micros(call.updated_at)),
+    ];
+    Value::Object(pairs.into_iter().map(|(key, value)| (key.to_owned(), value)).collect())
+}
+
+/// `ServiceCallResultEnvelope::fromCall`.
+fn result_envelope(call: &Call) -> Value {
+    let result = at(&call.metadata, "nexus_result");
+    if !is_array(result) {
+        return Value::Null;
+    }
+    if at(result, "blob").is_string() {
+        return result.clone();
+    }
+    let external = at(result, "external_reference");
+    match (&call.output_reference, external) {
+        (Some(uri), Value::Object(reference)) => {
+            let mut storage = reference.clone();
+            storage.entry("uri").or_insert_with(|| json!(uri));
+            json!({"codec": at(result, "codec"), "external_storage": storage})
+        }
+        _ => Value::Null,
+    }
+}
+
+/// `callShow` over `ServiceCallView::detail`, read from `observer`'s
+/// namespace: a call owned elsewhere hides its payload references.
+pub(crate) fn catalog_detail(call: &Call, observer: &str) -> Value {
+    let mut view = catalog_list_item(call);
+    let in_observer = |namespace: &Option<String>| namespace.as_deref() == Some(observer);
+    let reference = |namespace: &Option<String>, fields: Vec<(&str, Value)>| {
+        let mut fields: Map<String, Value> = fields.into_iter().map(|(key, value)| (key.to_owned(), value)).collect();
+        fields.insert("namespace".into(), json!(namespace));
+        fields.insert("in_observer_namespace".into(), json!(in_observer(namespace)));
+        Value::Object(fields)
+    };
+    let owned = in_observer(&call.namespace);
+    let mut metadata = array_value(&call.metadata);
+    if !owned && let Value::Object(fields) = &mut metadata {
+        fields.remove("nexus_result");
+    }
+    let hidden = |value: &Option<String>| if owned { json!(value) } else { Value::Null };
+    let detail: Vec<(&str, Value)> = vec![
+        ("payload_codec", json!(call.payload_codec)),
+        ("input_payload_reference", hidden(&call.input_reference)),
+        ("output_payload_reference", hidden(&call.output_reference)),
+        ("failure_payload_reference", hidden(&call.failure_reference)),
+        ("deadline_policy", array_value(&call.deadline_policy)),
+        ("idempotency_policy", array_value(&call.idempotency_policy)),
+        ("cancellation_policy", array_value(&call.cancellation_policy)),
+        ("boundary_policy", array_value(&call.boundary_policy)),
+        ("metadata", metadata),
+        ("caller_principal_claims", array_value(&call.principal_claims)),
+        ("caller_link", if call.caller_instance.is_none() && call.caller_run.is_none() {
+            Value::Null
+        } else {
+            reference(&call.caller_namespace, vec![("workflow_instance_id", json!(call.caller_instance)),
+                ("workflow_run_id", json!(call.caller_run))])
+        }),
+        ("linked_run_ref", if call.linked_instance.is_none() && call.linked_run.is_none() {
+            Value::Null
+        } else {
+            reference(&call.target_namespace, vec![("workflow_instance_id", json!(call.linked_instance)),
+                ("workflow_run_id", json!(call.linked_run))])
+        }),
+        ("linked_update_ref", if call.linked_update.is_none() {
+            Value::Null
+        } else {
+            reference(&call.target_namespace, vec![("workflow_instance_id", json!(call.linked_instance)),
+                ("workflow_update_id", json!(call.linked_update)), ("workflow_run_id", json!(call.linked_run))])
+        }),
+        ("payloads_in_observer_namespace", json!(owned)),
+        ("result_envelope", if owned { result_envelope(call) } else { Value::Null }),
+        ("failure_type", json!(failure_type(&array_value(&call.outcome_metadata)))),
+    ];
+    let fields = view.as_object_mut().expect("a list item is an object");
+    for (key, value) in detail {
+        fields.insert(key.to_owned(), value);
+    }
+    view
+}
+
 /// The controller's `serializeServiceCall`.
 fn controller_view(call: &Call, endpoint: &Endpoint, service: &Service, operation: &Operation) -> Map<String, Value> {
     let metadata_string = |key: &str| string_from(at(&call.outcome_metadata, key)).map_or(Value::Null, Value::from);
@@ -1113,7 +1267,7 @@ impl super::Runtime {
 }
 
 store_methods! {
-    fn service_call_row(row: &DB::Row) -> Result<Call> {
+    pub(crate) fn service_call_row(row: &DB::Row) -> Result<Call> {
         let text = |field: &str| -> Result<Option<String>> { DB::optional_string(row, field) };
         let document = |field: &str| -> Result<Value> { Ok(DB::optional_document_row(row, field)?.map_or(Value::Null, php_document)) };
         let time = |field: &str| -> Result<Option<DateTime<Utc>>> { DB::optional_instant(row, field) };

@@ -192,11 +192,18 @@ any other unknown path or method answers PHP's own 404 or 405
       fixture checks the empty namespace's 37 cases.
     - Service-call execution, show and cancel are served for the handler kinds
       that stay accepted (`activity_execution`, `invocable_http`), with the
-      `service-calls` fixture's 82 cases. That covers admission and its audit
+      `service-calls` fixture's 91 cases. That covers admission and its audit
       row, the boundary's authorization and circuit refusals, the 503 for an
       invalid limit, the shared rate and concurrency limits, handler failures
       retried in the request, deadlines, idempotent replays, and cancellation.
       A workflow-bound kind answers 501 before anything is written.
+      The `/api/service-catalog/calls` list and a call read by identity show
+      the recorded calls as `ServiceCatalogReadController` does: the scopes
+      (by default calls the namespace made or that target it), status and
+      outcome filters and buckets, newest accepted first, and the detail with
+      caller and link references; payload references and the Nexus result
+      show only to the namespace that owns the call. The fixture's last nine
+      cases read them.
     - Differences from published 2.11.1:
       - Native JSON documents don't keep object key order. An update that
         only reorders a document's keys writes nothing, where PHP's strict

@@ -50,7 +50,7 @@ const observation = () => {
 };
 
 test('the service calls accept the published answers', () => {
-  assert.deepStrictEqual(checkServiceCalls(fixture, observation(), id), {scope: 'service_calls', cases: 82});
+  assert.deepStrictEqual(checkServiceCalls(fixture, observation(), id), {scope: 'service_calls', cases: 91});
 });
 
 test('the fixture covers execute, show, cancel and every reachable refusal', () => {
@@ -63,6 +63,8 @@ test('the fixture covers execute, show, cancel and every reachable refusal', () 
   assert.deepStrictEqual([expected['rated again'][1].reason, expected['held again'][1].reason, expected['held sync again'][0]],
     ['rate_limit_exceeded', 'concurrency_limit_exceeded', 200]);
   assert.equal(fixture.service_calls.requests.find(request => request.label === 'rated').minute_start, true);
+  assert.deepStrictEqual([expected['catalog calls of charge'][1].total, expected['catalog policy calls page'][1].total,
+    expected['catalog show failed call'][1].failure_type], [3, 8, 'handler_target_missing']);
 });
 
 test('the embedded service calls are explicitly inapplicable', () => {
@@ -86,6 +88,17 @@ for (const [label, mutate] of [
   ['a rate limit that never refuses', responses => { responses['rated again'] = [200, responses.rated[1]]; }],
   ['a sync lease that is never returned', responses => { responses['held sync again'] = [429, responses['held again'][1]]; }],
   ['a refusal that counts the refused call', responses => { responses['held again'][1].outcome_metadata.observed_in_flight = 2; }],
+  ['a calls list that is always empty', responses => {
+    Object.assign(responses['catalog calls of charge'][1], {data: [], total: 0, last_page: 1});
+  }],
+  ['calls listed oldest first', responses => { responses['catalog calls of charge'][1].data.reverse(); }],
+  ['a caller scope that keeps another caller', responses => {
+    responses['catalog calls of charge as caller'][1].data.push(responses['catalog calls of charge'][1].data[1]);
+  }],
+  ['a whole-second list time', responses => { responses['catalog cancelled calls'][1].data[0].created_at = '2026-10-26T19:00:00+00:00'; }],
+  ['a caller link read as the observer', responses => {
+    responses['catalog show call with caller'][1].caller_link.in_observer_namespace = true;
+  }],
   ['a message naming another call', responses => {
     responses['show under another operation'][1].message = responses['show under another operation'][1].message.replace(/\[01[^\]]+\]/u, '[01m5wvy8d1j3dtr13es05k9999]');
   }],

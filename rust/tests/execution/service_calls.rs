@@ -326,3 +326,52 @@ async fn execute_requests_are_checked_like_the_controller() {
     assert_eq!((status, missing["reason"].clone(), missing["operation_name"].clone()),
         (StatusCode::NOT_FOUND, json!("operation_not_found"), json!("nope")), "the catalog before the input");
 }
+
+#[tokio::test]
+async fn catalog_reads_list_the_recorded_calls() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let mut guarded = activity("a");
+    guarded["boundary_policy"] = json!({"required_roles": ["nexus-caller"]});
+    catalog(&app, &[("charge", activity("a")), ("guarded", guarded)]).await;
+    let (_, first) = execute(&app, "charge", json!({})).await;
+    let (_, second) = execute(&app, "charge", json!({"caller_namespace": "partner", "caller_workflow_instance_id": "wf-caller"})).await;
+    let (status, refused) = execute(&app, "guarded", json!({})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    let operation = first["operation_id"].as_str().unwrap();
+
+    // Newest accepted first; the list item is `ServiceCallView::listItem`.
+    let (status, page) = request(&app, "GET", &format!("/api/service-catalog/calls?operation_id={operation}"), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let ids = |page: &Value| page["data"].as_array().unwrap().iter().map(|item| item["id"].clone()).collect::<Vec<_>>();
+    assert_eq!((page["total"].clone(), ids(&page)), (json!(2), vec![second["id"].clone(), first["id"].clone()]));
+    let item = &page["data"][1];
+    assert_eq!((item["status_bucket"].clone(), item["outcome_bucket"].clone(), item["is_terminal"].clone(),
+        item["is_policy_outcome"].clone(), item["caller_principal_roles"].clone(), item["retry_attempt_count"].clone()),
+        (json!("open"), json!("open"), json!(false), json!(false), json!(["admin"]), json!(1)));
+    assert!(item["created_at"].as_str().unwrap().ends_with('Z') && item["created_at"].as_str().unwrap().contains('.'), "{item}");
+    assert!(item.get("metadata").is_none(), "the detail fields stay out of a list item: {item}");
+
+    // Buckets and scopes.
+    let (_, policy) = request(&app, "GET", "/api/service-catalog/calls?outcome_bucket=policy", Value::Null).await;
+    assert_eq!((policy["total"].clone(), ids(&policy)), (json!(1), vec![refused["service_call_id"].clone()]));
+    assert_eq!((policy["data"][0]["is_policy_outcome"].clone(), policy["data"][0]["accepted_at"].clone(), policy["outcome_bucket"].clone()),
+        (json!(true), Value::Null, json!("policy")));
+    let (_, caller) = request(&app, "GET", &format!("/api/service-catalog/calls?scope=caller&operation_id={operation}"), Value::Null).await;
+    assert_eq!(ids(&caller), vec![first["id"].clone()], "another caller's call is not this namespace's as caller");
+    let (_, paged) = request(&app, "GET", "/api/service-catalog/calls?per_page=1&page=2&status=accepted", Value::Null).await;
+    assert_eq!((paged["total"].clone(), paged["last_page"].clone(), ids(&paged)), (json!(2), json!(2), vec![first["id"].clone()]));
+
+    // A call by identity: the detail, with the caller link and the payload view.
+    let (status, shown) = request(&app, "GET", &format!("/api/service-catalog/calls/{}", second["id"].as_str().unwrap()), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{shown}");
+    assert_eq!((shown["caller_link"].clone(), shown["payloads_in_observer_namespace"].clone(), shown["result_envelope"].clone(),
+        shown["failure_type"].clone(), shown["linked_run_ref"].clone(), shown["deadline_policy"].clone()),
+        (json!({"namespace": "partner", "workflow_instance_id": "wf-caller", "workflow_run_id": null, "in_observer_namespace": false}),
+            json!(true), Value::Null, Value::Null, Value::Null, json!([])));
+    let (status, refused_shown) = request(&app, "GET", &format!("/api/service-catalog/calls/{}", refused["service_call_id"].as_str().unwrap()),
+        Value::Null).await;
+    assert_eq!((status, refused_shown["outcome"].clone()), (StatusCode::OK, json!("rejected_forbidden")));
+    let (status, missing) = request(&app, "GET", "/api/service-catalog/calls/01nosuchcall00000000000000", Value::Null).await;
+    assert_eq!((status, missing["reason"].clone()), (StatusCode::NOT_FOUND, json!("catalog_object_not_found")));
+}
