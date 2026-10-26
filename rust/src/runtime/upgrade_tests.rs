@@ -29,12 +29,16 @@ async fn php_layout() -> (tempfile::TempDir, String) {
         "\n",
         include_str!("../../migrations/sqlite/0005_worker_session_holders.sql"),
         "\n",
-        include_str!("../../migrations/sqlite/0006_stream_reclaims.sql")
+        include_str!("../../migrations/sqlite/0006_stream_reclaims.sql"),
+        "\n",
+        include_str!("../../migrations/sqlite/0007_service_calls.sql")
     ))
     .execute(&mut connection)
     .await
     .unwrap();
     for table in [
+        "dw_service_admission_counters",
+        "dw_service_call_deadlines",
         "dw_stream_reclaims",
         "dw_worker_session_holders",
         "dw_worker_registration_incarnations",
@@ -1104,6 +1108,20 @@ async fn takeover_refusals_leave_the_php_database_unchanged() {
         );
         assert_eq!(std::fs::read(&path).unwrap(), before, "{expected}");
     }
+}
+
+#[tokio::test]
+async fn takeover_keeps_php_catalog_rows_that_native_then_serves() {
+    let (_directory, path) = php297_layout().await;
+    for statement in crate::runtime::service_endpoints::PHP_CATALOG_ROWS {
+        mutate(&path, statement).await;
+    }
+    let fingerprint = backup_fingerprint(&path).await;
+    let report = takeover::take_over_sqlite(&path, &fingerprint, &queue_config()).await.unwrap();
+    assert_eq!(report["status"], "taken_over", "{report}");
+    let runtime = crate::runtime::Runtime::open(&path, "test-token".into()).await.unwrap();
+    crate::runtime::service_endpoints::assert_php_catalog_served(&runtime).await;
+    runtime.close().await;
 }
 
 /// The frozen layout in PHP Server's default WAL mode, copied while its

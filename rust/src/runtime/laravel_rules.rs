@@ -42,6 +42,11 @@ pub(crate) enum Rule {
     Date,
     /// `regex:...`, as a predicate on the string.
     Pattern(fn(&str) -> bool),
+    /// `regex:...` as Laravel's `validateRegex` applies it: to a string, or
+    /// to a number's PHP string.
+    Regex(fn(&str) -> bool),
+    /// `prohibited`: the attribute is missing, null or empty. Implicit.
+    Prohibited,
 }
 
 pub(crate) type Rules = [(&'static str, &'static [Rule])];
@@ -219,7 +224,8 @@ fn message(rule: Rule, attribute: &str, rules: &[Rule], value: Option<&Value>) -
             "array" => format!("The {attribute} field must have between {min} and {max} items."),
             _ => format!("The {attribute} field must be between {min} and {max} characters."),
         },
-        Rule::NotBlank | Rule::Pattern(_) => format!("The {attribute} field format is invalid."),
+        Rule::NotBlank | Rule::Pattern(_) | Rule::Regex(_) => format!("The {attribute} field format is invalid."),
+        Rule::Prohibited => format!("The {attribute} field is prohibited."),
         Rule::Date => format!("The {attribute} field must be a valid date."),
         Rule::Nullable | Rule::Sometimes => String::new(),
     }
@@ -242,8 +248,18 @@ fn size(value: &Value, rules: &[Rule]) -> Option<f64> {
         Value::Array(items) => Some(items.len() as f64),
         Value::Object(fields) => Some(fields.len() as f64),
         Value::String(text) => Some(text.chars().count() as f64),
-        Value::Number(number) => number.as_f64(),
+        // Without a numeric rule a number is measured as its PHP string.
+        Value::Number(number) => Some(php_number(number).chars().count() as f64),
         _ => None,
+    }
+}
+
+/// PHP's `(string)` of a decoded JSON number: an integer's digits, else the
+/// float's shortest form, with integers beyond int64 read as floats.
+fn php_number(number: &serde_json::Number) -> String {
+    match number.as_i64() {
+        Some(whole) => whole.to_string(),
+        None => super::php_value::float(number.as_f64().unwrap_or_default(), false).replace('e', "E"),
     }
 }
 
@@ -256,6 +272,12 @@ fn passes(rule: Rule, data: &Value, value: Option<&Value>, rules: &[Rule]) -> bo
         Rule::NotBlank => value.and_then(Value::as_str).is_some_and(|text| text.chars().any(|character| !character.is_whitespace())),
         Rule::String => value.is_some_and(Value::is_string),
         Rule::Pattern(matches) => value.and_then(Value::as_str).is_some_and(matches),
+        Rule::Regex(matches) => match value {
+            Some(Value::String(text)) => matches(text),
+            Some(Value::Number(number)) => matches(&php_number(number)),
+            _ => false,
+        },
+        Rule::Prohibited => !filled(value),
         Rule::Date => value
             .and_then(Value::as_str)
             .is_some_and(|text| super::schedule_backfill::php_date(text).is_some()),
@@ -339,7 +361,7 @@ fn attribute_errors(body: &Value, attribute: &str, expanded: bool, list: &[Rule]
         if matches!(rule, Rule::Nullable | Rule::Sometimes) {
             continue;
         }
-        let implicit = matches!(rule, Rule::Required | Rule::RequiredWith(_) | Rule::Present);
+        let implicit = matches!(rule, Rule::Required | Rule::RequiredWith(_) | Rule::Present | Rule::Prohibited);
         if !implicit && skipped(value, nullable) {
             continue;
         }

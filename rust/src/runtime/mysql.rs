@@ -9,7 +9,7 @@ use sqlx::{
 };
 use std::{collections::BTreeMap, sync::OnceLock, time::Duration};
 
-pub const VERSION: i64 = 6;
+pub const VERSION: i64 = 7;
 type Catalog = Vec<(String, String)>;
 
 pub const MARKER_SQL: &str = "CREATE TABLE dw_server_schema (engine VARCHAR(64) NOT NULL PRIMARY KEY,version BIGINT NOT NULL,bootstrap_checksum VARBINARY(48) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin";
@@ -48,7 +48,9 @@ impl Flavor {
                     "\n",
                     include_str!("../../migrations/mysql/0005_worker_session_holders.sql"),
                 "\n",
-                include_str!("../../migrations/mysql/0006_stream_reclaims.sql")
+                include_str!("../../migrations/mysql/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0007_service_calls.sql")
                 ),
             ),
             Self::MariaDb => (
@@ -60,14 +62,16 @@ impl Flavor {
                     "\n",
                     include_str!("../../migrations/mariadb/0005_worker_session_holders.sql"),
                 "\n",
-                include_str!("../../migrations/mariadb/0006_stream_reclaims.sql")
+                include_str!("../../migrations/mariadb/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0007_service_calls.sql")
                 ),
             ),
         };
         slot.get_or_init(|| {
             let mut migrations = Migrator::with_migrations(vec![Migration::new(
                 VERSION,
-                "full frozen PHP schema, native worker incarnations, session holders and stream reclaim deadlines".into(),
+                "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines and service admission counters".into(),
                 MigrationType::Simple,
                 sql.into_sql_str(),
                 false,
@@ -80,8 +84,8 @@ impl Flavor {
     }
     fn expected(self) -> Result<Catalog> {
         Ok(serde_json::from_str(&canonical(match self {
-            Self::MySql => include_str!("../../migrations/mysql/0006_catalog.json"),
-            Self::MariaDb => include_str!("../../migrations/mariadb/0006_catalog.json"),
+            Self::MySql => include_str!("../../migrations/mysql/0007_catalog.json"),
+            Self::MariaDb => include_str!("../../migrations/mariadb/0007_catalog.json"),
         }))?)
     }
     /// The single native migration, which a takeover records as applied.
@@ -100,7 +104,9 @@ impl Flavor {
                     "\n",
                     include_str!("../../migrations/mysql/0005_worker_session_holders.sql"),
                 "\n",
-                include_str!("../../migrations/mysql/0006_stream_reclaims.sql")
+                include_str!("../../migrations/mysql/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0007_service_calls.sql")
                 ),
             ),
             Self::MariaDb => (
@@ -110,7 +116,9 @@ impl Flavor {
                     "\n",
                     include_str!("../../migrations/mariadb/0005_worker_session_holders.sql"),
                 "\n",
-                include_str!("../../migrations/mariadb/0006_stream_reclaims.sql")
+                include_str!("../../migrations/mariadb/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0007_service_calls.sql")
                 ),
             ),
         };
@@ -130,6 +138,14 @@ impl Flavor {
         .replace(
             "CREATE TABLE dw_stream_reclaims",
             "CREATE TABLE IF NOT EXISTS dw_stream_reclaims",
+        )
+        .replace(
+            "CREATE TABLE dw_service_call_deadlines",
+            "CREATE TABLE IF NOT EXISTS dw_service_call_deadlines",
+        )
+        .replace(
+            "CREATE TABLE dw_service_admission_counters",
+            "CREATE TABLE IF NOT EXISTS dw_service_admission_counters",
         ))
     }
     pub(super) fn checksum(self) -> &'static [u8] {
@@ -1364,6 +1380,25 @@ mod tests {
             takeover::take_over_mysql(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES).await,
             "upgrade_source_already_owned",
         );
+        db.remove().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an isolated MySQL/MariaDB create-database role"]
+    async fn qualification_takeover_keeps_php_catalog_rows_that_native_then_serves() {
+        let db = Database::new().await;
+        php_layout(&db, Some("php-2.9.7")).await;
+        let mut connection = db.connection().await;
+        for statement in crate::runtime::service_endpoints::PHP_CATALOG_ROWS {
+            connection.execute(statement).await.unwrap();
+        }
+        connection.close().await.unwrap();
+        let fingerprint = backup_fingerprint(&db).await;
+        let report = takeover::take_over_mysql(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES).await.unwrap();
+        assert_eq!(report["status"], "taken_over", "{report}");
+        let runtime = crate::runtime::Runtime::open_mysql(db.options.clone(), "test-token".into()).await.unwrap();
+        crate::runtime::service_endpoints::assert_php_catalog_served(&runtime).await;
+        runtime.close().await;
         db.remove().await;
     }
 

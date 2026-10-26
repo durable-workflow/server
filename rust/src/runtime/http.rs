@@ -246,6 +246,36 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/system/activity-timeouts/pass", post(activity_timeout_pass))
         .route("/api/workers", get(list_workers))
         .route("/api/task-queues", get(list_task_queues))
+        .route("/api/service-endpoints", get(service_endpoints_index).post(service_endpoint_store))
+        .route(
+            "/api/service-endpoints/{endpoint}",
+            get(service_endpoint_show).put(service_endpoint_update).delete(service_endpoint_destroy),
+        )
+        .route("/api/service-endpoints/{endpoint}/services", get(services_index).post(service_store))
+        .route(
+            "/api/service-endpoints/{endpoint}/services/{service}",
+            get(service_show).put(service_update).delete(service_destroy),
+        )
+        .route(
+            "/api/service-endpoints/{endpoint}/services/{service}/operations",
+            get(operations_index).post(operation_store),
+        )
+        .route(
+            "/api/service-endpoints/{endpoint}/services/{service}/operations/{operation}",
+            get(operation_show).put(operation_update).delete(operation_destroy),
+        )
+        .route(
+            "/api/service-endpoints/{endpoint}/services/{service}/operations/{operation}/execute",
+            post(operation_execute),
+        )
+        .route(
+            "/api/service-endpoints/{endpoint}/services/{service}/operations/{operation}/service-calls/{call}",
+            get(service_call_show),
+        )
+        .route(
+            "/api/service-endpoints/{endpoint}/services/{service}/operations/{operation}/service-calls/{call}/cancel",
+            post(service_call_cancel),
+        )
         .route("/api/service-catalog/{catalog}", get(service_catalog_list))
         .route("/api/service-catalog/{catalog}/{id}", get(service_catalog_show))
         .route("/api/task-queues/{task_queue}", get(describe_task_queue))
@@ -495,6 +525,8 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         || path.starts_with("/api/runtime-credentials/")
         // History import writes runs into the store; PHP serves it to admins.
         || path.starts_with("/api/workflows/import/")
+        // Service catalog administration.
+        || catalog_admin_route(&path)
     {
         &["admin"]
     } else {
@@ -691,7 +723,7 @@ const NAMESPACE_FAMILIES: [(&str, Rest, Allowed); 10] = [
     // Runtime credentials are server-wide; the namespace only scopes a tenant.
     ("/api/runtime-credentials/", Rest::Anything, Allowed::Any),
     ("/api/external-payloads/v1/", Rest::Anything, READ),
-    // The service catalog is namespace-scoped and, in native, always empty.
+    // The service catalog reads are namespace-scoped.
     ("/api/service-catalog/", Rest::Anything, READ),
     // Schedules are namespace-scoped rows, as in PHP.
     ("/api/schedules/", Rest::Anything, Allowed::Any),
@@ -722,6 +754,8 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
 /// further family needs its own shared namespace fixtures.
 fn namespace_route(path: &str) -> Option<Allowed> {
     exact_namespace_route(path)
+        // The catalog routes act on the namespace's own rows and calls.
+        .or_else(|| (catalog_admin_route(path) || catalog_call_route(path)).then_some(Allowed::Any))
         .or_else(|| {
             NAMESPACE_FAMILIES.iter().find_map(|(prefix, shape, allowed)| {
                 let rest = path.strip_prefix(prefix)?;
@@ -2490,20 +2524,199 @@ async fn service_catalog_list(
     Query(query): Query<Vec<(String, String)>>,
 ) -> Response {
     match super::service_catalog::Catalog::from_path(&catalog) {
-        Some(catalog) => super::service_catalog::list(&query, catalog, runtime.namespace()).map(Json).into_response(),
+        Some(catalog) => runtime.service_catalog_list(&query, catalog).await.map(Json).into_response(),
         None => unavailable().await,
     }
 }
 
 /// `GET /api/service-catalog/{catalog}/{id}`.
 async fn service_catalog_show(
-    Path((catalog, _id)): Path<(String, String)>,
+    Extension(runtime): Extension<Runtime>,
+    Path((catalog, id)): Path<(String, String)>,
     Query(query): Query<Vec<(String, String)>>,
 ) -> Response {
     match super::service_catalog::Catalog::from_path(&catalog) {
-        Some(catalog) => super::service_catalog::show(&query, catalog).map(Json).into_response(),
+        Some(catalog) => runtime.service_catalog_show(&query, catalog, &id).await.map(Json).into_response(),
         None => unavailable().await,
     }
+}
+
+/// PHP's admin-only catalog routes: an endpoint, its services, a service's
+/// operations, and each of those by name. Service-call reads, execution and
+/// cancellation lie deeper and are operator routes.
+fn catalog_admin_route(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/api/service-endpoints") else {
+        return false;
+    };
+    let Some(rest) = rest.strip_prefix('/') else {
+        return rest.is_empty();
+    };
+    let segments: Vec<&str> = rest.split('/').collect();
+    segments.iter().all(|segment| !segment.is_empty())
+        && matches!(
+            segments.as_slice(),
+            [_] | [_, "services"] | [_, "services", _] | [_, "services", _, "operations"] | [_, "services", _, "operations", _]
+        )
+}
+
+/// PHP's operator routes for an operation's calls: execute, and a call's
+/// show and cancel.
+fn catalog_call_route(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/api/service-endpoints/") else {
+        return false;
+    };
+    let segments: Vec<&str> = rest.split('/').collect();
+    segments.iter().all(|segment| !segment.is_empty())
+        && matches!(
+            segments.as_slice(),
+            [_, "services", _, "operations", _, "execute"]
+                | [_, "services", _, "operations", _, "service-calls", _]
+                | [_, "services", _, "operations", _, "service-calls", _, "cancel"]
+        )
+}
+
+type CatalogQuery = Query<Vec<(String, String)>>;
+type Created = Result<(StatusCode, Json<Value>)>;
+
+/// The input a catalog write validates: `$request->all()`.
+fn catalog_input(body: &[u8], query: &[(String, String)], level: super::service_endpoints::Level, create: bool) -> Result<Value> {
+    let rules = super::service_endpoints::rules_for(level, create);
+    Ok(super::service_endpoints::input(request_json(body)?, query, &rules))
+}
+
+/// `GET /api/service-endpoints`.
+async fn service_endpoints_index(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    runtime.list_service_endpoints().await.map(Json)
+}
+
+/// `POST /api/service-endpoints`.
+async fn service_endpoint_store(Extension(runtime): Extension<Runtime>, Query(query): CatalogQuery, body: axum::body::Bytes) -> Created {
+    let input = catalog_input(&body, &query, super::service_endpoints::Level::Endpoint, true)?;
+    Ok((StatusCode::CREATED, Json(runtime.create_service_endpoint(input).await?)))
+}
+
+async fn service_endpoint_show(Extension(runtime): Extension<Runtime>, Path(endpoint): Path<String>) -> Result<Json<Value>> {
+    runtime.show_service_endpoint(&endpoint).await.map(Json)
+}
+
+async fn service_endpoint_update(
+    Extension(runtime): Extension<Runtime>,
+    Path(endpoint): Path<String>,
+    Query(query): CatalogQuery,
+    body: axum::body::Bytes,
+) -> Result<Json<Value>> {
+    let input = catalog_input(&body, &query, super::service_endpoints::Level::Endpoint, false)?;
+    runtime.update_service_endpoint(&endpoint, input).await.map(Json)
+}
+
+async fn service_endpoint_destroy(Extension(runtime): Extension<Runtime>, Path(endpoint): Path<String>) -> Result<Json<Value>> {
+    runtime.delete_service_endpoint(&endpoint).await.map(Json)
+}
+
+async fn services_index(Extension(runtime): Extension<Runtime>, Path(endpoint): Path<String>) -> Result<Json<Value>> {
+    runtime.list_services(&endpoint).await.map(Json)
+}
+
+async fn service_store(
+    Extension(runtime): Extension<Runtime>,
+    Path(endpoint): Path<String>,
+    Query(query): CatalogQuery,
+    body: axum::body::Bytes,
+) -> Created {
+    let input = catalog_input(&body, &query, super::service_endpoints::Level::Service, true)?;
+    Ok((StatusCode::CREATED, Json(runtime.create_service(&endpoint, input).await?)))
+}
+
+async fn service_show(Extension(runtime): Extension<Runtime>, Path((endpoint, service)): Path<(String, String)>) -> Result<Json<Value>> {
+    runtime.show_service(&endpoint, &service).await.map(Json)
+}
+
+async fn service_update(
+    Extension(runtime): Extension<Runtime>,
+    Path((endpoint, service)): Path<(String, String)>,
+    Query(query): CatalogQuery,
+    body: axum::body::Bytes,
+) -> Result<Json<Value>> {
+    let input = catalog_input(&body, &query, super::service_endpoints::Level::Service, false)?;
+    runtime.update_service(&endpoint, &service, input).await.map(Json)
+}
+
+async fn service_destroy(Extension(runtime): Extension<Runtime>, Path((endpoint, service)): Path<(String, String)>) -> Result<Json<Value>> {
+    runtime.delete_service(&endpoint, &service).await.map(Json)
+}
+
+async fn operations_index(Extension(runtime): Extension<Runtime>, Path((endpoint, service)): Path<(String, String)>) -> Result<Json<Value>> {
+    runtime.list_operations(&endpoint, &service).await.map(Json)
+}
+
+async fn operation_store(
+    Extension(runtime): Extension<Runtime>,
+    Path((endpoint, service)): Path<(String, String)>,
+    Query(query): CatalogQuery,
+    body: axum::body::Bytes,
+) -> Created {
+    let input = catalog_input(&body, &query, super::service_endpoints::Level::Operation, true)?;
+    Ok((StatusCode::CREATED, Json(runtime.create_operation(&endpoint, &service, input).await?)))
+}
+
+async fn operation_show(
+    Extension(runtime): Extension<Runtime>,
+    Path((endpoint, service, operation)): Path<(String, String, String)>,
+) -> Result<Json<Value>> {
+    runtime.show_operation([&endpoint, &service, &operation]).await.map(Json)
+}
+
+async fn operation_update(
+    Extension(runtime): Extension<Runtime>,
+    Path((endpoint, service, operation)): Path<(String, String, String)>,
+    Query(query): CatalogQuery,
+    body: axum::body::Bytes,
+) -> Result<Json<Value>> {
+    let input = catalog_input(&body, &query, super::service_endpoints::Level::Operation, false)?;
+    runtime.update_operation([&endpoint, &service, &operation], input).await.map(Json)
+}
+
+async fn operation_destroy(
+    Extension(runtime): Extension<Runtime>,
+    Path((endpoint, service, operation)): Path<(String, String, String)>,
+) -> Result<Json<Value>> {
+    runtime.delete_operation([&endpoint, &service, &operation]).await.map(Json)
+}
+
+/// `POST .../operations/{operation}/execute`.
+async fn operation_execute(
+    Extension(runtime): Extension<Runtime>,
+    Extension(authenticated): Extension<AuthenticatedPrincipal>,
+    Path((endpoint, service, operation)): Path<(String, String, String)>,
+    Query(query): CatalogQuery,
+    body: axum::body::Bytes,
+) -> Created {
+    let caller = super::service_calls::Caller::from_principal(&authenticated.principal);
+    let (status, body) = runtime
+        .execute_service_operation([&endpoint, &service, &operation], request_json(&body)?, &query, caller)
+        .await?;
+    Ok((status, Json(body)))
+}
+
+/// `GET .../operations/{operation}/service-calls/{call}`.
+async fn service_call_show(
+    Extension(runtime): Extension<Runtime>,
+    Path((endpoint, service, operation, call)): Path<(String, String, String, String)>,
+) -> Result<Json<Value>> {
+    runtime.show_service_call([&endpoint, &service, &operation], &call).await.map(Json)
+}
+
+/// `POST .../service-calls/{call}/cancel`.
+async fn service_call_cancel(
+    Extension(runtime): Extension<Runtime>,
+    Path((endpoint, service, operation, call)): Path<(String, String, String, String)>,
+    Query(query): CatalogQuery,
+    body: axum::body::Bytes,
+) -> Created {
+    let (status, body) = runtime
+        .cancel_service_operation_call([&endpoint, &service, &operation], &call, request_json(&body)?, &query)
+        .await?;
+    Ok((status, Json(body)))
 }
 
 /// A request no native route serves gets PHP's answer for it: 501 when PHP

@@ -70,8 +70,8 @@ if ($argc !== 4) {
     throw new InvalidArgumentException('Compare requires two independent databases.');
 }
 $native = catalog($argv[3]);
-$tables = ['_sqlx_migrations', 'dw_server_schema', 'dw_task_completions', 'dw_poll_receipts', 'dw_query_cache', 'dw_worker_registration_incarnations', 'dw_worker_session_holders', 'dw_stream_reclaims'];
-$indexes = ['_sqlx_migrations_pkey', 'dw_task_completions_pkey', 'dw_poll_receipts_pkey', 'dw_workflow_tasks_poll', 'dw_query_cache_pkey', 'dw_worker_registration_incarnations_pkey', 'dw_worker_incarnation_authority', 'dw_worker_incarnation_retention', 'dw_worker_session_holders_pkey', 'dw_stream_reclaims_pkey', 'dw_stream_reclaims_due'];
+$tables = ['_sqlx_migrations', 'dw_server_schema', 'dw_task_completions', 'dw_poll_receipts', 'dw_query_cache', 'dw_worker_registration_incarnations', 'dw_worker_session_holders', 'dw_stream_reclaims', 'dw_service_call_deadlines', 'dw_service_admission_counters'];
+$indexes = ['_sqlx_migrations_pkey', 'dw_task_completions_pkey', 'dw_poll_receipts_pkey', 'dw_workflow_tasks_poll', 'dw_query_cache_pkey', 'dw_worker_registration_incarnations_pkey', 'dw_worker_incarnation_authority', 'dw_worker_incarnation_retention', 'dw_worker_session_holders_pkey', 'dw_stream_reclaims_pkey', 'dw_stream_reclaims_due', 'dw_service_call_deadlines_pkey', 'dw_service_call_deadlines_due', 'dw_service_admission_counters_pkey', 'dw_service_admission_counters_expiry'];
 $native = array_values(array_filter($native, static function (array $row) use ($tables, $indexes): bool {
     if (in_array($row[0], ['column', 'constraint'], true)) {
         return ! in_array(explode('.', $row[1], 2)[0], $tables, true);

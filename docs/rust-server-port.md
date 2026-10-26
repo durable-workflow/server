@@ -82,15 +82,17 @@ Updated October 24, 2026.
     ([#737](https://github.com/durable-workflow/server/issues/737)).
 
   No expectation is edited to make native pass.
-- **Parity surface.** Native answers 156 of the 175 API route methods in
+- **Parity surface.** Native answers 174 of the 175 API route methods in
   published 2.11.1's route table, with message streams, durable workflow
   stream writes, update validation, activity cancellation acknowledgement,
-  worker sessions, workflow-task cancellation scopes, caller-indexed Nexus
-  operation reads, bridge adapter webhooks, and embedded v2 and Waterline v1
-  workflow import. Eight of those are the prepared local-activity routes,
-  which it answers with PHP's refusal for a bridge without the prepared role.
-  An execution test sends each one through the native router, and the ones
-  still answering `501 rust_capability_not_implemented` must match
+  worker sessions, workflow-task cancellation scopes, service catalog
+  administration, Nexus service-call execution, show and cancel for the
+  handler kinds that stay accepted, caller-indexed Nexus operation reads,
+  bridge adapter webhooks, and embedded v2 and Waterline v1 workflow import.
+  Eight of those are the prepared local-activity routes, which it answers
+  with PHP's refusal for a bridge without the prepared role. An execution
+  test sends each one through the native router, and the ones still
+  answering `501 rust_capability_not_implemented` must match
   [`unserved-php-routes.v2.11.1.txt`](../rust/tests/fixtures/unserved-php-routes.v2.11.1.txt).
   Unlike published PHP, native's embedded v2 import refuses a bundle whose
   rows reference rows outside it, links only runs of one namespace, and reads
@@ -174,14 +176,60 @@ any other unknown path or method answers PHP's own 404 or 405
     ([checkpoint](rust-server-port-checkpoints/2026-10-23-message-streams.md)),
     except external payload references as input, stream retention cleanup
     and takeover of PHP data with streams.
-  - Service endpoints. (The service catalog reads from Server 2.11 are served:
-    native never holds catalog rows, so every list is PHP's empty page and every
-    identity its not-found answer; the `service-catalog` fixture checks 37 cases.
-    Native neither executes service operations nor accepts the workflow-task
-    `start_service_operation` command, which it refuses as
-    `unsupported_workflow_command`. When it does, an operation bound to a
-    workflow update must refuse a `wait_timeout_seconds` above the update
-    ceiling of 60 before it runs, as PHP does (Server #775).)
+  - Workflow-bound service handlers (start, signal, update and query
+    workflow), the workflow-task `start_service_operation` command, and
+    takeover of a PHP database that holds service calls. Each of these still
+    answers 501 or refuses. When the
+    workflow-bound handlers come, an operation bound to a workflow update must
+    refuse a `wait_timeout_seconds` above the update ceiling of 60 before it
+    runs, as PHP does (Server #775).
+    - Service catalog administration is served, and takeover keeps a PHP
+      database's endpoints, services and operations. The 15 admin routes under
+      `/api/service-endpoints` create, read, update and delete a namespace's
+      endpoints, services and operations as `ServiceCatalogController` does,
+      with the `service-endpoints` fixture's 72 cases. The `/api/service-catalog`
+      reads render those rows by page and identity; the `service-catalog`
+      fixture checks the empty namespace's 37 cases.
+    - Service-call execution, show and cancel are served for the handler kinds
+      that stay accepted (`activity_execution`, `invocable_http`), with the
+      `service-calls` fixture's 91 cases. That covers admission and its audit
+      row, the boundary's authorization and circuit refusals, the 503 for an
+      invalid limit, the shared rate and concurrency limits, handler failures
+      retried in the request, deadlines, idempotent replays, and cancellation.
+      A workflow-bound kind answers 501 before anything is written.
+      The `/api/service-catalog/calls` list and a call read by identity show
+      the recorded calls as `ServiceCatalogReadController` does: the scopes
+      (by default calls the namespace made or that target it), status and
+      outcome filters and buckets, newest accepted first, and the detail with
+      caller and link references; payload references and the Nexus result
+      show only to the namespace that owns the call. The fixture's last nine
+      cases read them.
+    - Differences from published 2.11.1:
+      - Native JSON documents don't keep object key order. An update that
+        only reorders a document's keys writes nothing, where PHP's strict
+        comparison writes it and moves `updated_at`.
+      - PHP checks a name and then inserts without a lock, so concurrent
+        creates of one name can end in a unique-index 500, and a delete can
+        race a child's create. Native writes under its serialized transaction,
+        so the second create gets 409.
+      - Laravel also reads a write's fields from the query string. Native reads
+        a field from it only when the body lacks that field, and only under its
+        exact name, not PHP's `metadata[a]=1` array syntax.
+      - A call's deadline lives in the native-owned `dw_service_call_deadlines`
+        (schema version 7), not in 2.11.1's
+        `workflow_service_calls.call_deadline_at`. Native keeps the frozen PHP
+        tables plus its own relations, so takeover layouts stay recognisable;
+        accepting a source with service calls will copy their deadlines.
+      - Native commits a call's admission and dispatch in one serialized
+        transaction, where PHP commits each step on its own. The rows end the
+        same.
+      - The shared admission counters live in the native-owned
+        `dw_service_admission_counters` (schema version 7), not in PHP's
+        cache. Native counts under its transition lock instead of a cache
+        lock, so an admission never answers 503 because the lock was busy, and
+        a call whose audit row fails to write takes back its rate count too.
+        The namespace-wide limits and the hard ceilings run only at their
+        default of none, and the concurrency lease lives the default day.
   - (Bridge adapter webhooks are served: `POST /api/bridge-adapters/webhook/{adapter}`,
     with the `bridge-adapters` fixture. Native admits bridge updates as the
     regular update route does; published 2.11.1 skips that admission, Server #747.

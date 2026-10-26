@@ -1,0 +1,2106 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "service-endpoints",
+  "review_state": "reviewed",
+  "contract": "Published Server 2.11.1 service catalog administration (ServiceCatalogController, admin): POST/GET/PUT/DELETE /api/service-endpoints[/{endpoint}[/services[/{service}[/operations[/{operation}]]]]] registers a namespace's Nexus endpoints, their services and the services' operations by lowercased name. Creates validate like Laravel (names required, string, at most 191 characters, /^[a-zA-Z0-9._-]+$/; descriptions at most 1000; metadata and policies arrays), answer 201 with a lowercase ULID and 409 with the existing id for a taken name. Operations require a sync or async mode, a handler binding kind and a non-empty handler_target_reference or handler_binding; a deadline_policy holds exactly timeout_seconds (1 to 2147483647) or an offset RFC3339 deadline_at within 1970-9999. Updates change only given fields, prohibit renaming an operation and repeat the binding check. Lookups answer 404 endpoint_not_found (with accepted false), service_not_found or operation_not_found, the parent first. Deletes refuse an endpoint with services, a service with operations, and succeed with outcome deleted. Endpoint lists are by name; service and operation lists in creation order. JSON documents read back as PHP arrays. The catalog reads under /api/service-catalog render the same rows by page and identity, and another namespace's identity is 404. Generated ids and whole-second times are placeholders; @own is the fixture's own namespace. Embedded applications have no HTTP catalog.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "service endpoints λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "service endpoints λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "service_endpoints": {
+    "requests": [
+      {
+        "label": "endpoints empty",
+        "method": "GET",
+        "path": "service-endpoints"
+      },
+      {
+        "label": "endpoint create",
+        "method": "POST",
+        "path": "service-endpoints",
+        "raw_body": "{\"endpoint_name\":\" Billing \",\"description\":\"Payments λ\",\"metadata\":{\"team\":\"core\",\"empty\":{},\"list\":[1,2],\"indexed\":{\"0\":\"a\",\"1\":\"b\"},\"ratio\":1.0,\"note\":\"  padded  \"}}"
+      },
+      {
+        "label": "endpoint duplicate",
+        "method": "POST",
+        "path": "service-endpoints",
+        "body": {
+          "endpoint_name": "BILLING"
+        }
+      },
+      {
+        "label": "endpoint invalid",
+        "method": "POST",
+        "path": "service-endpoints",
+        "body": {
+          "endpoint_name": "bad name!",
+          "description": 5,
+          "metadata": "x"
+        }
+      },
+      {
+        "label": "endpoint missing name",
+        "method": "POST",
+        "path": "service-endpoints",
+        "raw_body": "{}"
+      },
+      {
+        "label": "endpoint number name",
+        "method": "POST",
+        "path": "service-endpoints",
+        "body": {
+          "endpoint_name": 500
+        }
+      },
+      {
+        "label": "endpoint list name",
+        "method": "POST",
+        "path": "service-endpoints",
+        "body": {
+          "endpoint_name": [
+            "a"
+          ]
+        }
+      },
+      {
+        "label": "endpoint long name",
+        "method": "POST",
+        "path": "service-endpoints",
+        "body": {
+          "endpoint_name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      {
+        "label": "endpoint long description",
+        "method": "POST",
+        "path": "service-endpoints",
+        "body": {
+          "endpoint_name": "long",
+          "description": "ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      },
+      {
+        "label": "endpoint second",
+        "method": "POST",
+        "path": "service-endpoints",
+        "body": {
+          "endpoint_name": "alpha"
+        }
+      },
+      {
+        "label": "endpoints list",
+        "method": "GET",
+        "path": "service-endpoints"
+      },
+      {
+        "label": "endpoint show",
+        "method": "GET",
+        "path": "service-endpoints/BILLING"
+      },
+      {
+        "label": "endpoint missing",
+        "method": "GET",
+        "path": "service-endpoints/Missing"
+      },
+      {
+        "label": "endpoint update unchanged",
+        "method": "PUT",
+        "path": "service-endpoints/billing",
+        "raw_body": "{\"description\":\"Payments λ\"}"
+      },
+      {
+        "label": "endpoint update",
+        "method": "PUT",
+        "path": "service-endpoints/billing",
+        "body": {
+          "description": "  ",
+          "metadata": {
+            "team": "edge"
+          }
+        }
+      },
+      {
+        "label": "endpoint update invalid",
+        "method": "PUT",
+        "path": "service-endpoints/billing",
+        "body": {
+          "metadata": "x"
+        }
+      },
+      {
+        "label": "endpoint update missing",
+        "method": "PUT",
+        "path": "service-endpoints/nope",
+        "body": {
+          "metadata": "x"
+        }
+      },
+      {
+        "label": "service create",
+        "method": "POST",
+        "path": "service-endpoints/billing/services",
+        "body": {
+          "service_name": "Invoices",
+          "description": "Invoice service",
+          "metadata": {
+            "tier": 1
+          }
+        }
+      },
+      {
+        "label": "service second",
+        "method": "POST",
+        "path": "service-endpoints/billing/services",
+        "body": {
+          "service_name": "accounts"
+        }
+      },
+      {
+        "label": "service duplicate",
+        "method": "POST",
+        "path": "service-endpoints/billing/services",
+        "body": {
+          "service_name": "INVOICES"
+        }
+      },
+      {
+        "label": "service invalid",
+        "method": "POST",
+        "path": "service-endpoints/billing/services",
+        "body": {
+          "service_name": "",
+          "metadata": [
+            1
+          ]
+        }
+      },
+      {
+        "label": "service missing endpoint",
+        "method": "POST",
+        "path": "service-endpoints/nope/services",
+        "raw_body": "{}"
+      },
+      {
+        "label": "services list",
+        "method": "GET",
+        "path": "service-endpoints/billing/services"
+      },
+      {
+        "label": "services missing endpoint",
+        "method": "GET",
+        "path": "service-endpoints/nope/services"
+      },
+      {
+        "label": "service show",
+        "method": "GET",
+        "path": "service-endpoints/billing/services/Invoices"
+      },
+      {
+        "label": "service missing",
+        "method": "GET",
+        "path": "service-endpoints/billing/services/nope"
+      },
+      {
+        "label": "service update",
+        "method": "PUT",
+        "path": "service-endpoints/billing/services/invoices",
+        "body": {
+          "description": "Invoices",
+          "metadata": null
+        }
+      },
+      {
+        "label": "operation create",
+        "method": "POST",
+        "path": "service-endpoints/billing/services/invoices/operations",
+        "body": {
+          "operation_name": "Charge",
+          "operation_mode": "sync",
+          "handler_binding_kind": "start_workflow",
+          "handler_target_reference": "billing.charge",
+          "deadline_policy": {
+            "timeout_seconds": 30
+          },
+          "retry_policy": {
+            "max_attempts": 3
+          }
+        }
+      },
+      {
+        "label": "operation duplicate",
+        "method": "POST",
+        "path": "service-endpoints/billing/services/invoices/operations",
+        "body": {
+          "operation_name": "CHARGE",
+          "operation_mode": "async",
+          "handler_binding_kind": "signal_workflow",
+          "handler_target_reference": "billing.refund"
+        }
+      },
+      {
+        "label": "operation missing fields",
+        "method": "POST",
+        "path": "service-endpoints/billing/services/invoices/operations",
+        "raw_body": "{}"
+      },
+      {
+        "label": "operation unbound",
+        "method": "POST",
+        "path": "service-endpoints/billing/services/invoices/operations",
+        "body": {
+          "operation_name": "refund",
+          "operation_mode": "async",
+          "handler_binding_kind": "signal_workflow"
+        }
+      },
+      {
+        "label": "operation empty binding",
+        "method": "POST",
+        "path": "service-endpoints/billing/services/invoices/operations",
+        "raw_body": "{\"operation_name\":\"refund\",\"operation_mode\":\"async\",\"handler_binding_kind\":\"signal_workflow\",\"handler_target_reference\":\"  \",\"handler_binding\":{}}"
+      },
+      {
+        "label": "operation bad vocabulary",
+        "method": "POST",
+        "path": "service-endpoints/billing/services/invoices/operations",
+        "body": {
+          "operation_name": "refund",
+          "operation_mode": "later",
+          "handler_binding_kind": 5,
+          "handler_target_reference": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      },
+      {
+        "label": "operation deadline keys",
+        "method": "POST",
+        "path": "service-endpoints/billing/services/invoices/operations",
+        "raw_body": "{\"operation_name\":\"refund\",\"operation_mode\":\"async\",\"handler_binding_kind\":\"signal_workflow\",\"handler_target_reference\":\"billing.refund\",\"deadline_policy\":{}}"
+      },
+      {
+        "label": "operation deadline both",
+        "method": "POST",
+        "path": "service-endpoints/billing/services/invoices/operations",
+        "body": {
+          "operation_name": "refund",
+          "operation_mode": "async",
+          "handler_binding_kind": "signal_workflow",
+          "handler_target_reference": "billing.refund",
+          "deadline_policy": {
+            "timeout_seconds": 5,
+            "deadline_at": "2030-01-01T00:00:00Z"
+          }
+        }
+      },
+      {
+        "label": "operation deadline zero",
+        "method": "POST",
+        "path": "service-endpoints/billing/services/invoices/operations",
+        "body": {
+          "operation_name": "refund",
+          "operation_mode": "async",
+          "handler_binding_kind": "signal_workflow",
+          "handler_target_reference": "billing.refund",
+          "deadline_policy": {
+            "timeout_seconds": 0
+          }
+        }
+      },
+      {
+        "label": "operation deadline float",
+        "method": "POST",
+        "path": "service-endpoints/billing/services/invoices/operations",
+        "body": {
+          "operation_name": "refund",
+          "operation_mode": "async",
+          "handler_binding_kind": "signal_workflow",
+          "handler_target_reference": "billing.refund",
+          "deadline_policy": {
+            "timeout_seconds": 5.5
+          }
+        }
+      },
+      {
+        "label": "operation deadline shape",
+        "method": "POST",
+        "path": "service-endpoints/billing/services/invoices/operations",
+        "body": {
+          "operation_name": "refund",
+          "operation_mode": "async",
+          "handler_binding_kind": "signal_workflow",
+          "handler_target_reference": "billing.refund",
+          "deadline_policy": {
+            "deadline_at": "2030-01-01T00:00:00"
+          }
+        }
+      },
+      {
+        "label": "operation deadline digits",
+        "method": "POST",
+        "path": "service-endpoints/billing/services/invoices/operations",
+        "body": {
+          "operation_name": "refund",
+          "operation_mode": "async",
+          "handler_binding_kind": "signal_workflow",
+          "handler_target_reference": "billing.refund",
+          "deadline_policy": {
+            "deadline_at": "2030-01-01T00:00:00.1234567Z"
+          }
+        }
+      },
+      {
+        "label": "operation deadline calendar",
+        "method": "POST",
+        "path": "service-endpoints/billing/services/invoices/operations",
+        "body": {
+          "operation_name": "refund",
+          "operation_mode": "async",
+          "handler_binding_kind": "signal_workflow",
+          "handler_target_reference": "billing.refund",
+          "deadline_policy": {
+            "deadline_at": "2030-02-30T00:00:00Z"
+          }
+        }
+      },
+      {
+        "label": "operation deadline hour",
+        "method": "POST",
+        "path": "service-endpoints/billing/services/invoices/operations",
+        "body": {
+          "operation_name": "refund",
+          "operation_mode": "async",
+          "handler_binding_kind": "signal_workflow",
+          "handler_target_reference": "billing.refund",
+          "deadline_policy": {
+            "deadline_at": "2030-01-01T24:00:00Z"
+          }
+        }
+      },
+      {
+        "label": "operation deadline years",
+        "method": "POST",
+        "path": "service-endpoints/billing/services/invoices/operations",
+        "body": {
+          "operation_name": "refund",
+          "operation_mode": "async",
+          "handler_binding_kind": "signal_workflow",
+          "handler_target_reference": "billing.refund",
+          "deadline_policy": {
+            "deadline_at": "1970-01-01T00:30:00+01:00"
+          }
+        }
+      },
+      {
+        "label": "operation second",
+        "method": "POST",
+        "path": "service-endpoints/billing/services/invoices/operations",
+        "body": {
+          "operation_name": "refund",
+          "operation_mode": "async",
+          "handler_binding_kind": "signal_workflow",
+          "handler_binding": {
+            "workflow_type": "billing.refund"
+          },
+          "deadline_policy": {
+            "deadline_at": "2030-01-01T00:00:00.5+05:30"
+          }
+        }
+      },
+      {
+        "label": "operations list",
+        "method": "GET",
+        "path": "service-endpoints/billing/services/invoices/operations"
+      },
+      {
+        "label": "operation show",
+        "method": "GET",
+        "path": "service-endpoints/billing/services/invoices/operations/CHARGE"
+      },
+      {
+        "label": "operation missing",
+        "method": "GET",
+        "path": "service-endpoints/billing/services/invoices/operations/nope"
+      },
+      {
+        "label": "operation missing service",
+        "method": "GET",
+        "path": "service-endpoints/billing/services/nope/operations/charge"
+      },
+      {
+        "label": "operation rename",
+        "method": "PUT",
+        "path": "service-endpoints/billing/services/invoices/operations/charge",
+        "body": {
+          "operation_name": "other"
+        }
+      },
+      {
+        "label": "operation rename empty",
+        "method": "PUT",
+        "path": "service-endpoints/billing/services/invoices/operations/charge",
+        "body": {
+          "operation_name": "",
+          "description": "Charges"
+        }
+      },
+      {
+        "label": "operation clear target",
+        "method": "PUT",
+        "path": "service-endpoints/billing/services/invoices/operations/charge",
+        "body": {
+          "handler_target_reference": null
+        }
+      },
+      {
+        "label": "operation rebind",
+        "method": "PUT",
+        "path": "service-endpoints/billing/services/invoices/operations/charge",
+        "body": {
+          "handler_target_reference": null,
+          "handler_binding": {
+            "workflow_type": "billing.charge"
+          },
+          "operation_mode": "async"
+        }
+      },
+      {
+        "label": "operation unbind",
+        "method": "PUT",
+        "path": "service-endpoints/billing/services/invoices/operations/charge",
+        "raw_body": "{\"handler_binding\":{}}"
+      },
+      {
+        "label": "operation update deadline",
+        "method": "PUT",
+        "path": "service-endpoints/billing/services/invoices/operations/charge",
+        "body": {
+          "deadline_policy": {
+            "timeout_seconds": "5"
+          }
+        }
+      },
+      {
+        "label": "operation update mode",
+        "method": "PUT",
+        "path": "service-endpoints/billing/services/invoices/operations/charge",
+        "body": {
+          "operation_mode": null
+        }
+      },
+      {
+        "label": "read endpoints",
+        "method": "GET",
+        "path": "service-catalog/endpoints"
+      },
+      {
+        "label": "read endpoints page",
+        "method": "GET",
+        "path": "service-catalog/endpoints?per_page=1&page=2"
+      },
+      {
+        "label": "read services of endpoint",
+        "method": "GET",
+        "path": "service-catalog/services?endpoint_id={endpoint create.id}"
+      },
+      {
+        "label": "read operations of service",
+        "method": "GET",
+        "path": "service-catalog/operations?service_id={service create.id}"
+      },
+      {
+        "label": "read endpoint",
+        "method": "GET",
+        "path": "service-catalog/endpoints/{endpoint create.id}"
+      },
+      {
+        "label": "read service",
+        "method": "GET",
+        "path": "service-catalog/services/{service create.id}"
+      },
+      {
+        "label": "read operation",
+        "method": "GET",
+        "path": "service-catalog/operations/{operation create.id}"
+      },
+      {
+        "label": "read endpoint elsewhere",
+        "method": "GET",
+        "path": "service-catalog/endpoints/{endpoint create.id}",
+        "namespace": "default"
+      },
+      {
+        "label": "endpoint delete with services",
+        "method": "DELETE",
+        "path": "service-endpoints/billing"
+      },
+      {
+        "label": "service delete with operations",
+        "method": "DELETE",
+        "path": "service-endpoints/billing/services/invoices"
+      },
+      {
+        "label": "operation delete",
+        "method": "DELETE",
+        "path": "service-endpoints/billing/services/invoices/operations/charge"
+      },
+      {
+        "label": "operation delete again",
+        "method": "DELETE",
+        "path": "service-endpoints/billing/services/invoices/operations/charge"
+      },
+      {
+        "label": "operation delete second",
+        "method": "DELETE",
+        "path": "service-endpoints/billing/services/invoices/operations/refund"
+      },
+      {
+        "label": "service delete",
+        "method": "DELETE",
+        "path": "service-endpoints/billing/services/invoices"
+      },
+      {
+        "label": "service delete second",
+        "method": "DELETE",
+        "path": "service-endpoints/billing/services/accounts"
+      },
+      {
+        "label": "endpoint delete",
+        "method": "DELETE",
+        "path": "service-endpoints/billing"
+      },
+      {
+        "label": "endpoint delete second",
+        "method": "DELETE",
+        "path": "service-endpoints/alpha"
+      },
+      {
+        "label": "endpoints after",
+        "method": "GET",
+        "path": "service-endpoints"
+      }
+    ],
+    "expected": {
+      "endpoints empty": [
+        200,
+        {
+          "service_endpoints": []
+        }
+      ],
+      "endpoint create": [
+        201,
+        {
+          "id": "{id:endpoint create}",
+          "namespace": "@own",
+          "endpoint_name": "billing",
+          "description": "Payments λ",
+          "metadata": {
+            "team": "core",
+            "empty": [],
+            "list": [
+              1,
+              2
+            ],
+            "indexed": [
+              "a",
+              "b"
+            ],
+            "ratio": 1,
+            "note": "padded"
+          },
+          "created_at": "{time:endpoint create created}",
+          "updated_at": "{time:endpoint create updated}"
+        }
+      ],
+      "endpoint duplicate": [
+        409,
+        {
+          "message": "A service endpoint [billing] already exists in namespace [@own].",
+          "reason": "endpoint_already_exists",
+          "namespace": "@own",
+          "endpoint_name": "billing",
+          "endpoint_id": "{id:endpoint create}"
+        }
+      ],
+      "endpoint invalid": [
+        422,
+        {
+          "message": "The endpoint name field format is invalid. (and 2 more errors)",
+          "reason": "validation_failed",
+          "errors": {
+            "endpoint_name": [
+              "The endpoint name field format is invalid."
+            ],
+            "description": [
+              "The description field must be a string."
+            ],
+            "metadata": [
+              "The metadata field must be an array."
+            ]
+          },
+          "validation_errors": {
+            "endpoint_name": [
+              "The endpoint name field format is invalid."
+            ],
+            "description": [
+              "The description field must be a string."
+            ],
+            "metadata": [
+              "The metadata field must be an array."
+            ]
+          }
+        }
+      ],
+      "endpoint missing name": [
+        422,
+        {
+          "message": "The endpoint name field is required.",
+          "reason": "validation_failed",
+          "errors": {
+            "endpoint_name": [
+              "The endpoint name field is required."
+            ]
+          },
+          "validation_errors": {
+            "endpoint_name": [
+              "The endpoint name field is required."
+            ]
+          }
+        }
+      ],
+      "endpoint number name": [
+        422,
+        {
+          "message": "The endpoint name field must be a string.",
+          "reason": "validation_failed",
+          "errors": {
+            "endpoint_name": [
+              "The endpoint name field must be a string."
+            ]
+          },
+          "validation_errors": {
+            "endpoint_name": [
+              "The endpoint name field must be a string."
+            ]
+          }
+        }
+      ],
+      "endpoint list name": [
+        422,
+        {
+          "message": "The endpoint name field must be a string. (and 1 more error)",
+          "reason": "validation_failed",
+          "errors": {
+            "endpoint_name": [
+              "The endpoint name field must be a string.",
+              "The endpoint name field format is invalid."
+            ]
+          },
+          "validation_errors": {
+            "endpoint_name": [
+              "The endpoint name field must be a string.",
+              "The endpoint name field format is invalid."
+            ]
+          }
+        }
+      ],
+      "endpoint long name": [
+        422,
+        {
+          "message": "The endpoint name field must not be greater than 191 characters.",
+          "reason": "validation_failed",
+          "errors": {
+            "endpoint_name": [
+              "The endpoint name field must not be greater than 191 characters."
+            ]
+          },
+          "validation_errors": {
+            "endpoint_name": [
+              "The endpoint name field must not be greater than 191 characters."
+            ]
+          }
+        }
+      ],
+      "endpoint long description": [
+        422,
+        {
+          "message": "The description field must not be greater than 1000 characters.",
+          "reason": "validation_failed",
+          "errors": {
+            "description": [
+              "The description field must not be greater than 1000 characters."
+            ]
+          },
+          "validation_errors": {
+            "description": [
+              "The description field must not be greater than 1000 characters."
+            ]
+          }
+        }
+      ],
+      "endpoint second": [
+        201,
+        {
+          "id": "{id:endpoint second}",
+          "namespace": "@own",
+          "endpoint_name": "alpha",
+          "description": null,
+          "metadata": null,
+          "created_at": "{time:endpoint second created}",
+          "updated_at": "{time}"
+        }
+      ],
+      "endpoints list": [
+        200,
+        {
+          "service_endpoints": [
+            {
+              "id": "{id:endpoint second}",
+              "namespace": "@own",
+              "endpoint_name": "alpha",
+              "description": null,
+              "metadata": null,
+              "created_at": "{time:endpoint second created}",
+              "updated_at": "{time}"
+            },
+            {
+              "id": "{id:endpoint create}",
+              "namespace": "@own",
+              "endpoint_name": "billing",
+              "description": "Payments λ",
+              "metadata": {
+                "team": "core",
+                "empty": [],
+                "list": [
+                  1,
+                  2
+                ],
+                "indexed": [
+                  "a",
+                  "b"
+                ],
+                "ratio": 1,
+                "note": "padded"
+              },
+              "created_at": "{time:endpoint create created}",
+              "updated_at": "{time}"
+            }
+          ]
+        }
+      ],
+      "endpoint show": [
+        200,
+        {
+          "id": "{id:endpoint create}",
+          "namespace": "@own",
+          "endpoint_name": "billing",
+          "description": "Payments λ",
+          "metadata": {
+            "team": "core",
+            "empty": [],
+            "list": [
+              1,
+              2
+            ],
+            "indexed": [
+              "a",
+              "b"
+            ],
+            "ratio": 1,
+            "note": "padded"
+          },
+          "created_at": "{time:endpoint create created}",
+          "updated_at": "{time:endpoint create updated}"
+        }
+      ],
+      "endpoint missing": [
+        404,
+        {
+          "accepted": false,
+          "message": "Service endpoint [missing] not found in namespace [@own].",
+          "reason": "endpoint_not_found",
+          "namespace": "@own",
+          "endpoint_name": "missing"
+        }
+      ],
+      "endpoint update unchanged": [
+        200,
+        {
+          "id": "{id:endpoint create}",
+          "namespace": "@own",
+          "endpoint_name": "billing",
+          "description": "Payments λ",
+          "metadata": {
+            "team": "core",
+            "empty": [],
+            "list": [
+              1,
+              2
+            ],
+            "indexed": [
+              "a",
+              "b"
+            ],
+            "ratio": 1,
+            "note": "padded"
+          },
+          "created_at": "{time:endpoint create created}",
+          "updated_at": "{time:endpoint create updated}"
+        }
+      ],
+      "endpoint update": [
+        200,
+        {
+          "id": "{id:endpoint create}",
+          "namespace": "@own",
+          "endpoint_name": "billing",
+          "description": null,
+          "metadata": {
+            "team": "edge"
+          },
+          "created_at": "{time:endpoint create created}",
+          "updated_at": "{time}"
+        }
+      ],
+      "endpoint update invalid": [
+        422,
+        {
+          "message": "The metadata field must be an array.",
+          "reason": "validation_failed",
+          "errors": {
+            "metadata": [
+              "The metadata field must be an array."
+            ]
+          },
+          "validation_errors": {
+            "metadata": [
+              "The metadata field must be an array."
+            ]
+          }
+        }
+      ],
+      "endpoint update missing": [
+        404,
+        {
+          "accepted": false,
+          "message": "Service endpoint [nope] not found in namespace [@own].",
+          "reason": "endpoint_not_found",
+          "namespace": "@own",
+          "endpoint_name": "nope"
+        }
+      ],
+      "service create": [
+        201,
+        {
+          "id": "{id:service create}",
+          "namespace": "@own",
+          "endpoint_id": "{id:endpoint create}",
+          "endpoint_name": "billing",
+          "service_name": "invoices",
+          "description": "Invoice service",
+          "metadata": {
+            "tier": 1
+          },
+          "created_at": "{time:service create created}",
+          "updated_at": "{time}"
+        }
+      ],
+      "service second": [
+        201,
+        {
+          "id": "{id:service second}",
+          "namespace": "@own",
+          "endpoint_id": "{id:endpoint create}",
+          "endpoint_name": "billing",
+          "service_name": "accounts",
+          "description": null,
+          "metadata": null,
+          "created_at": "{time:service second created}",
+          "updated_at": "{time}"
+        }
+      ],
+      "service duplicate": [
+        409,
+        {
+          "message": "A service [invoices] already exists under endpoint [billing] in namespace [@own].",
+          "reason": "service_already_exists",
+          "namespace": "@own",
+          "endpoint_name": "billing",
+          "service_name": "invoices",
+          "service_id": "{id:service create}"
+        }
+      ],
+      "service invalid": [
+        422,
+        {
+          "message": "The service name field is required.",
+          "reason": "validation_failed",
+          "errors": {
+            "service_name": [
+              "The service name field is required."
+            ]
+          },
+          "validation_errors": {
+            "service_name": [
+              "The service name field is required."
+            ]
+          }
+        }
+      ],
+      "service missing endpoint": [
+        404,
+        {
+          "accepted": false,
+          "message": "Service endpoint [nope] not found in namespace [@own].",
+          "reason": "endpoint_not_found",
+          "namespace": "@own",
+          "endpoint_name": "nope"
+        }
+      ],
+      "services list": [
+        200,
+        {
+          "services": [
+            {
+              "id": "{id:service create}",
+              "namespace": "@own",
+              "endpoint_id": "{id:endpoint create}",
+              "endpoint_name": "billing",
+              "service_name": "invoices",
+              "description": "Invoice service",
+              "metadata": {
+                "tier": 1
+              },
+              "created_at": "{time:service create created}",
+              "updated_at": "{time}"
+            },
+            {
+              "id": "{id:service second}",
+              "namespace": "@own",
+              "endpoint_id": "{id:endpoint create}",
+              "endpoint_name": "billing",
+              "service_name": "accounts",
+              "description": null,
+              "metadata": null,
+              "created_at": "{time:service second created}",
+              "updated_at": "{time}"
+            }
+          ]
+        }
+      ],
+      "services missing endpoint": [
+        404,
+        {
+          "accepted": false,
+          "message": "Service endpoint [nope] not found in namespace [@own].",
+          "reason": "endpoint_not_found",
+          "namespace": "@own",
+          "endpoint_name": "nope"
+        }
+      ],
+      "service show": [
+        200,
+        {
+          "id": "{id:service create}",
+          "namespace": "@own",
+          "endpoint_id": "{id:endpoint create}",
+          "endpoint_name": "billing",
+          "service_name": "invoices",
+          "description": "Invoice service",
+          "metadata": {
+            "tier": 1
+          },
+          "created_at": "{time:service create created}",
+          "updated_at": "{time}"
+        }
+      ],
+      "service missing": [
+        404,
+        {
+          "message": "Service [nope] not found under endpoint [billing] in namespace [@own].",
+          "reason": "service_not_found",
+          "namespace": "@own",
+          "endpoint_name": "billing",
+          "service_name": "nope"
+        }
+      ],
+      "service update": [
+        200,
+        {
+          "id": "{id:service create}",
+          "namespace": "@own",
+          "endpoint_id": "{id:endpoint create}",
+          "endpoint_name": "billing",
+          "service_name": "invoices",
+          "description": "Invoices",
+          "metadata": null,
+          "created_at": "{time:service create created}",
+          "updated_at": "{time}"
+        }
+      ],
+      "operation create": [
+        201,
+        {
+          "id": "{id:operation create}",
+          "namespace": "@own",
+          "endpoint_id": "{id:endpoint create}",
+          "endpoint_name": "billing",
+          "service_id": "{id:service create}",
+          "service_name": "invoices",
+          "operation_name": "charge",
+          "description": null,
+          "operation_mode": "sync",
+          "handler_binding_kind": "start_workflow",
+          "handler_target_reference": "billing.charge",
+          "handler_binding": null,
+          "deadline_policy": {
+            "timeout_seconds": 30
+          },
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": {
+            "max_attempts": 3
+          },
+          "boundary_policy": null,
+          "metadata": null,
+          "created_at": "{time:operation create created}",
+          "updated_at": "{time}"
+        }
+      ],
+      "operation duplicate": [
+        409,
+        {
+          "message": "An operation [charge] already exists under service [invoices] at endpoint [billing] in namespace [@own].",
+          "reason": "operation_already_exists",
+          "namespace": "@own",
+          "endpoint_name": "billing",
+          "service_name": "invoices",
+          "operation_name": "charge",
+          "operation_id": "{id:operation create}"
+        }
+      ],
+      "operation missing fields": [
+        422,
+        {
+          "message": "The operation mode field is required. (and 2 more errors)",
+          "reason": "validation_failed",
+          "errors": {
+            "operation_mode": [
+              "The operation mode field is required."
+            ],
+            "handler_binding_kind": [
+              "The handler binding kind field is required."
+            ],
+            "operation_name": [
+              "The operation name field is required."
+            ]
+          },
+          "validation_errors": {
+            "operation_mode": [
+              "The operation mode field is required."
+            ],
+            "handler_binding_kind": [
+              "The handler binding kind field is required."
+            ],
+            "operation_name": [
+              "The operation name field is required."
+            ]
+          }
+        }
+      ],
+      "operation unbound": [
+        422,
+        {
+          "message": "Provide handler_target_reference or a non-empty handler_binding.",
+          "reason": "validation_failed",
+          "errors": {
+            "handler_target_reference": [
+              "Provide handler_target_reference or a non-empty handler_binding."
+            ]
+          },
+          "validation_errors": {
+            "handler_target_reference": [
+              "Provide handler_target_reference or a non-empty handler_binding."
+            ]
+          }
+        }
+      ],
+      "operation empty binding": [
+        422,
+        {
+          "message": "Provide handler_target_reference or a non-empty handler_binding.",
+          "reason": "validation_failed",
+          "errors": {
+            "handler_target_reference": [
+              "Provide handler_target_reference or a non-empty handler_binding."
+            ]
+          },
+          "validation_errors": {
+            "handler_target_reference": [
+              "Provide handler_target_reference or a non-empty handler_binding."
+            ]
+          }
+        }
+      ],
+      "operation bad vocabulary": [
+        422,
+        {
+          "message": "The selected operation mode is invalid. (and 3 more errors)",
+          "reason": "validation_failed",
+          "errors": {
+            "operation_mode": [
+              "The selected operation mode is invalid."
+            ],
+            "handler_binding_kind": [
+              "The handler binding kind field must be a string.",
+              "The selected handler binding kind is invalid."
+            ],
+            "handler_target_reference": [
+              "The handler target reference field must not be greater than 191 characters."
+            ]
+          },
+          "validation_errors": {
+            "operation_mode": [
+              "The selected operation mode is invalid."
+            ],
+            "handler_binding_kind": [
+              "The handler binding kind field must be a string.",
+              "The selected handler binding kind is invalid."
+            ],
+            "handler_target_reference": [
+              "The handler target reference field must not be greater than 191 characters."
+            ]
+          }
+        }
+      ],
+      "operation deadline keys": [
+        422,
+        {
+          "message": "Service deadline_policy must contain exactly timeout_seconds or deadline_at.",
+          "reason": "validation_failed",
+          "errors": {
+            "deadline_policy": [
+              "Service deadline_policy must contain exactly timeout_seconds or deadline_at."
+            ]
+          },
+          "validation_errors": {
+            "deadline_policy": [
+              "Service deadline_policy must contain exactly timeout_seconds or deadline_at."
+            ]
+          }
+        }
+      ],
+      "operation deadline both": [
+        422,
+        {
+          "message": "Service deadline_policy must contain exactly timeout_seconds or deadline_at.",
+          "reason": "validation_failed",
+          "errors": {
+            "deadline_policy": [
+              "Service deadline_policy must contain exactly timeout_seconds or deadline_at."
+            ]
+          },
+          "validation_errors": {
+            "deadline_policy": [
+              "Service deadline_policy must contain exactly timeout_seconds or deadline_at."
+            ]
+          }
+        }
+      ],
+      "operation deadline zero": [
+        422,
+        {
+          "message": "Service timeout_seconds must be an integer from 1 to 2147483647.",
+          "reason": "validation_failed",
+          "errors": {
+            "deadline_policy": [
+              "Service timeout_seconds must be an integer from 1 to 2147483647."
+            ]
+          },
+          "validation_errors": {
+            "deadline_policy": [
+              "Service timeout_seconds must be an integer from 1 to 2147483647."
+            ]
+          }
+        }
+      ],
+      "operation deadline float": [
+        422,
+        {
+          "message": "Service timeout_seconds must be an integer from 1 to 2147483647.",
+          "reason": "validation_failed",
+          "errors": {
+            "deadline_policy": [
+              "Service timeout_seconds must be an integer from 1 to 2147483647."
+            ]
+          },
+          "validation_errors": {
+            "deadline_policy": [
+              "Service timeout_seconds must be an integer from 1 to 2147483647."
+            ]
+          }
+        }
+      ],
+      "operation deadline shape": [
+        422,
+        {
+          "message": "Service deadline_at must be offset-bearing RFC3339 with at most six fractional digits.",
+          "reason": "validation_failed",
+          "errors": {
+            "deadline_policy": [
+              "Service deadline_at must be offset-bearing RFC3339 with at most six fractional digits."
+            ]
+          },
+          "validation_errors": {
+            "deadline_policy": [
+              "Service deadline_at must be offset-bearing RFC3339 with at most six fractional digits."
+            ]
+          }
+        }
+      ],
+      "operation deadline digits": [
+        422,
+        {
+          "message": "Service deadline_at must be offset-bearing RFC3339 with at most six fractional digits.",
+          "reason": "validation_failed",
+          "errors": {
+            "deadline_policy": [
+              "Service deadline_at must be offset-bearing RFC3339 with at most six fractional digits."
+            ]
+          },
+          "validation_errors": {
+            "deadline_policy": [
+              "Service deadline_at must be offset-bearing RFC3339 with at most six fractional digits."
+            ]
+          }
+        }
+      ],
+      "operation deadline calendar": [
+        422,
+        {
+          "message": "Service deadline_at must be a valid calendar instant.",
+          "reason": "validation_failed",
+          "errors": {
+            "deadline_policy": [
+              "Service deadline_at must be a valid calendar instant."
+            ]
+          },
+          "validation_errors": {
+            "deadline_policy": [
+              "Service deadline_at must be a valid calendar instant."
+            ]
+          }
+        }
+      ],
+      "operation deadline hour": [
+        422,
+        {
+          "message": "Service deadline_at must be a valid calendar instant.",
+          "reason": "validation_failed",
+          "errors": {
+            "deadline_policy": [
+              "Service deadline_at must be a valid calendar instant."
+            ]
+          },
+          "validation_errors": {
+            "deadline_policy": [
+              "Service deadline_at must be a valid calendar instant."
+            ]
+          }
+        }
+      ],
+      "operation deadline years": [
+        422,
+        {
+          "message": "Service call deadlines must resolve within UTC years 1970 through 9999.",
+          "reason": "validation_failed",
+          "errors": {
+            "deadline_policy": [
+              "Service call deadlines must resolve within UTC years 1970 through 9999."
+            ]
+          },
+          "validation_errors": {
+            "deadline_policy": [
+              "Service call deadlines must resolve within UTC years 1970 through 9999."
+            ]
+          }
+        }
+      ],
+      "operation second": [
+        201,
+        {
+          "id": "{id:operation second}",
+          "namespace": "@own",
+          "endpoint_id": "{id:endpoint create}",
+          "endpoint_name": "billing",
+          "service_id": "{id:service create}",
+          "service_name": "invoices",
+          "operation_name": "refund",
+          "description": null,
+          "operation_mode": "async",
+          "handler_binding_kind": "signal_workflow",
+          "handler_target_reference": null,
+          "handler_binding": {
+            "workflow_type": "billing.refund"
+          },
+          "deadline_policy": {
+            "deadline_at": "2030-01-01T00:00:00.5+05:30"
+          },
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": null,
+          "metadata": null,
+          "created_at": "{time:operation second created}",
+          "updated_at": "{time}"
+        }
+      ],
+      "operations list": [
+        200,
+        {
+          "operations": [
+            {
+              "id": "{id:operation create}",
+              "namespace": "@own",
+              "endpoint_id": "{id:endpoint create}",
+              "endpoint_name": "billing",
+              "service_id": "{id:service create}",
+              "service_name": "invoices",
+              "operation_name": "charge",
+              "description": null,
+              "operation_mode": "sync",
+              "handler_binding_kind": "start_workflow",
+              "handler_target_reference": "billing.charge",
+              "handler_binding": null,
+              "deadline_policy": {
+                "timeout_seconds": 30
+              },
+              "idempotency_policy": null,
+              "cancellation_policy": null,
+              "retry_policy": {
+                "max_attempts": 3
+              },
+              "boundary_policy": null,
+              "metadata": null,
+              "created_at": "{time:operation create created}",
+              "updated_at": "{time}"
+            },
+            {
+              "id": "{id:operation second}",
+              "namespace": "@own",
+              "endpoint_id": "{id:endpoint create}",
+              "endpoint_name": "billing",
+              "service_id": "{id:service create}",
+              "service_name": "invoices",
+              "operation_name": "refund",
+              "description": null,
+              "operation_mode": "async",
+              "handler_binding_kind": "signal_workflow",
+              "handler_target_reference": null,
+              "handler_binding": {
+                "workflow_type": "billing.refund"
+              },
+              "deadline_policy": {
+                "deadline_at": "2030-01-01T00:00:00.5+05:30"
+              },
+              "idempotency_policy": null,
+              "cancellation_policy": null,
+              "retry_policy": null,
+              "boundary_policy": null,
+              "metadata": null,
+              "created_at": "{time:operation second created}",
+              "updated_at": "{time}"
+            }
+          ]
+        }
+      ],
+      "operation show": [
+        200,
+        {
+          "id": "{id:operation create}",
+          "namespace": "@own",
+          "endpoint_id": "{id:endpoint create}",
+          "endpoint_name": "billing",
+          "service_id": "{id:service create}",
+          "service_name": "invoices",
+          "operation_name": "charge",
+          "description": null,
+          "operation_mode": "sync",
+          "handler_binding_kind": "start_workflow",
+          "handler_target_reference": "billing.charge",
+          "handler_binding": null,
+          "deadline_policy": {
+            "timeout_seconds": 30
+          },
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": {
+            "max_attempts": 3
+          },
+          "boundary_policy": null,
+          "metadata": null,
+          "created_at": "{time:operation create created}",
+          "updated_at": "{time}"
+        }
+      ],
+      "operation missing": [
+        404,
+        {
+          "message": "Operation [nope] not found under service [invoices] at endpoint [billing] in namespace [@own].",
+          "reason": "operation_not_found",
+          "namespace": "@own",
+          "endpoint_name": "billing",
+          "service_name": "invoices",
+          "operation_name": "nope"
+        }
+      ],
+      "operation missing service": [
+        404,
+        {
+          "message": "Service [nope] not found under endpoint [billing] in namespace [@own].",
+          "reason": "service_not_found",
+          "namespace": "@own",
+          "endpoint_name": "billing",
+          "service_name": "nope"
+        }
+      ],
+      "operation rename": [
+        422,
+        {
+          "message": "The operation name field is prohibited.",
+          "reason": "validation_failed",
+          "errors": {
+            "operation_name": [
+              "The operation name field is prohibited."
+            ]
+          },
+          "validation_errors": {
+            "operation_name": [
+              "The operation name field is prohibited."
+            ]
+          }
+        }
+      ],
+      "operation rename empty": [
+        200,
+        {
+          "id": "{id:operation create}",
+          "namespace": "@own",
+          "endpoint_id": "{id:endpoint create}",
+          "endpoint_name": "billing",
+          "service_id": "{id:service create}",
+          "service_name": "invoices",
+          "operation_name": "charge",
+          "description": "Charges",
+          "operation_mode": "sync",
+          "handler_binding_kind": "start_workflow",
+          "handler_target_reference": "billing.charge",
+          "handler_binding": null,
+          "deadline_policy": {
+            "timeout_seconds": 30
+          },
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": {
+            "max_attempts": 3
+          },
+          "boundary_policy": null,
+          "metadata": null,
+          "created_at": "{time:operation create created}",
+          "updated_at": "{time}"
+        }
+      ],
+      "operation clear target": [
+        422,
+        {
+          "message": "Provide handler_target_reference or a non-empty handler_binding.",
+          "reason": "validation_failed",
+          "errors": {
+            "handler_target_reference": [
+              "Provide handler_target_reference or a non-empty handler_binding."
+            ]
+          },
+          "validation_errors": {
+            "handler_target_reference": [
+              "Provide handler_target_reference or a non-empty handler_binding."
+            ]
+          }
+        }
+      ],
+      "operation rebind": [
+        200,
+        {
+          "id": "{id:operation create}",
+          "namespace": "@own",
+          "endpoint_id": "{id:endpoint create}",
+          "endpoint_name": "billing",
+          "service_id": "{id:service create}",
+          "service_name": "invoices",
+          "operation_name": "charge",
+          "description": "Charges",
+          "operation_mode": "async",
+          "handler_binding_kind": "start_workflow",
+          "handler_target_reference": null,
+          "handler_binding": {
+            "workflow_type": "billing.charge"
+          },
+          "deadline_policy": {
+            "timeout_seconds": 30
+          },
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": {
+            "max_attempts": 3
+          },
+          "boundary_policy": null,
+          "metadata": null,
+          "created_at": "{time:operation create created}",
+          "updated_at": "{time}"
+        }
+      ],
+      "operation unbind": [
+        422,
+        {
+          "message": "Provide handler_target_reference or a non-empty handler_binding.",
+          "reason": "validation_failed",
+          "errors": {
+            "handler_target_reference": [
+              "Provide handler_target_reference or a non-empty handler_binding."
+            ]
+          },
+          "validation_errors": {
+            "handler_target_reference": [
+              "Provide handler_target_reference or a non-empty handler_binding."
+            ]
+          }
+        }
+      ],
+      "operation update deadline": [
+        422,
+        {
+          "message": "Service timeout_seconds must be an integer from 1 to 2147483647.",
+          "reason": "validation_failed",
+          "errors": {
+            "deadline_policy": [
+              "Service timeout_seconds must be an integer from 1 to 2147483647."
+            ]
+          },
+          "validation_errors": {
+            "deadline_policy": [
+              "Service timeout_seconds must be an integer from 1 to 2147483647."
+            ]
+          }
+        }
+      ],
+      "operation update mode": [
+        422,
+        {
+          "message": "The operation mode field must be a string. (and 1 more error)",
+          "reason": "validation_failed",
+          "errors": {
+            "operation_mode": [
+              "The operation mode field must be a string.",
+              "The selected operation mode is invalid."
+            ]
+          },
+          "validation_errors": {
+            "operation_mode": [
+              "The operation mode field must be a string.",
+              "The selected operation mode is invalid."
+            ]
+          }
+        }
+      ],
+      "read endpoints": [
+        200,
+        {
+          "data": [
+            {
+              "id": "{id:endpoint second}",
+              "namespace": "@own",
+              "endpoint_name": "alpha",
+              "description": null,
+              "metadata": [],
+              "created_at": "{time:endpoint second created}",
+              "updated_at": "{time}"
+            },
+            {
+              "id": "{id:endpoint create}",
+              "namespace": "@own",
+              "endpoint_name": "billing",
+              "description": null,
+              "metadata": {
+                "team": "edge"
+              },
+              "created_at": "{time:endpoint create created}",
+              "updated_at": "{time}"
+            }
+          ],
+          "current_page": 1,
+          "per_page": 50,
+          "total": 2,
+          "last_page": 1,
+          "namespace": "@own"
+        }
+      ],
+      "read endpoints page": [
+        200,
+        {
+          "data": [
+            {
+              "id": "{id:endpoint create}",
+              "namespace": "@own",
+              "endpoint_name": "billing",
+              "description": null,
+              "metadata": {
+                "team": "edge"
+              },
+              "created_at": "{time:endpoint create created}",
+              "updated_at": "{time}"
+            }
+          ],
+          "current_page": 2,
+          "per_page": 1,
+          "total": 2,
+          "last_page": 2,
+          "namespace": "@own"
+        }
+      ],
+      "read services of endpoint": [
+        200,
+        {
+          "data": [
+            {
+              "id": "{id:service second}",
+              "workflow_service_endpoint_id": "{id:endpoint create}",
+              "namespace": "@own",
+              "service_name": "accounts",
+              "description": null,
+              "metadata": [],
+              "created_at": "{time:service second created}",
+              "updated_at": "{time}"
+            },
+            {
+              "id": "{id:service create}",
+              "workflow_service_endpoint_id": "{id:endpoint create}",
+              "namespace": "@own",
+              "service_name": "invoices",
+              "description": "Invoices",
+              "metadata": [],
+              "created_at": "{time:service create created}",
+              "updated_at": "{time}"
+            }
+          ],
+          "current_page": 1,
+          "per_page": 50,
+          "total": 2,
+          "last_page": 1,
+          "namespace": "@own"
+        }
+      ],
+      "read operations of service": [
+        200,
+        {
+          "data": [
+            {
+              "id": "{id:operation create}",
+              "workflow_service_endpoint_id": "{id:endpoint create}",
+              "workflow_service_id": "{id:service create}",
+              "namespace": "@own",
+              "operation_name": "charge",
+              "description": "Charges",
+              "operation_mode": "async",
+              "handler_binding_kind": "start_workflow",
+              "handler_target_reference": null,
+              "handler_binding": {
+                "workflow_type": "billing.charge"
+              },
+              "deadline_policy": {
+                "timeout_seconds": 30
+              },
+              "idempotency_policy": [],
+              "cancellation_policy": [],
+              "retry_policy": {
+                "max_attempts": 3
+              },
+              "boundary_policy": [],
+              "metadata": [],
+              "created_at": "{time:operation create created}",
+              "updated_at": "{time}"
+            },
+            {
+              "id": "{id:operation second}",
+              "workflow_service_endpoint_id": "{id:endpoint create}",
+              "workflow_service_id": "{id:service create}",
+              "namespace": "@own",
+              "operation_name": "refund",
+              "description": null,
+              "operation_mode": "async",
+              "handler_binding_kind": "signal_workflow",
+              "handler_target_reference": null,
+              "handler_binding": {
+                "workflow_type": "billing.refund"
+              },
+              "deadline_policy": {
+                "deadline_at": "2030-01-01T00:00:00.5+05:30"
+              },
+              "idempotency_policy": [],
+              "cancellation_policy": [],
+              "retry_policy": [],
+              "boundary_policy": [],
+              "metadata": [],
+              "created_at": "{time:operation second created}",
+              "updated_at": "{time}"
+            }
+          ],
+          "current_page": 1,
+          "per_page": 50,
+          "total": 2,
+          "last_page": 1,
+          "namespace": "@own"
+        }
+      ],
+      "read endpoint": [
+        200,
+        {
+          "id": "{id:endpoint create}",
+          "namespace": "@own",
+          "endpoint_name": "billing",
+          "description": null,
+          "metadata": {
+            "team": "edge"
+          },
+          "created_at": "{time:endpoint create created}",
+          "updated_at": "{time}",
+          "services": [
+            {
+              "id": "{id:service second}",
+              "workflow_service_endpoint_id": "{id:endpoint create}",
+              "namespace": "@own",
+              "service_name": "accounts",
+              "description": null,
+              "metadata": [],
+              "created_at": "{time:service second created}",
+              "updated_at": "{time}"
+            },
+            {
+              "id": "{id:service create}",
+              "workflow_service_endpoint_id": "{id:endpoint create}",
+              "namespace": "@own",
+              "service_name": "invoices",
+              "description": "Invoices",
+              "metadata": [],
+              "created_at": "{time:service create created}",
+              "updated_at": "{time}"
+            }
+          ],
+          "operations": [
+            {
+              "id": "{id:operation create}",
+              "workflow_service_endpoint_id": "{id:endpoint create}",
+              "workflow_service_id": "{id:service create}",
+              "namespace": "@own",
+              "operation_name": "charge",
+              "description": "Charges",
+              "operation_mode": "async",
+              "handler_binding_kind": "start_workflow",
+              "handler_target_reference": null,
+              "handler_binding": {
+                "workflow_type": "billing.charge"
+              },
+              "deadline_policy": {
+                "timeout_seconds": 30
+              },
+              "idempotency_policy": [],
+              "cancellation_policy": [],
+              "retry_policy": {
+                "max_attempts": 3
+              },
+              "boundary_policy": [],
+              "metadata": [],
+              "created_at": "{time:operation create created}",
+              "updated_at": "{time}"
+            },
+            {
+              "id": "{id:operation second}",
+              "workflow_service_endpoint_id": "{id:endpoint create}",
+              "workflow_service_id": "{id:service create}",
+              "namespace": "@own",
+              "operation_name": "refund",
+              "description": null,
+              "operation_mode": "async",
+              "handler_binding_kind": "signal_workflow",
+              "handler_target_reference": null,
+              "handler_binding": {
+                "workflow_type": "billing.refund"
+              },
+              "deadline_policy": {
+                "deadline_at": "2030-01-01T00:00:00.5+05:30"
+              },
+              "idempotency_policy": [],
+              "cancellation_policy": [],
+              "retry_policy": [],
+              "boundary_policy": [],
+              "metadata": [],
+              "created_at": "{time:operation second created}",
+              "updated_at": "{time}"
+            }
+          ],
+          "related_has_more": {
+            "services": false,
+            "operations": false
+          }
+        }
+      ],
+      "read service": [
+        200,
+        {
+          "id": "{id:service create}",
+          "workflow_service_endpoint_id": "{id:endpoint create}",
+          "namespace": "@own",
+          "service_name": "invoices",
+          "description": "Invoices",
+          "metadata": [],
+          "created_at": "{time:service create created}",
+          "updated_at": "{time}",
+          "endpoint": {
+            "id": "{id:endpoint create}",
+            "namespace": "@own",
+            "endpoint_name": "billing",
+            "description": null,
+            "metadata": {
+              "team": "edge"
+            },
+            "created_at": "{time:endpoint create created}",
+            "updated_at": "{time}"
+          },
+          "operations": [
+            {
+              "id": "{id:operation create}",
+              "workflow_service_endpoint_id": "{id:endpoint create}",
+              "workflow_service_id": "{id:service create}",
+              "namespace": "@own",
+              "operation_name": "charge",
+              "description": "Charges",
+              "operation_mode": "async",
+              "handler_binding_kind": "start_workflow",
+              "handler_target_reference": null,
+              "handler_binding": {
+                "workflow_type": "billing.charge"
+              },
+              "deadline_policy": {
+                "timeout_seconds": 30
+              },
+              "idempotency_policy": [],
+              "cancellation_policy": [],
+              "retry_policy": {
+                "max_attempts": 3
+              },
+              "boundary_policy": [],
+              "metadata": [],
+              "created_at": "{time:operation create created}",
+              "updated_at": "{time}"
+            },
+            {
+              "id": "{id:operation second}",
+              "workflow_service_endpoint_id": "{id:endpoint create}",
+              "workflow_service_id": "{id:service create}",
+              "namespace": "@own",
+              "operation_name": "refund",
+              "description": null,
+              "operation_mode": "async",
+              "handler_binding_kind": "signal_workflow",
+              "handler_target_reference": null,
+              "handler_binding": {
+                "workflow_type": "billing.refund"
+              },
+              "deadline_policy": {
+                "deadline_at": "2030-01-01T00:00:00.5+05:30"
+              },
+              "idempotency_policy": [],
+              "cancellation_policy": [],
+              "retry_policy": [],
+              "boundary_policy": [],
+              "metadata": [],
+              "created_at": "{time:operation second created}",
+              "updated_at": "{time}"
+            }
+          ],
+          "related_has_more": {
+            "operations": false
+          }
+        }
+      ],
+      "read operation": [
+        200,
+        {
+          "id": "{id:operation create}",
+          "workflow_service_endpoint_id": "{id:endpoint create}",
+          "workflow_service_id": "{id:service create}",
+          "namespace": "@own",
+          "operation_name": "charge",
+          "description": "Charges",
+          "operation_mode": "async",
+          "handler_binding_kind": "start_workflow",
+          "handler_target_reference": null,
+          "handler_binding": {
+            "workflow_type": "billing.charge"
+          },
+          "deadline_policy": {
+            "timeout_seconds": 30
+          },
+          "idempotency_policy": [],
+          "cancellation_policy": [],
+          "retry_policy": {
+            "max_attempts": 3
+          },
+          "boundary_policy": [],
+          "metadata": [],
+          "created_at": "{time:operation create created}",
+          "updated_at": "{time}",
+          "endpoint": {
+            "id": "{id:endpoint create}",
+            "namespace": "@own",
+            "endpoint_name": "billing",
+            "description": null,
+            "metadata": {
+              "team": "edge"
+            },
+            "created_at": "{time:endpoint create created}",
+            "updated_at": "{time}"
+          },
+          "service": {
+            "id": "{id:service create}",
+            "workflow_service_endpoint_id": "{id:endpoint create}",
+            "namespace": "@own",
+            "service_name": "invoices",
+            "description": "Invoices",
+            "metadata": [],
+            "created_at": "{time:service create created}",
+            "updated_at": "{time}"
+          }
+        }
+      ],
+      "read endpoint elsewhere": [
+        404,
+        {
+          "message": "Catalog object not found.",
+          "reason": "catalog_object_not_found"
+        }
+      ],
+      "endpoint delete with services": [
+        409,
+        {
+          "message": "Service endpoint [billing] in namespace [@own] still has registered services.",
+          "reason": "endpoint_has_services",
+          "namespace": "@own",
+          "endpoint_name": "billing"
+        }
+      ],
+      "service delete with operations": [
+        409,
+        {
+          "message": "Service [invoices] under endpoint [billing] in namespace [@own] still has registered operations.",
+          "reason": "service_has_operations",
+          "namespace": "@own",
+          "endpoint_name": "billing",
+          "service_name": "invoices"
+        }
+      ],
+      "operation delete": [
+        200,
+        {
+          "namespace": "@own",
+          "endpoint_name": "billing",
+          "service_name": "invoices",
+          "operation_name": "charge",
+          "outcome": "deleted"
+        }
+      ],
+      "operation delete again": [
+        404,
+        {
+          "message": "Operation [charge] not found under service [invoices] at endpoint [billing] in namespace [@own].",
+          "reason": "operation_not_found",
+          "namespace": "@own",
+          "endpoint_name": "billing",
+          "service_name": "invoices",
+          "operation_name": "charge"
+        }
+      ],
+      "operation delete second": [
+        200,
+        {
+          "namespace": "@own",
+          "endpoint_name": "billing",
+          "service_name": "invoices",
+          "operation_name": "refund",
+          "outcome": "deleted"
+        }
+      ],
+      "service delete": [
+        200,
+        {
+          "namespace": "@own",
+          "endpoint_name": "billing",
+          "service_name": "invoices",
+          "outcome": "deleted"
+        }
+      ],
+      "service delete second": [
+        200,
+        {
+          "namespace": "@own",
+          "endpoint_name": "billing",
+          "service_name": "accounts",
+          "outcome": "deleted"
+        }
+      ],
+      "endpoint delete": [
+        200,
+        {
+          "namespace": "@own",
+          "endpoint_name": "billing",
+          "outcome": "deleted"
+        }
+      ],
+      "endpoint delete second": [
+        200,
+        {
+          "namespace": "@own",
+          "endpoint_name": "alpha",
+          "outcome": "deleted"
+        }
+      ],
+      "endpoints after": [
+        200,
+        {
+          "service_endpoints": []
+        }
+      ]
+    }
+  }
+}
