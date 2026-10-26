@@ -4073,6 +4073,8 @@ where
         // The event was charged as recorded; the attribution's growth is
         // charged before the update (Workflow #930).
         tx.charge_bytes(super::history_meter::php_json_len(&payload).saturating_sub(recorded))?;
+        // The only in-place history change: a cached read would miss it.
+        tx.scope_history = None;
         Self::query("UPDATE workflow_history_events SET payload=$1 WHERE id=$2")
             .bind(DB::document(&payload))
             .bind(DB::string(&event, "id")?)

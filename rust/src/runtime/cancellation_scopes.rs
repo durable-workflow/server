@@ -24,6 +24,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 pub(super) const ROOT: &str = "root";
 const SCOPE_SCHEMA: &str = "durable-workflow.cancellation-scope/v1";
@@ -203,14 +204,26 @@ fn parallel_path_json(payload: &Value) -> String {
     encoded
 }
 
-/// One history event of a run, as the scope engine reads it.
+/// One history event of a run, as the scope engine reads it. The payload
+/// is shared, so a cached history is cheap to hand out again.
 #[derive(Clone, Debug)]
 pub(super) struct Event {
     pub(super) id: String,
     pub(super) sequence: i64,
     pub(super) kind: String,
-    pub(super) payload: Value,
+    pub(super) payload: Arc<Value>,
     pub(super) command_id: Option<String>,
+}
+
+/// The history one transaction has read for one run. It lives in the
+/// transaction, which holds the transition lock, so it ends with the commit
+/// or rollback. History in a transaction only grows by appended sequences:
+/// the in-place payload update (`attribute_worker_terminal`) and the deletes
+/// (retention pruning, namespace deletion) clear this, so a later read only
+/// fetches rows past the last sequence.
+pub(super) struct HistoryCache {
+    run_id: String,
+    events: Arc<Vec<Event>>,
 }
 
 /// A recorded scope, from its `CancellationScopeOpened` event.
@@ -245,7 +258,7 @@ impl RunFacts {
 pub(super) fn scopes(events: &[Event], run_id: &str) -> Result<Vec<Scope>> {
     let mut found: Vec<Scope> = Vec::new();
     for event in events.iter().filter(|event| event.kind == "CancellationScopeOpened") {
-        let payload = &event.payload;
+        let payload: &Value = &event.payload;
         let (Some(id), Some(parent), Some(shield), Some(sequence)) = (
             payload["scope_id"].as_str(),
             payload["parent_scope_id"].as_str(),
@@ -318,7 +331,7 @@ fn context(events: &[Event], scopes: &[Scope], run_id: &str, scope_id: &str) -> 
     let Some(event) = accepted(events, scope_id)? else {
         return Ok(None);
     };
-    let payload = &event.payload;
+    let payload: &Value = &event.payload;
     let context = &payload["cancellation"];
     if payload["schema"] != REQUEST_SCHEMA
         || payload["workflow_run_id"] != run_id
@@ -464,7 +477,7 @@ fn activity_members(events: &[Event], scope_id: &str) -> Result<Vec<Value>> {
     let mut ids = BTreeSet::new();
     let mut sequences = BTreeSet::new();
     for event in events.iter().filter(|event| event.kind == "ActivityScheduled") {
-        let payload = &event.payload;
+        let payload: &Value = &event.payload;
         let activity = &payload["activity"];
         let nested = activity["cancellation_scope_id"].as_str().unwrap_or(ROOT);
         let flat = payload["cancellation_scope_id"].as_str().unwrap_or(nested);
@@ -498,7 +511,7 @@ fn timer_members(events: &[Event], scope_id: &str) -> Result<Vec<Value>> {
     let mut ids = BTreeSet::new();
     let mut sequences: Vec<(i64, Option<String>)> = Vec::new();
     for event in events.iter().filter(|event| event.kind == "TimerScheduled") {
-        let payload = &event.payload;
+        let payload: &Value = &event.payload;
         let descriptor = payload.get("timer").cloned().unwrap_or_else(|| json!({}));
         if !descriptor.is_object() {
             return Err(no("cancellation_scope_timer_history_invalid"));
@@ -859,7 +872,7 @@ fn reference(events: &[Event], scopes: &[Scope], run: &RunFacts, scope_id: &str,
             event
         }
     };
-    let payload = &event.payload;
+    let payload: &Value = &event.payload;
     let snapshot = if payload["scope_id"] == scope_id {
         payload.clone()
     } else {
@@ -1143,26 +1156,52 @@ fn frame(response: &mut Value, run_id: &str, payload: &Value, preparation_id: &s
 }
 
 store_methods! {
-    /// The run's history, as the scope engine reads it.
-    pub(super) async fn scope_events(tx: &mut Transaction<'_, DB>, run_id: &str) -> Result<Vec<Event>> {
-        let rows = Self::query("SELECT id,sequence,event_type,payload,workflow_command_id FROM workflow_history_events WHERE workflow_run_id=$1 ORDER BY sequence LIMIT 10001")
-            .bind(run_id)
-            .fetch_all(&mut **tx)
-            .await?;
-        if rows.len() > 10000 {
-            return Err(refuse(StatusCode::SERVICE_UNAVAILABLE, "cancellation_inventory_exceeds_budget"));
-        }
-        rows.iter()
-            .map(|row| {
-                Ok(Event {
-                    id: DB::string(row, "id")?,
-                    sequence: DB::number(row, "sequence")?,
-                    kind: DB::string(row, "event_type")?,
-                    payload: DB::document_row(row, "payload")?,
-                    command_id: DB::optional_string(row, "workflow_command_id")?,
+    /// The run's history, as the scope engine reads it. The transaction
+    /// keeps what it read, so a prepare or delivery that rereads history
+    /// after each descendant or fence fetches only the rows written since,
+    /// instead of every row again while it holds the transition lock.
+    pub(super) async fn scope_events(tx: &mut Transaction<'_, DB>, run_id: &str) -> Result<Arc<Vec<Event>>> {
+        let mut events = match tx.scope_history.take() {
+            Some(cache) if cache.run_id == run_id => cache.events,
+            _ => Arc::new(Vec::new()),
+        };
+        loop {
+            let after = events.last().map_or(0, |event| event.sequence);
+            let rows = Self::query("SELECT id,sequence,event_type,payload,workflow_command_id FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence LIMIT 10001")
+                .bind(run_id)
+                .bind(after)
+                .fetch_all(&mut **tx)
+                .await?;
+            #[cfg(test)]
+            history_cache::ROWS_READ.with(|read| read.set(read.get() + rows.len()));
+            if events.len() + rows.len() > 10000 {
+                return Err(refuse(StatusCode::SERVICE_UNAVAILABLE, "cancellation_inventory_exceeds_budget"));
+            }
+            let fetched = rows
+                .iter()
+                .map(|row| {
+                    Ok(Event {
+                        id: DB::string(row, "id")?,
+                        sequence: DB::number(row, "sequence")?,
+                        kind: DB::string(row, "event_type")?,
+                        payload: Arc::new(DB::document_row(row, "payload")?),
+                        command_id: DB::optional_string(row, "workflow_command_id")?,
+                    })
                 })
-            })
-            .collect()
+                .collect::<Result<Vec<_>>>()?;
+            // A cached read only grows by the rows appended after it, which
+            // continue its sequence without a gap. Anything else is read
+            // again from the start.
+            if !events.is_empty() && fetched.iter().zip(after + 1..).any(|(event, expected)| event.sequence != expected) {
+                events = Arc::new(Vec::new());
+                continue;
+            }
+            if !fetched.is_empty() {
+                Arc::make_mut(&mut events).extend(fetched);
+            }
+            tx.scope_history = Some(HistoryCache { run_id: run_id.to_owned(), events: events.clone() });
+            return Ok(events);
+        }
     }
 
     pub(super) async fn scope_run(tx: &mut Transaction<'_, DB>, run_id: &str) -> Result<(DB::Row, RunFacts)> {
@@ -1641,7 +1680,7 @@ store_methods! {
         Self::scope_progress(tx, run_id).await?;
         self.renew_hosting(tx, run_id, task_id, &payload["authority_deadline_at"]).await?;
         let sequence = Self::scope_events(tx, run_id).await?.iter().find(|event| event.id == event_id).map_or(0, |event| event.sequence);
-        Ok(Event { id: event_id, sequence, kind: kind.to_owned(), payload, command_id: None })
+        Ok(Event { id: event_id, sequence, kind: kind.to_owned(), payload: Arc::new(payload), command_id: None })
     }
 
     /// `renewHosting`: raises the run's scope recovery horizon to the
@@ -1995,7 +2034,7 @@ store_methods! {
         let event_id = Self::append_returning(tx, run_id, "ActivityCancelled", payload.clone(), Some(&activity_task), Some(request_id)).await?;
         Self::scope_progress(tx, run_id).await?;
         tx.summary_changed(run_id);
-        Ok(Event { id: event_id, sequence: 0, kind: "ActivityCancelled".into(), payload, command_id: Some(request_id.to_owned()) })
+        Ok(Event { id: event_id, sequence: 0, kind: "ActivityCancelled".into(), payload: Arc::new(payload), command_id: Some(request_id.to_owned()) })
     }
 
     /// `CancellationScopeDescendants::request`: records a request for every
@@ -2218,4 +2257,247 @@ fn operation_addresses(events: &[Event], scopes: &[Scope]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod history_cache {
+    use super::super::store::Store;
+    use std::cell::Cell;
+    use std::sync::Arc;
+
+    thread_local! {
+        /// History rows `scope_events` fetched on this thread.
+        pub(super) static ROWS_READ: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn read() -> usize {
+        ROWS_READ.with(Cell::get)
+    }
+
+    async fn append(tx: &mut super::Transaction<'_, sqlx::Sqlite>, run_id: &str, sequence: i64) {
+        sqlx::query("INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload) VALUES (?,?,?,?,?)")
+            .bind(format!("{run_id}-{sequence}"))
+            .bind(run_id)
+            .bind(sequence)
+            .bind("SideEffectRecorded")
+            .bind(format!("{{\"sequence\":{sequence}}}"))
+            .execute(&mut **tx)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_reread_fetches_only_new_rows_and_sees_every_write() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("history-cache.sqlite");
+        let runtime = super::super::Runtime::open(path.to_str().unwrap(), "test-token".into()).await.unwrap();
+        let store = runtime.sqlite_store();
+        let mut tx = store.begin().await.unwrap();
+        for sequence in 1..=500 {
+            append(&mut tx, "run-a", sequence).await;
+        }
+        append(&mut tx, "run-b", 1).await;
+
+        let start = read();
+        let first = Store::scope_events(&mut tx, "run-a").await.unwrap();
+        assert_eq!((first.len(), read() - start), (500, 500));
+
+        // Nothing new: the same snapshot, and no row is fetched again.
+        let start = read();
+        let again = Store::scope_events(&mut tx, "run-a").await.unwrap();
+        assert!(Arc::ptr_eq(&first, &again));
+        assert_eq!(read() - start, 0);
+
+        // A write in the transaction is seen, fetching only that row. A
+        // snapshot already handed out keeps what it held.
+        append(&mut tx, "run-a", 501).await;
+        let start = read();
+        let grown = Store::scope_events(&mut tx, "run-a").await.unwrap();
+        assert_eq!((grown.len(), read() - start), (501, 1));
+        assert_eq!((grown[500].sequence, &*grown[500].payload), (501, &serde_json::json!({"sequence": 501})));
+        assert_eq!(first.len(), 500);
+
+        // Another run is read in full and never mixed in.
+        let other = Store::scope_events(&mut tx, "run-b").await.unwrap();
+        assert_eq!(other.iter().map(|event| event.id.as_str()).collect::<Vec<_>>(), ["run-b-1"]);
+        let back = Store::scope_events(&mut tx, "run-a").await.unwrap();
+        assert_eq!(back.len(), 501);
+
+        // Cleared (as an in-place history update does), the next read
+        // fetches every row again and sees the updated payload.
+        sqlx::query("UPDATE workflow_history_events SET payload=? WHERE id=?")
+            .bind("{\"sequence\":1,\"attributed\":true}")
+            .bind("run-a-1")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.scope_history = None;
+        let start = read();
+        let fresh = Store::scope_events(&mut tx, "run-a").await.unwrap();
+        assert_eq!((fresh.len(), read() - start), (501, 501));
+        assert_eq!(fresh[0].payload["attributed"], true);
+
+        // A delta that does not continue the cached sequence is never
+        // spliced in: the history is read again from the start.
+        append(&mut tx, "run-a", 505).await;
+        let start = read();
+        let gapped = Store::scope_events(&mut tx, "run-a").await.unwrap();
+        assert_eq!(read() - start, 1 + 502);
+        assert_eq!(gapped.iter().map(|event| event.sequence).rev().take(2).collect::<Vec<_>>(), [505, 501]);
+        tx.rollback().await.unwrap();
+
+        // Nothing outlives the transaction: after a rollback the next one
+        // reads afresh and never sees the rolled-back rows.
+        let mut tx = store.begin().await.unwrap();
+        append(&mut tx, "run-c", 1).await;
+        tx.commit().await.unwrap();
+        let mut tx = store.begin().await.unwrap();
+        let cached = Store::scope_events(&mut tx, "run-c").await.unwrap();
+        append(&mut tx, "run-c", 2).await;
+        assert_eq!(Store::scope_events(&mut tx, "run-c").await.unwrap().len(), 2);
+        tx.rollback().await.unwrap();
+        let mut tx = store.begin().await.unwrap();
+        let start = read();
+        let retried = Store::scope_events(&mut tx, "run-c").await.unwrap();
+        assert_eq!((retried.len(), read() - start, cached.len()), (1, 1, 1));
+        tx.rollback().await.unwrap();
+    }
+
+    async fn call(app: &axum::Router, path: &str, body: serde_json::Value) -> (axum::http::StatusCode, serde_json::Value) {
+        use tower::ServiceExt;
+        let worker = path.starts_with("/api/worker/");
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("authorization", "Bearer test-token")
+            .header("content-type", "application/json")
+            .header("x-namespace", "default")
+            .header(
+                if worker { "x-durable-workflow-protocol-version" } else { "x-durable-workflow-control-plane-version" },
+                if worker { "1.20" } else { "2" },
+            )
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 16 * 1024 * 1024).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    /// A response without the server capability document.
+    fn brief(body: &serde_json::Value) -> serde_json::Value {
+        let mut body = body.clone();
+        if let Some(object) = body.as_object_mut() {
+            object.remove("server_capabilities");
+        }
+        body
+    }
+
+    /// A run cancellation and a scope delivery over a wide tree read the
+    /// history about once, not once per descendant scope and fenced member,
+    /// while every member is still fenced from the history written so far.
+    #[tokio::test]
+    async fn a_wide_scope_tree_is_requested_and_delivered_reading_history_about_once() {
+        use axum::http::StatusCode;
+        use serde_json::json;
+        const SCOPES: i64 = 40;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("scope-tree.sqlite");
+        let runtime = super::super::Runtime::open(path.to_str().unwrap(), "test-token".into()).await.unwrap();
+        let app = super::super::http::router(runtime.clone());
+        let pool = runtime.sqlite_pool().clone();
+        let history = || async {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM workflow_history_events").fetch_one(&pool).await.unwrap() as usize
+        };
+
+        let (status, body) = call(&app, "/api/worker/register", json!({"worker_id": "scope-worker", "task_queue": "scopes",
+            "runtime": "python", "supported_workflow_types": ["scope.tree"], "supported_activity_types": [],
+            "capabilities": ["cooperative_cancellation"], "capability_manifest": {
+                "local_activities": {"supported": false, "minimum_protocol_version": "1.18", "reason": "raw_http"},
+                "worker_sessions": {"supported": false, "minimum_protocol_version": "1.18", "reason": "raw_http"},
+                "sticky_execution": {"supported": false, "minimum_protocol_version": "1.18", "reason": "raw_http"}}})).await;
+        assert_eq!(status, StatusCode::CREATED, "{}", brief(&body));
+        let (status, started) = call(&app, "/api/workflows", json!({"workflow_id": "scope-tree", "workflow_type": "scope.tree",
+            "task_queue": "scopes"})).await;
+        assert_eq!(status, StatusCode::CREATED, "{}", brief(&started));
+        let run = started["run_id"].as_str().unwrap().to_owned();
+        let poll = || async {
+            let (status, body) = call(&app, "/api/worker/workflow-tasks/poll",
+                json!({"worker_id": "scope-worker", "task_queue": "scopes", "timeout_seconds": 0})).await;
+            assert_eq!(status, StatusCode::OK, "{}", brief(&body));
+            body["task"].clone()
+        };
+        let first = poll().await;
+        let task = first["task_id"].as_str().unwrap().to_owned();
+        let own = json!({"lease_owner": first["lease_owner"], "workflow_task_attempt": first["workflow_task_attempt"]});
+        let with = |mut base: serde_json::Value, extra: serde_json::Value| {
+            for (key, value) in extra.as_object().unwrap() {
+                base[key] = value.clone();
+            }
+            base
+        };
+
+        // One parent scope with every other scope beneath it, and a timer in
+        // each, after the scopes.
+        let mut scopes = Vec::new();
+        for sequence in 1..=SCOPES {
+            let parent = scopes.first().cloned().unwrap_or_else(|| json!("root"));
+            let (status, body) = call(&app, &format!("/api/worker/workflow-tasks/{task}/cancellation-scopes/open"),
+                with(own.clone(), json!({"sequence": sequence, "parent_scope_id": parent}))).await;
+            assert_eq!((status, &body["opened"]), (StatusCode::OK, &json!(true)), "{}", brief(&body));
+            scopes.push(body["scope_id"].clone());
+        }
+        let timers: Vec<_> = scopes.iter().map(|scope| json!({"type": "start_timer", "delay_seconds": 3600,
+            "cancellation_scope_id": scope})).collect();
+        let (status, body) = call(&app, &format!("/api/worker/workflow-tasks/{task}/complete"),
+            with(own.clone(), json!({"commands": timers}))).await;
+        assert_eq!(status, StatusCode::OK, "{}", brief(&body));
+
+        // The run request asks every scope.
+        let start = read();
+        let (status, body) = call(&app, &format!("/api/workflows/scope-tree/runs/{run}/request-cancellation"),
+            json!({"reason": "wide tree", "cleanup_timeout_seconds": 300})).await;
+        assert!(status.is_success(), "{status} {}", brief(&body));
+        let requested = read() - start;
+        let requests: Vec<(String, String)> = sqlx::query_as("SELECT json_extract(payload,'$.scope_id'),json_extract(payload,'$.request_id') FROM workflow_history_events WHERE event_type='CancellationScopeRequested' ORDER BY sequence")
+            .fetch_all(&pool).await.unwrap();
+        assert_eq!(requests.len(), SCOPES as usize);
+        assert!(requested <= 2 * history().await, "the run request read {requested} history rows");
+
+        // The parent is prepared at its timer, freezing the others beneath it,
+        // and delivered: every timer is fenced, then the barrier is recorded.
+        let second = poll().await;
+        let task = second["task_id"].as_str().unwrap().to_owned();
+        let boundary = json!({"lease_owner": second["lease_owner"], "workflow_task_attempt": second["workflow_task_attempt"],
+            "scope_id": scopes[0], "request_id": requests[0].1, "sequence": SCOPES + 1, "call_kind": "timer"});
+        assert_eq!(requests[0].0, scopes[0].as_str().unwrap());
+        let start = read();
+        let (status, prepared) = call(&app, &format!("/api/worker/workflow-tasks/{task}/cancellation-scopes/prepare"), boundary.clone()).await;
+        assert_eq!((status, &prepared["prepared"]), (StatusCode::OK, &json!(true)), "{}", brief(&prepared));
+        let preparing = read() - start;
+        let frozen: i64 = sqlx::query_scalar("SELECT json_array_length(payload,'$.descendant_members') FROM workflow_history_events WHERE event_type='CancellationScopeDeliveryPrepared'")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(frozen, SCOPES - 1);
+        assert!(preparing <= 2 * history().await, "the preparation read {preparing} history rows");
+
+        let start = read();
+        let (status, delivered) = call(&app, &format!("/api/worker/workflow-tasks/{task}/cancellation-scopes/deliver"), boundary.clone()).await;
+        assert_eq!((status, &delivered["delivered"]), (StatusCode::OK, &json!(true)), "{}", brief(&delivered));
+        assert_eq!(delivered["timer_cancellations"].as_array().map(Vec::len), Some(SCOPES as usize), "{}", brief(&delivered));
+        let delivering = read() - start;
+        let after_delivery = history().await;
+        assert!(delivering <= 2 * after_delivery, "the delivery read {delivering} history rows");
+        let cancelled: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workflow_history_events WHERE event_type='TimerCancelled'")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(cancelled, SCOPES);
+
+        // A repeated delivery answers from history: the same fences, nothing
+        // written.
+        let start = read();
+        let (status, again) = call(&app, &format!("/api/worker/workflow-tasks/{task}/cancellation-scopes/deliver"), boundary).await;
+        assert_eq!((status, &again["delivered"], &again["history_event_id"]), (StatusCode::OK, &json!(true), &delivered["history_event_id"]), "{}", brief(&again));
+        assert_eq!(again["timer_cancellations"], delivered["timer_cancellations"]);
+        assert_eq!(history().await, after_delivery);
+        assert!(read() - start <= 2 * after_delivery);
+    }
 }

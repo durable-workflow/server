@@ -294,6 +294,14 @@ impl Runtime {
     }
 
     #[cfg(test)]
+    pub(super) fn sqlite_store(&self) -> &super::store::Store<sqlx::Sqlite> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store,
+            Storage::Postgres(_) | Storage::MySql(_) => panic!("SQLite-only store test"),
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn sqlite_pool(&self) -> &sqlx::SqlitePool {
         match &*self.storage {
             Storage::Sqlite(store) => &store.pool,
