@@ -599,6 +599,7 @@ mod pool_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::FutureExt;
     use serde_json::{Value, json};
     use sqlx::{ConnectOptions, MySql, migrate::MigrateDatabase, types::Json};
     use std::{process::Command, str::FromStr};
@@ -847,28 +848,41 @@ mod tests {
         assert_eq!(row, (timestamp, Json(payload)));
         let role = format!("dw_ro_{}", ulid::Ulid::new().to_string().to_lowercase());
         let database = db.options.get_database().unwrap();
-        // These identifiers contain only a fixed prefix and a ULID alphabet.
-        connection.execute(AssertSqlSafe(format!("CREATE USER '{role}'@'%' IDENTIFIED BY 'parity-disposable-password'; GRANT SELECT ON `{database}`.* TO '{role}'@'%'"))).await.unwrap();
-        let reader = db
-            .options
-            .clone()
-            .username(&role)
-            .password("parity-disposable-password");
-        MySqlStorage::check(reader.clone()).await.unwrap();
-        let mut read = MySqlConnection::connect_with(&reader).await.unwrap();
-        assert!(
-            sqlx::query("DELETE FROM workflow_instances")
-                .execute(&mut read)
-                .await
-                .is_err()
-        );
-        read.close().await.unwrap();
-        connection
-            .execute(AssertSqlSafe(format!("DROP USER '{role}'@'%'")))
+        // A fresh password for every run, from the operating system's secure
+        // source (Server #779). It is hex, so it cannot leave the quoted
+        // literal below, and the connection that sends it logs no statements.
+        let mut secret = [0_u8; 32];
+        getrandom::fill(&mut secret).unwrap();
+        let password: String = secret.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert!(password.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        let mut admin = MySqlConnection::connect_with(&db.options.clone().disable_statement_logging())
             .await
             .unwrap();
+        // These identifiers contain only a fixed prefix and a ULID alphabet.
+        admin.execute(AssertSqlSafe(format!("CREATE USER '{role}'@'%' IDENTIFIED BY '{password}'; GRANT SELECT ON `{database}`.* TO '{role}'@'%'"))).await.unwrap();
+        let reader = db.options.clone().username(&role).password(&password);
+        // The user is dropped whether or not the checks pass.
+        let checked = std::panic::AssertUnwindSafe(async {
+            MySqlStorage::check(reader.clone()).await.unwrap();
+            let mut read = MySqlConnection::connect_with(&reader).await.unwrap();
+            assert!(
+                sqlx::query("DELETE FROM workflow_instances")
+                    .execute(&mut read)
+                    .await
+                    .is_err()
+            );
+            read.close().await.unwrap();
+        })
+        .catch_unwind()
+        .await;
+        let dropped = admin.execute(AssertSqlSafe(format!("DROP USER '{role}'@'%'"))).await;
+        admin.close().await.unwrap();
         connection.close().await.unwrap();
         db.remove().await;
+        if let Err(panic) = checked {
+            std::panic::resume_unwind(panic);
+        }
+        dropped.unwrap();
     }
 
     #[tokio::test]
