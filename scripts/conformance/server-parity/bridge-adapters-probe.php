@@ -48,7 +48,10 @@ function finishHttpBridgeAdapters(Client $admin, array $fixture, string $workflo
     $worker = $workflowId.'-bra-worker';
     $type = $definition['workflow_type'];
     $contract = ['signals' => ['ping'], 'signal_contracts' => [['name' => 'ping', 'parameters' => []]],
-        'queries' => [], 'updates' => ['bump'], 'update_contracts' => [['name' => 'bump', 'parameters' => []]]];
+        'queries' => [], 'updates' => ['bump'], 'update_contracts' => [['name' => 'bump', 'parameters' => []]],
+        // `bump` has no validator. Without this declaration the regular update
+        // route refuses it with update_validator_contract_missing (Server #747).
+        'update_validators' => []];
     $capabilities = ['query_tasks', 'workflow_updates'];
     $ok($raw('POST', '/api/worker/register', ['worker_id' => $worker, 'task_queue' => $queue, 'runtime' => 'python',
         'supported_workflow_types' => [$type], 'supported_activity_types' => [],
