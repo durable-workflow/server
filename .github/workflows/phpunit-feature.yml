@@ -257,7 +257,18 @@ jobs:
             --health-cmd='pg_isready --host=127.0.0.1 --username=postgres' \
             --health-interval=1s --health-start-period=5s --health-retries=30 \
             mirror.gcr.io/library/postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
-          for database in mysql pgsql; do
+          # MariaDB for the real-database contention proofs that must cover
+          # every supported engine (Server #774).
+          docker run --detach \
+            --name "dw-server-backup-mariadb-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+            --network "dw-server-feature-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+            --memory 384m --memory-swap 384m \
+            --env MARIADB_ALLOW_EMPTY_ROOT_PASSWORD=yes --env MARIADB_ROOT_HOST=% \
+            --health-cmd='mariadb-admin --silent --host=127.0.0.1 ping' \
+            --health-interval=1s --health-start-period=20s --health-retries=30 \
+            mirror.gcr.io/library/mariadb@sha256:7db29378d4fdab73f8123bbc2b48905c90d1a4b00cf848b028f1e81e623257f2 \
+            --innodb-buffer-pool-size=64M --max-connections=40
+          for database in mysql pgsql mariadb; do
             for attempt in $(seq 1 60); do
               health="$(docker inspect --format '{{.State.Health.Status}}' "dw-server-backup-${database}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}")"
               [ "$health" = healthy ] && break
@@ -297,6 +308,7 @@ jobs:
                 -e DW_TEST_COMPLETION_MYSQL_HOST="dw-server-backup-mysql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
                 -e DW_TEST_BACKUP_PGSQL_HOST="dw-server-backup-pgsql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
                 -e DW_TEST_COMPLETION_PGSQL_HOST="dw-server-backup-pgsql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+                -e DW_TEST_COMPLETION_MARIADB_HOST="dw-server-backup-mariadb-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
                 -e DW_POOLER_TEST_HOST="dw-server-backup-pgsql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
                 -e DW_POOLER_TEST_PORT=5432 -e DW_POOLER_TEST_DATABASE=postgres -e DW_POOLER_TEST_USER=postgres \
                 -e DW_POOLER_TEST_PREFIX="dw-server-pooler-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
@@ -365,6 +377,7 @@ jobs:
             "dw-server-s3-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
             "dw-server-backup-mysql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
             "dw-server-backup-pgsql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+            "dw-server-backup-mariadb-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
             >/dev/null 2>&1 || true
           docker network rm \
             "dw-server-feature-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
