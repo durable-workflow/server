@@ -322,46 +322,105 @@ async fn a_bridge_start_refuses_under_the_transition_lock_with_its_own_envelope(
     assert_eq!((count(&database, commands).await, count(&database, instances).await), before);
 }
 
-// Real interleavings: a competing start in another namespace, or for
-// another type, races each bridge start through a second pool. The bridge
-// either starts its own type or answers its envelope; it never leaks the
-// competitor's namespace or returns an instance of another type.
+// A controlled interleaving with the real transition lock (Security,
+// server-325 2219). The test holds the lock; a bridge start queues on it,
+// then a second test-held lock, then a competitor: a start of the same id in
+// another namespace, a start of it for another type, or a drain of the
+// bridge's queue. Released, the bridge is granted first; the second hold
+// then keeps the competitor out until a read the bridge made outside the
+// lock has finished, so a start decided outside the lock (867a2d53) meets
+// the competitor's state at its write. Decided in one serialized
+// transaction, the bridge has started its own instance before the
+// competitor runs. PostgreSQL's advisory lock and InnoDB's row lock grant
+// waiters in order; SQLite's busy retry has no queue, so there the order is
+// not forced and the bridge may meet either winner, but never with a raw
+// answer or another type's instance.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn racing_starts_never_leak_a_namespace_or_reuse_another_type() {
-    let database = TestDatabase::new().await;
-    let apps = [router(database.open().await.unwrap()), router(database.open().await.unwrap())];
-    namespaces::create(&apps[0], "other").await;
-    let mut outcomes = std::collections::BTreeMap::<String, usize>::new();
-    for round in 0..6 {
-        for (kind, workflow_id) in [("namespace", format!("race-ns-{round}")), ("type", format!("race-type-{round}"))] {
-            let competitor = {
-                let (app, workflow_id) = (apps[1].clone(), workflow_id.clone());
-                tokio::spawn(async move {
-                    let body = json!({"workflow_id":workflow_id,"workflow_type":"other.type","task_queue":"test","input":envelope(Payload::Array(vec![]))});
-                    if kind == "namespace" {
-                        namespaces::scoped(&app, "other", "POST", "/api/workflows", body).await
-                    } else {
-                        request(&app, "POST", "/api/workflows", body).await
-                    }
-                })
-            };
-            let target = json!({"workflow_id":workflow_id,"workflow_type":"echo","task_queue":"test"});
-            let (status, answer) = bridge(&apps[0], "acme", start_event(&format!("evt-{kind}-{round}"), target)).await;
-            competitor.await.unwrap();
-            let unavailable = format!("Workflow instance [{workflow_id}] is unavailable.");
-            let reserved = format!("Workflow instance [{workflow_id}] is reserved for durable type [other.type] and cannot be reused for [echo].");
-            let label = match (status, answer["outcome"].as_str(), answer["message"].as_str()) {
-                (StatusCode::ACCEPTED, Some("accepted"), _) => {
-                    assert_eq!(answer["workflow_type"], "echo", "{answer}");
-                    "started"
+async fn a_foreign_start_queued_behind_a_bridge_start_cannot_change_its_answer() {
+    change_queued_behind_a_bridge_start("namespace").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn another_types_start_queued_behind_a_bridge_start_cannot_change_its_answer() {
+    change_queued_behind_a_bridge_start("type").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_drain_queued_behind_a_bridge_start_cannot_change_its_answer() {
+    change_queued_behind_a_bridge_start("drain").await;
+}
+
+async fn change_queued_behind_a_bridge_start(case: &'static str) {
+    use std::time::Duration;
+    let pause = || tokio::time::sleep(Duration::from_millis(200));
+    {
+        let database = TestDatabase::new().await;
+        let ordered = !matches!(database, TestDatabase::Sqlite(_));
+        let app = router(database.open().await.unwrap());
+        namespaces::create(&app, "other").await;
+        register_on(&app, "queued-worker", "queued-q", "q1").await;
+        let workflow_id = format!("bridge-queued-{case}");
+        let queue = if case == "drain" { "queued-q" } else { "test" };
+        let target = json!({"workflow_id":workflow_id,"workflow_type":"echo","task_queue":queue});
+
+        let first = database.transition_lock().await;
+        let bridged = {
+            let (app, event) = (app.clone(), start_event(&format!("evt-queued-{case}"), target.clone()));
+            tokio::spawn(async move { bridge(&app, "acme", event).await })
+        };
+        pause().await;
+        assert!(!bridged.is_finished(), "{case}: the bridge start waits for the transition lock");
+        let second = tokio::spawn(database.transition_lock());
+        pause().await;
+        assert!(!second.is_finished(), "{case}: the second hold queues behind the bridge");
+        let competitor = {
+            let (app, workflow_id) = (app.clone(), workflow_id.clone());
+            tokio::spawn(async move {
+                let input = envelope(Payload::Array(vec![]));
+                match case {
+                    "namespace" => namespaces::scoped(&app, "other", "POST", "/api/workflows",
+                        json!({"workflow_id":workflow_id,"workflow_type":"echo","task_queue":"test","input":input})).await,
+                    "type" => request(&app, "POST", "/api/workflows",
+                        json!({"workflow_id":workflow_id,"workflow_type":"other.type","task_queue":"test","input":input})).await,
+                    _ => request(&app, "POST", "/api/task-queues/queued-q/build-ids/drain", json!({"build_id":"q1"})).await,
                 }
-                (StatusCode::UNPROCESSABLE_ENTITY, Some("rejected"), Some(message)) if kind == "namespace" && message == unavailable => "unavailable",
-                (StatusCode::UNPROCESSABLE_ENTITY, Some("rejected"), Some(message)) if kind == "type" && message == reserved => "reserved",
-                _ => panic!("{kind} race {round}: {status} {answer}"),
+            })
+        };
+        pause().await;
+        assert!(!competitor.is_finished(), "{case}: the competitor queues behind the second hold");
+        first.release().await;
+        let second = second.await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        second.release().await;
+        let (status, answer) = bridged.await.unwrap();
+        let (competitor_status, competitor_answer) = competitor.await.unwrap();
+
+        let started = status == StatusCode::ACCEPTED;
+        if started {
+            assert_eq!((&answer["outcome"], &answer["workflow_id"], &answer["workflow_type"]),
+                (&json!("accepted"), &json!(workflow_id), &json!("echo")), "{case}: {answer}");
+            let (status, shown) = request(&app, "GET", &format!("/api/workflows/{workflow_id}"), Value::Null).await;
+            assert_eq!((status, &shown["workflow_type"]), (StatusCode::OK, &json!("echo")), "{case}: {shown}");
+            match case {
+                "namespace" => assert_eq!((competitor_status, &competitor_answer["reason"]),
+                    (StatusCode::CONFLICT, &json!("workflow_id_reserved_in_namespace")), "{case}: {competitor_answer}"),
+                "type" => assert_eq!((competitor_status, &competitor_answer["reason"]),
+                    (StatusCode::CONFLICT, &json!("instance_already_started")), "{case}: {competitor_answer}"),
+                _ => assert_eq!(competitor_status, StatusCode::OK, "{case}: {competitor_answer}"),
+            }
+        } else {
+            // Only where waiters are not granted in order may the competitor
+            // win, and then the bridge answers that state in its envelope.
+            assert!(!ordered, "{case}: the bridge was granted first but answered {status} {answer}");
+            let message = match case {
+                "namespace" => format!("Workflow instance [{workflow_id}] is unavailable."),
+                "type" => format!("Workflow instance [{workflow_id}] is reserved for durable type [other.type] and cannot be reused for [echo]."),
+                _ => "Task queue [queued-q] is draining and cannot accept new workflow starts until an active worker cohort is available.".to_owned(),
             };
-            assert!(!answer.to_string().contains("other\""), "{answer}");
-            *outcomes.entry(format!("{kind}:{label}")).or_default() += 1;
+            assert_eq!((status, &answer["schema"], &answer["outcome"], &answer["message"]),
+                (StatusCode::UNPROCESSABLE_ENTITY, &json!("durable-workflow.v2.bridge-adapter-outcome.contract"), &json!("rejected"), &json!(message)),
+                "{case}: {answer}");
         }
+        eprintln!("queued {case}: bridge {status}, competitor {competitor_status}");
     }
-    eprintln!("race outcomes: {outcomes:?}");
 }
