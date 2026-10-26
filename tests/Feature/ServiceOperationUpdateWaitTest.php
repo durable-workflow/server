@@ -10,6 +10,7 @@ use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Avro;
+use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowService;
@@ -109,6 +110,94 @@ final class ServiceOperationUpdateWaitTest extends TestCase
             ])
             ->assertStatus(422)
             ->assertJsonPath('errors.wait_timeout_seconds.0', 'The wait timeout seconds field must not be greater than 86400.');
+    }
+
+    public function test_a_binding_changed_after_the_check_still_cannot_carry_a_longer_wait(): void
+    {
+        // The catalog says start_workflow when the route checks, and a
+        // concurrent change makes it a workflow update before the service
+        // control plane resolves it. The update admission refuses the wait.
+        $this->seedOperation('start_workflow');
+        $this->changeBindingBeforeExecution();
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/service-endpoints/billing/services/approvals/operations/approve/execute', [
+                'arguments' => [true, 'service'],
+                'mode_override' => 'async',
+                'wait_for' => 'completed',
+                'wait_timeout_seconds' => 61,
+            ]);
+        $this->assertSame(0, $this->targetUpdates());
+
+        // At the ceiling the same race admits the update.
+        WorkflowServiceOperation::query()->get()->each(fn (WorkflowServiceOperation $operation) => $operation->forceFill([
+            'handler_binding_kind' => 'start_workflow', 'handler_target_reference' => 'tests.interactive-command-workflow',
+        ])->save());
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/service-endpoints/billing/services/approvals/operations/approve/execute', [
+                'arguments' => [true, 'service'],
+                'mode_override' => 'async',
+                'wait_for' => 'accepted',
+                'wait_timeout_seconds' => 60,
+            ])
+            ->assertSuccessful();
+        $this->assertSame(1, $this->targetUpdates());
+        WorkflowCommand::query()->where('workflow_instance_id', 'wf-update-target')->where('command_type', 'update')->delete();
+
+        $this->registerWorker('caller-worker', 'callers', supportedWorkflowTypes: ['tests.service-caller']);
+        $this->withHeaders($this->apiHeaders())->postJson('/api/workflows', [
+            'workflow_id' => 'wf-service-caller', 'workflow_type' => 'tests.service-caller',
+            'task_queue' => 'callers', 'input' => [],
+        ])->assertCreated();
+        $task = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'caller-worker', 'task_queue' => 'callers',
+        ], $this->workerHeaders())->assertOk()->json('task');
+        WorkflowServiceOperation::query()->get()->each(fn (WorkflowServiceOperation $operation) => $operation->forceFill([
+            'handler_binding_kind' => 'start_workflow', 'handler_target_reference' => 'tests.interactive-command-workflow',
+        ])->save());
+        $this->authenticateWorker();
+        $updateEvents = fn (): int => WorkflowHistoryEvent::query()->whereIn('event_type', ['UpdateAccepted', 'UpdateRejected'])->count();
+        $before = $updateEvents();
+        $this->complete($task, 61);
+
+        $this->assertSame(0, $this->targetUpdates());
+        $this->assertSame($before, $updateEvents());
+
+    }
+
+    /**
+     * Rebinds the service control plane so each execution first turns the
+     * catalog operation into a workflow update binding, as a concurrent
+     * catalog change would after the server's own check.
+     */
+    private function changeBindingBeforeExecution(): void
+    {
+        $inner = $this->app->make(ServiceControlPlane::class);
+        $this->app->instance(ServiceControlPlane::class, new class($inner) implements ServiceControlPlane
+        {
+            public function __construct(private readonly ServiceControlPlane $inner) {}
+
+            public function execute(string $endpointName, string $serviceName, string $operationName, array $options = []): array
+            {
+                WorkflowServiceOperation::query()->get()->each(fn (WorkflowServiceOperation $operation) => $operation->forceFill([
+                    'handler_binding_kind' => 'update_workflow',
+                    'handler_target_reference' => 'approve',
+                    'handler_binding' => ['workflow_instance_id' => 'wf-update-target', 'update_name' => 'approve'],
+                ])->save());
+
+                return $this->inner->execute($endpointName, $serviceName, $operationName, $options);
+            }
+
+            public function describeCall(string $serviceCallId, array $options = []): array
+            {
+                return $this->inner->describeCall($serviceCallId, $options);
+            }
+
+            public function cancelCall(string $serviceCallId, array $options = []): array
+            {
+                return $this->inner->cancelCall($serviceCallId, $options);
+            }
+        });
     }
 
     private function assertNothingAdmitted(): void

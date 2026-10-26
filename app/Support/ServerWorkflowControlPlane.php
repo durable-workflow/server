@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use App\Contracts\RuntimeSignalControlPlane;
+use Illuminate\Validation\ValidationException;
 use Throwable;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
@@ -126,6 +127,20 @@ final class ServerWorkflowControlPlane implements RuntimeSignalControlPlane, Wor
 
     public function update(string $instanceId, string $name, array $options = []): array
     {
+        // Every update admission waits at most the update ceiling, whichever
+        // route reached it (Server #775). The routes refuse a longer wait
+        // with their own validation first; this is the boundary a service
+        // operation's update binding reaches after its catalog lookup.
+        $seconds = $options['wait_timeout_seconds'] ?? null;
+        if (is_numeric($seconds) && (int) $seconds > ControlPlaneRequestContract::UPDATE_WAIT_TIMEOUT_SECONDS_MAX) {
+            throw ValidationException::withMessages([
+                'wait_timeout_seconds' => [sprintf(
+                    'The wait timeout seconds field must not be greater than %d.',
+                    ControlPlaneRequestContract::UPDATE_WAIT_TIMEOUT_SECONDS_MAX,
+                )],
+            ]);
+        }
+
         return $this->mutations->run(
             fn (): array => $this->inner->update($instanceId, $name, $options),
         );
