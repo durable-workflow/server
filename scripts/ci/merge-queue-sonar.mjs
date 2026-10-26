@@ -7,7 +7,7 @@ import {fileURLToPath} from 'node:url';
 
 export function queueIdentity(event, repositoryId, repositoryName) {
   const run = event.workflow_run;
-  if (!/^[1-9][0-9]*$/.test(String(repositoryId)) || repositoryName !== 'durable-workflow/server' ||
+  if (!/^[1-9]\d*$/.test(String(repositoryId)) || repositoryName !== 'durable-workflow/server' ||
       event.repository?.id !== Number(repositoryId) || event.repository?.full_name !== repositoryName ||
       run?.repository?.id !== Number(repositoryId) || run?.head_repository?.id !== Number(repositoryId) ||
       run?.name !== 'PHPUnit Feature' || run?.path !== '.github/workflows/phpunit-feature.yml' ||
@@ -15,7 +15,7 @@ export function queueIdentity(event, repositoryId, repositoryName) {
     throw new Error('Expected a successful merge_group PHPUnit Feature run from this repository');
   }
   if (typeof run.head_sha !== 'string' || !/^[0-9a-f]{40}$/.test(run.head_sha) || /^0+$/.test(run.head_sha) ||
-      typeof run.head_branch !== 'string' || !/^gh-readonly-queue\/main\/pr-[1-9][0-9]*-[0-9a-f]{40}$/.test(run.head_branch)) {
+      typeof run.head_branch !== 'string' || !/^gh-readonly-queue\/main\/pr-[1-9]\d*-[0-9a-f]{40}$/.test(run.head_branch)) {
     throw new Error('Invalid merge queue commit or branch identity');
   }
   return {sha: run.head_sha, branch: run.head_branch};
@@ -33,9 +33,9 @@ function regularSource(directory) {
 export function prepareSource(candidateDirectory, trustedConfiguration, sha) {
   const candidate = resolve(candidateDirectory);
   if (!lstatSync(candidate).isDirectory()) throw new Error('Candidate must be a directory');
-  const head = execFileSync('git', ['-C', candidate, 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
+  const head = execFileSync('/usr/bin/git', ['-C', candidate, 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
   if (head !== sha) throw new Error('Checked-out candidate differs from the merge queue SHA');
-  const entries = execFileSync('git', ['-C', candidate, 'ls-files', '--stage', '-z'], {encoding: 'utf8'}).split('\0');
+  const entries = execFileSync('/usr/bin/git', ['-C', candidate, 'ls-files', '--stage', '-z'], {encoding: 'utf8'}).split('\0');
   if (entries.some(entry => entry.startsWith('120000 ') || entry.startsWith('160000 '))) {
     throw new Error('Merge queue analysis does not follow symlinks or submodules');
   }
