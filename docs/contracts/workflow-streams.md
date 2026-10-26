@@ -167,7 +167,18 @@ responses.
     deletion fails, the batch's items stay and a later pass retries
     them.
 - When a run is pruned, its streams and their items are removed with
-  it, after the same external payload handling.
+  it, after the same external payload handling. Pruning takes the
+  run's lock before anything else, so an append to the run that
+  arrives meanwhile waits, then answers `404 stream_not_found` and
+  writes nothing.
+- Appends and cleanup decide each external payload object under that
+  object's lock. An admitted append claims its items' references in
+  its own transaction. Cleanup asks again, under the lock, whether
+  any retained row references the object before deleting it. If
+  cleanup deleted the object first, the append is refused and writes
+  nothing; over HTTP it answers `422 external_payload_unsupported`,
+  and the producer uploads the payload again. Otherwise the object
+  stays.
 
 ## SDK implementation notes
 

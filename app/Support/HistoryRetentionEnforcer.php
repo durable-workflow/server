@@ -7,7 +7,6 @@ use App\Models\WorkflowDurableStreamItem;
 use App\Models\WorkflowNamespace;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowRunSummary;
@@ -228,26 +227,45 @@ class HistoryRetentionEnforcer
             (string) $summary->workflow_instance_id,
         );
 
-        // The payload cleanup below settles the references of the run's
-        // durable stream items up to this point. An item appended later is
-        // not covered, so the prune transaction refuses to delete it.
-        $streamItemHighWater = (int) WorkflowDurableStreamItem::query()
-            ->where('workflow_run_id', $runId)
-            ->max('id');
-
+        // One transaction, fenced by the run row's lock before anything is
+        // deleted (Server #774). Stream writes take that lock first, so no
+        // append to this run can commit between the payload cleanup and the
+        // row deletes; a later one finds the run's details pruned. Each
+        // object's retained-reference check is asked again under its own
+        // lock, reading every reference committed before it.
         try {
-            $externalPayloads = app(ExternalPayloadRetentionCleanup::class)->deleteForRun(
-                $namespace,
-                $runId,
-                $streamPlan['releasable_item_ids'],
-            );
+            $outcome = ReadCommittedTransaction::run(static function () use ($namespace, $runId, $messageStreams, $streamPlan): array {
+                WorkflowRunStreamLock::acquire($runId);
+
+                $externalPayloads = app(ExternalPayloadRetentionCleanup::class)->deleteForRun(
+                    $namespace,
+                    $runId,
+                    $streamPlan['releasable_item_ids'],
+                );
+
+                if ($externalPayloads['blocked']) {
+                    return ['payloads' => $externalPayloads, 'report' => null];
+                }
+
+                return [
+                    'payloads' => $externalPayloads,
+                    'report' => array_merge(
+                        WorkflowRunRetentionCleanup::pruneRun($runId),
+                        $messageStreams->apply($streamPlan),
+                        self::pruneDurableStreams($runId),
+                    ),
+                ];
+            });
         } catch (\Throwable $exception) {
             $messageStreams->markBlocked($streamPlan, 'external_payload_cleanup_failed');
 
             throw $exception;
         }
 
-        if ($externalPayloads['blocked']) {
+        $externalPayloads = $outcome['payloads'];
+        $report = $outcome['report'];
+
+        if ($report === null) {
             $reason = $externalPayloads['reason'] ?? 'external_payload_cleanup_blocked';
             $messageStreams->markBlocked($streamPlan, $reason);
 
@@ -262,29 +280,6 @@ class HistoryRetentionEnforcer
             'status' => $summary->status,
             'closed_at' => $summary->closed_at?->toIso8601String(),
         ]);
-
-        $report = DB::transaction(static function () use ($runId, $messageStreams, $streamPlan, $streamItemHighWater): ?array {
-            // Stream writes take the run row first, so none commits between
-            // this check and the deletes below.
-            WorkflowRunStreamLock::acquire($runId);
-
-            if (WorkflowDurableStreamItem::query()
-                ->where('workflow_run_id', $runId)
-                ->where('id', '>', $streamItemHighWater)
-                ->exists()) {
-                return null;
-            }
-
-            return array_merge(
-                WorkflowRunRetentionCleanup::pruneRun($runId),
-                $messageStreams->apply($streamPlan),
-                self::pruneDurableStreams($runId),
-            );
-        });
-
-        if ($report === null) {
-            return self::skippedRetentionResult('durable_stream_appended_during_prune');
-        }
 
         return [
             'pruned' => true,

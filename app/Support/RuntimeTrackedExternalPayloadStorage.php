@@ -88,6 +88,22 @@ class RuntimeTrackedExternalPayloadStorage implements RuntimeExternalPayloadStor
         app(RuntimeExternalPayloadRegistry::class)->claimVerified($this->namespace, $uri, $sizeBytes, $sha256);
     }
 
+    public function claimRegistered(string $uri): void
+    {
+        app(RuntimeExternalPayloadRegistry::class)->claimRegistered($this->namespace, $uri);
+    }
+
+    /**
+     * Deletes $uri unless `$isReferenced`, asked under the object's lock,
+     * finds a reference to it. Returns false when one kept it.
+     *
+     * @param  callable(): bool  $isReferenced
+     */
+    public function deleteUnlessReferenced(string $uri, callable $isReferenced): bool
+    {
+        return app(RuntimeExternalPayloadRegistry::class)->deleteUriUnlessReferenced($this->namespace, $uri, $this->inner, $isReferenced);
+    }
+
     private function fetch(string $uri): string
     {
         try {

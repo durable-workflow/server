@@ -1405,44 +1405,6 @@ class HistoryRetentionTest extends TestCase
         $this->assertNull($stream->fresh());
     }
 
-    public function test_retention_skips_a_run_whose_stream_grew_after_its_payload_cleanup(): void
-    {
-        Queue::fake();
-        $this->createNamespace('default');
-        $runId = $this->createExpiredClosedRun('default', 'wf-prune-durable-stream-grew');
-        $stream = $this->addDurableStream($runId, 'tokens', [null]);
-        $this->app->instance(ExternalPayloadRetentionCleanup::class, new class($stream) extends ExternalPayloadRetentionCleanup
-        {
-            public function __construct(private readonly WorkflowDurableStream $stream) {}
-
-            public function deleteForRun(string $namespace, string $runId, array $releasedInboundStreamItemIds = []): array
-            {
-                $result = parent::deleteForRun($namespace, $runId, $releasedInboundStreamItemIds);
-                // An append commits after the cleanup collected the run's references.
-                DB::transaction(fn () => WorkflowDurableStreamItem::query()->create([
-                    'stream_id' => $this->stream->id,
-                    'namespace' => 'default',
-                    'workflow_run_id' => $runId,
-                    'stream_name' => 'tokens',
-                    'offset' => 1,
-                    'payload_reference' => 'file:///late/stream-item.bin',
-                    'emitted_at' => now(),
-                ]));
-
-                return $result;
-            }
-        });
-
-        $this->withHeaders($this->apiHeaders())
-            ->postJson('/api/system/retention/pass')
-            ->assertOk()
-            ->assertJsonPath('pruned', 0)
-            ->assertJsonPath('results.0.reason', 'durable_stream_appended_during_prune');
-
-        $this->assertNotNull(WorkflowRunSummary::find($runId));
-        $this->assertSame(2, WorkflowDurableStreamItem::query()->where('workflow_run_id', $runId)->count());
-    }
-
     public function test_stream_retention_reclaims_a_stream_only_payload_with_its_items(): void
     {
         Queue::fake();
