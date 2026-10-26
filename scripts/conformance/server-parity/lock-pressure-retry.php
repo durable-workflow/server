@@ -49,6 +49,9 @@ function lockPressurePollRetryDelay(
  * task and attempt identifiers (`outcome: deferred`), so repeating the request
  * cannot record a second outcome. Polls keep lockPressurePollRetryDelay's
  * stricter check that no task was handed out.
+ * Published heartbeat endpoints also defer without recording progress in a
+ * 2xx envelope, to keep older workers alive. Only their explicit negative
+ * recording/renewal acknowledgement is eligible for the same bounded retry.
  *
  * Returns the delay in seconds before the next attempt, or null to return the
  * refusal to the caller unchanged.
@@ -68,7 +71,15 @@ function lockPressureOperationRetryDelay(
         return lockPressurePollRetryDelay($method, $uri, $status, $response, $retriesSoFar, $waitedSeconds,
             $maxRetries, $maxWaitSeconds);
     }
-    if ($status !== 503 || ! is_array($response) || ($response['reason'] ?? null) !== 'backend_lock_pressure'
+    $deferredField = match (true) {
+        preg_match('~/worker/activity-tasks/[^/]+/heartbeat$~', $path) === 1 => 'heartbeat_recorded',
+        preg_match('~/worker/workflow-tasks/[^/]+/heartbeat$~', $path) === 1 => 'renewed',
+        str_ends_with($path, '/worker/heartbeat') => 'acknowledged',
+        default => null,
+    };
+    $deferredHeartbeat = $method === 'POST' && $status >= 200 && $status < 300
+        && $deferredField !== null && is_array($response) && ($response[$deferredField] ?? null) === false;
+    if (($status !== 503 && ! $deferredHeartbeat) || ! is_array($response) || ($response['reason'] ?? null) !== 'backend_lock_pressure'
         || ($response['retryable'] ?? null) !== true || $retriesSoFar >= $maxRetries) {
         return null;
     }
