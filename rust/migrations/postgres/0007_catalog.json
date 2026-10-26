@@ -768,6 +768,45 @@
     ],
     [
         "column",
+        "dw_service_call_deadlines.1",
+        {
+            "collation": "default",
+            "default": null,
+            "generated": "",
+            "identity": "",
+            "name": "service_call_id",
+            "not_null": true,
+            "type": "text"
+        }
+    ],
+    [
+        "column",
+        "dw_service_call_deadlines.2",
+        {
+            "collation": "default",
+            "default": null,
+            "generated": "",
+            "identity": "",
+            "name": "namespace",
+            "not_null": true,
+            "type": "text"
+        }
+    ],
+    [
+        "column",
+        "dw_service_call_deadlines.3",
+        {
+            "collation": null,
+            "default": null,
+            "generated": "",
+            "identity": "",
+            "name": "call_deadline_at",
+            "not_null": true,
+            "type": "timestamp(6) without time zone"
+        }
+    ],
+    [
+        "column",
         "dw_stream_reclaims.1",
         {
             "collation": null,
@@ -12041,6 +12080,16 @@
     ],
     [
         "constraint",
+        "dw_service_call_deadlines.dw_service_call_deadlines_pkey",
+        {
+            "deferrable": false,
+            "deferred": false,
+            "definition": "PRIMARY KEY (service_call_id)",
+            "validated": true
+        }
+    ],
+    [
+        "constraint",
         "dw_stream_reclaims.dw_stream_reclaims_pkey",
         {
             "deferrable": false,
@@ -13142,6 +13191,28 @@
             "unique": true,
             "primary": true,
             "definition": "CREATE UNIQUE INDEX dw_query_cache_pkey ON public.dw_query_cache USING btree (key)"
+        }
+    ],
+    [
+        "index",
+        "dw_service_call_deadlines_due",
+        {
+            "definition": "CREATE INDEX dw_service_call_deadlines_due ON public.dw_service_call_deadlines USING btree (call_deadline_at, service_call_id)",
+            "primary": false,
+            "ready": true,
+            "unique": false,
+            "valid": true
+        }
+    ],
+    [
+        "index",
+        "dw_service_call_deadlines_pkey",
+        {
+            "definition": "CREATE UNIQUE INDEX dw_service_call_deadlines_pkey ON public.dw_service_call_deadlines USING btree (service_call_id)",
+            "primary": true,
+            "ready": true,
+            "unique": true,
+            "valid": true
         }
     ],
     [
@@ -17390,6 +17461,21 @@
             "access_method": "heap",
             "partition_key": null,
             "force_row_security": false
+        }
+    ],
+    [
+        "relation",
+        "dw_service_call_deadlines",
+        {
+            "access_method": "heap",
+            "force_row_security": false,
+            "kind": "r",
+            "options": null,
+            "partition": false,
+            "partition_key": null,
+            "persistence": "p",
+            "row_security": false,
+            "view": null
         }
     ],
     [

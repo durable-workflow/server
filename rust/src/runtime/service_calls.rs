@@ -223,11 +223,41 @@ fn php_int(value: &Value) -> i64 {
             let float = number.as_f64().unwrap_or_default();
             if float.is_finite() { float.trunc().clamp(i64::MIN as f64, i64::MAX as f64) as i64 } else { 0 }
         }),
-        Value::String(text) => super::php_value::int_cast(text).unwrap_or(0),
+        Value::String(text) => php_string_int(text),
         Value::Array(items) => i64::from(!items.is_empty()),
         Value::Object(fields) => i64::from(!fields.is_empty()),
         Value::Null => 0,
     }
+}
+
+/// PHP's `(int)` of a string: its leading numeric prefix, after leading
+/// whitespace, or 0.
+fn php_string_int(text: &str) -> i64 {
+    let text = text.trim_start_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']);
+    let bytes = text.as_bytes();
+    let mut end = usize::from(matches!(bytes.first(), Some(b'+' | b'-')));
+    let digits = |from: usize| from + bytes[from..].iter().take_while(|byte| byte.is_ascii_digit()).count();
+    let whole = digits(end);
+    let mut fraction = whole;
+    if bytes.get(whole) == Some(&b'.') {
+        fraction = digits(whole + 1);
+    }
+    if fraction == end || (fraction == end + 1 && whole == end) {
+        return 0;
+    }
+    end = fraction;
+    if matches!(bytes.get(end), Some(b'e' | b'E')) {
+        let sign = end + 1 + usize::from(matches!(bytes.get(end + 1), Some(b'+' | b'-')));
+        let exponent = digits(sign);
+        if exponent > sign {
+            end = exponent;
+        }
+    }
+    let prefix = &text[..end];
+    prefix.parse::<i64>().unwrap_or_else(|_| {
+        let float: f64 = prefix.parse().unwrap_or(0.0);
+        if float.is_finite() { float.trunc().clamp(i64::MIN as f64, i64::MAX as f64) as i64 } else { 0 }
+    })
 }
 
 /// `positiveInt`: an int, or a string of digits, above zero.
@@ -1124,8 +1154,9 @@ store_methods! {
             .bind(DB::optional_time(call.created_at)).bind(DB::optional_time(call.updated_at))
             .execute(&mut *connection).await?;
         if let Some(deadline) = call.call_deadline_at {
-            Self::query("INSERT INTO dw_service_call_deadlines(service_call_id,call_deadline_at) VALUES ($1,$2)")
-                .bind(call.id.as_str()).bind(DB::bind_time(deadline)).execute(&mut *connection).await?;
+            Self::query("INSERT INTO dw_service_call_deadlines(service_call_id,namespace,call_deadline_at) VALUES ($1,$2,$3)")
+                .bind(call.id.as_str()).bind(call.namespace.as_deref().unwrap_or_default()).bind(DB::bind_time(deadline))
+                .execute(&mut *connection).await?;
         }
         Ok(())
     }
@@ -1646,6 +1677,8 @@ mod tests {
     #[test]
     fn php_casts_match() {
         assert_eq!([php_int(&json!("12abc")), php_int(&json!(3.9)), php_int(&json!(true)), php_int(&json!([1]))], [12, 3, 1, 1]);
+        assert_eq!([php_string_int(" 7"), php_string_int("1e3"), php_string_int("-2.9x"), php_string_int("abc"), php_string_int(".5")],
+            [7, 1000, -2, 0, 0]);
         assert_eq!(positive_int(&json!(" 7 ")), Some(7));
         assert_eq!(positive_int(&json!(-1)), None);
     }
