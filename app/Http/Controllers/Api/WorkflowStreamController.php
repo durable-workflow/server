@@ -177,7 +177,7 @@ class WorkflowStreamController
             'items.*.origin_reference' => ['nullable', 'string', 'max:191'],
             'items.*.item_type' => ['nullable', 'string', 'max:64'],
             'items.*.content_type' => ['nullable', 'string', 'max:191'],
-            'max_pending_items' => ['nullable', 'integer', 'min:1'],
+            'max_pending_items' => ['nullable', 'integer', 'min:1', 'max:'.WorkflowStreamService::MAX_PENDING_ITEMS_MAX],
         ]);
 
         foreach ($payload['items'] as $index => $item) {
@@ -277,7 +277,7 @@ class WorkflowStreamController
 
         $payload = $request->validate([
             'error_reason' => ['nullable', 'string', 'max:191'],
-            'retention_seconds' => ['nullable', 'integer', 'min:1'],
+            'retention_seconds' => ['nullable', 'integer', 'min:1', 'max:'.WorkflowStreamService::RETENTION_SECONDS_MAX],
         ]);
 
         try {

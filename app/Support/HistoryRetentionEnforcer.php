@@ -139,6 +139,11 @@ class HistoryRetentionEnforcer
      */
     public static function runInlinePass(string $namespace): array
     {
+        // Closed workflow streams carry their own retention, whatever the
+        // namespace's history retention mode (Server #774). The stream pass
+        // has its own throttle and is not part of this report.
+        WorkflowStreamRetention::runInlinePass($namespace);
+
         if (self::retentionMode($namespace) === WorkflowNamespace::RETENTION_MODE_FOREVER) {
             return [
                 'throttled' => false,
