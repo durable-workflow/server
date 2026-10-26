@@ -67,6 +67,7 @@ on:
       - tests/Unit/ServerParityUpdateValidationRetryTest.mjs
       - tests/Unit/ServerParityKilledAuthorPollTest.mjs
       - tests/Unit/ServerParityImagePullTest.mjs
+      - tests/Unit/ServerParityAdapterCacheTest.mjs
       - tests/Unit/ServerParityMessageStreamsContractTest.mjs
       - tests/Unit/ServerParityWorkflowStreamWritesContractTest.mjs
       - tests/Unit/ServerParityWaitingHistoryContractTest.mjs
@@ -142,6 +143,19 @@ jobs:
             mirror.gcr.io/library/rust@sha256:300ec56abce8cc9448ddea2172747d048ed902a3090e6b57babb2bf19f754081 \
             mirror.gcr.io/library/python@sha256:bf44cdfcb76cd3b41e879bc058fc37ec5872002ccfde7fcb765e218cde0cd79c \
             "$(baseline php-2.11.1)"
+      # The adapters' pinned, --locked dependencies build the same way every
+      # run. Restore the Cargo registry and build tree; only pushes to main
+      # save them, so no pull request writes what a later run reads. Every
+      # run still builds, stamps and hashes its own adapters, and the final
+      # adapter directories are never cached.
+      - name: Restore the adapters' Cargo registry and build tree
+        id: adapter_cargo
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            sdk-cargo
+            sdk-target
+          key: sdk-adapter-cargo-v1-rust-300ec56abce8cc9448ddea2172747d048ed902a3090e6b57babb2bf19f754081-${{ hashFiles('scripts/conformance/server-parity/*/rust/Cargo.lock', 'scripts/conformance/server-parity/*/rust/Cargo.toml', 'scripts/conformance/server-parity/*-adapters.sh') }}
       - name: Build the locked published SDK adapter once
         run: bash scripts/conformance/server-parity/published-sdk-patch-adapters.sh
       - name: Build genuine legacy-marker adapters with the existing cache
@@ -156,6 +170,14 @@ jobs:
         run: bash scripts/conformance/server-parity/corrected-marker-adapters.sh
       - name: Build the separate current query consumers once
         run: bash scripts/conformance/server-parity/query-authority-adapters.sh
+      - name: Save the adapters' Cargo registry and build tree from main
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.adapter_cargo.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            sdk-cargo
+            sdk-target
+          key: ${{ steps.adapter_cargo.outputs.cache-primary-key }}
       - name: Share current query consumers without compiler caches
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -1873,7 +1895,7 @@ jobs:
           bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
-            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParitySdkDirectionLanesTest.mjs tests/Unit/ServerParityCodecDeadlineCellsTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityFailureLocationTest.mjs tests/Unit/ServerParityFailureExcerptTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs tests/Unit/ServerParityRecordLocalActivityContractTest.mjs tests/Unit/ServerParityActivityCancellationAckContractTest.mjs tests/Unit/ServerParityServiceCatalogContractTest.mjs tests/Unit/ServerParityServiceEndpointsContractTest.mjs tests/Unit/ServerParityServiceCallsContractTest.mjs tests/Unit/ServerParityWorkflowImportContractTest.mjs tests/Unit/ServerParityWaterlineImportContractTest.mjs tests/Unit/ServerParitySystemMetricsContractTest.mjs tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs tests/Unit/ServerParityPrometheusMetricsContractTest.mjs tests/Unit/ServerParityPayloadCleanupContractTest.mjs tests/Unit/ServerParityRepairPassContractTest.mjs tests/Unit/ServerParityClusterInfoContractTest.mjs tests/Unit/ServerParityNamespaceDeleteContractTest.mjs tests/Unit/ServerParityMessageStreamsContractTest.mjs tests/Unit/ServerParityCancellationScopesContractTest.mjs tests/Unit/ServerParityWorkflowPollRequestContractTest.mjs tests/Unit/ServerParityUpdateValidationContractTest.mjs tests/Unit/ServerParityFixtureSelectionTest.mjs tests/Unit/ServerParityUpdateValidationRetryTest.mjs tests/Unit/ServerParityKilledAuthorPollTest.mjs tests/Unit/ServerParityImagePullTest.mjs tests/Unit/ServerParityWorkerSessionsContractTest.mjs tests/Unit/ServerParityWorkerSessionActivitiesContractTest.mjs tests/Unit/ServerParityNexusOperationsContractTest.mjs tests/Unit/ServerParityBridgeAdaptersContractTest.mjs tests/Unit/ServerParityWorkflowStreamWritesContractTest.mjs > parity-evidence/comparator-tests.txt
+            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParitySdkDirectionLanesTest.mjs tests/Unit/ServerParityCodecDeadlineCellsTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityFailureLocationTest.mjs tests/Unit/ServerParityFailureExcerptTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs tests/Unit/ServerParityRecordLocalActivityContractTest.mjs tests/Unit/ServerParityActivityCancellationAckContractTest.mjs tests/Unit/ServerParityServiceCatalogContractTest.mjs tests/Unit/ServerParityServiceEndpointsContractTest.mjs tests/Unit/ServerParityServiceCallsContractTest.mjs tests/Unit/ServerParityWorkflowImportContractTest.mjs tests/Unit/ServerParityWaterlineImportContractTest.mjs tests/Unit/ServerParitySystemMetricsContractTest.mjs tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs tests/Unit/ServerParityPrometheusMetricsContractTest.mjs tests/Unit/ServerParityPayloadCleanupContractTest.mjs tests/Unit/ServerParityRepairPassContractTest.mjs tests/Unit/ServerParityClusterInfoContractTest.mjs tests/Unit/ServerParityNamespaceDeleteContractTest.mjs tests/Unit/ServerParityMessageStreamsContractTest.mjs tests/Unit/ServerParityCancellationScopesContractTest.mjs tests/Unit/ServerParityWorkflowPollRequestContractTest.mjs tests/Unit/ServerParityUpdateValidationContractTest.mjs tests/Unit/ServerParityFixtureSelectionTest.mjs tests/Unit/ServerParityUpdateValidationRetryTest.mjs tests/Unit/ServerParityKilledAuthorPollTest.mjs tests/Unit/ServerParityImagePullTest.mjs tests/Unit/ServerParityAdapterCacheTest.mjs tests/Unit/ServerParityWorkerSessionsContractTest.mjs tests/Unit/ServerParityWorkerSessionActivitiesContractTest.mjs tests/Unit/ServerParityNexusOperationsContractTest.mjs tests/Unit/ServerParityBridgeAdaptersContractTest.mjs tests/Unit/ServerParityWorkflowStreamWritesContractTest.mjs > parity-evidence/comparator-tests.txt
           docker run --rm --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
             --network=none --entrypoint node -v "$PWD:/source:ro" -w /source \
             "$image" --test tests/Unit/ServerParityCodecDeadlineLoadTest.mjs > parity-evidence/codec-load-tests.txt
