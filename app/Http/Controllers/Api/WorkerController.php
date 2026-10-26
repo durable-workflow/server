@@ -68,6 +68,7 @@ use Workflow\V2\Contracts\CancellationScopeTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\PreparedLocalActivityGroupTaskBridge;
 use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
+use Workflow\V2\Contracts\ProtocolAwareWorkflowTaskBridge;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\HistoryEventType;
@@ -1860,6 +1861,12 @@ class WorkerController
         $commands = $this->promoteWorkflowFailureExceptionPayload($commands);
         /** @var WorkflowTaskBridge $bridge */
         $bridge = app(WorkflowTaskBridge::class);
+        if (! $bridge instanceof ProtocolAwareWorkflowTaskBridge) {
+            return WorkerProtocol::json([
+                'error' => 'workflow_bridge_protocol_unavailable',
+                'message' => 'The workflow task bridge must support authenticated worker protocol completion.',
+            ], 503);
+        }
         $workflowTaskQueue = WorkflowTask::query()
             ->whereKey($taskId)
             ->value('queue');
@@ -2007,7 +2014,7 @@ class WorkerController
                             $outcome['completed'] = false;
                         } else {
                             $outcome = WorkflowObservability::completion($request, $claimedTask,
-                                fn (): array => $bridge->complete($taskId, $commands));
+                                fn (): array => $bridge->completeForProtocol($taskId, $commands, WorkerProtocol::requestVersion($request)));
                         }
                         if (($outcome[$checkpoint ? 'checkpointed' : 'completed'] ?? false) === true) {
                             app(WorkflowStreamCommandProcessor::class)->process($taskId, (string) $namespace, $streamCommands);

@@ -11,6 +11,7 @@ use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
 use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Contracts\MatchingRole;
+use Workflow\V2\Contracts\ProtocolAwareWorkflowTaskBridge;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowServiceOperationAuthorizer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
@@ -194,6 +195,7 @@ final class WorkflowPackageApiFloor
      * Interface methods the server type-hints directly.
      */
     private const REQUIRED_INTERFACE_APIS = [
+        [ProtocolAwareWorkflowTaskBridge::class, 'completeForProtocol'],
         [WorkflowServiceOperationAuthorizer::class, 'authorize'],
         [MatchingRole::class, 'wake'],
         [MatchingRole::class, 'runPass'],

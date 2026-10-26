@@ -87,8 +87,6 @@ final class ServiceOperationUpdateWaitTest extends TestCase
 
         $this->complete($task, 60)->assertOk();
         $this->assertSame(1, WorkflowServiceCall::query()->count());
-        // The update runs when the scheduled effect does, after commit.
-        $this->assertSame(1, $this->runScheduledServiceCalls());
         $this->assertSame(1, $this->targetUpdates());
     }
 
