@@ -149,6 +149,7 @@ final class WorkflowUpdateValidationTaskBroker
         string $namespace,
         WorkerRegistration $worker,
         ?int $timeoutSeconds = null,
+        ?WorkerTaskDelivery $delivery = null,
     ): array {
         if (! $this->workerSupportsValidation($worker)) {
             return ['task' => null, 'poll_status' => 'empty'];
@@ -157,9 +158,9 @@ final class WorkflowUpdateValidationTaskBroker
         $fence = $this->workerFence($worker);
 
         return $this->longPoller->until(
-            fn (): array => $this->claimAvailableResult($namespace, $worker, $fence),
+            fn (): array => $this->claimAvailableResult($namespace, $worker, $fence, $delivery),
             static fn (array $candidate): bool => $candidate['poll_status'] !== 'empty',
-            $timeoutSeconds,
+            $delivery?->accepting() ? 0 : $timeoutSeconds,
             wakeChannels: $this->signals->updateValidationTaskPollChannels($namespace, $worker->task_queue),
             reserveWorkerWaitSlot: true,
             waitSlotPool: 'query-task',
@@ -172,16 +173,16 @@ final class WorkflowUpdateValidationTaskBroker
      *
      * @return array<string, mixed>|null
      */
-    public function claimAvailable(string $namespace, WorkerRegistration $worker): ?array
+    public function claimAvailable(string $namespace, WorkerRegistration $worker, ?WorkerTaskDelivery $delivery = null): ?array
     {
-        return $this->claimAvailableResult($namespace, $worker, $this->workerFence($worker))['task'];
+        return $this->claimAvailableResult($namespace, $worker, $this->workerFence($worker), $delivery)['task'];
     }
 
     /**
      * @param  array<string, mixed>  $fence
      * @return array{task: array<string, mixed>|null, poll_status: string}
      */
-    private function claimAvailableResult(string $namespace, WorkerRegistration $worker, array $fence): array
+    private function claimAvailableResult(string $namespace, WorkerRegistration $worker, array $fence, ?WorkerTaskDelivery $delivery = null): array
     {
         app(StoragePressure::class)->requireNewWork();
 
@@ -189,10 +190,10 @@ final class WorkflowUpdateValidationTaskBroker
             return ['task' => null, 'poll_status' => 'empty'];
         }
 
-        $claim = $this->claim($namespace, $worker, $fence);
+        $claim = $this->claim($namespace, $worker, $fence, $delivery);
 
         return [
-            'task' => $claim['task'] instanceof WorkflowUpdateValidationTask ? $this->taskPayload($claim['task']) : null,
+            'task' => $claim['task'] instanceof WorkflowUpdateValidationTask ? $this->taskPayload($claim['task']) : $claim['task'],
             'poll_status' => $claim['poll_status'],
         ];
     }
@@ -386,50 +387,99 @@ final class WorkflowUpdateValidationTaskBroker
      * @param  array<string, mixed>  $fence
      * @return array{task: WorkflowUpdateValidationTask|null, poll_status: string}
      */
-    private function claim(string $namespace, WorkerRegistration $worker, array $fence): array
+    private function claim(string $namespace, WorkerRegistration $worker, array $fence, ?WorkerTaskDelivery $delivery = null): array
     {
-        $claim = function () use ($namespace, $worker, $fence): array {
-            if (! $this->workerFenceIsCurrent($worker, $fence)) {
-                return ['task' => null, 'poll_status' => 'stale_worker_registration'];
-            }
-
-            /** @var Collection<int, WorkflowUpdateValidationTask> $tasks */
-            $tasks = WorkflowUpdateValidationTask::query()
-                ->where('namespace', $namespace)
-                ->where('task_queue', $worker->task_queue)
-                ->where(static function ($query): void {
-                    $query->where('status', WorkflowUpdateValidationTask::STATUS_PENDING)
-                        ->orWhere(static function ($query): void {
-                            $query->where('status', WorkflowUpdateValidationTask::STATUS_LEASED)
-                                ->where('lease_expires_at', '<=', now());
-                        });
-                })
-                ->orderBy('created_at')
-                ->lockForUpdate()
-                ->limit(25)
-                ->get();
-
-            foreach ($tasks as $task) {
-                if (! $this->workerMatchesTask($worker, $task)) {
-                    continue;
-                }
-
-                $task->forceFill([
-                    'status' => WorkflowUpdateValidationTask::STATUS_LEASED,
-                    'attempt_count' => $task->attempt_count + 1,
-                    'lease_owner' => $worker->worker_id,
-                    'lease_expires_at' => now()->addSeconds($this->leaseTimeoutSeconds()),
-                ])->save();
-
-                return ['task' => $task, 'poll_status' => 'leased'];
-            }
-
+        if ($delivery?->accepting() && $delivery->offeredTaskId('update_validation') === null) {
             return ['task' => null, 'poll_status' => 'empty'];
-        };
+        }
 
         return app(WorkerProtocolMutationRetrier::class)->run(
-            fn (): array => DB::transaction($claim),
+            fn (): array => DB::transaction(fn (): array => $this->claimWithFence($namespace, $worker, $fence, $delivery)),
         );
+    }
+
+    private function claimWithFence(string $namespace, WorkerRegistration $worker, array $fence, ?WorkerTaskDelivery $delivery): array
+    {
+        $resolved = $this->validationReplayOrRefusal($worker, $fence, $delivery);
+        if ($resolved !== null) {
+            return $resolved;
+        }
+        /** @var Collection<int, WorkflowUpdateValidationTask> $tasks */
+        $tasks = WorkflowUpdateValidationTask::query()
+            ->where('namespace', $namespace)
+            ->where('task_queue', $worker->task_queue)
+            ->when($delivery?->accepting(), fn ($query) => $query->whereKey($delivery->offeredTaskId('update_validation')))
+            ->where(static function ($query): void {
+                $query->where('status', WorkflowUpdateValidationTask::STATUS_PENDING)
+                    ->orWhere(static function ($query): void {
+                        $query->where('status', WorkflowUpdateValidationTask::STATUS_LEASED)
+                            ->where('lease_expires_at', '<=', now());
+                    });
+            })
+            ->orderBy('created_at')->lockForUpdate()->limit(25)->get();
+        foreach ($tasks as $task) {
+            if ($this->workerMatchesTask($worker, $task)) {
+                return $this->deliverValidationTask($task, $worker, $delivery);
+            }
+        }
+
+        return ['task' => null, 'poll_status' => 'empty'];
+    }
+
+    private function validationReplayOrRefusal(WorkerRegistration $worker, array $fence, ?WorkerTaskDelivery $delivery): ?array
+    {
+        if ($delivery === null && ! $this->workerFenceIsCurrent($worker, $fence)) {
+            return ['task' => null, 'poll_status' => 'stale_worker_registration'];
+        }
+        if ($delivery === null) {
+            return null;
+        }
+        $delivery->lockWorker();
+        $accepted = WorkflowUpdateValidationTask::query()->where('delivery_poll_key', $delivery->pollKey())->lockForUpdate()->first();
+        if ($accepted instanceof WorkflowUpdateValidationTask) {
+            if ($accepted->status !== WorkflowUpdateValidationTask::STATUS_LEASED
+                || $accepted->lease_owner !== $worker->worker_id || ! $accepted->lease_expires_at?->isFuture()) {
+                throw new TaskDeliveryOfferRejected('task_offer_lost_authority');
+            }
+            $delivery->assertReceipt($accepted->delivery_receipt, $accepted->id, $accepted->attempt_count);
+        }
+
+        return $accepted instanceof WorkflowUpdateValidationTask ? ['task' => $accepted, 'poll_status' => 'leased'] : null;
+    }
+
+    private function deliverValidationTask(WorkflowUpdateValidationTask $task, WorkerRegistration $worker, ?WorkerTaskDelivery $delivery): array
+    {
+        if ($delivery !== null && ! $delivery->accepting()) {
+            return ['task' => $delivery->issue($task->id, 'update_validation', $task->attempt_count, $this->deliveryFingerprint($task)), 'poll_status' => 'offered'];
+        }
+        if ($delivery !== null) {
+            $delivery->assertAcceptance($task->id, 'update_validation', $task->attempt_count, $this->deliveryFingerprint($task));
+            $delivery->assertSqlPollUnbound();
+        }
+        $task->forceFill([
+            'status' => WorkflowUpdateValidationTask::STATUS_LEASED,
+            'attempt_count' => $task->attempt_count + 1,
+            'lease_owner' => $worker->worker_id,
+            'lease_expires_at' => now()->addSeconds($this->leaseTimeoutSeconds()),
+        ])->save();
+        if ($delivery !== null) {
+            $task->forceFill(['delivery_poll_key' => $delivery->pollKey(),
+                'delivery_receipt' => $delivery->acceptedReceipt($task->attempt_count)])->save();
+            $delivery->acceptedReceipt($task->attempt_count);
+        }
+
+        return ['task' => $task, 'poll_status' => 'leased'];
+    }
+
+    private function deliveryFingerprint(WorkflowUpdateValidationTask $task): string
+    {
+        $attributes = $task->getRawOriginal();
+        foreach (['status', 'attempt_count', 'lease_owner', 'lease_expires_at', 'updated_at', 'delivery_poll_key', 'delivery_receipt'] as $key) {
+            unset($attributes[$key]);
+        }
+        ksort($attributes);
+
+        return hash('sha256', json_encode($attributes, JSON_THROW_ON_ERROR));
     }
 
     /** @param array<string, mixed> $fence */

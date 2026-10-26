@@ -8,6 +8,7 @@ use App\Support\LongPoller;
 use App\Support\LongPollSignalStore;
 use App\Support\LongPollWaitSlotStore;
 use App\Support\ServerWorkflowControlPlane;
+use App\Support\WorkerTaskDelivery;
 use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowUpdateValidationTaskBroker;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -32,6 +33,131 @@ class WorkflowUpdateValidationTaskTest extends TestCase
     private const WORKFLOW_TYPE = 'python.validated-update';
 
     private const TASK_QUEUE = 'validated-updates';
+
+    public function test_validation_offers_do_not_claim_and_lost_acceptance_replays_one_attempt(): void
+    {
+        foreach (['update-validation', 'workflow'] as $route) {
+            $workerId = 'delivery-'.$route;
+            $this->registerValidatorWorker($workerId, ['workflow_tasks', 'update_validation_tasks', WorkerTaskDelivery::CAPABILITY]);
+            $this->worker($workerId)->forceFill(['registration_token' => str_repeat('a', 32)])->save();
+            $run = $this->startRemoteWorkflow('delivery-'.$route);
+            $this->createPendingValidationTask($run, 'delivery-request-'.$route);
+            $task = WorkflowUpdateValidationTask::query()->where('workflow_run_id', $run->id)->firstOrFail();
+            $before = $task->getRawOriginal();
+            $headers = $this->workerHeaders() + [WorkerTaskDelivery::HEADER => WorkerTaskDelivery::VERSION];
+            $body = ['worker_id' => $workerId, 'task_queue' => self::TASK_QUEUE, 'timeout_seconds' => 0,
+                'poll_request_id' => 'delivery-poll', 'registration_token' => str_repeat('a', 32),
+                'task_kinds' => ['workflow', 'update_validation']];
+            $path = '/api/worker/'.$route.'-tasks/offers';
+            $offer = $this->postJson($path, $body, $headers)->assertOk()->assertJsonPath('poll_status', 'offered');
+            $this->assertSame($before, $task->fresh()->getRawOriginal());
+            $acceptance = $body + ['task_offer_token' => $offer->json('task_offer.token')];
+            $first = $this->postJson($path, $acceptance, $headers)->assertOk()
+                ->assertJsonPath('task.update_validation_task_id', $task->id)->assertJsonPath('task.update_validation_attempt', 1);
+            $this->travel(3)->seconds();
+            $this->worker($workerId)->forceFill(['last_heartbeat_at' => now()])->save();
+            $this->postJson($path, $acceptance, $headers)->assertOk()
+                ->assertJsonPath('task.update_validation_task_id', $first->json('task.update_validation_task_id'))
+                ->assertJsonPath('task.update_validation_attempt', 1);
+            $this->assertSame(1, $task->fresh()->attempt_count);
+            $task->forceFill(['status' => WorkflowUpdateValidationTask::STATUS_APPROVED])->save();
+            $this->travelBack();
+        }
+    }
+
+    public function test_expired_validation_acceptance_starts_no_attempt(): void
+    {
+        $this->registerValidatorWorker('delivery-worker', ['workflow_tasks', 'update_validation_tasks', WorkerTaskDelivery::CAPABILITY]);
+        $this->worker('delivery-worker')->forceFill(['registration_token' => str_repeat('a', 32)])->save();
+        $run = $this->startRemoteWorkflow('delivery-expired');
+        $this->createPendingValidationTask($run, 'delivery-expired');
+        $task = WorkflowUpdateValidationTask::query()->where('workflow_run_id', $run->id)->firstOrFail();
+        $before = $task->getRawOriginal();
+        $body = ['worker_id' => 'delivery-worker', 'task_queue' => self::TASK_QUEUE, 'timeout_seconds' => 0,
+            'poll_request_id' => 'delivery-poll', 'registration_token' => str_repeat('a', 32)];
+        $headers = $this->workerHeaders() + [WorkerTaskDelivery::HEADER => WorkerTaskDelivery::VERSION];
+        $path = '/api/worker/update-validation-tasks/offers';
+        $offer = $this->postJson($path, $body, $headers)->assertOk();
+        $this->travel(3)->seconds();
+        $this->postJson($path, $body + ['task_offer_token' => $offer->json('task_offer.token')], $headers)
+            ->assertConflict()->assertJsonPath('reason', 'task_offer_expired');
+        $this->assertSame($before, $task->fresh()->getRawOriginal());
+    }
+
+    public function test_one_multiplexed_poll_cannot_accept_both_a_validation_and_a_workflow_offer(): void
+    {
+        $this->registerValidatorWorker('delivery-worker', ['workflow_tasks', 'update_validation_tasks', WorkerTaskDelivery::CAPABILITY]);
+        $this->worker('delivery-worker')->forceFill(['registration_token' => str_repeat('a', 32)])->save();
+        $run = $this->startRemoteWorkflow('delivery-competing-kinds');
+        $this->createPendingValidationTask($run, 'delivery-competing-kinds');
+        $headers = $this->workerHeaders() + [WorkerTaskDelivery::HEADER => WorkerTaskDelivery::VERSION];
+        $body = ['worker_id' => 'delivery-worker', 'task_queue' => self::TASK_QUEUE, 'timeout_seconds' => 0,
+            'poll_request_id' => 'delivery-poll', 'registration_token' => str_repeat('a', 32),
+            'task_kinds' => ['workflow', 'update_validation']];
+        $path = '/api/worker/workflow-tasks/offers';
+        $validation = $this->postJson($path, $body, $headers)->assertOk()->assertJsonPath('task_offer.task_kind', 'update_validation');
+        $this->assertSame('update_validation', DB::table('workflow_task_poll_cursors')->value('next_task_kind'));
+        DB::table('workflow_task_poll_cursors')->update(['next_task_kind' => 'workflow']);
+        $workflow = $this->postJson($path, $body, $headers)->assertOk()->assertJsonPath('task_offer.task_kind', 'workflow');
+        $this->assertSame('workflow', DB::table('workflow_task_poll_cursors')->value('next_task_kind'));
+        $this->postJson($path, $body + ['task_offer_token' => $validation->json('task_offer.token')], $headers)
+            ->assertOk()->assertJsonPath('task.task_kind', 'update_validation');
+        $before = WorkflowTask::query()->where('workflow_run_id', $run->id)->firstOrFail()->getRawOriginal();
+        $this->postJson($path, $body + ['task_offer_token' => $workflow->json('task_offer.token')], $headers)
+            ->assertConflict()->assertJsonPath('reason', 'task_poll_already_accepted');
+        $this->assertSame($before, WorkflowTask::query()->where('workflow_run_id', $run->id)->firstOrFail()->getRawOriginal());
+        $this->assertSame(1, WorkflowUpdateValidationTask::query()->where('status', 'leased')->count());
+    }
+
+    public function test_expiry_resolves_a_validation_offer_after_a_peer_claim(): void
+    {
+        $this->registerValidatorWorker('delivery-worker', ['workflow_tasks', 'update_validation_tasks', WorkerTaskDelivery::CAPABILITY]);
+        $this->worker('delivery-worker')->forceFill(['registration_token' => str_repeat('a', 32)])->save();
+        $run = $this->startRemoteWorkflow('delivery-expired-peer');
+        $this->createPendingValidationTask($run, 'delivery-expired-peer');
+        $task = WorkflowUpdateValidationTask::query()->where('workflow_run_id', $run->id)->firstOrFail();
+        $body = ['worker_id' => 'delivery-worker', 'task_queue' => self::TASK_QUEUE, 'timeout_seconds' => 0,
+            'poll_request_id' => 'delivery-poll', 'registration_token' => str_repeat('a', 32)];
+        $headers = $this->workerHeaders() + [WorkerTaskDelivery::HEADER => WorkerTaskDelivery::VERSION];
+        $path = '/api/worker/update-validation-tasks/offers';
+        $offer = $this->postJson($path, $body, $headers)->assertOk();
+        $this->registerValidatorWorker('peer', ['workflow_tasks', 'update_validation_tasks']);
+        $this->postJson('/api/worker/update-validation-tasks/poll', [
+            'worker_id' => 'peer', 'task_queue' => self::TASK_QUEUE, 'timeout_seconds' => 0,
+        ], $this->workerHeaders())->assertOk()->assertJsonPath('task.update_validation_task_id', $task->id);
+        $before = $task->fresh()->getRawOriginal();
+        $this->travel(3)->seconds();
+        $this->postJson($path, $body + ['task_offer_token' => $offer->json('task_offer.token')], $headers)
+            ->assertConflict()->assertJsonPath('reason', 'task_offer_expired');
+        $this->assertSame($before, $task->fresh()->getRawOriginal());
+    }
+
+    public function test_validation_claim_that_finishes_after_the_offer_budget_rolls_back(): void
+    {
+        $this->registerValidatorWorker('delivery-worker', ['workflow_tasks', 'update_validation_tasks', WorkerTaskDelivery::CAPABILITY]);
+        $this->worker('delivery-worker')->forceFill(['registration_token' => str_repeat('a', 32)])->save();
+        $run = $this->startRemoteWorkflow('delivery-late-validation');
+        $this->createPendingValidationTask($run, 'delivery-late-validation');
+        $task = WorkflowUpdateValidationTask::query()->where('workflow_run_id', $run->id)->firstOrFail();
+        $before = $task->getRawOriginal();
+        $headers = $this->workerHeaders() + [WorkerTaskDelivery::HEADER => WorkerTaskDelivery::VERSION];
+        $body = ['worker_id' => 'delivery-worker', 'task_queue' => self::TASK_QUEUE, 'timeout_seconds' => 0,
+            'poll_request_id' => 'delivery-poll', 'registration_token' => str_repeat('a', 32)];
+        $path = '/api/worker/update-validation-tasks/offers';
+        $offer = $this->postJson($path, $body, $headers)->assertOk();
+        $advanced = false;
+        DB::listen(function ($query) use (&$advanced): void {
+            if (! $advanced && str_starts_with(str_replace(['"', '`'], '', $query->sql), 'update workflow_update_validation_tasks')
+                && in_array('leased', $query->bindings, true)) {
+                $advanced = true;
+                $this->travel(3)->seconds();
+            }
+        });
+        $this->postJson($path, $body + ['task_offer_token' => $offer->json('task_offer.token')], $headers)
+            ->assertConflict()->assertJsonPath('reason', 'task_offer_expired');
+        $this->assertTrue($advanced);
+        $this->assertSame($before, $task->fresh()->getRawOriginal());
+    }
 
     protected function setUp(): void
     {

@@ -47,6 +47,7 @@ final class ActivityTaskPoller
         bool $workerSessionsAvailable = true,
         ?int $timeoutSeconds = null,
         ?string $protocolVersion = null,
+        ?WorkerTaskDelivery $delivery = null,
     ): array {
         $pollRequestId = $this->nonEmptyString($pollRequestId);
 
@@ -55,6 +56,21 @@ final class ActivityTaskPoller
                 'task' => null,
                 'poll_status' => 'stale_worker_registration',
             ];
+        }
+
+        if ($delivery !== null) {
+            $result = $this->performPoll(
+                namespace: $namespace, taskQueue: $taskQueue, leaseOwner: $leaseOwner,
+                buildId: $buildId, worker: $worker, pollRequestId: $pollRequestId,
+                supportedActivityTypes: $supportedActivityTypes, workerSessionsAvailable: $workerSessionsAvailable,
+                timeoutSeconds: $delivery->accepting() ? 0 : $timeoutSeconds,
+                protocolVersion: $protocolVersion, delivery: $delivery,
+            );
+            if (is_array($result['task'] ?? null) && ! isset($result['task']['delivery_offer'])) {
+                $delivery->assertReplay($result['task']['task_id']);
+            }
+
+            return $result;
         }
 
         if ($pollRequestId !== null) {
@@ -440,6 +456,7 @@ final class ActivityTaskPoller
         bool $workerSessionsAvailable = true,
         ?int $timeoutSeconds = null,
         ?string $protocolVersion = null,
+        ?WorkerTaskDelivery $delivery = null,
     ): array {
         $limit = max(10, max(1, (int) config('server.polling.max_tasks_per_poll', 1)) * 10);
         $nextProbeAt = null;
@@ -464,12 +481,14 @@ final class ActivityTaskPoller
                 $workerSessionsAvailable,
                 $limit,
                 $workerPollFence,
+                $delivery,
                 &$nextProbeAt,
                 &$resolvedResult,
             ): ?array {
                 app(StoragePressure::class)->requireNewWork();
 
-                if (! WorkerPollFence::isCurrent($workerPollFence)) {
+                $delivery?->lockWorker();
+                if ($delivery === null && ! WorkerPollFence::isCurrent($workerPollFence)) {
                     $resolvedResult = [
                         'task' => null,
                         'poll_status' => 'stale_worker_registration',
@@ -490,6 +509,7 @@ final class ActivityTaskPoller
                     $supportedActivityTypes,
                     $workerSessionsAvailable,
                     $workerPollFence,
+                    $delivery,
                 );
                 $nextProbeAt = $resolvedResult['next_probe_at'] ?? null;
 
@@ -694,6 +714,7 @@ final class ActivityTaskPoller
         array $supportedActivityTypes = [],
         bool $workerSessionsAvailable = true,
         array $workerPollFence = [],
+        ?WorkerTaskDelivery $delivery = null,
     ): array {
         return $this->withWorkerCompatibility(
             $namespace,
@@ -709,6 +730,7 @@ final class ActivityTaskPoller
                 $supportedActivityTypes,
                 $workerSessionsAvailable,
                 $workerPollFence,
+                $delivery,
             ): array {
                 if ($pollRequestId !== null) {
                     $task = $this->activeLeasedTaskForWorker(
@@ -751,6 +773,7 @@ final class ActivityTaskPoller
                                 $supportedActivityTypes,
                                 $workerSessionsAvailable,
                                 $workerPollFence,
+                                $delivery,
                             ),
                         ),
                     );
@@ -821,8 +844,9 @@ final class ActivityTaskPoller
         array $supportedActivityTypes = [],
         bool $workerSessionsAvailable = true,
         array $workerPollFence = [],
+        ?WorkerTaskDelivery $delivery = null,
     ): ?array {
-        $readyTasks = $this->bridge->poll(
+        $readyTasks = $delivery?->accepting() ? $delivery->candidates('activity') : $this->bridge->poll(
             connection: null,
             queue: $taskQueue,
             limit: $limit,
@@ -881,6 +905,15 @@ final class ActivityTaskPoller
                 continue;
             }
 
+            if ($delivery !== null && ! $delivery->accepting()) {
+                $offer = $delivery->offerTask($readyTask, 'activity');
+                if ($offer !== null) {
+                    return $offer;
+                }
+
+                continue;
+            }
+
             try {
                 $claim = DB::transaction(function () use (
                     $namespace,
@@ -892,8 +925,10 @@ final class ActivityTaskPoller
                     $pollRequestId,
                     $taskQueue,
                     $buildId,
+                    $delivery,
                 ): ?array {
-                    if ($workerPollFence !== [] && ! WorkerPollFence::isCurrentForUpdate($workerPollFence)) {
+                    $delivery?->lockWorker();
+                    if ($delivery === null && $workerPollFence !== [] && ! WorkerPollFence::isCurrentForUpdate($workerPollFence)) {
                         throw new ActivityTaskClaimRolledBack;
                     }
 
@@ -906,6 +941,7 @@ final class ActivityTaskPoller
                         $pollRequestId,
                     );
 
+                    $delivery?->assertClaimable($taskId, 'activity');
                     $claim = $this->claimStatus($taskId, $leaseOwner);
 
                     if (($claim['claimed'] ?? false) !== true) {
@@ -942,6 +978,7 @@ final class ActivityTaskPoller
                         $pollRequestId,
                         $workerPollFence,
                     );
+                    $delivery?->bindAccepted($taskId);
 
                     return $claim;
                 });

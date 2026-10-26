@@ -64,6 +64,7 @@ final class WorkflowTaskPoller
         bool $acceptsQueryTasks = false,
         ?int $timeoutSeconds = null,
         array $taskKinds = ['workflow'],
+        ?WorkerTaskDelivery $delivery = null,
     ): array {
         $pollRequestId = $this->nonEmptyString($pollRequestId);
         $taskKinds = WorkflowTaskPollRequestStore::normalizeTaskKinds($taskKinds);
@@ -74,6 +75,25 @@ final class WorkflowTaskPoller
                 'task' => null,
                 'poll_status' => 'stale_worker_registration',
             ];
+        }
+
+        if ($delivery !== null) {
+            $result = $this->performPoll(
+                request: $request, namespace: $namespace, taskQueue: $taskQueue,
+                leaseOwner: $leaseOwner, buildId: $buildId, worker: $worker,
+                pollRequestId: $pollRequestId, historyPageSize: $historyPageSize,
+                acceptHistoryEncoding: $acceptHistoryEncoding, supportedWorkflowTypes: $supportedWorkflowTypes,
+                workflowDefinitionFingerprints: $workflowDefinitionFingerprints,
+                acceptsQueryTasks: $acceptsQueryTasks,
+                timeoutSeconds: $delivery->accepting() ? 0 : $timeoutSeconds,
+                taskKinds: $taskKinds, delivery: $delivery,
+            );
+            if (is_array($result['task'] ?? null) && ! isset($result['task']['delivery_offer'])
+                && ($result['task']['task_kind'] ?? null) !== 'update_validation') {
+                $delivery->assertReplay($result['task']['task_id']);
+            }
+
+            return $result;
         }
 
         if ($pollRequestId !== null && $this->cache->available()) {
@@ -450,6 +470,7 @@ final class WorkflowTaskPoller
         bool $acceptsQueryTasks = false,
         ?int $timeoutSeconds = null,
         array $taskKinds = ['workflow'],
+        ?WorkerTaskDelivery $delivery = null,
     ): array {
         $limit = max(10, max(1, (int) config('server.polling.max_tasks_per_poll', 1)) * 10);
         $nextProbeAt = null;
@@ -502,12 +523,14 @@ final class WorkflowTaskPoller
                 $taskKinds,
                 $limit,
                 $workerPollFence,
+                $delivery,
                 &$nextProbeAt,
                 &$resolvedResult,
             ): ?array {
                 app(StoragePressure::class)->requireNewWork();
 
-                if (! WorkerPollFence::isCurrent($workerPollFence)) {
+                $delivery?->lockWorker();
+                if ($delivery === null && ! WorkerPollFence::isCurrent($workerPollFence)) {
                     $resolvedResult = [
                         'task' => null,
                         'poll_status' => 'stale_worker_registration',
@@ -534,6 +557,7 @@ final class WorkflowTaskPoller
                     acceptsQueryTasks: $acceptsQueryTasks,
                     supportsQueryTasks: $supportsQueryTasks,
                     workerPollFence: $workerPollFence,
+                    delivery: $delivery,
                 );
                 $nextProbeAt = $resolvedResult['next_probe_at'] ?? null;
 
@@ -608,6 +632,7 @@ final class WorkflowTaskPoller
         bool $acceptsQueryTasks = false,
         bool $supportsQueryTasks = false,
         array $workerPollFence = [],
+        ?WorkerTaskDelivery $delivery = null,
     ): array {
         return $this->taskKindSelector->select(
             $namespace,
@@ -629,9 +654,10 @@ final class WorkflowTaskPoller
                 $acceptsQueryTasks,
                 $supportsQueryTasks,
                 $workerPollFence,
+                $delivery,
             ): array {
                 if ($taskKind === 'update_validation') {
-                    $validationTask = $this->updateValidationTasks->claimAvailable($namespace, $worker);
+                    $validationTask = $this->updateValidationTasks->claimAvailable($namespace, $worker, $delivery);
 
                     return [
                         'task' => $validationTask,
@@ -655,6 +681,7 @@ final class WorkflowTaskPoller
                     acceptsQueryTasks: $acceptsQueryTasks,
                     supportsQueryTasks: $supportsQueryTasks,
                     workerPollFence: $workerPollFence,
+                    delivery: $delivery,
                 );
 
                 if (is_array($result['task'] ?? null)) {
@@ -686,6 +713,7 @@ final class WorkflowTaskPoller
         bool $acceptsQueryTasks = false,
         bool $supportsQueryTasks = false,
         array $workerPollFence = [],
+        ?WorkerTaskDelivery $delivery = null,
     ): array {
         return $this->withWorkerCompatibility(
             $namespace,
@@ -705,6 +733,7 @@ final class WorkflowTaskPoller
                 $acceptsQueryTasks,
                 $supportsQueryTasks,
                 $workerPollFence,
+                $delivery,
             ): array {
                 $this->runDueServiceModeTimers($namespace, $taskQueue, $buildId);
 
@@ -722,6 +751,8 @@ final class WorkflowTaskPoller
                     );
 
                     if (is_array($task)) {
+                        $delivery?->assertReplay($task['task_id']);
+
                         return [
                             'task' => $task,
                             'poll_status' => 'leased',
@@ -750,6 +781,7 @@ final class WorkflowTaskPoller
                                 acceptHistoryEncoding: $acceptHistoryEncoding,
                                 supportedWorkflowTypes: $supportedWorkflowTypes,
                                 workerPollFence: $workerPollFence,
+                                delivery: $delivery,
                             ),
                         ),
                     );
@@ -798,6 +830,7 @@ final class WorkflowTaskPoller
                                     acceptHistoryEncoding: $acceptHistoryEncoding,
                                     supportedWorkflowTypes: $supportedWorkflowTypes,
                                     workerPollFence: $workerPollFence,
+                                    delivery: $delivery,
                                 ),
                             ),
                         );
@@ -967,8 +1000,9 @@ final class WorkflowTaskPoller
         ?string $acceptHistoryEncoding = null,
         array $supportedWorkflowTypes = [],
         array $workerPollFence = [],
+        ?WorkerTaskDelivery $delivery = null,
     ): ?array {
-        $readyTasks = $this->pollReplayEligibleReadyTasks(
+        $readyTasks = $delivery?->accepting() ? $delivery->candidates('workflow') : $this->pollReplayEligibleReadyTasks(
             namespace: $namespace,
             taskQueue: $taskQueue,
             leaseOwner: $leaseOwner,
@@ -1056,6 +1090,15 @@ final class WorkflowTaskPoller
                 continue;
             }
 
+            if ($delivery !== null && ! $delivery->accepting()) {
+                $offer = $delivery->offerTask($readyTask, 'workflow');
+                if ($offer !== null) {
+                    return $offer;
+                }
+
+                continue;
+            }
+
             $claim = DB::transaction(function () use (
                 $namespace,
                 $taskQueue,
@@ -1065,8 +1108,10 @@ final class WorkflowTaskPoller
                 $pollRequestId,
                 $workerPollFence,
                 $runId,
+                $delivery,
             ): array {
-                if ($workerPollFence !== [] && ! WorkerPollFence::isCurrentForUpdate($workerPollFence)) {
+                $delivery?->lockWorker();
+                if ($delivery === null && $workerPollFence !== [] && ! WorkerPollFence::isCurrentForUpdate($workerPollFence)) {
                     return ['claimed' => false, 'reason' => 'stale_worker_registration'];
                 }
 
@@ -1099,6 +1144,7 @@ final class WorkflowTaskPoller
                     $pollRequestId,
                 );
 
+                $delivery?->assertClaimable($taskId, 'workflow');
                 $claim = $this->bridge->claimStatus($taskId, $leaseOwner);
 
                 if (($claim['claimed'] ?? false) === true) {
@@ -1109,6 +1155,7 @@ final class WorkflowTaskPoller
                         $pollRequestId,
                         $workerPollFence,
                     );
+                    $delivery?->bindAccepted($taskId);
                 }
 
                 return $claim;

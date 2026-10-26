@@ -13,6 +13,7 @@ use App\Support\NamespaceDurableStateException;
 use App\Support\PollClientDisconnected;
 use App\Support\RuntimeExternalPayloadAudit;
 use App\Support\RuntimeExternalPayloadException;
+use App\Support\TaskDeliveryOfferRejected;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -43,7 +44,14 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
-        $exceptions->dontReport([PollClientDisconnected::class]);
+        $exceptions->dontReport([PollClientDisconnected::class, TaskDeliveryOfferRejected::class]);
+
+        $exceptions->render(function (TaskDeliveryOfferRejected $exception) {
+            return WorkerProtocol::json([
+                'task' => null, 'poll_status' => $exception->reason,
+                'reason' => $exception->reason, 'retryable' => true,
+            ], 409);
+        });
 
         // Laravel selects renderers by the first parameter's reflected type.
         $exceptions->render(function (PollClientDisconnected $exception) {

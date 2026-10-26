@@ -72,10 +72,10 @@ final class BackendUnavailable
         }
 
         $operation = match (true) {
-            $request->is('api/worker/workflow-tasks/poll') => 'poll_workflow_task',
-            $request->is('api/worker/activity-tasks/poll') => 'poll_activity_task',
-            $request->is('api/worker/query-tasks/poll') => 'poll_query_task',
-            $request->is('api/worker/update-validation-tasks/poll') => 'poll_update_validation_task',
+            $request->is('api/worker/workflow-tasks/poll', 'api/worker/workflow-tasks/offers') => 'poll_workflow_task',
+            $request->is('api/worker/activity-tasks/poll', 'api/worker/activity-tasks/offers') => 'poll_activity_task',
+            $request->is('api/worker/query-tasks/poll', 'api/worker/query-tasks/offers') => 'poll_query_task',
+            $request->is('api/worker/update-validation-tasks/poll', 'api/worker/update-validation-tasks/offers') => 'poll_update_validation_task',
             $request->is('api/worker/register') => 'register_worker',
             $request->isMethod('POST') && $request->is('api/worker/registrations/*/deregister') => 'deregister_worker',
             $request->is('api/worker/heartbeat') => 'heartbeat_worker',

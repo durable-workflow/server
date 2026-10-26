@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "56"
+  version: "57"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -481,6 +481,39 @@ paths:
         "200": { $ref: "#/components/responses/WorkerSessionOperation" }
         "404": { $ref: "#/components/responses/WorkerError" }
         "409": { $ref: "#/components/responses/WorkerError" }
+  /worker/workflow-tasks/offers:
+    post:
+      operationId: offerOrAcceptWorkflowTask
+      tags: [workflow-tasks]
+      description: >
+        Explicit protocol-1.20 offer/accept opt-in. An offer carries no lease and
+        reserves no task. Retry uncertain acceptance with the same endpoint,
+        poll_request_id, registration_token and task_offer_token.
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskDeliveryVersionHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/WorkflowTaskPollRequest"
+                - $ref: "#/components/schemas/TaskDeliveryRequestFields"
+      responses:
+        "200":
+          description: An unaccepted offer, the exact accepted task, or an ordinary empty result.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/TaskDeliveryOfferedResponse"
+                  - $ref: "#/components/schemas/WorkflowTaskPollResponse"
+        "400": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/TaskDeliveryConflict" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+        "429": { $ref: "#/components/responses/WorkerPollBackpressure" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
   /worker/workflow-tasks/poll:
     post:
       operationId: pollWorkflowTask
@@ -963,6 +996,39 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/WorkerEnvelope" }
         "409": { $ref: "#/components/responses/WorkerError" }
+  /worker/update-validation-tasks/offers:
+    post:
+      operationId: offerOrAcceptUpdateValidationTask
+      tags: [update-validation-tasks]
+      description: >
+        Explicit protocol-1.20 offer/accept opt-in. An offer carries no lease and
+        reserves no task. Retry uncertain acceptance with the same endpoint,
+        poll_request_id, registration_token and task_offer_token.
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskDeliveryVersionHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/UpdateValidationTaskPollRequest"
+                - $ref: "#/components/schemas/TaskDeliveryRequestFields"
+      responses:
+        "200":
+          description: An unaccepted offer, the exact accepted task, or an ordinary empty result.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/TaskDeliveryOfferedResponse"
+                  - $ref: "#/components/schemas/UpdateValidationTaskOfferAcceptedResponse"
+        "400": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/TaskDeliveryConflict" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+        "429": { $ref: "#/components/responses/WorkerPollBackpressure" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
   /worker/update-validation-tasks/poll:
     post:
       operationId: pollUpdateValidationTask
@@ -1022,6 +1088,39 @@ paths:
         "404": { $ref: "#/components/responses/UpdateValidationTaskCompletionFailure" }
         "409": { $ref: "#/components/responses/UpdateValidationTaskCompletionFailure" }
         "422": { $ref: "#/components/responses/WorkerError" }
+  /worker/query-tasks/offers:
+    post:
+      operationId: offerOrAcceptQueryTask
+      tags: [query-tasks]
+      description: >
+        Explicit protocol-1.20 offer/accept opt-in. An offer carries no lease and
+        reserves no task. Retry uncertain acceptance with the same endpoint,
+        poll_request_id, registration_token and task_offer_token.
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskDeliveryVersionHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/PollRequest"
+                - $ref: "#/components/schemas/TaskDeliveryRequestFields"
+      responses:
+        "200":
+          description: An unaccepted offer, the exact accepted task, or an ordinary empty result.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/TaskDeliveryOfferedResponse"
+                  - $ref: "#/components/schemas/QueryTaskPollResult"
+        "400": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/TaskDeliveryConflict" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+        "429": { $ref: "#/components/responses/WorkerPollBackpressure" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
   /worker/query-tasks/poll:
     post:
       operationId: pollQueryTask
@@ -1102,6 +1201,39 @@ paths:
         "200": { $ref: "#/components/responses/WorkerEnvelope" }
         "409": { $ref: "#/components/responses/WorkerError" }
         "503": { $ref: "#/components/responses/QueryTaskOutcomeUnavailable" }
+  /worker/activity-tasks/offers:
+    post:
+      operationId: offerOrAcceptActivityTask
+      tags: [activity-tasks]
+      description: >
+        Explicit protocol-1.20 offer/accept opt-in. An offer carries no lease and
+        reserves no task. Retry uncertain acceptance with the same endpoint,
+        poll_request_id, registration_token and task_offer_token.
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskDeliveryVersionHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/PollRequest"
+                - $ref: "#/components/schemas/TaskDeliveryRequestFields"
+      responses:
+        "200":
+          description: An unaccepted offer, the exact accepted task, or an ordinary empty result.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/TaskDeliveryOfferedResponse"
+                  - $ref: "#/components/schemas/ActivityTaskOfferAcceptedResponse"
+        "400": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/TaskDeliveryConflict" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+        "429": { $ref: "#/components/responses/WorkerPollBackpressure" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
   /worker/activity-tasks/poll:
     post:
       operationId: pollActivityTask
@@ -1287,6 +1419,11 @@ components:
       in: header
       name: Authorization
   parameters:
+    TaskDeliveryVersionHeader:
+      name: X-Durable-Workflow-Task-Delivery
+      in: header
+      required: true
+      schema: { type: string, const: offer-accept.v1 }
     WorkerProtocolVersionHeader:
       name: X-Durable-Workflow-Protocol-Version
       in: header
@@ -1319,6 +1456,21 @@ components:
       description: Worker registration identity in the resolved namespace.
       schema: { type: string, minLength: 1, maxLength: 255 }
   responses:
+    TaskDeliveryConflict:
+      description: >
+        Offer negotiation, incarnation, identity, deadline or task authority
+        no longer permits this acceptance. This refusal never revokes a claim
+        already accepted through another response.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [task, poll_status, reason, retryable]
+            properties:
+              task: { type: "null" }
+              poll_status: { type: string }
+              reason: { type: string }
+              retryable: { type: boolean, const: true }
     WorkerEnvelope:
       description: Worker-protocol response envelope.
       headers:
@@ -1499,6 +1651,50 @@ components:
               - $ref: "#/components/schemas/WorkerEnvelope"
               - $ref: "#/components/schemas/WorkerDeregistrationResult"
   schemas:
+    TaskDeliveryRequestFields:
+      type: object
+      required: [poll_request_id, registration_token]
+      properties:
+        poll_request_id: { type: string, minLength: 1, maxLength: 255 }
+        registration_token: { type: string, pattern: "^[a-f0-9]{32}$" }
+        task_offer_token: { type: string, minLength: 1, maxLength: 8192 }
+    TaskDeliveryOfferedResponse:
+      type: object
+      required: [task, task_offer, poll_status]
+      properties:
+        task: { type: "null" }
+        poll_status: { type: string, const: offered }
+        task_offer:
+          type: object
+          required: [schema, task_id, task_kind, token, expires_at_ms]
+          properties:
+            schema: { type: string, const: durable-workflow.task-delivery.v1 }
+            task_id: { type: string, minLength: 1 }
+            task_kind: { type: string, enum: [workflow, activity, query, update_validation] }
+            token: { type: string, minLength: 1, maxLength: 8192 }
+            expires_at_ms: { type: integer }
+    ActivityTaskOfferAcceptedResponse:
+      oneOf:
+        - $ref: "#/components/schemas/ActivityTaskClaim"
+        - $ref: "#/components/schemas/EmptyPoll"
+        - $ref: "#/components/schemas/DrainingPoll"
+    UpdateValidationTaskOfferAcceptedResponse:
+      oneOf:
+        - $ref: "#/components/schemas/UpdateValidationTaskClaim"
+        - $ref: "#/components/schemas/EmptyPoll"
+    TaskDeliveryCapabilities:
+      type: object
+      required: [schema, supported, minimum_protocol_version, worker_capability, header, version, endpoint_suffix, acceptance_timeout_seconds, unaccepted_offer_reserves_task]
+      properties:
+        schema: { type: string, const: durable-workflow.task-delivery.v1 }
+        supported: { type: boolean }
+        minimum_protocol_version: { type: string, const: "1.20" }
+        worker_capability: { type: string, const: task_delivery_offers }
+        header: { type: string, const: X-Durable-Workflow-Task-Delivery }
+        version: { type: string, const: offer-accept.v1 }
+        endpoint_suffix: { type: string, const: /offers }
+        acceptance_timeout_seconds: { type: integer, minimum: 1, maximum: 10 }
+        unaccepted_offer_reserves_task: { type: boolean, const: false }
     AcceptedWorkerProtocolRequestVersion:
       type: string
       enum: ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15", "1.16", "1.17", "1.18", "1.19", "1.20"]
@@ -1707,6 +1903,7 @@ components:
       additionalProperties: true
       required: [supported_workflow_task_commands, workflow_task_poll_request_idempotency, workflow_memo_updates, message_streams, typed_search_attributes, condition_wait_occurrence_identity, update_validation_tasks, synchronous_update_validation, local_activities, sticky_execution]
       properties:
+        task_delivery: { $ref: "#/components/schemas/TaskDeliveryCapabilities" }
         query_task_authority:
           type: boolean
           description: Original query timing and atomic outcome fences with non-renewing protocol-1.20 query status. A 1.19 status request is explicitly unavailable.

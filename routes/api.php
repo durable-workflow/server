@@ -241,6 +241,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
 
         // Workflow tasks (long-poll)
         Route::post('/workflow-tasks/poll', [WorkerController::class, 'pollWorkflowTasks']);
+        Route::post('/workflow-tasks/offers', [WorkerController::class, 'pollWorkflowTasks']);
         Route::post('/workflow-tasks/{taskId}/history', [WorkerController::class, 'workflowTaskHistory']);
         Route::post('/workflow-tasks/{taskId}/heartbeat', [WorkerController::class, 'heartbeatWorkflowTask']);
         Route::post('/workflow-tasks/{taskId}/deliver-cancellation', [CooperativeCancellationController::class, 'deliver']);
@@ -261,17 +262,20 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
 
         // Query tasks (ephemeral worker-routed workflow queries)
         Route::post('/query-tasks/poll', [WorkerController::class, 'pollQueryTasks']);
+        Route::post('/query-tasks/offers', [WorkerController::class, 'pollQueryTasks']);
         Route::get('/query-tasks/{queryTaskId}/status', [WorkerController::class, 'queryTaskStatus']);
         Route::post('/query-tasks/{queryTaskId}/complete', [WorkerController::class, 'completeQueryTask']);
         Route::post('/query-tasks/{queryTaskId}/fail', [WorkerController::class, 'failQueryTask']);
 
         // Update validation tasks (durable, synchronous pre-acceptance checks)
         Route::post('/update-validation-tasks/poll', [WorkerController::class, 'pollUpdateValidationTasks']);
+        Route::post('/update-validation-tasks/offers', [WorkerController::class, 'pollUpdateValidationTasks']);
         Route::post('/update-validation-tasks/{taskId}/approve', [WorkerController::class, 'approveUpdateValidationTask']);
         Route::post('/update-validation-tasks/{taskId}/reject', [WorkerController::class, 'rejectUpdateValidationTask']);
 
         // Activity tasks (long-poll)
         Route::post('/activity-tasks/poll', [ActivityTaskController::class, 'poll']);
+        Route::post('/activity-tasks/offers', [ActivityTaskController::class, 'poll']);
         Route::post('/activity-tasks/{taskId}/status', [ActivityTaskController::class, 'status']);
         Route::post('/activity-tasks/{taskId}/acknowledge-cancellation', [ActivityTaskController::class, 'acknowledgeCancellation']);
         Route::post('/activity-tasks/{taskId}/complete', [ActivityTaskController::class, 'complete']);

@@ -54,7 +54,8 @@ final class WorkflowTaskKindSelector
             $result = $this->claimInOrder([$first, $second], $claim);
             $leasedKind = $result['task']['task_kind'] ?? null;
 
-            if (is_string($leasedKind) && in_array($leasedKind, [self::WORKFLOW, self::UPDATE_VALIDATION], true)) {
+            if (! isset($result['task']['delivery_offer'])
+                && is_string($leasedKind) && in_array($leasedKind, [self::WORKFLOW, self::UPDATE_VALIDATION], true)) {
                 DB::table(self::TABLE)
                     ->where('namespace', $namespace)
                     ->where('task_queue', $taskQueue)
