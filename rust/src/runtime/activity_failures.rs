@@ -219,7 +219,7 @@ fn resolve_details(details: &Value) -> Result<(Value, Option<&'static str>)> {
 
 /// A PHP array round trip: an object keyed 0..n, including an empty one,
 /// comes back as a list.
-fn php_array(value: Value) -> Value {
+pub(super) fn php_array(value: Value) -> Value {
     match value {
         Value::Array(items) => Value::Array(items.into_iter().map(php_array).collect()),
         Value::Object(fields) => {

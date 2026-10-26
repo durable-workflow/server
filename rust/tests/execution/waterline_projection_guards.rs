@@ -60,6 +60,33 @@ async fn appends_to_a_projection_are_refused_before_their_body_is_read() {
     assert_eq!(after, described);
 }
 
+// Durable output streams on a projection are read-only too: an append and a
+// close are refused as PHP's `projectedRunReadOnly` refuses them, and no
+// stream or item is written.
+#[tokio::test]
+async fn durable_stream_writes_to_a_projection_are_refused() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let (status, report) = import(&app, "stream-guard-src", running(1)).await;
+    assert_eq!(status, StatusCode::CREATED, "{report}");
+    let workflow_id = report["identity"]["standalone"]["workflow_id"].as_str().unwrap().replace(':', "%3A");
+    let run_id = report["identity"]["standalone"]["run_id"].as_str().unwrap().to_owned();
+    let stream = format!("/api/workflows/{workflow_id}/runs/{run_id}/streams/tokens");
+    let before = rows(&database).await;
+    for (path, body) in [
+        (format!("{stream}/items"), json!({"items": [{"payload": "x", "idempotency_key": "k1"}]})),
+        (format!("{stream}/close"), json!({})),
+        (format!("{stream}/close"), json!({"error_reason": "failed"})),
+    ] {
+        let (status, refusal) = request(&app, "POST", &path, body.clone()).await;
+        assert_eq!((status, &refusal["reason"]), (StatusCode::CONFLICT, &json!("v1_projection_read_only")), "{path} {body}: {refusal}");
+        assert_eq!((&refusal["run_id"], &refusal["execution_owner"]), (&json!(run_id), &json!("v1")), "{refusal}");
+    }
+    let (status, listed) = request(&app, "GET", &format!("/api/workflows/{workflow_id}/runs/{run_id}/streams"), Value::Null).await;
+    assert_eq!((status, &listed["count"]), (StatusCode::OK, &json!(0)), "{listed}");
+    assert_eq!(rows(&database).await, before);
+}
+
 #[tokio::test]
 async fn a_projection_past_the_event_limit_is_refused_before_any_row() {
     let database = TestDatabase::new().await;
