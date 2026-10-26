@@ -162,9 +162,9 @@ any other unknown path or method answers PHP's own 404 or 405
     except external payload references as input, stream retention cleanup
     and takeover of PHP data with streams.
   - Workflow-bound service handlers (start, signal, update and query
-    workflow), the shared admission limits, the workflow-task
-    `start_service_operation` command, and takeover of a PHP database that
-    holds service calls. Each of these still answers 501 or refuses. When the
+    workflow), the workflow-task `start_service_operation` command, and
+    takeover of a PHP database that holds service calls. Each of these still
+    answers 501 or refuses. When the
     workflow-bound handlers come, an operation bound to a workflow update must
     refuse a `wait_timeout_seconds` above the update ceiling of 60 before it
     runs, as PHP does (Server #775).
@@ -177,12 +177,11 @@ any other unknown path or method answers PHP's own 404 or 405
       fixture checks the empty namespace's 37 cases.
     - Service-call execution, show and cancel are served for the handler kinds
       that stay accepted (`activity_execution`, `invocable_http`), with the
-      `service-calls` fixture's 71 cases. That covers admission and its audit
+      `service-calls` fixture's 82 cases. That covers admission and its audit
       row, the boundary's authorization and circuit refusals, the 503 for an
-      invalid limit, handler failures retried in the request, deadlines,
-      idempotent replays, and cancellation. A workflow-bound kind and an
-      operation with a valid rate or concurrency limit answer 501 before
-      anything is written.
+      invalid limit, the shared rate and concurrency limits, handler failures
+      retried in the request, deadlines, idempotent replays, and cancellation.
+      A workflow-bound kind answers 501 before anything is written.
     - Differences from published 2.11.1:
       - Native JSON documents don't keep object key order. An update that
         only reorders a document's keys writes nothing, where PHP's strict
@@ -202,6 +201,13 @@ any other unknown path or method answers PHP's own 404 or 405
       - Native commits a call's admission and dispatch in one serialized
         transaction, where PHP commits each step on its own. The rows end the
         same.
+      - The shared admission counters live in the native-owned
+        `dw_service_admission_counters` (schema version 7), not in PHP's
+        cache. Native counts under its transition lock instead of a cache
+        lock, so an admission never answers 503 because the lock was busy, and
+        a call whose audit row fails to write takes back its rate count too.
+        The namespace-wide limits and the hard ceilings run only at their
+        default of none, and the concurrency lease lives the default day.
   - (Bridge adapter webhooks are served: `POST /api/bridge-adapters/webhook/{adapter}`,
     with the `bridge-adapters` fixture. Native admits bridge updates as the
     regular update route does; published 2.11.1 skips that admission, Server #747.

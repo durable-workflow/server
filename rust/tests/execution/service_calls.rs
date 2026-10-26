@@ -190,14 +190,70 @@ async fn the_boundary_refuses_and_records_every_decision() {
     assert_eq!((status, unavailable["outcome"].clone(), unavailable["reason"].clone(), unavailable["retry_after_seconds"].clone()),
         (StatusCode::SERVICE_UNAVAILABLE, json!("rejected_throttled"), json!("service_boundary_admission_unavailable"), json!(1)));
 
-    // Later slices: admission limits and workflow-bound handlers.
+    // An async call keeps its concurrency lease, so the next one is refused.
+    let (status, admitted) = execute(&app, "limited", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{admitted}");
     let (status, limited) = execute(&app, "limited", json!({})).await;
-    assert_eq!((status, limited["reason"].clone()), (StatusCode::NOT_IMPLEMENTED, json!("rust_capability_not_implemented")));
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{limited}");
+    assert_eq!((limited["outcome"].clone(), limited["reason"].clone(), limited["retry_after_seconds"].clone(),
+        limited["outcome_metadata"].clone()), (json!("rejected_concurrency_limited"), json!("concurrency_limit_exceeded"), json!(1),
+        json!({"failure_reason": "policy_rejection", "admission_scope": "boundary", "observed_in_flight": 1, "max_in_flight": 1})));
+
+    // A later slice: workflow-bound handlers.
     let (status, start) = execute(&app, "start", json!({})).await;
     assert_eq!((status, start["reason"].clone()), (StatusCode::NOT_IMPLEMENTED, json!("rust_capability_not_implemented")));
     let rows = text_rows(&database, "SELECT id, status FROM workflow_service_calls ORDER BY id",
         "SELECT id, status FROM workflow_service_calls ORDER BY id", "SELECT id, status FROM workflow_service_calls ORDER BY id").await;
-    assert_eq!(rows.len(), 5, "one audit row per decision, none for a 501: {rows:?}");
+    assert_eq!(rows.len(), 7, "one audit row per decision, none for a 501: {rows:?}");
+}
+
+#[tokio::test]
+async fn shared_admission_limits_count_per_boundary() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let with_policy = |mode: &str, policy: Value| {
+        let mut definition = activity("a");
+        definition["operation_mode"] = json!(mode);
+        definition["boundary_policy"] = policy;
+        definition
+    };
+    catalog(&app, &[
+        ("rated", with_policy("async", json!({"rate_limit": {"requests_per_minute": 2, "retry_after_seconds": "7"}}))),
+        ("held-sync", with_policy("sync", json!({"concurrency_limit": {"max_in_flight": 1}}))),
+    ]).await;
+
+    // The rate window is one minute; start early enough in one to stay in it.
+    let second = chrono::Timelike::second(&chrono::Utc::now());
+    if second >= 50 {
+        tokio::time::sleep(std::time::Duration::from_secs(u64::from(61 - second))).await;
+    }
+    let (status, first) = execute(&app, "rated", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(first["outcome_metadata"], json!({"boundary_key": "default|default|pay|billing|rated", "admission_scope": "shared_cache",
+        "boundary_rate_limit": 2, "namespace_rate_limit": null, "boundary_concurrency_limit": null, "namespace_concurrency_limit": null}));
+    let (status, second_call) = execute(&app, "rated", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{second_call}");
+    let (status, throttled) = execute(&app, "rated", json!({})).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{throttled}");
+    assert_eq!((throttled["outcome"].clone(), throttled["reason"].clone(), throttled["message"].clone(),
+        throttled["retry_after_seconds"].clone(), throttled["policy_name"].clone(), throttled["outcome_metadata"].clone()),
+        (json!("rejected_throttled"), json!("rate_limit_exceeded"), json!("Shared service-call rate capacity is exhausted."), json!(7),
+            json!("server.shared-service-boundary"),
+            json!({"failure_reason": "policy_rejection", "admission_scope": "boundary", "observed_window_count": 2, "requests_per_minute": 2})));
+    // Another caller namespace is another boundary with its own window.
+    let (status, other) = execute(&app, "rated", json!({"caller_namespace": "other"})).await;
+    assert_eq!(status, StatusCode::OK, "{other}");
+
+    // A sync call returns its lease when the request ends.
+    for _ in 0..3 {
+        let (status, call) = execute(&app, "held-sync", json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{call}");
+        assert_eq!(call["outcome_metadata"]["boundary_concurrency_limit"], json!(1), "{call}");
+    }
+    let leases = text_rows(&database, "SELECT cache_key, cache_key FROM dw_service_admission_counters WHERE cache_key LIKE '%concurrency%'",
+        "SELECT cache_key, cache_key FROM dw_service_admission_counters WHERE cache_key LIKE '%concurrency%'",
+        "SELECT cache_key, cache_key FROM dw_service_admission_counters WHERE cache_key LIKE '%concurrency%'").await;
+    assert!(leases.is_empty(), "a returned lease leaves no counter: {leases:?}");
 }
 
 #[tokio::test]
