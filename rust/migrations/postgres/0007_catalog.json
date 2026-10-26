@@ -768,6 +768,45 @@
     ],
     [
         "column",
+        "dw_service_admission_counters.1",
+        {
+            "collation": "default",
+            "default": null,
+            "generated": "",
+            "identity": "",
+            "name": "cache_key",
+            "not_null": true,
+            "type": "text"
+        }
+    ],
+    [
+        "column",
+        "dw_service_admission_counters.2",
+        {
+            "collation": null,
+            "default": null,
+            "generated": "",
+            "identity": "",
+            "name": "amount",
+            "not_null": true,
+            "type": "bigint"
+        }
+    ],
+    [
+        "column",
+        "dw_service_admission_counters.3",
+        {
+            "collation": null,
+            "default": null,
+            "generated": "",
+            "identity": "",
+            "name": "expires_at",
+            "not_null": true,
+            "type": "timestamp(6) without time zone"
+        }
+    ],
+    [
+        "column",
         "dw_service_call_deadlines.1",
         {
             "collation": "default",
@@ -12080,6 +12119,16 @@
     ],
     [
         "constraint",
+        "dw_service_admission_counters.dw_service_admission_counters_pkey",
+        {
+            "deferrable": false,
+            "deferred": false,
+            "definition": "PRIMARY KEY (cache_key)",
+            "validated": true
+        }
+    ],
+    [
+        "constraint",
         "dw_service_call_deadlines.dw_service_call_deadlines_pkey",
         {
             "deferrable": false,
@@ -13191,6 +13240,28 @@
             "unique": true,
             "primary": true,
             "definition": "CREATE UNIQUE INDEX dw_query_cache_pkey ON public.dw_query_cache USING btree (key)"
+        }
+    ],
+    [
+        "index",
+        "dw_service_admission_counters_expiry",
+        {
+            "definition": "CREATE INDEX dw_service_admission_counters_expiry ON public.dw_service_admission_counters USING btree (expires_at)",
+            "primary": false,
+            "ready": true,
+            "unique": false,
+            "valid": true
+        }
+    ],
+    [
+        "index",
+        "dw_service_admission_counters_pkey",
+        {
+            "definition": "CREATE UNIQUE INDEX dw_service_admission_counters_pkey ON public.dw_service_admission_counters USING btree (cache_key)",
+            "primary": true,
+            "ready": true,
+            "unique": true,
+            "valid": true
         }
     ],
     [
@@ -17461,6 +17532,21 @@
             "access_method": "heap",
             "partition_key": null,
             "force_row_security": false
+        }
+    ],
+    [
+        "relation",
+        "dw_service_admission_counters",
+        {
+            "access_method": "heap",
+            "force_row_security": false,
+            "kind": "r",
+            "options": null,
+            "partition": false,
+            "partition_key": null,
+            "persistence": "p",
+            "row_security": false,
+            "view": null
         }
     ],
     [

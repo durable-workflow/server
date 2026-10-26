@@ -22,7 +22,7 @@ fn migrator() -> &'static Migrator {
     MIGRATOR.get_or_init(|| {
         let mut migrations = Migrator::with_migrations(vec![Migration::new(
             VERSION,
-            "full frozen PHP PostgreSQL schema, native worker incarnations, session holders, stream reclaim deadlines and service call deadlines".into(),
+            "full frozen PHP PostgreSQL schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines and service admission counters".into(),
             MigrationType::Simple,
             concat!(
                 include_str!("../../migrations/postgres/0003_full_schema.sql"),
@@ -33,7 +33,7 @@ fn migrator() -> &'static Migrator {
                 "\n",
                 include_str!("../../migrations/postgres/0006_stream_reclaims.sql"),
                 "\n",
-                include_str!("../../migrations/postgres/0007_service_call_deadlines.sql")
+                include_str!("../../migrations/postgres/0007_service_calls.sql")
             )
             .into_sql_str(),
             false,
@@ -65,7 +65,7 @@ pub(super) fn native_relations_sql() -> Result<String> {
                 "\n",
                 include_str!("../../migrations/postgres/0006_stream_reclaims.sql"),
                 "\n",
-                include_str!("../../migrations/postgres/0007_service_call_deadlines.sql")
+                include_str!("../../migrations/postgres/0007_service_calls.sql")
         ),
     )
 }

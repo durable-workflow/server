@@ -2,7 +2,7 @@
   "schema": "durable-workflow.server-parity-fixture/v1",
   "id": "service-calls",
   "review_state": "reviewed",
-  "contract": "Published Server 2.11.1 Nexus service-call execution (ServiceCatalogController over Workflow 2.10.2's DefaultServiceControlPlane, operator): POST .../operations/{operation}/execute validates like Laravel (mode, wait, ids, labels, memo, search attributes, payload codec and an Avro arguments payload or {codec, blob} envelope; a provider external_storage reference is refused by the runtime transport before routing), then admits at the service boundary and writes an audit row for every decision. Required roles, caller-namespace deny and allow lists answer 403 with the target redacted (show on the audit row is not redacted), an open circuit 503 circuit_open with retry 30, an invalid shared limit 503 service_boundary_admission_unavailable. An activity_execution or invocable_http call stays accepted with its handler stamped (an uppercase ULID unless the binding names one); a binding without a target is a handler failure (409), retried in the request up to retry_policy.max_attempts unless its type is non-retryable. A deadline policy sets call_deadline_at; one already past is admitted and timed out (200, accepted). GET .../service-calls/{id} reads a call of the operation by trimmed id; POST .../cancel cancels an open call once (repeat or terminal 409 service_call_terminal, a policy with mode none 409 cancellation_not_allowed), validating the reason after the lookup. A repeated idempotency key replays the first call in the describe shape, re-checking authorization (a refusal writes a new audit row). Generated ids and times are placeholders; @own is the fixture's namespace. Embedded applications have no HTTP service calls.",
+  "contract": "Published Server 2.11.1 Nexus service-call execution (ServiceCatalogController over Workflow 2.10.2's DefaultServiceControlPlane, operator): POST .../operations/{operation}/execute validates like Laravel (mode, wait, ids, labels, memo, search attributes, payload codec and an Avro arguments payload or {codec, blob} envelope; a provider external_storage reference is refused by the runtime transport before routing), then admits at the service boundary and writes an audit row for every decision. Required roles, caller-namespace deny and allow lists answer 403 with the target redacted (show on the audit row is not redacted), an open circuit 503 circuit_open with retry 30, an invalid shared limit 503 service_boundary_admission_unavailable. Shared admission limits count per caller boundary: a per-minute rate refuses 429 rate_limit_exceeded once the window is spent, a concurrency limit 429 concurrency_limit_exceeded while a lease is taken; an async call keeps its lease, a sync call returns it when the request ends. An activity_execution or invocable_http call stays accepted with its handler stamped (an uppercase ULID unless the binding names one); a binding without a target is a handler failure (409), retried in the request up to retry_policy.max_attempts unless its type is non-retryable. A deadline policy sets call_deadline_at; one already past is admitted and timed out (200, accepted). GET .../service-calls/{id} reads a call of the operation by trimmed id; POST .../cancel cancels an open call once (repeat or terminal 409 service_call_terminal, a policy with mode none 409 cancellation_not_allowed), validating the reason after the lookup. A repeated idempotency key replays the first call in the describe shape, re-checking authorization (a refusal writes a new audit row). Generated ids and times are placeholders; @own is the fixture's namespace. Embedded applications have no HTTP service calls.",
   "workflow_type": "parity.v1.echo",
   "input": {
     "message": "service calls λ",
@@ -297,6 +297,56 @@
           "boundary_policy": {
             "rate_limit": {
               "requests_per_minute": "lots"
+            }
+          }
+        }
+      },
+      {
+        "label": "register rated",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations",
+        "body": {
+          "operation_name": "rated",
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "t",
+          "boundary_policy": {
+            "rate_limit": {
+              "requests_per_minute": 1,
+              "retry_after_seconds": 7
+            }
+          }
+        }
+      },
+      {
+        "label": "register held",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations",
+        "body": {
+          "operation_name": "held",
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "t",
+          "boundary_policy": {
+            "concurrency_limit": {
+              "max_in_flight": 1,
+              "sync_only": false
+            }
+          }
+        }
+      },
+      {
+        "label": "register held-sync",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations",
+        "body": {
+          "operation_name": "held-sync",
+          "operation_mode": "sync",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "t",
+          "boundary_policy": {
+            "concurrency_limit": {
+              "max_in_flight": 1
             }
           }
         }
@@ -609,6 +659,56 @@
         "method": "POST",
         "path": "service-endpoints/pay/services/billing/operations/misconfigured/execute",
         "body": {}
+      },
+      {
+        "label": "rated",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/rated/execute",
+        "body": {},
+        "minute_start": true
+      },
+      {
+        "label": "rated again",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/rated/execute",
+        "body": {}
+      },
+      {
+        "label": "rated other caller",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/rated/execute",
+        "body": {
+          "caller_namespace": "other"
+        }
+      },
+      {
+        "label": "held",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/held/execute",
+        "body": {}
+      },
+      {
+        "label": "held again",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/held/execute",
+        "body": {}
+      },
+      {
+        "label": "held sync",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/held-sync/execute",
+        "body": {}
+      },
+      {
+        "label": "held sync again",
+        "method": "POST",
+        "path": "service-endpoints/pay/services/billing/operations/held-sync/execute",
+        "body": {}
+      },
+      {
+        "label": "show rated again",
+        "method": "GET",
+        "path": "service-endpoints/pay/services/billing/operations/rated/service-calls/{rated again.service_call_id}"
       },
       {
         "label": "replay first",
@@ -1183,6 +1283,95 @@
           "boundary_policy": {
             "rate_limit": {
               "requests_per_minute": "lots"
+            }
+          },
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "register rated": [
+        201,
+        {
+          "id": "{id:register rated}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_name": "rated",
+          "description": null,
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "t",
+          "handler_binding": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": {
+            "rate_limit": {
+              "requests_per_minute": 1,
+              "retry_after_seconds": 7
+            }
+          },
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "register held": [
+        201,
+        {
+          "id": "{id:register held}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_name": "held",
+          "description": null,
+          "operation_mode": "async",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "t",
+          "handler_binding": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": {
+            "concurrency_limit": {
+              "max_in_flight": 1,
+              "sync_only": false
+            }
+          },
+          "metadata": null,
+          "created_at": "{time}",
+          "updated_at": "{time}"
+        }
+      ],
+      "register held-sync": [
+        201,
+        {
+          "id": "{id:register held-sync}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_name": "held-sync",
+          "description": null,
+          "operation_mode": "sync",
+          "handler_binding_kind": "activity_execution",
+          "handler_target_reference": "t",
+          "handler_binding": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": {
+            "concurrency_limit": {
+              "max_in_flight": 1
             }
           },
           "metadata": null,
@@ -3917,6 +4106,745 @@
           "linked_workflow_instance_id": null,
           "linked_workflow_run_id": null,
           "linked_workflow_update_id": null
+        }
+      ],
+      "rated": [
+        200,
+        {
+          "id": "{id:rated}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register rated}",
+          "operation_name": "rated",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "accepted",
+          "outcome": "accepted",
+          "outcome_category": "accepted",
+          "outcome_reason": "accepted",
+          "outcome_message": null,
+          "outcome_metadata": {
+            "boundary_key": "@own|@own|pay|billing|rated",
+            "admission_scope": "shared_cache",
+            "boundary_rate_limit": 1,
+            "namespace_rate_limit": null,
+            "boundary_concurrency_limit": null,
+            "namespace_concurrency_limit": null
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:rated}",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": null,
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": {
+            "rate_limit": {
+              "requests_per_minute": 1,
+              "retry_after_seconds": 7
+            }
+          },
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|rated",
+            "admission_scope": "shared_cache",
+            "boundary_rate_limit": 1,
+            "namespace_rate_limit": null,
+            "boundary_concurrency_limit": null,
+            "namespace_concurrency_limit": null,
+            "activity_execution_id": "{ULID:rated}",
+            "activity_class": "t",
+            "activity_type": "t",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:rated}",
+          "accepted": true,
+          "idempotent_replay": false,
+          "handler": {
+            "accepted": true,
+            "kind": "activity_execution",
+            "activity_execution_id": "{ULID:rated}",
+            "activity_class": "t",
+            "activity_type": "t"
+          },
+          "reason": null
+        }
+      ],
+      "rated again": [
+        429,
+        {
+          "accepted": false,
+          "service_call_id": "{id:rated again}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register rated}",
+          "operation_name": "rated",
+          "operation_mode": "async",
+          "status": "failed",
+          "outcome": "rejected_throttled",
+          "error_type": "rejected_throttled",
+          "outcome_category": "rejected",
+          "reason": "rate_limit_exceeded",
+          "message": "Shared service-call rate capacity is exhausted.",
+          "retry_after_seconds": 7,
+          "policy_name": "server.shared-service-boundary",
+          "outcome_metadata": {
+            "failure_reason": "policy_rejection",
+            "admission_scope": "boundary",
+            "observed_window_count": 1,
+            "requests_per_minute": 1
+          },
+          "caller_namespace": "@own",
+          "caller_principal_subject": "legacy-token",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null
+        }
+      ],
+      "rated other caller": [
+        200,
+        {
+          "id": "{id:rated other caller}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register rated}",
+          "operation_name": "rated",
+          "caller_namespace": "other",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "accepted",
+          "outcome": "accepted",
+          "outcome_category": "accepted",
+          "outcome_reason": "accepted",
+          "outcome_message": null,
+          "outcome_metadata": {
+            "boundary_key": "other|@own|pay|billing|rated",
+            "admission_scope": "shared_cache",
+            "boundary_rate_limit": 1,
+            "namespace_rate_limit": null,
+            "boundary_concurrency_limit": null,
+            "namespace_concurrency_limit": null
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:rated other caller}",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": null,
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": {
+            "rate_limit": {
+              "requests_per_minute": 1,
+              "retry_after_seconds": 7
+            }
+          },
+          "metadata": {
+            "boundary_key": "other|@own|pay|billing|rated",
+            "admission_scope": "shared_cache",
+            "boundary_rate_limit": 1,
+            "namespace_rate_limit": null,
+            "boundary_concurrency_limit": null,
+            "namespace_concurrency_limit": null,
+            "activity_execution_id": "{ULID:rated other caller}",
+            "activity_class": "t",
+            "activity_type": "t",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:rated other caller}",
+          "accepted": true,
+          "idempotent_replay": false,
+          "handler": {
+            "accepted": true,
+            "kind": "activity_execution",
+            "activity_execution_id": "{ULID:rated other caller}",
+            "activity_class": "t",
+            "activity_type": "t"
+          },
+          "reason": null
+        }
+      ],
+      "held": [
+        200,
+        {
+          "id": "{id:held}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register held}",
+          "operation_name": "held",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "accepted",
+          "outcome": "accepted",
+          "outcome_category": "accepted",
+          "outcome_reason": "accepted",
+          "outcome_message": null,
+          "outcome_metadata": {
+            "boundary_key": "@own|@own|pay|billing|held",
+            "admission_scope": "shared_cache",
+            "boundary_rate_limit": null,
+            "namespace_rate_limit": null,
+            "boundary_concurrency_limit": 1,
+            "namespace_concurrency_limit": null
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:held}",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": null,
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": {
+            "concurrency_limit": {
+              "max_in_flight": 1,
+              "sync_only": false
+            }
+          },
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|held",
+            "admission_scope": "shared_cache",
+            "boundary_rate_limit": null,
+            "namespace_rate_limit": null,
+            "boundary_concurrency_limit": 1,
+            "namespace_concurrency_limit": null,
+            "activity_execution_id": "{ULID:held}",
+            "activity_class": "t",
+            "activity_type": "t",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:held}",
+          "accepted": true,
+          "idempotent_replay": false,
+          "handler": {
+            "accepted": true,
+            "kind": "activity_execution",
+            "activity_execution_id": "{ULID:held}",
+            "activity_class": "t",
+            "activity_type": "t"
+          },
+          "reason": null
+        }
+      ],
+      "held again": [
+        429,
+        {
+          "accepted": false,
+          "service_call_id": "{id:held again}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register held}",
+          "operation_name": "held",
+          "operation_mode": "async",
+          "status": "failed",
+          "outcome": "rejected_concurrency_limited",
+          "error_type": "rejected_concurrency_limited",
+          "outcome_category": "rejected",
+          "reason": "concurrency_limit_exceeded",
+          "message": "Shared service-call concurrency capacity is exhausted.",
+          "retry_after_seconds": 1,
+          "policy_name": "server.shared-service-boundary",
+          "outcome_metadata": {
+            "failure_reason": "policy_rejection",
+            "admission_scope": "boundary",
+            "observed_in_flight": 1,
+            "max_in_flight": 1
+          },
+          "caller_namespace": "@own",
+          "caller_principal_subject": "legacy-token",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null
+        }
+      ],
+      "held sync": [
+        200,
+        {
+          "id": "{id:held sync}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register held-sync}",
+          "operation_name": "held-sync",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "accepted",
+          "outcome": "accepted",
+          "outcome_category": "accepted",
+          "outcome_reason": "accepted",
+          "outcome_message": null,
+          "outcome_metadata": {
+            "boundary_key": "@own|@own|pay|billing|held-sync",
+            "admission_scope": "shared_cache",
+            "boundary_rate_limit": null,
+            "namespace_rate_limit": null,
+            "boundary_concurrency_limit": 1,
+            "namespace_concurrency_limit": null
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "sync",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:held sync}",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": null,
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": {
+            "concurrency_limit": {
+              "max_in_flight": 1
+            }
+          },
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|held-sync",
+            "admission_scope": "shared_cache",
+            "boundary_rate_limit": null,
+            "namespace_rate_limit": null,
+            "boundary_concurrency_limit": 1,
+            "namespace_concurrency_limit": null,
+            "activity_execution_id": "{ULID:held sync}",
+            "activity_class": "t",
+            "activity_type": "t",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:held sync}",
+          "accepted": true,
+          "idempotent_replay": false,
+          "handler": {
+            "accepted": true,
+            "kind": "activity_execution",
+            "activity_execution_id": "{ULID:held sync}",
+            "activity_class": "t",
+            "activity_type": "t"
+          },
+          "reason": null
+        }
+      ],
+      "held sync again": [
+        200,
+        {
+          "id": "{id:held sync again}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register held-sync}",
+          "operation_name": "held-sync",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "accepted",
+          "outcome": "accepted",
+          "outcome_category": "accepted",
+          "outcome_reason": "accepted",
+          "outcome_message": null,
+          "outcome_metadata": {
+            "boundary_key": "@own|@own|pay|billing|held-sync",
+            "admission_scope": "shared_cache",
+            "boundary_rate_limit": null,
+            "namespace_rate_limit": null,
+            "boundary_concurrency_limit": 1,
+            "namespace_concurrency_limit": null
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": null,
+          "operation_mode": "sync",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "{ULID:held sync again}",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": null,
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": {
+            "concurrency_limit": {
+              "max_in_flight": 1
+            }
+          },
+          "metadata": {
+            "boundary_key": "@own|@own|pay|billing|held-sync",
+            "admission_scope": "shared_cache",
+            "boundary_rate_limit": null,
+            "namespace_rate_limit": null,
+            "boundary_concurrency_limit": 1,
+            "namespace_concurrency_limit": null,
+            "activity_execution_id": "{ULID:held sync again}",
+            "activity_class": "t",
+            "activity_type": "t",
+            "service_call_attempts": [
+              {
+                "attempt": 1,
+                "status": "accepted",
+                "outcome": "accepted",
+                "outcome_reason": "accepted",
+                "started_at": "{µs}",
+                "retry_scheduled": false
+              }
+            ],
+            "retry_attempt_count": 1
+          },
+          "service_call_attempts": [
+            {
+              "attempt": 1,
+              "status": "accepted",
+              "outcome": "accepted",
+              "outcome_reason": "accepted",
+              "started_at": "{µs}",
+              "retry_scheduled": false
+            }
+          ],
+          "retry_attempt_count": 1,
+          "accepted_at": "{µs}",
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": null,
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "service_call_id": "{id:held sync again}",
+          "accepted": true,
+          "idempotent_replay": false,
+          "handler": {
+            "accepted": true,
+            "kind": "activity_execution",
+            "activity_execution_id": "{ULID:held sync again}",
+            "activity_class": "t",
+            "activity_type": "t"
+          },
+          "reason": null
+        }
+      ],
+      "show rated again": [
+        200,
+        {
+          "id": "{id:rated again}",
+          "namespace": "@own",
+          "endpoint_id": "{id:register endpoint}",
+          "endpoint_name": "pay",
+          "service_id": "{id:register service}",
+          "service_name": "billing",
+          "operation_id": "{id:register rated}",
+          "operation_name": "rated",
+          "caller_namespace": "@own",
+          "caller_workflow_instance_id": null,
+          "caller_workflow_run_id": null,
+          "target_namespace": "@own",
+          "linked_workflow_instance_id": null,
+          "linked_workflow_run_id": null,
+          "linked_workflow_update_id": null,
+          "status": "failed",
+          "outcome": "rejected_throttled",
+          "outcome_category": "rejected",
+          "outcome_reason": "rate_limit_exceeded",
+          "outcome_message": "Shared service-call rate capacity is exhausted.",
+          "outcome_metadata": {
+            "failure_reason": "policy_rejection",
+            "admission_scope": "boundary",
+            "observed_window_count": 1,
+            "requests_per_minute": 1
+          },
+          "service_error_type": null,
+          "caller_observed_error_type": null,
+          "typed_error_message": null,
+          "policy_name": "server.shared-service-boundary",
+          "retry_after_seconds": 7,
+          "operation_mode": "async",
+          "resolved_binding_kind": "activity_execution",
+          "resolved_target_reference": "t",
+          "caller_principal_subject": "legacy-token",
+          "caller_principal_method": "token",
+          "caller_principal_roles": [
+            "admin"
+          ],
+          "caller_principal_tenant": null,
+          "caller_principal_claims": {
+            "legacy_credential": true
+          },
+          "payload_codec": null,
+          "input_payload_reference": null,
+          "output_payload_reference": null,
+          "failure_payload_reference": null,
+          "failure_message": "Shared service-call rate capacity is exhausted.",
+          "idempotency_key": null,
+          "deadline_policy": null,
+          "idempotency_policy": null,
+          "cancellation_policy": null,
+          "retry_policy": null,
+          "boundary_policy": {
+            "rate_limit": {
+              "requests_per_minute": 1,
+              "retry_after_seconds": 7
+            }
+          },
+          "metadata": {
+            "failure_reason": "policy_rejection",
+            "admission_scope": "boundary",
+            "observed_window_count": 1,
+            "requests_per_minute": 1
+          },
+          "service_call_attempts": [],
+          "retry_attempt_count": 0,
+          "accepted_at": null,
+          "call_deadline_at": null,
+          "started_at": null,
+          "completed_at": null,
+          "failed_at": "{µs}",
+          "cancelled_at": null,
+          "created_at": "{time}",
+          "updated_at": "{time}",
+          "found": true,
+          "service_call_id": "{id:rated again}",
+          "message": "Shared service-call rate capacity is exhausted."
         }
       ],
       "replay first": [

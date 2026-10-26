@@ -49,6 +49,11 @@ function serviceCatalogRequests(array $requests, string $own, string $url): arra
 
             return rawurlencode($value);
         }, $request['path']);
+        // A request opening a per-minute rate window starts at least 15
+        // seconds before the minute ends, so the requests after it share it.
+        if (($request['minute_start'] ?? false) === true && (int) gmdate('s') >= 45) {
+            sleep(61 - (int) gmdate('s'));
+        }
         $namespace = ($request['namespace'] ?? '@own') === '@own' ? $own : $request['namespace'];
         $options = ['headers' => [
             ...($token === null ? [] : ['Authorization' => 'Bearer '.$token]),

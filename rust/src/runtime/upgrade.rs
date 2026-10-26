@@ -108,6 +108,7 @@ pub(super) fn native_relation(name: &str) -> bool {
             | "dw_worker_session_holders"
             | "dw_stream_reclaims"
             | "dw_service_call_deadlines"
+            | "dw_service_admission_counters"
     )
 }
 
@@ -128,6 +129,8 @@ pub(super) fn native_object(name: &str) -> bool {
                 | "dw_stream_reclaims_due"
                 | "dw_service_call_deadlines_pkey"
                 | "dw_service_call_deadlines_due"
+                | "dw_service_admission_counters_pkey"
+                | "dw_service_admission_counters_expiry"
         )
 }
 

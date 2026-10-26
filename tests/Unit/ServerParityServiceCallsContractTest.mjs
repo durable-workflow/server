@@ -50,16 +50,19 @@ const observation = () => {
 };
 
 test('the service calls accept the published answers', () => {
-  assert.deepStrictEqual(checkServiceCalls(fixture, observation(), id), {scope: 'service_calls', cases: 71});
+  assert.deepStrictEqual(checkServiceCalls(fixture, observation(), id), {scope: 'service_calls', cases: 82});
 });
 
 test('the fixture covers execute, show, cancel and every reachable refusal', () => {
   const {expected} = fixture.service_calls;
   const statuses = new Set(Object.values(expected).map(([status]) => status));
-  assert.deepStrictEqual([...statuses].sort(), [200, 201, 403, 404, 409, 422, 503]);
+  assert.deepStrictEqual([...statuses].sort(), [200, 201, 403, 404, 409, 422, 429, 503]);
   assert.equal(expected['expired'][1].call_deadline_at, '2001-02-03T03:05:06.500000Z');
   assert.equal(expected['broken retry'][1].service_call_attempts.length, 3);
   assert.equal(expected['replay again'][1].idempotent_replay, true);
+  assert.deepStrictEqual([expected['rated again'][1].reason, expected['held again'][1].reason, expected['held sync again'][0]],
+    ['rate_limit_exceeded', 'concurrency_limit_exceeded', 200]);
+  assert.equal(fixture.service_calls.requests.find(request => request.label === 'rated').minute_start, true);
 });
 
 test('the embedded service calls are explicitly inapplicable', () => {
@@ -80,6 +83,9 @@ for (const [label, mutate] of [
   ['a replayed forbidden call that reuses the id', responses => {
     responses['replay forbidden'][1].service_call_id = responses['replay second key'][1].id;
   }],
+  ['a rate limit that never refuses', responses => { responses['rated again'] = [200, responses.rated[1]]; }],
+  ['a sync lease that is never returned', responses => { responses['held sync again'] = [429, responses['held again'][1]]; }],
+  ['a refusal that counts the refused call', responses => { responses['held again'][1].outcome_metadata.observed_in_flight = 2; }],
   ['a message naming another call', responses => {
     responses['show under another operation'][1].message = responses['show under another operation'][1].message.replace(/\[01[^\]]+\]/u, '[01m5wvy8d1j3dtr13es05k9999]');
   }],

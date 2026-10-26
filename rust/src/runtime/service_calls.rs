@@ -7,7 +7,8 @@
 //! row to `workflow_service_calls` for every decision:
 //! - authorization (required roles, caller-namespace deny and allow lists, on
 //!   the endpoint, service and operation policies) and the circuit breaker;
-//! - the shared admission limits: an invalid limit answers 503
+//! - the shared admission limits: a per-minute rate and a concurrency limit
+//!   per caller boundary refuse 429 once spent; an invalid limit answers 503
 //!   `service_boundary_admission_unavailable`, as PHP does.
 //!
 //! An admitted `activity_execution` or `invocable_http` operation is then
@@ -29,8 +30,6 @@
 //! Not in this slice, refused 501 `rust_capability_not_implemented` before
 //! anything is written:
 //! - a workflow-bound handler kind (start, signal, update, query workflow);
-//! - an operation whose effective boundary policy sets a valid rate or
-//!   concurrency limit;
 //! - an `external_payload` reference in `arguments`;
 //! - cancelling a call whose policy propagates to a linked workflow.
 //!
@@ -43,6 +42,13 @@
 //!   native keeps the frozen PHP tables and its own relations, so takeover
 //!   layouts stay recognisable. Takeover still refuses a source with service
 //!   calls; accepting one will copy their deadlines.
+//! - The shared admission counters PHP keeps in its cache live in the
+//!   native-owned `dw_service_admission_counters`, counted under the
+//!   transition lock and written in the call's transaction: a per-minute rate
+//!   count that lives 120 s, and a concurrency lease that lives a day. Only a
+//!   sync call returns its lease when the request ends; an async call's stays
+//!   until it expires, as PHP's does. The namespace-wide limits and hard
+//!   ceilings run only at their default of none.
 use super::laravel_rules::{self, Rule};
 use super::service_endpoints::{Endpoint, Operation, Service, deadline_instant, deadline_policy_error, php_document};
 use super::{Result, RuntimeError};
@@ -168,6 +174,18 @@ fn merge_metadata(metadata: &Value, extra: &Value) -> Value {
         return Value::Null;
     }
     merge_policy(&[&base, extra])
+}
+
+/// PHP's array union `$left + $right`: the left side's keys win.
+fn union(left: &Value, right: Value) -> Value {
+    let mut map = match right {
+        Value::Object(map) => map,
+        _ => Map::new(),
+    };
+    for (key, value) in entries(left) {
+        map.insert(key, value);
+    }
+    Value::Object(map)
 }
 
 /// `withoutAdmissionControls`: the rate and concurrency rules removed at
@@ -506,22 +524,47 @@ impl BoundaryRequest<'_> {
                 self.target_namespace), axis))
     }
 
-    /// `SharedServiceBoundaryPolicy::limits`: whether a boundary limit is in
-    /// force, or an error for an invalid one (PHP's `unavailable`). Native
-    /// runs the namespace and hard limits only at their default of none.
-    fn has_limits(&self) -> std::result::Result<bool, ()> {
+    /// `SharedServiceBoundaryPolicy::limits`, or an error for an invalid one
+    /// (PHP's `unavailable`). Native runs the namespace and hard limits only
+    /// at their default of none.
+    fn limits(&self) -> std::result::Result<Limits, ()> {
         let rules = global_rules();
         let effective = self.effective_policy();
         let rate = merge_policy(&[&array_at(&rules, "rate_limit"), &array_at(&effective, "rate_limit")]);
         let concurrency = merge_policy(&[&array_at(&rules, "concurrency"), &array_at(&effective, "concurrency_limit")]);
         let skips = |rules: &Value| at(rules, "sync_only") == &Value::Bool(true) && self.mode != "sync";
-        let boundary_rate = if skips(&rate) { None } else { limit(at(&rate, "requests_per_minute"))? };
-        let boundary_concurrency = if skips(&concurrency) { None } else { limit(at(&concurrency, "max_in_flight"))? };
-        retry_after_seconds(&rate)?;
-        retry_after_seconds(&concurrency)?;
-        Ok(boundary_rate.is_some() || boundary_concurrency.is_some())
+        let rate_limit = if skips(&rate) { None } else { limit(at(&rate, "requests_per_minute"))? };
+        let concurrency_limit = if skips(&concurrency) { None } else { limit(at(&concurrency, "max_in_flight"))? };
+        Ok(Limits {
+            rate: rate_limit,
+            concurrency: concurrency_limit,
+            rate_retry: retry_after_seconds(&rate)?,
+            concurrency_retry: retry_after_seconds(&concurrency)?,
+        })
+    }
+
+    /// `boundaryRateKey` for this minute and `boundaryConcurrencyKey`.
+    fn counter_keys(&self, now: DateTime<Utc>) -> (String, String) {
+        use sha2::{Digest, Sha256};
+        let hash: String = Sha256::digest(self.boundary_key().as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect();
+        (format!("server:service-boundary:rate:{hash}:{}", now.timestamp().div_euclid(60)),
+            format!("server:service-boundary:concurrency:{hash}"))
     }
 }
+
+/// The boundary limits in force for one request.
+#[derive(Clone, Copy, Debug)]
+struct Limits {
+    rate: Option<i64>,
+    concurrency: Option<i64>,
+    rate_retry: i64,
+    concurrency_retry: i64,
+}
+
+/// The rate counter's life and the concurrency lease's
+/// (`concurrency_lease_ttl_seconds`, which native runs at its default).
+const RATE_TTL_SECONDS: i64 = 120;
+const CONCURRENCY_TTL_SECONDS: i64 = 86_400;
 
 /// `SharedServiceBoundaryPolicy::limit`: null, empty or zero is no limit.
 fn limit(value: &Value) -> std::result::Result<Option<i64>, ()> {
@@ -1279,11 +1322,21 @@ store_methods! {
             return Err(not_implemented());
         }
         let mut decision = request.base_decision();
+        // A sync call's concurrency lease, released when the request ends.
+        let mut lease = None;
         if decision.allowed() {
-            decision = match request.has_limits() {
+            decision = match request.limits() {
                 Err(()) => Decision::unavailable(),
-                Ok(true) => return Err(not_implemented()),
-                Ok(false) => Decision::allow(SHARED_POLICY, decision.metadata),
+                Ok(limits) if limits.rate.is_none() && limits.concurrency.is_none() => {
+                    Decision::allow(SHARED_POLICY, decision.metadata)
+                }
+                Ok(limits) => {
+                    let (admitted, reserved) = Self::admit_with_counters(&mut tx, &request, limits, decision.metadata).await?;
+                    if mode == "sync" {
+                        lease = reserved;
+                    }
+                    admitted
+                }
             };
         }
         let mut call = self.admission_row(&request, &execution, kind, &decision);
@@ -1296,15 +1349,97 @@ store_methods! {
         if call.expire(super::store::now()) {
             Self::save_service_call(&mut tx, &mut call).await?;
             tx.commit().await?;
+            self.release_lease(lease).await?;
             let plane = with(plane_view(&call), json!({"accepted": true, "idempotent_replay": false, "reason": call.outcome_reason}));
             return Ok((StatusCode::OK, replaced(controller_view(&call, &endpoint, &service, &operation), plane)));
         }
-        let handler = self.dispatch_service_call(tx, &mut call, &operation, &execution).await?;
+        // PHP releases in a `finally`, so a failed dispatch returns it too.
+        let dispatched = self.dispatch_service_call(tx, &mut call, &operation, &execution).await;
+        self.release_lease(lease).await?;
+        let handler = dispatched?;
         let reason = call.is_failed().then(|| call.outcome_reason.clone().unwrap_or_else(|| "handler_failed".into()));
         let accepted = call.accepted_shape();
         let plane = with(plane_view(&call), json!({"accepted": accepted, "idempotent_replay": false, "handler": handler, "reason": reason}));
         Ok((if accepted { StatusCode::OK } else { StatusCode::CONFLICT },
             replaced(controller_view(&call, &endpoint, &service, &operation), plane)))
+    }
+
+    /// A shared admission counter: its value until it expires, else 0.
+    async fn admission_counter(connection: &mut DB::Connection, key: &str, now: DateTime<Utc>) -> Result<i64> {
+        let row = Self::query("SELECT amount,expires_at FROM dw_service_admission_counters WHERE cache_key=$1")
+            .bind(key).fetch_optional(&mut *connection).await?;
+        Ok(match row {
+            Some(row) if DB::instant(&row, "expires_at")? > now => DB::number(&row, "amount")?.max(0),
+            _ => 0,
+        })
+    }
+
+    /// Stores a counter's new value with a fresh life, as the cache's `put` does.
+    async fn put_admission_counter(connection: &mut DB::Connection, key: &str, amount: i64, ttl: i64, now: DateTime<Utc>) -> Result<()> {
+        Self::query("DELETE FROM dw_service_admission_counters WHERE cache_key=$1").bind(key).execute(&mut *connection).await?;
+        if amount > 0 {
+            Self::query("INSERT INTO dw_service_admission_counters(cache_key,amount,expires_at) VALUES ($1,$2,$3)")
+                .bind(key).bind(amount).bind(DB::bind_time(now + chrono::Duration::seconds(ttl)))
+                .execute(&mut *connection).await?;
+        }
+        Ok(())
+    }
+
+    /// `admitWithLock` under the transition lock: the rate, then the
+    /// concurrency limit; an admitted call counts against both. Returns the
+    /// decision and the concurrency lease it took, if any.
+    async fn admit_with_counters(
+        connection: &mut DB::Connection,
+        request: &BoundaryRequest<'_>,
+        limits: Limits,
+        base_metadata: Value,
+    ) -> Result<(Decision, Option<String>)> {
+        let now = super::store::now();
+        Self::query("DELETE FROM dw_service_admission_counters WHERE expires_at<=$1")
+            .bind(DB::bind_time(now)).execute(&mut *connection).await?;
+        let (rate_key, concurrency_key) = request.counter_keys(now);
+        let rate = Self::admission_counter(connection, &rate_key, now).await?;
+        let concurrency = Self::admission_counter(connection, &concurrency_key, now).await?;
+        let denied = |outcome: &'static str, reason: &str, message: &str, retry: i64, metadata: Value| Decision {
+            outcome,
+            reason: reason.into(),
+            message: Some(message.into()),
+            policy: SHARED_POLICY.into(),
+            retry_after: Some(retry),
+            metadata: union(&json!({"failure_reason": "policy_rejection"}), metadata),
+        };
+        if let Some(limit) = limits.rate.filter(|limit| rate >= *limit) {
+            return Ok((denied("rejected_throttled", "rate_limit_exceeded", "Shared service-call rate capacity is exhausted.",
+                limits.rate_retry, json!({"admission_scope": "boundary", "observed_window_count": rate, "requests_per_minute": limit})), None));
+        }
+        if let Some(limit) = limits.concurrency.filter(|limit| concurrency >= *limit) {
+            return Ok((denied("rejected_concurrency_limited", "concurrency_limit_exceeded",
+                "Shared service-call concurrency capacity is exhausted.", limits.concurrency_retry,
+                json!({"admission_scope": "boundary", "observed_in_flight": concurrency, "max_in_flight": limit})), None));
+        }
+        if limits.rate.is_some() {
+            Self::put_admission_counter(connection, &rate_key, rate + 1, RATE_TTL_SECONDS, now).await?;
+        }
+        let lease = if limits.concurrency.is_some() {
+            Self::put_admission_counter(connection, &concurrency_key, concurrency + 1, CONCURRENCY_TTL_SECONDS, now).await?;
+            Some(concurrency_key)
+        } else {
+            None
+        };
+        let metadata = union(&base_metadata, json!({"admission_scope": "shared_cache", "boundary_rate_limit": limits.rate,
+            "namespace_rate_limit": null, "boundary_concurrency_limit": limits.concurrency, "namespace_concurrency_limit": null}));
+        Ok((Decision::allow(SHARED_POLICY, metadata), lease))
+    }
+
+    /// `SharedServiceBoundaryPolicy::release` of a sync call's lease.
+    async fn release_lease(&self, lease: Option<String>) -> Result<()> {
+        let Some(key) = lease else { return Ok(()) };
+        let mut tx = self.begin().await?;
+        let now = super::store::now();
+        let current = Self::admission_counter(&mut tx, &key, now).await?;
+        Self::put_admission_counter(&mut tx, &key, current - 1, CONCURRENCY_TTL_SECONDS, now).await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// `ServiceBoundaryAuditRecorder::record`.

@@ -50,7 +50,7 @@ impl Flavor {
                 "\n",
                 include_str!("../../migrations/mysql/0006_stream_reclaims.sql"),
                 "\n",
-                include_str!("../../migrations/mysql/0007_service_call_deadlines.sql")
+                include_str!("../../migrations/mysql/0007_service_calls.sql")
                 ),
             ),
             Self::MariaDb => (
@@ -64,14 +64,14 @@ impl Flavor {
                 "\n",
                 include_str!("../../migrations/mariadb/0006_stream_reclaims.sql"),
                 "\n",
-                include_str!("../../migrations/mariadb/0007_service_call_deadlines.sql")
+                include_str!("../../migrations/mariadb/0007_service_calls.sql")
                 ),
             ),
         };
         slot.get_or_init(|| {
             let mut migrations = Migrator::with_migrations(vec![Migration::new(
                 VERSION,
-                "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines and service call deadlines".into(),
+                "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines and service admission counters".into(),
                 MigrationType::Simple,
                 sql.into_sql_str(),
                 false,
@@ -106,7 +106,7 @@ impl Flavor {
                 "\n",
                 include_str!("../../migrations/mysql/0006_stream_reclaims.sql"),
                 "\n",
-                include_str!("../../migrations/mysql/0007_service_call_deadlines.sql")
+                include_str!("../../migrations/mysql/0007_service_calls.sql")
                 ),
             ),
             Self::MariaDb => (
@@ -118,7 +118,7 @@ impl Flavor {
                 "\n",
                 include_str!("../../migrations/mariadb/0006_stream_reclaims.sql"),
                 "\n",
-                include_str!("../../migrations/mariadb/0007_service_call_deadlines.sql")
+                include_str!("../../migrations/mariadb/0007_service_calls.sql")
                 ),
             ),
         };
@@ -142,6 +142,10 @@ impl Flavor {
         .replace(
             "CREATE TABLE dw_service_call_deadlines",
             "CREATE TABLE IF NOT EXISTS dw_service_call_deadlines",
+        )
+        .replace(
+            "CREATE TABLE dw_service_admission_counters",
+            "CREATE TABLE IF NOT EXISTS dw_service_admission_counters",
         ))
     }
     pub(super) fn checksum(self) -> &'static [u8] {
