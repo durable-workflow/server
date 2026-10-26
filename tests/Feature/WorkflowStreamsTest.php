@@ -424,6 +424,27 @@ class WorkflowStreamsTest extends TestCase
         $this->assertSame(0, WorkflowDurableStreamItem::query()->count());
     }
 
+    public function test_the_operator_retention_pass_reclaims_expired_streams_within_its_limit(): void
+    {
+        $run = $this->createRun('default', 'wf-streams-operator-pass');
+        $streams = app(WorkflowStreamService::class);
+        $streams->append($run, 'default', 'large', array_map(static fn (int $n): array => ['payload' => $n], range(1, 150)));
+        $streams->close($run, 'default', 'large', null, 60);
+        $streams->append($run, 'default', 'small', [['payload' => 1]]);
+        $streams->close($run, 'default', 'small', null, 60);
+        $this->travel(61)->seconds();
+
+        // limit 1: one stream and at most 100 items per pass, resumed by the next.
+        $pass = fn () => $this->withHeaders($this->apiHeaders())->postJson('/api/system/retention/pass', ['limit' => 1])->assertOk();
+        $pass();
+        $this->assertSame(50, WorkflowDurableStreamItem::query()->where('stream_name', 'large')->count());
+        $pass();
+        $this->assertSame(['small'], WorkflowDurableStream::query()->pluck('stream_name')->all());
+        $pass();
+        $this->assertSame(0, WorkflowDurableStream::query()->count());
+        $this->assertSame(0, WorkflowDurableStreamItem::query()->count());
+    }
+
     public function test_close_marks_stream_terminal_and_rejects_further_appends(): void
     {
         $run = $this->createRun('default', 'wf-streams-close');

@@ -149,8 +149,9 @@ responses.
   `stream_closed` or `stream_errored`.
 - A bounded retention pass then removes the expired stream's rows,
   whatever the namespace's history retention mode. It runs from the
-  throttled inline retention pass on worker heartbeats and from
-  `history:prune`. Each pass handles a capped number of streams,
+  throttled inline retention pass on worker heartbeats, from
+  `history:prune`, and from a general operator retention pass
+  (`POST /api/system/retention/pass` without `run_ids`). Each pass handles a capped number of streams,
   oldest close first, and deletes a capped number of items in small
   transactions. The next pass resumes where it stopped.
 
