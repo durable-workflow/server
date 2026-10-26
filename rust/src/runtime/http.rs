@@ -260,6 +260,18 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/service-endpoints/{endpoint}/services/{service}/operations/{operation}",
             get(operation_show).put(operation_update).delete(operation_destroy),
         )
+        .route(
+            "/api/service-endpoints/{endpoint}/services/{service}/operations/{operation}/execute",
+            post(operation_execute),
+        )
+        .route(
+            "/api/service-endpoints/{endpoint}/services/{service}/operations/{operation}/service-calls/{call}",
+            get(service_call_show),
+        )
+        .route(
+            "/api/service-endpoints/{endpoint}/services/{service}/operations/{operation}/service-calls/{call}/cancel",
+            post(service_call_cancel),
+        )
         .route("/api/service-catalog/{catalog}", get(service_catalog_list))
         .route("/api/service-catalog/{catalog}/{id}", get(service_catalog_show))
         .route("/api/task-queues/{task_queue}", get(describe_task_queue))
@@ -725,8 +737,8 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
 /// further family needs its own shared namespace fixtures.
 fn namespace_route(path: &str) -> Option<Allowed> {
     exact_namespace_route(path)
-        // The catalog administration routes act on the namespace's own rows.
-        .or_else(|| catalog_admin_route(path).then_some(Allowed::Any))
+        // The catalog routes act on the namespace's own rows and calls.
+        .or_else(|| (catalog_admin_route(path) || catalog_call_route(path)).then_some(Allowed::Any))
         .or_else(|| {
             NAMESPACE_FAMILIES.iter().find_map(|(prefix, shape, allowed)| {
                 let rest = path.strip_prefix(prefix)?;
@@ -2510,6 +2522,22 @@ fn catalog_admin_route(path: &str) -> bool {
         )
 }
 
+/// PHP's operator routes for an operation's calls: execute, and a call's
+/// show and cancel.
+fn catalog_call_route(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/api/service-endpoints/") else {
+        return false;
+    };
+    let segments: Vec<&str> = rest.split('/').collect();
+    segments.iter().all(|segment| !segment.is_empty())
+        && matches!(
+            segments.as_slice(),
+            [_, "services", _, "operations", _, "execute"]
+                | [_, "services", _, "operations", _, "service-calls", _]
+                | [_, "services", _, "operations", _, "service-calls", _, "cancel"]
+        )
+}
+
 type CatalogQuery = Query<Vec<(String, String)>>;
 type Created = Result<(StatusCode, Json<Value>)>;
 
@@ -2616,6 +2644,42 @@ async fn operation_destroy(
     Path((endpoint, service, operation)): Path<(String, String, String)>,
 ) -> Result<Json<Value>> {
     runtime.delete_operation([&endpoint, &service, &operation]).await.map(Json)
+}
+
+/// `POST .../operations/{operation}/execute`.
+async fn operation_execute(
+    Extension(runtime): Extension<Runtime>,
+    Extension(authenticated): Extension<AuthenticatedPrincipal>,
+    Path((endpoint, service, operation)): Path<(String, String, String)>,
+    Query(query): CatalogQuery,
+    body: axum::body::Bytes,
+) -> Created {
+    let caller = super::service_calls::Caller::from_principal(&authenticated.principal);
+    let (status, body) = runtime
+        .execute_service_operation([&endpoint, &service, &operation], request_json(&body)?, &query, caller)
+        .await?;
+    Ok((status, Json(body)))
+}
+
+/// `GET .../operations/{operation}/service-calls/{call}`.
+async fn service_call_show(
+    Extension(runtime): Extension<Runtime>,
+    Path((endpoint, service, operation, call)): Path<(String, String, String, String)>,
+) -> Result<Json<Value>> {
+    runtime.show_service_call([&endpoint, &service, &operation], &call).await.map(Json)
+}
+
+/// `POST .../service-calls/{call}/cancel`.
+async fn service_call_cancel(
+    Extension(runtime): Extension<Runtime>,
+    Path((endpoint, service, operation, call)): Path<(String, String, String, String)>,
+    Query(query): CatalogQuery,
+    body: axum::body::Bytes,
+) -> Created {
+    let (status, body) = runtime
+        .cancel_service_operation_call([&endpoint, &service, &operation], &call, request_json(&body)?, &query)
+        .await?;
+    Ok((status, Json(body)))
 }
 
 /// A request no native route serves gets PHP's answer for it: 501 when PHP

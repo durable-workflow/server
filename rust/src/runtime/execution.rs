@@ -490,6 +490,21 @@ impl Runtime {
         .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?
     }
 
+    /// `AvroPayloadEnvelopeResolver::assertSerializedPayload`'s test: whether
+    /// `blob` is one complete Avro value, decoded under the transition codec.
+    pub(super) async fn avro_value_decodes(&self, blob: String) -> Result<bool> {
+        let permit = self.transition_codec.clone().acquire_owned().await
+            .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let codec = crate::codec::ValueCodec::new()
+                .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?;
+            Ok(codec.decode(&blob).is_ok())
+        })
+        .await
+        .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?
+    }
+
     /// Refuses an envelope blob the codec cannot decode, with PHP's message.
     async fn decodable(&self, blob: &Value) -> Result<()> {
         let Some(blob) = blob.as_str().map(str::to_owned) else {
@@ -1677,6 +1692,12 @@ impl Runtime {
     delegate!(show_operation(names: [&str; 3]) -> Result<Value>);
     delegate!(update_operation(names: [&str; 3], input: Value) -> Result<Value>);
     delegate!(delete_operation(names: [&str; 3]) -> Result<Value>);
+    delegate!(service_operation_exists(names: [&str; 3]) -> Result<()>);
+    delegate!(service_call_exists(names: [&str; 3], id: &str) -> Result<()>);
+    delegate!(validate_service_call_search_attributes(attributes: Value) -> Result<()>);
+    delegate!(execute_service_call(names: [&str; 3], execution: super::service_calls::Execution, caller: super::service_calls::Caller) -> Result<(StatusCode, Value)>);
+    delegate!(show_service_call(names: [&str; 3], id: &str) -> Result<Value>);
+    delegate!(cancel_service_call(names: [&str; 3], id: &str, reason: Option<String>) -> Result<(StatusCode, Value)>);
     delegate!(import_existing_run(run_id: &str) -> Result<Option<super::workflow_import::ExistingRun>>);
     delegate!(import_write(plan: &super::workflow_import::Plan) -> std::result::Result<super::workflow_import::Rows, String>);
     delegate!(waterline_existing(workflow_id: &str, run_id: &str) -> Result<super::waterline_import::Existing>);

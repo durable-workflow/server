@@ -1,9 +1,6 @@
 # Published Server 2.11.1 API routes that native answers with 501
 # rust_capability_not_implemented, in route-table order. Checked by
 # rust/tests/execution/route_coverage.rs.
-POST /api/service-endpoints/{endpointName}/services/{serviceName}/operations/{operationName}/execute
-GET /api/service-endpoints/{endpointName}/services/{serviceName}/operations/{operationName}/service-calls/{serviceCallId}
-POST /api/service-endpoints/{endpointName}/services/{serviceName}/operations/{operationName}/service-calls/{serviceCallId}/cancel
 POST /api/worker/workflow-tasks/{taskId}/cancellation-scopes/checkpoint
 POST /api/worker/workflow-tasks/{taskId}/local-activities/checkpoint
 POST /api/worker/workflow-tasks/{taskId}/local-activities/checkpoint-group

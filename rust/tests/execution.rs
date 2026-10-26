@@ -220,6 +220,8 @@ mod waterline_reads;
 mod nexus_operations;
 #[path = "execution/service_endpoints.rs"]
 mod service_endpoints;
+#[path = "execution/service_calls.rs"]
+mod service_calls;
 #[path = "execution/task_queue_build_ids.rs"]
 mod task_queue_build_ids;
 #[path = "execution/start_timeouts.rs"]
