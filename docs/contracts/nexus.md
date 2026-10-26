@@ -174,6 +174,18 @@ operator and is read-only.
 
 ## Durable record and retry semantics
 
+Workflow task completion derives caller namespace and run/instance identity from
+the leased run. A request-bound Core service-operation authorizer supplies the
+authenticated worker principal and checks requested target scope through the
+server's current authorization policy. Principal command fields are prohibited;
+they cannot supply roles, tenant or claims. An existing call or idempotency-key
+match must also belong to that caller run and instance and the exact catalog
+operation. The server retains current boundary-policy checks on replay.
+
+The server requires the corresponding Core authorizer contract at boot. An
+older package is refused with the package-floor upgrade diagnostic, rather than
+falling back to a synthetic system principal.
+
 Every accepted Nexus call writes one row in `workflow_service_calls`
 keyed by the durable service-call id (a ULID). The row carries:
 

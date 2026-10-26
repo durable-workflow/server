@@ -287,7 +287,9 @@ class ServiceCatalogReadControllerTest extends TestCase
                 'metadata' => ['nexus_result' => $envelope, 'retained_diagnostic' => 'original'],
             ]);
             $this->withHeaders($this->apiHeaders('target'))->getJson('/api/service-catalog/calls/'.$call->id)
-                ->assertOk()->assertJsonPath('result_envelope', $envelope)
+                ->assertOk()->assertJsonCount(2, 'result_envelope')
+                ->assertJsonPath('result_envelope.codec', $envelope['codec'])
+                ->assertJsonPath('result_envelope.blob', $envelope['blob'])
                 ->assertJsonPath('payloads_in_observer_namespace', true);
             $foreign = $this->withHeaders($this->apiHeaders('caller'))->getJson('/api/service-catalog/calls/'.$call->id)
                 ->assertOk()->assertJsonPath('result_envelope', null)
