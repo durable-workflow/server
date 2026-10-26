@@ -221,9 +221,7 @@ fn report(backend: &str, layout: &str, digest: &Value, inventory: &Value, conver
 /// Published PHP features native does not implement yet. A source holding any
 /// of their rows is refused, rather than taken over without them. Derived
 /// projections and PHP's own queue and poll bookkeeping are left in place.
-const UNSUPPORTED_FEATURES: [(&str, &[&str]); 3] = [
-    ("upgrade_source_runtime_credentials_unsupported", &["runtime_credentials"]),
-    (
+const UNSUPPORTED_FEATURES: [(&str, &[&str]); 2] = [    (
         "upgrade_source_message_streams_unsupported",
         &[
             "workflow_messages",

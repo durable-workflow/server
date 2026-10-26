@@ -1142,10 +1142,6 @@ async fn takeover_refusals_leave_the_php_database_unchanged() {
         ),
         // Features native lacks: their rows would be left behind unread.
         (
-            "INSERT INTO runtime_credentials(id,subject,roles,tenant,token_prefix,token_hash) VALUES ('c','worker','[]','default','dw_','h')",
-            "upgrade_source_runtime_credentials_unsupported",
-        ),
-        (
             "INSERT INTO workflow_messages(workflow_instance_id,direction,channel,stream_key,sequence) VALUES ('w','inbound','c','k',1)",
             "upgrade_source_message_streams_unsupported",
         ),
@@ -1268,6 +1264,23 @@ async fn takeover_keeps_php_service_calls_and_their_deadlines() {
     assert_eq!((call["status"].clone(), call["outcome"].clone()), (json!("failed"), json!("timed_out")), "{call}");
     let open = runtime.service_catalog_show(&[], crate::runtime::service_catalog::Catalog::Calls, "01m5wvy8d1j3dtr13es05kopen").await.unwrap();
     assert_eq!((open["status"].clone(), open["call_deadline_at"].clone()), (json!("accepted"), Value::Null), "{open}");
+    runtime.close().await;
+}
+
+/// PHP's runtime credentials carry over: native stores and checks the same
+/// SHA-256 token hashes in the same table, so a worker's PHP-issued token
+/// still authenticates after takeover, and a revoked one still does not.
+#[tokio::test]
+async fn takeover_keeps_php_runtime_credentials_that_native_then_accepts() {
+    let (_directory, path) = php_release_layout(&[PHP_280_CHANGES, TRACE_CARRIERS, QUEUE_DELIVERY]).await;
+    for statement in crate::runtime::runtime_credentials::PHP_CREDENTIAL_ROWS {
+        mutate(&path, statement).await;
+    }
+    let fingerprint = backup_fingerprint(&path).await;
+    let report = takeover::take_over_sqlite(&path, &fingerprint, &queue_config()).await.unwrap();
+    assert_eq!(report["status"], "taken_over", "{report}");
+    let runtime = crate::runtime::Runtime::open(&path, "test-token".into()).await.unwrap();
+    crate::runtime::runtime_credentials::assert_php_credentials_served(&runtime).await;
     runtime.close().await;
 }
 

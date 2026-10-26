@@ -1395,6 +1395,9 @@ mod tests {
                 "INSERT INTO workflow_worker_sessions(namespace,session_id,queue,status,lease_owner,lease_expires_at,ttl_expires_at,created_at,updated_at) VALUES ('default','held','q','active','current','2030-01-01 00:00:00','2030-01-01 00:00:00','2026-10-20 09:00:00','2026-10-20 09:00:00');",
                 "INSERT INTO workflow_service_calls(id,namespace,endpoint_name,service_name,operation_name,caller_namespace,target_namespace,status,outcome,operation_mode,accepted_at,call_deadline_at,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kcall','default','pay','billing','charge','default','default','accepted','accepted','async','2026-10-26 10:00:00.000000','2027-02-03 04:05:06.500000','2026-10-26 10:00:00','2026-10-26 10:00:00');",
             )).await.unwrap();
+            for statement in crate::runtime::runtime_credentials::PHP_CREDENTIAL_ROWS {
+                sqlx::raw_sql(statement).execute(&mut connection).await.unwrap();
+            }
             connection.close().await.unwrap();
             let fingerprint = backup_fingerprint(&db).await;
             let report = takeover::take_over_mysql(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES)
@@ -1422,6 +1425,9 @@ mod tests {
                 takeover::take_over_mysql(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES).await,
                 "upgrade_source_already_owned",
             );
+            let runtime = crate::runtime::Runtime::open_mysql(db.options.clone(), "test-token".into()).await.unwrap();
+            crate::runtime::runtime_credentials::assert_php_credentials_served(&runtime).await;
+            runtime.close().await;
             db.remove().await;
         }
     }

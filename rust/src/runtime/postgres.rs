@@ -882,6 +882,9 @@ mod tests {
             .execute(&mut connection)
             .await
             .unwrap();
+            for statement in crate::runtime::runtime_credentials::PHP_CREDENTIAL_ROWS {
+                sqlx::raw_sql(statement).execute(&mut connection).await.unwrap();
+            }
             connection.close().await.unwrap();
             let fingerprint = backup_fingerprint(&db).await;
             let report = takeover::take_over_postgres(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES)
@@ -906,6 +909,9 @@ mod tests {
             let storage = PostgresStorage::open(db.options.clone()).await.unwrap();
             storage.close().await;
             PostgresStorage::check(db.options.clone()).await.unwrap();
+            let runtime = crate::runtime::Runtime::open_postgres(db.options.clone(), "test-token".into()).await.unwrap();
+            crate::runtime::runtime_credentials::assert_php_credentials_served(&runtime).await;
+            runtime.close().await;
             db.remove().await;
         }
     }
