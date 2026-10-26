@@ -1,7 +1,7 @@
 // The Actions checks a GitHub merge queue waits for must run on merge_group.
-// Source-only: enabling the queue is a separate repository setting. Its Sonar
-// gate is a separate prerequisite (Server #725); the terminal Shared Server
-// fixtures result is covered by ServerParityAggregateTest.mjs.
+// Queue activation is a separate repository setting. Sonar scans synthetic
+// commits through default-branch workflow_run controls; the terminal Shared
+// Server fixtures result is covered by ServerParityAggregateTest.mjs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -24,7 +24,7 @@ for (const name of ['phpunit-feature.yml', 'server-parity.yml', 'public-boundary
 
 // The Sonar job receives SONAR_TOKEN and its fork guard is always true for a
 // merge group, so candidate source must not reach it through the queue.
-test('SonarQube does not run for merge queue groups', () => {
+test('candidate-controlled merge_group workflows never receive the Sonar token', () => {
   assert.doesNotMatch(triggers(workflow('sonar.yml')), /merge_group/);
 });
 

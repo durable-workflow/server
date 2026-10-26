@@ -15,7 +15,7 @@ require_once __DIR__.'/lock-pressure-retry.php';
 
 /**
  * The published PHP SQLite reference shares its file with its maintenance loop
- * and may refuse a request with the documented 503 backend_lock_pressure reply
+ * and may defer a request with the documented backend_lock_pressure reply
  * (see lockPressureOperationRetryDelay and lockPressurePollRetryDelay for the
  * exact conditions). This Guzzle middleware retries only that refusal, below the SDK transport, so
  * the transport keeps every capability the SDK checks (bounded requests,
@@ -30,11 +30,12 @@ final class LockPressurePollRetries
 {
     /** @var list<array{path: string, retry_after_seconds: float}> */
     public static array $retries = [];
+
     private static bool $reporting = false;
 
     public static function middleware(): callable
     {
-        if (!self::$reporting) {
+        if (! self::$reporting) {
             self::$reporting = true;
             register_shutdown_function(static function (): void {
                 if (self::$retries !== []) {
@@ -51,18 +52,23 @@ final class LockPressurePollRetries
             while (true) {
                 try {
                     $response = $handler($request, $options)->wait();
-                } catch (\Throwable $error) {
+                } catch (Throwable $error) {
                     return Create::rejectionFor($error);
                 }
                 // A request body that cannot be replayed exactly is never retried.
-                if (!$response instanceof ResponseInterface || $response->getStatusCode() !== 503
-                    || (!$request->getBody()->isSeekable() && $request->getBody()->getSize() !== 0)) {
+                if (! $response instanceof ResponseInterface
+                    || (! $request->getBody()->isSeekable() && $request->getBody()->getSize() !== 0)) {
+                    return Create::promiseFor($response);
+                }
+                $status = $response->getStatusCode();
+                if ($status !== 503 && ! ($status >= 200 && $status < 300 && $request->getMethod() === 'POST'
+                    && str_ends_with($request->getUri()->getPath(), '/heartbeat'))) {
                     return Create::promiseFor($response);
                 }
                 $text = (string) $response->getBody();
                 $response = $response->withBody(Utils::streamFor($text));
                 $decoded = json_decode($text, true);
-                $delay = lockPressureOperationRetryDelay($request->getMethod(), (string) $request->getUri(), 503,
+                $delay = lockPressureOperationRetryDelay($request->getMethod(), (string) $request->getUri(), $status,
                     is_array($decoded) ? $decoded : null, $count, $waited);
                 if ($delay === null || ($budget > 0 && microtime(true) - $started + $delay >= $budget)) {
                     return Create::promiseFor($response);

@@ -86,7 +86,7 @@ jobs:
         run: node --test tests/Unit/PatchCohortMaintenanceTest.mjs
 
       - name: Run the required checks for merge queue groups
-        run: node --test tests/Unit/MergeGroupTriggersTest.mjs
+        run: node --test tests/Unit/MergeGroupTriggersTest.mjs tests/Unit/MergeQueueSonarTest.mjs
 
       - name: Report one Shared Server fixtures result on every pull request
         run: node --test tests/Unit/ServerParityAggregateTest.mjs tests/Unit/ServerParityPartsTest.mjs
