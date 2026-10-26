@@ -1,0 +1,168 @@
+{
+  "applicable": true,
+  "namespace": "pr1-nexus-operations-nxo",
+  "workflow": {
+    "status": 200,
+    "response": {
+      "workflow_id": "pr1-nexus-operations",
+      "caller_namespace": "default",
+      "count": 0,
+      "limit": 200,
+      "nexus_operations": []
+    }
+  },
+  "run": {
+    "status": 200,
+    "response": {
+      "workflow_id": "pr1-nexus-operations",
+      "workflow_run_id": "{run}",
+      "caller_namespace": "default",
+      "count": 0,
+      "limit": 200,
+      "nexus_operations": []
+    }
+  },
+  "unknown_workflow": {
+    "status": 200,
+    "response": {
+      "workflow_id": "pr1-nexus-operations-nxo-missing",
+      "caller_namespace": "default",
+      "count": 0,
+      "limit": 200,
+      "nexus_operations": []
+    }
+  },
+  "unknown_run": {
+    "status": 200,
+    "response": {
+      "workflow_id": "pr1-nexus-operations",
+      "workflow_run_id": "01NOSUCHRUN000000000000000",
+      "caller_namespace": "default",
+      "count": 0,
+      "limit": 200,
+      "nexus_operations": []
+    }
+  },
+  "other_namespace": {
+    "status": 200,
+    "response": {
+      "workflow_id": "pr1-nexus-operations",
+      "caller_namespace": "pr1-nexus-operations-nxo",
+      "count": 0,
+      "limit": 200,
+      "nexus_operations": []
+    }
+  },
+  "other_namespace_run": {
+    "status": 200,
+    "response": {
+      "workflow_id": "pr1-nexus-operations",
+      "workflow_run_id": "{run}",
+      "caller_namespace": "pr1-nexus-operations-nxo",
+      "count": 0,
+      "limit": 200,
+      "nexus_operations": []
+    }
+  },
+  "limit_five": {
+    "status": 200,
+    "response": {
+      "workflow_id": "pr1-nexus-operations",
+      "caller_namespace": "default",
+      "count": 0,
+      "limit": 5,
+      "nexus_operations": []
+    }
+  },
+  "limit_zero": {
+    "status": 200,
+    "response": {
+      "workflow_id": "pr1-nexus-operations",
+      "caller_namespace": "default",
+      "count": 0,
+      "limit": 1,
+      "nexus_operations": []
+    }
+  },
+  "limit_negative": {
+    "status": 200,
+    "response": {
+      "workflow_id": "pr1-nexus-operations",
+      "caller_namespace": "default",
+      "count": 0,
+      "limit": 1,
+      "nexus_operations": []
+    }
+  },
+  "limit_text": {
+    "status": 200,
+    "response": {
+      "workflow_id": "pr1-nexus-operations",
+      "caller_namespace": "default",
+      "count": 0,
+      "limit": 200,
+      "nexus_operations": []
+    }
+  },
+  "limit_above_cap": {
+    "status": 200,
+    "response": {
+      "workflow_id": "pr1-nexus-operations",
+      "caller_namespace": "default",
+      "count": 0,
+      "limit": 200,
+      "nexus_operations": []
+    }
+  },
+  "limit_fraction": {
+    "status": 200,
+    "response": {
+      "workflow_id": "pr1-nexus-operations",
+      "caller_namespace": "default",
+      "count": 0,
+      "limit": 2,
+      "nexus_operations": []
+    }
+  },
+  "limit_empty": {
+    "status": 200,
+    "response": {
+      "workflow_id": "pr1-nexus-operations",
+      "caller_namespace": "default",
+      "count": 0,
+      "limit": 200,
+      "nexus_operations": []
+    }
+  },
+  "limit_exponent": {
+    "status": 200,
+    "response": {
+      "workflow_id": "pr1-nexus-operations",
+      "caller_namespace": "default",
+      "count": 0,
+      "limit": 100,
+      "nexus_operations": []
+    }
+  },
+  "limit_padded": {
+    "status": 200,
+    "response": {
+      "workflow_id": "pr1-nexus-operations",
+      "caller_namespace": "default",
+      "count": 0,
+      "limit": 7,
+      "nexus_operations": []
+    }
+  },
+  "run_limit_five": {
+    "status": 200,
+    "response": {
+      "workflow_id": "pr1-nexus-operations",
+      "workflow_run_id": "{run}",
+      "caller_namespace": "default",
+      "count": 0,
+      "limit": 5,
+      "nexus_operations": []
+    }
+  }
+}

@@ -214,6 +214,8 @@ mod waterline_projection_guards;
 mod operator_dashboard;
 #[path = "execution/waterline_reads.rs"]
 mod waterline_reads;
+#[path = "execution/nexus_operations.rs"]
+mod nexus_operations;
 #[path = "execution/task_queue_build_ids.rs"]
 mod task_queue_build_ids;
 #[path = "execution/start_timeouts.rs"]

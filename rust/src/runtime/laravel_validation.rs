@@ -155,7 +155,7 @@ fn php_string(value: &Value) -> Option<String> {
 }
 
 /// PHP 8's `is_numeric` for a request value.
-fn php_numeric(value: &Value) -> Option<f64> {
+pub(super) fn php_numeric(value: &Value) -> Option<f64> {
     match value {
         Value::Number(number) => number.as_f64(),
         Value::String(text) => {

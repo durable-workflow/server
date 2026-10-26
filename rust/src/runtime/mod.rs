@@ -80,6 +80,7 @@ mod memos;
 pub mod mysql;
 mod namespace_cleanup;
 mod namespaces;
+mod nexus_operations;
 mod operator_dashboard;
 mod operator_metrics;
 mod payload_cleanup;
