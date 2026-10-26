@@ -105,7 +105,18 @@ final class NexusWorkflowBindingContractTest extends TestCase
         $this->operation('update_workflow', 'approve', ['workflow_instance_id' => $this->baseline->workflow_instance_id]);
         $this->execute(['wait_for' => 'completed', 'wait_timeout_seconds' => 0])
             ->assertStatus(422);
+        $this->execute(['mode_override' => 'sync', 'wait_timeout_seconds' => 0])
+            ->assertStatus(422);
         $this->assertSame(0, WorkflowServiceCall::query()->count());
+    }
+
+    public function test_an_accepted_only_update_keeps_its_zero_second_non_waiting_contract(): void
+    {
+        $this->operation('update_workflow', 'approve', ['workflow_instance_id' => $this->baseline->workflow_instance_id]);
+        $this->execute(['wait_for' => 'accepted', 'wait_timeout_seconds' => 0])
+            ->assertSuccessful()->assertJsonPath('accepted', true);
+        $this->assertSame(1, WorkflowServiceCall::query()->count());
+        $this->assertDatabaseCount('workflow_updates', 1);
     }
 
     public function test_a_service_update_uses_the_same_external_worker_admission_as_the_regular_route(): void

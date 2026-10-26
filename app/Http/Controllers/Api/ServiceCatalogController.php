@@ -663,6 +663,11 @@ class ServiceCatalogController
 
         // An update-bound operation hands its wait to the update admission.
         ServiceOperationUpdateWait::assertWithinCeiling($operation, $validated['wait_timeout_seconds'] ?? null);
+        $waitFor = $validated['wait_for']
+            ?? (($validated['mode_override'] ?? $operation->operation_mode) === 'sync' ? 'completed' : 'accepted');
+        if (ServiceOperationUpdateWait::bindsWorkflowUpdate($operation) && $waitFor === UpdateWaitPolicy::WAIT_FOR_COMPLETED) {
+            UpdateWaitPolicy::requestedTimeoutSeconds($validated['wait_timeout_seconds'] ?? null);
+        }
 
         try {
             $validated['payload_codec'] = PayloadCodecContract::canonicalize(
