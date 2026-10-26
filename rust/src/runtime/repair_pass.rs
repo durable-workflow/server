@@ -399,6 +399,40 @@ store_methods! {
         self.ids(sql).await
     }
 
+    /// `ServiceCallDeadline::expiredCallIds`: admitted open calls past their
+    /// deadline, earliest first, within the pass's runs and instance. A
+    /// requested connection or queue matches the caller's or linked run
+    /// exactly, as PHP's `whereHas` does; a call with neither run has no queue
+    /// owner, so any scope may enforce it.
+    async fn expired_service_call_ids(&self, request: &PassRequest, at: DateTime<Utc>) -> Result<Vec<String>> {
+        let mut sql = Sql::new("SELECT c.id FROM workflow_service_calls c JOIN dw_service_call_deadlines d ON d.service_call_id=c.id WHERE c.status IN ('pending','accepted','started') AND c.accepted_at IS NOT NULL AND d.call_deadline_at<=", DB::NAME == "MySQL");
+        sql.time(at);
+        if !request.run_ids.is_empty() {
+            sql.push(" AND (c.caller_workflow_run_id IN ").list(&request.run_ids);
+            sql.push(" OR c.linked_workflow_run_id IN ").list(&request.run_ids).push(")");
+        }
+        if let Some(instance) = &request.instance_id {
+            sql.push(" AND (c.caller_workflow_instance_id=").text(instance);
+            sql.push(" OR c.linked_workflow_instance_id=").text(instance).push(")");
+        }
+        if request.connection.is_some() || request.queue.is_some() {
+            sql.push(" AND (");
+            for column in ["c.caller_workflow_run_id", "c.linked_workflow_run_id"] {
+                sql.push("EXISTS (SELECT 1 FROM workflow_runs r WHERE r.id=").push(column);
+                if let Some(connection) = &request.connection {
+                    sql.push(" AND r.connection=").text(connection);
+                }
+                if let Some(queue) = &request.queue {
+                    sql.push(" AND r.queue=").text(queue);
+                }
+                sql.push(") OR ");
+            }
+            sql.push("(c.caller_workflow_run_id IS NULL AND c.linked_workflow_run_id IS NULL))");
+        }
+        sql.push(&format!(" ORDER BY d.call_deadline_at,c.id LIMIT {SCAN_LIMIT}"));
+        self.ids(sql).await
+    }
+
     /// `ActivityTimeoutEnforcer::expiredExecutionIds` within the requested
     /// connections and queues.
     async fn scoped_expired_activity_ids(&self, request: &PassRequest, at: DateTime<Utc>) -> Result<Vec<String>> {
@@ -470,6 +504,15 @@ store_methods! {
                     }
                 }
                 Err(error) => record_failure(&mut report, "deadline_expired_failures", "run_id", run_id, error.to_string()),
+            }
+        }
+        let calls = self.expired_service_call_ids(request, now()).await?;
+        report.insert("service_call_timeout_candidates".into(), json!(calls.len()));
+        for call_id in &calls {
+            match self.expire_service_call(call_id).await {
+                Ok(true) => bump(&mut report, "service_call_timeouts_enforced"),
+                Ok(false) => {}
+                Err(error) => record_failure(&mut report, "service_call_timeout_failures", "call_id", call_id, error.to_string()),
             }
         }
         let activities = self.scoped_expired_activity_ids(request, now()).await?;

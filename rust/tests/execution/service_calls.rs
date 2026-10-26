@@ -375,3 +375,30 @@ async fn catalog_reads_list_the_recorded_calls() {
     let (status, missing) = request(&app, "GET", "/api/service-catalog/calls/01nosuchcall00000000000000", Value::Null).await;
     assert_eq!((status, missing["reason"].clone()), (StatusCode::NOT_FOUND, json!("catalog_object_not_found")));
 }
+
+#[tokio::test]
+async fn the_repair_pass_times_out_calls_past_their_deadline() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let mut timed = activity("a");
+    timed["deadline_policy"] = json!({"timeout_seconds": 1});
+    catalog(&app, &[("timed", timed), ("charge", activity("a"))]).await;
+    let (_, due) = execute(&app, "timed", json!({})).await;
+    let (_, open) = execute(&app, "charge", json!({})).await;
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+
+    // The sweep expires the call without anyone reading it first.
+    let (status, report) = request(&app, "POST", "/api/system/repair/pass", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!((report["service_call_timeout_candidates"].clone(), report["service_call_timeouts_enforced"].clone(),
+        report["service_call_timeout_failures"].clone()), (json!(1), json!(1), json!([])), "{report}");
+    let (_, page) = request(&app, "GET", &format!("/api/service-catalog/calls?operation_id={}", due["operation_id"].as_str().unwrap()),
+        Value::Null).await;
+    assert_eq!((page["data"][0]["status"].clone(), page["data"][0]["outcome"].clone()), (json!("failed"), json!("timed_out")), "{page}");
+    let (_, other) = request(&app, "GET", &format!("/api/service-catalog/calls/{}", open["id"].as_str().unwrap()), Value::Null).await;
+    assert_eq!(other["status"], "accepted", "a call without a deadline stays open");
+
+    // A second pass finds nothing left to time out.
+    let (_, again) = request(&app, "POST", "/api/system/repair/pass", json!({})).await;
+    assert_eq!((again["service_call_timeout_candidates"].clone(), again["service_call_timeouts_enforced"].clone()), (json!(0), json!(0)));
+}
