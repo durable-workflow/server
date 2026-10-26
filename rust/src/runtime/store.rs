@@ -2587,8 +2587,11 @@ where
                 command
             };
             // The command normalizer's field scopes and value rules, with
-            // PHP's messages, before native's own refusals.
-            super::completion_rules::normalizer_checks(index, command)?;
+            // PHP's messages, before native's own refusals. A local activity
+            // record meets the normalizer after the ownership guards, as in PHP.
+            if command["type"] != super::local_activities::COMMAND {
+                super::completion_rules::normalizer_checks(index, command)?;
+            }
             let command_type = text(command, "type")?;
             // A non-member command naming a scope is refused by the admission
             // guard after ownership, before PHP reads its payload.
@@ -2599,6 +2602,7 @@ where
                 continue;
             }
             match command_type {
+                "record_local_activity" => {}
                 "fail_workflow" => {
                     super::workflow_failures::validate(command)?;
                 }
@@ -2780,6 +2784,15 @@ where
                 });
             }
         }
+        // `guardPortableWorkerAffinityCompletion`, then the normalizer's
+        // local activity rules inside the transaction.
+        let mut local = std::collections::BTreeMap::new();
+        let mut exceptions = std::collections::BTreeMap::new();
+        if commands.iter().any(|command| command["type"] == super::local_activities::COMMAND) {
+            Self::guard_local_activities(&mut tx, self.namespace.as_ref(), &task, &body, protocol).await?;
+            local = super::local_activities::normalize(commands, protocol)?;
+            exceptions = super::local_activities::exceptions(&local, transition_codec.clone()).await?;
+        }
         // `parseCommands`: at most one terminal command, anywhere in the
         // batch. It applies after every other command.
         if commands.iter().filter(|command| is_terminal(command)).count() > 1 {
@@ -2799,6 +2812,30 @@ where
             self.wake.notify_waiters();
             return Err(super::RuntimeError::Protocol { status: StatusCode::CONFLICT, response });
         }
+        // Workflow #930: the deadline close above is never metered. Before
+        // the worker's first write, its local activities' exact events and
+        // rows (other commands at one event) must fit the limits; then the
+        // rest of the completion runs under the history meter.
+        let (mut events, mut rows) = (0usize, 0usize);
+        for index in 0..commands.len() {
+            let (command_events, command_rows) = match local.get(&index) {
+                Some(record) => record.budget(),
+                None => (super::history_meter::MIN_COMMAND_HISTORY_EVENTS, 2 * super::history_meter::MIN_COMMAND_HISTORY_EVENTS),
+            };
+            events = events.saturating_add(command_events);
+            rows = rows.saturating_add(command_rows);
+        }
+        if limits.history_events.is_some_and(|limit| limit > 0 && events > limit)
+            || limits.history_rows.is_some_and(|limit| limit > 0 && rows > limit)
+        {
+            return Err(super::RuntimeError::Protocol {
+                status: StatusCode::CONFLICT,
+                response: json!({"task_id": task_id, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed",
+                    "recorded": false, "run_id": run_id, "run_status": null, "created_task_ids": [],
+                    "reason": "completion_budget_exceeded"}),
+            });
+        }
+        tx.meter = Some(super::history_meter::Meter::new(&limits, task_id, &body["workflow_task_attempt"]));
         let task_payload = DB::document_row(&task, "payload")?;
         if Self::cancellation_request(&run)?.is_some()
             && commands.iter().any(|command| {
@@ -2869,6 +2906,11 @@ where
             } else if command["type"] == "start_child_workflow" {
                 sequence += 1;
                 created.push(Self::start_child(&mut tx, &run, task_id, command, sequence).await?);
+            } else if command["type"] == super::local_activities::COMMAND {
+                // `applyRecordLocalActivity`: one authored sequence.
+                sequence += 1;
+                let record = local.get(&index).expect("a normalized local activity record");
+                Self::record_local_activity(&mut tx, &run, &task, record, exceptions.get(&index).map(String::as_str), sequence).await?;
             } else if command["type"] == "record_side_effect" {
                 // `applyRecordSideEffect`: one authored sequence and its result.
                 sequence += 1;
@@ -3956,6 +3998,8 @@ where
         {
             payload["command"] = snapshot;
         }
+        // A metered completion (Workflow #930) charges the event as stored.
+        tx.charge_event(event_type, &payload)?;
         let event_id = id();
         Self::query("INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,workflow_task_id,workflow_command_id,recorded_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
         .bind(&event_id).bind(run_id).bind(sequence).bind(event_type).bind(DB::document(&payload)).bind(task_id).bind(command_id).bind(DB::bind_time(recorded_at)).execute(&mut **tx).await?;
@@ -4024,7 +4068,11 @@ where
             return Ok(());
         };
         let mut payload = DB::document_row(&event, "payload")?;
+        let recorded = super::history_meter::php_json_len(&payload);
         super::command_context::worker_terminal(&mut payload, &DB::string(&event, "event_type")?, worker);
+        // The event was charged as recorded; the attribution's growth is
+        // charged before the update (Workflow #930).
+        tx.charge_bytes(super::history_meter::php_json_len(&payload).saturating_sub(recorded))?;
         Self::query("UPDATE workflow_history_events SET payload=$1 WHERE id=$2")
             .bind(DB::document(&payload))
             .bind(DB::string(&event, "id")?)
@@ -4594,11 +4642,14 @@ pub(super) fn replayed_poll(mut replay: Value, encoding: Option<&'static str>) -
 }
 
 pub(crate) fn capabilities() -> Value {
-    let mut value = json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "record_side_effect", "complete_workflow", "fail_workflow", "continue_as_new", "complete_update", "fail_update"],
+    // Prepared local activities are not served yet: like a PHP server whose
+    // bridge lacks the prepared role, no groups and no cancellation policies.
+    let mut value = json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "record_side_effect", "record_local_activity", "complete_workflow", "fail_workflow", "continue_as_new", "complete_update", "fail_update"],
         "worker_deregistration_fencing":{"schema":"durable-workflow.v2.worker-deregistration.v1","supported":true,"receipt_retention_seconds":600,"endpoint":"/worker/registrations/{workerId}/deregister"},
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
+        "prepared_local_activity_groups": false, "prepared_local_activity_cancellation_policies": [],
         "worker_sessions": super::worker_sessions::capability(), "worker_session_verbs": ["create", "heartbeat", "close"],
-        "sticky_execution": false, "local_activities": false, "message_streams": super::message_streams::worker_capability(),
+        "sticky_execution": false, "local_activities": super::local_activities::manifest(), "message_streams": super::message_streams::worker_capability(),
         "update_validation_tasks": true, "synchronous_update_validation": super::update_validation::capability(),
         "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": true,
         "activity_lease_renewal": true, "activity_cancellation_acknowledgement": true});
