@@ -174,3 +174,44 @@ async fn a_recorded_local_activity_writes_its_attempts_history_and_failure() {
     assert_eq!(status, StatusCode::OK, "{described}");
     assert_eq!((&described["status"], &described["wait_kind"]), (&json!("waiting"), &json!("signal")), "{described}");
 }
+
+/// The prepared local-activity routes answer as a PHP server whose bridge lacks
+/// the prepared role: refused with 409 before any task is read, whether or not
+/// the task exists, in the worker envelope.
+#[tokio::test]
+async fn prepared_local_routes_are_refused_without_the_prepared_role() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let base = "/api/worker/workflow-tasks/no-such-task/local-activities";
+    let prepared = ["prepare", "recover", "checkpoint", "attempt-1/control", "attempt-1/heartbeat", "attempt-1/outcome",
+        "attempt-1/acknowledge-cancellation"];
+    for route in prepared {
+        let (status, body) = request_protocol(&app, "POST", &format!("{base}/{route}"), json!({"lease_owner": " worker-1 "}), "1.20").await;
+        assert_eq!(status, StatusCode::CONFLICT, "{route}: {body}");
+        assert_eq!(body["reason"], "prepared_local_activity_not_supported", "{route}: {body}");
+        assert_eq!(body["required_capability"], "prepared_local_activities", "{route}");
+        assert_eq!(body["minimum_protocol_version"], "1.20", "{route}");
+        assert_eq!(body["worker_id"], "worker-1", "{route}");
+        assert_eq!(body["unavailable"], json!(["installed_runtime_prepared_local_activity"]), "{route}");
+        assert_eq!(body["remediation"], "Use a prepared-local backend and a claim issued to a capable protocol 1.20 worker.");
+        assert_eq!(body["protocol_version"], "1.20", "{route}");
+        assert_eq!(body["server_capabilities"]["prepared_local_activities"], false, "{route}");
+
+        // An older worker is refused for its protocol too.
+        let (status, body) = request_protocol(&app, "POST", &format!("{base}/{route}"), Value::Null, "1.19").await;
+        assert_eq!(status, StatusCode::CONFLICT, "{route}: {body}");
+        assert_eq!(body["worker_id"], "", "{route}");
+        assert_eq!(body["unavailable"], json!(["request_protocol", "installed_runtime_prepared_local_activity"]), "{route}");
+    }
+
+    let (status, body) = request_protocol(&app, "POST", &format!("{base}/checkpoint-group"), json!({"lease_owner": 7}), "1.20").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["reason"], "prepared_local_activity_groups_not_supported", "{body}");
+    assert_eq!(body["required_capability"], "prepared_local_activity_groups");
+    assert_eq!(body["worker_id"], "7");
+    assert_eq!(body["unavailable"], json!(["installed_runtime_prepared_local_activity", "installed_runtime_prepared_local_activity_groups"]));
+
+    // A version native does not support at all is the protocol gate's 400.
+    let (status, body) = request_protocol(&app, "POST", &format!("{base}/prepare"), json!({}), "2.0").await;
+    assert_eq!((status, &body["reason"]), (StatusCode::BAD_REQUEST, &json!("unsupported_protocol_version")), "{body}");
+}

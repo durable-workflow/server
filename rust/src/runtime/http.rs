@@ -281,6 +281,19 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/worker/workflow-tasks/{task_id}/cancellation-scopes/deliver",
             post(deliver_cancellation_scope),
         )
+        // Native lacks the prepared local-activity role: refused as PHP
+        // refuses them without it (prepared_local.rs).
+        .route("/api/worker/workflow-tasks/{task_id}/local-activities/prepare", post(prepared_local_refused))
+        .route("/api/worker/workflow-tasks/{task_id}/local-activities/recover", post(prepared_local_refused))
+        .route("/api/worker/workflow-tasks/{task_id}/local-activities/checkpoint", post(prepared_local_refused))
+        .route("/api/worker/workflow-tasks/{task_id}/local-activities/checkpoint-group", post(prepared_local_group_refused))
+        .route("/api/worker/workflow-tasks/{task_id}/local-activities/{attempt_id}/control", post(prepared_local_refused))
+        .route("/api/worker/workflow-tasks/{task_id}/local-activities/{attempt_id}/heartbeat", post(prepared_local_refused))
+        .route("/api/worker/workflow-tasks/{task_id}/local-activities/{attempt_id}/outcome", post(prepared_local_refused))
+        .route(
+            "/api/worker/workflow-tasks/{task_id}/local-activities/{attempt_id}/acknowledge-cancellation",
+            post(prepared_local_refused),
+        )
         .route(
             "/api/worker/workflow-tasks/{task_id}/complete",
             post(complete_workflow),
@@ -817,6 +830,8 @@ fn worker_route(rest: &str) -> Option<Allowed> {
             | ["update-validation-tasks", _, "approve" | "reject"]
             | ["workflow-tasks", _, "complete" | "fail" | "history" | "heartbeat" | "deliver-cancellation"]
             | ["workflow-tasks", _, "cancellation-scopes", "open" | "prepare" | "deliver"]
+            | ["workflow-tasks", _, "local-activities", "prepare" | "recover" | "checkpoint" | "checkpoint-group"]
+            | ["workflow-tasks", _, "local-activities", _, "control" | "heartbeat" | "outcome" | "acknowledge-cancellation"]
             | ["activity-tasks", _, "complete" | "fail" | "heartbeat" | "status" | "renew-lease" | "acknowledge-cancellation"]
     )
     .then_some(Allowed::Any)
@@ -2330,6 +2345,22 @@ async fn deliver_cancellation_scope(
 ) -> Result<(StatusCode, Json<Value>)> {
     let (status, body) = runtime.deliver_cancellation_scope(&task_id, body, request_protocol(&headers)?).await?;
     Ok((status, Json(body)))
+}
+
+/// POST …/local-activities/*: refused before any task is read, as a PHP
+/// server whose bridge lacks the prepared role refuses them.
+async fn prepared_local_refused(headers: HeaderMap, body: axum::body::Bytes) -> Result<(StatusCode, Json<Value>)> {
+    prepared_local(&headers, &body, super::prepared_local::Capability::Prepared)
+}
+
+async fn prepared_local_group_refused(headers: HeaderMap, body: axum::body::Bytes) -> Result<(StatusCode, Json<Value>)> {
+    prepared_local(&headers, &body, super::prepared_local::Capability::Groups)
+}
+
+fn prepared_local(headers: &HeaderMap, body: &[u8], capability: super::prepared_local::Capability) -> Result<(StatusCode, Json<Value>)> {
+    let protocol = headers.get("x-durable-workflow-protocol-version").and_then(|value| value.to_str().ok());
+    let (status, response) = super::prepared_local::refusal(&request_json(body)?, protocol, capability);
+    Ok((status, Json(response)))
 }
 
 async fn acknowledge_activity_cancellation(

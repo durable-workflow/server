@@ -96,7 +96,7 @@ where
             return Err(refusal);
         }
         for run_id in std::mem::take(&mut self.summaries) {
-            Store::<DB>::order_open_waits(&mut self, &run_id).await?;
+            Store::<DB>::order_waits(&mut self, &run_id).await?;
             Store::<DB>::project_run_summary(&mut self, &run_id).await?;
         }
         self.inner.commit().await?;
