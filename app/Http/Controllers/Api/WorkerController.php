@@ -33,6 +33,7 @@ use App\Support\RuntimeExternalPayloadException;
 use App\Support\SearchAttributeValueValidator;
 use App\Support\ServiceCallBoundary;
 use App\Support\ServiceModeTimerDispatcher;
+use App\Support\ServiceOperationUpdateWait;
 use App\Support\StreamClosedException;
 use App\Support\StreamErroredException;
 use App\Support\StreamFullException;
@@ -3194,6 +3195,14 @@ class WorkerController
                 'service_operation_name' => strtolower(trim($command['operation_name'])),
             ]);
             abort_unless($principal !== null && app(AuthProvider::class)->authorize($principal, 'execute_operation', $resource), 403);
+
+            // An update-bound operation hands its wait to the update admission.
+            ServiceOperationUpdateWait::assertWithinCeiling(
+                ServiceOperationUpdateWait::operation($targetNamespace, (string) $command['endpoint_name'],
+                    (string) $command['service_name'], (string) $command['operation_name']),
+                $command['wait_timeout_seconds'] ?? null,
+                "commands.{$index}.wait_timeout_seconds",
+            );
 
             if (isset($command['search_attributes'])) {
                 $this->searchAttributeValues->validateForNamespace(

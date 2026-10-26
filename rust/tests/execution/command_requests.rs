@@ -78,3 +78,22 @@ async fn update_wait_timeout_is_bounded_before_admission() {
     assert_eq!(cluster["control_plane"]["request_contract"]["operations"]["update"]["fields"]["wait_timeout_seconds"],
         json!({"minimum":1,"maximum":60}));
 }
+
+// Server #775: a service operation bound to a workflow update hands its wait
+// to the update admission. Native runs no service operation, so neither the
+// execute route nor the workflow-task command can carry a longer wait here.
+#[tokio::test]
+async fn service_operations_cannot_carry_an_update_wait_past_the_ceiling() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register(&app, "worker", json!(["echo"]), json!([])).await;
+    start(&app, "service-caller").await;
+    let task = poll(&app, "worker", "workflow").await;
+    let (status, refused) = finish_task(&app, &task, json!([{"type":"start_service_operation","endpoint_name":"billing",
+        "service_name":"approvals","operation_name":"approve","wait_for":"completed","wait_timeout_seconds":86400}])).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["reason"], "unsupported_workflow_command", "{refused}");
+    let (status, unserved) = request(&app, "POST", "/api/service-endpoints/billing/services/approvals/operations/approve/execute",
+        json!({"wait_timeout_seconds":61})).await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{unserved}");
+}
