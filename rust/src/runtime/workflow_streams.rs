@@ -794,7 +794,7 @@ pub(super) async fn items(
 ) -> Result<Json<Value>> {
     located(&runtime, &workflow_id, &run_id).await?;
     items_rules(&query)?;
-    let value = |field: &str, default: i64| query_integer(&query, field).and_then(|value| value.ok()).unwrap_or(default);
+    let value = |field: &str, default: i64| query_integer(&query, field).and_then(std::result::Result::ok).unwrap_or(default);
     let from = value("from", 0);
     let max_items = value("max_items", DEFAULT_MAX_ITEMS_PER_SUBSCRIBE);
     let wait_seconds = value("wait_seconds", 0);
