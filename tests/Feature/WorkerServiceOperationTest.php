@@ -44,7 +44,16 @@ final class WorkerServiceOperationTest extends TestCase
 
         $this->complete($task, $this->command())->assertOk();
 
+        // Workflow 2.14 admits the call in the completion and runs its effect
+        // after commit: the call is accepted and scheduled, with no target yet.
         $call = WorkflowServiceCall::query()->sole();
+        $this->assertSame('accepted', $call->status);
+        $this->assertNull($call->linked_workflow_run_id);
+        $this->assertDatabaseHas('workflow_history_events', ['workflow_run_id' => $task['run_id'], 'event_type' => 'ServiceOperationScheduled']);
+        $this->assertDatabaseMissing('workflow_history_events', ['workflow_run_id' => $task['run_id'], 'event_type' => 'ServiceCallStarted']);
+        $this->assertSame(1, $this->runScheduledServiceCalls());
+
+        $call->refresh();
         $this->assertSame('started', $call->status);
         $this->assertSame('billing', $call->endpoint_name);
         $this->assertSame('invoicing', $call->service_name);
@@ -57,7 +66,10 @@ final class WorkerServiceOperationTest extends TestCase
         $target = WorkflowRun::query()->findOrFail($call->linked_workflow_run_id);
         $this->assertSame([['invoice' => 42]], Avro::unserialize($target->arguments));
         $this->assertDatabaseHas('workflow_tasks', ['workflow_run_id' => $target->id, 'status' => 'ready']);
-        $this->assertDatabaseHas('workflow_history_events', ['workflow_run_id' => $task['run_id'], 'event_type' => 'ServiceCallStarted']);
+        // The caller's admission event stays ServiceOperationScheduled; its
+        // terminal outcome is delivered later, and no ServiceCallStarted is
+        // synthesized for it.
+        $this->assertDatabaseMissing('workflow_history_events', ['workflow_run_id' => $task['run_id'], 'event_type' => 'ServiceCallStarted']);
         $this->assertSame('completed', WorkflowTask::query()->findOrFail($task['task_id'])->status->value);
 
         $this->registerWorker('invoice-worker', 'invoices', supportedWorkflowTypes: ['tests.nexus-target']);
@@ -150,12 +162,13 @@ final class WorkerServiceOperationTest extends TestCase
                 return;
             }
             $response->assertOk();
+            $this->assertSame(1, $this->runScheduledServiceCalls());
             $call = WorkflowServiceCall::query()->sole();
             $target = WorkflowRun::query()->findOrFail($call->linked_workflow_run_id);
             $this->assertSame([['invoice' => 42]], Avro::unserialize($target->arguments));
             $this->assertNotNull(RuntimeExternalPayload::query()->findOrFail($reference['reference_id'])->retained_at);
             $this->assertDatabaseHas('workflow_history_events', [
-                'workflow_run_id' => $task['run_id'], 'event_type' => 'ServiceCallStarted',
+                'workflow_run_id' => $task['run_id'], 'event_type' => 'ServiceOperationScheduled',
             ]);
         } finally {
             File::deleteDirectory($directory);
@@ -227,6 +240,7 @@ final class WorkerServiceOperationTest extends TestCase
         $this->authenticateWorker(null);
 
         $this->complete($task, $this->command(['namespace' => 'other-tenant']))->assertOk();
+        $this->assertSame(1, $this->runScheduledServiceCalls());
         $call = WorkflowServiceCall::query()->sole();
         $this->assertSame('other-tenant', $call->target_namespace);
         $this->assertSame('default', $call->caller_namespace);
@@ -265,6 +279,7 @@ final class WorkerServiceOperationTest extends TestCase
         $task = $this->leaseWorkflow();
         $this->authenticateWorker();
         $this->complete($task, $this->command(['idempotency_key' => 'invoice-42']))->assertOk();
+        $this->runScheduledServiceCalls();
         $call = WorkflowServiceCall::query()->sole();
         $task = $this->pollWorkflow();
 
@@ -281,6 +296,7 @@ final class WorkerServiceOperationTest extends TestCase
         $task = $this->leaseWorkflow();
         $this->authenticateWorker();
         $this->complete($task, $this->command(['idempotency_key' => 'invoice-42']))->assertOk();
+        $this->runScheduledServiceCalls();
         $call = WorkflowServiceCall::query()->sole();
         $call->update(['caller_namespace' => 'other-tenant']);
         $task = $this->pollWorkflow();
@@ -300,6 +316,7 @@ final class WorkerServiceOperationTest extends TestCase
         $task = $this->leaseWorkflow();
         $this->authenticateWorker();
         $this->complete($task, $this->command(['idempotency_key' => 'invoice-42']))->assertOk();
+        $this->runScheduledServiceCalls();
         $call = WorkflowServiceCall::query()->sole();
         $operation->update(['boundary_policy' => ['required_roles' => ['admin']]]);
         $task = $this->pollWorkflow();
@@ -318,6 +335,7 @@ final class WorkerServiceOperationTest extends TestCase
         $task = $this->leaseWorkflow();
         $this->authenticateWorker();
         $this->complete($task, $this->command(['idempotency_key' => 'invoice-42']))->assertOk();
+        $this->runScheduledServiceCalls();
         $call = WorkflowServiceCall::query()->sole();
         $call->update(['caller_workflow_instance_id' => 'another-instance']);
         $task = $this->pollWorkflow();
@@ -345,6 +363,7 @@ final class WorkerServiceOperationTest extends TestCase
         $task = $this->leaseWorkflow();
         $this->authenticateWorker();
         $this->complete($task, $this->command(['idempotency_key' => 'invoice-42']))->assertOk();
+        $this->runScheduledServiceCalls();
         $call = WorkflowServiceCall::query()->sole();
         $call->update(['caller_workflow_run_id' => $call->linked_workflow_run_id]);
         $task = $this->pollWorkflow();

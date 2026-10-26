@@ -16,11 +16,14 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
 use Workflow\V2\Contracts\ServiceControlPlane;
+use Workflow\V2\Exceptions\ServiceOperationAuthorizationException;
 use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
 use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Support\ServiceCallDeadlinePolicy;
+use Workflow\V2\Support\ServiceCallPrincipal;
+use Workflow\V2\Support\UpdateWaitPolicy;
 
 class ServiceCatalogController
 {
@@ -637,7 +640,8 @@ class ServiceCatalogController
             'payload_codec' => ['nullable', 'string', 'max:191'],
             'mode_override' => ['nullable', 'string', 'in:'.implode(',', self::OPERATION_MODES)],
             'wait_for' => ['nullable', 'string', 'in:accepted,completed'],
-            'wait_timeout_seconds' => ['nullable', 'integer', 'min:0', 'max:86400'],
+            // Workflow 2.14 bounds every service-operation wait at 60 seconds.
+            'wait_timeout_seconds' => ['nullable', 'integer', 'min:0', 'max:'.UpdateWaitPolicy::MAX_COMPLETION_TIMEOUT_SECONDS],
             'idempotency_key' => ['nullable', 'string', 'max:191'],
             'caller_namespace' => ['nullable', 'string', 'max:255'],
             'caller_workflow_instance_id' => ['nullable', 'string', 'max:191'],
@@ -760,16 +764,20 @@ class ServiceCatalogController
 
             if ((string) $idempotentCall->status === 'accepted'
                 && ! $this->acceptedCallHasIssuedHandler($idempotentCall)) {
-                $options = $executionOptions;
+                $options = $this->admittedExecutionOptions($request, $executionOptions, $callerNamespace);
                 $options['service_call_id'] = $idempotentCall->id;
                 $options['boundary_policy_outcome'] = 'accepted';
 
-                $result = $this->serviceControlPlane()->execute(
-                    $endpoint->endpoint_name,
-                    $service->service_name,
-                    $operation->operation_name,
-                    $options,
-                );
+                try {
+                    $result = $this->serviceControlPlane()->execute(
+                        $endpoint->endpoint_name,
+                        $service->service_name,
+                        $operation->operation_name,
+                        $options,
+                    );
+                } catch (ServiceOperationAuthorizationException) {
+                    return $this->serviceOperationForbidden();
+                }
                 $result['idempotent_replay'] = true;
             } else {
                 $result = array_replace(
@@ -815,7 +823,7 @@ class ServiceCatalogController
             );
         }
 
-        $options = $executionOptions;
+        $options = $this->admittedExecutionOptions($request, $executionOptions, $callerNamespace);
         $options['service_call_id'] = $admission->call->id;
         $options['boundary_policy_outcome'] = $admission->decision->outcome->value;
 
@@ -826,6 +834,8 @@ class ServiceCatalogController
                 $operation->operation_name,
                 $options,
             );
+        } catch (ServiceOperationAuthorizationException) {
+            return $this->serviceOperationForbidden();
         } finally {
             if ($admission->request->operationMode->value === 'sync') {
                 $this->serviceCallBoundary()->release($admission->request);
@@ -1170,6 +1180,39 @@ class ServiceCatalogController
     {
         return Authenticate::principal($request)
             ?? Principal::role('operator', 'none', subject: 'unknown');
+    }
+
+    /**
+     * Workflow 2.14 re-authorizes an admitted call against its stored caller
+     * scope and current catalog policy before any effect. Give it the caller
+     * namespace and principal the boundary admitted, so the package checks
+     * the same identity instead of its own configured defaults.
+     *
+     * @param  array<string, mixed>  $options
+     * @return array<string, mixed>
+     */
+    private function admittedExecutionOptions(Request $request, array $options, string $callerNamespace): array
+    {
+        $principal = $this->principal($request);
+        $options['caller_namespace'] = $callerNamespace;
+        $options['principal'] = new ServiceCallPrincipal(
+            subject: $principal->subject(),
+            method: $principal->method(),
+            roles: $principal->roles(),
+            tenant: $principal->tenant(),
+            claims: $principal->claims(),
+        );
+
+        return $options;
+    }
+
+    /** A package authority refusal: forbidden, with no ownership or policy detail. */
+    private function serviceOperationForbidden(): JsonResponse
+    {
+        return ControlPlaneProtocol::json([
+            'reason' => 'service_operation_forbidden',
+            'message' => 'The service operation is not authorized for this caller.',
+        ], 403);
     }
 
     /**
