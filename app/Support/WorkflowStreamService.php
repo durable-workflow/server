@@ -31,6 +31,18 @@ final class WorkflowStreamService
 
     public const DEFAULT_MAX_PENDING_ITEMS = 10000;
 
+    /**
+     * The highest pending-items cap a producer may ask for (Server #774): a
+     * producer may lower its stream's backpressure threshold, not raise it.
+     */
+    public const MAX_PENDING_ITEMS_MAX = self::DEFAULT_MAX_PENDING_ITEMS;
+
+    /**
+     * The longest closed-stream retention a producer may ask for (30 days).
+     * It fits every engine's retention column.
+     */
+    public const RETENTION_SECONDS_MAX = 2592000;
+
     public const DEFAULT_MAX_ITEMS_PER_APPEND = 500;
 
     public const DEFAULT_MAX_ITEMS_PER_SUBSCRIBE = 100;
@@ -65,7 +77,14 @@ final class WorkflowStreamService
             ));
         }
 
-        $result = DB::transaction(function () use ($run, $namespace, $streamName, $items, $maxPendingItems) {
+        if ($maxPendingItems < 1 || $maxPendingItems > self::MAX_PENDING_ITEMS_MAX) {
+            throw new InvalidArgumentException(sprintf(
+                'max_pending_items must be between 1 and %d',
+                self::MAX_PENDING_ITEMS_MAX,
+            ));
+        }
+
+        return DB::transaction(function () use ($run, $namespace, $streamName, $items, $maxPendingItems) {
             $stream = $this->lockStream($run, $namespace, $streamName, openIfMissing: true);
 
             if ($stream === null) {
@@ -80,11 +99,12 @@ final class WorkflowStreamService
                 throw new StreamErroredException($stream);
             }
 
-            $now = Carbon::now();
-            $accepted = [];
-            $deduped = 0;
-            $offset = (int) $stream->last_offset;
-            $streamFull = false;
+            // The whole batch is admitted or refused before any item is
+            // written (Server #774). Items whose idempotency key is already
+            // in the stream, or earlier in this batch, take no capacity.
+            $plan = [];
+            $seen = [];
+            $fresh = 0;
 
             foreach ($items as $item) {
                 if (! is_array($item)) {
@@ -94,25 +114,58 @@ final class WorkflowStreamService
                 $idempotencyKey = isset($item['idempotency_key']) ? (string) $item['idempotency_key'] : null;
                 $idempotencyKey = ($idempotencyKey === '' ? null : $idempotencyKey);
 
+                if ($idempotencyKey !== null && array_key_exists($idempotencyKey, $seen)) {
+                    $plan[] = ['key' => $idempotencyKey, 'existing' => null, 'item' => $item, 'repeat' => true];
+
+                    continue;
+                }
+
+                $existing = null;
+
                 if ($idempotencyKey !== null) {
+                    $seen[$idempotencyKey] = true;
                     /** @var WorkflowDurableStreamItem|null $existing */
                     $existing = WorkflowDurableStreamItem::query()
                         ->where('stream_id', $stream->id)
                         ->where('idempotency_key', $idempotencyKey)
                         ->first();
-
-                    if ($existing !== null) {
-                        $accepted[] = $existing;
-                        $deduped++;
-
-                        continue;
-                    }
                 }
 
-                if ($stream->pending_items >= $maxPendingItems) {
-                    $streamFull = true;
+                if ($existing === null) {
+                    $fresh++;
+                }
 
-                    break;
+                $plan[] = ['key' => $idempotencyKey, 'existing' => $existing, 'item' => $item, 'repeat' => false];
+            }
+
+            if ($fresh > 0 && (int) $stream->pending_items + $fresh > $maxPendingItems) {
+                // Rolls back the whole append, including a stream this
+                // request opened.
+                throw new StreamFullException($stream, $maxPendingItems);
+            }
+
+            $now = Carbon::now();
+            $accepted = [];
+            $byKey = [];
+            $deduped = 0;
+            $offset = (int) $stream->last_offset;
+
+            foreach ($plan as $entry) {
+                $idempotencyKey = $entry['key'];
+                $item = $entry['item'];
+
+                if ($entry['repeat']) {
+                    $accepted[] = $byKey[$idempotencyKey];
+                    $deduped++;
+
+                    continue;
+                }
+
+                if ($entry['existing'] !== null) {
+                    $accepted[] = $byKey[$idempotencyKey] = $entry['existing'];
+                    $deduped++;
+
+                    continue;
                 }
 
                 $offset++;
@@ -140,6 +193,10 @@ final class WorkflowStreamService
                 $stream->last_appended_at = $now;
 
                 $accepted[] = $created;
+
+                if ($idempotencyKey !== null) {
+                    $byKey[$idempotencyKey] = $created;
+                }
             }
 
             $stream->save();
@@ -149,17 +206,8 @@ final class WorkflowStreamService
                 'items' => $accepted,
                 'accepted' => count($accepted) - $deduped,
                 'deduped' => $deduped,
-                'stream_full' => $streamFull,
             ];
         });
-
-        if (($result['stream_full'] ?? false) === true) {
-            throw new StreamFullException($result['stream'], $maxPendingItems);
-        }
-
-        unset($result['stream_full']);
-
-        return $result;
     }
 
     /**
@@ -233,10 +281,17 @@ final class WorkflowStreamService
     ): WorkflowDurableStream {
         $this->assertValidStreamName($streamName);
 
+        if ($retentionSeconds !== null && ($retentionSeconds < 1 || $retentionSeconds > self::RETENTION_SECONDS_MAX)) {
+            throw new InvalidArgumentException(sprintf(
+                'retention_seconds must be between 1 and %d',
+                self::RETENTION_SECONDS_MAX,
+            ));
+        }
+
         return DB::transaction(function () use ($run, $namespace, $streamName, $errorReason, $retentionSeconds) {
             $stream = $this->lockStream($run, $namespace, $streamName, openIfMissing: false);
 
-            if ($stream === null) {
+            if ($stream === null || self::isExpired($stream)) {
                 throw new StreamNotFoundException($run, $streamName);
             }
 
@@ -267,11 +322,31 @@ final class WorkflowStreamService
      */
     public function listForRun(string $namespace, string $workflowRunId): Collection
     {
+        $now = Carbon::now();
+
         return WorkflowDurableStream::query()
             ->where('namespace', $namespace)
             ->where('workflow_run_id', $workflowRunId)
             ->orderBy('stream_name')
-            ->get();
+            ->get()
+            ->reject(static fn (WorkflowDurableStream $stream): bool => self::isExpired($stream, $now))
+            ->values();
+    }
+
+    /**
+     * Whether a closed or errored stream is past `closed_at` plus its
+     * retention (3600 seconds when none was recorded). An expired stream
+     * reads as not found; the retention pass reclaims its rows.
+     */
+    public static function isExpired(WorkflowDurableStream $stream, ?Carbon $now = null): bool
+    {
+        if (! $stream->isTerminal() || $stream->closed_at === null) {
+            return false;
+        }
+
+        $retention = $stream->retention_seconds ?? self::DEFAULT_CLOSED_RETENTION_SECONDS;
+
+        return $stream->closed_at->copy()->addSeconds((int) $retention)->lessThanOrEqualTo($now ?? Carbon::now());
     }
 
     public function describe(
@@ -295,11 +370,13 @@ final class WorkflowStreamService
         string $namespace,
         string $streamName,
     ): ?WorkflowDurableStream {
-        return WorkflowDurableStream::query()
+        $stream = WorkflowDurableStream::query()
             ->where('namespace', $namespace)
             ->where('workflow_run_id', $run->id)
             ->where('stream_name', $streamName)
             ->first();
+
+        return $stream === null || self::isExpired($stream) ? null : $stream;
     }
 
     private function lockStream(
@@ -323,7 +400,12 @@ final class WorkflowStreamService
             return null;
         }
 
-        return WorkflowDurableStream::query()->create([
+        // Concurrent first appends both find no row. Each inserts it if it
+        // is still missing (a loser waits for the winner's commit, then
+        // inserts nothing) and then locks the one row, so the capacity
+        // decision always runs against the committed stream.
+        $now = Carbon::now();
+        WorkflowDurableStream::query()->insertOrIgnore([
             'namespace' => $namespace,
             'workflow_instance_id' => $run->workflow_instance_id,
             'workflow_run_id' => $run->id,
@@ -332,8 +414,22 @@ final class WorkflowStreamService
             'last_offset' => -1,
             'total_items' => 0,
             'pending_items' => 0,
-            'opened_at' => Carbon::now(),
+            'opened_at' => $now,
+            'created_at' => $now,
+            'updated_at' => $now,
         ]);
+
+        $stream = WorkflowDurableStream::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('stream_name', $streamName)
+            ->lockForUpdate()
+            ->first();
+
+        if ($stream === null || $stream->namespace !== $namespace) {
+            throw new RuntimeException('Stream row could not be opened for this run and namespace');
+        }
+
+        return $stream;
     }
 
     private function assertValidStreamName(string $streamName): void

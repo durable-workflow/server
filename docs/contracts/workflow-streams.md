@@ -87,11 +87,16 @@ The contract names two distinct flows:
 - **Slow consumer.** Each append increments `pending_items`. Each
   successful read with `next_offset > last_offset` (consumer caught
   up) advisory-decrements pending back toward zero. When
-  `pending_items >= max_pending_items`, the next append returns
-  `429` with `reason=stream_full`. The default
-  `max_pending_items` per stream is 10000; producers may pass an
-  explicit `max_pending_items` per request to negotiate a lower or
-  higher cap on a per-stream basis.
+  `pending_items` plus the new items of an append would exceed
+  `max_pending_items`, the append returns `429` with
+  `reason=stream_full`. The whole batch is refused before any item
+  is written, so a plain retry cannot duplicate part of it. Items
+  whose `idempotency_key` is already in the stream (or earlier in the
+  same batch) take no capacity, and a batch made only of such items
+  still answers with their existing offsets. The default and the
+  maximum `max_pending_items` per stream are both 10000. A producer
+  may pass a lower `max_pending_items` per request; a value above
+  10000 is refused with `422`.
 - **Fast producer / idle consumer.** A subscriber may pass
   `wait_seconds` (default 0, max 60) to long-poll. When no items
   are available within the window the request returns an empty
@@ -103,6 +108,8 @@ Per-request limits:
 
 - `max_items` on subscribe: default 100, max 500.
 - `items` on append: max 500 per request.
+- `max_pending_items` on append: 1 to 10000.
+- `retention_seconds` on close: 1 to 2592000 (30 days).
 - `wait_seconds` on subscribe: max 60.
 
 ## Observability
@@ -134,8 +141,18 @@ responses.
 - An `open` stream is retained until close.
 - A `closed` or `errored` stream is retained for
   `retention_seconds` after `closed_at`. Default is 3600 seconds.
-  The producer may override on close. The namespace retention
-  sweep removes expired closed streams.
+  The producer may override on close, up to 2592000 seconds (30
+  days); a larger value is refused with `422`.
+- Once `closed_at + retention_seconds` has passed, the stream reads
+  as not found: list omits it, and describe, subscribe and close
+  answer `404 stream_not_found`. An append still answers
+  `stream_closed` or `stream_errored`.
+- A bounded retention pass then removes the expired stream's rows,
+  whatever the namespace's history retention mode. It runs from the
+  throttled inline retention pass on worker heartbeats and from
+  `history:prune`. Each pass handles a capped number of streams,
+  oldest close first, and deletes a capped number of items in small
+  transactions. The next pass resumes where it stopped.
 
 ## SDK implementation notes
 
