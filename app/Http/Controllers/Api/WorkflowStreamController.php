@@ -3,17 +3,20 @@
 namespace App\Http\Controllers\Api;
 
 use App\Models\WorkflowDurableStream;
+use App\Models\WorkflowDurableStreamItem;
 use App\Support\ControlPlaneProtocol;
 use App\Support\LegacyV1Projection;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\PayloadCodecContract;
 use App\Support\RuntimeExternalPayloadException;
+use App\Support\RuntimeTrackedExternalPayloadStorage;
 use App\Support\StreamClosedException;
 use App\Support\StreamErroredException;
 use App\Support\StreamFullException;
 use App\Support\StreamNotFoundException;
 use App\Support\WorkflowStreamService;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
@@ -180,6 +183,12 @@ class WorkflowStreamController
             'max_pending_items' => ['nullable', 'integer', 'min:1', 'max:'.WorkflowStreamService::MAX_PENDING_ITEMS_MAX],
         ]);
 
+        // References are fetched and verified before the append and claimed
+        // only inside its transaction, after the whole batch is admitted, so
+        // a refused append claims nothing (Server #774).
+        $driver = null;
+        $verified = [];
+
         foreach ($payload['items'] as $index => $item) {
             if (array_key_exists('payload_codec', $item)) {
                 try {
@@ -194,9 +203,9 @@ class WorkflowStreamController
             }
 
             $reference = $item['payload_reference'] ?? null;
-            if (is_string($reference) && $reference !== '') {
-                $driver = $this->externalPayloadStorage->driverFor($namespace);
-                if ($driver === null) {
+            if (is_string($reference) && $reference !== '' && ! array_key_exists($reference, $verified)) {
+                $driver ??= $this->externalPayloadStorage->driverFor($namespace);
+                if (! $driver instanceof RuntimeTrackedExternalPayloadStorage) {
                     throw new RuntimeExternalPayloadException(
                         'external_payload_unavailable',
                         503,
@@ -205,9 +214,15 @@ class WorkflowStreamController
                     );
                 }
 
-                $driver->get($reference);
+                $verified[$reference] = $driver->verify($reference);
             }
         }
+
+        $claimReferences = $verified === [] ? null : static function (array $references) use ($driver, $verified): void {
+            foreach ($references as $reference) {
+                $driver->claimVerified($reference, $verified[$reference]['size_bytes'], $verified[$reference]['sha256']);
+            }
+        };
 
         $maxPending = (int) ($payload['max_pending_items']
             ?? WorkflowStreamService::DEFAULT_MAX_PENDING_ITEMS);
@@ -219,7 +234,13 @@ class WorkflowStreamController
                 $streamName,
                 $payload['items'],
                 $maxPending,
+                $claimReferences,
             );
+        } catch (StreamNotFoundException) {
+            return ControlPlaneProtocol::jsonForRequest($request, [
+                'message' => 'Stream not found.',
+                'reason' => 'stream_not_found',
+            ], 404);
         } catch (StreamClosedException) {
             return ControlPlaneProtocol::jsonForRequest($request, [
                 'message' => 'Stream is closed.',
@@ -328,7 +349,7 @@ class WorkflowStreamController
     }
 
     /**
-     * @return array{stream: WorkflowDurableStream, items: \Illuminate\Database\Eloquent\Collection<int, \App\Models\WorkflowDurableStreamItem>, next_offset: int, terminal: bool}
+     * @return array{stream: WorkflowDurableStream, items: Collection<int, WorkflowDurableStreamItem>, next_offset: int, terminal: bool}
      */
     private function readWithWait(
         WorkflowRun $run,

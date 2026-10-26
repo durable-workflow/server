@@ -2,6 +2,8 @@
 
 namespace App\Support;
 
+use App\Models\WorkflowDurableStream;
+use App\Models\WorkflowDurableStreamItem;
 use App\Models\WorkflowNamespace;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
@@ -141,8 +143,17 @@ class HistoryRetentionEnforcer
     {
         // Closed workflow streams carry their own retention, whatever the
         // namespace's history retention mode (Server #774). The stream pass
-        // has its own throttle and is not part of this report.
-        WorkflowStreamRetention::runInlinePass($namespace);
+        // has its own throttle and is not part of this report; a failure
+        // leaves its items for the next pass instead of failing the caller.
+        try {
+            WorkflowStreamRetention::runInlinePass($namespace);
+        } catch (\Throwable $exception) {
+            Log::warning('workflow_stream_retention_failed', [
+                'namespace' => $namespace,
+                'exception' => $exception::class,
+                'message' => $exception->getMessage(),
+            ]);
+        }
 
         if (self::retentionMode($namespace) === WorkflowNamespace::RETENTION_MODE_FOREVER) {
             return [
@@ -217,6 +228,13 @@ class HistoryRetentionEnforcer
             (string) $summary->workflow_instance_id,
         );
 
+        // The payload cleanup below settles the references of the run's
+        // durable stream items up to this point. An item appended later is
+        // not covered, so the prune transaction refuses to delete it.
+        $streamItemHighWater = (int) WorkflowDurableStreamItem::query()
+            ->where('workflow_run_id', $runId)
+            ->max('id');
+
         try {
             $externalPayloads = app(ExternalPayloadRetentionCleanup::class)->deleteForRun(
                 $namespace,
@@ -245,12 +263,28 @@ class HistoryRetentionEnforcer
             'closed_at' => $summary->closed_at?->toIso8601String(),
         ]);
 
-        $report = DB::transaction(static function () use ($runId, $messageStreams, $streamPlan): array {
+        $report = DB::transaction(static function () use ($runId, $messageStreams, $streamPlan, $streamItemHighWater): ?array {
+            // Stream writes take the run row first, so none commits between
+            // this check and the deletes below.
+            WorkflowRunStreamLock::acquire($runId);
+
+            if (WorkflowDurableStreamItem::query()
+                ->where('workflow_run_id', $runId)
+                ->where('id', '>', $streamItemHighWater)
+                ->exists()) {
+                return null;
+            }
+
             return array_merge(
                 WorkflowRunRetentionCleanup::pruneRun($runId),
                 $messageStreams->apply($streamPlan),
+                self::pruneDurableStreams($runId),
             );
         });
+
+        if ($report === null) {
+            return self::skippedRetentionResult('durable_stream_appended_during_prune');
+        }
 
         return [
             'pruned' => true,
@@ -259,6 +293,20 @@ class HistoryRetentionEnforcer
             'tasks_deleted' => $report['tasks_deleted'] ?? 0,
             'external_payloads_deleted' => $externalPayloads['deleted'],
             'deleted' => $report,
+        ];
+    }
+
+    /**
+     * The run's durable workflow streams go with the run (Server #774). Their
+     * external payload references were settled by the payload cleanup.
+     *
+     * @return array{durable_stream_items_deleted: int, durable_streams_deleted: int}
+     */
+    private static function pruneDurableStreams(string $runId): array
+    {
+        return [
+            'durable_stream_items_deleted' => WorkflowDurableStreamItem::query()->where('workflow_run_id', $runId)->delete(),
+            'durable_streams_deleted' => WorkflowDurableStream::query()->where('workflow_run_id', $runId)->delete(),
         ];
     }
 

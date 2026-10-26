@@ -144,16 +144,30 @@ responses.
   The producer may override on close, up to 2592000 seconds (30
   days); a larger value is refused with `422`.
 - Once `closed_at + retention_seconds` has passed, the stream reads
-  as not found: list omits it, and describe, subscribe and close
-  answer `404 stream_not_found`. An append still answers
-  `stream_closed` or `stream_errored`.
-- A bounded retention pass then removes the expired stream's rows,
+  as not found from that instant: list omits it, and describe,
+  subscribe, append and close answer `404 stream_not_found`.
+- The expired stream's name stays taken for the rest of its run: an
+  append never opens it again at offset 0. Its row, without items,
+  is removed when the run itself is pruned.
+- A bounded retention pass removes the expired stream's items,
   whatever the namespace's history retention mode. It runs from the
   throttled inline retention pass on worker heartbeats, from
   `history:prune`, and from a general operator retention pass
-  (`POST /api/system/retention/pass` without `run_ids`). Each pass handles a capped number of streams,
-  oldest close first, and deletes a capped number of items in small
-  transactions. The next pass resumes where it stopped.
+  (`POST /api/system/retention/pass` without `run_ids`).
+  - Each pass reads a capped number of a namespace's due streams in
+    deadline order from an index on the stream's reclaim deadline,
+    so its reads stop at that cap.
+  - It deletes a capped number of items in small transactions, and
+    the next pass resumes where it stopped.
+  - Before deleting a batch it settles the batch's external
+    payloads as run retention does: an object no other retained row
+    references is deleted (honoring backup holds), and an object
+    another row still references is kept.
+  - If the namespace's external payload storage is unavailable, or a
+    deletion fails, the batch's items stay and a later pass retries
+    them.
+- When a run is pruned, its streams and their items are removed with
+  it, after the same external payload handling.
 
 ## SDK implementation notes
 
