@@ -102,7 +102,8 @@ pub(super) fn request_contract() -> Value {
     json!({"schema":"durable-workflow.v2.control-plane-request.contract", "version":1,
         "operations":{"list":{"fields":{"status":{"canonical_values":["running","completed","failed"],
             "rejected_aliases":{"cancelled":"failed","terminated":"failed","pending":"running","waiting":"running"}}}},
-            "update":{"fields":{"wait_for":{"canonical_values":["accepted","completed"]}}}}})
+            "update":{"fields":{"wait_for":{"canonical_values":["accepted","completed"]},
+                "wait_timeout_seconds":{"minimum":1,"maximum":super::command_requests::UPDATE_WAIT_TIMEOUT_SECONDS_MAX}}}}})
 }
 
 fn response(body: Value) -> Value {
@@ -125,15 +126,18 @@ fn validation(field: &'static str, message: &'static str) -> RuntimeError {
     }
 }
 
-pub(super) const VISIBILITY_PAGE: &str = "SELECT r.id,r.workflow_instance_id,r.workflow_type,r.queue,r.status,r.compatibility,r.started_at,r.closed_at,COALESCE(r.business_key,i.business_key) AS business_key FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE r.namespace=$1 AND i.namespace=$2 AND ($3 IS NULL OR r.workflow_type=$4) AND ($5 IS NULL OR CASE WHEN r.status IN ('pending','running','waiting') THEN 'running' WHEN r.status='completed' THEN 'completed' ELSE 'failed' END=$6 OR r.status=$7) AND ($8 IS NULL OR r.workflow_instance_id LIKE $9 OR COALESCE(r.business_key,i.business_key) LIKE $10) ORDER BY r.started_at DESC,r.id DESC LIMIT $11 OFFSET $12";
+pub(super) const VISIBILITY_PAGE: &str = "SELECT r.id,r.workflow_instance_id,r.workflow_type,r.queue,r.status,r.compatibility,r.started_at,r.closed_at,COALESCE(r.business_key,i.business_key) AS business_key FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id LEFT JOIN workflow_run_summaries s ON s.id=r.id AND r.import_source='waterline_v1_projection' WHERE r.namespace=$1 AND i.namespace=$2 AND ($3 IS NULL OR r.workflow_type=$4) AND ($5 IS NULL OR CASE WHEN r.status IN ('pending','running','waiting') THEN 'running' WHEN r.status='completed' THEN 'completed' ELSE 'failed' END=$6 OR r.status=$7) AND ($8 IS NULL OR r.workflow_instance_id LIKE $9 OR COALESCE(r.business_key,i.business_key) LIKE $10) ORDER BY COALESCE(s.sort_timestamp,r.started_at) DESC,r.id DESC LIMIT $11 OFFSET $12";
 
 // Preserve decimal micro/nanosecond ordering across PHP SQL UTC and earlier
 // native RFC3339 UTC strings without SQLite floating-point date conversion.
+// A Waterline v1 projection sorts by its summary's sort time, as PHP's
+// summary-ordered list places it; other runs keep their start time.
 pub(super) const SQLITE_VISIBILITY_PAGE: &str = r#"
 WITH runs AS (
     SELECT r.id,r.workflow_instance_id,r.workflow_type,r.queue,r.status,r.compatibility,r.started_at,r.closed_at,COALESCE(r.business_key,i.business_key) AS business_key,
-        replace(replace(replace(r.started_at,'T',' '),'Z',''),'+00:00','') AS _dw_started_utc
+        replace(replace(replace(COALESCE(s.sort_timestamp,r.started_at),'T',' '),'Z',''),'+00:00','') AS _dw_started_utc
     FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id
+    LEFT JOIN workflow_run_summaries s ON s.id=r.id AND r.import_source='waterline_v1_projection'
     WHERE r.namespace=$1 AND i.namespace=$2 AND ($3 IS NULL OR r.workflow_type=$4)
         AND ($5 IS NULL OR CASE WHEN r.status IN ('pending','running','waiting') THEN 'running' WHEN r.status='completed' THEN 'completed' ELSE 'failed' END=$6 OR r.status=$7)
         AND ($8 IS NULL OR r.workflow_instance_id LIKE $9 OR COALESCE(r.business_key,i.business_key) LIKE $10)
@@ -275,10 +279,10 @@ where
             };
             workflows.push(json!({"workflow_id":DB::string(row,"workflow_instance_id")?, "run_id":run_id,
                 "workflow_type":DB::string(row,"workflow_type")?, "business_key":DB::optional_string(row,"business_key")?,
-                "status":status, "status_bucket":bucket, "task_queue":DB::string(row,"queue")?,
+                "status":status, "status_bucket":bucket, "task_queue":DB::optional_string(row,"queue")?,
                 "is_terminal":bucket!="running", "compatibility":null, "compatibility_status":"compatible",
                 "compatibility_supported_in_fleet":true, "compatibility_fleet_reason":null,
-                "started_at":DB::instant(row,"started_at")?, "closed_at":DB::optional_instant(row,"closed_at")?,
+                "started_at":super::task_queues::json_time(DB::optional_instant(row,"started_at")?), "closed_at":super::task_queues::json_time(DB::optional_instant(row,"closed_at")?),
                 "search_attributes":search_attributes}));
         }
         let next =

@@ -431,14 +431,18 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $searchAttributes = isset($fixture['search_attributes']) ? finishHttpSearchAttributes($client, $fixture, $workflowId, $url) : null;
     $storageTest = isset($fixture['storage_test']) ? finishHttpStorageTest($client, $fixture, $workflowId, $url) : null;
     $activityLeaseRenewal = isset($fixture['activity_lease_renewal']) ? finishHttpActivityLeaseRenewal($client, $fixture, $workflowId, $url) : null;
+    $nexusOperations = isset($fixture['nexus_operations']) ? finishHttpNexusOperations($client, $fixture, $workflowId, $url) : null;
+    $recordLocalActivity = isset($fixture['record_local_activity']) ? finishHttpRecordLocalActivity($client, $fixture, $workflowId, $url) : null;
     $workflowPollRequest = isset($fixture['workflow_poll_request']) ? finishHttpWorkflowPollRequest($client, $fixture, $workflowId, $url) : null;
     $workerPollFence = isset($fixture['worker_poll_fence']) ? finishHttpWorkerPollFence($client, $fixture, $workflowId, $url) : null;
     $workerSessions = isset($fixture['worker_sessions']) ? finishHttpWorkerSessions($client, $fixture, $workflowId, $url) : null;
     $workerSessionActivities = isset($fixture['worker_session_activities']) ? finishHttpWorkerSessionActivities($client, $fixture, $workflowId, $url) : null;
     $activityCancellationAcknowledgement = isset($fixture['activity_cancellation_acknowledgement'])
         ? finishHttpActivityCancellationAcknowledgement($client, $fixture, $workflowId, $url) : null;
+    $cancellationScopes = isset($fixture['cancellation_scopes']) ? finishHttpCancellationScopes($client, $fixture, $workflowId, $url) : null;
     $serviceCatalog = isset($fixture['service_catalog']) ? finishHttpServiceCatalog($client, $fixture, $workflowId, $url) : null;
     $workflowImport = isset($fixture['workflow_import']) ? finishHttpWorkflowImport($client, $fixture, $workflowId, $url) : null;
+    $waterlineImport = isset($fixture['waterline_import']) ? finishHttpWaterlineImport($client, $fixture, $workflowId, $url) : null;
     $systemMetrics = isset($fixture['system_metrics']) ? finishHttpSystemMetrics($client, $fixture, $workflowId, $url) : null;
     $operatorDashboardTypes = isset($fixture['operator_dashboard_types']) ? finishHttpOperatorDashboardTypes($client, $fixture, $workflowId, $url) : null;
     $prometheusMetrics = isset($fixture['prometheus_metrics']) ? finishHttpPrometheusMetrics($client, $fixture, $workflowId, $url) : null;
@@ -548,13 +552,17 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'search_attributes' => $searchAttributes,
         'storage_test' => $storageTest,
         'activity_lease_renewal' => $activityLeaseRenewal,
+        'nexus_operations' => $nexusOperations,
+        'record_local_activity' => $recordLocalActivity,
         'workflow_poll_request' => $workflowPollRequest,
         'worker_poll_fence' => $workerPollFence,
         'worker_sessions' => $workerSessions,
         'worker_session_activities' => $workerSessionActivities,
         'activity_cancellation_acknowledgement' => $activityCancellationAcknowledgement,
+        'cancellation_scopes' => $cancellationScopes,
         'service_catalog' => $serviceCatalog,
         'workflow_import' => $workflowImport,
+        'waterline_import' => $waterlineImport,
         'system_metrics' => $systemMetrics,
         'operator_dashboard_types' => $operatorDashboardTypes,
         'prometheus_metrics' => $prometheusMetrics,
@@ -868,13 +876,17 @@ try {
     require __DIR__.'/search-attribute-probe.php';
     require __DIR__.'/storage-test-probe.php';
     require __DIR__.'/activity-lease-renewal-probe.php';
+    require __DIR__.'/nexus-operations-probe.php';
+    require __DIR__.'/record-local-activity-probe.php';
     require __DIR__.'/workflow-poll-request-probe.php';
     require __DIR__.'/worker-poll-fence-probe.php';
     require __DIR__.'/worker-sessions-probe.php';
     require __DIR__.'/worker-session-activities-probe.php';
     require __DIR__.'/activity-cancellation-ack-probe.php';
+    require __DIR__.'/cancellation-scopes-probe.php';
     require __DIR__.'/service-catalog-probe.php';
     require __DIR__.'/workflow-import-probe.php';
+    require __DIR__.'/waterline-import-probe.php';
     require __DIR__.'/system-metrics-probe.php';
     require __DIR__.'/operator-dashboard-types-probe.php';
     require __DIR__.'/prometheus-metrics-probe.php';
@@ -1045,6 +1057,12 @@ try {
     if ($mode === 'embedded' && isset($fixture['activity_lease_renewal'])) {
         $observation['activity_lease_renewal'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
     }
+    if ($mode === 'embedded' && isset($fixture['nexus_operations'])) {
+        $observation['nexus_operations'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_nexus_operations'];
+    }
+    if ($mode === 'embedded' && isset($fixture['record_local_activity'])) {
+        $observation['record_local_activity'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
+    }
     if ($mode === 'embedded' && isset($fixture['workflow_poll_request'])) {
         $observation['workflow_poll_request'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
     }
@@ -1060,11 +1078,17 @@ try {
     if ($mode === 'embedded' && isset($fixture['activity_cancellation_acknowledgement'])) {
         $observation['activity_cancellation_acknowledgement'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
     }
+    if ($mode === 'embedded' && isset($fixture['cancellation_scopes'])) {
+        $observation['cancellation_scopes'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
+    }
     if ($mode === 'embedded' && isset($fixture['service_catalog'])) {
         $observation['service_catalog'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_service_catalog'];
     }
     if ($mode === 'embedded' && isset($fixture['workflow_import'])) {
         $observation['workflow_import'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_workflow_import'];
+    }
+    if ($mode === 'embedded' && isset($fixture['waterline_import'])) {
+        $observation['waterline_import'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_waterline_import'];
     }
     if ($mode === 'embedded' && isset($fixture['system_metrics'])) {
         $observation['system_metrics'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_metrics'];

@@ -68,6 +68,7 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route("/api/workflows", get(list_workflows).post(start))
         .route("/api/workflows/import/embedded-v2", post(import_embedded_v2))
+        .route("/api/workflows/import/waterline-v1", post(import_waterline_v1))
         .route("/api/activities", get(list_activities).post(start_activity))
         .route("/api/activities/{activity_id}", get(show_activity))
         .route(
@@ -110,6 +111,8 @@ pub fn router(runtime: Runtime) -> Router {
             get(super::run_observation::selected),
         )
         .route("/api/workflows/{workflow_id}/runs", get(list_runs))
+        .route("/api/workflows/{workflow_id}/nexus-operations", get(nexus_operations_current))
+        .route("/api/workflows/{workflow_id}/runs/{run_id}/nexus-operations", get(nexus_operations_run))
         .route("/api/workflows/{workflow_id}/cancel", post(cancel_current))
         .route(
             "/api/workflows/{workflow_id}/terminate",
@@ -262,6 +265,18 @@ pub fn router(runtime: Runtime) -> Router {
             post(heartbeat_task),
         )
         .route(
+            "/api/worker/workflow-tasks/{task_id}/cancellation-scopes/open",
+            post(open_cancellation_scope),
+        )
+        .route(
+            "/api/worker/workflow-tasks/{task_id}/cancellation-scopes/prepare",
+            post(prepare_cancellation_scope),
+        )
+        .route(
+            "/api/worker/workflow-tasks/{task_id}/cancellation-scopes/deliver",
+            post(deliver_cancellation_scope),
+        )
+        .route(
             "/api/worker/workflow-tasks/{task_id}/complete",
             post(complete_workflow),
         )
@@ -319,6 +334,7 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .fallback(route_fallback)
         .method_not_allowed_fallback(route_fallback)
+        .layer(middleware::from_fn(super::waterline_import::read_only_guard))
         .layer(middleware::from_fn(empty_list_body))
         // `payload_limits` reads and bounds every body first.
         .layer(DefaultBodyLimit::disable())
@@ -709,7 +725,8 @@ fn exact_namespace_route(path: &str) -> Option<Allowed> {
         // The metrics describe the namespace's own state, read by GET or POST.
         "/api/system/metrics" => READ_WRITE,
         // An import writes into the requested namespace.
-        "/api/external-payloads/v1" | "/api/storage/test" | "/api/workflows/import/embedded-v2" => WRITE,
+        "/api/external-payloads/v1" | "/api/storage/test" | "/api/workflows/import/embedded-v2"
+        | "/api/workflows/import/waterline-v1" => WRITE,
         "/api/task-queues"
         | "/api/deployments"
         | "/api/workers"
@@ -760,7 +777,9 @@ fn workflow_route(rest: &str) -> Option<Allowed> {
         | [_, "runs", _, "history", "export"]
         | [_, "runs", _, "streams"]
         | [_, "runs", _, "streams", _]
-        | [_, "runs", _, "streams", _, "items"] => Some(READ),
+        | [_, "runs", _, "streams", _, "items"]
+        | [_, "nexus-operations"]
+        | [_, "runs", _, "nexus-operations"] => Some(READ),
         [_, "signal" | "query" | "update", _]
         | [_, "runs", _, "signal" | "query" | "update", _]
         | [_, "repair" | "request-cancellation"]
@@ -788,6 +807,7 @@ fn worker_route(rest: &str) -> Option<Allowed> {
             | ["update-validation-tasks", "poll"]
             | ["update-validation-tasks", _, "approve" | "reject"]
             | ["workflow-tasks", _, "complete" | "fail" | "history" | "heartbeat" | "deliver-cancellation"]
+            | ["workflow-tasks", _, "cancellation-scopes", "open" | "prepare" | "deliver"]
             | ["activity-tasks", _, "complete" | "fail" | "heartbeat" | "status" | "renew-lease" | "acknowledge-cancellation"]
     )
     .then_some(Allowed::Any)
@@ -1111,6 +1131,15 @@ async fn import_embedded_v2(
     Ok((status, Json(answer)))
 }
 
+/// `POST /api/workflows/import/waterline-v1`.
+async fn import_waterline_v1(
+    Extension(runtime): Extension<Runtime>,
+    body: axum::body::Bytes,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, answer) = runtime.import_waterline_v1(&body).await?;
+    Ok((status, Json(answer)))
+}
+
 /// `POST /api/activities`: a standalone activity in its own host run.
 async fn start_activity(
     Extension(runtime): Extension<Runtime>,
@@ -1164,6 +1193,35 @@ async fn describe_current(
     Ok(Json(
         super::control_plane::Operation::Describe.response(body),
     ))
+}
+
+/// `GET /api/workflows/{workflow_id}/nexus-operations`.
+async fn nexus_operations_current(
+    Extension(runtime): Extension<Runtime>,
+    Path(workflow_id): Path<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Value>> {
+    nexus_operations(runtime, &workflow_id, None, query).await
+}
+
+/// `GET /api/workflows/{workflow_id}/runs/{run_id}/nexus-operations`.
+async fn nexus_operations_run(
+    Extension(runtime): Extension<Runtime>,
+    Path((workflow_id, run_id)): Path<(String, String)>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Value>> {
+    nexus_operations(runtime, &workflow_id, Some(&run_id), query).await
+}
+
+async fn nexus_operations(
+    runtime: Runtime,
+    workflow_id: &str,
+    run_id: Option<&str>,
+    query: std::collections::HashMap<String, String>,
+) -> Result<Json<Value>> {
+    let limit = super::nexus_operations::list_limit(query.get("limit").map(String::as_str));
+    let calls = runtime.nexus_operations(workflow_id, run_id, limit).await?;
+    Ok(Json(super::nexus_operations::listing(workflow_id, run_id, runtime.namespace(), limit, calls)))
 }
 
 async fn list_runs(
@@ -2218,6 +2276,38 @@ async fn renew_activity_lease(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     runtime.renew_activity_lease(&task_id, body).await.map(Json)
+}
+
+/// POST …/cancellation-scopes/open, prepare and deliver: each answer is
+/// the route's own body and status, in the worker envelope.
+async fn open_cancellation_scope(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, body) = runtime.open_cancellation_scope(&task_id, body, request_protocol(&headers)?).await?;
+    Ok((status, Json(body)))
+}
+
+async fn prepare_cancellation_scope(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, body) = runtime.prepare_cancellation_scope(&task_id, body, request_protocol(&headers)?).await?;
+    Ok((status, Json(body)))
+}
+
+async fn deliver_cancellation_scope(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, body) = runtime.deliver_cancellation_scope(&task_id, body, request_protocol(&headers)?).await?;
+    Ok((status, Json(body)))
 }
 
 async fn acknowledge_activity_cancellation(

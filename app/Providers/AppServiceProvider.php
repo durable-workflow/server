@@ -30,6 +30,7 @@ use App\Support\ServiceCallBoundary;
 use App\Support\ServiceModeBusDispatcher;
 use App\Support\SharedServiceBoundaryPolicy;
 use App\Support\StoragePressure;
+use App\Support\UpdateWaitConfiguration;
 use App\Support\ValidatedExternalWorkflowUpdateAdmission;
 use App\Support\WorkflowMemoRollingCompatibility;
 use App\Support\WorkflowObservability;
@@ -209,6 +210,7 @@ class AppServiceProvider extends ServiceProvider
 
         WorkflowTaskLeaseConfiguration::apply();
         ActivityTaskLeaseConfiguration::apply();
+        UpdateWaitConfiguration::apply();
         WorkflowMemoRollingCompatibility::register();
 
         config([

@@ -379,7 +379,8 @@ where
         let rules: &[(&str, &[Rule])] = &[
             ("request_id", &[Rule::Nullable, Rule::String, Rule::Max(255)]),
             ("wait_for", &[Rule::Nullable, Rule::String, Rule::In(&["accepted", "completed"])]),
-            ("wait_timeout_seconds", &[Rule::Nullable, Rule::Integer, Rule::Min(1)]),
+            ("wait_timeout_seconds", &[Rule::Nullable, Rule::Integer, Rule::Min(1),
+                Rule::Max(super::command_requests::UPDATE_WAIT_TIMEOUT_SECONDS_MAX)]),
         ];
         if let Some(error) = failure_messages(rule_errors(&request, rules, |_, _| None)) {
             return Err(error);

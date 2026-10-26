@@ -104,7 +104,7 @@ where
             .bind(seconds).bind(DB::bind_time(fire_at)).bind(DB::optional_time((seconds == 0).then_some(fire_at)))
             .execute(&mut **tx).await?;
         let mut payload = json!({"timer_id":timer_id,"sequence":sequence,"delay_seconds":seconds,
-            "fire_at":fire_at,"timer_kind":if direct {"signal_timeout"} else {"condition_timeout"}});
+            "fire_at":super::cancellation_scopes::iso(fire_at),"timer_kind":if direct {"signal_timeout"} else {"condition_timeout"}});
         payload
             .as_object_mut()
             .unwrap()
