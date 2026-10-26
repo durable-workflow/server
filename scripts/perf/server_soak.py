@@ -44,6 +44,7 @@ SERVER_CACHE_KEY_PATTERNS = {
     "runtime_external_payload_quota_rejections": "*server:external-payload-quota:*",
     "workflow_task_expired_lease_recovery": "*server:workflow-task-expired-lease-recovery:*",
     "history_retention_inline": "*server:history-retention-inline:*",
+    "stream_retention_inline": "*server:stream-retention-inline:*",
     "worker_compatibility_heartbeat": "*server:worker-compatibility-heartbeat:*",
     "readiness_probe": "*server:readiness:*",
 }

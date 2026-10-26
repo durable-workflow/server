@@ -16,9 +16,11 @@ use App\Support\RuntimeExternalPayloadCleanupMetrics;
 use App\Support\RuntimeExternalPayloadQuota;
 use App\Support\TaskQueueBuildIdRolloutSnapshot;
 use App\Support\WorkerSessionRegistry;
+use App\Support\WorkflowStreamRetention;
 use App\Support\WorkflowTaskFailureMetrics;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
@@ -436,6 +438,22 @@ class SystemController
             static fn (string $v): string => trim($v),
             $validated['run_ids'] ?? [],
         ));
+
+        // A general pass also reclaims closed workflow streams past their own
+        // retention (Server #774): at most $limit streams and $limit * 100
+        // items. The report is the run pass's; a stream failure leaves its
+        // items for the next pass and does not stop the run pass.
+        if ($runIds === []) {
+            try {
+                WorkflowStreamRetention::pruneExpired($namespace, $limit, $limit * 100);
+            } catch (\Throwable $exception) {
+                Log::warning('workflow_stream_retention_failed', [
+                    'namespace' => $namespace,
+                    'exception' => $exception::class,
+                    'message' => $exception->getMessage(),
+                ]);
+            }
+        }
 
         $report = HistoryRetentionEnforcer::runPass($namespace, $limit, $runIds);
         $retention = HistoryRetentionEnforcer::retentionPolicy($namespace);
