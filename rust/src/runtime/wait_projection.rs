@@ -18,32 +18,41 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
-    pub(super) async fn order_open_waits(tx: &mut Transaction<'_, DB>, run: &str) -> Result<()> {
-        let mut position = 0_i64;
+    /// Store each wait's chronological ordinal over all of the run's retained
+    /// waits, as Workflow #941's projector does, writing only waits that moved.
+    /// Resolving a wait moves nothing, so most transitions write no positions.
+    pub(super) async fn order_waits(tx: &mut Transaction<'_, DB>, run: &str) -> Result<()> {
+        let mut moved = std::collections::HashSet::new();
         loop {
-            // Match the published projector's open-wait order without
-            // rebuilding missing rows or hydrating the complete collection.
-            let rows = Self::query(DB::OPEN_WAIT_ORDER)
+            // The database ranks the run's waits; only rows whose stored
+            // position differs come back, at most a page at a time.
+            let rows = Self::query(DB::WAIT_POSITION_MOVES)
                 .bind(run)
-                .bind(position)
                 .fetch_all(&mut **tx)
                 .await?;
             if rows.is_empty() {
-                break;
+                return Ok(());
             }
             for row in rows {
+                let id = DB::string(&row, "id")?;
+                // A wait already written in this pass that still differs
+                // means the write did not apply; stop instead of looping.
+                if !moved.insert(id.clone()) {
+                    return Err(super::refuse(
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "wait_position_not_applied",
+                    ));
+                }
                 Self::query(
                     "UPDATE workflow_run_waits SET position=$1 WHERE id=$2 AND workflow_run_id=$3",
                 )
-                .bind(position)
-                .bind(DB::string(&row, "id")?)
+                .bind(DB::number(&row, "ordinal")?)
+                .bind(id)
                 .bind(run)
                 .execute(&mut **tx)
                 .await?;
-                position += 1;
             }
         }
-        Ok(())
     }
 
     pub(super) async fn project_update_wait_event(

@@ -244,6 +244,8 @@ mod run_observation_signals;
 mod run_observation_summaries;
 #[path = "execution/run_observation_timers.rs"]
 mod run_observation_timers;
+#[path = "execution/wait_positions.rs"]
+mod wait_positions;
 #[path = "execution/run_observation_updates.rs"]
 mod run_observation_updates;
 
