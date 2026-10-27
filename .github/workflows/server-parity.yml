@@ -471,8 +471,8 @@ jobs:
             -v "$PWD/mysql-tls:/tls" --entrypoint openssl "$image" req -x509 -newkey rsa:2048 \
             -nodes -sha256 -days 1 -keyout /tls/untrusted.key -out /tls/untrusted.crt -subj /CN=untrusted-development-ca \
             >> parity-evidence/tls-certificate-generation.txt 2>&1
-      # The workflow hash includes the pinned compiler and its build flags;
-      # the commit identifies every tracked source and fixture input.
+      # Exact dependency keys include the pinned compiler, build flags and
+      # vendored crates. Server outputs are discarded before rebuilding.
       - name: Restore native Cargo dependencies from trusted main
         id: native_cargo
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -481,9 +481,7 @@ jobs:
             cargo-home/registry
             cargo-home/git
             rust-target
-          key: native-cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock', '.github/workflows/server-parity.yml') }}-${{ github.sha }}
-          restore-keys: |
-            native-cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock', '.github/workflows/server-parity.yml') }}-
+          key: native-cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock', 'rust/Cargo.toml', 'rust/vendor/**', 'rust/.cargo/**', '.github/workflows/server-parity.yml') }}
       - name: Fetch locked Rust dependencies
         # A registry or network failure belongs to this step, not to the
         # offline native builds and tests that follow.
@@ -1154,8 +1152,8 @@ jobs:
           name: corrected-marker-adapters
           path: corrected-marker-adapters
           digest-mismatch: error
-      # The workflow hash includes the pinned compiler and its build flags;
-      # the commit identifies every tracked source and fixture input.
+      # Exact dependency keys include the pinned compiler, build flags and
+      # vendored crates. Server outputs are discarded before rebuilding.
       - name: Restore native Cargo dependencies from trusted main
         id: native_cargo
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -1164,9 +1162,7 @@ jobs:
             cargo-home/registry
             cargo-home/git
             rust-target
-          key: native-cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock', '.github/workflows/server-parity.yml') }}-${{ github.sha }}
-          restore-keys: |
-            native-cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock', '.github/workflows/server-parity.yml') }}-
+          key: native-cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock', 'rust/Cargo.toml', 'rust/vendor/**', 'rust/.cargo/**', '.github/workflows/server-parity.yml') }}
       - name: Fetch locked Rust dependencies
         # A registry or network failure belongs to this step, not to the
         # offline native builds and tests that follow.
@@ -1875,8 +1871,8 @@ jobs:
           name: corrected-marker-adapters
           path: corrected-marker-adapters
           digest-mismatch: error
-      # The workflow hash includes the pinned compiler and its build flags;
-      # the commit identifies every tracked source and fixture input.
+      # Exact dependency keys include the pinned compiler, build flags and
+      # vendored crates. Server outputs are discarded before rebuilding.
       - name: Restore native Cargo dependencies from trusted main
         id: native_cargo
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -1885,9 +1881,7 @@ jobs:
             cargo-home/registry
             cargo-home/git
             rust-target
-          key: native-cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock', '.github/workflows/server-parity.yml') }}-${{ github.sha }}
-          restore-keys: |
-            native-cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock', '.github/workflows/server-parity.yml') }}-
+          key: native-cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock', 'rust/Cargo.toml', 'rust/vendor/**', 'rust/.cargo/**', '.github/workflows/server-parity.yml') }}
       - name: Fetch locked Rust dependencies
         # A registry or network failure belongs to this step, not to the
         # offline native builds and tests that follow.
@@ -2473,7 +2467,7 @@ jobs:
             cargo-home/registry
             cargo-home/git
             rust-target
-          key: native-cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock', '.github/workflows/server-parity.yml') }}-${{ github.sha }}
+          key: native-cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock', 'rust/Cargo.toml', 'rust/vendor/**', 'rust/.cargo/**', '.github/workflows/server-parity.yml') }}
 
 
   # The one Shared Server fixtures result. It always runs, including after a
