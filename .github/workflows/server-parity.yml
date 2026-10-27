@@ -471,6 +471,19 @@ jobs:
             -v "$PWD/mysql-tls:/tls" --entrypoint openssl "$image" req -x509 -newkey rsa:2048 \
             -nodes -sha256 -days 1 -keyout /tls/untrusted.key -out /tls/untrusted.crt -subj /CN=untrusted-development-ca \
             >> parity-evidence/tls-certificate-generation.txt 2>&1
+      # The workflow hash includes the pinned compiler and its build flags;
+      # the commit identifies every tracked source and fixture input.
+      - name: Restore native Cargo dependencies from trusted main
+        id: native_cargo
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            cargo-home/registry
+            cargo-home/git
+            rust-target
+          key: native-cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock', '.github/workflows/server-parity.yml') }}-${{ github.sha }}
+          restore-keys: |
+            native-cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock', '.github/workflows/server-parity.yml') }}-
       - name: Fetch locked Rust dependencies
         # A registry or network failure belongs to this step, not to the
         # offline native builds and tests that follow.
@@ -482,6 +495,14 @@ jobs:
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -w /source/rust \
             mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
             cargo fetch --locked
+      - name: Discard restored native workspace outputs before rebuilding
+        run: |
+          set -euo pipefail
+          mkdir -p cargo-home rust-target
+          docker run --rm --init --user="$(id -u):$(id -g)" --network=none --cpus=2 --memory=2g --memory-swap=2g \
+            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target \
+            -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" -w /source/rust \
+            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 cargo clean --locked --offline --package durable-workflow-server
       - name: Bootstrap independent published PHP and native MySQL databases
         run: |
           set -euo pipefail
@@ -1133,6 +1154,19 @@ jobs:
           name: corrected-marker-adapters
           path: corrected-marker-adapters
           digest-mismatch: error
+      # The workflow hash includes the pinned compiler and its build flags;
+      # the commit identifies every tracked source and fixture input.
+      - name: Restore native Cargo dependencies from trusted main
+        id: native_cargo
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            cargo-home/registry
+            cargo-home/git
+            rust-target
+          key: native-cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock', '.github/workflows/server-parity.yml') }}-${{ github.sha }}
+          restore-keys: |
+            native-cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock', '.github/workflows/server-parity.yml') }}-
       - name: Fetch locked Rust dependencies
         # A registry or network failure belongs to this step, not to the
         # offline native builds and tests that follow.
@@ -1144,6 +1178,14 @@ jobs:
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -w /source/rust \
             mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
             cargo fetch --locked
+      - name: Discard restored native workspace outputs before rebuilding
+        run: |
+          set -euo pipefail
+          mkdir -p cargo-home rust-target
+          docker run --rm --init --user="$(id -u):$(id -g)" --network=none --cpus=2 --memory=2g --memory-swap=2g \
+            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target \
+            -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" -w /source/rust \
+            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 cargo clean --locked --offline --package durable-workflow-server
       - name: Bootstrap independent published PHP and native PostgreSQL databases
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
@@ -1833,6 +1875,19 @@ jobs:
           name: corrected-marker-adapters
           path: corrected-marker-adapters
           digest-mismatch: error
+      # The workflow hash includes the pinned compiler and its build flags;
+      # the commit identifies every tracked source and fixture input.
+      - name: Restore native Cargo dependencies from trusted main
+        id: native_cargo
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            cargo-home/registry
+            cargo-home/git
+            rust-target
+          key: native-cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock', '.github/workflows/server-parity.yml') }}-${{ github.sha }}
+          restore-keys: |
+            native-cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock', '.github/workflows/server-parity.yml') }}-
       - name: Fetch locked Rust dependencies
         # A registry or network failure belongs to this step, not to the
         # offline native builds and tests that follow.
@@ -1844,6 +1899,14 @@ jobs:
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -w /source/rust \
             mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
             cargo fetch --locked
+      - name: Discard restored native workspace outputs before rebuilding
+        run: |
+          set -euo pipefail
+          mkdir -p cargo-home rust-target
+          docker run --rm --init --user="$(id -u):$(id -g)" --network=none --cpus=2 --memory=2g --memory-swap=2g \
+            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target \
+            -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" -w /source/rust \
+            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 cargo clean --locked --offline --package durable-workflow-server
       - name: Build the native server
         if: ${{ matrix.part != 'native-tests' }}
         run: |
@@ -2393,6 +2456,25 @@ jobs:
           path: parity-summary
           retention-days: 1
           if-no-files-found: error
+      - name: Remove current workspace outputs before caching dependencies
+        if: ${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.part == 'native-tests' && steps.native_cargo.outputs.cache-hit != 'true' }}
+        run: |
+          set -euo pipefail
+          mkdir -p cargo-home rust-target
+          docker run --rm --init --user="$(id -u):$(id -g)" --network=none --cpus=2 --memory=2g --memory-swap=2g \
+            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target \
+            -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" -w /source/rust \
+            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 cargo clean --locked --offline --package durable-workflow-server
+      - name: Save native Cargo dependencies from successful main native tests
+        if: ${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.part == 'native-tests' && steps.native_cargo.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            cargo-home/registry
+            cargo-home/git
+            rust-target
+          key: native-cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock', '.github/workflows/server-parity.yml') }}-${{ github.sha }}
+
 
   # The one Shared Server fixtures result. It always runs, including after a
   # failure or cancellation, and passes only when every fixture job passed, or
