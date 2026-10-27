@@ -148,6 +148,9 @@ for (const language of ['rust', 'python']) for (const checkpoint of ['pending', 
     ['the refused worker id as a prefix', requests => requests.at(-1).path = '/api/worker/registrations/test%3Areplacement-2'],
     ['another route segment', requests => requests.at(-1).path = '/api/worker/registrations/test%3Areplacement/deregister'],
     ['undecodable segment', requests => requests.at(-1).path = '/api/worker/registrations/test%3Areplacement%'],
+    ['a string retry hint', requests => requests.at(-2).response.retry_after_seconds = '1'],
+    ['a fractional retry hint', requests => { requests.at(-2).response.retry_after_seconds = 1.5; requests.at(-2).response_retry_after = '1.5'; }],
+    ['a zero retry hint', requests => { requests.at(-2).response.retry_after_seconds = 0; requests.at(-2).response_retry_after = '0'; }],
   ]) test(`${language} ${checkpoint}: capacity model rejects ${name}`, () => {
     const raw = capacityModel(); mutate(raw.patch_deployment.replacement.requests);
     assert.throws(() => checkPatchDeployment(fixture, raw, 'test'));

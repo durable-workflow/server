@@ -54,6 +54,8 @@ function checkLongPollCapacity(item, index, phase, observation, workflowId) {
     assert.equal(response.task_kind, kinds[item.path]);
     assert.equal(response.namespace, observation.namespace);
     assert.equal(response.task_queue, observation.task_queue);
+    assert.ok(Number.isSafeInteger(response.retry_after_seconds) && response.retry_after_seconds > 0
+      && response.retry_after_seconds <= 25, 'bounded integer retry hint');
     assert.equal(item.response_retry_after, String(response.retry_after_seconds), 'Retry-After header agrees with the body');
   }
   assert.equal(item.request.worker_id, `${workflowId}:${phase.phase}`);
