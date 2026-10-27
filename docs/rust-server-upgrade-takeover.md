@@ -55,6 +55,16 @@ environment, so export them first rather than writing a credential on the
 command line or into shell history. Add `--network` when the
 database is only reachable on a Docker network.
 
+Every command uses one exact image, the multi-architecture index digest that
+the release receipt records, never a tag. A tag can move between steps; a
+digest cannot, so the image that inspected the source is the one that takes
+it over and serves it. Keep the reference with the backup.
+
+```sh
+export IMAGE=durableworkflow/server-native@sha256:<index digest from the release receipt>
+docker pull "$IMAGE"
+```
+
 1. Stop every PHP role that can write: HTTP, queue workers, the scheduler and
    any bootstrap. Keep them stopped until step 6.
 2. Inspect the stopped source. Every report must say `inspected` and name a
@@ -65,9 +75,9 @@ database is only reachable on a Docker network.
      -e DB_DATABASE=workflow -e DB_USERNAME=workflow -e DB_PASSWORD"
    queues="-e DW_RUST_UPGRADE_QUEUE_CONNECTION=database \
      -e DW_RUST_UPGRADE_QUEUE_DEFAULT_CONNECTION=database -e DW_RUST_UPGRADE_QUEUE_DEFAULT_QUEUE=default"
-   docker run --rm $source $queues durableworkflow/server-native:<tag> upgrade-inspect
-   docker run --rm $source $queues durableworkflow/server-native:<tag> upgrade-queue-inspect
-   docker run --rm $source $queues durableworkflow/server-native:<tag> upgrade-payload-inspect
+   docker run --rm $source $queues "$IMAGE" upgrade-inspect
+   docker run --rm $source $queues "$IMAGE" upgrade-queue-inspect
+   docker run --rm $source $queues "$IMAGE" upgrade-payload-inspect
    ```
 3. Back up with the [existing procedure](self-hosted-backup-and-restore.md).
    Restore the backup into a separate database (here `workflow_restored`).
@@ -75,8 +85,8 @@ database is only reachable on a Docker network.
    restores to exactly the stopped source.
 
    ```sh
-   docker run --rm $source durableworkflow/server-native:<tag> upgrade-fingerprint
-   docker run --rm $source -e DB_DATABASE=workflow_restored durableworkflow/server-native:<tag> upgrade-fingerprint
+   docker run --rm $source "$IMAGE" upgrade-fingerprint
+   docker run --rm $source -e DB_DATABASE=workflow_restored "$IMAGE" upgrade-fingerprint
    ```
 4. Take over the source with that digest. Native refuses unless the source
    still has it, so a write after the backup stops the takeover before any
@@ -84,12 +94,12 @@ database is only reachable on a Docker network.
 
    ```sh
    docker run --rm $source $queues -e DW_UPGRADE_BACKUP_FINGERPRINT=sha256:<digest> \
-     durableworkflow/server-native:<tag> upgrade-takeover
+     "$IMAGE" upgrade-takeover
    ```
 5. Start native on the taken-over database.
 
    ```sh
-   docker run -d -p 8080:8080 $source -e DW_AUTH_TOKEN durableworkflow/server-native:<tag>
+   docker run -d -p 8080:8080 $source -e DW_AUTH_TOKEN "$IMAGE"
    ```
 
    The image runs the repair pass itself (`DW_RUST_MAINTENANCE_LOOP=1`),
