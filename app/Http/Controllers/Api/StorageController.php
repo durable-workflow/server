@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
 use App\Support\NamespaceExternalPayloadStorage;
+use App\Support\RuntimeExternalPayloadWriteClaims;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -70,8 +71,8 @@ class StorageController
             'status' => 'passed',
             'namespace' => $namespace,
             'driver' => $driver,
-            'small_payload' => $this->roundTrip($storage, 'small', (int) $validated['small_payload_bytes']),
-            'large_payload' => $this->roundTrip($storage, 'large', (int) $validated['large_payload_bytes']),
+            'small_payload' => $this->roundTrip($storage, $namespace, 'small', (int) $validated['small_payload_bytes']),
+            'large_payload' => $this->roundTrip($storage, $namespace, 'large', (int) $validated['large_payload_bytes']),
         ]);
     }
 
@@ -91,13 +92,15 @@ class StorageController
         ] + $extra, 422);
     }
 
-    private function roundTrip(ExternalPayloadStorageDriver $storage, string $kind, int $bytes): array
+    private function roundTrip(ExternalPayloadStorageDriver $storage, string $namespace, string $kind, int $bytes): array
     {
         $payload = str_repeat($kind === 'small' ? 's' : 'l', $bytes);
         $expectedHash = hash('sha256', $payload);
         $uri = $storage->put($payload, $expectedHash, 'avro');
         $read = $storage->get($uri);
-        $storage->delete($uri);
+        app(RuntimeExternalPayloadWriteClaims::class)->deleteTemporary(
+            $namespace, $uri, fn () => $storage->delete($uri),
+        );
 
         if ($read !== $payload) {
             throw new \RuntimeException('External storage round trip failed integrity verification.');
