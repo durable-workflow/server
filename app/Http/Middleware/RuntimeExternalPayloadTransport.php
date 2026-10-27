@@ -3,6 +3,8 @@
 namespace App\Http\Middleware;
 
 use App\Support\ControlPlaneProtocol;
+use App\Support\JsonProjection;
+use App\Support\LongPollResponseProgress;
 use App\Support\RuntimeExternalPayloadAudit;
 use App\Support\RuntimeExternalPayloadException;
 use App\Support\RuntimeExternalPayloadRegistry;
@@ -12,6 +14,7 @@ use App\Support\WorkflowQueryTaskBroker;
 use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\JsonResponse as BaseJsonResponse;
 use Symfony\Component\HttpFoundation\Response;
 
 class RuntimeExternalPayloadTransport
@@ -220,6 +223,9 @@ class RuntimeExternalPayloadTransport
             $request->query('namespace', config('server.default_namespace')),
         ));
 
+        $request->attributes->set(LongPollResponseProgress::RESPONSE_PROJECTOR_ATTRIBUTE,
+            fn (BaseJsonResponse $response): BaseJsonResponse => $this->projectResponse($request, $response, $namespace));
+
         try {
             $response = app(RuntimeExternalPayloadWriteClaims::class)->transport(fn (): Response => $next($request));
 
@@ -227,36 +233,50 @@ class RuntimeExternalPayloadTransport
                 $this->audit->record($request, 'external_payload.claimed');
             }
 
-            if ($response instanceof JsonResponse) {
-                $action = $this->action($request);
-                $response->setData($this->outgoing(
-                    $response->getData(),
-                    $namespace,
-                    $this->outgoingEnvelopePaths($action),
-                    $this->outgoingReferencePaths($action),
-                ));
-            }
+            return $response instanceof BaseJsonResponse ? $this->projectResponse($request, $response, $namespace) : $response;
+        } catch (RuntimeExternalPayloadException $exception) {
+            return $this->rejectedResponse($request, $exception);
+        }
+    }
+
+    private function projectResponse(Request $request, BaseJsonResponse $response, string $namespace): BaseJsonResponse
+    {
+        if (! $response instanceof JsonResponse) {
+            return $response;
+        }
+
+        try {
+            $action = $this->action($request);
+            $response->setJson(JsonProjection::map($response->getContent(), fn (mixed $body): mixed => $this->outgoing(
+                $body, $namespace, $this->outgoingEnvelopePaths($action), $this->outgoingReferencePaths($action),
+            ), $response->getEncodingOptions()));
 
             return $response;
         } catch (RuntimeExternalPayloadException $exception) {
-            $this->audit->record($request, 'external_payload.rejected', [
-                'reason' => $exception->reason,
-                'retryable' => $exception->retryable,
-                'status' => $exception->status,
-            ]);
-
-            $payload = [
-                'schema' => 'durable-workflow.v2.runtime-external-payload-error.v1',
-                'reason' => $exception->reason,
-                'message' => $exception->getMessage(),
-                'retryable' => $exception->retryable,
-                'status' => $exception->status,
-            ];
-
-            return WorkerProtocol::isWorkerPlaneRequest($request)
-                ? WorkerProtocol::json($payload, $exception->status)
-                : ControlPlaneProtocol::jsonForRequest($request, $payload, $exception->status);
+            // Deferred poll projection runs after the outer middleware returns.
+            return $this->rejectedResponse($request, $exception);
         }
+    }
+
+    private function rejectedResponse(Request $request, RuntimeExternalPayloadException $exception): JsonResponse
+    {
+        $this->audit->record($request, 'external_payload.rejected', [
+            'reason' => $exception->reason,
+            'retryable' => $exception->retryable,
+            'status' => $exception->status,
+        ]);
+
+        $payload = [
+            'schema' => 'durable-workflow.v2.runtime-external-payload-error.v1',
+            'reason' => $exception->reason,
+            'message' => $exception->getMessage(),
+            'retryable' => $exception->retryable,
+            'status' => $exception->status,
+        ];
+
+        return WorkerProtocol::isWorkerPlaneRequest($request)
+            ? WorkerProtocol::json($payload, $exception->status)
+            : ControlPlaneProtocol::jsonForRequest($request, $payload, $exception->status);
     }
 
     public function queryCompletionResponse(Request $request): ?JsonResponse
