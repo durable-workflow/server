@@ -19,5 +19,10 @@
   - SQLite: `takeover_keeps_php_runtime_credentials_that_native_then_accepts`;
   - PostgreSQL, MySQL and MariaDB: the 2.11.1 takeover qualification, for
     both the fresh and the upgraded-from-2.9.7 layouts.
-- **Still refused.** Message streams, update validation tasks and external
-  payloads.
+- **Update validation tasks** carry over too (October 27). Native validates
+  updates in the same `workflow_update_validation_tasks` rows and keeps no
+  state of its own, so takeover leaves them as they are. A pending task whose
+  caller was waiting on PHP is then what a PHP restart leaves: a validator may
+  still claim it, and a caller's retry with the same request reads its
+  recorded outcome. `takeover_keeps_php_update_validation_tasks` covers it.
+- **Still refused.** Message streams and external payloads.

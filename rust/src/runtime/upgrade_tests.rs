@@ -1402,6 +1402,36 @@ async fn takeover_keeps_php_service_calls_and_their_deadlines() {
     runtime.close().await;
 }
 
+/// PHP's update validation tasks carry over unchanged: native validates
+/// updates in the same `workflow_update_validation_tasks` rows, with no state
+/// of its own. A pending task whose caller was waiting on PHP is then what a
+/// PHP restart leaves: a validator may still claim it, and a caller's retry
+/// with the same request reads its recorded outcome.
+#[tokio::test]
+async fn takeover_keeps_php_update_validation_tasks() {
+    let (_directory, path) = php_release_layout(&[PHP_280_CHANGES, TRACE_CARRIERS, QUEUE_DELIVERY]).await;
+    let row = |id: &str, status: &str, decided: &str| format!(
+        "INSERT INTO workflow_update_validation_tasks(id,idempotency_key,namespace,workflow_instance_id,workflow_run_id,workflow_type,task_queue,update_name,request_id,input_hash,payload_codec,arguments,status,attempt_count,approved_at,created_at,updated_at) VALUES ('{id}','key-{id}','default','order-1','01jrun0000000000000000000a','orders','q','approve','req-{id}','{}','avro','[]','{status}',{},{decided},'2026-10-26 10:00:00','2026-10-26 10:00:00')",
+        "0".repeat(64), if status == "pending" { 0 } else { 1 });
+    for statement in [row("01m5wvy8d1j3dtr13es05kval1", "pending", "NULL"), row("01m5wvy8d1j3dtr13es05kval2", "approved", "'2026-10-26 10:00:01'")] {
+        mutate(&path, Box::leak(statement.into_boxed_str())).await;
+    }
+    let read = |path: String| async move {
+        let mut connection = SqliteConnection::connect(&format!("sqlite://{path}")).await.unwrap();
+        let rows: Vec<(String, String, i64, Option<String>)> = sqlx::query_as("SELECT id,status,attempt_count,approved_at FROM workflow_update_validation_tasks ORDER BY id")
+            .fetch_all(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+        rows
+    };
+    let before = read(path.clone()).await;
+    let fingerprint = backup_fingerprint(&path).await;
+    let report = takeover::take_over_sqlite(&path, &fingerprint, &queue_config()).await.unwrap();
+    assert_eq!(report["status"], "taken_over", "{report}");
+    assert_eq!(read(path.clone()).await, before, "the tasks carry over unchanged");
+    let runtime = crate::runtime::Runtime::open(&path, "test-token".into()).await.unwrap();
+    runtime.close().await;
+}
+
 /// PHP's runtime credentials carry over: native stores and checks the same
 /// SHA-256 token hashes in the same table, so a worker's PHP-issued token
 /// still authenticates after takeover, and a revoked one still does not.

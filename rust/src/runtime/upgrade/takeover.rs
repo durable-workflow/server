@@ -221,7 +221,7 @@ fn report(backend: &str, layout: &str, digest: &Value, inventory: &Value, conver
 /// Published PHP features native does not implement yet. A source holding any
 /// of their rows is refused, rather than taken over without them. Derived
 /// projections and PHP's own queue and poll bookkeeping are left in place.
-const UNSUPPORTED_FEATURES: [(&str, &[&str]); 2] = [    (
+const UNSUPPORTED_FEATURES: [(&str, &[&str]); 1] = [    (
         "upgrade_source_message_streams_unsupported",
         &[
             "workflow_messages",
@@ -231,7 +231,6 @@ const UNSUPPORTED_FEATURES: [(&str, &[&str]); 2] = [    (
             "workflow_inbound_stream_items",
         ],
     ),
-    ("upgrade_source_update_validation_unsupported", &["workflow_update_validation_tasks"]),
 ];
 
 /// Takeover needs every inspection result it relies on, and refuses what
