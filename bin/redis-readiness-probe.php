@@ -7,6 +7,9 @@ use Illuminate\Redis\RedisManager;
 
 $diagnosticStartedAt = hrtime(true);
 $diagnosticsEnabled = getenv('DW_REDIS_READINESS_DIAGNOSTICS') === '1';
+if ($diagnosticsEnabled) {
+    @fwrite(STDERR, 'DW_REDIS_READY_ENTRY_NS '.$diagnosticStartedAt."\n");
+}
 $markStage = static function (string $stage) use ($diagnosticStartedAt, $diagnosticsEnabled): void {
     if (! $diagnosticsEnabled) {
         return;
@@ -68,6 +71,9 @@ try {
     $markStage('setex');
     $read = $client->get($input['key']);
     $markStage('get');
+    if ($diagnosticsEnabled) {
+        @fwrite(STDERR, 'DW_REDIS_READY_VALUE_MATCH '.($read === $input['value'] ? '1' : '0')."\n");
+    }
     $client->del($input['key']);
     $markStage('del');
 
@@ -75,18 +81,22 @@ try {
         'ok' => true,
         'value' => is_string($read) ? $read : '',
     ], JSON_THROW_ON_ERROR);
+    $markStage('encoded');
     $roundTripCompleted = true;
 } catch (Throwable) {
     $exitCode = 1;
 } finally {
     if ($roundTripCompleted && is_object($client)) {
         try {
+            $markStage('closing');
             if (method_exists($client, 'close')) {
                 $client->close();
             } elseif (method_exists($client, 'disconnect')) {
                 $client->disconnect();
             }
+            $markStage('closed');
         } catch (Throwable) {
+            $markStage('close_failed');
             // The client is non-persistent and the process exits immediately.
         }
     }
@@ -103,4 +113,5 @@ if ($exitCode !== 0) {
     exit($exitCode);
 }
 
-fwrite(STDOUT, $stdout);
+$written = fwrite(STDOUT, $stdout);
+$markStage($written === strlen($stdout) ? 'written' : 'write_incomplete');

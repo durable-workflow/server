@@ -21,7 +21,7 @@ final class RedisReadinessProcess
     /** @var list<string>|null */
     private readonly ?array $command;
 
-    /** @var Closure(array<string, int|string|null>): void|null */
+    /** @var Closure(array<string, mixed>): void|null */
     private readonly ?Closure $diagnosticSink;
 
     /**
@@ -213,8 +213,24 @@ final class RedisReadinessProcess
 
         // The child stream is untrusted. Admit only fixed stage names and a
         // bounded number; never log its raw output or selected Redis settings.
+        $parentElapsedNanoseconds = hrtime(true) - $runStartedAt;
+        $childEntryOffsetMilliseconds = null;
+        preg_match_all('/^DW_REDIS_READY_ENTRY_NS ([0-9]{1,19})\r?$/m', $stderr, $entryMatches);
+        foreach ($entryMatches[1] as $entry) {
+            $enteredAt = (int) $entry;
+            $offset = $enteredAt - $runStartedAt;
+            if ((string) $enteredAt === $entry && $offset >= 0
+                && $offset <= min(10_000_000_000, $parentElapsedNanoseconds)) {
+                $childEntryOffsetMilliseconds = intdiv($offset, 1_000_000);
+                break;
+            }
+        }
+        $valueMatchesExpected = null;
+        if (preg_match('/^DW_REDIS_READY_VALUE_MATCH ([01])\r?$/m', $stderr, $valueMatch) === 1) {
+            $valueMatchesExpected = $valueMatch[1] === '1';
+        }
         preg_match_all(
-            '/^DW_REDIS_READY_STAGE (entry|autoloaded|bootstrapped|input_decoded|connecting|connected|setex|get|del) ([0-9]{1,5})\r?$/m',
+            '/^DW_REDIS_READY_STAGE (entry|autoloaded|bootstrapped|input_decoded|connecting|connected|setex|get|del|encoded|closing|closed|close_failed|written|write_incomplete) ([0-9]{1,5})\r?$/m',
             $stderr,
             $matches,
             PREG_SET_ORDER,
@@ -237,7 +253,9 @@ final class RedisReadinessProcess
             'last_stage' => $lastStage,
             'child_stage_elapsed_ms' => $stageElapsedMilliseconds,
             'stages_ms' => $stagesMilliseconds,
-            'parent_elapsed_ms' => intdiv(hrtime(true) - $runStartedAt, 1_000_000),
+            'child_entry_offset_ms' => $childEntryOffsetMilliseconds,
+            'value_matches_expected' => $valueMatchesExpected,
+            'parent_elapsed_ms' => intdiv($parentElapsedNanoseconds, 1_000_000),
             'spawn_elapsed_ms' => $spawnElapsedMilliseconds,
         ];
         try {
