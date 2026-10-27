@@ -353,8 +353,8 @@ class WorkflowStartService
 
         return match ($contractScope) {
             WorkflowStartVersionPin::CONTRACT_SCOPE_BUILD_ID => $contractBuildId !== null
-                && $this->workerBuildId($worker) === $contractBuildId,
-            WorkflowStartVersionPin::CONTRACT_SCOPE_UNVERSIONED => $this->workerBuildId($worker) === null,
+                && $this->nullableString($worker->build_id) === $contractBuildId,
+            WorkflowStartVersionPin::CONTRACT_SCOPE_UNVERSIONED => $this->nullableString($worker->build_id) === null,
             default => false,
         };
     }
@@ -377,11 +377,6 @@ class WorkflowStartService
         return $heartbeat->getTimestamp() >= now()
             ->subSeconds($this->workerStaleAfterSeconds())
             ->getTimestamp();
-    }
-
-    private function workerBuildId(WorkerRegistration $worker): ?string
-    {
-        return $this->nullableString($worker->build_id);
     }
 
     private function workerStaleAfterSeconds(): int

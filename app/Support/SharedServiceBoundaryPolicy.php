@@ -123,25 +123,28 @@ final class SharedServiceBoundaryPolicy implements ServiceBoundaryPolicy
 
             $store->getStore()
                 ->lock($this->lockKey($request), $this->lockTtlSeconds())
-                ->block($this->lockWaitSeconds(), function () use ($reservation, $refundRate): void {
-                    if ($reservation['boundary'] !== null) {
-                        $this->decrement($reservation['boundary']);
-                    }
-
-                    if ($reservation['namespace'] !== null) {
-                        $this->decrement($reservation['namespace']);
-                    }
-                    if ($refundRate) {
-                        foreach (['boundary_rate', 'namespace_rate'] as $rate) {
-                            if ($reservation[$rate] !== null) {
-                                $this->decrement($reservation[$rate], $this->rateTtlSeconds());
-                            }
-                        }
-                    }
-                });
+                ->block($this->lockWaitSeconds(), fn () => $this->decrementReservation($reservation, $refundRate));
         } catch (Throwable) {
             // Admission counters have a finite lease and self-heal if a
             // completion races a transient cache outage.
+        }
+    }
+
+    /** @param array{boundary: string|null, namespace: string|null, boundary_rate: string|null, namespace_rate: string|null} $reservation */
+    private function decrementReservation(array $reservation, bool $refundRate): void
+    {
+        foreach (['boundary', 'namespace'] as $scope) {
+            if ($reservation[$scope] !== null) {
+                $this->decrement($reservation[$scope]);
+            }
+        }
+        if (! $refundRate) {
+            return;
+        }
+        foreach (['boundary_rate', 'namespace_rate'] as $scope) {
+            if ($reservation[$scope] !== null) {
+                $this->decrement($reservation[$scope], $this->rateTtlSeconds());
+            }
         }
     }
 

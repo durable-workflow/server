@@ -4,6 +4,7 @@ namespace App\Support;
 
 use App\Auth\Principal;
 use Closure;
+use Illuminate\Database\Connection;
 use Throwable;
 use Workflow\V2\Contracts\ServiceBoundaryPolicy;
 use Workflow\V2\Enums\ServiceCallBindingKind;
@@ -397,28 +398,14 @@ final class ServiceCallBoundary
         try {
             $connection->beginTransaction();
             if ($request->idempotencyKey !== null) {
-                try {
-                    [$call, $replayed] = $this->canonicalAdmission($request);
-                } catch (ServiceOperationAuthorizationException $exception) {
-                    $denial = $exception->boundaryDecision ?? null;
-                    if (! $denial instanceof ServiceBoundaryDecision || ! $denial->isDenied()) {
-                        throw $exception;
-                    }
-                    // Ownership/catalog refusal has no typed decision. Only a
-                    // current policy denial of an owned winner reaches here,
-                    // matching the ordinary prelookup replay's failed audit.
-                    $request = $this->currentPolicyRequest($request);
-                    $call = $this->recorder->record($request, $denial);
+                $canonical = $this->canonicalAdmissionResult($request);
+                $call = $canonical->call;
+                if ($canonical->replayed) {
+                    $request = $canonical->request;
                     $commitAttempted = true;
                     $connection->commit();
 
-                    return new ServiceCallAdmission($denial, $call, $request, replayed: true);
-                }
-                if ($replayed) {
-                    $commitAttempted = true;
-                    $connection->commit();
-
-                    return new ServiceCallAdmission(ServiceBoundaryDecision::allow(), $call, $request, replayed: true);
+                    return $canonical;
                 }
             }
 
@@ -439,15 +426,7 @@ final class ServiceCallBoundary
 
             return new ServiceCallAdmission($decision, $call, $request);
         } catch (Throwable $throwable) {
-            $outcomeUnknown = $commitAttempted && ! $connection->getPdo()->inTransaction();
-            if ($connection->transactionLevel() > $level) {
-                $inTransaction = $connection->getPdo()->inTransaction();
-                // A failed COMMIT with no remaining PDO transaction has an
-                // uncertain durable outcome. Reset bookkeeping without a
-                // refund; an ordinary failed writer can safely roll back.
-                $canRefund = ! $commitAttempted || $inTransaction;
-                $connection->rollBack($inTransaction ? $level : 0);
-            }
+            $outcomeUnknown = $this->rollbackAdmissionWriter($connection, $level, $commitAttempted, $canRefund);
             // Beginning a transaction can fail before a rollback callback is
             // registered. After that point, only an actual rollback refunds:
             // an after-commit exception cannot undo a durable admission.
@@ -470,6 +449,39 @@ final class ServiceCallBoundary
             }
 
             throw $throwable;
+        }
+    }
+
+    private function rollbackAdmissionWriter(Connection $connection, int $level, bool $commitAttempted, bool &$canRefund): bool
+    {
+        $outcomeUnknown = $commitAttempted && ! $connection->getPdo()->inTransaction();
+        if ($connection->transactionLevel() > $level) {
+            $inTransaction = $connection->getPdo()->inTransaction();
+            // A failed COMMIT with no PDO transaction has an uncertain durable
+            // outcome. Reset bookkeeping without refunding its admission.
+            $canRefund = ! $commitAttempted || $inTransaction;
+            $connection->rollBack($inTransaction ? $level : 0);
+        }
+
+        return $outcomeUnknown;
+    }
+
+    private function canonicalAdmissionResult(ServiceBoundaryRequest $request): ServiceCallAdmission
+    {
+        try {
+            [$call, $replayed] = $this->canonicalAdmission($request);
+
+            return new ServiceCallAdmission(ServiceBoundaryDecision::allow(), $call, $request, replayed: $replayed);
+        } catch (ServiceOperationAuthorizationException $exception) {
+            $denial = $exception->boundaryDecision ?? null;
+            if (! $denial instanceof ServiceBoundaryDecision || ! $denial->isDenied()) {
+                throw $exception;
+            }
+            // Ownership/catalog refusal has no typed decision. Only a current
+            // policy denial of an owned winner records this failed audit.
+            $request = $this->currentPolicyRequest($request);
+
+            return new ServiceCallAdmission($denial, $this->recorder->record($request, $denial), $request, replayed: true);
         }
     }
 
