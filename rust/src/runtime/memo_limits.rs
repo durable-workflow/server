@@ -84,6 +84,13 @@ fn configured(suffix: &str, default: usize, invalid: &'static str) -> Result<Opt
 /// single-payload byte ceiling. `None` is a disabled check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StructuralLimits {
+    /// Pending or running activities a run may hold
+    /// (DW_V2_LIMIT_PENDING_ACTIVITIES; Workflow #933).
+    pub pending_activities: Option<usize>,
+    /// Open child workflows a run may hold (DW_V2_LIMIT_PENDING_CHILDREN).
+    pub pending_children: Option<usize>,
+    /// Pending timers a run may hold (DW_V2_LIMIT_PENDING_TIMERS).
+    pub pending_timers: Option<usize>,
     /// Received signals a run may hold (DW_V2_LIMIT_PENDING_SIGNALS).
     pub pending_signals: Option<usize>,
     /// Accepted updates a run may hold (DW_V2_LIMIT_PENDING_UPDATES).
@@ -106,6 +113,9 @@ pub struct StructuralLimits {
 impl Default for StructuralLimits {
     fn default() -> Self {
         Self {
+            pending_activities: Some(2000),
+            pending_children: Some(1000),
+            pending_timers: Some(2000),
             pending_signals: Some(5000),
             pending_updates: Some(500),
             payload_bytes: Some(2_097_152),
@@ -121,6 +131,9 @@ impl StructuralLimits {
         let defaults = Self::default();
         let invalid = "invalid_structural_limit_configuration";
         Ok(Self {
+            pending_activities: configured("PENDING_ACTIVITIES", defaults.pending_activities.unwrap(), invalid)?,
+            pending_children: configured("PENDING_CHILDREN", defaults.pending_children.unwrap(), invalid)?,
+            pending_timers: configured("PENDING_TIMERS", defaults.pending_timers.unwrap(), invalid)?,
             pending_signals: configured("PENDING_SIGNALS", defaults.pending_signals.unwrap(), invalid)?,
             pending_updates: configured("PENDING_UPDATES", defaults.pending_updates.unwrap(), invalid)?,
             payload_bytes: configured("PAYLOAD_SIZE_BYTES", defaults.payload_bytes.unwrap(), invalid)?,
@@ -129,6 +142,14 @@ impl StructuralLimits {
             history_rows: configured("HISTORY_TRANSACTION_ROWS", defaults.history_rows.unwrap(), invalid)?,
         })
     }
+}
+
+/// The pending rows a completion command adds one of.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Pending {
+    Activities,
+    Children,
+    Timers,
 }
 
 /// One exceeded ceiling, as `StructuralLimitExceededException` reports it.
@@ -144,6 +165,32 @@ impl Exceeded {
     fn new(kind: &'static str, value: usize, configured: usize, message: String) -> Self {
         let int = |value: usize| i64::try_from(value).unwrap_or(i64::MAX);
         Self { kind, value: int(value), configured: int(configured), message }
+    }
+
+    /// `guardPendingActivities`, `guardPendingChildren` and
+    /// `guardPendingTimers` (Workflow #933): a run's pending rows of that kind
+    /// at or above the ceiling.
+    pub(super) fn pending(kind: Pending, limit: Option<usize>, count: i64) -> Option<Self> {
+        let (limit, count) = (limit?, usize::try_from(count).unwrap_or(0));
+        let (name, noun) = match kind {
+            Pending::Activities => ("pending_activity_count", "pending activities"),
+            Pending::Children => ("pending_child_count", "pending child workflows"),
+            Pending::Timers => ("pending_timer_count", "pending timers"),
+        };
+        (count >= limit).then(|| Self::new(name, count, limit,
+            format!("Structural limit exceeded: {count} {noun} (limit {limit}).")))
+    }
+
+    /// The worker's refusal of a completion that met this ceiling, as
+    /// `WorkerController` answers `StructuralLimitExceededException`: 422,
+    /// nothing recorded.
+    pub(super) fn worker_refusal(&self, task_id: &str, attempt: &serde_json::Value) -> super::RuntimeError {
+        super::RuntimeError::Protocol {
+            status: axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            response: serde_json::json!({"task_id":task_id,"workflow_task_attempt":attempt,"outcome":"rejected",
+                "recorded":false,"error":self.message,"reason":"structural_limit_exceeded","limit_kind":self.kind,
+                "current_value":self.value,"configured_limit":self.configured}),
+        }
     }
 
     /// `guardPendingSignals`: received signals at or above the ceiling.

@@ -1623,9 +1623,9 @@ fn empty_repair_snapshot() -> Value {
 fn structural_limits(connection: &str, limits: &super::StructuralLimits, memo: Option<usize>) -> Value {
     let shown = |limit: Option<usize>| limit.unwrap_or(0);
     let configured = json!({
-        "pending_activity_count": 2000,
-        "pending_child_count": 1000,
-        "pending_timer_count": 2000,
+        "pending_activity_count": shown(limits.pending_activities),
+        "pending_child_count": shown(limits.pending_children),
+        "pending_timer_count": shown(limits.pending_timers),
         "pending_signal_count": shown(limits.pending_signals),
         "pending_update_count": shown(limits.pending_updates),
         "command_batch_size": 1000,

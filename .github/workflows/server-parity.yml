@@ -416,7 +416,8 @@ jobs:
             mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
             "$MYSQL_IMAGE" \
             "$(baseline php-2.11.4)" \
-            "$(baseline php-2.5.14)"
+            "$(baseline php-2.5.14)" \
+            composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee
       - name: Fetch this run's published SDK adapters
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -1101,7 +1102,8 @@ jobs:
             mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
             "$POSTGRES_IMAGE" \
             "$(baseline php-2.11.4)" \
-            "$(baseline php-2.5.14)"
+            "$(baseline php-2.5.14)" \
+            composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee
       - name: Fetch this run's published SDK adapters
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -1800,7 +1802,8 @@ jobs:
           bash scripts/ci/pull-images.sh \
             mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
             "$(baseline php-2.11.4)" \
-            "$(baseline php-2.5.14)"
+            "$(baseline php-2.5.14)" \
+            composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee
       - name: Fetch this run's published SDK adapters
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
