@@ -140,7 +140,29 @@ services:
       DB_USERNAME: workflow
       DB_PASSWORD: port-mysql
     volumes:
-      - "${DW_PORT_NATIVE_BINARY:?Set the absolute optimized binary path}:/native/server:ro"
+      - "${DW_PORT_NATIVE_BINARY:-/dev/null}:/native/server:ro"
+    cpus: 2
+    mem_limit: 2048m
+    memswap_limit: 2048m
+    restart: "no"
+
+  # The published native image, by digest, as an operator runs it: its own
+  # entrypoint, user and maintenance loop. Select it with the native-image
+  # implementation; it never runs beside native-server.
+  native-image-server:
+    profiles: [native-image]
+    stop_signal: SIGTERM
+    image: "${DW_PORT_NATIVE_IMAGE:-unset-native-image}"
+    platform: linux/amd64
+    environment:
+      DW_RUST_EXPERIMENTAL: "1"
+      DW_AUTH_DRIVER: token
+      DW_AUTH_TOKEN: port-test-token
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_DATABASE: durable_workflow
+      DB_USERNAME: workflow
+      DB_PASSWORD: port-mysql
     cpus: 2
     mem_limit: 2048m
     memswap_limit: 2048m

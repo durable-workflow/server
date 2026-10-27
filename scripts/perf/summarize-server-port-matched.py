@@ -14,7 +14,11 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-RUNTIME = {"php": ["php-server", "php-worker", "php-scheduler", "redis"], "native": ["native-server"]}
+RUNTIME = {
+    "php": ["php-server", "php-worker", "php-scheduler", "redis"],
+    "native": ["native-server"],
+    "native-image": ["native-image-server"],
+}
 
 
 def load_samples(path):
