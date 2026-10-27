@@ -330,6 +330,12 @@ or replay the same idempotency key to observe its result. A concurrent replay
 shares the existing dispatch. Query failures use the recorded service retry
 policy, and every business attempt contacts the worker separately.
 
+The API and PHP queue worker must share their polling cache so SDK workers can
+receive queries dispatched by the queue worker. Use Redis for separate hosts.
+For SQLite on one host, mount the same directory into both containers and set
+`DW_POLLING_CACHE_PATH` to a path inside that shared directory. Private file
+caches in separate containers cannot exchange query tasks or their results.
+
 ## Original call deadlines
 
 An operation's `deadline_policy` is either null, a positive integer
