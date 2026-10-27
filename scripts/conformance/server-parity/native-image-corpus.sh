@@ -12,11 +12,9 @@
 # and its maintenance loop, with SQLite in its /app/database volume.
 #
 # Containers and the network are named from RESOURCE_SCOPE exactly as the
-# corpus part names them, dw-parity-<run>-<attempt>-<job>, because the shared
-# PHP maintenance window finds its container by that name. So
-# update-validation-sqlite.sh records the separate update-validation fixture
-# unchanged. The workflow removes them in an always step. Evidence lands in
-# parity-evidence/, with a receipt naming the image.
+# corpus part names them, dw-parity-<run>-<attempt>-<job>. The workflow
+# removes them in an always step. Evidence lands in parity-evidence/, with a
+# receipt naming the image.
 set -euo pipefail
 shopt -s inherit_errexit
 test "$#" = 1 || { echo "usage: $0 <native image reference>" >&2; exit 2; }
@@ -25,17 +23,15 @@ native=$1
   || { echo "The native image must be pinned by digest (name@sha256:...) or be this job's local build." >&2; exit 2; }
 scope="dw-parity-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-parity}"
 [[ "${RESOURCE_SCOPE:-$scope}" == "$scope" ]] \
-  || { echo "RESOURCE_SCOPE must be $scope, the name the PHP maintenance window expects." >&2; exit 2; }
+  || { echo "RESOURCE_SCOPE must be $scope, the corpus part's own container and network name." >&2; exit 2; }
 export RESOURCE_SCOPE="$scope"
 export DW_PARITY_RUNNER_REVISION
 DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
-image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.4.json)
+image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.5.json)
 
-# CI's corpus selection: the reviewed corpus without update-validation and
-# service-calls, which record separately below with PHP's maintenance loop
-# stopped (Server #723, #796), plus the pending candidates it carries.
-selection=(--exclude-fixture tests/Fixtures/ServerParity/update-validation.json
-  --exclude-fixture tests/Fixtures/ServerParity/service-calls.json)
+# CI's corpus selection: the reviewed corpus plus the pending candidates it
+# carries.
+selection=()
 for pending in patch-insertion-activity-pending patch-insertion-activity-completed patch-created-activity-pending \
   patch-created-activity-completed workflow-waiting-history-type workflow-waiting-history-message workflow-task-transient-retry; do
   selection+=(--include-fixture "tests/Fixtures/ServerParityPending/$pending.json")
@@ -115,24 +111,15 @@ compare_status=0
 docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
   scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json "${selection[@]}" \
   > parity-evidence/comparison.json || compare_status=$?
-update_validation_status=0
-bash scripts/conformance/server-parity/update-validation-sqlite.sh http://parity-server:8080 http://parity-rust:8080 || update_validation_status=$?
-service_calls_status=0
-bash scripts/conformance/server-parity/update-validation-sqlite.sh http://parity-server:8080 http://parity-rust:8080 service-calls \
-  || service_calls_status=$?
 
 native_id=$(docker image inspect --format '{{.Id}}' "$native")
 jq -n --arg native "$native" --arg id "$native_id" --arg php "$image" --arg revision "$DW_PARITY_RUNNER_REVISION" \
   --argjson reference "$status" --argjson nativeStatus "$native_status" --argjson compare "$compare_status" \
-  --argjson updateValidation "$update_validation_status" --argjson serviceCalls "$service_calls_status" \
   '{schema:"durable-workflow.native-image-corpus.v1", native_image:$native, native_image_id:$id, php_reference:$php,
     runner_revision:$revision, backend:"sqlite",
-    status:{reference_records:$reference, native_record:$nativeStatus, compare:$compare, update_validation:$updateValidation,
-      service_calls:$serviceCalls}}' \
+    status:{reference_records:$reference, native_record:$nativeStatus, compare:$compare}}' \
   > parity-evidence/native-image-corpus.json
 cat parity-evidence/native-image-corpus.json
 test "$status" -eq 0
 test "$native_status" -eq 0
 test "$compare_status" -eq 0
-test "$update_validation_status" -eq 0
-test "$service_calls_status" -eq 0

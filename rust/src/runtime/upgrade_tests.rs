@@ -1156,12 +1156,37 @@ async fn takeover_refuses_a_php_2113_dispatch_still_pending() {
     mutate(&path, "INSERT INTO workflow_service_call_dispatches(service_call_id,state,dispatch_options,available_at,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kcall','scheduled','{}','2026-10-26 10:00:00','2026-10-26 10:00:00','2026-10-26 10:00:00')").await;
     let inspection = inspect_sqlite(&path).await.unwrap();
     assert_eq!(inspection["status"], "unqualified", "{inspection}");
-    assert_eq!(inspection["service_call_dispatch_inspection"], json!({"dispatches": 1, "pending": 1}));
+    assert_eq!(inspection["service_call_dispatch_inspection"], json!({"dispatches": 1, "pending": 1, "workflow_bound_open": 0}));
     let before = std::fs::read(&path).unwrap();
     let fingerprint = backup_fingerprint(&path).await;
     reason(
         takeover::take_over_sqlite(&path, &fingerprint, &queue_config()).await,
         "upgrade_source_service_call_dispatches_pending",
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before, "the PHP database is unchanged");
+}
+
+/// An open service call bound to a workflow run would never close under
+/// native, which serves no workflow-bound handler (Server #794): inspection
+/// reports it and takeover refuses before any change. A closed one, or an
+/// open call of another binding, takes over.
+#[tokio::test]
+async fn takeover_refuses_an_open_workflow_bound_service_call() {
+    let (_directory, path) = php_release_layout(&[PHP_280_CHANGES, TRACE_CARRIERS, QUEUE_DELIVERY, RELEASE_2113]).await;
+    let call = |id: &str, kind: &str, status: &str| format!("INSERT INTO workflow_service_calls(id,namespace,endpoint_name,service_name,operation_name,caller_namespace,target_namespace,status,outcome,operation_mode,resolved_binding_kind,accepted_at,created_at,updated_at) VALUES ('{id}','default','pay','billing','charge','default','default','{status}','accepted','async','{kind}','2026-10-26 10:00:00','2026-10-26 10:00:00','2026-10-26 10:00:00')");
+    mutate(&path, call("01m5wvy8d1j3dtr13es05kdone", "workflow_run", "completed").leak()).await;
+    mutate(&path, call("01m5wvy8d1j3dtr13es05kactv", "activity_execution", "accepted").leak()).await;
+    let inspection = inspect_sqlite(&path).await.unwrap();
+    assert_eq!(inspection["service_call_dispatch_inspection"], json!({"dispatches": 0, "pending": 0, "workflow_bound_open": 0}));
+    mutate(&path, call("01m5wvy8d1j3dtr13es05kopen", "workflow_run", "started").leak()).await;
+    let inspection = inspect_sqlite(&path).await.unwrap();
+    assert_eq!(inspection["status"], "unqualified", "{inspection}");
+    assert_eq!(inspection["service_call_dispatch_inspection"], json!({"dispatches": 0, "pending": 0, "workflow_bound_open": 1}));
+    let before = std::fs::read(&path).unwrap();
+    let fingerprint = backup_fingerprint(&path).await;
+    reason(
+        takeover::take_over_sqlite(&path, &fingerprint, &queue_config()).await,
+        "upgrade_source_service_calls_workflow_bound_open",
     );
     assert_eq!(std::fs::read(&path).unwrap(), before, "the PHP database is unchanged");
 }

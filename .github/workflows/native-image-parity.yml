@@ -19,8 +19,6 @@ on:
   pull_request:
     paths:
       - scripts/conformance/server-parity/native-image-corpus.sh
-      - scripts/conformance/server-parity/update-validation-sqlite.sh
-      - scripts/conformance/server-parity/php-maintenance-window.sh
       - .github/workflows/native-image-parity.yml
 
 permissions:
@@ -36,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 75
     env:
-      # The name the shared PHP maintenance window expects.
+      # The corpus part's own container and network name.
       RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
       LOCAL_IMAGE: dw-native-corpus-${{ github.run_id }}-${{ github.run_attempt }}:corpus
     steps:
@@ -47,7 +45,7 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/ci/pull-images.sh \
-            "$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.4.json)" \
+            "$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.5.json)" \
             composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee
 
       - name: Set up Docker Buildx

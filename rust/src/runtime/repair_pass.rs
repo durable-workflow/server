@@ -107,6 +107,12 @@ fn empty_report(request: &PassRequest, throttled: bool) -> Map<String, Value> {
         // never has a dispatch to enqueue.
         "service_call_dispatch_candidates": 0, "service_call_dispatches_enqueued": 0,
         "service_call_dispatch_failures": [],
+        // Published 2.11.5 (Core 2.15) also closes open calls bound to a
+        // workflow run whose run has ended (LinkedServiceCallCloser). Native
+        // binds no call to a workflow run: it refuses workflow-bound handlers
+        // (Server #794).
+        "service_call_linked_candidates": 0, "service_call_links_reconciled": 0,
+        "service_call_linked_failures": [],
     });
     match value {
         Value::Object(map) => map,
