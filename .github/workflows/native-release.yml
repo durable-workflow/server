@@ -1,0 +1,265 @@
+name: Native release candidate
+
+# Publishes the native (Rust) server image for an existing immutable release
+# tag (Server #325). Each architecture builds on its own runner and pushes by
+# digest only; that exact digest is pulled back and smoke-tested there, so a
+# failed smoke leaves no tag. The publish job then refuses tags that already
+# exist, gives both smoked digests
+# the release tag in both registries as one index, verifies it, and attests
+# its build provenance. The PHP image and its Release workflow are unchanged.
+
+run-name: Native ${{ inputs.tag }} at ${{ inputs.release_commit }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing immutable release tag to publish natively (for example 2.12.0-rc.1)'
+        required: true
+      release_commit:
+        description: 'Full source commit of that tag'
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  DOCKERHUB_IMAGE: durableworkflow/server-native
+  GHCR_IMAGE: ghcr.io/durable-workflow/server-native
+
+jobs:
+  build-amd64:
+    name: Build and smoke linux/amd64
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    environment: dockerhub
+    permissions:
+      contents: read
+      packages: write
+    env:
+      PLATFORM: linux/amd64
+      RESOURCE_SCOPE: dw-native-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Check out trusted release tooling
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Check out immutable release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          path: release-source
+          ref: refs/tags/${{ inputs.tag }}
+
+      - name: Verify the release tag names the planned commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+        run: |
+          set -euo pipefail
+          scripts/ci/verify-release-tag-source.sh
+          test "$(git -C release-source rev-parse HEAD)" = "$RELEASE_COMMIT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push linux/amd64 by digest only
+        id: build
+        timeout-minutes: 60
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7
+        with:
+          context: release-source
+          file: release-source/Dockerfile.native
+          platforms: linux/amd64
+          pull: true
+          provenance: false
+          labels: |
+            org.opencontainers.image.revision=${{ inputs.release_commit }}
+            dev.durable-workflow.release.tag=${{ inputs.tag }}
+            dev.durable-workflow.release.run-id=${{ github.run_id }}
+          outputs: type=image,"name=${{ env.GHCR_IMAGE }},${{ env.DOCKERHUB_IMAGE }}",push-by-digest=true,name-canonical=true,push=true
+
+      - name: Smoke-test the pushed linux/amd64 digest on its own architecture
+        env:
+          IMAGE: ${{ env.GHCR_IMAGE }}@${{ steps.build.outputs.digest }}
+        run: bash scripts/ci/native-image-smoke.sh "$IMAGE" "$PLATFORM" native-release/smoke-amd64.json
+
+      - name: Remove this job's smoke containers and network
+        if: always()
+        run: |
+          docker rm -f "$RESOURCE_SCOPE-native-sqlite" "$RESOURCE_SCOPE-native-pgsql" "$RESOURCE_SCOPE-native-mysql" "$RESOURCE_SCOPE-postgres" "$RESOURCE_SCOPE-mysql" || true
+          docker network rm "$RESOURCE_SCOPE" || true
+
+      - name: Keep the linux/amd64 smoke receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: native-smoke-amd64
+          path: native-release
+          retention-days: 30
+          if-no-files-found: ignore
+
+  build-arm64:
+    name: Build and smoke linux/arm64
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 75
+    environment: dockerhub
+    permissions:
+      contents: read
+      packages: write
+    env:
+      PLATFORM: linux/arm64
+      RESOURCE_SCOPE: dw-native-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Check out trusted release tooling
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Check out immutable release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          path: release-source
+          ref: refs/tags/${{ inputs.tag }}
+
+      - name: Verify the release tag names the planned commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+        run: |
+          set -euo pipefail
+          scripts/ci/verify-release-tag-source.sh
+          test "$(git -C release-source rev-parse HEAD)" = "$RELEASE_COMMIT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push linux/arm64 by digest only
+        id: build
+        timeout-minutes: 60
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7
+        with:
+          context: release-source
+          file: release-source/Dockerfile.native
+          platforms: linux/arm64
+          pull: true
+          provenance: false
+          labels: |
+            org.opencontainers.image.revision=${{ inputs.release_commit }}
+            dev.durable-workflow.release.tag=${{ inputs.tag }}
+            dev.durable-workflow.release.run-id=${{ github.run_id }}
+          outputs: type=image,"name=${{ env.GHCR_IMAGE }},${{ env.DOCKERHUB_IMAGE }}",push-by-digest=true,name-canonical=true,push=true
+
+      - name: Smoke-test the pushed linux/arm64 digest on its own architecture
+        env:
+          IMAGE: ${{ env.GHCR_IMAGE }}@${{ steps.build.outputs.digest }}
+        run: bash scripts/ci/native-image-smoke.sh "$IMAGE" "$PLATFORM" native-release/smoke-arm64.json
+
+      - name: Remove this job's smoke containers and network
+        if: always()
+        run: |
+          docker rm -f "$RESOURCE_SCOPE-native-sqlite" "$RESOURCE_SCOPE-native-pgsql" "$RESOURCE_SCOPE-native-mysql" "$RESOURCE_SCOPE-postgres" "$RESOURCE_SCOPE-mysql" || true
+          docker network rm "$RESOURCE_SCOPE" || true
+
+      - name: Keep the linux/arm64 smoke receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: native-smoke-arm64
+          path: native-release
+          retention-days: 30
+          if-no-files-found: ignore
+
+  publish:
+    name: Tag, verify and attest the native index
+    needs: [build-amd64, build-arm64]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: dockerhub
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out trusted release tooling
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag and verify the index in both registries
+        id: index
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          DIGEST_AMD64: ${{ needs.build-amd64.outputs.digest }}
+          DIGEST_ARM64: ${{ needs.build-arm64.outputs.digest }}
+        run: bash scripts/ci/native-release-publish.sh
+
+      - name: Attest the index's build provenance in GHCR
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4
+        with:
+          subject-name: ${{ env.GHCR_IMAGE }}
+          subject-digest: ${{ steps.index.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest the index's build provenance in Docker Hub
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4
+        with:
+          subject-name: index.docker.io/${{ env.DOCKERHUB_IMAGE }}
+          subject-digest: ${{ steps.index.outputs.digest }}
+          push-to-registry: true

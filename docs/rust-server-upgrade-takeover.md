@@ -38,6 +38,81 @@ There is no PHP rollback after step 4. Recovery restores the verified backup
 into a new database for a PHP installation, with the data boundary of that
 backup.
 
+## Running it with the native image
+
+The native release-candidate image (`durableworkflow/server-native`, also
+`ghcr.io/durable-workflow/server-native`) carries every command below. It
+reads the same `DB_*` settings as the PHP image. Every command needs
+`DW_RUST_EXPERIMENTAL=1`: native is opt-in until it is declared qualified.
+
+The inspection, the fingerprints and the takeover must all name the same
+stopped source. Native refuses a fingerprint that does not match the source
+in the takeover's own transaction, but only the operator can make sure the
+backup restores. The backup check in step 3 is therefore not optional.
+Shown here for PostgreSQL; MySQL is the same with `DB_CONNECTION=mysql`.
+`-e DB_PASSWORD` passes the password from the shell's environment, so export
+it first rather than writing it on the command line. Add `--network` when the
+database is only reachable on a Docker network.
+
+1. Stop every PHP role that can write: HTTP, queue workers, the scheduler and
+   any bootstrap. Keep them stopped until step 6.
+2. Inspect the stopped source. Every report must say `inspected` and name a
+   qualified `source_layout`.
+
+   ```sh
+   source="-e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=pgsql -e DB_HOST=db -e DB_PORT=5432 \
+     -e DB_DATABASE=workflow -e DB_USERNAME=workflow -e DB_PASSWORD"
+   queues="-e DW_RUST_UPGRADE_QUEUE_CONNECTION=database \
+     -e DW_RUST_UPGRADE_QUEUE_DEFAULT_CONNECTION=database -e DW_RUST_UPGRADE_QUEUE_DEFAULT_QUEUE=default"
+   docker run --rm $source $queues durableworkflow/server-native:<tag> upgrade-inspect
+   docker run --rm $source $queues durableworkflow/server-native:<tag> upgrade-queue-inspect
+   docker run --rm $source $queues durableworkflow/server-native:<tag> upgrade-payload-inspect
+   ```
+3. Back up with the [existing procedure](self-hosted-backup-and-restore.md).
+   Restore the backup into a separate database (here `workflow_restored`).
+   Fingerprint both. The two digests must be equal: that proves the backup
+   restores to exactly the stopped source.
+
+   ```sh
+   docker run --rm $source durableworkflow/server-native:<tag> upgrade-fingerprint
+   docker run --rm $source -e DB_DATABASE=workflow_restored durableworkflow/server-native:<tag> upgrade-fingerprint
+   ```
+4. Take over the source with that digest. Native refuses unless the source
+   still has it, so a write after the backup stops the takeover before any
+   change.
+
+   ```sh
+   docker run --rm $source $queues -e DW_UPGRADE_BACKUP_FINGERPRINT=sha256:<digest> \
+     durableworkflow/server-native:<tag> upgrade-takeover
+   ```
+5. Start native on the taken-over database.
+
+   ```sh
+   docker run -d -p 8080:8080 $source -e DW_AUTH_TOKEN=<token> durableworkflow/server-native:<tag>
+   ```
+
+   The image runs the repair pass itself (`DW_RUST_MAINTENANCE_LOOP=1`),
+   because it has no separate scheduler container.
+6. Do not restart PHP against the database: its ownership check refuses it.
+
+The native image uses the PHP image's paths: SQLite at
+`/app/database/database.sqlite` and local external payload objects under
+`/app/storage/app/external-payloads/<namespace>`. PHP records each object's
+absolute `file://` path in the database, so mount the PHP installation's
+volumes at the same paths. The PHP image writes them as `www-data`; native
+runs as UID and GID 1000. Once PHP is stopped (step 1), give both volumes to
+1000 (for example `chown -R 1000:1000`): ownership is not part of the
+fingerprint, and `upgrade-prepare-sqlite`, the takeover and the server all
+write. Takeover still refuses a source that holds external payload references.
+
+For SQLite, stop PHP first. Then switch the file from WAL to the rollback
+journal with `upgrade-prepare-sqlite`, and mount it read-only for the
+inspections (`-v <volume>:/app/database:ro`). The backup check in step 3 is a
+byte copy of the prepared file, fingerprinted like the source.
+
+Rollback is restoring the verified backup into a new database for a PHP
+installation. There is no in-place rollback after step 4.
+
 ## Fingerprint
 
 The digest covers every relation in the database, not only the ones PHP
@@ -162,9 +237,12 @@ with a recorded recipe:
   use PHP's queue, and the queue inspection has already bound every queued
   job to its durable task row, so the column is removed and the takeover
   report counts the references it held.
-- Service calls are not part of native yet, so a source with service calls
-  is refused before any change, and `call_deadline_at` is removed only from
-  an empty table.
+- Each service call's `call_deadline_at` is copied into native's
+  `dw_service_call_deadlines` before the column is removed.
+- Later releases add their own recipes: 2.11.1's trace carriers, and
+  2.11.3's session holders, full failure messages, idempotency digest,
+  dispatch outbox and stream reclaim deadlines. The layout READMEs under
+  `rust/upgrade/` and the port checkpoints describe each one.
 
 A release whose layout has no recipe is refused by step 1.
 
