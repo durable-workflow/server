@@ -99,6 +99,7 @@ final class BridgeAdapterOutcomeContract
                 ],
                 'rejected' => [
                     'http_status' => 422,
+                    'http_status_overrides' => ['bridge_identity_conflict' => 409],
                     'retriable' => false,
                     'terminal' => true,
                     'meaning' => 'The bridge rejected a well-formed event for a named product reason.',
@@ -120,6 +121,7 @@ final class BridgeAdapterOutcomeContract
                 'task_queue_draining',
                 'unsupported_routing',
                 'unsupported_action',
+                'bridge_identity_conflict',
                 'payload_too_large',
                 'adapter_unavailable',
             ],

@@ -28,7 +28,9 @@ POST /api/bridge-adapters/webhook/{adapter}
 
 The route is protected by the same control-plane version, auth, and namespace
 middleware as other API routes. `{adapter}` is an operator-visible adapter key
-made of letters, numbers, `.`, `_`, `:`, or `-`.
+made of letters, numbers, `.`, `_`, `:`, or `-`, with a maximum of 64 bytes.
+Longer names are refused with `unsupported_routing` before creating workflow
+state.
 
 Every request must include:
 
@@ -80,6 +82,21 @@ Expected outcomes:
 
 The accepted command context records `adapter`, `action`, `idempotency_key`,
 `request_id`, and `signal_name`.
+
+Signal and update deliveries use an internal `dw-bridge:v1:` request identity.
+Its SHA-256 digest covers the adapter, action, raw provider key, literal target
+field (`signal_name` or `update_name`) and target name, each prefixed by its
+UTF-8 byte length as an unsigned 64-bit big-endian integer. The owning workflow
+instance scopes the identity. Provider keys, target names and input strings
+retain their whitespace and case; a proxy's `X-Request-Id` does not determine
+bridge deduplication.
+
+The command writer checks this identity while holding the instance lock.
+Concurrent redelivery reuses the original command and effect. Accepted legacy
+receipts are also recognized without rewriting their identity or input. If the
+retained identity has different tuple metadata, the bridge refuses it with
+HTTP 409, `outcome: rejected`, `reason: bridge_identity_conflict`. It does not
+replace the retained receipt. Inspect the retained command before redelivery.
 
 ## Reference Journey: Commerce Event Starts A Workflow
 

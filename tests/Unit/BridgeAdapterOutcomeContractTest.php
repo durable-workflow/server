@@ -28,6 +28,8 @@ class BridgeAdapterOutcomeContractTest extends TestCase
         $this->assertContains('unknown_target', $manifest['rejection_reasons']);
         $this->assertContains('unsupported_routing', $manifest['rejection_reasons']);
         $this->assertContains('task_queue_draining', $manifest['rejection_reasons']);
+        $this->assertContains('bridge_identity_conflict', $manifest['rejection_reasons']);
+        $this->assertSame(409, $manifest['outcomes']['rejected']['http_status_overrides']['bridge_identity_conflict']);
         $this->assertArrayHasKey('incident_webhook_signals_workflow', $manifest['reference_journeys']);
         $this->assertArrayHasKey('commerce_event_starts_workflow', $manifest['reference_journeys']);
     }
