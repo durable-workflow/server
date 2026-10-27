@@ -134,7 +134,10 @@ snapshot() {
 }
 snapshot > "$evidence/before.json"
 inspect_source > "$evidence/inspection.json" 2> "$evidence/inspection.stderr"
-jq -e --arg layout "$layout" '.status=="inspected" and .source_layout==$layout and (.table_rows|length)==50 and .table_rows.workflow_runs==4
+# PHP 2.11.3 adds one table, the service-call dispatch outbox.
+tables=50
+if [[ $layout == php-2.11.3* ]]; then tables=51; fi
+jq -e --arg layout "$layout" --argjson tables "$tables" '.status=="inspected" and .source_layout==$layout and (.table_rows|length)==$tables and .table_rows.workflow_runs==4
   and .table_rows.activity_executions==1 and .catalog_visibility=="configured_role"
   and .source_mutated==false and .takeover_allowed==false and .backup_verified==false
   and .php_quiescence_verified==false and .stored_representation_compatibility_verified==false' "$evidence/inspection.json" >/dev/null
@@ -165,8 +168,8 @@ fingerprint() {
     --entrypoint /target/debug/durable-workflow-server "$rust_image" upgrade-fingerprint
 }
 fingerprint "$database" > "$evidence/fingerprint.json" 2> "$evidence/fingerprint.stderr"
-jq -e --arg layout "$layout" '.status=="fingerprinted" and .source_layout==$layout and (.fingerprint|test("^sha256:[0-9a-f]{64}$"))
-  and (.table_rows|length)==50 and .table_rows.workflow_runs==4 and .table_rows.jobs==1
+jq -e --arg layout "$layout" --argjson tables "$tables" '.status=="fingerprinted" and .source_layout==$layout and (.fingerprint|test("^sha256:[0-9a-f]{64}$"))
+  and (.table_rows|length)==$tables and .table_rows.workflow_runs==4 and .table_rows.jobs==1
   and .source_mutated==false and .takeover_allowed==false and .backup_verified==false
   and .php_quiescence_verified==false and .stored_representation_compatibility_verified==false' "$evidence/fingerprint.json" >/dev/null
 source_fingerprint=$(jq -r .fingerprint "$evidence/fingerprint.json")

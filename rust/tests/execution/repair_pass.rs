@@ -177,14 +177,17 @@ async fn repair_pass_creates_deadline_tasks_settles_leases_and_reports_failures(
     assert_eq!(invalid["errors"]["queue"], json!(["The queue field must not be greater than 128 characters."]));
 }
 
-// PHP's maintenance loop runs the repair pass every few seconds; native's
-// ticker does the same unless the pass is turned off. An idle run past its
+// PHP's scheduler container runs the repair pass every few seconds; native's
+// ticker does the same when it takes that role. An idle run past its
 // execution deadline gets the workflow task that closes it without anyone
 // asking for a pass.
 #[tokio::test]
 async fn the_maintenance_loop_gives_an_overdue_idle_run_its_deadline_task() {
     let database = TestDatabase::new().await;
-    let app = router(database.open().await.unwrap());
+    let runtime = database.open().await.unwrap();
+    // `DW_RUST_MAINTENANCE_LOOP=1`, as the native image sets it.
+    runtime.set_maintenance_repair(true);
+    let app = router(runtime);
     let deadline = started_on(&app, "maintained", "repair-m").await;
     let deadline = deadline["run_id"].as_str().unwrap();
     execute(&database, format!("UPDATE workflow_tasks SET status='completed' WHERE workflow_run_id='{deadline}'")).await;

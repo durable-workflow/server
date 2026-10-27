@@ -52,15 +52,19 @@ struct TimerScheduler {
     stop: watch::Sender<bool>,
     task: Mutex<Option<JoinHandle<()>>>,
     healthy: Arc<AtomicBool>,
-    /// Whether the ticker also runs the repair pass, as PHP's maintenance
-    /// loop does unless `DW_V2_MATCHING_ROLE_QUEUE_WAKE` is false or 0.
+    /// Whether the ticker also runs the repair pass (`maintenance_repair_enabled`).
     repair: Arc<AtomicBool>,
 }
 
-/// PHP's maintenance loop skips `workflow:v2:repair-pass` when
-/// `DW_V2_MATCHING_ROLE_QUEUE_WAKE` is `false` or `0`.
+/// Whether the ticker runs the repair pass, as PHP's separate `scheduler`
+/// container does. A PHP server container never repairs on its own, so the
+/// native binary takes that role only when asked: `DW_RUST_MAINTENANCE_LOOP=1`
+/// (the native image sets it, having no separate scheduler).
+/// `DW_V2_MATCHING_ROLE_QUEUE_WAKE=false` or `0` still turns it off, as it
+/// turns off PHP's.
 fn maintenance_repair_enabled() -> bool {
-    !matches!(std::env::var("DW_V2_MATCHING_ROLE_QUEUE_WAKE").as_deref(), Ok("false" | "0"))
+    matches!(std::env::var("DW_RUST_MAINTENANCE_LOOP").as_deref(), Ok("1" | "true"))
+        && !matches!(std::env::var("DW_V2_MATCHING_ROLE_QUEUE_WAKE").as_deref(), Ok("false" | "0"))
 }
 
 impl TimerScheduler {
