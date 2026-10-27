@@ -193,7 +193,20 @@ function embeddedCancellationObservation(array $fixture, string $workflowId, str
     if ($phase === 'before_claim') {
         cancelEmbeddedRun($stub->runId());
     } elseif ($phase === 'pending_timer') {
-        Artisan::call('queue:work', ['connection' => 'database', '--queue' => $queue, '--once' => true, '--sleep' => 0, '--tries' => 1]);
+        // The declared phase is a scheduled timer. One queue job can return
+        // before the workflow task is available, so work single jobs until
+        // the run has recorded TimerScheduled (bounded), then cancel.
+        $deadline = microtime(true) + 15;
+        do {
+            Artisan::call('queue:work', ['connection' => 'database', '--queue' => $queue, '--once' => true, '--sleep' => 0, '--tries' => 1]);
+            $scheduled = in_array('TimerScheduled', array_column(embeddedCancellationHistory($stub->runId()), 'event_type'), true);
+            if (! $scheduled) {
+                usleep(100_000);
+            }
+        } while (! $scheduled && microtime(true) < $deadline);
+        if (! $scheduled) {
+            throw new \RuntimeException('The embedded run did not reach its pending timer before the cancellation phase.');
+        }
         cancelEmbeddedRun($stub->runId());
     }
     Artisan::call('queue:work', ['connection' => 'database', '--queue' => $queue, '--stop-when-empty' => true,
