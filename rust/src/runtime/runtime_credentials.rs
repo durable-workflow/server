@@ -393,6 +393,33 @@ where
     }
 }
 
+/// Credentials as published PHP stores them: `hash('sha256', $token)` of
+/// each token. The first is live until 2030, the second is revoked.
+#[cfg(test)]
+pub(crate) const PHP_CREDENTIAL_ROWS: [&str; 2] = [
+    r#"INSERT INTO runtime_credentials(id,name,subject,roles,tenant,claims,token_prefix,token_hash,expires_at,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kcred','worker key','worker-a','["worker"]','default','{"region":"eu"}','dw_live_abc','5ac9039987e0c53110302d98235eafd5b48403cc74f32a9dc365418eab15bfa2','2030-01-01 00:00:00','2026-10-26 10:00:00','2026-10-26 10:00:00')"#,
+    r#"INSERT INTO runtime_credentials(id,name,subject,roles,tenant,claims,token_prefix,token_hash,revoked_at,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kgone','old key','worker-b','["worker"]','default','[]','dw_live_old','2b968f18b9fe6bbd5de84bd3dfa0cf8e2eaf41be6a2e9a8ca860cae3a28321e9','2026-10-26 11:00:00','2026-10-26 10:00:00','2026-10-26 11:00:00')"#,
+];
+
+/// What native accepts over `PHP_CREDENTIAL_ROWS` after a takeover: the live
+/// PHP-issued token authenticates as its subject, and the revoked one does not.
+#[cfg(test)]
+pub(crate) async fn assert_php_credentials_served(runtime: &super::Runtime) {
+    let principal = runtime
+        .runtime_credential_principal("dw_live_abcdefghijklmnopqrstuvwxyz")
+        .await
+        .unwrap()
+        .expect("the PHP-issued token authenticates");
+    assert_eq!(
+        (principal.subject.as_str(), principal.roles.as_slice(), principal.method, principal.tenant.as_deref(), &principal.claims),
+        ("worker-a", ["worker".to_owned()].as_slice(), "runtime-token", Some("default"), &json!({"region": "eu"}))
+    );
+    assert!(
+        runtime.runtime_credential_principal("dw_live_oldoldoldoldoldoldoldold").await.unwrap().is_none(),
+        "a revoked key stays refused"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

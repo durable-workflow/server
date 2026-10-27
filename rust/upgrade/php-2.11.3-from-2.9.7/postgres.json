@@ -1,0 +1,382 @@
+{
+  "remove": [],
+  "add": [
+    [
+      "column",
+      "workflow_durable_streams.18",
+      {
+        "collation": null,
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "reclaim_at",
+        "not_null": false,
+        "type": "timestamp(6) without time zone"
+      }
+    ],
+    [
+      "column",
+      "workflow_failures.16",
+      {
+        "collation": "default",
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "message_full",
+        "not_null": false,
+        "type": "text"
+      }
+    ],
+    [
+      "column",
+      "workflow_service_call_dispatches.1",
+      {
+        "collation": "default",
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "service_call_id",
+        "not_null": true,
+        "type": "character varying(26)"
+      }
+    ],
+    [
+      "column",
+      "workflow_service_call_dispatches.10",
+      {
+        "collation": null,
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "claim_expires_at",
+        "not_null": false,
+        "type": "timestamp(6) without time zone"
+      }
+    ],
+    [
+      "column",
+      "workflow_service_call_dispatches.11",
+      {
+        "collation": "default",
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "authorized_catalog_revision",
+        "not_null": false,
+        "type": "character(64)"
+      }
+    ],
+    [
+      "column",
+      "workflow_service_call_dispatches.12",
+      {
+        "collation": "default",
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "authorized_policy_revision",
+        "not_null": false,
+        "type": "character(64)"
+      }
+    ],
+    [
+      "column",
+      "workflow_service_call_dispatches.13",
+      {
+        "collation": null,
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "dispatch_attempted_at",
+        "not_null": false,
+        "type": "timestamp(6) without time zone"
+      }
+    ],
+    [
+      "column",
+      "workflow_service_call_dispatches.14",
+      {
+        "collation": null,
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "repair_available_at",
+        "not_null": false,
+        "type": "timestamp(6) without time zone"
+      }
+    ],
+    [
+      "column",
+      "workflow_service_call_dispatches.15",
+      {
+        "collation": null,
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "completed_at",
+        "not_null": false,
+        "type": "timestamp(6) without time zone"
+      }
+    ],
+    [
+      "column",
+      "workflow_service_call_dispatches.16",
+      {
+        "collation": "default",
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "last_error",
+        "not_null": false,
+        "type": "text"
+      }
+    ],
+    [
+      "column",
+      "workflow_service_call_dispatches.17",
+      {
+        "collation": null,
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "created_at",
+        "not_null": false,
+        "type": "timestamp(6) without time zone"
+      }
+    ],
+    [
+      "column",
+      "workflow_service_call_dispatches.18",
+      {
+        "collation": null,
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "updated_at",
+        "not_null": false,
+        "type": "timestamp(6) without time zone"
+      }
+    ],
+    [
+      "column",
+      "workflow_service_call_dispatches.2",
+      {
+        "collation": "default",
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "state",
+        "not_null": true,
+        "type": "character varying(32)"
+      }
+    ],
+    [
+      "column",
+      "workflow_service_call_dispatches.3",
+      {
+        "collation": null,
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "dispatch_options",
+        "not_null": true,
+        "type": "json"
+      }
+    ],
+    [
+      "column",
+      "workflow_service_call_dispatches.4",
+      {
+        "collation": null,
+        "default": "1",
+        "generated": "",
+        "identity": "",
+        "name": "attempt",
+        "not_null": true,
+        "type": "integer"
+      }
+    ],
+    [
+      "column",
+      "workflow_service_call_dispatches.5",
+      {
+        "collation": null,
+        "default": "1",
+        "generated": "",
+        "identity": "",
+        "name": "max_attempts",
+        "not_null": true,
+        "type": "integer"
+      }
+    ],
+    [
+      "column",
+      "workflow_service_call_dispatches.6",
+      {
+        "collation": null,
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "available_at",
+        "not_null": true,
+        "type": "timestamp(6) without time zone"
+      }
+    ],
+    [
+      "column",
+      "workflow_service_call_dispatches.7",
+      {
+        "collation": null,
+        "default": "'0'::bigint",
+        "generated": "",
+        "identity": "",
+        "name": "claim_generation",
+        "not_null": true,
+        "type": "bigint"
+      }
+    ],
+    [
+      "column",
+      "workflow_service_call_dispatches.8",
+      {
+        "collation": "default",
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "claim_token",
+        "not_null": false,
+        "type": "character(64)"
+      }
+    ],
+    [
+      "column",
+      "workflow_service_call_dispatches.9",
+      {
+        "collation": null,
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "claimed_at",
+        "not_null": false,
+        "type": "timestamp(6) without time zone"
+      }
+    ],
+    [
+      "column",
+      "workflow_service_calls.52",
+      {
+        "collation": "default",
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "idempotency_scope_hash",
+        "not_null": false,
+        "type": "character(64)"
+      }
+    ],
+    [
+      "column",
+      "workflow_worker_sessions.21",
+      {
+        "collation": "default",
+        "default": null,
+        "generated": "",
+        "identity": "",
+        "name": "lease_owner_incarnation",
+        "not_null": false,
+        "type": "character(64)"
+      }
+    ],
+    [
+      "constraint",
+      "workflow_service_call_dispatches.workflow_service_call_dispatches_pkey",
+      {
+        "deferrable": false,
+        "deferred": false,
+        "definition": "PRIMARY KEY (service_call_id)",
+        "validated": true
+      }
+    ],
+    [
+      "index",
+      "wf_durable_streams_ns_reclaim_idx",
+      {
+        "definition": "CREATE INDEX wf_durable_streams_ns_reclaim_idx ON public.workflow_durable_streams USING btree (namespace, reclaim_at, id)",
+        "primary": false,
+        "ready": true,
+        "unique": false,
+        "valid": true
+      }
+    ],
+    [
+      "index",
+      "wf_service_calls_idem_scope_unique",
+      {
+        "definition": "CREATE UNIQUE INDEX wf_service_calls_idem_scope_unique ON public.workflow_service_calls USING btree (idempotency_scope_hash)",
+        "primary": false,
+        "ready": true,
+        "unique": true,
+        "valid": true
+      }
+    ],
+    [
+      "index",
+      "wf_service_dispatch_claim_idx",
+      {
+        "definition": "CREATE INDEX wf_service_dispatch_claim_idx ON public.workflow_service_call_dispatches USING btree (state, claim_expires_at)",
+        "primary": false,
+        "ready": true,
+        "unique": false,
+        "valid": true
+      }
+    ],
+    [
+      "index",
+      "wf_service_dispatch_due_idx",
+      {
+        "definition": "CREATE INDEX wf_service_dispatch_due_idx ON public.workflow_service_call_dispatches USING btree (state, available_at)",
+        "primary": false,
+        "ready": true,
+        "unique": false,
+        "valid": true
+      }
+    ],
+    [
+      "index",
+      "wf_service_dispatch_repair_idx",
+      {
+        "definition": "CREATE INDEX wf_service_dispatch_repair_idx ON public.workflow_service_call_dispatches USING btree (state, repair_available_at)",
+        "primary": false,
+        "ready": true,
+        "unique": false,
+        "valid": true
+      }
+    ],
+    [
+      "index",
+      "workflow_service_call_dispatches_pkey",
+      {
+        "definition": "CREATE UNIQUE INDEX workflow_service_call_dispatches_pkey ON public.workflow_service_call_dispatches USING btree (service_call_id)",
+        "primary": true,
+        "ready": true,
+        "unique": true,
+        "valid": true
+      }
+    ],
+    [
+      "relation",
+      "workflow_service_call_dispatches",
+      {
+        "access_method": "heap",
+        "force_row_security": false,
+        "kind": "r",
+        "options": null,
+        "partition": false,
+        "partition_key": null,
+        "persistence": "p",
+        "row_security": false,
+        "view": null
+      }
+    ]
+  ]
+}

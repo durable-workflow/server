@@ -27,7 +27,7 @@ const MARKED: i64 = 0;
 /// Sessions rechecked and the source fingerprinted again after the marker:
 /// nothing PHP wrote can be missing from the backup.
 const FENCED: i64 = 1;
-const LAST: i64 = 9;
+const LAST: i64 = 10;
 
 /// One takeover run: what its steps need and what its report says.
 struct Run<'a> {
@@ -315,7 +315,7 @@ async fn perform(connection: &mut MySqlConnection, run: &mut Run<'_>, step: i64)
             // Rows, unlike DDL, commit with the step that records them.
             let mut tx = connection.begin().await?;
             let (copied, created) = adopt_incarnations::<MySql>(&mut tx, php_incarnations).await?;
-            let holders = super::adopt_session_holders::<MySql>(&mut tx).await?;
+            let holders = super::adopt_session_holders::<MySql>(&mut tx, super::super::has_release(&run.layout, "php-2.11.3")).await?;
             advance(&mut *tx, run, step).await?;
             tx.commit().await?;
             run.converted
@@ -386,6 +386,34 @@ async fn perform(connection: &mut MySqlConnection, run: &mut Run<'_>, step: i64)
             for table in carriers {
                 sqlx::raw_sql(sqlx::AssertSqlSafe(format!("ALTER TABLE {table} DROP COLUMN observability_context")))
                     .execute(&mut *connection)
+                    .await?;
+            }
+        }
+        10 => {
+            // PHP 2.11.3's additions. Count before dropping, as step 9 does.
+            if column_exists(connection, "workflow_failures", "message_full").await? {
+                let messages = count::<MySql>(connection, super::FULL_FAILURE_MESSAGES).await?;
+                run.converted.insert("full_failure_messages_removed".into(), json!(messages));
+                connection.execute("ALTER TABLE workflow_failures DROP COLUMN message_full").await?;
+            }
+            if column_exists(connection, "workflow_service_calls", "idempotency_scope_hash").await? {
+                connection
+                    .execute("ALTER TABLE workflow_service_calls DROP INDEX wf_service_calls_idem_scope_unique, DROP COLUMN idempotency_scope_hash")
+                    .await?;
+            }
+            if column_exists(connection, "workflow_service_call_dispatches", "state").await? {
+                let dispatches = count::<MySql>(connection, super::COMPLETED_DISPATCHES).await?;
+                run.converted.insert("service_call_dispatches_removed".into(), json!(dispatches));
+                connection.execute("DROP TABLE workflow_service_call_dispatches").await?;
+            }
+            if column_exists(connection, "workflow_worker_sessions", "lease_owner_incarnation").await? {
+                connection
+                    .execute("ALTER TABLE workflow_worker_sessions DROP COLUMN lease_owner_incarnation")
+                    .await?;
+            }
+            if column_exists(connection, "workflow_durable_streams", "reclaim_at").await? {
+                connection
+                    .execute("ALTER TABLE workflow_durable_streams DROP INDEX wf_durable_streams_ns_reclaim_idx, DROP COLUMN reclaim_at")
                     .await?;
             }
         }

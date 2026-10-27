@@ -92,6 +92,8 @@ impl TestDatabase {
 async fn real_shutdown_lock_pressure_preserves_original_leases_and_retries_same_token() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
+    // Expired leases must stay as the shutdown left them until the test retries.
+    runtime.set_maintenance_repair(false);
     let app = router(runtime.clone());
     let worker = "pressure-worker";
     let accepted = registration(&app, worker).await;

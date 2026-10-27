@@ -1,0 +1,90 @@
+{
+  "remove": [
+    [
+      "table",
+      "workflow_durable_streams",
+      "workflow_durable_streams",
+      "CREATE TABLE \"workflow_durable_streams\" (\"id\" integer primary key autoincrement not null, \"namespace\" varchar not null, \"workflow_instance_id\" varchar not null, \"workflow_run_id\" varchar not null, \"stream_name\" varchar not null, \"status\" varchar not null default 'open', \"last_offset\" integer not null default '-1', \"total_items\" integer not null default '0', \"retention_seconds\" integer, \"opened_at\" datetime, \"last_appended_at\" datetime, \"closed_at\" datetime, \"error_reason\" varchar, \"pending_items\" integer not null default '0', \"metadata\" text, \"created_at\" datetime, \"updated_at\" datetime)"
+    ],
+    [
+      "table",
+      "workflow_failures",
+      "workflow_failures",
+      "CREATE TABLE \"workflow_failures\" (\"id\" varchar not null, \"workflow_run_id\" varchar not null, \"source_kind\" varchar not null, \"source_id\" varchar not null, \"propagation_kind\" varchar not null, \"failure_category\" varchar, \"non_retryable\" tinyint(1) not null default '0', \"handled\" tinyint(1) not null default '0', \"exception_class\" varchar not null, \"message\" text not null, \"file\" text not null, \"line\" integer, \"trace_preview\" text, \"created_at\" datetime, \"updated_at\" datetime, primary key (\"id\"))"
+    ],
+    [
+      "table",
+      "workflow_worker_sessions",
+      "workflow_worker_sessions",
+      "CREATE TABLE \"workflow_worker_sessions\" (\"id\" integer primary key autoincrement not null, \"namespace\" varchar not null, \"session_id\" varchar not null, \"connection\" varchar, \"queue\" varchar, \"requirements\" text, \"status\" varchar not null default 'active', \"lease_owner\" varchar, \"lease_expires_at\" datetime, \"ttl_expires_at\" datetime, \"closed_at\" datetime, \"failure_reason\" varchar, \"lease_seconds\" integer not null default '120', \"ttl_seconds\" integer not null default '1800', \"max_concurrent_activities\" integer not null default '1', \"create_if_missing\" tinyint(1) not null default '1', \"allow_reacquire_after_failure\" tinyint(1) not null default '1', \"last_heartbeat_at\" datetime, \"created_at\" datetime, \"updated_at\" datetime)"
+    ],
+    [
+      "table",
+      "workflow_service_calls",
+      "workflow_service_calls",
+      "CREATE TABLE \"workflow_service_calls\" (\"id\" varchar not null, \"workflow_service_endpoint_id\" varchar, \"workflow_service_id\" varchar, \"workflow_service_operation_id\" varchar, \"namespace\" varchar, \"endpoint_name\" varchar not null, \"service_name\" varchar not null, \"operation_name\" varchar not null, \"caller_namespace\" varchar, \"caller_workflow_instance_id\" varchar, \"caller_workflow_run_id\" varchar, \"target_namespace\" varchar, \"linked_workflow_instance_id\" varchar, \"linked_workflow_run_id\" varchar, \"linked_workflow_update_id\" varchar, \"status\" varchar not null, \"outcome\" varchar, \"operation_mode\" varchar not null, \"resolved_binding_kind\" varchar, \"resolved_target_reference\" varchar, \"payload_codec\" varchar, \"input_payload_reference\" varchar, \"output_payload_reference\" varchar, \"failure_payload_reference\" varchar, \"failure_message\" text, \"idempotency_key\" varchar, \"deadline_policy\" text, \"idempotency_policy\" text, \"cancellation_policy\" text, \"retry_policy\" text, \"boundary_policy\" text, \"metadata\" text, \"outcome_category\" varchar, \"outcome_reason\" varchar, \"outcome_message\" text, \"outcome_metadata\" text, \"policy_name\" varchar, \"retry_after_seconds\" integer, \"caller_principal_subject\" varchar, \"caller_principal_method\" varchar, \"caller_principal_roles\" text, \"caller_principal_tenant\" varchar, \"caller_principal_claims\" text, \"accepted_at\" datetime, \"started_at\" datetime, \"completed_at\" datetime, \"failed_at\" datetime, \"cancelled_at\" datetime, \"created_at\" datetime, \"updated_at\" datetime, \"call_deadline_at\" datetime, primary key (\"id\"))"
+    ]
+  ],
+  "add": [
+    [
+      "index",
+      "wf_durable_streams_ns_reclaim_idx",
+      "workflow_durable_streams",
+      "CREATE INDEX \"wf_durable_streams_ns_reclaim_idx\" on \"workflow_durable_streams\" (\"namespace\", \"reclaim_at\", \"id\")"
+    ],
+    [
+      "index",
+      "wf_service_calls_idem_scope_unique",
+      "workflow_service_calls",
+      "CREATE UNIQUE INDEX \"wf_service_calls_idem_scope_unique\" on \"workflow_service_calls\" (\"idempotency_scope_hash\")"
+    ],
+    [
+      "index",
+      "wf_service_dispatch_claim_idx",
+      "workflow_service_call_dispatches",
+      "CREATE INDEX \"wf_service_dispatch_claim_idx\" on \"workflow_service_call_dispatches\" (\"state\", \"claim_expires_at\")"
+    ],
+    [
+      "index",
+      "wf_service_dispatch_due_idx",
+      "workflow_service_call_dispatches",
+      "CREATE INDEX \"wf_service_dispatch_due_idx\" on \"workflow_service_call_dispatches\" (\"state\", \"available_at\")"
+    ],
+    [
+      "index",
+      "wf_service_dispatch_repair_idx",
+      "workflow_service_call_dispatches",
+      "CREATE INDEX \"wf_service_dispatch_repair_idx\" on \"workflow_service_call_dispatches\" (\"state\", \"repair_available_at\")"
+    ],
+    [
+      "table",
+      "workflow_durable_streams",
+      "workflow_durable_streams",
+      "CREATE TABLE \"workflow_durable_streams\" (\"id\" integer primary key autoincrement not null, \"namespace\" varchar not null, \"workflow_instance_id\" varchar not null, \"workflow_run_id\" varchar not null, \"stream_name\" varchar not null, \"status\" varchar not null default 'open', \"last_offset\" integer not null default '-1', \"total_items\" integer not null default '0', \"retention_seconds\" integer, \"opened_at\" datetime, \"last_appended_at\" datetime, \"closed_at\" datetime, \"error_reason\" varchar, \"pending_items\" integer not null default '0', \"metadata\" text, \"created_at\" datetime, \"updated_at\" datetime, \"reclaim_at\" datetime)"
+    ],
+    [
+      "table",
+      "workflow_failures",
+      "workflow_failures",
+      "CREATE TABLE \"workflow_failures\" (\"id\" varchar not null, \"workflow_run_id\" varchar not null, \"source_kind\" varchar not null, \"source_id\" varchar not null, \"propagation_kind\" varchar not null, \"failure_category\" varchar, \"non_retryable\" tinyint(1) not null default '0', \"handled\" tinyint(1) not null default '0', \"exception_class\" varchar not null, \"message\" text not null, \"file\" text not null, \"line\" integer, \"trace_preview\" text, \"created_at\" datetime, \"updated_at\" datetime, \"message_full\" text, primary key (\"id\"))"
+    ],
+    [
+      "table",
+      "workflow_service_call_dispatches",
+      "workflow_service_call_dispatches",
+      "CREATE TABLE \"workflow_service_call_dispatches\" (\"service_call_id\" varchar not null, \"state\" varchar not null, \"dispatch_options\" text not null, \"attempt\" integer not null default '1', \"max_attempts\" integer not null default '1', \"available_at\" datetime not null, \"claim_generation\" integer not null default '0', \"claim_token\" varchar, \"claimed_at\" datetime, \"claim_expires_at\" datetime, \"authorized_catalog_revision\" varchar, \"authorized_policy_revision\" varchar, \"dispatch_attempted_at\" datetime, \"repair_available_at\" datetime, \"completed_at\" datetime, \"last_error\" text, \"created_at\" datetime, \"updated_at\" datetime, primary key (\"service_call_id\"))"
+    ],
+    [
+      "table",
+      "workflow_service_calls",
+      "workflow_service_calls",
+      "CREATE TABLE \"workflow_service_calls\" (\"id\" varchar not null, \"workflow_service_endpoint_id\" varchar, \"workflow_service_id\" varchar, \"workflow_service_operation_id\" varchar, \"namespace\" varchar, \"endpoint_name\" varchar not null, \"service_name\" varchar not null, \"operation_name\" varchar not null, \"caller_namespace\" varchar, \"caller_workflow_instance_id\" varchar, \"caller_workflow_run_id\" varchar, \"target_namespace\" varchar, \"linked_workflow_instance_id\" varchar, \"linked_workflow_run_id\" varchar, \"linked_workflow_update_id\" varchar, \"status\" varchar not null, \"outcome\" varchar, \"operation_mode\" varchar not null, \"resolved_binding_kind\" varchar, \"resolved_target_reference\" varchar, \"payload_codec\" varchar, \"input_payload_reference\" varchar, \"output_payload_reference\" varchar, \"failure_payload_reference\" varchar, \"failure_message\" text, \"idempotency_key\" varchar, \"deadline_policy\" text, \"idempotency_policy\" text, \"cancellation_policy\" text, \"retry_policy\" text, \"boundary_policy\" text, \"metadata\" text, \"outcome_category\" varchar, \"outcome_reason\" varchar, \"outcome_message\" text, \"outcome_metadata\" text, \"policy_name\" varchar, \"retry_after_seconds\" integer, \"caller_principal_subject\" varchar, \"caller_principal_method\" varchar, \"caller_principal_roles\" text, \"caller_principal_tenant\" varchar, \"caller_principal_claims\" text, \"accepted_at\" datetime, \"started_at\" datetime, \"completed_at\" datetime, \"failed_at\" datetime, \"cancelled_at\" datetime, \"created_at\" datetime, \"updated_at\" datetime, \"call_deadline_at\" datetime, \"idempotency_scope_hash\" varchar, primary key (\"id\"))"
+    ],
+    [
+      "table",
+      "workflow_worker_sessions",
+      "workflow_worker_sessions",
+      "CREATE TABLE \"workflow_worker_sessions\" (\"id\" integer primary key autoincrement not null, \"namespace\" varchar not null, \"session_id\" varchar not null, \"connection\" varchar, \"queue\" varchar, \"requirements\" text, \"status\" varchar not null default 'active', \"lease_owner\" varchar, \"lease_expires_at\" datetime, \"ttl_expires_at\" datetime, \"closed_at\" datetime, \"failure_reason\" varchar, \"lease_seconds\" integer not null default '120', \"ttl_seconds\" integer not null default '1800', \"max_concurrent_activities\" integer not null default '1', \"create_if_missing\" tinyint(1) not null default '1', \"allow_reacquire_after_failure\" tinyint(1) not null default '1', \"last_heartbeat_at\" datetime, \"created_at\" datetime, \"updated_at\" datetime, \"lease_owner_incarnation\" varchar)"
+    ]
+  ]
+}

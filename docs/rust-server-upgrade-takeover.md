@@ -77,6 +77,16 @@ inspection is `unqualified` and takeover refuses with
 `upgrade_source_external_payload_storage_unsupported` before any change. A
 disabled policy does not block takeover.
 
+PHP 2.11.3 (Core 2.14) schedules a service call's handler in the
+`workflow_service_call_dispatches` outbox and dispatches it in a later pass.
+Native runs the handler when it accepts the call, so it cannot resume a
+dispatch that is still scheduled or claimed. Every inspection reports
+`service_call_dispatch_inspection`: the number of dispatches and of pending
+ones, without naming calls. A pending dispatch makes the inspection
+`unqualified`, and takeover refuses with
+`upgrade_source_service_call_dispatches_pending` before any change. Let PHP
+finish them before the stop. Completed dispatches do not block takeover.
+
 ## Exclusive transaction per backend
 
 The marker, the fingerprint check and the schema changes must not interleave

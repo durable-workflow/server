@@ -848,6 +848,8 @@ fn source_layout_names_the_release_each_recorded_delta_reaches() {
         r#"{"remove":[],"add":[["c","3"]]}"#,
         r#"{"remove":[["c","3"]],"add":[["c","3 changed"]]}"#,
         r#"{"remove":[["b","2"]],"add":[["b","2 reordered"]]}"#,
+        r#"{"remove":[],"add":[["d","4"]]}"#,
+        r#"{"remove":[],"add":[["d","4 after reorder"]]}"#,
     ];
     let layout = |actual: &[(&str, &str)]| {
         source_layout(&rows(actual), frozen.clone(), deltas, |row| row.0.clone())
@@ -867,12 +869,38 @@ fn source_layout_names_the_release_each_recorded_delta_reaches() {
         layout(&[("c", "3 changed"), ("a", "1 changed"), ("b", "2 reordered")]).unwrap(),
         "php-2.11.1-from-2.9.7"
     );
+    // 2.11.3 descends from each 2.11.1 variant separately.
+    assert_eq!(
+        layout(&[("c", "3 changed"), ("a", "1 changed"), ("b", "2"), ("d", "4")]).unwrap(),
+        "php-2.11.3"
+    );
+    assert_eq!(
+        layout(&[("c", "3 changed"), ("a", "1 changed"), ("b", "2 reordered"), ("d", "4 after reorder")]).unwrap(),
+        "php-2.11.3-from-2.9.7"
+    );
+    reason(
+        layout(&[("c", "3 changed"), ("a", "1 changed"), ("b", "2"), ("d", "4 after reorder")]),
+        "upgrade_source_catalog_unqualified",
+    );
     // A later release's addition without the earlier change is no recorded layout.
     reason(
         layout(&[("a", "1"), ("b", "2"), ("c", "3")]),
         "upgrade_source_catalog_unqualified",
     );
     reason(layout(&[("a", "1")]), "upgrade_source_catalog_unqualified");
+}
+
+#[test]
+fn every_recorded_layout_descends_from_an_earlier_one() {
+    for (index, (name, parent)) in SOURCE_LAYOUTS.iter().enumerate() {
+        assert!(
+            *parent == "frozen" || SOURCE_LAYOUTS[..index].iter().any(|(layout, _)| layout == parent),
+            "{name} names a parent recorded before it"
+        );
+    }
+    assert_eq!(layout_lineage("php-2.11.3"), [0, 1, 2, 4]);
+    assert_eq!(layout_lineage("php-2.11.3-from-2.9.7"), [0, 1, 2, 3, 5]);
+    assert!(layout_lineage("frozen").is_empty());
 }
 
 #[tokio::test]
@@ -909,6 +937,24 @@ const TRACE_CARRIERS: &[&str] = &[
     r#"ALTER TABLE "workflow_runs" ADD COLUMN "observability_context" text"#,
     r#"ALTER TABLE "workflow_commands" ADD COLUMN "observability_context" text"#,
     r#"ALTER TABLE "workflow_tasks" ADD COLUMN "observability_context" text"#,
+];
+
+/// PHP 2.11.3's changes (Core 2.14.2 and Server), in its migrations' order.
+const RELEASE_2113: &[&str] = &[
+    // Core 2.14: full failure messages.
+    r#"ALTER TABLE "workflow_failures" ADD COLUMN "message_full" text"#,
+    // Core 2.14: the service-call idempotency scope.
+    r#"ALTER TABLE "workflow_service_calls" ADD COLUMN "idempotency_scope_hash" varchar"#,
+    r#"CREATE UNIQUE INDEX "wf_service_calls_idem_scope_unique" on "workflow_service_calls" ("idempotency_scope_hash")"#,
+    // Core 2.14: the service-call dispatch outbox.
+    r#"CREATE TABLE "workflow_service_call_dispatches" ("service_call_id" varchar not null, "state" varchar not null, "dispatch_options" text not null, "attempt" integer not null default '1', "max_attempts" integer not null default '1', "available_at" datetime not null, "claim_generation" integer not null default '0', "claim_token" varchar, "claimed_at" datetime, "claim_expires_at" datetime, "authorized_catalog_revision" varchar, "authorized_policy_revision" varchar, "dispatch_attempted_at" datetime, "repair_available_at" datetime, "completed_at" datetime, "last_error" text, "created_at" datetime, "updated_at" datetime, primary key ("service_call_id"))"#,
+    r#"CREATE INDEX "wf_service_dispatch_due_idx" on "workflow_service_call_dispatches" ("state", "available_at")"#,
+    r#"CREATE INDEX "wf_service_dispatch_claim_idx" on "workflow_service_call_dispatches" ("state", "claim_expires_at")"#,
+    r#"CREATE INDEX "wf_service_dispatch_repair_idx" on "workflow_service_call_dispatches" ("state", "repair_available_at")"#,
+    // Server: each session's holder incarnation and each stream's reclaim deadline.
+    r#"ALTER TABLE "workflow_worker_sessions" ADD COLUMN "lease_owner_incarnation" varchar"#,
+    r#"ALTER TABLE "workflow_durable_streams" ADD COLUMN "reclaim_at" datetime"#,
+    r#"CREATE INDEX "wf_durable_streams_ns_reclaim_idx" on "workflow_durable_streams" ("namespace", "reclaim_at", "id")"#,
 ];
 
 /// The frozen test layout with a release's changes applied in order.
@@ -1030,6 +1076,95 @@ async fn takeover_converts_a_php_2111_database(release: &str, changes: &[&[&'sta
     runtime.close().await;
 }
 
+/// PHP 2.11.3 databases, fresh or created by 2.9.x, convert. Native keeps
+/// each active session's recorded holder, so a session PHP already orphaned
+/// stays orphaned, and drops what it does not keep: full failure messages
+/// (the labelled preview and retained history remain), the idempotency scope
+/// digest, completed dispatches and the stream reclaim deadline.
+#[tokio::test]
+async fn takeover_converts_php_2113_databases() {
+    for (release, changes) in [
+        ("php-2.11.3", [PHP_280_CHANGES, TRACE_CARRIERS, QUEUE_DELIVERY, RELEASE_2113]),
+        ("php-2.11.3-from-2.9.7", [PHP_280_CHANGES, QUEUE_DELIVERY, TRACE_CARRIERS, RELEASE_2113]),
+    ] {
+        takeover_converts_a_php_2113_database(release, &changes).await;
+    }
+}
+
+async fn takeover_converts_a_php_2113_database(release: &str, changes: &[&[&'static str]]) {
+    use sha2::{Digest, Sha256};
+    let (_directory, path) = php_release_layout(changes).await;
+    assert_eq!(inspect_sqlite(&path).await.unwrap()["source_layout"], release);
+    let digest = |token: &str| -> String { Sha256::digest(token.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect() };
+    let at = |offset: i64| (chrono::Utc::now() + chrono::Duration::seconds(offset)).format("%Y-%m-%d %H:%M:%S").to_string();
+    let token = "0123456789abcdef0123456789abcdef";
+    let statements = [
+        format!("INSERT INTO workflow_worker_registrations(worker_id,namespace,task_queue,runtime,registration_token,status,last_heartbeat_at,created_at,updated_at) VALUES ('worker-a','default','q','php','{token}','active','{}','{}','{}')", at(0), at(-60), at(0)),
+        format!("INSERT INTO workflow_worker_registration_incarnations VALUES ('{token}','default','worker-a','active',0,NULL,'{}','{}')", at(-60), at(-60)),
+        // Held by the current registration, as PHP recorded it.
+        format!("INSERT INTO workflow_worker_sessions(namespace,session_id,queue,status,lease_owner,lease_owner_incarnation,lease_expires_at,ttl_expires_at,last_heartbeat_at,created_at,updated_at) VALUES ('default','held','q','active','worker-a','{}','{}','{}','{}','{}','{}')", digest(token), at(600), at(1800), at(-5), at(-60), at(-5)),
+        // Held by a registration the worker has since replaced.
+        format!("INSERT INTO workflow_worker_sessions(namespace,session_id,queue,status,lease_owner,lease_owner_incarnation,lease_expires_at,ttl_expires_at,last_heartbeat_at,created_at,updated_at) VALUES ('default','replaced','q','active','worker-a','{}','{}','{}','{}','{}','{}')", digest("an earlier registration token"), at(600), at(1800), at(-5), at(-60), at(-5)),
+        "INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,exception_class,message,file,message_full,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kfail','01jrun0000000000000000000a','activity_execution','a','activity','RuntimeException','preview\n[full message stored separately]','','base64:ZnVsbA==','2026-10-26 10:00:00','2026-10-26 10:00:00')".to_owned(),
+        "INSERT INTO workflow_service_calls(id,namespace,endpoint_name,service_name,operation_name,caller_namespace,target_namespace,status,outcome,operation_mode,idempotency_key,idempotency_scope_hash,accepted_at,completed_at,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kcall','default','pay','billing','charge','default','default','completed','succeeded','async','order-1','0000000000000000000000000000000000000000000000000000000000000001','2026-10-26 10:00:00','2026-10-26 10:00:01','2026-10-26 10:00:00','2026-10-26 10:00:01')".to_owned(),
+        "INSERT INTO workflow_service_call_dispatches(service_call_id,state,dispatch_options,available_at,completed_at,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kcall','completed','{}','2026-10-26 10:00:00','2026-10-26 10:00:01','2026-10-26 10:00:00','2026-10-26 10:00:01')".to_owned(),
+    ];
+    for statement in &statements {
+        mutate(&path, Box::leak(statement.clone().into_boxed_str())).await;
+    }
+    let fingerprint = backup_fingerprint(&path).await;
+    let report = takeover::take_over_sqlite(&path, &fingerprint, &queue_config()).await.unwrap();
+    assert_eq!(report["status"], "taken_over", "{report}");
+    assert_eq!(report["source_layout"], release);
+    assert_eq!(
+        [&report["converted"]["session_holders_recorded"], &report["converted"]["full_failure_messages_removed"], &report["converted"]["service_call_dispatches_removed"]],
+        [&json!(2), &json!(1), &json!(1)],
+        "{report}"
+    );
+    let mut connection = SqliteConnection::connect(&format!("sqlite://{path}")).await.unwrap();
+    let message: String = sqlx::query_scalar("SELECT message FROM workflow_failures").fetch_one(&mut connection).await.unwrap();
+    assert_eq!(message, "preview\n[full message stored separately]", "the labelled preview stays");
+    let left: i64 = sqlx::query_scalar(concat!(
+        "SELECT (SELECT COUNT(*) FROM pragma_table_info('workflow_failures') WHERE name='message_full')",
+        "+(SELECT COUNT(*) FROM pragma_table_info('workflow_service_calls') WHERE name='idempotency_scope_hash')",
+        "+(SELECT COUNT(*) FROM pragma_table_info('workflow_worker_sessions') WHERE name='lease_owner_incarnation')",
+        "+(SELECT COUNT(*) FROM pragma_table_info('workflow_durable_streams') WHERE name='reclaim_at')",
+        "+(SELECT COUNT(*) FROM sqlite_master WHERE name='workflow_service_call_dispatches')"))
+        .fetch_one(&mut connection).await.unwrap();
+    assert_eq!(left, 0, "PHP 2.11.3's additions are gone");
+    connection.close().await.unwrap();
+    let runtime = crate::runtime::Runtime::open(&path, "test-token".into()).await.unwrap();
+    let held = runtime.show_worker_session("held").await.unwrap();
+    assert_eq!((held["session"]["status"].clone(), held["session"]["failure_reason"].clone()), (json!("active"), Value::Null), "{held}");
+    let replaced = runtime.show_worker_session("replaced").await.unwrap();
+    assert_eq!(
+        (replaced["session"]["status"].clone(), replaced["session"]["failure_reason"].clone()),
+        (json!("orphaned"), json!("worker_registration_replaced")),
+        "{replaced}"
+    );
+    runtime.close().await;
+}
+
+/// Native runs a service call's handler when it accepts the call, so it
+/// cannot resume a dispatch PHP 2.11.3 scheduled or claimed. Inspection
+/// reports it and takeover refuses before any change.
+#[tokio::test]
+async fn takeover_refuses_a_php_2113_dispatch_still_pending() {
+    let (_directory, path) = php_release_layout(&[PHP_280_CHANGES, TRACE_CARRIERS, QUEUE_DELIVERY, RELEASE_2113]).await;
+    mutate(&path, "INSERT INTO workflow_service_calls(id,namespace,endpoint_name,service_name,operation_name,caller_namespace,target_namespace,status,outcome,operation_mode,accepted_at,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kcall','default','pay','billing','charge','default','default','accepted','accepted','async','2026-10-26 10:00:00','2026-10-26 10:00:00','2026-10-26 10:00:00')").await;
+    mutate(&path, "INSERT INTO workflow_service_call_dispatches(service_call_id,state,dispatch_options,available_at,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kcall','scheduled','{}','2026-10-26 10:00:00','2026-10-26 10:00:00','2026-10-26 10:00:00')").await;
+    let inspection = inspect_sqlite(&path).await.unwrap();
+    assert_eq!(inspection["status"], "unqualified", "{inspection}");
+    assert_eq!(inspection["service_call_dispatch_inspection"], json!({"dispatches": 1, "pending": 1}));
+    let before = std::fs::read(&path).unwrap();
+    let fingerprint = backup_fingerprint(&path).await;
+    reason(
+        takeover::take_over_sqlite(&path, &fingerprint, &queue_config()).await,
+        "upgrade_source_service_call_dispatches_pending",
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before, "the PHP database is unchanged");
+}
+
 #[tokio::test]
 #[ignore = "only invoked as a real subprocess by the takeover interruption test"]
 async fn sqlite_takeover_child() {
@@ -1141,10 +1276,6 @@ async fn takeover_refusals_leave_the_php_database_unchanged() {
             "upgrade_source_external_payloads_unsupported",
         ),
         // Features native lacks: their rows would be left behind unread.
-        (
-            "INSERT INTO runtime_credentials(id,subject,roles,tenant,token_prefix,token_hash) VALUES ('c','worker','[]','default','dw_','h')",
-            "upgrade_source_runtime_credentials_unsupported",
-        ),
         (
             "INSERT INTO workflow_messages(workflow_instance_id,direction,channel,stream_key,sequence) VALUES ('w','inbound','c','k',1)",
             "upgrade_source_message_streams_unsupported",
@@ -1268,6 +1399,53 @@ async fn takeover_keeps_php_service_calls_and_their_deadlines() {
     assert_eq!((call["status"].clone(), call["outcome"].clone()), (json!("failed"), json!("timed_out")), "{call}");
     let open = runtime.service_catalog_show(&[], crate::runtime::service_catalog::Catalog::Calls, "01m5wvy8d1j3dtr13es05kopen").await.unwrap();
     assert_eq!((open["status"].clone(), open["call_deadline_at"].clone()), (json!("accepted"), Value::Null), "{open}");
+    runtime.close().await;
+}
+
+/// PHP's update validation tasks carry over unchanged: native validates
+/// updates in the same `workflow_update_validation_tasks` rows, with no state
+/// of its own. A pending task whose caller was waiting on PHP is then what a
+/// PHP restart leaves: a validator may still claim it, and a caller's retry
+/// with the same request reads its recorded outcome.
+#[tokio::test]
+async fn takeover_keeps_php_update_validation_tasks() {
+    let (_directory, path) = php_release_layout(&[PHP_280_CHANGES, TRACE_CARRIERS, QUEUE_DELIVERY]).await;
+    let row = |id: &str, status: &str, decided: &str| format!(
+        "INSERT INTO workflow_update_validation_tasks(id,idempotency_key,namespace,workflow_instance_id,workflow_run_id,workflow_type,task_queue,update_name,request_id,input_hash,payload_codec,arguments,status,attempt_count,approved_at,created_at,updated_at) VALUES ('{id}','key-{id}','default','order-1','01jrun0000000000000000000a','orders','q','approve','req-{id}','{}','avro','[]','{status}',{},{decided},'2026-10-26 10:00:00','2026-10-26 10:00:00')",
+        "0".repeat(64), if status == "pending" { 0 } else { 1 });
+    for statement in [row("01m5wvy8d1j3dtr13es05kval1", "pending", "NULL"), row("01m5wvy8d1j3dtr13es05kval2", "approved", "'2026-10-26 10:00:01'")] {
+        mutate(&path, Box::leak(statement.into_boxed_str())).await;
+    }
+    let read = |path: String| async move {
+        let mut connection = SqliteConnection::connect(&format!("sqlite://{path}")).await.unwrap();
+        let rows: Vec<(String, String, i64, Option<String>)> = sqlx::query_as("SELECT id,status,attempt_count,approved_at FROM workflow_update_validation_tasks ORDER BY id")
+            .fetch_all(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+        rows
+    };
+    let before = read(path.clone()).await;
+    let fingerprint = backup_fingerprint(&path).await;
+    let report = takeover::take_over_sqlite(&path, &fingerprint, &queue_config()).await.unwrap();
+    assert_eq!(report["status"], "taken_over", "{report}");
+    assert_eq!(read(path.clone()).await, before, "the tasks carry over unchanged");
+    let runtime = crate::runtime::Runtime::open(&path, "test-token".into()).await.unwrap();
+    runtime.close().await;
+}
+
+/// PHP's runtime credentials carry over: native stores and checks the same
+/// SHA-256 token hashes in the same table, so a worker's PHP-issued token
+/// still authenticates after takeover, and a revoked one still does not.
+#[tokio::test]
+async fn takeover_keeps_php_runtime_credentials_that_native_then_accepts() {
+    let (_directory, path) = php_release_layout(&[PHP_280_CHANGES, TRACE_CARRIERS, QUEUE_DELIVERY]).await;
+    for statement in crate::runtime::runtime_credentials::PHP_CREDENTIAL_ROWS {
+        mutate(&path, statement).await;
+    }
+    let fingerprint = backup_fingerprint(&path).await;
+    let report = takeover::take_over_sqlite(&path, &fingerprint, &queue_config()).await.unwrap();
+    assert_eq!(report["status"], "taken_over", "{report}");
+    let runtime = crate::runtime::Runtime::open(&path, "test-token".into()).await.unwrap();
+    crate::runtime::runtime_credentials::assert_php_credentials_served(&runtime).await;
     runtime.close().await;
 }
 
