@@ -178,7 +178,8 @@ the replacement starts serving writes.
    with sqlite3.connect("working/runtime.sqlite") as source:
        with sqlite3.connect(snapshot) as destination:
            source.backup(destination)
-           assert destination.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+           if destination.execute("PRAGMA integrity_check").fetchone() != ("ok",):
+               raise RuntimeError("Backup integrity check failed")
            destination.execute("PRAGMA journal_mode=DELETE")
    ```
 
