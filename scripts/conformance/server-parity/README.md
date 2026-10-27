@@ -40,6 +40,9 @@ the complete installed dependency lock and hashes of the actual autoloaded repla
 processes. Actual author `Workflow::now()` snapshots after both replacement
 calls must equal the original marker timestamp, preserving every microsecond.
 This embedded component observation makes no service SDK clock-helper claim.
+Server #820 refreshed only `symfony/http-foundation` to 7.4.21 in this lock and
+both `legacy-marker-aliases` role locks (GHSA-r925-mgvr-h9cc); Workflow
+packages and loaded-source hashes are unchanged.
 Run `bash scripts/conformance/server-parity/repeated-patch-profile.sh BACKEND
 PHP_URL NATIVE_URL` after the ordinary targets and adapter are prepared, with
 the same `RESOURCE_SCOPE` and database-image variables as the owning CI job.
