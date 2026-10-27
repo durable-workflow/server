@@ -13,6 +13,9 @@ bucket and every namespace prefix used by the snapshot are part of the same
 recovery point. A MySQL dump alone is incomplete when any namespace stores
 external payloads.
 
+For single-host SQLite installations, use the
+[offline SQLite procedure](#offline-sqlite-snapshot-recovery) below.
+
 ## Take a recovery point
 
 1. Confirm the published Server processes all use the same external-store
@@ -139,3 +142,66 @@ restoring it into an isolated stack.
 The [2026-09-27 published-artifact drill](evidence/server-236-20260927/README.md)
 records pinned versions, commands, raw results and recovery time. Its test
 environment is isolated and contains only synthetic workflows.
+
+## Offline SQLite snapshot recovery
+
+This procedure restores a matched SQLite database, published PHP Server image,
+encryption key and authentication configuration. Restoring a snapshot discards
+operations committed after that snapshot. Keep the former database fenced when
+the replacement starts serving writes.
+
+1. Drain accepted work and stop or fence every writer: API processes, queue
+   workers, schedulers, matching-role processes and external SDK workers. Verify
+   clean exits before copying files. Keep customer traffic fenced throughout
+   recovery. Record the exact image digest and retain the protected environment
+   and encryption key with the backup.
+2. Copy the database and any corresponding `-wal`, `-shm` and `-journal` files
+   together into a private, writable working directory while all writers remain
+   stopped. Preserve the original files. A WAL file can contain committed
+   operations absent from the main database; do not discard it or copy only the
+   main file from a running database. SQLite may need writable sidecar files
+   even to open a WAL database for reading. Let SQLite recover the working copy,
+   then use its [backup API](https://www.sqlite.org/backup.html) to create a
+   separate snapshot. The original database remains untouched.
+
+   For example, in a tooling container with Python's standard `sqlite3` module,
+   mount only the working copy and an empty backup directory as the database
+   owner's UID. After making the stopped-writer copy:
+
+   ```python
+   import sqlite3
+   from pathlib import Path
+
+   snapshot = Path("backup/runtime.sqlite")
+   if snapshot.exists():
+       raise RuntimeError("Choose a new backup destination")
+   with sqlite3.connect("working/runtime.sqlite") as source:
+       with sqlite3.connect(snapshot) as destination:
+           source.backup(destination)
+           assert destination.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+           destination.execute("PRAGMA journal_mode=DELETE")
+   ```
+
+   Protect the resulting snapshot and record its hash. If a namespace uses
+   external payloads, retain and restore the object bodies and manifest from
+   the same recovery point using the procedure above. A SQLite snapshot alone
+   does not include those objects. See SQLite's
+   [WAL file and read-only rules](https://sqlite.org/wal.html#read_only_databases).
+3. Restore into a new empty directory, preserving the database owner's UID and
+   write access to the directory. Verify `PRAGMA integrity_check` before
+   starting Server processes. Mount that directory at the configured SQLite
+   path and reuse the backed-up image digest, encryption key and authentication
+   settings. Keep the source database and protected backup unchanged.
+4. Start the isolated replacement. Verify `/api/ready`, authorized reads and
+   authentication refusal before moving traffic. Compare workflow/run identity,
+   history and acknowledged outcomes with the recovery-point inventory. Inspect
+   cancelled retried activities through the installed Waterline consumer: the
+   earlier completed task must remain completed, the live task must remain
+   cancelled and the cancellation acknowledgement must identify the original
+   retained event. Confirm that a known post-snapshot operation is absent.
+
+The [retried-activity cancellation qualification](https://github.com/durable-workflow/workflow/issues/923)
+records the published Server/Core, SDK and Waterline tuple, browser checks,
+retained task/event identities and isolated SQLite recovery result. That
+exercise uses inline payloads; the external-object restore procedure has its own
+qualification above.
