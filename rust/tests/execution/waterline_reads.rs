@@ -24,6 +24,11 @@ async fn task_queue_views_follow_registrations_and_tasks() {
     assert_eq!(status, StatusCode::OK, "{queue}");
     assert_eq!(queue["pollers"][0]["worker_id"], "queue-worker", "{queue}");
     assert_eq!(queue["admission"]["query_tasks"]["status"], "accepting", "{queue}");
+    // Published 2.11.3's poll diagnostics, reported as unobserved: native keeps
+    // no record of worker polls that ended early.
+    let unobserved = json!({"status":"unavailable","retention_seconds":900,"last_disconnect":null});
+    assert_eq!(queue["poll_transport"], unobserved, "{queue}");
+    assert_eq!(queues[0]["poll_transport"], unobserved, "{list}");
     let (status, other) = get(&app, "queues", "/api/task-queues").await;
     assert_eq!(status, StatusCode::OK, "{other}");
     assert_eq!(other["task_queues"], json!([]), "{other}");

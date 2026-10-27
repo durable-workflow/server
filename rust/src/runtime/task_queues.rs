@@ -371,6 +371,14 @@ where
             "current_leases":self.current_leases(queue, at).await?,"repair":self.repair_stats(queue, at).await?}))
     }
 
+    /// `WorkerPollDiagnostics::snapshot` as published 2.11.3 reports it when
+    /// its observation store is unavailable. Native keeps no record of worker
+    /// polls that ended early, so it never claims `no_recent_observation`.
+    /// PHP's retention for an observation is 15 minutes.
+    fn poll_transport() -> Value {
+        json!({"status":"unavailable","retention_seconds":900,"last_disconnect":null})
+    }
+
     /// One queue's detail with recent flow, activity attempts and admission.
     async fn queue_view(&self, queue: &str, config: &QueryTaskConfig, detail: bool) -> Result<Value> {
         let at = now();
@@ -395,9 +403,9 @@ where
         });
         Ok(if detail {
             json!({"name":queue,"pollers":pollers,"stats":stats,"current_leases":base["current_leases"],
-                "repair":repair,"admission":admission})
+                "repair":repair,"admission":admission,"poll_transport":Self::poll_transport()})
         } else {
-            json!({"name":queue,"stats":stats,"repair":repair,"admission":admission})
+            json!({"name":queue,"stats":stats,"repair":repair,"admission":admission,"poll_transport":Self::poll_transport()})
         })
     }
 
