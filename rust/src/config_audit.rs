@@ -502,7 +502,10 @@ pub fn audit(environment: &BTreeMap<String, String>) -> Report {
 
 /// Names native reads that PHP's contract does not list.
 fn native_only(name: &str) -> bool {
-    matches!(name, "DW_BIND_ADDRESS" | "DW_ENV" | "DW_RUST_EXPERIMENTAL" | "DW_UPGRADE_BACKUP_FINGERPRINT")
+    matches!(
+        name,
+        "DW_BIND_ADDRESS" | "DW_ENV" | "DW_RUST_EXPERIMENTAL" | "DW_RUST_MAINTENANCE_LOOP" | "DW_UPGRADE_BACKUP_FINGERPRINT"
+    )
         || ["DW_RUST_UPGRADE_QUEUE_", "DW_SCHEMA_TEST_", "DW_TAKEOVER_TEST_", "DW_TEST_"]
             .iter()
             .any(|prefix| name.starts_with(prefix))
@@ -820,6 +823,7 @@ mod tests {
             ("DW_WORKFLOW_MEMO_MIGRATION_RECOVERY", ""),
             ("DW_ENV_AUDIT_STRICT", "1"),
             ("DW_RUST_EXPERIMENTAL", "1"),
+            ("DW_RUST_MAINTENANCE_LOOP", "1"),
             ("DW_BIND_ADDRESS", "0.0.0.0:8080"),
         ];
         let report = audit(&environment(&shipped));
