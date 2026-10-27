@@ -180,3 +180,128 @@ async fn a_prefix_waits_for_a_root_cancellation_to_be_delivered() {
     let (status, receipt) = checkpoint(&app, &task, json!({"checkpoint_id":"c","start_sequence":2,"commands":prefix()}), "1.20").await;
     assert_eq!((status, receipt["next_sequence"].clone()), (StatusCode::OK, json!(4)), "{receipt}");
 }
+
+/// A cooperative worker that declares the `finish` signal and the `set`
+/// update, as `update_worker` does.
+async fn contract_worker(app: &Router, worker: &str) {
+    let registered = request_protocol(app, "POST", "/api/worker/register", json!({
+        "worker_id":worker,"task_queue":"test","runtime":"php","supported_workflow_types":["echo"],
+        "supported_activity_types":[],"capabilities":["cooperative_cancellation","workflow_updates"],"workflow_command_contracts":{"echo":{
+            "signals":["finish"],"signal_contracts":[{"name":"finish","parameters":[{"name":"value","type":"int","required":true,"variadic":false,"default_available":false,"allows_null":false}]}],
+            "updates":["set"],"update_validators":[],"update_contracts":[{"name":"set","parameters":[{"name":"value","type":"int","required":true,"variadic":false,"default_available":false,"allows_null":false}]}]
+        }}}), "1.20").await;
+    assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+}
+
+fn events_of<'a>(history: &'a Value, kind: &str) -> Vec<&'a Value> {
+    history.as_array().unwrap().iter().filter(|event| event["event_type"] == kind).collect()
+}
+
+// Core's recordAppliedSignalForSignalResume applies a resumed task's signal
+// once: a prefix checkpoint applies it, and the second checkpoint and the
+// completion on the same claim leave it applied.
+#[tokio::test]
+async fn a_signal_resumed_claim_checkpoints_then_completes() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    contract_worker(&app, "signal-worker").await;
+    let run = start(&app, "scope-signal").await;
+    let first = claim(&app, "signal-worker").await;
+    let parked = finish_task(&app, &first, json!([{"type":"open_signal_wait","signal_name":"finish"}])).await;
+    assert_eq!(parked.0, StatusCode::OK, "{}", parked.1);
+    let signalled = request(&app, "POST", "/api/workflows/scope-signal/signal/finish",
+        json!({"input":envelope(Payload::Array(vec![Payload::Long(1)]))})).await;
+    assert_eq!(signalled.0, StatusCode::ACCEPTED, "{}", signalled.1);
+    let task = claim(&app, "signal-worker").await;
+    assert_eq!(task["resume_source_kind"], "workflow_signal", "{task}");
+
+    let (status, receipt) = checkpoint(&app, &task,
+        json!({"checkpoint_id":"after-signal","start_sequence":2,"commands":[marker("after-signal")]}), "1.20").await;
+    assert_eq!((status, receipt["next_sequence"].clone()), (StatusCode::OK, json!(3)), "{receipt}");
+    let (status, second) = checkpoint(&app, &task,
+        json!({"checkpoint_id":"second","start_sequence":3,"commands":[marker("second")]}), "1.20").await;
+    assert_eq!((status, second["next_sequence"].clone()), (StatusCode::OK, json!(4)), "{second}");
+    let finished = finish_task(&app, &task, json!([{"type":"complete_workflow","result":envelope(Payload::Null)}])).await;
+    assert_eq!((finished.0, finished.1["run_status"].clone()), (StatusCode::OK, json!("completed")), "{}", finished.1);
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    assert_eq!(events_of(&history, "SignalApplied").len(), 1, "{history}");
+}
+
+// Core's nextDurableCommandSequence counts SearchAttributesUpserted, so a
+// prefix that ends in an upsert is followed at its receipt's next sequence.
+#[tokio::test]
+async fn a_prefix_ending_in_a_search_attribute_upsert_is_followed_at_its_next_sequence() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let defined = request(&app, "POST", "/api/search-attributes", json!({"name":"ScopeCount","type":"int"})).await;
+    assert_eq!(defined.0, StatusCode::CREATED, "{}", defined.1);
+    register(&app, "scope-worker", json!(["cooperative_cancellation", "typed_search_attributes"])).await;
+    start(&app, "scope-upsert").await;
+    let task = claim(&app, "scope-worker").await;
+    let (status, receipt) = checkpoint(&app, &task, json!({"checkpoint_id":"upsert","start_sequence":1,
+        "commands":[{"type":"upsert_search_attributes","attributes":{"ScopeCount":1}}]}), "1.20").await;
+    assert_eq!((status, receipt["next_sequence"].clone()), (StatusCode::OK, json!(2)), "{receipt}");
+    let (status, opened) = request_protocol(&app, "POST",
+        &format!("/api/worker/workflow-tasks/{}/cancellation-scopes/open", task["task_id"].as_str().unwrap()),
+        json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"],"sequence":2}), "1.20").await;
+    assert_eq!((status, opened["opened"].clone()), (StatusCode::OK, json!(true)), "{opened}");
+}
+
+// Core changes a run's status at completion (markRunWaiting), not at a
+// prefix checkpoint: a timer in a prefix leaves the run as the claim found it.
+#[tokio::test]
+async fn a_prefix_leaves_the_run_status_until_completion() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register(&app, "scope-worker", json!(["cooperative_cancellation"])).await;
+    start(&app, "scope-status").await;
+    let task = claim(&app, "scope-worker").await;
+    let status_of = || async { request(&app, "GET", "/api/workflows/scope-status", Value::Null).await.1["status"].clone() };
+    let claimed = status_of().await;
+    assert_ne!(claimed, "waiting");
+    let (status, receipt) = checkpoint(&app, &task,
+        json!({"checkpoint_id":"timer","start_sequence":1,"commands":[{"type":"start_timer","delay_seconds":3600}]}), "1.20").await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    assert_eq!(status_of().await, claimed);
+    let finished = finish_task(&app, &task, json!([marker("after-timer")])).await;
+    assert_eq!(finished.0, StatusCode::OK, "{}", finished.1);
+    assert_eq!(status_of().await, "waiting");
+}
+
+// Core's applyCompleteUpdate records the update at the batch's next sequence
+// and returns the one after it: a command after the update takes the
+// following sequence, in a completion as in a prefix checkpoint.
+#[tokio::test]
+async fn a_command_after_an_update_completion_takes_the_following_sequence() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    contract_worker(&app, "update-worker").await;
+    let run = start(&app, "scope-updates").await;
+    let first = claim(&app, "update-worker").await;
+    let parked = finish_task(&app, &first, json!([{"type":"open_signal_wait","signal_name":"finish"}])).await;
+    assert_eq!(parked.0, StatusCode::OK, "{}", parked.1);
+    for (round, through) in [(1, "complete"), (2, "checkpoint")] {
+        let accepted = request(&app, "POST", "/api/workflows/scope-updates/update/set",
+            json!({"input":envelope(Payload::Array(vec![Payload::Long(round)])),"request_id":format!("set-{round}"),"wait_for":"accepted"})).await;
+        assert_eq!(accepted.0, StatusCode::ACCEPTED, "{}", accepted.1);
+        let task = claim(&app, "update-worker").await;
+        assert_eq!(task["workflow_update_id"], accepted.1["update_id"], "{task}");
+        let commands = json!([{"type":"complete_update","update_id":accepted.1["update_id"],"result":envelope(Payload::Long(round))},
+            marker(&format!("after-update-{round}"))]);
+        if through == "complete" {
+            let finished = finish_task(&app, &task, commands).await;
+            assert_eq!(finished.0, StatusCode::OK, "{}", finished.1);
+        } else {
+            let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+            let next = events_of(&history, "VersionMarkerRecorded").iter().filter_map(|event| event["payload"]["sequence"].as_i64()).max().unwrap() + 1;
+            let (status, receipt) = checkpoint(&app, &task, json!({"checkpoint_id":"update","start_sequence":next,"commands":commands}), "1.20").await;
+            assert_eq!((status, receipt["next_sequence"].clone()), (StatusCode::OK, json!(next + 2)), "{receipt}");
+        }
+        let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+        let update = *events_of(&history, "UpdateCompleted").last().unwrap();
+        let marker_event = events_of(&history, "VersionMarkerRecorded").into_iter()
+            .find(|event| event["payload"]["change_id"] == format!("after-update-{round}")).unwrap();
+        assert_eq!(marker_event["payload"]["sequence"].as_i64().unwrap(), update["payload"]["sequence"].as_i64().unwrap() + 1,
+            "{update} {marker_event}");
+    }
+}

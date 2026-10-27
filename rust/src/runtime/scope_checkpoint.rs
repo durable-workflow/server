@@ -73,24 +73,28 @@ fn refused(task_id: &str, reason: &str) -> Value {
 
 const INVALID_COMMANDS: &str = "invalid_cancellation_scope_checkpoint_commands";
 
-/// Commands that cannot be part of a retained-claim prefix: a wait closes a
-/// turn, a local report reconstructs an executed callback, and selection
-/// cancellation requires activity fencing.
+/// Commands that cannot be part of a retained-claim prefix: a terminal
+/// command, a wait (it closes a turn) and a local report (it reconstructs an
+/// executed callback). Core also refuses `cancel_selection_operation` here;
+/// native refuses that command type for any workflow task before this point
+/// (`unsupported_workflow_command`).
 fn excluded(command: &Value) -> bool {
     matches!(
         command["type"].as_str(),
-        Some("record_local_activity" | "open_condition_wait" | "open_signal_wait" | "cancel_selection_operation")
-    ) || matches!(command["type"].as_str(), Some("complete_workflow" | "fail_workflow" | "continue_as_new"))
+        Some("record_local_activity" | "open_condition_wait" | "open_signal_wait" | "complete_workflow" | "fail_workflow"
+            | "continue_as_new")
+    )
 }
 
 /// The prefix's identity for retries: SHA-256 over its commands' JSON.
-fn fingerprint(commands: &[Value]) -> String {
-    super::bundle_verifier::hex(&Sha256::digest(Value::Array(commands.to_vec()).to_string().as_bytes()))
+fn fingerprint(commands: &[Value]) -> Result<String> {
+    let encoded = serde_json::to_vec(commands).map_err(|_| super::refuse(StatusCode::CONFLICT, INVALID_COMMANDS))?;
+    Ok(super::bundle_verifier::hex(&Sha256::digest(&encoded)))
 }
 
-fn same_instant(left: &Value, right: Option<DateTime<Utc>>) -> bool {
-    let parsed = left.as_str().and_then(|text| DateTime::parse_from_rfc3339(text).ok()).map(|at| at.with_timezone(&Utc));
-    parsed.is_some() && parsed == right
+/// A context's RFC 3339 instant.
+fn instant(value: &Value) -> Option<DateTime<Utc>> {
+    value.as_str().and_then(|text| DateTime::parse_from_rfc3339(text).ok()).map(|at| at.with_timezone(&Utc))
 }
 
 store_methods! {
@@ -143,9 +147,10 @@ store_methods! {
             && requested["request_id"].as_str() == Some(request_id.as_str())
             && requested["root_request_id"] == delivered["root_request_id"]
             && requested["request_id"] == delivered["request_id"]
-            && same_instant(&requested["requested_at"], same_or_none(&delivered["requested_at"]))
-            && same_instant(&requested["cleanup_deadline_at"], same_or_none(&delivered["cleanup_deadline_at"]))
-            && same_instant(&requested["cleanup_deadline_at"], deadline))
+            && instant(&requested["requested_at"]).is_some_and(|at| Some(at) == instant(&delivered["requested_at"]))
+            && instant(&requested["cleanup_deadline_at"]).is_some_and(|at| {
+                Some(at) == instant(&delivered["cleanup_deadline_at"]) && Some(at) == deadline
+            }))
     }
 
     /// Core's `checkpointCommands` for a cancellation scope prefix, after
@@ -174,9 +179,9 @@ store_methods! {
         let refusal = |reason: &str| Ok(refused(&task_id, reason));
         let owner = body["lease_owner"].as_str().unwrap_or_default();
         let attempt = body["workflow_task_attempt"].as_i64().unwrap_or_default();
-        if attempt < 1 || owner.is_empty() || checkpoint.id.trim().is_empty() || checkpoint.id.len() > 255
-            || commands.len() > 100
-        {
+        // Core's argument checks. Its command-count bound (100) is already
+        // the completion's, refused before this point.
+        if attempt < 1 || owner.is_empty() || checkpoint.id.trim().is_empty() || checkpoint.id.len() > 255 {
             tx.rollback().await?;
             return refusal("invalid_cancellation_scope_checkpoint");
         }
@@ -184,7 +189,7 @@ store_methods! {
             tx.rollback().await?;
             return refusal(INVALID_COMMANDS);
         }
-        let fingerprint = fingerprint(commands);
+        let fingerprint = fingerprint(commands)?;
         // The claim, read in this transaction.
         let expires = DB::optional_instant(&task, "lease_expires_at")?;
         if DB::string(&task, "task_type")? != "workflow" || DB::string(&task, "status")? != "leased"
@@ -259,7 +264,15 @@ store_methods! {
         }
         // Metered like a completion (Workflow #930).
         tx.meter = Some(super::history_meter::Meter::new(&limits, &task_id, &body["workflow_task_attempt"]));
-        Self::apply_task_signal(&mut tx, &run_id, &task_id, &task, transition_codec).await?;
+        // Core answers its own refusals as a refused checkpoint.
+        match Self::apply_task_signal(&mut tx, &run_id, &task_id, &task, transition_codec, true).await {
+            Ok(()) => {}
+            Err(RuntimeError::Refused { reason, .. }) => {
+                tx.rollback().await?;
+                return refusal(reason);
+            }
+            Err(error) => return Err(error),
+        }
         let apply = super::store::Apply {
             run: &run,
             task: &task,
@@ -322,7 +335,8 @@ store_methods! {
                 error => Err(error),
             };
         }
-        tx.summary_changed(&run_id);
+        // Core projects the run at completion, not at a checkpoint: the run's
+        // status and summary stay as the claim found them.
         tx.commit().await?;
         self.wake.notify_waiters();
         let mut response = receipt;
@@ -331,11 +345,6 @@ store_methods! {
         response["reason"] = Value::Null;
         Ok(response)
     }
-}
-
-/// A delivered context's instant, for comparison with the request's.
-fn same_or_none(value: &Value) -> Option<DateTime<Utc>> {
-    value.as_str().and_then(|text| DateTime::parse_from_rfc3339(text).ok()).map(|at| at.with_timezone(&Utc))
 }
 
 /// The task payload key of the retained receipt.

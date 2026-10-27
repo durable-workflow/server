@@ -1192,7 +1192,7 @@ where
         .map(|row| DB::number(&row, "sequence"))
         .transpose()?
         .unwrap_or(0);
-        let wait = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('SignalWaitOpened','ConditionWaitOpened','VersionMarkerRecorded','MemoUpserted','SideEffectRecorded') ORDER BY sequence DESC LIMIT 1")
+        let wait = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('SignalWaitOpened','ConditionWaitOpened','VersionMarkerRecorded','MemoUpserted','SideEffectRecorded','SearchAttributesUpserted') ORDER BY sequence DESC LIMIT 1")
             .bind(run_id).fetch_optional(&mut **tx).await?;
         let wait_sequence = wait
             .map(|row| DB::document_row(&row, "payload"))
@@ -1442,12 +1442,19 @@ where
         Ok(None)
     }
 
+    /// `recordAppliedSignalForSignalResume`: a signal-resumed task applies
+    /// its signal once. A signal already applied (by an earlier prefix
+    /// checkpoint on the same claim) is left as it is, as Core leaves it.
+    /// For a `checkpoint`, a signal Core would not apply (its command
+    /// unavailable, its wait not open or another wait open) is skipped as
+    /// Core skips it; a completion keeps native's refusals for those.
     pub(super) async fn apply_task_signal(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
         task_id: &str,
         task: &DB::Row,
         transition_codec: Arc<Semaphore>,
+        checkpoint: bool,
     ) -> Result<()> {
         let payload = DB::document_row(task, "payload")?;
         if payload["resume_source_kind"] != "workflow_signal" {
@@ -1455,11 +1462,15 @@ where
         }
         let signal_id = text(&payload, "workflow_signal_id")?;
         // The signal's own command, never one of another workflow (Server #765).
-        let signal = Self::query("SELECT s.*,c.message_sequence FROM workflow_signal_records s JOIN workflow_commands c ON c.id=s.workflow_command_id AND c.workflow_instance_id=s.workflow_instance_id WHERE s.id=$1 AND s.workflow_run_id=$2")
+        let Some(signal) = Self::query("SELECT s.*,c.message_sequence FROM workflow_signal_records s JOIN workflow_commands c ON c.id=s.workflow_command_id AND c.workflow_instance_id=s.workflow_instance_id WHERE s.id=$1 AND s.workflow_run_id=$2")
             .bind(signal_id).bind(run_id).fetch_optional(&mut **tx).await?
-            .ok_or_else(|| refuse(StatusCode::CONFLICT, "signal_command_unavailable"))?;
-        if DB::string(&signal, "status")? != "received" {
-            return Err(refuse(StatusCode::CONFLICT, "signal_already_applied"));
+        else {
+            return if checkpoint { Ok(()) } else { Err(refuse(StatusCode::CONFLICT, "signal_command_unavailable")) };
+        };
+        match DB::string(&signal, "status")?.as_str() {
+            "received" => {}
+            "applied" => return Ok(()),
+            _ => return Err(refuse(StatusCode::CONFLICT, "signal_already_applied")),
         }
         let name = DB::string(&signal, "signal_name")?;
         let wait_id = DB::string(&signal, "signal_wait_id")?;
@@ -1474,6 +1485,9 @@ where
             .await?
             .is_some_and(|names| names.contains(&name));
         if wait.is_none() && !declared {
+            if checkpoint {
+                return Ok(());
+            }
             let reason = if open.is_some() { "signal_wait_mismatch" } else { "signal_wait_not_open" };
             return Err(refuse(StatusCode::CONFLICT, reason));
         }
@@ -2607,7 +2621,7 @@ where
         }
         // `acknowledgeWorkflowTaskWaitingForHistory` completes a signal task
         // through the bridge, which records its signal as applied.
-        Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec).await?;
+        Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec, false).await?;
         payload["waiting_for_history_acknowledged"] = json!(true);
         tx.summary_changed(&run_id);
         payload["waiting_for_history_message"] = json!(message);
@@ -2977,7 +2991,7 @@ where
         let mut sequence = Self::authored_sequence(&mut tx, &run_id).await?;
         // The tasks this batch's commands create, in order, as PHP reports them.
         let mut created = Vec::new();
-        Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec).await?;
+        Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec, false).await?;
         // Published parseCommands applies every other command first, whatever
         // the terminal command's position in the batch.
         let apply = Apply {
@@ -3010,6 +3024,18 @@ where
                 }
             } else if command["type"] != "complete_workflow" {
                 self.apply_non_terminal(&mut tx, &apply, index, command, &mut sequence, &mut created).await?;
+                // The completion leaves the run waiting on what it scheduled
+                // or opened. A prefix checkpoint changes no run status:
+                // Core's markRunWaiting runs only at completion.
+                if matches!(
+                    command["type"].as_str(),
+                    Some("schedule_activity" | "start_timer" | "open_condition_wait" | "open_signal_wait")
+                ) {
+                    Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1")
+                        .bind(&run_id)
+                        .execute(&mut *tx)
+                        .await?;
+                }
             } else {
                 if Self::cancellation_request(&run)?.is_some() {
                     Self::finish_root_cancellation(&mut tx, &run, Some(&task)).await?;
@@ -3125,7 +3151,12 @@ where
             command["type"].as_str(),
             Some("complete_update" | "fail_update")
         ) {
-            Self::apply_update(tx, &run, &task, command, sequence + 1).await?;
+            // `applyCompleteUpdate` and `applyFailUpdate` record the update at
+            // the next sequence and return the one after it, so a later
+            // command in the batch takes the following sequence. History
+            // does not count update events toward the next turn's sequence.
+            sequence += 1;
+            Self::apply_update(tx, &run, &task, command, sequence).await?;
         } else if command["type"] == "start_child_workflow" {
             Self::guard_pending(tx, &run_id, super::memo_limits::Pending::Children, &limits, task_id, attempt).await?;
             sequence += 1;
@@ -3253,10 +3284,6 @@ where
                 recorded_at,
             )
             .await?;
-            Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1")
-                .bind(&run_id)
-                .execute(&mut **tx)
-                .await?;
         } else if command["type"] == "start_timer" {
             Self::guard_pending(tx, &run_id, super::memo_limits::Pending::Timers, &limits, task_id, attempt).await?;
             sequence += 1;
@@ -3315,10 +3342,6 @@ where
                 fire_at,
             )
             .await?;
-            Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1")
-                .bind(&run_id)
-                .execute(&mut **tx)
-                .await?;
         } else if command["type"] == "open_condition_wait"
             || command["type"] == "open_signal_wait"
         {
@@ -3391,10 +3414,6 @@ where
             if !direct || pending_wait_id.is_none() {
                 Self::schedule_wait_timeout(tx, &run, &payload, task_id).await?;
             }
-            Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1")
-                .bind(&run_id)
-                .execute(&mut **tx)
-                .await?;
         } else {
             return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "unsupported_workflow_command"));
         }
@@ -4676,9 +4695,6 @@ pub(super) fn validate_arguments(
     Ok(())
 }
 
-/// A workflow task completion's stored receipt: its request and the tasks it
-/// created, so a repeat answers as the original did. Older receipts, and
-/// activity receipts, are the bare request.
 /// What a workflow task's non-terminal commands are applied with: the run
 /// and task they belong to, the request's attempt, the structural limits,
 /// and the batch's prepared external payloads and local activity records.
@@ -4701,6 +4717,9 @@ impl<R> Clone for Apply<'_, R> {
 }
 impl<R> Copy for Apply<'_, R> {}
 
+/// A workflow task completion's stored receipt: its request and the tasks it
+/// created, so a repeat answers as the original did. Older receipts, and
+/// activity receipts, are the bare request.
 const COMPLETION_RECEIPT: &str = "workflow_task_completion";
 
 /// PHP's `TERMINAL_TYPES`: the commands that close the run.
