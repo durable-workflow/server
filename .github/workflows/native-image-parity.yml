@@ -1,0 +1,82 @@
+name: Native image parity
+
+# Differential qualification of a native server image (Server #325). It
+# records the shared fixture corpus on SQLite against the published PHP
+# reference, embedded PHP and the native image itself, and compares the three
+# records, as the Shared Server fixtures corpus part does for a source build.
+#
+# Dispatch it with a published native image by digest to qualify that
+# artifact. A pull request that changes the comparison itself builds the image
+# from its own source and compares that build, so the comparison is exercised
+# before it is relied on. Nothing is pushed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      native_image:
+        description: 'Native image by digest, for example ghcr.io/durable-workflow/server-native@sha256:<index digest>'
+        required: true
+  pull_request:
+    paths:
+      - scripts/conformance/server-parity/native-image-corpus.sh
+      - scripts/conformance/server-parity/update-validation-sqlite.sh
+      - scripts/conformance/server-parity/php-maintenance-window.sh
+      - .github/workflows/native-image-parity.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-image-parity-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  corpus:
+    name: Compare the native image over the shared fixture corpus (SQLite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      # The name the shared PHP maintenance window expects.
+      RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+      LOCAL_IMAGE: dw-native-corpus-${{ github.run_id }}-${{ github.run_attempt }}:corpus
+    steps:
+      - name: Check out
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+
+      - name: Set up Docker Buildx
+        if: github.event_name == 'pull_request'
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
+
+      - name: Build this pull request's native image into the local daemon
+        if: github.event_name == 'pull_request'
+        timeout-minutes: 45
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7
+        with:
+          context: .
+          file: Dockerfile.native
+          platforms: linux/amd64
+          pull: true
+          provenance: false
+          load: true
+          push: false
+          tags: ${{ env.LOCAL_IMAGE }}
+
+      - name: Record and compare the corpus against the native image
+        env:
+          NATIVE_IMAGE: ${{ github.event_name == 'pull_request' && env.LOCAL_IMAGE || inputs.native_image }}
+        run: bash scripts/conformance/server-parity/native-image-corpus.sh "$NATIVE_IMAGE"
+
+      - name: Remove this job's containers and network
+        if: always()
+        run: |
+          docker rm -f "$RESOURCE_SCOPE-rust" "$RESOURCE_SCOPE-server" "$RESOURCE_SCOPE-php-maintenance" || true
+          docker network rm "$RESOURCE_SCOPE" || true
+
+      - name: Keep the comparison evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: native-image-parity
+          path: parity-evidence
+          retention-days: 14
+          if-no-files-found: ignore
