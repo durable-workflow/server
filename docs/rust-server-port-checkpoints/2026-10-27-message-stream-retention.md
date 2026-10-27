@@ -34,3 +34,25 @@
     third. Pruning the last run deletes the stream and its three items.
   - `retention_keeps_consumed_messages_no_retained_checkpoint_covers`: without
     a retained checkpoint, nothing is compacted and the stream stays.
+
+## Takeover keeps message and workflow streams
+
+- **Before.** Takeover refused any source with rows in
+  `workflow_messages`, either kind of stream, or their items.
+- **Change.** Stream rows carry over unchanged.
+  - Each closed or errored durable stream gets its `dw_stream_reclaims`
+    deadline: 2.11.3's `reclaim_at`, or `closed_at` plus `retention_seconds`
+    (3600 unless set) for earlier layouts. Reported as
+    `stream_reclaims_recorded`; MySQL and MariaDB do it in journal step 10.
+  - Inspection reports `stream_reference_inspection`. A stream row holding an
+    external payload reference refuses with
+    `upgrade_source_external_payloads_unsupported`.
+  - Only `workflow_messages` stays refused, now as
+    `upgrade_source_workflow_messages_unsupported`.
+- **Tests.**
+  - `takeover_keeps_php_streams_and_records_their_reclaim_deadlines` (SQLite).
+  - The 2.11.3 takeover test now copies a recorded deadline.
+  - The refusal list covers a durable stream item holding an external
+    reference.
+  - Takeover qualification passes on PostgreSQL, MySQL and MariaDB,
+    including a MySQL takeover killed after step 9.

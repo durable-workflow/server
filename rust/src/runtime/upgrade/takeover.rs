@@ -221,16 +221,9 @@ fn report(backend: &str, layout: &str, digest: &Value, inventory: &Value, conver
 /// Published PHP features native does not implement yet. A source holding any
 /// of their rows is refused, rather than taken over without them. Derived
 /// projections and PHP's own queue and poll bookkeeping are left in place.
-const UNSUPPORTED_FEATURES: [(&str, &[&str]); 1] = [    (
-        "upgrade_source_message_streams_unsupported",
-        &[
-            "workflow_messages",
-            "workflow_durable_streams",
-            "workflow_durable_stream_items",
-            "workflow_inbound_streams",
-            "workflow_inbound_stream_items",
-        ],
-    ),
+const UNSUPPORTED_FEATURES: [(&str, &[&str]); 1] = [
+    // Workflow-to-workflow messages, which native does not deliver yet.
+    ("upgrade_source_workflow_messages_unsupported", &["workflow_messages"]),
 ];
 
 /// Takeover needs every inspection result it relies on, and refuses what
@@ -294,6 +287,7 @@ fn qualified(inventory: &Value) -> Result<&str> {
         || total("unqualified_references") != 0
         || total("other_unvalidated") != 0
         || inventory["table_rows"]["runtime_external_payloads"] != 0
+        || inventory["stream_reference_inspection"]["references"] != 0
     {
         return Err(refuse(
             StatusCode::CONFLICT,
@@ -406,6 +400,7 @@ where
     } else {
         0
     };
+    let reclaims = adopt_stream_reclaims::<DB>(tx, super::has_release(layout, "php-2.11.3")).await?;
     let release_2113 = if super::has_release(layout, "php-2.11.3") {
         let messages = count::<DB>(tx, FULL_FAILURE_MESSAGES).await?;
         let dispatches = count::<DB>(tx, COMPLETED_DISPATCHES).await?;
@@ -419,12 +414,51 @@ where
         "session_holders_recorded":holders,
         "service_call_deadlines_copied":deadlines,
         "queue_delivery_references_removed":delivery_references,
-        "observability_contexts_removed":observability_contexts
+        "observability_contexts_removed":observability_contexts,
+        "stream_reclaims_recorded":reclaims
     });
     if let (Value::Object(converted), Value::Object(release)) = (&mut converted, release_2113) {
         converted.extend(release);
     }
     Ok(converted)
+}
+
+/// Native keeps each closed or errored durable stream's reclaim deadline in
+/// `dw_stream_reclaims`, which its retention pass reads. PHP 2.11.3 records it
+/// as `workflow_durable_streams.reclaim_at` (null once the stream's items are
+/// gone). Earlier releases recorded none, so the deadline is `closed_at` plus
+/// the stream's retention, an hour unless set, as 2.11.3's own migration
+/// backfills it. A repeated call records only streams not recorded yet.
+/// Returns how many it recorded.
+pub(super) async fn adopt_stream_reclaims<DB: Backend>(tx: &mut DB::Connection, recorded: bool) -> Result<usize>
+where
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+    for<'q> String: Encode<'q, DB> + Type<DB>,
+{
+    let rows = query::<DB>(if recorded {
+        "SELECT id,namespace,workflow_run_id,reclaim_at FROM workflow_durable_streams WHERE reclaim_at IS NOT NULL AND id NOT IN (SELECT stream_id FROM dw_stream_reclaims) ORDER BY id"
+    } else {
+        "SELECT id,namespace,workflow_run_id,closed_at,retention_seconds FROM workflow_durable_streams WHERE status IN ('closed','errored') AND closed_at IS NOT NULL AND id NOT IN (SELECT stream_id FROM dw_stream_reclaims) ORDER BY id"
+    })
+    .fetch_all(&mut *tx)
+    .await?;
+    for row in &rows {
+        let reclaim_at = if recorded {
+            DB::instant(row, "reclaim_at")?
+        } else {
+            DB::instant(row, "closed_at")?
+                + chrono::Duration::seconds(DB::optional_number(row, "retention_seconds")?.unwrap_or(3600))
+        };
+        query::<DB>("INSERT INTO dw_stream_reclaims(stream_id,namespace,workflow_run_id,reclaim_at) VALUES ($1,$2,$3,$4)")
+            .bind(DB::optional_integer(Some(DB::number(row, "id")?)))
+            .bind(DB::string(row, "namespace")?)
+            .bind(DB::string(row, "workflow_run_id")?)
+            .bind(DB::bind_time(reclaim_at))
+            .execute(&mut *tx)
+            .await?;
+    }
+    Ok(rows.len())
 }
 
 /// Core 2.14's full failure messages: a message beyond the old TEXT capacity,

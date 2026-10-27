@@ -1108,6 +1108,7 @@ async fn takeover_converts_a_php_2113_database(release: &str, changes: &[&[&'sta
         "INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,exception_class,message,file,message_full,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kfail','01jrun0000000000000000000a','activity_execution','a','activity','RuntimeException','preview\n[full message stored separately]','','base64:ZnVsbA==','2026-10-26 10:00:00','2026-10-26 10:00:00')".to_owned(),
         "INSERT INTO workflow_service_calls(id,namespace,endpoint_name,service_name,operation_name,caller_namespace,target_namespace,status,outcome,operation_mode,idempotency_key,idempotency_scope_hash,accepted_at,completed_at,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kcall','default','pay','billing','charge','default','default','completed','succeeded','async','order-1','0000000000000000000000000000000000000000000000000000000000000001','2026-10-26 10:00:00','2026-10-26 10:00:01','2026-10-26 10:00:00','2026-10-26 10:00:01')".to_owned(),
         "INSERT INTO workflow_service_call_dispatches(service_call_id,state,dispatch_options,available_at,completed_at,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kcall','completed','{}','2026-10-26 10:00:00','2026-10-26 10:00:01','2026-10-26 10:00:00','2026-10-26 10:00:01')".to_owned(),
+        "INSERT INTO workflow_durable_streams(namespace,workflow_instance_id,workflow_run_id,stream_name,status,retention_seconds,closed_at,reclaim_at) VALUES ('default','i','01jrun0000000000000000000a','progress','closed',600,'2026-10-26 10:00:00','2026-10-26 10:10:00')".to_owned(),
     ];
     for statement in &statements {
         mutate(&path, Box::leak(statement.clone().into_boxed_str())).await;
@@ -1117,8 +1118,8 @@ async fn takeover_converts_a_php_2113_database(release: &str, changes: &[&[&'sta
     assert_eq!(report["status"], "taken_over", "{report}");
     assert_eq!(report["source_layout"], release);
     assert_eq!(
-        [&report["converted"]["session_holders_recorded"], &report["converted"]["full_failure_messages_removed"], &report["converted"]["service_call_dispatches_removed"]],
-        [&json!(2), &json!(1), &json!(1)],
+        [&report["converted"]["session_holders_recorded"], &report["converted"]["full_failure_messages_removed"], &report["converted"]["service_call_dispatches_removed"], &report["converted"]["stream_reclaims_recorded"]],
+        [&json!(2), &json!(1), &json!(1), &json!(1)],
         "{report}"
     );
     let mut connection = SqliteConnection::connect(&format!("sqlite://{path}")).await.unwrap();
@@ -1278,7 +1279,12 @@ async fn takeover_refusals_leave_the_php_database_unchanged() {
         // Features native lacks: their rows would be left behind unread.
         (
             "INSERT INTO workflow_messages(workflow_instance_id,direction,channel,stream_key,sequence) VALUES ('w','inbound','c','k',1)",
-            "upgrade_source_message_streams_unsupported",
+            "upgrade_source_workflow_messages_unsupported",
+        ),
+        // A stream item native would carry over but cannot resolve.
+        (
+            "INSERT INTO workflow_durable_stream_items(stream_id,namespace,workflow_run_id,stream_name,\"offset\",payload_reference,emitted_at) VALUES (1,'default','r','s',0,'dw-external-payload:v1:x','2026-10-26 10:00:00')",
+            "upgrade_source_external_payloads_unsupported",
         ),
         // A namespace whose uploads would all be refused: native serves
         // only the local driver.
@@ -1399,6 +1405,42 @@ async fn takeover_keeps_php_service_calls_and_their_deadlines() {
     assert_eq!((call["status"].clone(), call["outcome"].clone()), (json!("failed"), json!("timed_out")), "{call}");
     let open = runtime.service_catalog_show(&[], crate::runtime::service_catalog::Catalog::Calls, "01m5wvy8d1j3dtr13es05kopen").await.unwrap();
     assert_eq!((open["status"].clone(), open["call_deadline_at"].clone()), (json!("accepted"), Value::Null), "{open}");
+    runtime.close().await;
+}
+
+/// Message streams and durable workflow streams carry over: native serves
+/// them from PHP's own tables. A closed durable stream gets the reclaim
+/// deadline native's retention pass reads, its `closed_at` plus its
+/// retention, as PHP 2.11.3's migration backfills it; an open one gets none.
+#[tokio::test]
+async fn takeover_keeps_php_streams_and_records_their_reclaim_deadlines() {
+    let (_directory, path) = php_release_layout(&[PHP_280_CHANGES, TRACE_CARRIERS, QUEUE_DELIVERY]).await;
+    for statement in [
+        "INSERT INTO workflow_durable_streams(id,namespace,workflow_instance_id,workflow_run_id,stream_name,status,last_offset,total_items,retention_seconds,closed_at) VALUES (7,'default','i','01jrun0000000000000000000a','progress','closed',0,1,600,'2026-10-26 10:00:00')",
+        "INSERT INTO workflow_durable_streams(id,namespace,workflow_instance_id,workflow_run_id,stream_name,status) VALUES (8,'default','i','01jrun0000000000000000000a','log','open')",
+        "INSERT INTO workflow_durable_stream_items(stream_id,namespace,workflow_run_id,stream_name,\"offset\",payload,emitted_at) VALUES (7,'default','01jrun0000000000000000000a','progress',0,'{\"step\":1}','2026-10-26 09:59:00')",
+        "INSERT INTO workflow_inbound_streams(id,namespace,workflow_instance_id,stream_name,last_position) VALUES (3,'default','i','orders',1)",
+        "INSERT INTO workflow_inbound_stream_items(stream_id,namespace,workflow_instance_id,stream_name,message_id,position,payload_codec,payload_blob,payload_hash) VALUES (3,'default','i','orders','m1',1,'avro','AA==','h')",
+    ] {
+        mutate(&path, statement).await;
+    }
+    let inspection = inspect_sqlite(&path).await.unwrap();
+    assert_eq!(inspection["stream_reference_inspection"], json!({"references": 0}), "{inspection}");
+    let fingerprint = backup_fingerprint(&path).await;
+    let report = takeover::take_over_sqlite(&path, &fingerprint, &queue_config()).await.unwrap();
+    assert_eq!(report["status"], "taken_over", "{report}");
+    assert_eq!(report["converted"]["stream_reclaims_recorded"], 1, "{report}");
+    let mut connection = SqliteConnection::connect(&format!("sqlite://{path}")).await.unwrap();
+    let reclaims: Vec<(i64, String)> = sqlx::query_as("SELECT stream_id,reclaim_at FROM dw_stream_reclaims")
+        .fetch_all(&mut connection).await.unwrap();
+    assert_eq!(reclaims.len(), 1);
+    assert_eq!(reclaims[0].0, 7);
+    assert!(reclaims[0].1.starts_with("2026-10-26 10:10:00"), "{reclaims:?}");
+    let kept: i64 = sqlx::query_scalar("SELECT (SELECT COUNT(*) FROM workflow_durable_streams)+(SELECT COUNT(*) FROM workflow_durable_stream_items)+(SELECT COUNT(*) FROM workflow_inbound_streams)+(SELECT COUNT(*) FROM workflow_inbound_stream_items)")
+        .fetch_one(&mut connection).await.unwrap();
+    assert_eq!(kept, 5, "every stream row carries over");
+    connection.close().await.unwrap();
+    let runtime = crate::runtime::Runtime::open(&path, "test-token".into()).await.unwrap();
     runtime.close().await;
 }
 

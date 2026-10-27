@@ -390,6 +390,11 @@ async fn perform(connection: &mut MySqlConnection, run: &mut Run<'_>, step: i64)
             }
         }
         10 => {
+            // Durable stream reclaim deadlines, from 2.11.3's column while it
+            // is still there, else from each closed stream's retention.
+            let recorded = column_exists(connection, "workflow_durable_streams", "reclaim_at").await?;
+            let reclaims = super::adopt_stream_reclaims::<MySql>(connection, recorded).await?;
+            run.converted.insert("stream_reclaims_recorded".into(), json!(reclaims));
             // PHP 2.11.3's additions. Count before dropping, as step 9 does.
             if column_exists(connection, "workflow_failures", "message_full").await? {
                 let messages = count::<MySql>(connection, super::FULL_FAILURE_MESSAGES).await?;
