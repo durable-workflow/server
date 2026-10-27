@@ -390,6 +390,17 @@ async fn perform(connection: &mut MySqlConnection, run: &mut Run<'_>, step: i64)
             }
         }
         10 => {
+            // Durable stream reclaim deadlines: 2.11.3 recorded them in
+            // `reclaim_at`; earlier layouts get each closed stream's
+            // retention. The layout decides, not the column: a resumed
+            // 2.11.3 takeover whose column is already dropped copied every
+            // deadline before the drop (each insert commits), so it adopts
+            // nothing more.
+            let recorded = super::super::has_release(&run.layout, "php-2.11.3");
+            if !recorded || column_exists(connection, "workflow_durable_streams", "reclaim_at").await? {
+                let reclaims = super::adopt_stream_reclaims::<MySql>(connection, recorded).await?;
+                run.converted.insert("stream_reclaims_recorded".into(), json!(reclaims));
+            }
             // PHP 2.11.3's additions. Count before dropping, as step 9 does.
             if column_exists(connection, "workflow_failures", "message_full").await? {
                 let messages = count::<MySql>(connection, super::FULL_FAILURE_MESSAGES).await?;

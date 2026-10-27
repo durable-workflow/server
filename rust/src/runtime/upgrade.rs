@@ -3,6 +3,7 @@ pub mod external_reference;
 pub mod fingerprint;
 pub mod takeover;
 mod dispatch_scan;
+mod stream_scan;
 mod payload_scan;
 mod schedule_scan;
 mod storage_scan;
@@ -255,6 +256,7 @@ fn report(
     schedule_inspection: Value,
     storage_inspection: Value,
     dispatch_inspection: Value,
+    stream_inspection: Value,
 ) -> Result<Value> {
     let digest = Sha256::digest(serde_json::to_vec(catalog)?)
         .iter()
@@ -291,6 +293,10 @@ fn report(
         report["status"] = json!("unqualified");
     }
     report["service_call_dispatch_inspection"] = dispatch_inspection;
+    if stream_inspection["references"] != 0 {
+        report["status"] = json!("unqualified");
+    }
+    report["stream_reference_inspection"] = stream_inspection;
     Ok(report)
 }
 
@@ -466,6 +472,7 @@ pub(super) async fn sqlite_inventory(
     let schedule_inspection = schedule_scan::inspect::<sqlx::Sqlite>(&mut *tx).await?;
     let storage_inspection = storage_scan::inspect::<sqlx::Sqlite>(&mut *tx).await?;
     let dispatch_inspection = dispatch_scan::inspect::<sqlx::Sqlite>(&mut *tx, &counts).await?;
+    let stream_inspection = stream_scan::inspect::<sqlx::Sqlite>(&mut *tx).await?;
     report(
         "sqlite",
         &catalog,
@@ -476,6 +483,7 @@ pub(super) async fn sqlite_inventory(
         schedule_inspection,
         storage_inspection,
         dispatch_inspection,
+        stream_inspection,
     )
 }
 
@@ -741,6 +749,7 @@ pub(super) async fn mysql_inventory(
     let schedule_inspection = schedule_scan::inspect::<sqlx::MySql>(&mut *tx).await?;
     let storage_inspection = storage_scan::inspect::<sqlx::MySql>(&mut *tx).await?;
     let dispatch_inspection = dispatch_scan::inspect::<sqlx::MySql>(&mut *tx, &counts).await?;
+    let stream_inspection = stream_scan::inspect::<sqlx::MySql>(&mut *tx).await?;
     // MySQL's metadata is not an MVCC snapshot. Refuse a changed visible
     // catalog rather than joining counts to a different schema.
     if mysql_source_catalog(&mut *tx, fenced).await?.0 != catalog {
@@ -759,6 +768,7 @@ pub(super) async fn mysql_inventory(
         schedule_inspection,
         storage_inspection,
         dispatch_inspection,
+        stream_inspection,
     )
 }
 
@@ -828,6 +838,7 @@ pub(super) async fn postgres_inventory(
     let schedule_inspection = schedule_scan::inspect::<sqlx::Postgres>(&mut *tx).await?;
     let storage_inspection = storage_scan::inspect::<sqlx::Postgres>(&mut *tx).await?;
     let dispatch_inspection = dispatch_scan::inspect::<sqlx::Postgres>(&mut *tx, &counts).await?;
+    let stream_inspection = stream_scan::inspect::<sqlx::Postgres>(&mut *tx).await?;
     report(
         "pgsql",
         &catalog,
@@ -838,6 +849,7 @@ pub(super) async fn postgres_inventory(
         schedule_inspection,
         storage_inspection,
         dispatch_inspection,
+        stream_inspection,
     )
 }
 
