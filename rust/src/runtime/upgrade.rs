@@ -289,7 +289,7 @@ fn report(
         report["status"] = json!("unqualified");
     }
     report["storage_inspection"] = storage_inspection;
-    if dispatch_inspection["pending"] != 0 {
+    if dispatch_inspection["pending"] != 0 || dispatch_inspection["workflow_bound_open"] != 0 {
         report["status"] = json!("unqualified");
     }
     report["service_call_dispatch_inspection"] = dispatch_inspection;

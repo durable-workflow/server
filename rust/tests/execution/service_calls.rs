@@ -271,8 +271,26 @@ async fn cancellation_and_idempotent_replays_follow_the_control_plane() {
     assert_eq!((replay["accepted"].clone(), replay["idempotent_replay"].clone(), replay["reason"].clone(), replay["found"].clone(),
         replay["service_call_id"].clone(), replay.get("id").is_some()),
         (json!(true), json!(true), Value::Null, json!(true), json!(id), false));
-    let (_, other) = execute(&app, "charge", json!({"idempotency_key": "k1", "caller_namespace": "other"})).await;
-    assert_ne!(other["id"], json!(id), "another caller namespace is another call");
+    // The key belongs to the operation (Workflow #931): the catalog names in
+    // any case replay the call, and anyone but its owner is refused without
+    // a new call, an audit row or a change to the first call.
+    let (status, upper) = request(&app, "POST", &format!("{}/CHARGE/execute", OPERATIONS.replace("pay", "PAY").replace("billing", "BILLING")),
+        json!({"idempotency_key": "k1"})).await;
+    assert_eq!((status, upper["service_call_id"].clone(), upper["idempotent_replay"].clone()), (StatusCode::OK, json!(id), json!(true)), "{upper}");
+    let (_, before) = request(&app, "GET", &format!("{OPERATIONS}/charge/service-calls/{id}"), Value::Null).await;
+    const CALLS: &str = "SELECT id, id FROM workflow_service_calls";
+    let count = text_rows(&database, CALLS, CALLS, CALLS).await.len();
+    for foreign in [json!({"caller_namespace": "other"}), json!({"caller_workflow_instance_id": "caller-wf"}),
+        json!({"caller_workflow_instance_id": "caller-wf", "caller_workflow_run_id": "01hcallerrun00000000000000"})] {
+        let mut body = foreign.clone();
+        body["idempotency_key"] = json!("k1");
+        let (status, refused) = execute(&app, "charge", body).await;
+        assert_eq!((status, refused), (StatusCode::FORBIDDEN, json!({"reason": "service_operation_forbidden",
+            "message": "The service operation is not authorized for this caller."})), "{foreign}");
+    }
+    assert_eq!(text_rows(&database, CALLS, CALLS, CALLS).await.len(), count, "a refused replay writes no call or audit row");
+    let (_, after) = request(&app, "GET", &format!("{OPERATIONS}/charge/service-calls/{id}"), Value::Null).await;
+    assert_eq!(after, before, "a refused replay leaves the first call as it was");
 
     let cancel = format!("{OPERATIONS}/charge/service-calls/{id}/cancel");
     let (status, cancelled) = request(&app, "POST", &cancel, json!({"reason": "operator stop"})).await;
