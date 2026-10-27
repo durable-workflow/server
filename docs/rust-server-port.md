@@ -26,19 +26,26 @@ Updated October 27, 2026.
     published 2.11.1 databases (fresh and upgraded from 2.9.x), keeping search
     attribute definitions, worker sessions and service calls, plus the repair
     pass's service-call deadline sweep.
+  - [#797](https://github.com/durable-workflow/server/pull/797): native's own
+    maintenance repair loop (opt-in, `DW_RUST_MAINTENANCE_LOOP=1`); takeover
+    keeps runtime credentials and update validation tasks; takeover of
+    published 2.11.3, fresh and upgraded from 2.9.x.
 - **In the queue or next, in order.**
-  1. [#797](https://github.com/durable-workflow/server/pull/797):
-     - native's own maintenance repair loop;
-     - takeover keeps runtime credentials and update validation tasks;
-     - takeover of published 2.11.3, fresh and upgraded from 2.9.x.
+  1. [#799](https://github.com/durable-workflow/server/pull/799): the fixture
+     adapters' Cargo cache, saved only by pushes to main.
   2. Message-stream retention (PHP's `MessageStreamRetentionCleanup`), and
      takeover that keeps message and workflow streams.
-  3. The parity reference moves to published 2.11.3. Native already matches it
+  3. The native release-candidate image (`Dockerfile.native`), its release
+     workflow and the takeover runbook's image commands.
+  4. The parity reference moves to published 2.11.3. Native already matches it
      on 62 of 65 fixtures. The move waits on two published 2.11.3 defects
      General owns: the storage diagnostic (#789) and cross-caller idempotent
      replay (Workflow #931).
 - **Still refused at takeover:** workflow-to-workflow messages
-  (`workflow_messages`) and external payloads.
+  (`workflow_messages`, written only by embedded PHP workflows) and external
+  payload references. PHP keeps references in about 30 table and column
+  locations in their URI form, so taking them over is its own project; the
+  recommendation is that the release candidate keeps refusing them.
 - **Shared Server fixtures.** Native, embedded and published PHP 2.11.1 are
   compared on SQLite, MySQL 8.0, MariaDB 10.11 and PostgreSQL 17. Where the
   published reference itself misbehaves, an explicit boundary separates it
@@ -56,12 +63,11 @@ Updated October 27, 2026.
   `501 rust_capability_not_implemented` must match
   [`unserved-php-routes.v2.11.1.txt`](../rust/tests/fixtures/unserved-php-routes.v2.11.1.txt).
 - **Remaining for the release candidate:**
-  - takeover of workflow messages and external payloads;
   - the 2.11.3 reference move;
-  - prepared local activities and workflow-bound Nexus handlers (scope
-    question with the operator);
-  - native image packaging and publication, with a cutover runbook;
-  - differential and performance qualification.
+  - the scope question with the operator: prepared local activities,
+    workflow-bound Nexus handlers and external payload takeover;
+  - publishing the native image (General runs the release);
+  - differential and performance qualification of the published image.
 
 ## API surface still missing
 
