@@ -152,6 +152,28 @@ for (const language of ['rust', 'python']) for (const checkpoint of ['pending', 
     const raw = capacityModel(); mutate(raw.patch_deployment.replacement.requests);
     assert.throws(() => checkPatchDeployment(fixture, raw, 'test'));
   });
+  // The SDK probe projects poll responses to their core fields
+  // (patch-deployment-probe.php, `read_or_poll_summary`).
+  function projectedCapacityModel() {
+    const raw = capacityModel();
+    const refusal = raw.patch_deployment.replacement.requests.at(-2);
+    refusal.response = {task: null, poll_status: 'long_poll_capacity_exhausted', reason: 'long_poll_capacity_exhausted',
+      message: 'Retry the poll after the advertised delay.'};
+    refusal.response_projection = 'read_or_poll_summary';
+    return raw;
+  }
+  test(`${language} ${checkpoint}: model accepts a projected long-poll capacity summary`, () =>
+    checkPatchDeployment(fixture, projectedCapacityModel(), 'test'));
+  for (const [name, mutate] of [
+    ['an unreviewed projected field', refusal => refusal.response.status = 'completed'],
+    ['a projected leased task', refusal => refusal.response.task = {task_id: 'unknown-task'}],
+    ['other projected pressure', refusal => refusal.response.poll_status = 'backend_lock_pressure'],
+    ['a missing Retry-After', refusal => refusal.response_retry_after = null],
+    ['an oversized Retry-After', refusal => refusal.response_retry_after = '26'],
+  ]) test(`${language} ${checkpoint}: projected capacity model rejects ${name}`, () => {
+    const raw = projectedCapacityModel(); mutate(raw.patch_deployment.replacement.requests.at(-2));
+    assert.throws(() => checkPatchDeployment(fixture, raw, 'test'));
+  });
   test(`${language} ${checkpoint}: capacity model rejects a changed retry request`, () => {
     const raw = capacityModel('/api/worker/workflow-tasks/poll', true);
     raw.patch_deployment.replacement.requests.at(-2).request.timeout_seconds = 2;

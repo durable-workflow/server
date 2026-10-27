@@ -41,13 +41,21 @@ function checkLongPollCapacity(item, index, phase, observation, workflowId) {
   assert.equal(response.task, null, 'capacity refusal leases no task');
   assert.equal(response.poll_status, 'long_poll_capacity_exhausted');
   assert.equal(response.reason, 'long_poll_capacity_exhausted');
-  assert.equal(response.retryable, true);
-  assert.equal(response.task_kind, kinds[item.path]);
-  assert.equal(response.namespace, observation.namespace);
-  assert.equal(response.task_queue, observation.task_queue);
-  assert.ok(Number.isSafeInteger(response.retry_after_seconds) && response.retry_after_seconds > 0
-    && response.retry_after_seconds <= 25, 'bounded retry hint');
-  assert.equal(item.response_retry_after, String(response.retry_after_seconds), 'Retry-After header agrees with the body');
+  assert.match(item.response_retry_after ?? '', /^[1-9][0-9]*$/, 'positive explicit Retry-After');
+  assert.ok(Number(item.response_retry_after) <= 25, 'retry hint fits the actual published worker deadline');
+  if (item.response_projection === 'read_or_poll_summary') {
+    // The SDK probe keeps only a poll's core fields (patch-deployment-probe.php);
+    // the full bytes stay in its raw sidecar.
+    assert.ok(Object.keys(response).every(key => ['task', 'poll_status', 'reason', 'message'].includes(key)),
+      'projected capacity summary carries only core poll fields');
+    if (Object.hasOwn(response, 'message')) assert.equal(typeof response.message, 'string');
+  } else {
+    assert.equal(response.retryable, true);
+    assert.equal(response.task_kind, kinds[item.path]);
+    assert.equal(response.namespace, observation.namespace);
+    assert.equal(response.task_queue, observation.task_queue);
+    assert.equal(item.response_retry_after, String(response.retry_after_seconds), 'Retry-After header agrees with the body');
+  }
   assert.equal(item.request.worker_id, `${workflowId}:${phase.phase}`);
   assert.equal(item.request.task_queue, observation.task_queue);
   assert.ok(typeof item.request.poll_request_id === 'string' && item.request.poll_request_id.length > 0);
