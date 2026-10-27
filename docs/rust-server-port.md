@@ -14,92 +14,54 @@ qualify a later tree.
 
 ## Current state
 
-Updated October 24, 2026.
+Updated October 27, 2026.
 
-- **Merged October 24.** Train
-  [#729](https://github.com/durable-workflow/server/pull/729) (merge
-  `61219609b`):
-  - MySQL statement closes are sent with the next command
-    ([#717](https://github.com/durable-workflow/server/pull/717)), ending the
-    MySQL-family stalls of [#714](https://github.com/durable-workflow/server/issues/714);
-  - policy maps that are not JSON objects are refused, like PHP #705, and a
-    namespace quota map that is not UTF-8 is refused under either name
-    ([#719](https://github.com/durable-workflow/server/pull/719));
-  - worker history shows consumed signal sequences, hydrating only each page's
-    own signals, plus full task snapshots
-    ([#710](https://github.com/durable-workflow/server/pull/710));
-  - a newer push cancels a superseded Shared Server fixtures run
-    ([#724](https://github.com/durable-workflow/server/pull/724)).
-- **Merged October 20-23.** These are summarized in the checkpoint history:
-  - backup-first takeover on every database;
-  - multi-node kill and restart;
-  - ownership guards, search attributes, namespace update, history export,
-    retention and activity timeouts;
-  - the October 21-23 trains;
-  - the move to the published 2.11.1 reference;
-  - the GHSA-6q48-6c7w-9gw2 fixes.
-
-  Each train's PR holds its evidence.
-- **In review or qualifying, in merge order.**
-  1. CI speed and the merge queue:
-     - [#741](https://github.com/durable-workflow/server/pull/741) runs the
-       SDK direction profiles in parallel lanes, about 14 minutes off every
-       database job, and fixes a timestamp-comparison test flake;
-     - [#742](https://github.com/durable-workflow/server/pull/742) adds the
-       merge-queue prerequisites (`merge_group` triggers, one fixtures
-       result, and fixture cells skipped when a change cannot affect them).
-  2. This train: operator metrics read across PHP's redispatch steps
-     ([#708](https://github.com/durable-workflow/server/pull/708)),
-     query-authority clients that wait for the acknowledgement
-     ([#720](https://github.com/durable-workflow/server/pull/720)), and the
-     machine-checked route list below.
-  3. Condition waits without a key, task snapshots, the SQLite patch cohort and
-     message streams (#713, #718, #722, #709).
-  4. Update validation with PHP's poll request ID contract
-     ([#712](https://github.com/durable-workflow/server/pull/712)), then the
-     held-poll registration fence
-     ([#739](https://github.com/durable-workflow/server/pull/739), #734) and
-     worker sessions
-     ([#740](https://github.com/durable-workflow/server/pull/740), #736),
-     stacked in that order.
-  5. Activity cancellation acknowledgement, and pip, Composer and Cargo trust
-     in CI ([#673](https://github.com/durable-workflow/server/pull/673)).
+- **Merged October 26-27, through the merge queue.**
+  - [#790](https://github.com/durable-workflow/server/pull/790): prepared
+    local-activity refusals.
+  - [#793](https://github.com/durable-workflow/server/pull/793): Nexus catalog
+    administration, service-call execute, show and cancel, shared admission
+    limits, and catalog call reads.
+  - [#795](https://github.com/durable-workflow/server/pull/795): takeover of
+    published 2.11.1 databases (fresh and upgraded from 2.9.x), keeping search
+    attribute definitions, worker sessions and service calls, plus the repair
+    pass's service-call deadline sweep.
+- **In the queue or next, in order.**
+  1. [#797](https://github.com/durable-workflow/server/pull/797):
+     - native's own maintenance repair loop;
+     - takeover keeps runtime credentials and update validation tasks;
+     - takeover of published 2.11.3, fresh and upgraded from 2.9.x.
+  2. Message-stream retention (PHP's `MessageStreamRetentionCleanup`), and
+     takeover that keeps message and workflow streams.
+  3. The parity reference moves to published 2.11.3. Native already matches it
+     on 62 of 65 fixtures. The move waits on two published 2.11.3 defects
+     General owns: the storage diagnostic (#789) and cross-caller idempotent
+     replay (Workflow #931).
+- **Still refused at takeover:** workflow-to-workflow messages
+  (`workflow_messages`) and external payloads.
 - **Shared Server fixtures.** Native, embedded and published PHP 2.11.1 are
   compared on SQLite, MySQL 8.0, MariaDB 10.11 and PostgreSQL 17. Where the
   published reference itself misbehaves, an explicit boundary separates it
-  from native, and the PHP owner has an issue for each case:
-  - `operator-metrics` across PHP's redispatch window (#708);
-  - the published-SDK patch cohort's SQLite poll refusal
-    ([#721](https://github.com/durable-workflow/server/issues/721), #722);
-  - update validation under SQLite write locks
-    ([#726](https://github.com/durable-workflow/server/issues/726), fixed in
-    PHP by #730);
-  - `worker-sdk-persistent-pressure`'s shutdown window
-    ([#728](https://github.com/durable-workflow/server/issues/728));
-  - a retried activity's cooperative cancellation
-    ([Workflow #923](https://github.com/durable-workflow/workflow/issues/923));
-  - a reacquired worker session keeping its old failure reason
-    ([#737](https://github.com/durable-workflow/server/issues/737)).
+  from native, and the PHP owner has an issue for each case. Recent ones:
+  - #796, `service-calls` under full-corpus SQLite load;
+  - #794, workflow-bound Nexus handlers.
 
   No expectation is edited to make native pass.
 - **Parity surface.** Native answers 174 of the 175 API route methods in
-  published 2.11.1's route table, with message streams, durable workflow
-  stream writes, update validation, activity cancellation acknowledgement,
-  worker sessions, workflow-task cancellation scopes, service catalog
-  administration, Nexus service-call execution, show and cancel for the
-  handler kinds that stay accepted, caller-indexed Nexus operation reads,
-  bridge adapter webhooks, and embedded v2 and Waterline v1 workflow import.
-  Eight of those are the prepared local-activity routes, which it answers
-  with PHP's refusal for a bridge without the prepared role. An execution
-  test sends each one through the native router, and the ones still
-  answering `501 rust_capability_not_implemented` must match
+  published 2.11.1's route table. Eight of those are the prepared
+  local-activity routes, which it answers with PHP's refusal for a bridge
+  without the prepared role. Nexus workflow-bound handler kinds answer 501
+  until #794 settles their contract. An execution test sends each route
+  through the native router, and the ones still answering
+  `501 rust_capability_not_implemented` must match
   [`unserved-php-routes.v2.11.1.txt`](../rust/tests/fixtures/unserved-php-routes.v2.11.1.txt).
-  Unlike published PHP, native's embedded v2 import refuses a bundle whose
-  rows reference rows outside it, links only runs of one namespace, and reads
-  the signing key only from the request body
-  ([#765](https://github.com/durable-workflow/server/issues/765)).
-- **Next action.** Land the items above in order, keep porting the unserved
-  routes fixture first, and package the native binary into the server image.
+- **Remaining for the release candidate:**
+  - takeover of workflow messages and external payloads;
+  - the 2.11.3 reference move;
+  - prepared local activities and workflow-bound Nexus handlers (scope
+    question with the operator);
+  - native image packaging and publication, with a cutover runbook;
+  - differential and performance qualification.
 
 ## API surface still missing
 
