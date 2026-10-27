@@ -3,11 +3,13 @@
 namespace App\Support;
 
 use App\Auth\Principal;
+use Closure;
 use Throwable;
 use Workflow\V2\Contracts\ServiceBoundaryPolicy;
 use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallOperationMode;
 use Workflow\V2\Enums\ServiceCallOutcome;
+use Workflow\V2\Enums\ServiceCallStatus;
 use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Support\ConfiguredV2Models;
@@ -15,7 +17,9 @@ use Workflow\V2\Support\DefaultServiceBoundaryPolicy;
 use Workflow\V2\Support\ServiceBoundaryAuditRecorder;
 use Workflow\V2\Support\ServiceBoundaryDecision;
 use Workflow\V2\Support\ServiceBoundaryRequest;
+use Workflow\V2\Support\ServiceCallIdempotency;
 use Workflow\V2\Support\ServiceCallPrincipal;
+use Workflow\V2\Support\WorkflowServiceOperationAuthority;
 
 /**
  * Server-side admission gate for cross-namespace service calls.
@@ -53,11 +57,7 @@ final class ServiceCallBoundary
      */
     public function admit(ServiceBoundaryRequest $request): ServiceCallAdmission
     {
-        $decision = $this->policy->evaluate($request);
-
-        $call = $this->recordAdmission($request, $decision);
-
-        return new ServiceCallAdmission($decision, $call, $request);
+        return $this->recordAdmission($request, fn () => $this->policy->evaluate($request));
     }
 
     /**
@@ -107,10 +107,8 @@ final class ServiceCallBoundary
             cancellationPolicy: $cancellationPolicy,
             retryPolicy: $retryPolicy,
         );
-        $decision = $this->decisionFor($request, $operation);
-        $call = $this->recordAdmission($request, $decision);
 
-        return new ServiceCallAdmission($decision, $call, $request);
+        return $this->recordAdmission($request, fn () => $this->decisionFor($request, $operation));
     }
 
     /**
@@ -375,25 +373,39 @@ final class ServiceCallBoundary
         return $policy;
     }
 
-    private function recordAdmission(ServiceBoundaryRequest $request, ServiceBoundaryDecision $decision): WorkflowServiceCall
+    private function recordAdmission(ServiceBoundaryRequest $request, Closure $decide): ServiceCallAdmission
     {
         // Admission audit metadata is not the payload reference writer. The
         // later Core writer must claim prepared bytes under its own locks.
         return app(RuntimeExternalPayloadWriteClaims::class)->prepare(
-            fn () => $this->recordAdmissionMetadata($request, $decision),
+            fn () => $this->recordAdmissionMetadata($request, $decide),
         );
     }
 
-    private function recordAdmissionMetadata(ServiceBoundaryRequest $request, ServiceBoundaryDecision $decision): WorkflowServiceCall
+    private function recordAdmissionMetadata(ServiceBoundaryRequest $request, Closure $decide): ServiceCallAdmission
     {
         $connection = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)->getModel()->getConnection();
         $level = $connection->transactionLevel();
         $rollbackRegistered = false;
+        $reserved = false;
         $commitAttempted = false;
         $canRefund = true;
+        $call = null;
         try {
             $connection->beginTransaction();
+            if ($request->idempotencyKey !== null) {
+                [$call, $replayed] = $this->canonicalAdmission($request);
+                if ($replayed) {
+                    $commitAttempted = true;
+                    $connection->commit();
+
+                    return new ServiceCallAdmission(ServiceBoundaryDecision::allow(), $call, $request, replayed: true);
+                }
+            }
+
+            $decision = $decide();
             if ($decision->isAllowed()) {
+                $reserved = true;
                 $connection->afterRollBack(function () use ($request, &$canRefund): void {
                     if ($canRefund) {
                         $this->rollbackAdmission($request);
@@ -402,12 +414,13 @@ final class ServiceCallBoundary
                 $rollbackRegistered = true;
             }
 
-            $call = $this->recorder->record($request, $decision);
+            $call = $this->recorder->record($request, $decision, $call);
             $commitAttempted = true;
             $connection->commit();
 
-            return $call;
+            return new ServiceCallAdmission($decision, $call, $request);
         } catch (Throwable $throwable) {
+            $outcomeUnknown = $commitAttempted && ! $connection->getPdo()->inTransaction();
             if ($connection->transactionLevel() > $level) {
                 $inTransaction = $connection->getPdo()->inTransaction();
                 // A failed COMMIT with no remaining PDO transaction has an
@@ -419,12 +432,57 @@ final class ServiceCallBoundary
             // Beginning a transaction can fail before a rollback callback is
             // registered. After that point, only an actual rollback refunds:
             // an after-commit exception cannot undo a durable admission.
-            if ($decision->isAllowed() && ! $rollbackRegistered) {
+            if ($reserved && ! $rollbackRegistered) {
                 $this->rollbackAdmission($request);
+            }
+
+            if ($outcomeUnknown && $call !== null) {
+                throw new ServiceCallAdmissionOutcomeUnknown(
+                    (string) $call->id, $request->targetNamespace,
+                    $request->idempotencyKey !== null && $call->idempotency_scope_hash !== null,
+                    $throwable,
+                );
             }
 
             throw $throwable;
         }
+    }
+
+    /** @return array{WorkflowServiceCall, bool} */
+    private function canonicalAdmission(ServiceBoundaryRequest $request): array
+    {
+        $scope = [$request->targetNamespace, $request->endpointName, $request->serviceName,
+            $request->operationName, $request->idempotencyKey];
+        $call = ServiceCallIdempotency::find($scope);
+        if ($call === null) {
+            $candidate = $this->recorder->make($request, ServiceBoundaryDecision::allow());
+            $candidate->status = ServiceCallStatus::Pending->value;
+            $candidate->accepted_at = null;
+            $candidate->call_deadline_at = null;
+            $call = ServiceCallIdempotency::save($candidate, $scope);
+            if ($call === $candidate) {
+                return [$call, false];
+            }
+        }
+
+        $this->authorizeCanonicalAdmission($call, $request);
+        $call = ServiceCallIdempotency::save($call, $scope);
+        $this->authorizeCanonicalAdmission($call, $request);
+
+        return [$call, true];
+    }
+
+    private function authorizeCanonicalAdmission(WorkflowServiceCall $call, ServiceBoundaryRequest $request): void
+    {
+        WorkflowServiceOperationAuthority::authorizeExistingCall($call, $request->principal, [
+            'namespace' => $request->targetNamespace,
+            'caller_namespace' => $request->callerNamespace,
+            'caller_workflow_instance_id' => $request->callerWorkflowInstanceId,
+            'caller_workflow_run_id' => $request->callerWorkflowRunId,
+            'endpoint_name' => $request->endpointName,
+            'service_name' => $request->serviceName,
+            'operation_name' => $request->operationName,
+        ], $this->policy);
     }
 
     private function rollbackAdmission(ServiceBoundaryRequest $request): void

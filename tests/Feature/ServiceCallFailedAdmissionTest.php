@@ -7,6 +7,7 @@ use App\Models\WorkflowNamespace;
 use App\Support\RuntimeExternalPayloadRegistry;
 use App\Support\RuntimeExternalPayloadWriteClaims;
 use App\Support\ServerPollingCache;
+use App\Support\ServiceCallAdmissionOutcomeUnknown;
 use App\Support\ServiceCallBoundary;
 use App\Support\SharedServiceBoundaryPolicy;
 use Illuminate\Database\Events\TransactionCommitting;
@@ -127,7 +128,14 @@ class ServiceCallFailedAdmissionTest extends TestCase
                     $admit();
                 }
                 $this->fail('The injected audit failure must propagate.');
+            } catch (ServiceCallAdmissionOutcomeUnknown $exception) {
+                $this->assertSame('committed', $failurePoint);
+                $this->assertSame(WorkflowServiceCall::query()->sole()->id, $exception->serviceCallId);
+                $this->assertSame('finance', $exception->namespace);
+                $this->assertFalse($exception->keyed);
+                $this->assertInstanceOf(QueryException::class, $exception->getPrevious());
             } catch (QueryException $exception) {
+                $this->assertNotSame('committed', $failurePoint);
                 $this->assertStringContainsString('database is locked', $exception->getMessage());
             } finally {
                 $locked = false;

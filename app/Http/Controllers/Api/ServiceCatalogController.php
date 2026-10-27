@@ -5,16 +5,20 @@ namespace App\Http\Controllers\Api;
 use App\Auth\Principal;
 use App\Http\Middleware\Authenticate;
 use App\Support\AvroPayloadEnvelopeResolver;
+use App\Support\BackendLockPressure;
+use App\Support\ControlPlaneFailureDiagnostics;
 use App\Support\ControlPlaneProtocol;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\PayloadCodecContract;
 use App\Support\SearchAttributeValueValidator;
 use App\Support\ServiceCallAdmission;
+use App\Support\ServiceCallAdmissionOutcomeUnknown;
 use App\Support\ServiceCallBoundary;
 use App\Support\ServiceOperationUpdateWait;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Exceptions\ServiceOperationAuthorizationException;
 use Workflow\V2\Models\WorkflowService;
@@ -812,24 +816,32 @@ class ServiceCatalogController
 
         $this->assertDeadlinePolicy($this->arrayValueOrNull($operation->deadline_policy));
 
-        $admission = $this->serviceCallBoundary()->admitFor(
-            principal: $this->principal($request),
-            callerNamespace: $callerNamespace,
-            operation: $operation,
-            endpointName: $endpoint->endpoint_name,
-            serviceName: $service->service_name,
-            callerWorkflowInstanceId: $validated['caller_workflow_instance_id'] ?? null,
-            callerWorkflowRunId: $validated['caller_workflow_run_id'] ?? null,
-            idempotencyKey: $validated['idempotency_key'] ?? null,
-            operationModeOverride: $validated['mode_override'] ?? null,
-            endpointBoundaryPolicy: $this->arrayValue($endpoint->boundary_policy),
-            serviceBoundaryPolicy: $this->arrayValue($service->boundary_policy),
-            operationBoundaryPolicy: $this->arrayValue($operation->boundary_policy),
-            deadlinePolicy: $this->arrayValueOrNull($operation->deadline_policy),
-            idempotencyPolicy: $this->arrayValueOrNull($operation->idempotency_policy),
-            cancellationPolicy: $this->arrayValueOrNull($operation->cancellation_policy),
-            retryPolicy: $this->arrayValueOrNull($operation->retry_policy),
-        );
+        try {
+            $admission = $this->serviceCallBoundary()->admitFor(
+                principal: $this->principal($request),
+                callerNamespace: $callerNamespace,
+                operation: $operation,
+                endpointName: $endpoint->endpoint_name,
+                serviceName: $service->service_name,
+                callerWorkflowInstanceId: $validated['caller_workflow_instance_id'] ?? null,
+                callerWorkflowRunId: $validated['caller_workflow_run_id'] ?? null,
+                idempotencyKey: $validated['idempotency_key'] ?? null,
+                operationModeOverride: $validated['mode_override'] ?? null,
+                endpointBoundaryPolicy: $this->arrayValue($endpoint->boundary_policy),
+                serviceBoundaryPolicy: $this->arrayValue($service->boundary_policy),
+                operationBoundaryPolicy: $this->arrayValue($operation->boundary_policy),
+                deadlinePolicy: $this->arrayValueOrNull($operation->deadline_policy),
+                idempotencyPolicy: $this->arrayValueOrNull($operation->idempotency_policy),
+                cancellationPolicy: $this->arrayValueOrNull($operation->cancellation_policy),
+                retryPolicy: $this->arrayValueOrNull($operation->retry_policy),
+            );
+        } catch (ServiceOperationAuthorizationException) {
+            return $this->serviceOperationForbidden();
+        } catch (ServiceCallAdmissionOutcomeUnknown $exception) {
+            return $this->serviceOperationOutcomeUnknown(
+                $request, $exception->serviceCallId, $exception->namespace, $exception->keyed, $exception,
+            );
+        }
 
         if ($admission->rejected()) {
             return ControlPlaneProtocol::json(
@@ -843,31 +855,80 @@ class ServiceCatalogController
         $options['boundary_policy_outcome'] = $admission->decision->outcome->value;
 
         try {
-            $result = $this->serviceControlPlane()->execute(
-                $endpoint->endpoint_name,
-                $service->service_name,
-                $operation->operation_name,
-                $options,
+            if ($admission->replayed && ((string) $admission->call->status !== 'accepted'
+                || $this->acceptedCallHasIssuedHandler($admission->call))) {
+                $result = array_replace([
+                    'accepted' => ! in_array((string) $admission->call->status, ['failed', 'cancelled'], true),
+                    'reason' => null,
+                ], $this->serviceControlPlane()->describeCall($admission->call->id, [
+                    'namespace' => $this->namespace($request),
+                ]));
+            } else {
+                $result = $this->serviceControlPlane()->execute(
+                    $endpoint->endpoint_name,
+                    $service->service_name,
+                    $operation->operation_name,
+                    $options,
+                );
+            }
+            if ($admission->replayed) {
+                $result['idempotent_replay'] = true;
+            }
+
+            return ControlPlaneProtocol::json(
+                array_replace(
+                    $this->serializeServiceCall($admission->call->refresh(), $endpoint, $service, $operation),
+                    $result,
+                ),
+                ($result['accepted'] ?? false) === true ? 200 : 409,
             );
         } catch (ServiceOperationAuthorizationException) {
             return $this->serviceOperationForbidden();
+        } catch (Throwable $exception) {
+            return $this->serviceOperationOutcomeUnknown(
+                $request, (string) $admission->call->id, $admission->request->targetNamespace,
+                $admission->request->idempotencyKey !== null && $admission->call->idempotency_scope_hash !== null,
+                $exception,
+            );
         } finally {
-            if ($admission->request->operationMode->value === 'sync') {
+            if (! $admission->replayed && $admission->request->operationMode->value === 'sync') {
                 $this->serviceCallBoundary()->release($admission->request);
             }
         }
+    }
 
-        $status = ($result['accepted'] ?? false) === true ? 200 : 409;
+    private function serviceOperationOutcomeUnknown(
+        Request $request,
+        string $serviceCallId,
+        string $namespace,
+        bool $keyed,
+        Throwable $exception,
+    ): JsonResponse {
+        $locked = BackendLockPressure::is($exception);
+        $errorId = null;
+        if ($locked) {
+            $errorId = app(ControlPlaneFailureDiagnostics::class)->reportLockPressure($exception, $request);
+        } else {
+            report($exception);
+        }
 
-        $serviceCall = $admission->call->refresh();
+        $retryable = $keyed && $locked;
+        $payload = [
+            'message' => $retryable
+                ? 'The service call may have committed. Retry only with the same idempotency key and caller.'
+                : 'The service call may have committed. Inspect its state before sending another request.',
+            'reason' => $retryable ? 'backend_lock_pressure' : 'service_operation_outcome_unknown',
+            'retryable' => $retryable,
+            'service_call_id' => $serviceCallId,
+            'namespace' => $namespace,
+            'error_id' => $errorId,
+        ];
+        if ($retryable) {
+            $payload['retry_after_seconds'] = 1;
+        }
+        $response = ControlPlaneProtocol::jsonForRequest($request, $payload, 503);
 
-        return ControlPlaneProtocol::json(
-            array_replace(
-                $this->serializeServiceCall($serviceCall, $endpoint, $service, $operation),
-                $result,
-            ),
-            $status,
-        );
+        return $retryable ? $response->header('Retry-After', '1') : $response;
     }
 
     public function serviceCallCancel(
