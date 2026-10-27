@@ -55,9 +55,14 @@ if [[ $impl == native ]]; then
   fi
 fi
 if [[ $impl == native-image ]]; then
+  # The profile must name the image, so results always bind to it.
   native_image=$DW_PORT_NATIVE_IMAGE
   want_image=$(j '.artifacts.native_image // empty')
-  if [[ -n $want_image && $native_image != "$want_image" ]]; then
+  if [[ -z $want_image ]]; then
+    echo "The profile must name artifacts.native_image for native-image runs." >&2
+    exit 1
+  fi
+  if [[ $native_image != "$want_image" ]]; then
     echo "The native image does not match the profile." >&2
     exit 1
   fi

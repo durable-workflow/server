@@ -44,5 +44,6 @@ bash "$driver" PROFILE results/native-image native-image
 It runs as an operator runs it: the image's own entrypoint, user and
 maintenance loop (`DW_RUST_MAINTENANCE_LOOP=1`), with the same CPU and memory
 limits as `native-server`. PHP's comparison run already includes its scheduler
-container. Set `artifacts.native_image` in the profile copy to that reference;
-the driver refuses any other image, and `identity.json` records it.
+container. Set `artifacts.native_image` in the profile copy to that reference.
+The driver refuses a profile without it and any other image, and
+`identity.json` records it.
