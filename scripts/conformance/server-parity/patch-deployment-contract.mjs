@@ -10,6 +10,21 @@ export function checkPatchPollPressureResponse(response) {
   if (Object.hasOwn(response, 'message')) assert.equal(typeof response.message, 'string', 'published diagnostic message is text');
 }
 
+// Whether a request deregisters exactly this worker: DELETE
+// /api/worker/registrations/{workerId} with the id as one percent-encoded
+// route segment, as the SDKs send it.
+function deregisters(request, workerId) {
+  const prefix = '/api/worker/registrations/';
+  if (request.method !== 'DELETE' || typeof request.path !== 'string' || !request.path.startsWith(prefix)) return false;
+  const segment = request.path.slice(prefix.length);
+  if (segment === '' || segment.includes('/')) return false;
+  try {
+    return decodeURIComponent(segment) === workerId;
+  } catch {
+    return false;
+  }
+}
+
 // A server whose worker long-poll wait slots are full answers a workflow or
 // activity poll with PHP's typed, retryable 429 (WorkerPollBackpressure, the
 // DW_WORKER_LONG_POLL_MAX_CONCURRENT contract) before holding a wait. It
@@ -44,8 +59,8 @@ function checkLongPollCapacity(item, index, phase, observation, workflowId) {
     assert.deepEqual(retry.request, item.request, 'retry changes no poll authority or request fields');
     return;
   }
-  assert.ok(later.some(request => request.method === 'DELETE' && request.path.startsWith('/api/worker/registrations/') && ok(request)),
-    'the same poll succeeds later, or the worker stops cleanly after the refusal');
+  assert.ok(later.some(request => deregisters(request, item.request.worker_id) && ok(request)),
+    'the same poll succeeds later, or the refused worker itself stops cleanly after the refusal');
 }
 
 function checkPhpPollPressure(item, index, phase, observation, workflowId) {
@@ -259,6 +274,8 @@ export function checkPatchDeployment(fixture, observation, workflowId) {
           'real published SDK registration');
         assert.equal(phase.requests.filter(item => item.method === 'DELETE' && item.path.startsWith('/api/worker/registrations/')).length, 1,
           'real published SDK deregistration');
+        assert.ok(phase.requests.some(item => deregisters(item, `${workflowId}:replacement`)),
+          'the replacement worker deregisters itself');
       } else {
         assert.ok(phase.diagnostics.includes('worker.registered'));
         assert.ok(phase.diagnostics.includes('worker.stopped'));
