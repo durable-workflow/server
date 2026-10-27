@@ -556,7 +556,6 @@ const UNLISTED: &[Setting] = &[
 /// when the PHP Server takes that release. They are not unknown names, and
 /// their legacy names warn as the contract's do.
 pub const NATIVE_HONORED: &[Setting] = &[
-    Setting { name: "DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES", legacy: Some("WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_BYTES"), disposition: Honored },
     Setting { name: "DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS", legacy: Some("WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_ROWS"), disposition: Honored },
 ];
 
@@ -682,6 +681,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting { name: "DW_V2_HISTORY_EXPORT_SIGNING_KEY", legacy: Some("WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY"), disposition: Honored },
     Setting { name: "DW_V2_HISTORY_EXPORT_SIGNING_KEY_ID", legacy: Some("WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY_ID"), disposition: Honored },
     Setting { name: "DW_V2_LIMIT_COMMAND_BATCH_SIZE", legacy: Some("WORKFLOW_V2_LIMIT_COMMAND_BATCH_SIZE"), disposition: Refused(Int(1000), STRUCTURAL) },
+    Setting { name: "DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES", legacy: Some("WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_BYTES"), disposition: Honored },
     Setting { name: "DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE", legacy: Some("WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_SIZE"), disposition: Honored },
     Setting { name: "DW_V2_LIMIT_MEMO_SIZE_BYTES", legacy: Some("WORKFLOW_V2_LIMIT_MEMO_SIZE_BYTES"), disposition: Honored },
     Setting { name: "DW_V2_LIMIT_PAYLOAD_SIZE_BYTES", legacy: Some("WORKFLOW_V2_LIMIT_PAYLOAD_SIZE_BYTES"), disposition: Honored },
@@ -766,7 +766,7 @@ mod tests {
     #[test]
     fn every_contract_setting_has_one_disposition() {
         let contract = contract();
-        assert_eq!(contract.len(), 164, "PHP's contract changed; classify the new settings");
+        assert_eq!(contract.len(), 165, "PHP's contract changed; classify the new settings");
         let mut names: Vec<&str> = SETTINGS.iter().map(|setting| setting.name).collect();
         names.sort_unstable();
         names.dedup();
