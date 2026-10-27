@@ -112,8 +112,8 @@ PHP;
     // Each case has its own worker and queue, so it sees only its own work.
     // PHP keeps registration times in whole seconds, so a registration
     // change is separated from the previous one by more than a second.
-    $register = static function (string $case, ?array $process = null) use ($ok, $raw, $definition, $workflowId): array {
-        $worker = ['worker_id' => $workflowId.'-wpf-'.$case, 'task_queue' => $workflowId.'-wpf-'.$case.'-queue'];
+    $register = static function (string $case, ?array $process = null, ?string $queue = null) use ($ok, $raw, $definition, $workflowId): array {
+        $worker = ['worker_id' => $workflowId.'-wpf-'.$case, 'task_queue' => $queue ?? $workflowId.'-wpf-'.$case.'-queue'];
         // Query cases answer one query without parameters.
         $queries = str_starts_with($case, 'query-');
         $ok($raw('POST', '/api/worker/register', $worker + ['runtime' => 'php', 'sdk_version' => 'raw-http',
@@ -156,6 +156,17 @@ PHP;
         'reason' => $recorded['response']['reason'] ?? null];
 
     $state = ['applicable' => true, 'namespace' => $namespace];
+
+    // A workflow task claim whose owner stops reporting (WorkerController's
+    // workflow-task ownership guard). It is leased first and checked after
+    // the other cases, once the owner's registration has passed the stale
+    // window, so the wait overlaps them. Its own queue keeps other polls from
+    // recovering it before then.
+    $staleWorker = $register('stale-owner');
+    $start($staleWorker);
+    $staleClaim = $workflowTask($staleWorker);
+    $staleClaimedAt = microtime(true);
+    $state['stale_owner_leased'] = $outcome($staleClaim, $staleWorker);
 
     // Workflow polls: unchanged, across a heartbeat, across a re-registration.
     $worker = $register('workflow-control');
@@ -274,6 +285,43 @@ PHP;
         'lease_owner' => $task['lease_owner'] ?? null, 'workflow_task_attempt' => $task['workflow_task_attempt'] ?? null,
         'commands' => [['type' => 'complete_workflow', 'result' => $empty]]]);
     $state['recovery_old_completion'] = ['status' => $old['status'], 'reason' => $old['response']['reason'] ?? null];
+
+    // The stale owner's claim, once its registration is past the stale
+    // window: every workflow-task route that checks the claim refuses it,
+    // and another worker's poll on its queue recovers the task.
+    $remaining = $definition['stale_wait_seconds'] - (microtime(true) - $staleClaimedAt);
+    if ($remaining > 0) {
+        usleep((int) round($remaining * 1_000_000));
+    }
+    $task = $staleClaim['response']['task'] ?? [];
+    $taskPath = '/api/worker/workflow-tasks/'.($task['task_id'] ?? 'missing');
+    $claim = ['lease_owner' => $task['lease_owner'] ?? null, 'workflow_task_attempt' => $task['workflow_task_attempt'] ?? null];
+    $refusal = static function (array $recorded) use ($task): array {
+        $response = $recorded['response'];
+        $keys = array_keys($response);
+        sort($keys);
+
+        return ['status' => $recorded['status'], 'reason' => $response['reason'] ?? null, 'error' => $response['error'] ?? null,
+            'task_status' => $response['task_status'] ?? null, 'keys' => $keys,
+            'own_task' => ($response['task_id'] ?? null) === ($task['task_id'] ?? false),
+            'own_attempt' => ($response['workflow_task_attempt'] ?? null) === ($task['workflow_task_attempt'] ?? false),
+            'own_owner' => ($response['lease_owner'] ?? null) === ($task['lease_owner'] ?? false),
+            'lease_expires_at' => array_key_exists('lease_expires_at', $response)
+                ? ($response['lease_expires_at'] === null ? null : 'present') : 'absent'];
+    };
+    $state['stale_owner_heartbeat'] = $refusal($raw('POST', $taskPath.'/heartbeat', $claim));
+    $state['stale_owner_history'] = $refusal($raw('POST', $taskPath.'/history', $claim
+        + ['next_history_page_token' => $task['next_history_page_token'] ?? 'MQ==']));
+    $state['stale_owner_scope_checkpoint'] = $refusal($raw('POST', $taskPath.'/cancellation-scopes/checkpoint', $claim
+        + ['checkpoint_id' => 'stale-owner', 'start_sequence' => 1, 'commands' => [['type' => 'start_timer', 'delay_seconds' => 60]]]));
+    $state['stale_owner_fail'] = $refusal($raw('POST', $taskPath.'/fail', $claim
+        + ['failure' => ['message' => 'stale owner', 'type' => 'StaleOwner']]));
+    $state['stale_owner_complete'] = $refusal($raw('POST', $taskPath.'/complete', $claim
+        + ['commands' => [['type' => 'complete_workflow', 'result' => $empty]]]));
+    $replacement = $register('stale-replacement', null, $staleWorker['task_queue']);
+    $state['stale_owner_recovered'] = $outcome($workflowTask($replacement), $staleWorker);
+    $old = $raw('POST', $taskPath.'/complete', $claim + ['commands' => [['type' => 'complete_workflow', 'result' => $empty]]]);
+    $state['stale_owner_complete_after_recovery'] = ['status' => $old['status'], 'reason' => $old['response']['reason'] ?? null];
 
     return $state;
 }

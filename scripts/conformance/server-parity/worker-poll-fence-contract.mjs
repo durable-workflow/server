@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 
 // Reviewed worker poll fences (`WorkerPollFence` in WorkflowTaskPoller and
-// ActivityTaskPoller), recorded against published Server 2.11.1. A held poll
+// ActivityTaskPoller), recorded against published Server 2.11.1 (the stale-owner
+// claim against 2.11.5). A held poll
 // belongs to the registration it started under. Each case has its own worker
 // and queue:
 // - work reaching a held poll under an unchanged registration is leased;
@@ -15,6 +16,13 @@ import assert from 'node:assert/strict';
 // - a held workflow poll whose registration is removed ends stale too;
 // - a held query poll ends the same way but answers empty, with or without
 //   a request ID, and the next poll leases the query, which is answered.
+// - a workflow task claim whose owner has not reported for longer than the
+//   stale window (WorkerController's ownership guard, recorded against
+//   published 2.11.5) is refused on heartbeat, history, scope checkpoint,
+//   fail and complete with 409 stale_worker_registration, the claim's task,
+//   attempt, owner and lease; another worker's poll on its queue recovers it
+//   at the next attempt, and the old claim's completion is then refused
+//   lease_owner_mismatch.
 // Registration changes are more than a second apart: PHP keeps registration
 // times in whole seconds.
 export function checkWorkerPollFence(fixture, observation, workflowId) {
@@ -59,5 +67,16 @@ export function checkWorkerPollFence(fixture, observation, workflowId) {
   equal(state.recovery_after_registration, leased(2), 'the re-registration hands it out again at the next attempt');
   equal(state.recovery_old_completion, {status: 409, reason: 'workflow_task_attempt_mismatch'},
     'the old attempt cannot complete it');
+  equal(state.stale_owner_leased, leased(), 'the stale owner leases its workflow task');
+  const staleOwner = {status: 409, reason: 'stale_worker_registration',
+    error: 'Workflow task lease owner is no longer an active worker.', task_status: 'leased',
+    keys: ['error', 'lease_expires_at', 'lease_owner', 'protocol_version', 'reason', 'task_id', 'task_status', 'workflow_task_attempt'],
+    own_task: true, own_attempt: true, own_owner: true, lease_expires_at: 'present'};
+  for (const route of ['heartbeat', 'history', 'scope_checkpoint', 'fail', 'complete']) {
+    equal(state[`stale_owner_${route}`], staleOwner, `a stale owner's claim is refused on ${route}`);
+  }
+  equal(state.stale_owner_recovered, leased(2), "another worker's poll recovers the stale owner's task at the next attempt");
+  equal(state.stale_owner_complete_after_recovery, {status: 409, reason: 'lease_owner_mismatch'},
+    "the stale owner's old claim cannot complete the recovered task");
   return projection;
 }
