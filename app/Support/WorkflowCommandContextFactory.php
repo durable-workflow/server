@@ -223,7 +223,7 @@ final class WorkflowCommandContextFactory
             JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
         );
 
-        $requestId = $commandName === 'update'
+        $requestId = in_array($commandName, ['signal', 'update'], true)
             ? $this->bodyRequestId($request)
             : ($headers['x_request_id'] ?? $this->bodyRequestId($request));
 
