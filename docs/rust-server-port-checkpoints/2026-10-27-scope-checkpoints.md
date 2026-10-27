@@ -58,6 +58,35 @@
   values for the same prefix. The value identifies a retry on the server
   that issued it; no client computes or compares it. The fixture names each
   fingerprint and compares only its reuse.
+- **Review corrections, against Core 2.15.2.** Three also change the
+  completion, where native had diverged from Core:
+  - *Completion and checkpoint:* a signal-resumed claim applies its signal
+    once (`recordAppliedSignalForSignalResume`). An already-applied signal
+    is left as it is, instead of refused with `signal_already_applied`, so
+    a claim that checkpointed still completes.
+  - *Completion, checkpoint and scope open:* the authored sequence counts
+    `SearchAttributesUpserted`, as `nextDurableCommandSequence` does.
+  - *Completion and checkpoint:* `complete_update` and `fail_update` take
+    the batch's next sequence and advance it (`applyCompleteUpdate`,
+    `applyFailUpdate`). A later command in the batch takes the following
+    sequence. Update events still do not count toward the next turn.
+  - *Checkpoint only:*
+    - A signal Core would not apply (its command unavailable, its wait not
+      open, another wait open) is skipped, as Core skips it. The completion
+      keeps native's refusals for those.
+    - A checkpoint changes no run status or summary; Core's
+      `markRunWaiting` and projection run at completion.
+    - Core's own refusals answer as a refused checkpoint. Server's
+      exception answers (structural limits, memo validation) keep their
+      shapes, as Server's catch block gives them for both routes.
+- **Deferred: wait rows.** Native writes an activity's or timer's wait row
+  in the transaction that schedules it. Later events, such as the activity
+  completing while the turn is still open, update that row and require it
+  to exist. PHP's projector writes the row at completion. After a
+  checkpoint, native therefore lists the new wait while the claim is still
+  held, and PHP lists it only after completion. Both agree once the turn
+  completes. Deferring the row needs a rebuild-from-history path in
+  native's wait projection.
 - **Not ported:** Server's `persistTypedSearchAttributeHistoryIdentity`
   reads the receipt's `next_sequence` to check that Core wrote typed
   search-attribute history. Native writes that history itself.
@@ -87,7 +116,15 @@
     (a one-second update wait), failed once while a release image build
     saturated the host, and passed 3 of 3 alone.
   - The contract unit test (27 cases).
-  - `cancellation-scopes` recorded on SQLite against published 2.11.5
-    (`sha256:bcc67285…`), a native image built from this branch, and
-    embedded 2.11.5. All three pass, and `compare` reports
-    `{"outcome":"pass","recordings":3}`.
+  - On main's 2.11.5 reference (after #815), `native-image-corpus.sh`
+    ran with a native image built from this branch: CI's whole SQLite
+    selection, `update-validation` and `service-calls` included, against
+    published 2.11.5 (`sha256:bcc67285…`) and embedded 2.11.5. All three
+    pass 73 of 73 cases, `cancellation-scopes` among them, and the records
+    compare equal.
+  - After the review corrections, the whole native suite passes: library
+    339 on SQLite, and execution 570 on SQLite, PostgreSQL 17 and MySQL 8.0.
+    `updates_have_no_lifetime_cap_and_preserve_accepted_work_after_wait_timeout`,
+    which waits one second for an update, failed on PostgreSQL and MySQL
+    while a release image build saturated the host. Run alone it passed 3
+    of 3 on each.
