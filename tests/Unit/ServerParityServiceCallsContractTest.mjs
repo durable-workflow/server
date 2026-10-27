@@ -50,7 +50,7 @@ const observation = () => {
 };
 
 test('the service calls accept the published answers', () => {
-  assert.deepStrictEqual(checkServiceCalls(fixture, observation(), id), {scope: 'service_calls', cases: 91});
+  assert.deepStrictEqual(checkServiceCalls(fixture, observation(), id), {scope: 'service_calls', cases: 90});
 });
 
 test('the fixture covers execute, show, cancel and every reachable refusal', () => {

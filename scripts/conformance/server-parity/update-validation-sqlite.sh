@@ -29,7 +29,7 @@ native_url="$2"
 [[ -n "$RESOURCE_SCOPE" ]]
 [[ -n "$DW_PARITY_RUNNER_REVISION" ]]
 fixture=tests/Fixtures/ServerParity/update-validation.json
-image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
+image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.4.json)
 . scripts/conformance/server-parity/php-maintenance-window.sh
 
 prefix=parity-v1
