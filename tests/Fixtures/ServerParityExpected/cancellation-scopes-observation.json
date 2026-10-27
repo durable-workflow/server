@@ -7338,5 +7338,340 @@
       "workflow_run_id": "{R1}"
     },
     "status": 409
+  },
+  "scope_checkpoints": {
+    "complete": {
+      "response": {
+        "created_task_ids": [],
+        "outcome": "completed",
+        "protocol_version": "1.20",
+        "reason": null,
+        "recorded": true,
+        "run_id": "{R5}",
+        "run_status": "completed",
+        "server_capabilities": "{present}",
+        "task_id": "{R5.T1}",
+        "workflow_task_attempt": 1
+      },
+      "status": 200
+    },
+    "first_after_second": {
+      "response": {
+        "checkpointed": false,
+        "duplicate": false,
+        "history_refresh_page_token": "MA==",
+        "protocol_version": "1.20",
+        "reason": "cancellation_scope_checkpoint_sequence_mismatch",
+        "server_capabilities": "{present}",
+        "task_id": "{R5.T1}"
+      },
+      "status": 409
+    },
+    "foreign_owner": {
+      "response": {
+        "error": "Workflow task lease is owned by another worker.",
+        "lease_owner": "pr1-cancellation-scopes-r5-worker",
+        "protocol_version": "1.20",
+        "reason": "lease_owner_mismatch",
+        "server_capabilities": "{present}",
+        "task_id": "{R5.T1}",
+        "workflow_task_attempt": 1
+      },
+      "status": 409
+    },
+    "history": [
+      {
+        "event_type": "StartAccepted",
+        "sequence": 1
+      },
+      {
+        "event_type": "WorkflowStarted",
+        "sequence": 2
+      },
+      {
+        "event_type": "SideEffectRecorded",
+        "sequence": 3
+      },
+      {
+        "event_type": "VersionMarkerRecorded",
+        "sequence": 4
+      },
+      {
+        "event_type": "TimerScheduled",
+        "payload": {
+          "cancellation_scope_id": "{absent}",
+          "sequence": 3
+        },
+        "sequence": 5
+      },
+      {
+        "event_type": "CancellationScopeOpened",
+        "payload": {
+          "parent_scope_id": "root",
+          "schema": "durable-workflow.cancellation-scope/v1",
+          "scope_id": "{R5.S1}",
+          "sequence": 4,
+          "shield_parent": false,
+          "task": {
+            "attempt_count": 1,
+            "id": "{R5.T1}",
+            "lease_owner": "pr1-cancellation-scopes-r5-worker",
+            "status": "leased",
+            "type": "workflow"
+          },
+          "workflow_run_id": "{R5}"
+        },
+        "sequence": 6
+      },
+      {
+        "event_type": "WorkflowCompleted",
+        "sequence": 7
+      }
+    ],
+    "history_after_prefix": [
+      {
+        "event_type": "StartAccepted",
+        "sequence": 1
+      },
+      {
+        "event_type": "WorkflowStarted",
+        "sequence": 2
+      },
+      {
+        "event_type": "SideEffectRecorded",
+        "sequence": 3
+      },
+      {
+        "event_type": "VersionMarkerRecorded",
+        "sequence": 4
+      }
+    ],
+    "invalid_fields": {
+      "response": {
+        "errors": {
+          "checkpoint_id": [
+            "The checkpoint id field must be a string."
+          ],
+          "message_stream_cursors": [
+            "The message stream cursors field is prohibited."
+          ],
+          "start_sequence": [
+            "The start sequence field must be at least 1."
+          ]
+        },
+        "message": "The checkpoint id field must be a string. (and 2 more errors)",
+        "protocol_version": "1.20",
+        "reason": "validation_failed",
+        "server_capabilities": "{present}",
+        "validation_errors": {
+          "checkpoint_id": [
+            "The checkpoint id field must be a string."
+          ],
+          "message_stream_cursors": [
+            "The message stream cursors field is prohibited."
+          ],
+          "start_sequence": [
+            "The start sequence field must be at least 1."
+          ]
+        }
+      },
+      "status": 422
+    },
+    "legacy_claim": {
+      "response": {
+        "checkpointed": false,
+        "protocol_version": "1.20",
+        "reason": "active_claim_cancellation_not_supported",
+        "server_capabilities": "{present}"
+      },
+      "status": 409
+    },
+    "mismatch": {
+      "response": {
+        "checkpointed": false,
+        "duplicate": false,
+        "history_refresh_page_token": "MA==",
+        "protocol_version": "1.20",
+        "reason": "cancellation_scope_checkpoint_mismatch",
+        "server_capabilities": "{present}",
+        "task_id": "{R5.T1}"
+      },
+      "status": 409
+    },
+    "missing_fields": {
+      "response": {
+        "errors": {
+          "checkpoint_id": [
+            "The checkpoint id field is required."
+          ],
+          "start_sequence": [
+            "The start sequence field is required."
+          ],
+          "sticky_cache": [
+            "The sticky cache field is prohibited."
+          ]
+        },
+        "message": "The checkpoint id field is required. (and 2 more errors)",
+        "protocol_version": "1.20",
+        "reason": "validation_failed",
+        "server_capabilities": "{present}",
+        "validation_errors": {
+          "checkpoint_id": [
+            "The checkpoint id field is required."
+          ],
+          "start_sequence": [
+            "The start sequence field is required."
+          ],
+          "sticky_cache": [
+            "The sticky cache field is prohibited."
+          ]
+        }
+      },
+      "status": 422
+    },
+    "open_after": {
+      "response": {
+        "claim_released": false,
+        "created_task_ids": [],
+        "duplicate": false,
+        "history_event_id": "{ulid:36}",
+        "history_refresh_page_token": "MA==",
+        "lease_owner": "pr1-cancellation-scopes-r5-worker",
+        "opened": true,
+        "parent_scope_id": "root",
+        "protocol_version": "1.20",
+        "reason": null,
+        "scope_id": "{R5.S1}",
+        "sequence": 4,
+        "server_capabilities": "{present}",
+        "shield_parent": false,
+        "task_id": "{R5.T1}",
+        "workflow_run_id": "{R5}",
+        "workflow_task_attempt": 1
+      },
+      "status": 200
+    },
+    "plain_claim": {
+      "response": {
+        "checkpointed": false,
+        "protocol_version": "1.20",
+        "reason": "active_claim_cancellation_not_supported",
+        "server_capabilities": "{present}"
+      },
+      "status": 409
+    },
+    "prefix": {
+      "response": {
+        "checkpoint_id": "ck-1",
+        "checkpointed": true,
+        "created_task_ids": [],
+        "duplicate": false,
+        "fingerprint": "{R5.prefix.fingerprint}",
+        "history_refresh_page_token": "MA==",
+        "lease_expires_at": "{time:Z6}",
+        "lease_owner": "pr1-cancellation-scopes-r5-worker",
+        "next_sequence": 3,
+        "protocol_version": "1.20",
+        "reason": null,
+        "recorded_at": "{time:Z6}",
+        "server_capabilities": "{present}",
+        "start_sequence": 1,
+        "task_id": "{R5.T1}",
+        "workflow_run_id": "{R5}",
+        "workflow_task_attempt": 1
+      },
+      "status": 200
+    },
+    "prefix_again": {
+      "response": {
+        "checkpoint_id": "ck-1",
+        "checkpointed": true,
+        "created_task_ids": [],
+        "duplicate": true,
+        "fingerprint": "{R5.prefix.fingerprint}",
+        "history_refresh_page_token": "MA==",
+        "lease_expires_at": "{time:Z6}",
+        "lease_owner": "pr1-cancellation-scopes-r5-worker",
+        "next_sequence": 3,
+        "protocol_version": "1.20",
+        "reason": null,
+        "recorded_at": "{time:Z6}",
+        "server_capabilities": "{present}",
+        "start_sequence": 1,
+        "task_id": "{R5.T1}",
+        "workflow_run_id": "{R5}",
+        "workflow_task_attempt": 1
+      },
+      "status": 200
+    },
+    "protocol_1_19": {
+      "response": {
+        "checkpointed": false,
+        "protocol_version": "1.20",
+        "reason": "cancellation_scope_checkpoint_requires_protocol_1_20",
+        "server_capabilities": "{present}"
+      },
+      "status": 409
+    },
+    "sequence_behind": {
+      "response": {
+        "checkpointed": false,
+        "duplicate": false,
+        "history_refresh_page_token": "MA==",
+        "protocol_version": "1.20",
+        "reason": "cancellation_scope_checkpoint_sequence_mismatch",
+        "server_capabilities": "{present}",
+        "task_id": "{R5.T1}"
+      },
+      "status": 409
+    },
+    "signal_wait": {
+      "response": {
+        "checkpointed": false,
+        "duplicate": false,
+        "history_refresh_page_token": "MA==",
+        "protocol_version": "1.20",
+        "reason": "invalid_cancellation_scope_checkpoint_commands",
+        "server_capabilities": "{present}",
+        "task_id": "{R5.T1}"
+      },
+      "status": 409
+    },
+    "terminal": {
+      "response": {
+        "checkpointed": false,
+        "duplicate": false,
+        "history_refresh_page_token": "MA==",
+        "protocol_version": "1.20",
+        "reason": "invalid_cancellation_scope_checkpoint_commands",
+        "server_capabilities": "{present}",
+        "task_id": "{R5.T1}"
+      },
+      "status": 409
+    },
+    "timer": {
+      "response": {
+        "checkpoint_id": "ck-2",
+        "checkpointed": true,
+        "created_task_ids": [
+          "{R5.timer.task}"
+        ],
+        "duplicate": false,
+        "fingerprint": "{R5.timer.fingerprint}",
+        "history_refresh_page_token": "MA==",
+        "lease_expires_at": "{time:Z6}",
+        "lease_owner": "pr1-cancellation-scopes-r5-worker",
+        "next_sequence": 4,
+        "protocol_version": "1.20",
+        "reason": null,
+        "recorded_at": "{time:Z6}",
+        "server_capabilities": "{present}",
+        "start_sequence": 3,
+        "task_id": "{R5.T1}",
+        "workflow_run_id": "{R5}",
+        "workflow_task_attempt": 1
+      },
+      "status": 200
+    }
   }
 }

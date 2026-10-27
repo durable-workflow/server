@@ -101,6 +101,8 @@ mod payload_discovery;
 mod signal_rejection;
 #[path = "execution/cooperative_waits.rs"]
 mod cooperative_waits;
+#[path = "execution/scope_checkpoints.rs"]
+mod scope_checkpoints;
 #[path = "execution/child_policies.rs"]
 mod child_policies;
 #[path = "execution/definition_routing.rs"]
