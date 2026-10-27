@@ -67,10 +67,10 @@ dimension to `0` disables that dimension. These limits supplement the HTTP
 request payload limit.
 
 The event count includes the start event, each log, signal and exception row,
-and a terminal event when applicable. Byte accounting retains the projection
-history summary's existing encoding, including event identities, sequence
-numbers, timestamps and payloads. The server checks the count before copying
-or hashing source rows, then builds payloads in history order and stops at the
+and a terminal event when applicable. The byte budget and stored summary use
+Core's canonical history metric: the event type's byte length plus its payload's
+JSON byte length, with unescaped slashes and Unicode. The server checks the count
+before copying or hashing source rows, then builds payloads in history order and stops at the
 first event exceeding the byte budget.
 
 An oversized import returns HTTP 409 with `reason: v1_projection_too_large`

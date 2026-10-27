@@ -10,6 +10,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Support\HistoryBudget;
 use Workflow\V2\Support\StructuralLimits;
 
 final class LegacyV1Projection
@@ -629,7 +630,7 @@ final class LegacyV1Projection
             $sequence = $index + 1;
             $event['sequence'] = $sequence;
             $event['id'] = substr(hash('sha256', $runId."\0".$sequence."\0".$event['event_type']), 0, 26);
-            $historySize += strlen(json_encode($event, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+            $historySize += HistoryBudget::sizeOfEvent(new WorkflowHistoryEvent($event));
             if ($byteLimit > 0 && $historySize > $byteLimit) {
                 return ['limit_error' => self::limitError('history_transaction_bytes', $historySize, $byteLimit)];
             }

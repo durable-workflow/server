@@ -63,13 +63,19 @@ class LegacyV1ProjectionBudgetTest extends TestCase
     {
         $this->createNamespace('default');
         $source = $this->source();
-        $source['arguments'] = 'Unicode: 雪😀, slash: /, quote: "';
+        $source['arguments'] = "Unicode: 雪😀\u{2028}\u{2029}, slash: /, quote: \"";
         $source['logs'] = [['result' => 'a:1:{s:5:"value";i:42;}', 'created_at' => '2026-07-10T10:01:00+03:00']];
         config(['workflows.v2.structural_limits.history_transaction_bytes' => 0]);
         DB::beginTransaction();
         $initial = LegacyV1Projection::import('budget-test', $source, 'default');
-        $bytes = (int) WorkflowRunSummary::query()->findOrFail($initial['identity']['standalone']['run_id'])->history_size_bytes;
+        $runId = $initial['identity']['standalone']['run_id'];
+        $bytes = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->get()->sum(
+            static fn (WorkflowHistoryEvent $event): int => strlen($event->event_type->value)
+                + strlen(json_encode($event->payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)),
+        );
+        $summaryBytes = (int) WorkflowRunSummary::query()->findOrFail($runId)->history_size_bytes;
         DB::rollBack();
+        $this->assertSame($bytes, $summaryBytes);
 
         config(['workflows.v2.structural_limits.history_transaction_bytes' => $bytes - 1]);
         $this->assertQueryFreeRefusal($source, 'history_transaction_bytes', $bytes, $bytes - 1);
