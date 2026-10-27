@@ -56,15 +56,23 @@ refusal=$(docker run --rm --platform "$platform" -e DW_AUTH_TOKEN=$token "$image
 test "$status" != 0
 grep -q 'requires DW_RUST_EXPERIMENTAL=1' <<<"$refusal"
 
-# GET http://<host>:8080<path> from inside the network, with the bearer token
-# when a third argument is given; prints the body and fails on any non-2xx.
+# GET <path> from <host> port 8080 inside the job's network, with the bearer
+# token when a third argument is given; prints the body and fails on any
+# non-2xx. The server answers plain HTTP on that private network.
 get() {
+  local host=$1 path=$2
+  shift 2
   docker run --rm --network "$RESOURCE_SCOPE" --entrypoint python "$probe" -I -c '
-import sys, urllib.request
-headers = {"Authorization": "Bearer " + sys.argv[2]} if len(sys.argv) > 2 else {}
-request = urllib.request.Request(sys.argv[1], headers=headers)
-print(urllib.request.urlopen(request, timeout=5).read().decode())
-' "http://$1:8080$2" "${@:3}"
+import sys, http.client
+connection = http.client.HTTPConnection(sys.argv[1], 8080, timeout=5)
+headers = {"Authorization": "Bearer " + sys.argv[3]} if len(sys.argv) > 3 else {}
+connection.request("GET", sys.argv[2], headers=headers)
+response = connection.getresponse()
+body = response.read().decode()
+if not 200 <= response.status < 300:
+    sys.exit("HTTP %d: %s" % (response.status, body[:200]))
+print(body)
+' "$host" "$path" "$@"
 }
 
 wait_ready() {
