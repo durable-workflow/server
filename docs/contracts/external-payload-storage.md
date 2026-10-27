@@ -144,6 +144,13 @@ retention authority. SDKs have no delete endpoint, and namespace/run cleanup
 does not remove a backing object while retained state in any namespace still
 owns it.
 
+Opaque-reference preflight verifies bytes without committing a claim. The
+state-bearing database transaction claims verified inputs before its outer
+commit, after ownership locks and in canonical object-lock order. A failed
+writer rolls back its claim updates and commit callbacks. If cleanup wins
+first, the request receives a typed payload refusal and commits no reference
+to the removed object.
+
 The singleton maintenance runner executes
 `external-payloads:cleanup --limit=100` on every maintenance pass. The Docker
 topology runs a pass every 10 seconds and the default Kubernetes CronJob runs a

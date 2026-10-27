@@ -10,7 +10,7 @@ use App\Support\RuntimeExternalPayloadCleanup;
 use App\Support\RuntimeExternalPayloadRegistry;
 use App\Support\RuntimePayloadCompletionContext;
 use App\Support\WorkflowQueryTaskBroker;
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
@@ -25,7 +25,7 @@ use Workflow\V2\Models\WorkflowTask;
 
 class RuntimePayloadCompletionUploadsTest extends TestCase
 {
-    use RefreshDatabase;
+    use DatabaseMigrations;
     use ServerTestHelpers;
     use StoragePressureFixture;
 
@@ -34,6 +34,7 @@ class RuntimePayloadCompletionUploadsTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        $this->assertSame(0, DB::connection()->transactionLevel(), 'Completion uploads must reach real commits.');
         Queue::fake();
         $this->directory = storage_path('framework/testing/completion-uploads');
         File::deleteDirectory($this->directory);
@@ -66,14 +67,14 @@ class RuntimePayloadCompletionUploadsTest extends TestCase
         $payload = Serializer::serializeWithCodec('avro', str_repeat('result', 200));
         $this->observeStoragePressure('draining');
         $reference = $this->upload($payload, $context)->assertCreated()->json('reference');
-        $this->upload($payload, $context)->assertCreated()->assertJsonPath('reference', $reference);
+        $this->assertSameReference($this->upload($payload, $context)->assertCreated(), $reference);
         $this->postJson('/api/worker/activity-tasks/'.$context['task_id'].'/complete', [
             'activity_attempt_id' => $context['attempt'], 'lease_owner' => 'worker',
             'result' => ['codec' => 'avro', 'external_payload' => $reference],
         ], $this->workerHeaders())->assertOk();
         $before = RuntimeExternalPayload::query()->sole()->getRawOriginal();
         $budgetBefore = RuntimePayloadCompletionBudget::query()->sole()->getRawOriginal();
-        $this->upload($payload, $context)->assertCreated()->assertJsonPath('reference', $reference);
+        $this->assertSameReference($this->upload($payload, $context)->assertCreated(), $reference);
         $this->assertSame($before, RuntimeExternalPayload::query()->sole()->getRawOriginal());
         $this->assertSame($budgetBefore, RuntimePayloadCompletionBudget::query()->sole()->getRawOriginal());
         $this->getJson('/api/activities/activity', $this->apiHeaders())->assertOk()
@@ -108,7 +109,7 @@ class RuntimePayloadCompletionUploadsTest extends TestCase
         ], $this->workerHeaders())->assertOk();
         $this->assertNotNull(RuntimeExternalPayload::query()->sole()->retained_at);
         $this->assertSame('completed', WorkflowRun::query()->sole()->status->value);
-        $this->upload($payload, $context)->assertCreated()->assertJsonPath('reference', $reference);
+        $this->assertSameReference($this->upload($payload, $context)->assertCreated(), $reference);
     }
 
     #[DataProvider('completionRosterStates')]
@@ -146,7 +147,7 @@ class RuntimePayloadCompletionUploadsTest extends TestCase
             'lease_owner' => 'worker', 'query_task_attempt' => $context['attempt'],
             'result_envelope' => ['codec' => 'avro', 'external_payload' => $reference],
         ], $this->workerHeaders())->assertOk()->assertJsonPath('outcome', 'completed');
-        $this->upload($payload, $context)->assertCreated()->assertJsonPath('reference', $reference);
+        $this->assertSameReference($this->upload($payload, $context)->assertCreated(), $reference);
     }
 
     public function test_activity_cannot_claim_another_budget_as_a_workflow_task(): void
@@ -391,6 +392,14 @@ class RuntimePayloadCompletionUploadsTest extends TestCase
         return ['schema' => RuntimePayloadCompletionContext::SCHEMA, 'kind' => 'workflow',
             'task_id' => $task['task_id'], 'attempt' => $task['workflow_task_attempt'],
             'lease_owner' => 'worker', 'operation' => 'complete', 'slot' => ['commands', 0, 'result']];
+    }
+
+    private function assertSameReference(TestResponse $response, array $reference): void
+    {
+        $response->assertJsonCount(count($reference), 'reference');
+        foreach ($reference as $field => $value) {
+            $response->assertJsonPath('reference.'.$field, $value);
+        }
     }
 
     private function upload(string $bytes, ?array $context, string $namespace = 'default', ?string $token = null): TestResponse

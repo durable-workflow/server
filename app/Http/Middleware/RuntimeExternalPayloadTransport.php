@@ -6,6 +6,7 @@ use App\Support\ControlPlaneProtocol;
 use App\Support\RuntimeExternalPayloadAudit;
 use App\Support\RuntimeExternalPayloadException;
 use App\Support\RuntimeExternalPayloadRegistry;
+use App\Support\RuntimeExternalPayloadWriteClaims;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowQueryTaskBroker;
 use Closure;
@@ -220,7 +221,7 @@ class RuntimeExternalPayloadTransport
         ));
 
         try {
-            $response = $next($request);
+            $response = app(RuntimeExternalPayloadWriteClaims::class)->transport(fn (): Response => $next($request));
 
             if ($request->attributes->getBoolean(self::ATTRIBUTE_CLAIMED) && $response->getStatusCode() < 400) {
                 $this->audit->record($request, 'external_payload.claimed');

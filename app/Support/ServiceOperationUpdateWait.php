@@ -11,11 +11,13 @@ use Workflow\V2\Models\WorkflowServiceOperation;
  * The update wait ceiling on service operations bound to a workflow update
  * (Server #775).
  *
- * A service operation's own `wait_timeout_seconds` contract (up to 86400 on
- * the execute route) is unchanged. When the operation's binding is a workflow
- * update, though, the service control plane hands that wait to the update
- * admission, so it is refused above the update ceiling before the operation
- * runs, as the update route refuses it.
+ * When the operation's binding is a workflow update, the service control
+ * plane hands that wait to the update admission, so it is refused above the
+ * update ceiling before the operation runs, as the update route refuses it.
+ * Since Workflow 2.14 every service-operation wait has the same 60-second
+ * bound, which the execute route and workflow-task completion validation
+ * also enforce; this check keeps the update route's message for a binding
+ * that changes after those rules ran.
  */
 final class ServiceOperationUpdateWait
 {

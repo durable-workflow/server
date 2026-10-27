@@ -90,8 +90,10 @@ final class ServiceOperationUpdateWaitTest extends TestCase
         $this->assertSame(1, $this->targetUpdates());
     }
 
-    public function test_other_bindings_keep_the_service_operation_wait_contract(): void
+    public function test_every_binding_takes_the_service_operation_wait_ceiling(): void
     {
+        // Workflow 2.14 bounds every service-operation wait at 60 seconds, so
+        // a start binding is refused above it before anything is admitted.
         $this->seedOperation('start_workflow');
 
         $this->withHeaders($this->apiHeaders())
@@ -99,17 +101,21 @@ final class ServiceOperationUpdateWaitTest extends TestCase
                 'arguments' => Avro::envelope(['approved' => true, 'source' => 'service']),
                 'mode_override' => 'async',
                 'wait_for' => 'accepted',
-                'wait_timeout_seconds' => 600,
+                'wait_timeout_seconds' => 61,
             ])
-            ->assertSuccessful();
-        $this->assertSame(1, WorkflowServiceCall::query()->count());
+            ->assertStatus(422)
+            ->assertJsonPath('errors.wait_timeout_seconds.0', 'The wait timeout seconds field must not be greater than 60.');
+        $this->assertSame(0, WorkflowServiceCall::query()->count());
 
         $this->withHeaders($this->apiHeaders())
             ->postJson('/api/service-endpoints/billing/services/approvals/operations/approve/execute', [
-                'wait_timeout_seconds' => 86401,
+                'arguments' => Avro::envelope(['approved' => true, 'source' => 'service']),
+                'mode_override' => 'async',
+                'wait_for' => 'accepted',
+                'wait_timeout_seconds' => 60,
             ])
-            ->assertStatus(422)
-            ->assertJsonPath('errors.wait_timeout_seconds.0', 'The wait timeout seconds field must not be greater than 86400.');
+            ->assertSuccessful();
+        $this->assertSame(1, WorkflowServiceCall::query()->count());
     }
 
     public function test_a_binding_changed_after_the_check_still_cannot_carry_a_longer_wait(): void

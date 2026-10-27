@@ -13,8 +13,9 @@ use App\Support\RuntimeLocalExternalPayloadStorage;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowHistoryPageToken;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
@@ -33,7 +34,9 @@ use Workflow\V2\Support\MemoPayload;
 
 class RuntimeExternalPayloadTransportTest extends TestCase
 {
-    use RefreshDatabase;
+    // Reference lifetime reaches the outer commit; a test transaction would
+    // hide that boundary behind savepoints for every HTTP writer.
+    use DatabaseMigrations;
     use StoragePressureFixture;
 
     private string $storageDirectory;
@@ -41,6 +44,7 @@ class RuntimeExternalPayloadTransportTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        $this->assertSame(0, DB::connection()->transactionLevel(), 'HTTP writers must reach real commits.');
 
         $this->storageDirectory = storage_path('framework/testing/runtime-external-payloads');
         File::deleteDirectory($this->storageDirectory);
@@ -620,7 +624,7 @@ class RuntimeExternalPayloadTransportTest extends TestCase
             ->assertJsonPath('retryable', false);
 
         $this->assertDatabaseMissing('workflow_instances', [
-            'workflow_id' => 'oversized-runtime-reference',
+            'id' => 'oversized-runtime-reference',
         ]);
         $this->assertNull($row->fresh()?->last_fetched_at);
     }
@@ -672,7 +676,7 @@ class RuntimeExternalPayloadTransportTest extends TestCase
             ])
             ->assertStatus(422)
             ->assertJsonPath('reason', 'external_payload_integrity_mismatch');
-        $this->assertDatabaseMissing('workflow_instances', ['workflow_id' => 'tampered-runtime-reference']);
+        $this->assertDatabaseMissing('workflow_instances', ['id' => 'tampered-runtime-reference']);
 
         $this->withHeaders($this->controlHeaders())
             ->postJson('/api/workflows', [
@@ -691,7 +695,7 @@ class RuntimeExternalPayloadTransportTest extends TestCase
             ])
             ->assertStatus(422)
             ->assertJsonPath('reason', 'external_payload_unsupported');
-        $this->assertDatabaseMissing('workflow_instances', ['workflow_id' => 'provider-reference-rejected']);
+        $this->assertDatabaseMissing('workflow_instances', ['id' => 'provider-reference-rejected']);
     }
 
     public function test_large_workflow_input_keeps_the_verified_reference_without_materializing_bytes(): void

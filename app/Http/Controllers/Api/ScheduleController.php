@@ -1021,6 +1021,7 @@ class ScheduleController
             $action['input'],
             'action.input',
             $this->externalPayloadStorage->driverFor($namespace),
+            retainExternal: true,
         );
     }
 
