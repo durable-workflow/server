@@ -1,7 +1,9 @@
 name: Native release candidate
 
-# Publishes the native (Rust) server image for an existing immutable release
-# tag (Server #325). Each architecture builds on its own runner and pushes by
+# Publishes the native (Rust) server image for an existing immutable native
+# Git tag, native-<version> (Server #325). A native- tag never matches the PHP
+# Release workflow's tag filter, so it starts no PHP release; the image tag is
+# the version without the prefix. Each architecture builds on its own runner and pushes by
 # digest only; that exact digest is pulled back and smoke-tested there, so a
 # failed smoke leaves no tag. The publish job then refuses tags that already
 # exist, gives both smoked digests
@@ -14,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing immutable release tag to publish natively (for example 2.12.0-rc.1)'
+        description: 'Existing immutable native Git tag, native-<version> (for example native-2.12.0-rc.1); the image tag drops native-'
         required: true
       release_commit:
         description: 'Full source commit of that tag'
@@ -62,6 +64,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG_PREFIX: native-
           RELEASE_COMMIT: ${{ inputs.release_commit }}
         run: |
           set -euo pipefail
@@ -150,6 +153,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG_PREFIX: native-
           RELEASE_COMMIT: ${{ inputs.release_commit }}
         run: |
           set -euo pipefail

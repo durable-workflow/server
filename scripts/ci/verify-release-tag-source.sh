@@ -12,8 +12,13 @@ release_commit="${RELEASE_COMMIT:-}"
 repository="${GITHUB_REPOSITORY:-}"
 gh_cli="${GH_CLI:-gh}"
 
-[[ "$release_tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] \
-    || fail "RELEASE_TAG must be an exact release version."
+# A native release-candidate tag is its own Git tag, native-<version>, so it
+# never starts the PHP Release workflow; it is verified the same way.
+release_tag_prefix="${RELEASE_TAG_PREFIX:-}"
+[[ -z "$release_tag_prefix" || "$release_tag_prefix" = native- ]] \
+    || fail "RELEASE_TAG_PREFIX may only be empty or native-."
+[[ "$release_tag" =~ ^${release_tag_prefix}[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] \
+    || fail "RELEASE_TAG must be an exact ${release_tag_prefix}release version."
 [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]] \
     || fail "RELEASE_COMMIT must be a full lowercase Git commit SHA."
 [[ "$repository" =~ ^[0-9A-Za-z_.-]+/[0-9A-Za-z_.-]+$ ]] \
