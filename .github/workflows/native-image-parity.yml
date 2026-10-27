@@ -19,6 +19,8 @@ on:
   pull_request:
     paths:
       - scripts/conformance/server-parity/native-image-corpus.sh
+      - scripts/conformance/server-parity/update-validation-sqlite.sh
+      - scripts/conformance/server-parity/php-maintenance-window.sh
       - .github/workflows/native-image-parity.yml
 
 permissions:
