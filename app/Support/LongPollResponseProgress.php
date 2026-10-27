@@ -19,6 +19,10 @@ class LongPollResponseProgress
 
     private ?Fiber $fiber = null;
 
+    private ?JsonResponse $projectedResponse = null;
+
+    private ?Closure $responseProjector = null;
+
     private ?int $waitSeconds = null;
 
     private float $lastProgressAt = 0;
@@ -47,6 +51,11 @@ class LongPollResponseProgress
     {
         $this->waitSeconds = $waitSeconds;
         $this->checkpoint();
+    }
+
+    public function projectResponsesUsing(Closure $projector): void
+    {
+        $this->responseProjector = $projector;
     }
 
     public function checkpoint(): void
@@ -135,15 +144,21 @@ class LongPollResponseProgress
 
     private function terminalResponse(): JsonResponse
     {
+        if ($this->projectedResponse !== null) {
+            return $this->projectedResponse;
+        }
+
         $response = $this->fiber->getReturn();
 
         if ($response instanceof JsonResponse) {
-            return $response;
+            // Immediate responses are inspected for status before send(), while
+            // suspended waits finish during send(). Project either exactly once.
+            return $this->projectedResponse = $this->responseProjector !== null ? ($this->responseProjector)($response) : $response;
         }
 
         logger()->error('Worker poll returned an unsupported progress-transport response.');
 
-        return new JsonResponse([
+        return $this->projectedResponse = new JsonResponse([
             'task' => null,
             'reason' => 'worker_poll_transport_unavailable',
             'retryable' => true,
