@@ -412,14 +412,14 @@ contract fixture before its correction.
   workflow task guard does not check registration freshness yet, and the
   local activity and cancellation scope checkpoints still use the older fence.
   Add a fixture for each before changing them.
-- **Retention of runs with external payloads or message streams.**
-  Published PHP deletes a pruned run's external payload objects and releases
-  its message stream items. It also compacts its instance's consumed inbound
-  stream items, and removes the instance's streams with its last run. Native
-  does not clean any of these up yet. It skips such a run, including any run
-  whose instance has inbound streams, with
-  `external_payload_cleanup_unavailable` or
-  `message_stream_cleanup_unavailable`, and keeps its details.
+- **Retention of runs with external payloads.** Published PHP deletes a
+  pruned run's external payload objects. Native does not delete them yet: it
+  skips such a run with `external_payload_cleanup_unavailable` and keeps its
+  details. A run whose instance has inbound message streams is pruned as PHP's
+  `MessageStreamRetentionCleanup` prunes it (October 27): the messages it
+  consumed lose their payloads once a retained later run's cursor checkpoint
+  covers them, and the instance's last retained run, once terminal, takes the
+  instance's streams with it.
 - **Deeply nested JSON bodies.** Published PHP decodes JSON up to 512 levels
   deep. Native checks every body as PHP does before any route, but its
   handlers parse with serde_json's 128-level limit. A body nested 129 to 512

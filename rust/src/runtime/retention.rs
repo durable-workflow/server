@@ -3,9 +3,10 @@
 //! with `details_pruned_at`.
 //!
 //! Native never deletes stored external payload objects. A run that holds a
-//! reference to one, an open abandoned activity or a message stream is
-//! skipped with its reason, so a prune never strands or loses data PHP would
-//! have handled.
+//! reference to one, or an open abandoned activity, is skipped with its
+//! reason, so a prune never strands or loses data PHP would have handled.
+//! Inbound message streams are released as PHP's
+//! `MessageStreamRetentionCleanup` releases them.
 use super::laravel_validation::{Rule, failure_messages, rule_errors};
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{Map, Value, json};
@@ -87,16 +88,21 @@ pub(super) const STREAM_COUNTS: [&str; 3] =
     ["message_streams_deleted", "message_stream_items_deleted", "message_stream_items_compacted"];
 
 /// Counts that hold a run's details, the run-id binds of each, and the
-/// skip reason. An abandoned activity's hold is read from history. A run
-/// with messages or whose instance has inbound message streams is held too:
-/// native does not compact or remove that state as PHP's
-/// MessageStreamRetentionCleanup does yet, so it keeps the run rather than
-/// orphan it. Durable workflow streams go with the run (`DURABLE_STREAMS`)
-/// unless they hold an external reference (`Backend::RUN_STREAM_REFERENCES`).
-pub(super) const HOLDS: &[(&str, usize, &str)] = &[
-    ("SELECT (SELECT COUNT(*) FROM workflow_messages WHERE workflow_run_id=$1)+(SELECT COUNT(*) FROM workflow_inbound_streams WHERE workflow_instance_id IN (SELECT workflow_instance_id FROM workflow_runs WHERE id=$2))", 2, "message_stream_cleanup_unavailable"),
-    (REFERENCES_SQL, 5, "external_payload_cleanup_unavailable"),
-];
+/// skip reason. An abandoned activity's hold is read from history. Durable
+/// workflow streams go with the run (`DURABLE_STREAMS`) unless they hold an
+/// external reference (`Backend::RUN_STREAM_REFERENCES`).
+pub(super) const HOLDS: &[(&str, usize, &str)] = &[(REFERENCES_SQL, 5, "external_payload_cleanup_unavailable")];
+
+/// `MessageStreamRetentionCleanup::planForRun`'s plan for one run: the
+/// instance's inbound streams, whether they all go with the instance's last
+/// retained run, and otherwise each stream whose cursor checkpoint belongs
+/// to a retained later run, with that cursor.
+#[derive(Default)]
+pub(super) struct StreamPlan {
+    pub(super) stream_ids: Vec<i64>,
+    pub(super) delete_instance_state: bool,
+    pub(super) checkpointed: Vec<(i64, i64)>,
+}
 
 /// `server.history.retention_days`.
 fn default_days() -> i64 {

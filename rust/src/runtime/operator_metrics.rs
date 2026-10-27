@@ -1353,7 +1353,7 @@ where
             return Ok(Skipped(reason));
         }
         let mut tx = self.begin().await?;
-        let run = Self::query("SELECT status,closed_at FROM workflow_runs WHERE id=$1")
+        let run = Self::query("SELECT status,closed_at,workflow_instance_id FROM workflow_runs WHERE id=$1")
             .bind(run_id)
             .fetch_one(&mut *tx)
             .await?;
@@ -1366,10 +1366,8 @@ where
         }
         let mut deleted = serde_json::Map::new();
         deleted.insert("run_deleted".into(), json!(0));
-        // A run with message streams is held above, so none are released.
-        for key in retention::STREAM_COUNTS {
-            deleted.insert(key.into(), json!(0));
-        }
+        // Planned before the run's own summary goes, as PHP plans it.
+        let streams = Self::stream_retention_plan(&mut tx, self.namespace.as_ref(), run_id, &DB::string(&run, "workflow_instance_id")?).await?;
         for (key, sql, binds) in retention::PRUNED {
             let mut query = Self::query(sql);
             for _ in 0..*binds {
@@ -1383,6 +1381,10 @@ where
                 deleted.insert((*key).into(), json!(affected));
             }
         }
+        let [streams_deleted, items_deleted, items_compacted] = Self::apply_stream_retention(&mut tx, run_id, &streams).await?;
+        for (key, value) in retention::STREAM_COUNTS.into_iter().zip([streams_deleted, items_deleted, items_compacted]) {
+            deleted.insert(key.into(), json!(value));
+        }
         // The run's history is gone; no cached read of it may survive.
         tx.scope_history = None;
         Self::query("UPDATE workflow_runs SET details_pruned_at=$1 WHERE id=$2 AND details_pruned_at IS NULL")
@@ -1394,9 +1396,116 @@ where
         Ok(Pruned(deleted))
     }
 
+    /// `MessageStreamRetentionCleanup::planForRun`: what pruning `run_id`
+    /// releases of its instance's inbound message streams.
+    ///
+    /// An active or continued instance keeps its streams, cursor checkpoint,
+    /// pending items and identity rows. An item the run consumed loses its
+    /// payload only once a retained later run's cursor checkpoint covers it,
+    /// so replay never needs it again. A terminal instance keeps all stream
+    /// state until its last retained run goes, which removes every stream.
+    async fn stream_retention_plan(
+        tx: &mut DB::Connection,
+        namespace: &str,
+        run_id: &str,
+        instance_id: &str,
+    ) -> Result<retention::StreamPlan> {
+        let streams = Self::query("SELECT id,cursor_position,cursor_checkpoint_run_id FROM workflow_inbound_streams WHERE namespace=$1 AND workflow_instance_id=$2 ORDER BY id")
+            .bind(namespace)
+            .bind(instance_id)
+            .fetch_all(&mut *tx)
+            .await?;
+        let mut plan = retention::StreamPlan::default();
+        if streams.is_empty() {
+            return Ok(plan);
+        }
+        let current = Self::query("SELECT current_run_id FROM workflow_instances WHERE id=$1 AND namespace=$2")
+            .bind(instance_id)
+            .bind(namespace)
+            .fetch_optional(&mut *tx)
+            .await?
+            .map(|row| DB::optional_string(&row, "current_run_id"))
+            .transpose()?
+            .flatten();
+        let current_terminal = match &current {
+            Some(current) => Self::query("SELECT status FROM workflow_runs WHERE id=$1")
+                .bind(current)
+                .fetch_optional(&mut *tx)
+                .await?
+                .map(|row| DB::string(&row, "status"))
+                .transpose()?
+                .is_some_and(|status| retention::terminal(&status)),
+            None => false,
+        };
+        let mut retained = Vec::new();
+        for row in Self::query("SELECT id FROM workflow_run_summaries WHERE namespace=$1 AND workflow_instance_id=$2 AND id<>$3")
+            .bind(namespace)
+            .bind(instance_id)
+            .bind(run_id)
+            .fetch_all(&mut *tx)
+            .await?
+        {
+            retained.push(DB::string(&row, "id")?);
+        }
+        for row in &streams {
+            plan.stream_ids.push(DB::number(row, "id")?);
+        }
+        if current_terminal && retained.is_empty() {
+            plan.delete_instance_state = true;
+            return Ok(plan);
+        }
+        if let Some(current) = current.filter(|current| current != run_id && !retained.contains(current)) {
+            retained.push(current);
+        }
+        for row in &streams {
+            if DB::optional_string(row, "cursor_checkpoint_run_id")?.is_some_and(|checkpoint| retained.contains(&checkpoint)) {
+                plan.checkpointed.push((DB::number(row, "id")?, DB::number(row, "cursor_position")?));
+            }
+        }
+        Ok(plan)
+    }
+
+    /// `MessageStreamRetentionCleanup::apply`, in the prune's transaction:
+    /// streams deleted, items deleted and items compacted.
+    async fn apply_stream_retention(tx: &mut DB::Connection, run_id: &str, plan: &retention::StreamPlan) -> Result<[u64; 3]> {
+        if plan.stream_ids.is_empty() {
+            return Ok([0, 0, 0]);
+        }
+        let mut counts = [0, 0, 0];
+        if plan.delete_instance_state {
+            for stream_id in &plan.stream_ids {
+                counts[1] += DB::affected(Self::query("DELETE FROM workflow_inbound_stream_items WHERE stream_id=$1").bind(*stream_id).execute(&mut *tx).await?);
+                counts[0] += DB::affected(Self::query("DELETE FROM workflow_inbound_streams WHERE id=$1").bind(*stream_id).execute(&mut *tx).await?);
+            }
+            return Ok(counts);
+        }
+        let at = now();
+        for (stream_id, cursor) in &plan.checkpointed {
+            counts[2] += DB::affected(
+                Self::query("UPDATE workflow_inbound_stream_items SET payload_blob='',payload_released_at=$1,updated_at=$2 WHERE stream_id=$3 AND consumed_run_id=$4 AND consumed_at IS NOT NULL AND payload_released_at IS NULL AND position<=$5")
+                    .bind(DB::bind_time(at))
+                    .bind(DB::bind_time(at))
+                    .bind(*stream_id)
+                    .bind(run_id)
+                    .bind(*cursor)
+                    .execute(&mut *tx)
+                    .await?,
+            );
+        }
+        for stream_id in &plan.stream_ids {
+            Self::query("UPDATE workflow_inbound_streams SET cleanup_blocked_at=NULL,cleanup_blocked_reason=NULL,cleanup_blocked_run_id=NULL,updated_at=$1 WHERE id=$2 AND cleanup_blocked_run_id=$3")
+                .bind(DB::bind_time(at))
+                .bind(*stream_id)
+                .bind(run_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        Ok(counts)
+    }
+
     /// What keeps a closed run's details: an activity it abandoned that is
-    /// still open, a message stream, or a stored external payload reference,
-    /// whose cleanup native does not perform yet.
+    /// still open, or a stored external payload reference, whose cleanup
+    /// native does not perform yet.
     async fn retention_hold(&self, run_id: &str) -> Result<Option<&'static str>> {
         if self.abandoned_activity_open(run_id).await? {
             return Ok(Some("detached_activity_still_open"));

@@ -176,3 +176,96 @@ async fn cluster_info_and_workers_see_the_contract() {
     assert_eq!(capability["supported"], true, "{capability}");
     assert_eq!(capability["minimum_worker_protocol_version"], "1.15");
 }
+
+/// Counts rows with a query built for this test.
+async fn rows(database: &TestDatabase, sql: String) -> i64 {
+    task_retry::rows(database, Box::leak(sql.into_boxed_str())).await
+}
+
+// Published PHP's MessageStreamRetentionCleanup. Pruning a continued run
+// releases the payloads of the messages it consumed once the next run's
+// cursor checkpoint covers them, and keeps their identity rows. Pruning the
+// instance's last retained run, once it is terminal, removes its streams.
+#[tokio::test]
+async fn retention_releases_consumed_messages_and_removes_the_last_runs_streams() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    assert_eq!(request(&app, "POST", "/api/worker/register", stream_worker()).await.0, StatusCode::CREATED);
+    let started = start(&app, "streams-kept").await;
+    let first = started["run_id"].as_str().unwrap().to_owned();
+    for (id, n) in [("m1", 1), ("m2", 2)] {
+        assert_eq!(append(&app, "streams-kept", "orders", json!({"message_id":id,"input":[{"n":n}]})).await.0, StatusCode::ACCEPTED);
+    }
+    // The first run consumes both messages and continues as new.
+    let task = poll(&app, "streams", "workflow").await;
+    let cursor = json!({"message_stream_cursors":[{"stream_name":"orders","through_position":2}]});
+    let (status, body) = complete(&app, &task, json!([{"type":"continue_as_new","arguments":envelope(Payload::Array(vec![]))}]), cursor, "1.20").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(append(&app, "streams-kept", "orders", json!({"message_id":"m3","input":[{"n":3}]})).await.0, StatusCode::ACCEPTED);
+    let task = poll(&app, "streams", "workflow").await;
+    let second = task["run_id"].as_str().unwrap().to_owned();
+    assert_ne!(second, first);
+    let cursor = json!({"message_stream_cursors":[{"stream_name":"orders","through_position":3}]});
+    let (status, body) = complete(&app, &task, json!([{"type":"complete_workflow","result":envelope(Payload::String("done".into()))}]), cursor, "1.20").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let expire = |run: &str| format!("UPDATE {{table}} SET closed_at='2020-01-01 00:00:00.000000' WHERE id='{run}'");
+    for table in ["workflow_runs", "workflow_run_summaries"] {
+        database.execute(sqlx::AssertSqlSafe(expire(&first).replace("{table}", table))).await;
+    }
+
+    // The first run goes; the second run's checkpoint covers what it consumed.
+    let (status, pruned) = request(&app, "POST", "/api/system/retention/pass", json!({"run_ids":[first]})).await;
+    assert_eq!(status, StatusCode::OK, "{pruned}");
+    let deleted = &pruned["results"][0]["deleted"];
+    assert_eq!(pruned["results"][0]["outcome"], "pruned", "{pruned}");
+    assert_eq!(
+        [&deleted["message_stream_items_compacted"], &deleted["message_stream_items_deleted"], &deleted["message_streams_deleted"]],
+        [&json!(2), &json!(0), &json!(0)],
+        "{pruned}"
+    );
+    assert_eq!(rows(&database, "SELECT COUNT(*) FROM workflow_inbound_stream_items WHERE payload_released_at IS NOT NULL AND payload_blob=''".into()).await, 2);
+    assert_eq!(rows(&database, "SELECT COUNT(*) FROM workflow_inbound_stream_items WHERE message_id='m3' AND payload_released_at IS NULL AND payload_blob<>''".into()).await, 1);
+    let orders = &streams(&app, "streams-kept").await["streams"][0];
+    assert_eq!((&orders["last_position"], &orders["cursor_position"]), (&json!(3), &json!(3)), "{orders}");
+
+    // The last run goes too, and the instance's stream with it.
+    for table in ["workflow_runs", "workflow_run_summaries"] {
+        database.execute(sqlx::AssertSqlSafe(expire(&second).replace("{table}", table))).await;
+    }
+    let (status, pruned) = request(&app, "POST", "/api/system/retention/pass", json!({"run_ids":[second]})).await;
+    assert_eq!(status, StatusCode::OK, "{pruned}");
+    let deleted = &pruned["results"][0]["deleted"];
+    assert_eq!(
+        [&deleted["message_stream_items_compacted"], &deleted["message_stream_items_deleted"], &deleted["message_streams_deleted"]],
+        [&json!(0), &json!(3), &json!(1)],
+        "{pruned}"
+    );
+    assert_eq!(rows(&database, "SELECT (SELECT COUNT(*) FROM workflow_inbound_streams)+(SELECT COUNT(*) FROM workflow_inbound_stream_items)".into()).await, 0);
+}
+
+// Without a retained checkpoint past them, a run's consumed messages keep
+// their payloads: replaying the instance's current run still needs them.
+#[tokio::test]
+async fn retention_keeps_consumed_messages_no_retained_checkpoint_covers() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    assert_eq!(request(&app, "POST", "/api/worker/register", stream_worker()).await.0, StatusCode::CREATED);
+    let started = start(&app, "streams-open").await;
+    let first = started["run_id"].as_str().unwrap().to_owned();
+    assert_eq!(append(&app, "streams-open", "orders", json!({"message_id":"m1","input":[{"n":1}]})).await.0, StatusCode::ACCEPTED);
+    let task = poll(&app, "streams", "workflow").await;
+    let cursor = json!({"message_stream_cursors":[{"stream_name":"orders","through_position":1}]});
+    let (status, body) = complete(&app, &task, json!([{"type":"continue_as_new","arguments":envelope(Payload::Array(vec![]))}]), cursor, "1.20").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // The checkpoint names a run that is no longer retained.
+    database.execute(sqlx::AssertSqlSafe("UPDATE workflow_inbound_streams SET cursor_checkpoint_run_id='gone'".to_owned())).await;
+    for table in ["workflow_runs", "workflow_run_summaries"] {
+        database.execute(sqlx::AssertSqlSafe(format!("UPDATE {table} SET closed_at='2020-01-01 00:00:00.000000' WHERE id='{first}'"))).await;
+    }
+    let (status, pruned) = request(&app, "POST", "/api/system/retention/pass", json!({"run_ids":[first]})).await;
+    assert_eq!(status, StatusCode::OK, "{pruned}");
+    assert_eq!(pruned["results"][0]["outcome"], "pruned", "{pruned}");
+    assert_eq!(pruned["results"][0]["deleted"]["message_stream_items_compacted"], 0, "{pruned}");
+    assert_eq!(rows(&database, "SELECT COUNT(*) FROM workflow_inbound_stream_items WHERE payload_released_at IS NULL AND payload_blob<>''".into()).await, 1);
+    assert_eq!(rows(&database, "SELECT COUNT(*) FROM workflow_inbound_streams".into()).await, 1, "the open instance keeps its stream");
+}
