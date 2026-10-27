@@ -29,9 +29,10 @@ export DW_PARITY_RUNNER_REVISION
 DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
 image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.5.json)
 
-# CI's corpus selection: the reviewed corpus plus the pending candidates it
-# carries.
-selection=()
+# CI's corpus selection: the reviewed corpus without service-calls, which
+# records separately below with PHP's maintenance loop stopped (Server #796),
+# plus the pending candidates it carries.
+selection=(--exclude-fixture tests/Fixtures/ServerParity/service-calls.json)
 for pending in patch-insertion-activity-pending patch-insertion-activity-completed patch-created-activity-pending \
   patch-created-activity-completed workflow-waiting-history-type workflow-waiting-history-message workflow-task-transient-retry; do
   selection+=(--include-fixture "tests/Fixtures/ServerParityPending/$pending.json")
@@ -111,15 +112,20 @@ compare_status=0
 docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
   scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json "${selection[@]}" \
   > parity-evidence/comparison.json || compare_status=$?
+service_calls_status=0
+bash scripts/conformance/server-parity/update-validation-sqlite.sh http://parity-server:8080 http://parity-rust:8080 service-calls \
+  || service_calls_status=$?
 
 native_id=$(docker image inspect --format '{{.Id}}' "$native")
 jq -n --arg native "$native" --arg id "$native_id" --arg php "$image" --arg revision "$DW_PARITY_RUNNER_REVISION" \
   --argjson reference "$status" --argjson nativeStatus "$native_status" --argjson compare "$compare_status" \
+  --argjson serviceCalls "$service_calls_status" \
   '{schema:"durable-workflow.native-image-corpus.v1", native_image:$native, native_image_id:$id, php_reference:$php,
     runner_revision:$revision, backend:"sqlite",
-    status:{reference_records:$reference, native_record:$nativeStatus, compare:$compare}}' \
+    status:{reference_records:$reference, native_record:$nativeStatus, compare:$compare, service_calls:$serviceCalls}}' \
   > parity-evidence/native-image-corpus.json
 cat parity-evidence/native-image-corpus.json
 test "$status" -eq 0
 test "$native_status" -eq 0
 test "$compare_status" -eq 0
+test "$service_calls_status" -eq 0
