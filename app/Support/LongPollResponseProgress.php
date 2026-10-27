@@ -17,11 +17,11 @@ class LongPollResponseProgress
 
     public const REQUEST_ATTRIBUTE = '_server_poll_response_progress';
 
-    public const RESPONSE_PROJECTOR_ATTRIBUTE = '_server_poll_response_projector';
-
     private ?Fiber $fiber = null;
 
     private ?JsonResponse $projectedResponse = null;
+
+    private ?Closure $responseProjector = null;
 
     private ?int $waitSeconds = null;
 
@@ -51,6 +51,11 @@ class LongPollResponseProgress
     {
         $this->waitSeconds = $waitSeconds;
         $this->checkpoint();
+    }
+
+    public function projectResponsesUsing(Closure $projector): void
+    {
+        $this->responseProjector = $projector;
     }
 
     public function checkpoint(): void
@@ -146,11 +151,9 @@ class LongPollResponseProgress
         $response = $this->fiber->getReturn();
 
         if ($response instanceof JsonResponse) {
-            $projector = $this->request->attributes->get(self::RESPONSE_PROJECTOR_ATTRIBUTE);
-
             // Immediate responses are inspected for status before send(), while
             // suspended waits finish during send(). Project either exactly once.
-            return $this->projectedResponse = $projector instanceof Closure ? $projector($response) : $response;
+            return $this->projectedResponse = $this->responseProjector !== null ? ($this->responseProjector)($response) : $response;
         }
 
         logger()->error('Worker poll returned an unsupported progress-transport response.');
