@@ -41,7 +41,8 @@ Updated October 27, 2026.
     the takeover runbook's image commands.
   - The parity reference moved to published 2.11.4 (#805,
     [checkpoint](rust-server-port-checkpoints/2026-10-27-reference-2114.md)),
-    and moves to published 2.11.5, without the SQLite maintenance pause
+    and moved to published 2.11.5 (#815); the SQLite maintenance pause stays
+    for `service-calls` only
     ([checkpoint](rust-server-port-checkpoints/2026-10-27-reference-2115.md)).
   - [#814](https://github.com/durable-workflow/server/pull/814): the shared
     fixtures accept published PHP's typed `429 long_poll_capacity_exhausted`
@@ -68,7 +69,10 @@ Updated October 27, 2026.
 
   Closed by 2.11.5: Workflow #931 (`service-calls` repeats a key from
   another caller again, now refused 403), and the SQLite maintenance pause
-  for `update-validation` and `service-calls` (#723, #726, #796).
+  for `update-validation` (#723, #726). `service-calls` still records apart
+  with the loop stopped: under full-corpus load 2.11.5 can exhaust its SQLite
+  contention retries on a service-call insert (#796, open;
+  [checkpoint](rust-server-port-checkpoints/2026-10-27-sqlite-service-calls-pause.md)).
 
   No expectation is edited to make native pass.
 - **Parity surface.** Native answers 174 of the 175 API route methods in

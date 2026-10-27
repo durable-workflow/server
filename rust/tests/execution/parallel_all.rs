@@ -155,8 +155,13 @@ async fn complete_activity(app: &Router, task: &Value, value: i64) -> (StatusCod
     .await
 }
 
+/// A positive wait for a timer: it returns as soon as TimerFired is recorded.
+/// The bound only limits how long a real failure takes to report, and allows
+/// for the timer loop under a loaded CI database (Server #325).
+const TIMER_FIRE_BOUND: std::time::Duration = std::time::Duration::from_secs(15);
+
 async fn wait_for_timer(app: &Router, run: &Value) -> Value {
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    let deadline = tokio::time::Instant::now() + TIMER_FIRE_BOUND;
     loop {
         let history = run_history(app, &run["workflow_id"], &run["run_id"]).await;
         if history
@@ -737,7 +742,7 @@ async fn timer_barrier_fires_zero_and_positive_members_once_on_competing_cold_no
     let (one, two) = tokio::join!(database.open(), database.open());
     let (one, two) = (one.unwrap(), two.unwrap());
     let (app_a, app_b) = (router(one.clone()), router(two.clone()));
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    let deadline = tokio::time::Instant::now() + TIMER_FIRE_BOUND;
     let history = loop {
         let history = run_history(&app_b, &run["workflow_id"], &run["run_id"]).await;
         if history
@@ -1152,7 +1157,7 @@ async fn a_timer_group_wakes_the_workflow_only_after_its_last_member_fires() {
     let waiting = request(&app, "POST", "/api/worker/workflow-tasks/poll",
         json!({"worker_id":"staggered","task_queue":"test","timeout_seconds":1})).await;
     assert!(waiting.1["task"].is_null(), "{}", waiting.1);
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + TIMER_FIRE_BOUND;
     while fired(&run_history(&app, &run["workflow_id"], &run["run_id"]).await) < 2 {
         assert!(tokio::time::Instant::now() < deadline, "the second timer did not fire");
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
