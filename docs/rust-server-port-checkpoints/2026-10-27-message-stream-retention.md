@@ -21,8 +21,13 @@
     becomes `''` and `payload_released_at` is set. The item rows stay as
     identity tombstones. Reported as `message_stream_items_compacted`.
     `cleanup_blocked_*` markers naming this run are cleared.
-  - The run's `workflow_messages` rows go with the run's other details, as
-    before.
+  - The run's `workflow_messages` rows go with the run's other details
+    (`messages_deleted`), as in PHP. Before, such a run was held.
+  - The current run counts as retained only when its run row exists, as in
+    PHP.
+  - A run stays held with `external_payload_cleanup_unavailable` when an
+    inbound item on its instance holds an external reference. Nothing writes
+    one today; the hold keeps a later change from stranding stored objects.
 - **Not ported.** PHP's `markBlocked`, which marks a stream when
   external-payload cleanup blocks a prune. Native never deletes external
   objects: a run holding an external reference stays held as
@@ -56,3 +61,16 @@
     reference.
   - Takeover qualification passes on PostgreSQL, MySQL and MariaDB,
     including a MySQL takeover killed after step 9.
+
+## Review fixes before the PR
+
+An independent review found no serious defects. Fixed:
+- A resumed MySQL takeover decides step 10's deadline source by layout, not
+  by whether `reclaim_at` still exists. A 2.11.3 takeover killed after that
+  column's drop had already copied every deadline, so it adopts nothing more
+  instead of adding `closed_at + retention` rows for streams PHP had emptied.
+- The current run's missing row and the inbound-item hold above.
+- The payload scan's comment no longer says stream item rows are refused.
+- The retention test now puts the cursor exactly on the pruned run's last
+  consumed message (so `<=` matters) and points the instance at a missing
+  current run.

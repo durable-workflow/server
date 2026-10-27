@@ -65,13 +65,18 @@ macro_rules! reference {
 pub(super) use reference;
 
 /// The run's payload columns that can hold an external reference. History
-/// events repeat these payloads, so they are not scanned again.
+/// events repeat these payloads, so they are not scanned again. Inbound
+/// message stream items on the run's instance count too: retention blanks or
+/// deletes them, and native never deletes the stored object behind one.
+/// Nothing writes such an item today (append and takeover refuse external
+/// references), so this only keeps a later change from stranding objects.
 const REFERENCES_SQL: &str = concat!(
     "SELECT (SELECT COUNT(*) FROM workflow_runs WHERE id=$1 AND (", reference!("arguments"), " OR ", reference!("output"), "))",
     "+(SELECT COUNT(*) FROM workflow_commands WHERE workflow_run_id=$2 AND ", reference!("payload"), ")",
     "+(SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$3 AND ", reference!("arguments"), ")",
     "+(SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id=$4 AND (", reference!("arguments"), " OR ", reference!("result"), "))",
     "+(SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$5 AND (", reference!("arguments"), " OR ", reference!("result"), "))",
+    "+(SELECT COUNT(*) FROM workflow_inbound_stream_items WHERE stream_id IN (SELECT id FROM workflow_inbound_streams WHERE workflow_instance_id IN (SELECT workflow_instance_id FROM workflow_runs WHERE id=$6)) AND ", reference!("payload_blob"), ")",
 );
 
 /// The run's durable workflow streams, deleted with it as PHP's
@@ -91,7 +96,7 @@ pub(super) const STREAM_COUNTS: [&str; 3] =
 /// skip reason. An abandoned activity's hold is read from history. Durable
 /// workflow streams go with the run (`DURABLE_STREAMS`) unless they hold an
 /// external reference (`Backend::RUN_STREAM_REFERENCES`).
-pub(super) const HOLDS: &[(&str, usize, &str)] = &[(REFERENCES_SQL, 5, "external_payload_cleanup_unavailable")];
+pub(super) const HOLDS: &[(&str, usize, &str)] = &[(REFERENCES_SQL, 6, "external_payload_cleanup_unavailable")];
 
 /// `MessageStreamRetentionCleanup::planForRun`'s plan for one run: the
 /// instance's inbound streams, whether they all go with the instance's last

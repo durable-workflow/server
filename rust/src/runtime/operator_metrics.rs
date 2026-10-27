@@ -1427,16 +1427,19 @@ where
             .map(|row| DB::optional_string(&row, "current_run_id"))
             .transpose()?
             .flatten();
-        let current_terminal = match &current {
+        // The current run counts only when its row exists, as in PHP: an
+        // instance pointing at a missing run retains nothing through it.
+        let current_status = match &current {
             Some(current) => Self::query("SELECT status FROM workflow_runs WHERE id=$1")
                 .bind(current)
                 .fetch_optional(&mut *tx)
                 .await?
                 .map(|row| DB::string(&row, "status"))
-                .transpose()?
-                .is_some_and(|status| retention::terminal(&status)),
-            None => false,
+                .transpose()?,
+            None => None,
         };
+        let current_terminal = current_status.as_deref().is_some_and(retention::terminal);
+        let current = current.filter(|_| current_status.is_some());
         let mut retained = Vec::new();
         for row in Self::query("SELECT id FROM workflow_run_summaries WHERE namespace=$1 AND workflow_instance_id=$2 AND id<>$3")
             .bind(namespace)

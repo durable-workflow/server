@@ -214,6 +214,9 @@ async fn retention_releases_consumed_messages_and_removes_the_last_runs_streams(
     }
 
     // The first run goes; the second run's checkpoint covers what it consumed.
+    // Put the cursor exactly on the last message the first run consumed: that
+    // message is covered too (PHP compares with <=).
+    database.execute(sqlx::AssertSqlSafe("UPDATE workflow_inbound_streams SET cursor_position=2".to_owned())).await;
     let (status, pruned) = request(&app, "POST", "/api/system/retention/pass", json!({"run_ids":[first]})).await;
     assert_eq!(status, StatusCode::OK, "{pruned}");
     let deleted = &pruned["results"][0]["deleted"];
@@ -225,6 +228,7 @@ async fn retention_releases_consumed_messages_and_removes_the_last_runs_streams(
     );
     assert_eq!(rows(&database, "SELECT COUNT(*) FROM workflow_inbound_stream_items WHERE payload_released_at IS NOT NULL AND payload_blob=''".into()).await, 2);
     assert_eq!(rows(&database, "SELECT COUNT(*) FROM workflow_inbound_stream_items WHERE message_id='m3' AND payload_released_at IS NULL AND payload_blob<>''".into()).await, 1);
+    database.execute(sqlx::AssertSqlSafe("UPDATE workflow_inbound_streams SET cursor_position=3".to_owned())).await;
     let orders = &streams(&app, "streams-kept").await["streams"][0];
     assert_eq!((&orders["last_position"], &orders["cursor_position"]), (&json!(3), &json!(3)), "{orders}");
 
@@ -257,8 +261,11 @@ async fn retention_keeps_consumed_messages_no_retained_checkpoint_covers() {
     let cursor = json!({"message_stream_cursors":[{"stream_name":"orders","through_position":1}]});
     let (status, body) = complete(&app, &task, json!([{"type":"continue_as_new","arguments":envelope(Payload::Array(vec![]))}]), cursor, "1.20").await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    // The checkpoint names a run that is no longer retained.
+    // The checkpoint names a run that is no longer retained. The instance
+    // names it as its current run too, but without a run row it retains
+    // nothing, as in PHP.
     database.execute(sqlx::AssertSqlSafe("UPDATE workflow_inbound_streams SET cursor_checkpoint_run_id='gone'".to_owned())).await;
+    database.execute(sqlx::AssertSqlSafe("UPDATE workflow_instances SET current_run_id='gone'".to_owned())).await;
     for table in ["workflow_runs", "workflow_run_summaries"] {
         database.execute(sqlx::AssertSqlSafe(format!("UPDATE {table} SET closed_at='2020-01-01 00:00:00.000000' WHERE id='{first}'"))).await;
     }
