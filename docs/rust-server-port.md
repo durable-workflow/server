@@ -177,9 +177,9 @@ any other unknown path or method answers PHP's own 404 or 405
     except external payload references as input, stream retention cleanup
     and takeover of PHP data with streams.
   - Workflow-bound service handlers (start, signal, update and query
-    workflow), the workflow-task `start_service_operation` command, and
-    takeover of a PHP database that holds service calls. Each of these still
-    answers 501 or refuses. When the
+    workflow) and the workflow-task `start_service_operation` command. Each
+    still answers 501 or refuses; published PHP's handlers are unusable for
+    SDK-worker workflows (Server #794), so native waits for that contract. When the
     workflow-bound handlers come, an operation bound to a workflow update must
     refuse a `wait_timeout_seconds` above the update ceiling of 60 before it
     runs, as PHP does (Server #775).
@@ -248,9 +248,10 @@ any other unknown path or method answers PHP's own 404 or 405
     - The regular signal and update routes refuse caller request ids that
       start with `dw-bridge:`.)
   - (Caller-indexed Nexus operation reads are served, with the
-    `nexus-operations` fixture. Native writes no service calls and takeover
-    refuses a source that holds any, so every list is PHP's empty answer; an
-    execution test seeds rows for the row shape and newest-first order.)
+    `nexus-operations` fixture. The fixture's lists are empty, because an HTTP
+    execute records no caller run; an execution test seeds rows for the row
+    shape and newest-first order. Native now records service calls, and
+    takeover keeps PHP's.)
 
 ## Known gaps found in review
 
@@ -479,14 +480,15 @@ contract fixture before its correction.
   streams, the run has service calls, or a query is live
   (`continue_as_new_transfer_unqualified`); PHP continues it. A new workflow
   type or queue on the command now applies, as in PHP.
-- **Trace context (Workflow #773 / workflow#788, not yet published).** A
-  Workflow minor will add nullable `observability_context` columns on runs,
-  commands and tasks, plus an entry in schedule metadata. Native-owned
-  databases are unaffected. A Server release carrying the columns is a new
-  takeover source layout, which native refuses with
-  `upgrade_source_catalog_unqualified` until its recipe lands. The recipe must
-  also refuse rows that carry trace context until native implements the
-  contract. The boundary is agreed on #325.
+- **Trace context (Core 2.10, published in Server 2.11.1).** Core adds
+  nullable `observability_context` columns on runs, commands and tasks.
+  Native has no carrier: it accepts and ignores a top-level carrier on
+  business operations, as a PHP server with the feature disabled does.
+  Takeover recognizes both published 2.11.1 layouts, fresh and migrated from
+  2.9.x. It counts the carried values (`observability_contexts_removed`) and
+  drops the three columns; the verified backup keeps them
+  ([#325 decision](https://github.com/durable-workflow/server/issues/325#issuecomment-6306545520),
+  [checkpoint](rust-server-port-checkpoints/2026-10-26-php-2111-takeover.md)).
 - **Stop signal in the published image.** The published Server image declares
   `STOPSIGNAL SIGWINCH`, Apache's graceful stop. Native stops gracefully on
   `SIGTERM` or `SIGINT` and ignores `SIGWINCH`, so `docker stop` on the

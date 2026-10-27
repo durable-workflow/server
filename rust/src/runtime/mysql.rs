@@ -326,16 +326,20 @@ async fn source_layout(
         Flavor::MySql => [
             canonical(include_str!("../../upgrade/php-2.8.0/mysql.json")),
             canonical(include_str!("../../upgrade/php-2.9.7/mysql.json")),
+            canonical(include_str!("../../upgrade/php-2.11.1/mysql.json")),
+            canonical(include_str!("../../upgrade/php-2.11.1-from-2.9.7/mysql.json")),
         ],
         Flavor::MariaDb => [
             canonical(include_str!("../../upgrade/php-2.8.0/mariadb.json")),
             canonical(include_str!("../../upgrade/php-2.9.7/mariadb.json")),
+            canonical(include_str!("../../upgrade/php-2.11.1/mariadb.json")),
+            canonical(include_str!("../../upgrade/php-2.11.1-from-2.9.7/mariadb.json")),
         ],
     };
     let layout = super::upgrade::source_layout(
         &actual,
         expected.clone(),
-        [&deltas[0], &deltas[1]],
+        [&deltas[0], &deltas[1], &deltas[2], &deltas[3]],
         |row| row.0.clone(),
     );
     // Laravel's separate mariadb connection stores the backup hold owner as
@@ -349,12 +353,14 @@ async fn source_layout(
             match super::upgrade::source_layout(
                 &actual,
                 driver,
-                [&deltas[0], &deltas[1]],
+                [&deltas[0], &deltas[1], &deltas[2], &deltas[3]],
                 |row| row.0.clone(),
             )? {
                 "frozen" => "frozen+mariadb-driver",
                 "php-2.8.0" => "php-2.8.0+mariadb-driver",
                 "php-2.9.7" => "php-2.9.7+mariadb-driver",
+                "php-2.11.1" => "php-2.11.1+mariadb-driver",
+                "php-2.11.1-from-2.9.7" => "php-2.11.1-from-2.9.7+mariadb-driver",
                 _ => {
                     return Err(refuse(
                         StatusCode::CONFLICT,
@@ -1238,6 +1244,8 @@ mod tests {
                 [
                     include_str!("../../upgrade/php-2.8.0/mysql.json"),
                     include_str!("../../upgrade/php-2.9.7/mysql.json"),
+                    include_str!("../../upgrade/php-2.11.1/mysql.json"),
+                    include_str!("../../upgrade/php-2.11.1-from-2.9.7/mysql.json"),
                 ],
             ),
             Flavor::MariaDb => (
@@ -1245,6 +1253,8 @@ mod tests {
                 [
                     include_str!("../../upgrade/php-2.8.0/mariadb.json"),
                     include_str!("../../upgrade/php-2.9.7/mariadb.json"),
+                    include_str!("../../upgrade/php-2.11.1/mariadb.json"),
+                    include_str!("../../upgrade/php-2.11.1-from-2.9.7/mariadb.json"),
                 ],
             ),
         };
@@ -1257,8 +1267,13 @@ mod tests {
         let releases = match release {
             None => 0,
             Some("php-2.8.0") => 1,
-            Some(_) => 2,
+            Some("php-2.9.7") => 2,
+            Some("php-2.11.1") => 3,
+            Some(_) => 4,
         };
+        // A replaced table can have inbound foreign keys (2.11.1's runs); they
+        // name the table, so they hold again once it is recreated.
+        connection.execute("SET FOREIGN_KEY_CHECKS=0").await.unwrap();
         for delta in &deltas[..releases] {
             let delta: Value = serde_json::from_str(delta).unwrap();
             for added in delta["add"].as_array().unwrap() {
@@ -1270,6 +1285,7 @@ mod tests {
                 connection.execute(AssertSqlSafe(ddl.to_owned())).await.unwrap();
             }
         }
+        connection.execute("SET FOREIGN_KEY_CHECKS=1").await.unwrap();
         connection.close().await.unwrap();
         flavor
     }
@@ -1359,6 +1375,55 @@ mod tests {
             true
         )));
         assert!(incarnations.iter().any(|row| row.1 == "older" && row.2 == "active" && row.0.len() == 32));
+    }
+
+    /// PHP 2.11.1, fresh and as a 2.9.7 database upgrades to it: both carry
+    /// Core 2.10's trace carriers on runs, commands and tasks, which takeover
+    /// counts and drops.
+    #[tokio::test]
+    #[ignore = "requires an isolated MySQL/MariaDB create-database role"]
+    async fn qualification_takeover_converts_php_2111_and_native_opens_it() {
+        for release in ["php-2.11.1", "php-2.11.1-from-2.9.7"] {
+            let db = Database::new().await;
+            php_layout(&db, Some(release)).await;
+            registrations(&db).await;
+            let mut connection = db.connection().await;
+            connection.execute(concat!(
+                "INSERT INTO workflow_instances(id,workflow_class,workflow_type,namespace,current_run_id,run_count) VALUES ('traced','Traced','traced','default','01jrun0000000000000000000a',1);",
+                "INSERT INTO workflow_runs(id,workflow_instance_id,run_number,workflow_class,workflow_type,namespace,status,observability_context) VALUES ('01jrun0000000000000000000a','traced',1,'Traced','traced','default','completed','{\"traceparent\":\"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01\"}');",
+                "INSERT INTO workflow_tasks(id,workflow_run_id,namespace,task_type,status,observability_context) VALUES ('01jtask000000000000000000a','01jrun0000000000000000000a','default','workflow','completed','{\"traceparent\":\"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01\"}');",
+                "INSERT INTO workflow_worker_sessions(namespace,session_id,queue,status,lease_owner,lease_expires_at,ttl_expires_at,created_at,updated_at) VALUES ('default','held','q','active','current','2030-01-01 00:00:00','2030-01-01 00:00:00','2026-10-20 09:00:00','2026-10-20 09:00:00');",
+                "INSERT INTO workflow_service_calls(id,namespace,endpoint_name,service_name,operation_name,caller_namespace,target_namespace,status,outcome,operation_mode,accepted_at,call_deadline_at,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kcall','default','pay','billing','charge','default','default','accepted','accepted','async','2026-10-26 10:00:00.000000','2027-02-03 04:05:06.500000','2026-10-26 10:00:00','2026-10-26 10:00:00');",
+            )).await.unwrap();
+            connection.close().await.unwrap();
+            let fingerprint = backup_fingerprint(&db).await;
+            let report = takeover::take_over_mysql(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES)
+                .await
+                .unwrap();
+            assert_eq!(report["status"], "taken_over", "{report}");
+            assert_eq!(report["source_layout"], release);
+            assert_eq!(report["converted"]["observability_contexts_removed"], 2, "{report}");
+            assert_eq!(report["converted"]["incarnations_copied"], 3, "{report}");
+            assert_eq!(report["converted"]["session_holders_recorded"], 1, "{report}");
+            assert_eq!(report["converted"]["service_call_deadlines_copied"], 1, "{report}");
+            converted(&db).await;
+            let mut connection = db.connection().await;
+            let holder: String = sqlx::query_scalar("SELECT incarnation FROM dw_worker_session_holders WHERE namespace='default' AND session_id='held'")
+                .fetch_one(&mut connection).await.unwrap();
+            assert_eq!(holder, super::super::worker_sessions::incarnation_digest("0123456789abcdef0123456789abcdef"));
+            let deadline: (String, String) = sqlx::query_as("SELECT namespace,DATE_FORMAT(call_deadline_at,'%Y-%m-%d %H:%i:%s.%f') FROM dw_service_call_deadlines WHERE service_call_id='01m5wvy8d1j3dtr13es05kcall'")
+                .fetch_one(&mut connection).await.unwrap();
+            assert_eq!(deadline, ("default".to_owned(), "2027-02-03 04:05:06.500000".to_owned()));
+            let carriers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND COLUMN_NAME IN ('observability_context','queue_delivery_reference')")
+                .fetch_one(&mut connection).await.unwrap();
+            assert_eq!(carriers, 0, "{release}: the PHP-only columns are gone");
+            connection.close().await.unwrap();
+            takeover_refused(
+                takeover::take_over_mysql(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES).await,
+                "upgrade_source_already_owned",
+            );
+            db.remove().await;
+        }
     }
 
     #[tokio::test]
@@ -1477,10 +1542,6 @@ mod tests {
         assert_eq!(source_state(&db).await, written);
         db.remove().await;
         for (statement, expected) in [
-            (
-                "INSERT INTO workflow_service_calls(id,endpoint_name,service_name,operation_name,status,operation_mode) VALUES ('call','e','s','o','accepted','sync')",
-                "upgrade_source_service_calls_unsupported",
-            ),
             (
                 "INSERT INTO runtime_external_payloads(id,namespace,storage_uri,storage_uri_sha256,codec,sha256,size_bytes) VALUES ('p','default','s3://b/k','x','avro','y',1)",
                 "upgrade_source_external_payloads_unsupported",

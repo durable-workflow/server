@@ -1267,6 +1267,25 @@ impl super::Runtime {
 }
 
 store_methods! {
+    /// `ServiceCallDeadline::expire` for the repair pass: under the
+    /// transition lock, times the call out if it is still open and due.
+    pub(crate) async fn expire_service_call(&self, id: &str) -> Result<bool> {
+        let mut tx = self.begin().await?;
+        let row = Self::query("SELECT c.*,d.call_deadline_at FROM workflow_service_calls c LEFT JOIN dw_service_call_deadlines d ON d.service_call_id=c.id WHERE c.id=$1")
+            .bind(id).fetch_optional(&mut *tx).await?;
+        // The pass just selected it; only a concurrent delete loses it.
+        let Some(row) = row else {
+            return Err(RuntimeError::Database(sqlx::Error::RowNotFound));
+        };
+        let mut call = Self::service_call_row(&row)?;
+        let expired = call.expire(super::store::now());
+        if expired {
+            Self::save_service_call(&mut tx, &mut call).await?;
+        }
+        tx.commit().await?;
+        Ok(expired)
+    }
+
     pub(crate) fn service_call_row(row: &DB::Row) -> Result<Call> {
         let text = |field: &str| -> Result<Option<String>> { DB::optional_string(row, field) };
         let document = |field: &str| -> Result<Value> { Ok(DB::optional_document_row(row, field)?.map_or(Value::Null, php_document)) };

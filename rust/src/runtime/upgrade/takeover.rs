@@ -221,7 +221,7 @@ fn report(backend: &str, layout: &str, digest: &Value, inventory: &Value, conver
 /// Published PHP features native does not implement yet. A source holding any
 /// of their rows is refused, rather than taken over without them. Derived
 /// projections and PHP's own queue and poll bookkeeping are left in place.
-const UNSUPPORTED_FEATURES: [(&str, &[&str]); 5] = [
+const UNSUPPORTED_FEATURES: [(&str, &[&str]); 3] = [
     ("upgrade_source_runtime_credentials_unsupported", &["runtime_credentials"]),
     (
         "upgrade_source_message_streams_unsupported",
@@ -234,11 +234,6 @@ const UNSUPPORTED_FEATURES: [(&str, &[&str]); 5] = [
         ],
     ),
     ("upgrade_source_update_validation_unsupported", &["workflow_update_validation_tasks"]),
-    ("upgrade_source_worker_sessions_unsupported", &["workflow_worker_sessions"]),
-    (
-        "upgrade_source_search_attribute_definitions_unsupported",
-        &["search_attribute_definitions"],
-    ),
 ];
 
 /// Takeover needs every inspection result it relies on, and refuses what
@@ -341,7 +336,7 @@ where
 fn php_incarnations(layout: &str) -> Result<bool> {
     match layout.trim_end_matches("+mariadb-driver") {
         "frozen" => Ok(false),
-        "php-2.8.0" | "php-2.9.7" => Ok(true),
+        "php-2.8.0" | "php-2.9.7" | "php-2.11.1" | "php-2.11.1-from-2.9.7" => Ok(true),
         _ => Err(refuse(
             StatusCode::CONFLICT,
             "upgrade_source_layout_unconverted",
@@ -349,20 +344,10 @@ fn php_incarnations(layout: &str) -> Result<bool> {
     }
 }
 
-/// Service calls are not part of native yet.
-async fn service_calls_absent<DB: Backend>(tx: &mut DB::Connection) -> Result<()>
-where
-    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
-    DB::Arguments: IntoArguments<DB>,
-{
-    if count::<DB>(tx, "SELECT COUNT(*) AS n FROM workflow_service_calls").await? != 0 {
-        return Err(refuse(
-            StatusCode::CONFLICT,
-            "upgrade_source_service_calls_unsupported",
-        ));
-    }
-    Ok(())
-}
+/// Native keeps a service call's deadline in `dw_service_call_deadlines`,
+/// not in PHP 2.8.0+'s `workflow_service_calls.call_deadline_at`. Copies each
+/// one not copied yet, before that column is dropped; returns how many.
+pub(super) const SERVICE_CALL_DEADLINES: &str = "INSERT INTO dw_service_call_deadlines(service_call_id,namespace,call_deadline_at) SELECT c.id,COALESCE(c.namespace,c.target_namespace,''),c.call_deadline_at FROM workflow_service_calls c WHERE c.call_deadline_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dw_service_call_deadlines d WHERE d.service_call_id=c.id)";
 
 /// Converts a recorded PHP release layout to native's (the design's recipes).
 async fn convert<DB: Backend>(tx: &mut DB::Connection, layout: &str) -> Result<Value>
@@ -372,8 +357,14 @@ where
     for<'q> String: Encode<'q, DB> + Type<DB>,
 {
     let php_incarnations = php_incarnations(layout)?;
-    service_calls_absent::<DB>(tx).await?;
     let (copied, created) = adopt_incarnations::<DB>(tx, php_incarnations).await?;
+    let holders = adopt_session_holders::<DB>(tx).await?;
+    // The frozen layout has no call deadlines; every later one does.
+    let deadlines = if php_incarnations {
+        DB::affected(query::<DB>(SERVICE_CALL_DEADLINES).execute(&mut *tx).await?)
+    } else {
+        0
+    };
     if php_incarnations {
         sqlx::raw_sql(
             "DROP TABLE workflow_worker_registration_incarnations; \
@@ -384,7 +375,7 @@ where
         .execute(&mut *tx)
         .await?;
     }
-    let delivery_references = if layout == "php-2.9.7" {
+    let delivery_references = if matches!(layout, "php-2.9.7" | "php-2.11.1" | "php-2.11.1-from-2.9.7") {
         // PHP's own queue delivery lookup metadata; native does not use PHP's
         // queue, and the queue inspection bound every job to its task row.
         let references = count::<DB>(tx, DELIVERY_REFERENCES).await?;
@@ -395,14 +386,73 @@ where
     } else {
         0
     };
+    let observability_contexts = if matches!(layout, "php-2.11.1" | "php-2.11.1-from-2.9.7") {
+        // Core 2.10's trace carriers on runs, commands and tasks (decided on
+        // #325). Native has no carrier; they are not business state or
+        // history, and the verified backup keeps them.
+        let mut contexts = 0;
+        for (table, sql) in OBSERVABILITY_CONTEXTS {
+            contexts += count::<DB>(tx, sql).await?;
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!("ALTER TABLE {table} DROP COLUMN observability_context")))
+                .execute(&mut *tx)
+                .await?;
+        }
+        contexts
+    } else {
+        0
+    };
     Ok(json!({
         "incarnations_copied":copied, "incarnations_created":created,
-        "queue_delivery_references_removed":delivery_references
+        "session_holders_recorded":holders,
+        "service_call_deadlines_copied":deadlines,
+        "queue_delivery_references_removed":delivery_references,
+        "observability_contexts_removed":observability_contexts
     }))
 }
 
+/// The tables Core 2.10 gave a trace carrier, with the count of carried values.
+pub(super) const OBSERVABILITY_CONTEXTS: [(&str, &str); 3] = [
+    ("workflow_runs", "SELECT COUNT(*) AS n FROM workflow_runs WHERE observability_context IS NOT NULL"),
+    ("workflow_commands", "SELECT COUNT(*) AS n FROM workflow_commands WHERE observability_context IS NOT NULL"),
+    ("workflow_tasks", "SELECT COUNT(*) AS n FROM workflow_tasks WHERE observability_context IS NOT NULL"),
+];
+
 const DELIVERY_REFERENCES: &str =
     "SELECT COUNT(*) AS n FROM workflow_tasks WHERE queue_delivery_reference IS NOT NULL";
+
+/// Records each active PHP worker session's holder as native records one:
+/// the lease owner's current registration incarnation, which native compares
+/// on every read. Without it native would read the session as held by a
+/// replaced registration and orphan it. Returns how many were recorded.
+pub(super) async fn adopt_session_holders<DB: Backend>(tx: &mut DB::Connection) -> Result<usize>
+where
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+    for<'q> String: Encode<'q, DB> + Type<DB>,
+{
+    // Newest active incarnation first, as native's current-token read picks.
+    let rows = query::<DB>("SELECT s.namespace,s.session_id,i.token FROM workflow_worker_sessions s JOIN dw_worker_registration_incarnations i ON i.namespace=s.namespace AND i.worker_id=s.lease_owner AND i.status='active' WHERE s.status='active' AND s.lease_owner IS NOT NULL ORDER BY s.namespace,s.session_id,i.created_at DESC")
+        .fetch_all(&mut *tx)
+        .await?;
+    let now = super::super::store::now();
+    let mut recorded = std::collections::BTreeSet::new();
+    for row in &rows {
+        let key = (DB::string(row, "namespace")?, DB::string(row, "session_id")?);
+        if recorded.contains(&key) {
+            continue;
+        }
+        let incarnation = super::super::worker_sessions::incarnation_digest(&DB::string(row, "token")?);
+        query::<DB>("INSERT INTO dw_worker_session_holders(namespace,session_id,incarnation,updated_at) VALUES ($1,$2,$3,$4)")
+            .bind(key.0.clone())
+            .bind(key.1.clone())
+            .bind(incarnation)
+            .bind(DB::bind_time(now))
+            .execute(&mut *tx)
+            .await?;
+        recorded.insert(key);
+    }
+    Ok(recorded.len())
+}
 
 /// Gives every registration the incarnation native expects. PHP's own
 /// incarnations and tokens are copied, so a running SDK worker's fenced
