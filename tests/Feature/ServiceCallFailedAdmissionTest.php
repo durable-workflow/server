@@ -144,6 +144,10 @@ class ServiceCallFailedAdmissionTest extends TestCase
                 $this->assertDatabaseCount('workflow_service_calls', 1);
                 $this->assertSame(ServiceCallOutcome::RejectedThrottled, $admit()->decision->outcome);
                 $this->assertDatabaseCount('workflow_service_calls', 2);
+                Carbon::setTestNow('2026-10-27T01:01:05Z');
+                $nextMinute = $admit();
+                $this->assertTrue($nextMinute->accepted(), 'An ended synchronous admission must release its concurrency slot.');
+                $boundary->release($nextMinute->request);
 
                 return;
             }

@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\DB;
 use Mockery;
 use PDOException;
 use PHPUnit\Framework\Attributes\DataProvider;
+use RuntimeException;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
 use Workflow\V2\Contracts\ServiceBoundaryPolicy;
@@ -115,7 +116,9 @@ class ServiceCallAdmissionRecoveryTest extends TestCase
         $real = app(ServiceControlPlane::class);
         $armed = true;
         $refreshArmed = false;
-        $fail = static fn () => throw new QueryException('sqlite', 'fixture writer', [], new PDOException('database is locked'));
+        $fail = $stage === 'after_handler_error'
+            ? static fn () => throw new RuntimeException('fixture response failure')
+            : static fn () => throw new QueryException('sqlite', 'fixture writer', [], new PDOException('database is locked'));
         if ($stage === 'audit_commit') {
             WorkflowServiceCall::created(static function () use (&$armed, $fail): void {
                 if ($armed) {
@@ -129,7 +132,7 @@ class ServiceCallAdmissionRecoveryTest extends TestCase
                 $fail();
             }
             $result = $real->execute(...$arguments);
-            if ($armed && $stage === 'after_handler') {
+            if ($armed && in_array($stage, ['after_handler', 'after_handler_error'], true)) {
                 $fail();
             }
             $refreshArmed = $armed && $stage === 'response_refresh';
@@ -148,15 +151,16 @@ class ServiceCallAdmissionRecoveryTest extends TestCase
         $response = $this->withHeaders($this->apiHeaders())->postJson(self::PATH, $body);
         $armed = false;
         $call = WorkflowServiceCall::query()->sole();
+        $retryable = $keyed && $stage !== 'after_handler_error';
         $response->assertStatus(503)->assertJsonPath('service_call_id', $call->id)
-            ->assertJsonPath('namespace', 'default')->assertJsonPath('retryable', $keyed)
-            ->assertJsonPath('reason', $keyed ? 'backend_lock_pressure' : 'service_operation_outcome_unknown');
-        if ($keyed) {
+            ->assertJsonPath('namespace', 'default')->assertJsonPath('retryable', $retryable)
+            ->assertJsonPath('reason', $retryable ? 'backend_lock_pressure' : 'service_operation_outcome_unknown');
+        if ($retryable) {
             $response->assertHeader('Retry-After', '1');
         } else {
             $response->assertHeaderMissing('Retry-After');
         }
-        $issued = in_array($stage, ['after_handler', 'response_refresh'], true);
+        $issued = in_array($stage, ['after_handler', 'after_handler_error', 'response_refresh'], true);
         $this->assertSame($issued && $kind === 'activity_execution' ? 1 : 0,
             WorkflowServiceCall::query()->whereNotNull('metadata->activity_execution_id')->count());
         $this->assertSame($issued && $kind !== 'activity_execution' ? 1 : 0,
@@ -189,7 +193,7 @@ class ServiceCallAdmissionRecoveryTest extends TestCase
     public static function committedFailureCases(): iterable
     {
         foreach (['activity_execution', 'invocable_carrier_request'] as $kind) {
-            foreach (['audit_commit', 'before_handler', 'after_handler', 'response_refresh'] as $stage) {
+            foreach (['audit_commit', 'before_handler', 'after_handler', 'after_handler_error', 'response_refresh'] as $stage) {
                 foreach ([false, true] as $keyed) {
                     yield $kind.'-'.$stage.'-'.(int) $keyed => [$kind, $stage, $keyed];
                 }

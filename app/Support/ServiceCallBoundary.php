@@ -437,6 +437,12 @@ final class ServiceCallBoundary
             }
 
             if ($outcomeUnknown && $call !== null) {
+                if ($reserved && $request->operationMode === ServiceCallOperationMode::Sync) {
+                    // The HTTP attempt ended before the caller received an
+                    // admission. Keep its committed rate charge, but free the
+                    // synchronous in-flight slot just as dispatch's finally does.
+                    $this->release($request);
+                }
                 throw new ServiceCallAdmissionOutcomeUnknown(
                     (string) $call->id, $request->targetNamespace,
                     $request->idempotencyKey !== null && $call->idempotency_scope_hash !== null,
