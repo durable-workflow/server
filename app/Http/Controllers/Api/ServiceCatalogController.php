@@ -22,6 +22,7 @@ use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
 use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Support\ServiceCallDeadlinePolicy;
+use Workflow\V2\Support\ServiceCallIdempotency;
 use Workflow\V2\Support\ServiceCallPrincipal;
 use Workflow\V2\Support\UpdateWaitPolicy;
 
@@ -663,6 +664,11 @@ class ServiceCatalogController
 
         // An update-bound operation hands its wait to the update admission.
         ServiceOperationUpdateWait::assertWithinCeiling($operation, $validated['wait_timeout_seconds'] ?? null);
+        $waitFor = $validated['wait_for']
+            ?? (($validated['mode_override'] ?? $operation->operation_mode) === 'sync' ? 'completed' : 'accepted');
+        if (ServiceOperationUpdateWait::bindsWorkflowUpdate($operation) && $waitFor === UpdateWaitPolicy::WAIT_FOR_COMPLETED) {
+            UpdateWaitPolicy::requestedTimeoutSeconds($validated['wait_timeout_seconds'] ?? null);
+        }
 
         try {
             $validated['payload_codec'] = PayloadCodecContract::canonicalize(
@@ -729,13 +735,22 @@ class ServiceCatalogController
             static fn (mixed $value): bool => $value !== null,
         );
 
-        $idempotentCall = $this->findIdempotentServiceCall(
-            $request,
-            $operation,
-            $validated['idempotency_key'] ?? null,
-            $callerNamespace,
-        );
+        try {
+            $idempotentCall = $this->findIdempotentServiceCall(
+                $request, $endpoint, $service, $operation, $validated['idempotency_key'] ?? null,
+            );
+        } catch (ServiceOperationAuthorizationException) {
+            return $this->serviceOperationForbidden();
+        }
         if ($idempotentCall) {
+            if ($idempotentCall->caller_namespace !== $callerNamespace
+                || $idempotentCall->caller_workflow_instance_id !== ($validated['caller_workflow_instance_id'] ?? null)
+                || $idempotentCall->caller_workflow_run_id !== ($validated['caller_workflow_run_id'] ?? null)
+                || $idempotentCall->workflow_service_endpoint_id !== $endpoint->id
+                || $idempotentCall->workflow_service_id !== $service->id
+                || $idempotentCall->workflow_service_operation_id !== $operation->id) {
+                return $this->serviceOperationForbidden();
+            }
             $replayRejection = $this->serviceCallBoundary()->replayRejectionFor(
                 principal: $this->principal($request),
                 callerNamespace: $callerNamespace,
@@ -1459,22 +1474,21 @@ class ServiceCatalogController
 
     private function findIdempotentServiceCall(
         Request $request,
+        WorkflowServiceEndpoint $endpoint,
+        WorkflowService $service,
         WorkflowServiceOperation $operation,
         mixed $idempotencyKey,
-        string $callerNamespace,
     ): ?WorkflowServiceCall {
         if (! is_string($idempotencyKey) || trim($idempotencyKey) === '') {
             return null;
         }
 
-        return WorkflowServiceCall::query()
-            ->where('namespace', $this->namespace($request))
-            ->where('workflow_service_operation_id', $operation->id)
-            ->where('caller_namespace', $callerNamespace)
-            ->where('idempotency_key', trim($idempotencyKey))
-            ->oldest('created_at')
-            ->oldest('id')
-            ->first();
+        // Core's canonical key belongs to the target contract, not a caller.
+        // Find it before admitting a new audit row, then verify ownership.
+        return ServiceCallIdempotency::find([
+            $this->namespace($request), $endpoint->endpoint_name, $service->service_name,
+            $operation->operation_name, trim($idempotencyKey),
+        ], lock: false);
     }
 
     private function acceptedCallHasIssuedHandler(WorkflowServiceCall $call): bool

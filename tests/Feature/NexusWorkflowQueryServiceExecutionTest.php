@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
@@ -74,7 +75,11 @@ class NexusWorkflowQueryServiceExecutionTest extends TestCase
             ->assertJsonPath('service_call_attempts.0.failure_type', 'TransientGreetingFailure')
             ->assertJsonPath('service_call_attempts.0.retry_scheduled', true)
             ->assertJsonPath('service_call_attempts.1.status', 'completed')
-            ->assertJsonPath('linked_workflow_instance_id', $run->workflow_instance_id);
+            ->assertJsonPath('linked_workflow_instance_id', $run->workflow_instance_id)
+            ->assertJsonPath('result_envelope.codec', 'avro');
+
+        $this->assertSame(['greeting' => 'hello from public query worker'],
+            Serializer::unserialize($response->json('result_envelope.blob')));
 
         $history = $this->withHeaders($this->apiHeaders())
             ->getJson(sprintf('/api/workflows/caller-retry-workflow/runs/%s/nexus-operations', $callerRunId));
