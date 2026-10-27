@@ -860,6 +860,17 @@
       ]
     },
     {
+      "path": "scripts/conformance/server-parity/native-image-corpus.sh",
+      "line": "bash scripts/ci/run-composer.sh --rm -v \"$PWD:/source\" -w /source -- \\",
+      "count": 1,
+      "confinement": "scripts/ci/run-composer.sh runs Composer in the pinned image after Alpine's fixed Brotli decoder (brotli-safe-composer.sh), never in the image under test. It sets COMPOSER_CAFILE to the checked store and COMPOSER_CAPATH to an empty directory after the caller's options, which may not name either, an entrypoint, an env file, /checked-ca or --volumes-from.",
+      "guards": [
+        {
+          "type": "composer-wrapper"
+        }
+      ]
+    },
+    {
       "path": "scripts/conformance/server-parity/query-authority-cohort.sh",
       "line": "bash scripts/ci/run-composer.sh --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \\",
       "count": 1,
