@@ -51,7 +51,7 @@ for database in "${database_list[@]}"; do
   cleanup() {
     compose down -v --remove-orphans >/dev/null 2>&1 || true
   }
-  trap cleanup EXIT
+  trap 'memo_failure_status=$?; if (( memo_failure_status != 0 )); then printf "::error file=scripts/smoke-workflow-memo-rolling-upgrade.sh,line=%s,title=Memo rolling smoke failed::Unexpected exit %s at smoke script line %s.\n" "$LINENO" "$memo_failure_status" "$LINENO" >&2; fi; cleanup' EXIT
 
   request() {
     docker run --rm --network "$network" "$curl_image" -fsS "$@"
