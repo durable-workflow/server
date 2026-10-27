@@ -9,6 +9,12 @@ name: Native release candidate
 # exist, gives both smoked digests
 # the release tag in both registries as one index, verifies it, and attests
 # its build provenance. The PHP image and its Release workflow are unchanged.
+#
+# Its credentials are its own: the dockerhub-native Environment and the
+# NATIVE_DOCKERHUB_* secret names. While they are absent the workflow fails
+# closed: each job signs in to Docker Hub before it builds anything, so a
+# dispatch stops there and pushes nothing. It can never resolve the PHP
+# release's Environment or repository credentials.
 
 run-name: Native ${{ inputs.tag }} at ${{ inputs.release_commit }}
 
@@ -39,7 +45,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 75
-    environment: dockerhub
+    environment: dockerhub-native
     permissions:
       contents: read
       packages: write
@@ -77,8 +83,8 @@ jobs:
       - name: Log in to Docker Hub
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ secrets.NATIVE_DOCKERHUB_USERNAME }}
+          password: ${{ secrets.NATIVE_DOCKERHUB_TOKEN }}
 
       - name: Log in to GHCR
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
@@ -128,7 +134,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 75
-    environment: dockerhub
+    environment: dockerhub-native
     permissions:
       contents: read
       packages: write
@@ -166,8 +172,8 @@ jobs:
       - name: Log in to Docker Hub
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ secrets.NATIVE_DOCKERHUB_USERNAME }}
+          password: ${{ secrets.NATIVE_DOCKERHUB_TOKEN }}
 
       - name: Log in to GHCR
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
@@ -218,7 +224,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    environment: dockerhub
+    environment: dockerhub-native
     permissions:
       contents: read
       packages: write
@@ -236,8 +242,8 @@ jobs:
       - name: Log in to Docker Hub
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ secrets.NATIVE_DOCKERHUB_USERNAME }}
+          password: ${{ secrets.NATIVE_DOCKERHUB_TOKEN }}
 
       - name: Log in to GHCR
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
