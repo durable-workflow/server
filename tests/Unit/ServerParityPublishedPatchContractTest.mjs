@@ -111,6 +111,48 @@ for (const language of ['rust', 'python']) for (const checkpoint of ['pending', 
     const raw = pressureModel(); mutate(raw.patch_deployment.replacement.requests);
     assert.throws(() => checkPatchDeployment(fixture, raw, 'test'));
   });
+  function capacityModel(path = '/api/worker/activity-tasks/poll', retried = false) {
+    const raw = model();
+    const request = {worker_id: 'test:replacement', task_queue: 'server-parity-v1', poll_request_id: 'capacity-poll', timeout_seconds: 1};
+    const refusal = {method: 'POST', path, status: 429, request, response_retry_after: '1', client_cancelled: false, transport_error: null,
+      response: {task: null, poll_status: 'long_poll_capacity_exhausted', reason: 'long_poll_capacity_exhausted',
+        error: 'Worker poll wait capacity is temporarily exhausted.', message: 'Retry the poll after the advertised delay.',
+        namespace: 'default', task_queue: 'server-parity-v1', task_kind: path.includes('activity') ? 'activity_task' : 'workflow_task',
+        wait_pool: 'worker', retry_after_seconds: 1, retryable: true}};
+    const requests = raw.patch_deployment.replacement.requests;
+    requests.splice(requests.length - 1, 0, refusal,
+      ...(retried ? [{...structuredClone(refusal), status: 200, response_retry_after: null, response: {task: null}}] : []));
+    return raw;
+  }
+  test(`${language} ${checkpoint}: model accepts long-poll capacity before clean shutdown`, () =>
+    checkPatchDeployment(fixture, capacityModel(), 'test'));
+  test(`${language} ${checkpoint}: model accepts long-poll capacity with same-request retry`, () =>
+    checkPatchDeployment(fixture, capacityModel('/api/worker/workflow-tasks/poll', true), 'test'));
+  for (const [name, mutate] of [
+    ['hidden leased task', requests => requests.at(-2).response.task = {task_id: 'unknown-task'}],
+    ['other poll status', requests => requests.at(-2).response.poll_status = 'rejected'],
+    ['contradicting reason', requests => requests.at(-2).response.reason = 'backend_lock_pressure'],
+    ['not retryable', requests => requests.at(-2).response.retryable = false],
+    ['wrong task kind', requests => requests.at(-2).response.task_kind = 'workflow_task'],
+    ['other queue', requests => requests.at(-2).response.task_queue = 'other'],
+    ['missing Retry-After', requests => requests.at(-2).response_retry_after = null],
+    ['Retry-After disagrees', requests => requests.at(-2).response_retry_after = '2'],
+    ['oversized retry hint', requests => { requests.at(-2).response.retry_after_seconds = 26; requests.at(-2).response_retry_after = '26'; }],
+    ['query poll', requests => requests.at(-2).path = '/api/worker/query-tasks/poll'],
+    ['completion refused', requests => requests.at(-2).path = '/api/worker/activity-tasks/task/complete'],
+    ['other worker', requests => requests.at(-2).request.worker_id = 'other-worker'],
+    ['missing poll identity', requests => delete requests.at(-2).request.poll_request_id],
+    ['neither retried nor stopped', requests => requests.push(requests.splice(-2, 1)[0])],
+  ]) test(`${language} ${checkpoint}: capacity model rejects ${name}`, () => {
+    const raw = capacityModel(); mutate(raw.patch_deployment.replacement.requests);
+    assert.throws(() => checkPatchDeployment(fixture, raw, 'test'));
+  });
+  test(`${language} ${checkpoint}: capacity model rejects a changed retry request`, () => {
+    const raw = capacityModel('/api/worker/workflow-tasks/poll', true);
+    raw.patch_deployment.replacement.requests.at(-2).request.timeout_seconds = 2;
+    raw.patch_deployment.replacement.requests.at(-2).request.poll_request_id = 'capacity-poll';
+    assert.throws(() => checkPatchDeployment(fixture, raw, 'test'));
+  });
   function cancelledModel() {
     const raw = model();
     const requests = raw.patch_deployment.replacement.requests;

@@ -378,6 +378,49 @@ class RunComposerTest(unittest.TestCase):
         self.assertRegex(text, r'image=\$\(sh "\$here/brotli-safe-composer\.sh"\)')
         self.assertRegex(text, r'sh "\$here/checked-ca\.sh" "\$ca"')
 
+    def retrying(self, failures: int, message: str, *arguments: str) -> tuple[subprocess.CompletedProcess[str], int]:
+        """Runs a copy of the wrapper whose Composer run fails `failures` times with `message`."""
+        work = Path(tempfile.mkdtemp(prefix="dw-run-composer-retry-"))
+        self.addCleanup(shutil.rmtree, work, ignore_errors=True)
+        (work / "bin").mkdir()
+        shutil.copy(WRAPPER_SCRIPT, work / "run-composer.sh")
+        (work / "brotli-safe-composer.sh").write_text("#!/bin/sh\necho composer:checked\n")
+        (work / "checked-ca.sh").write_text('#!/bin/sh\nmkdir -p "$1/no-ca-directory"\n: > "$1/ca.pem"\n')
+        count = work / "runs"
+        docker = work / "bin" / "docker"
+        docker.write_text(f"""#!/bin/sh
+n=$(($(cat '{count}' 2>/dev/null || echo 0) + 1)); echo "$n" > '{count}'
+if [ "$n" -le {failures} ]; then echo '{message}' >&2; exit 100; fi
+echo installed
+""")
+        (work / "bin" / "sleep").write_text("#!/bin/sh\nexit 0\n")
+        for stub in (docker, work / "bin" / "sleep"):
+            stub.chmod(0o755)
+        result = subprocess.run(["bash", str(work / "run-composer.sh"), *arguments], capture_output=True, text=True,
+                                env={**os.environ, "PATH": f"{work / 'bin'}:{os.environ['PATH']}"}, timeout=60)
+        return result, int(count.read_text())
+
+    def test_a_locked_install_retries_transient_download_failures(self) -> None:
+        rate_limited = ('Failed to download a/b from dist: The "https://codeload.github.com/a/b/legacy.zip/c" '
+                        "file could not be downloaded (HTTP/2 429 )")
+        result, runs = self.retrying(2, rate_limited, "--rm", "--", "install", "--no-dev")
+        self.assertEqual((0, 3), (result.returncode, runs), result.stderr)
+        self.assertEqual("installed\n", result.stdout)
+        self.assertEqual(2, result.stderr.count("HTTP/2 429"), "each attempt's stderr reaches the caller")
+
+        result, runs = self.retrying(3, rate_limited, "--rm", "--", "install")
+        self.assertEqual((100, 3), (result.returncode, runs), "three attempts at most, then Composer's own status")
+
+    def test_other_failures_commands_and_kept_containers_are_not_retried(self) -> None:
+        rate_limited = 'The "https://codeload.github.com/a" file could not be downloaded (HTTP/2 429 )'
+        for failure, arguments in (
+                ("Your lock file does not contain a compatible set of packages.", ("--rm", "--", "install")),
+                (rate_limited, ("--rm", "--", "update")),
+                (rate_limited, ("--name", "kept-sdk", "--", "install"))):
+            with self.subTest(arguments):
+                result, runs = self.retrying(1, failure, *arguments)
+                self.assertEqual((100, 1), (result.returncode, runs), result.stderr)
+
     def test_the_floor_refuses_the_pinned_image_and_accepts_its_own(self) -> None:
         docker_or_skip(self)
         refused = subprocess.run(["sh", str(FLOOR_SCRIPT), "--check", PINNED_COMPOSER],
