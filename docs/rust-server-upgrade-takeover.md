@@ -50,8 +50,9 @@ stopped source. Native refuses a fingerprint that does not match the source
 in the takeover's own transaction, but only the operator can make sure the
 backup restores. The backup check in step 3 is therefore not optional.
 Shown here for PostgreSQL; MySQL is the same with `DB_CONNECTION=mysql`.
-`-e DB_PASSWORD` passes the password from the shell's environment, so export
-it first rather than writing it on the command line. Add `--network` when the
+`-e DB_PASSWORD` and `-e DW_AUTH_TOKEN` pass those values from the shell's
+environment, so export them first rather than writing a credential on the
+command line or into shell history. Add `--network` when the
 database is only reachable on a Docker network.
 
 1. Stop every PHP role that can write: HTTP, queue workers, the scheduler and
@@ -88,7 +89,7 @@ database is only reachable on a Docker network.
 5. Start native on the taken-over database.
 
    ```sh
-   docker run -d -p 8080:8080 $source -e DW_AUTH_TOKEN=<token> durableworkflow/server-native:<tag>
+   docker run -d -p 8080:8080 $source -e DW_AUTH_TOKEN durableworkflow/server-native:<tag>
    ```
 
    The image runs the repair pass itself (`DW_RUST_MAINTENANCE_LOOP=1`),
