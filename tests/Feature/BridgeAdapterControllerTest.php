@@ -129,7 +129,8 @@ class BridgeAdapterControllerTest extends TestCase
         $this->assertSame('shopify', $context['server']['metadata']['adapter'] ?? null);
         $this->assertSame('signal_workflow', $context['server']['metadata']['action'] ?? null);
         $this->assertSame('shopify-event-2002', $context['server']['metadata']['idempotency_key'] ?? null);
-        $this->assertSame('shopify-event-2002', $context['server']['metadata']['request_id'] ?? null);
+        $this->assertSame($command->request_id, $context['server']['metadata']['request_id'] ?? null);
+        $this->assertMatchesRegularExpression('/^dw-bridge:v1:[a-f0-9]{64}$/D', $command->request_id);
 
         $duplicate = $this->withHeaders($this->apiHeaders())
             ->postJson('/api/bridge-adapters/webhook/shopify', [
@@ -208,7 +209,8 @@ class BridgeAdapterControllerTest extends TestCase
         $context = $command->context ?? [];
 
         $this->assertSame('pagerduty-event-3003', $context['server']['metadata']['idempotency_key'] ?? null);
-        $this->assertSame('pagerduty-event-3003', $context['server']['metadata']['request_id'] ?? null);
+        $this->assertSame($command->request_id, $context['server']['metadata']['request_id'] ?? null);
+        $this->assertMatchesRegularExpression('/^dw-bridge:v1:[a-f0-9]{64}$/D', $command->request_id);
         $this->assertSame(1, WorkflowCommand::query()
             ->where('workflow_instance_id', 'wf-bridge-update')
             ->where('command_type', 'update')

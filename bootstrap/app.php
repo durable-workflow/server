@@ -37,6 +37,11 @@ return Application::configure(basePath: dirname(__DIR__))
         // Size checks must precede global JSON/form normalization, not merely
         // the route middleware, so unknown-length bodies remain bounded.
         $middleware->prepend(EnforcePayloadLimits::class);
+        // Bridge provider keys, target names and input strings are opaque.
+        // Form normalization must not merge identities or alter their payloads.
+        $bridgeRequest = static fn (Request $request): bool => $request->is('api/bridge-adapters/webhook/*');
+        $middleware->trimStrings(except: [$bridgeRequest]);
+        $middleware->convertEmptyStringsToNull(except: [$bridgeRequest]);
         $middleware->api(append: [
             CompressResponse::class,
             RemoveServerHeader::class,

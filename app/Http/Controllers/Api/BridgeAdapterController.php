@@ -16,8 +16,12 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
 use LogicException;
+use Workflow\V2\CommandContext;
 use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Exceptions\BridgeCommandIdentityConflict;
 use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Support\BridgeCommandIdentity;
+use Workflow\V2\Support\ConfiguredV2Models;
 
 class BridgeAdapterController
 {
@@ -44,7 +48,7 @@ class BridgeAdapterController
 
         $adapter = trim($adapter);
 
-        if ($adapter === '' || ! preg_match('/^[a-zA-Z0-9._:-]+$/', $adapter)) {
+        if ($adapter === '' || strlen($adapter) > 64 || ! preg_match('/^[a-zA-Z0-9._:-]+$/', $adapter)) {
             return $this->rejected($request, $adapter, null, null, 'unsupported_routing', [
                 'message' => 'Bridge adapter route is unsupported.',
             ]);
@@ -127,9 +131,9 @@ class BridgeAdapterController
                 $startTarget['workflow_type'],
                 $startTarget['task_queue'] ?? null,
             );
-        } catch (LogicException $exception) {
+        } catch (LogicException) {
             return $this->rejected($request, $adapter, 'start_workflow', $idempotencyKey, 'unknown_target', [
-                'message' => $exception->getMessage(),
+                'message' => sprintf('Workflow instance [%s] is unavailable.', $workflowId),
                 'target' => $this->redactedTarget($target),
                 'correlation' => $correlation,
             ]);
@@ -182,9 +186,9 @@ class BridgeAdapterController
                     ],
                 ),
             );
-        } catch (LogicException $exception) {
+        } catch (LogicException) {
             return $this->rejected($request, $adapter, 'start_workflow', $idempotencyKey, 'unknown_target', [
-                'message' => $exception->getMessage(),
+                'message' => sprintf('Workflow instance [%s] is unavailable.', $workflowId),
                 'target' => $this->redactedTarget($target),
                 'correlation' => $correlation,
             ]);
@@ -202,14 +206,17 @@ class BridgeAdapterController
         $duplicate = $start['outcome'] === 'returned_existing_active';
 
         if (! $started && ! $duplicate) {
+            $reason = $start['rejection_reason'] ?? $start['reason'] ?? 'unsupported_routing';
+
             return $this->rejected(
                 $request,
                 $adapter,
                 'start_workflow',
                 $idempotencyKey,
-                $start['rejection_reason'] ?? $start['reason'] ?? 'unsupported_routing',
+                $reason,
                 array_filter([
-                    'message' => $start['message'] ?? null,
+                    'message' => $reason === 'unknown_target'
+                        ? sprintf('Workflow instance [%s] is unavailable.', $workflowId) : ($start['message'] ?? null),
                     'target' => $this->redactedTarget($target + ['workflow_id' => $start['workflow_id']]),
                     'correlation' => $correlation,
                     'workflow_id' => $start['workflow_id'],
@@ -279,46 +286,28 @@ class BridgeAdapterController
         $externalStorage = $this->externalPayloadStorage->driverFor($namespace);
         $envelope = AvroPayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input', $externalStorage);
 
-        $duplicate = $this->duplicateBridgeCommand(
-            workflowId: $workflowId,
-            commandType: 'signal',
-            adapter: $adapter,
-            action: 'signal_workflow',
-            idempotencyKey: $idempotencyKey,
-            targetField: 'signal_name',
-            targetName: $signalName,
-        );
-
-        if ($duplicate instanceof WorkflowCommand) {
-            return $this->duplicateCommandOutcome(
-                $request,
-                $adapter,
-                'signal_workflow',
-                $idempotencyKey,
-                $target,
-                $correlation,
-                $duplicate,
-            );
+        $identity = BridgeCommandIdentity::forCommand($adapter, 'signal_workflow', $idempotencyKey, 'signal_name', $signalName);
+        $context = $this->commandContexts->make(
+            $request, workflowId: $workflowId, commandName: 'bridge.signal_workflow',
+            metadata: ['adapter' => $adapter, 'action' => 'signal_workflow', 'idempotency_key' => $idempotencyKey,
+                'request_id' => $identity->storageToken(), 'signal_name' => $signalName],
+        )->with($identity->commandContext());
+        try {
+            $result = $this->workflowControlPlane->signal($workflowId, $signalName, [
+                'namespace' => $namespace,
+                'arguments' => AvroPayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input', $externalStorage),
+                'payload_codec' => $envelope['codec'],
+                'payload_blob' => $envelope['blob'],
+                'command_context' => $context,
+                'strict_configured_type_validation' => true,
+            ]);
+        } catch (BridgeCommandIdentityConflict) {
+            return $this->rejected($request, $adapter, 'signal_workflow', $idempotencyKey, 'bridge_identity_conflict')->setStatusCode(409);
         }
 
-        $result = $this->workflowControlPlane->signal($workflowId, $signalName, [
-            'arguments' => AvroPayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input', $externalStorage),
-            'payload_codec' => $envelope['codec'],
-            'payload_blob' => $envelope['blob'],
-            'command_context' => $this->commandContexts->make(
-                $request,
-                workflowId: $workflowId,
-                commandName: 'bridge.signal_workflow',
-                metadata: [
-                    'adapter' => $adapter,
-                    'action' => 'signal_workflow',
-                    'idempotency_key' => $idempotencyKey,
-                    'request_id' => $idempotencyKey,
-                    'signal_name' => $signalName,
-                ],
-            ),
-            'strict_configured_type_validation' => true,
-        ]);
+        if ($duplicate = $this->replayedBridgeCommand($result, $context)) {
+            return $this->duplicateCommandOutcome($request, $adapter, 'signal_workflow', $idempotencyKey, $target, $correlation, $duplicate);
+        }
 
         return $this->commandOutcome($request, $adapter, 'signal_workflow', $idempotencyKey, $target, $correlation, $result);
     }
@@ -370,73 +359,48 @@ class BridgeAdapterController
             $this->externalPayloadStorage->driverFor($namespace),
         );
 
-        $duplicate = $this->duplicateBridgeCommand(
-            workflowId: $workflowId,
-            commandType: 'update',
-            adapter: $adapter,
-            action: 'update_workflow',
-            idempotencyKey: $idempotencyKey,
-            targetField: 'update_name',
-            targetName: $updateName,
-        );
-
-        if ($duplicate instanceof WorkflowCommand) {
-            return $this->duplicateCommandOutcome(
-                $request,
-                $adapter,
-                'update_workflow',
-                $idempotencyKey,
-                $target,
-                $correlation,
-                $duplicate,
-            );
+        $identity = BridgeCommandIdentity::forCommand($adapter, 'update_workflow', $idempotencyKey, 'update_name', $updateName);
+        $context = $this->commandContexts->make(
+            $request, workflowId: $workflowId, commandName: 'bridge.update_workflow',
+            metadata: ['adapter' => $adapter, 'action' => 'update_workflow', 'idempotency_key' => $idempotencyKey,
+                'request_id' => $identity->storageToken(), 'update_name' => $updateName,
+                'wait_for' => $updateTarget['wait_for'] ?? 'accepted'],
+        )->with($identity->commandContext());
+        try {
+            $result = $this->workflowControlPlane->update($workflowId, $updateName, [
+                'namespace' => $namespace,
+                'arguments' => $arguments,
+                'command_context' => $context,
+                'wait_for' => $updateTarget['wait_for'] ?? 'accepted',
+                'wait_timeout_seconds' => $updateTarget['wait_timeout_seconds'] ?? null,
+                'strict_configured_type_validation' => true,
+            ]);
+        } catch (BridgeCommandIdentityConflict) {
+            return $this->rejected($request, $adapter, 'update_workflow', $idempotencyKey, 'bridge_identity_conflict')->setStatusCode(409);
         }
 
-        $result = $this->workflowControlPlane->update($workflowId, $updateName, [
-            'arguments' => $arguments,
-            'command_context' => $this->commandContexts->make(
-                $request,
-                workflowId: $workflowId,
-                commandName: 'bridge.update_workflow',
-                metadata: [
-                    'adapter' => $adapter,
-                    'action' => 'update_workflow',
-                    'idempotency_key' => $idempotencyKey,
-                    'request_id' => $idempotencyKey,
-                    'update_name' => $updateName,
-                    'wait_for' => $updateTarget['wait_for'] ?? 'accepted',
-                ],
-            ),
-            'wait_for' => $updateTarget['wait_for'] ?? 'accepted',
-            'wait_timeout_seconds' => $updateTarget['wait_timeout_seconds'] ?? null,
-            'strict_configured_type_validation' => true,
-        ]);
+        if ($duplicate = $this->replayedBridgeCommand($result, $context)) {
+            return $this->duplicateCommandOutcome($request, $adapter, 'update_workflow', $idempotencyKey, $target, $correlation, $duplicate);
+        }
 
         return $this->commandOutcome($request, $adapter, 'update_workflow', $idempotencyKey, $target, $correlation, $result);
     }
 
-    private function duplicateBridgeCommand(
-        string $workflowId,
-        string $commandType,
-        string $adapter,
-        string $action,
-        string $idempotencyKey,
-        string $targetField,
-        string $targetName,
-    ): ?WorkflowCommand {
+    private function replayedBridgeCommand(array $result, CommandContext $context): ?WorkflowCommand
+    {
+        $commandId = $result['command_id'] ?? null;
+        if (! is_string($commandId)) {
+            return null;
+        }
+        $server = $context->attributes()['context']['server'];
         /** @var WorkflowCommand|null $command */
-        $command = WorkflowCommand::query()
-            ->where('workflow_instance_id', $workflowId)
-            ->where('command_type', $commandType)
-            ->where('status', 'accepted')
-            ->where('context->server->metadata->adapter', $adapter)
-            ->where('context->server->metadata->action', $action)
-            ->where('context->server->metadata->idempotency_key', $idempotencyKey)
-            ->where("context->server->metadata->{$targetField}", $targetName)
-            ->latest('created_at')
+        $command = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+            ->whereKey($commandId)->where('workflow_instance_id', $server['workflow_id'])
+            ->whereRelation('instance', 'namespace', $server['namespace'])
             ->first();
 
-        return $command;
+        return $command !== null && $command->getRawOriginal('status') === 'accepted'
+            && ($command->context['server']['operation_id'] ?? null) !== $server['operation_id'] ? $command : null;
     }
 
     /**
