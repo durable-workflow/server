@@ -1,22 +1,4 @@
 # Published Server 2.11.1 API routes that native answers with 501
 # rust_capability_not_implemented, in route-table order. Checked by
 # rust/tests/execution/route_coverage.rs.
-GET /api/service-endpoints
-POST /api/service-endpoints
-GET /api/service-endpoints/{endpointName}
-PUT /api/service-endpoints/{endpointName}
-DELETE /api/service-endpoints/{endpointName}
-GET /api/service-endpoints/{endpointName}/services
-POST /api/service-endpoints/{endpointName}/services
-GET /api/service-endpoints/{endpointName}/services/{serviceName}
-PUT /api/service-endpoints/{endpointName}/services/{serviceName}
-DELETE /api/service-endpoints/{endpointName}/services/{serviceName}
-GET /api/service-endpoints/{endpointName}/services/{serviceName}/operations
-POST /api/service-endpoints/{endpointName}/services/{serviceName}/operations
-GET /api/service-endpoints/{endpointName}/services/{serviceName}/operations/{operationName}
-PUT /api/service-endpoints/{endpointName}/services/{serviceName}/operations/{operationName}
-DELETE /api/service-endpoints/{endpointName}/services/{serviceName}/operations/{operationName}
-POST /api/service-endpoints/{endpointName}/services/{serviceName}/operations/{operationName}/execute
-GET /api/service-endpoints/{endpointName}/services/{serviceName}/operations/{operationName}/service-calls/{serviceCallId}
-POST /api/service-endpoints/{endpointName}/services/{serviceName}/operations/{operationName}/service-calls/{serviceCallId}/cancel
 POST /api/worker/workflow-tasks/{taskId}/cancellation-scopes/checkpoint

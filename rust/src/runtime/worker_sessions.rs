@@ -207,7 +207,7 @@ const REGISTRATION_TOKEN_RULES: &[Rule] = &[Rule::Nullable, Rule::String, Rule::
 /// The digest a session keeps of its holder's registration, as PHP keeps
 /// `hash('sha256', token)`, so the deregistration credential itself is never
 /// stored with the session.
-fn incarnation_digest(token: &str) -> String {
+pub(crate) fn incarnation_digest(token: &str) -> String {
     use sha2::{Digest, Sha256};
     Sha256::digest(token.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect()
 }

@@ -24,6 +24,14 @@
         "CREATE TABLE `dw_server_schema` (\n  `engine` varchar(64) COLLATE utf8mb4_bin NOT NULL,\n  `version` bigint NOT NULL,\n  `bootstrap_checksum` varbinary(48) NOT NULL,\n  PRIMARY KEY (`engine`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"
     ],
     [
+        "dw_service_admission_counters",
+        "CREATE TABLE `dw_service_admission_counters` (\n  `cache_key` varchar(191) COLLATE utf8mb4_unicode_ci NOT NULL,\n  `amount` bigint NOT NULL,\n  `expires_at` datetime(6) NOT NULL,\n  PRIMARY KEY (`cache_key`),\n  KEY `dw_service_admission_counters_expiry` (`expires_at`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    ],
+    [
+        "dw_service_call_deadlines",
+        "CREATE TABLE `dw_service_call_deadlines` (\n  `service_call_id` varchar(26) COLLATE utf8mb4_unicode_ci NOT NULL,\n  `namespace` varchar(128) COLLATE utf8mb4_unicode_ci NOT NULL,\n  `call_deadline_at` datetime(6) NOT NULL,\n  PRIMARY KEY (`service_call_id`),\n  KEY `dw_service_call_deadlines_due` (`call_deadline_at`,`service_call_id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    ],
+    [
         "dw_stream_reclaims",
         "CREATE TABLE `dw_stream_reclaims` (\n  `stream_id` bigint unsigned NOT NULL,\n  `namespace` varchar(128) COLLATE utf8mb4_unicode_ci NOT NULL,\n  `workflow_run_id` varchar(26) COLLATE utf8mb4_unicode_ci NOT NULL,\n  `reclaim_at` datetime(6) NOT NULL,\n  PRIMARY KEY (`stream_id`),\n  KEY `dw_stream_reclaims_due` (`namespace`,`reclaim_at`,`stream_id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
     ],

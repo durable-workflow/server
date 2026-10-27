@@ -26,7 +26,7 @@ const BUDGET: Duration = Duration::from_secs(30);
 
 /// Published PHP layouts after the frozen one, oldest first. Each backend
 /// records one delta per layout, applied to the layout before it.
-pub(super) const SOURCE_LAYOUTS: [&str; 2] = ["php-2.8.0", "php-2.9.7"];
+pub(super) const SOURCE_LAYOUTS: [&str; 4] = ["php-2.8.0", "php-2.9.7", "php-2.11.1", "php-2.11.1-from-2.9.7"];
 
 /// Names the qualified layout `actual` matches exactly: the frozen layout, or
 /// one reached by applying the recorded deltas in order. Rows are compared in
@@ -34,7 +34,7 @@ pub(super) const SOURCE_LAYOUTS: [&str; 2] = ["php-2.8.0", "php-2.9.7"];
 pub(super) fn source_layout<T, K: Ord>(
     actual: &[T],
     frozen: Vec<T>,
-    deltas: [&str; 2],
+    deltas: [&str; 4],
     order: impl Fn(&T) -> K,
 ) -> Result<&'static str>
 where
@@ -107,6 +107,8 @@ pub(super) fn native_relation(name: &str) -> bool {
             | "dw_worker_registration_incarnations"
             | "dw_worker_session_holders"
             | "dw_stream_reclaims"
+            | "dw_service_call_deadlines"
+            | "dw_service_admission_counters"
     )
 }
 
@@ -125,6 +127,10 @@ pub(super) fn native_object(name: &str) -> bool {
                 | "dw_worker_session_holders_pkey"
                 | "dw_stream_reclaims_pkey"
                 | "dw_stream_reclaims_due"
+                | "dw_service_call_deadlines_pkey"
+                | "dw_service_call_deadlines_due"
+                | "dw_service_admission_counters_pkey"
+                | "dw_service_admission_counters_expiry"
         )
 }
 

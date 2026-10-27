@@ -8,7 +8,7 @@
 //! recorded one.
 use super::{
     BUDGET, DELIVERY_REFERENCES, Result, adopt_incarnations, count, matches_backup,
-    php_incarnations, preconditions, qualified, report, service_calls_absent,
+    php_incarnations, preconditions, qualified, report,
 };
 use crate::runtime::{
     mysql::{self, Flavor, LEDGER_SQL, MARKER_SQL, TAKEOVER_ENGINE},
@@ -27,7 +27,7 @@ const MARKED: i64 = 0;
 /// Sessions rechecked and the source fingerprinted again after the marker:
 /// nothing PHP wrote can be missing from the backup.
 const FENCED: i64 = 1;
-const LAST: i64 = 8;
+const LAST: i64 = 9;
 
 /// One takeover run: what its steps need and what its report says.
 struct Run<'a> {
@@ -228,7 +228,6 @@ async fn verified_snapshot(
     let layout = qualified(&inventory)?.to_owned();
     matches_backup(&digest, run.fingerprint)?;
     php_incarnations(&layout)?;
-    service_calls_absent::<MySql>(connection).await?;
     Ok((inventory, layout))
 }
 
@@ -316,12 +315,15 @@ async fn perform(connection: &mut MySqlConnection, run: &mut Run<'_>, step: i64)
             // Rows, unlike DDL, commit with the step that records them.
             let mut tx = connection.begin().await?;
             let (copied, created) = adopt_incarnations::<MySql>(&mut tx, php_incarnations).await?;
+            let holders = super::adopt_session_holders::<MySql>(&mut tx).await?;
             advance(&mut *tx, run, step).await?;
             tx.commit().await?;
             run.converted
                 .insert("incarnations_copied".into(), json!(copied));
             run.converted
                 .insert("incarnations_created".into(), json!(created));
+            run.converted
+                .insert("session_holders_recorded".into(), json!(holders));
             return Ok(());
         }
         4 => {
@@ -340,6 +342,10 @@ async fn perform(connection: &mut MySqlConnection, run: &mut Run<'_>, step: i64)
         }
         6 => {
             if column_exists(connection, "workflow_service_calls", "call_deadline_at").await? {
+                // Copy the deadlines native keeps first; a repeated step
+                // copies only those not copied yet.
+                let copied = sqlx::query(super::SERVICE_CALL_DEADLINES).execute(&mut *connection).await?.rows_affected();
+                run.converted.insert("service_call_deadlines_copied".into(), json!(copied));
                 // Dropping only the column would leave its index on status alone.
                 connection.execute("ALTER TABLE workflow_service_calls DROP INDEX wf_service_calls_deadline_idx, DROP COLUMN call_deadline_at").await?;
             }
@@ -359,6 +365,27 @@ async fn perform(connection: &mut MySqlConnection, run: &mut Run<'_>, step: i64)
                 // Laravel's mariadb connection made the backup hold owner a uuid.
                 connection
                     .execute("ALTER TABLE runtime_external_payload_backup_hold MODIFY owner char(36) DEFAULT NULL")
+                    .await?;
+            }
+        }
+        9 => {
+            // Count every carrier before dropping any column, so a step
+            // repeated after an interruption still drops each one.
+            let mut contexts = 0;
+            let mut carriers = Vec::new();
+            for (table, sql) in super::OBSERVABILITY_CONTEXTS {
+                if column_exists(connection, table, "observability_context").await? {
+                    contexts += count::<MySql>(connection, sql).await?;
+                    carriers.push(table);
+                }
+            }
+            if !carriers.is_empty() {
+                run.converted
+                    .insert("observability_contexts_removed".into(), json!(contexts));
+            }
+            for table in carriers {
+                sqlx::raw_sql(sqlx::AssertSqlSafe(format!("ALTER TABLE {table} DROP COLUMN observability_context")))
+                    .execute(&mut *connection)
                     .await?;
             }
         }

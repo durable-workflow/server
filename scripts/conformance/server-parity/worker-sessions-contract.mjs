@@ -10,7 +10,21 @@ import assert from 'node:assert/strict';
 // Published defect boundary: a reacquired session keeps its previous
 // failure_reason, because renewHeldSession filters its own `failure_reason =>
 // null` out (fixture `published_defects`). At those paths the published value
-// or the intended null is accepted; nothing else is relaxed.
+// or the intended null is accepted. The only other allowance is PHP's
+// creation-second boundary on ttl_span (creationSecond).
+// PHP computes a new session's ttl_expires_at from its request clock, then
+// Eloquent stamps created_at when it inserts the row. When the insert lands in
+// the next second, the probe's ttl_span (ttl_expires_at - created_at) reads one
+// second short. That span, and only that one, is read as the recorded one.
+// Native stamps both from one clock reading.
+function creationSecond(actual, expected) {
+  if (actual === null || expected === null || typeof actual !== 'object' || typeof expected !== 'object') return;
+  if (Number.isInteger(actual.ttl_span) && Number.isInteger(expected.ttl_span) && actual.ttl_span === expected.ttl_span - 1) {
+    actual.ttl_span = expected.ttl_span;
+  }
+  for (const key of Object.keys(expected)) creationSecond(actual[key], expected[key]);
+}
+
 export function checkWorkerSessions(fixture, observation, workflowId) {
   const state = observation.worker_sessions;
   const projection = {scope: 'worker_sessions'};
@@ -31,6 +45,7 @@ export function checkWorkerSessions(fixture, observation, workflowId) {
   tolerate(actual.orphan_reacquired?.response?.session, defect.published[1], 'orphan reacquired');
   tolerate((actual.list_sessions ?? []).find(session => session.session_id === '{id}-wss-held'), defect.published[2], 'listed held session');
   for (const [step, expected] of Object.entries(definition.expected)) {
+    creationSecond(actual[step], expected);
     assert.deepStrictEqual(actual[step], expected, `worker sessions ${step}`);
   }
   assert.deepStrictEqual(Object.keys(actual).sort(), Object.keys(definition.expected).sort(), 'worker sessions steps');
