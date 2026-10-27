@@ -19,6 +19,7 @@ final class ServiceCallAdmission
         public readonly ServiceBoundaryDecision $decision,
         public readonly WorkflowServiceCall $call,
         public readonly ServiceBoundaryRequest $request,
+        public readonly bool $replayed = false,
     ) {}
 
     public function accepted(): bool

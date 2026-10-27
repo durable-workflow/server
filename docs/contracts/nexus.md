@@ -218,6 +218,22 @@ shape. A caller worker that crashes mid-call resumes by replaying its
 workflow code with the same idempotency key and recovers the same
 durable service-call id.
 
+HTTP admission claims a keyed call's canonical identity before charging rate
+or concurrency budgets. A concurrent retry must authorize the winning row and
+reuse it without creating another audit row or spending another admission.
+An audit writer that rolls back refunds its own reservation; a committed
+admission retains its rate charge.
+
+If an HTTP response fails after admission may have committed, the response
+includes the original `service_call_id` and `namespace`. An unkeyed request
+gets `service_operation_outcome_unknown`, `retryable: false`, and no
+`Retry-After`: inspect the existing call before submitting another invocation.
+A keyed request encountering backend lock pressure can return
+`backend_lock_pressure`, `retryable: true`, and `Retry-After: 1`; retry with
+the same key, caller identity and intent. Other post-commit failures remain
+non-retryable. These responses do not assert that a handler completed or that
+an external business effect occurred.
+
 ## Namespace ACL enforcement
 
 The boundary gate (`App\Support\ServiceCallBoundary`) admits or
