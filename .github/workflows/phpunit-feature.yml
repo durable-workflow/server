@@ -80,8 +80,6 @@ jobs:
       - name: Require safe PHP image build context
         run: node --test tests/Unit/PhpImageContextTest.mjs
 
-      - name: Restore PHP's SQLite maintenance loop on every path
-        run: node --test tests/Unit/PhpMaintenanceWindowTest.mjs
       - name: Restore the patch cohort's maintenance loop on every path
         run: node --test tests/Unit/PatchCohortMaintenanceTest.mjs
 

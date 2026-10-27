@@ -1,5 +1,7 @@
-// Fixture selection for parity records and comparisons, and the SQLite job's
-// separate update-validation and service-calls records (Server #723, #796).
+// Fixture selection for parity records and comparisons. Every database job
+// records update-validation and service-calls in its main corpus, with PHP's
+// maintenance loop running: published 2.11.5 carries the #726 and #796 fixes
+// that the SQLite job's former separate records worked around.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync, readdirSync} from 'node:fs';
@@ -56,21 +58,14 @@ function mainCorpusCommands(job) {
   return job.split(/(?=docker run )/).filter(command => /server-parity\.mjs (record|compare)/.test(command));
 }
 
-test('the SQLite job covers update-validation and service-calls only through their separate records', () => {
+test('the SQLite job keeps update-validation and service-calls in its main corpus', () => {
   const sqlite = jobs()['execution-and-codec'];
   const commands = mainCorpusCommands(sqlite);
   assert.equal(commands.length, 4, 'php, embedded and rust records plus their comparison');
-  for (const command of commands) {
-    assert.deepEqual(command.match(/--exclude-fixture \S+/g), [
-      '--exclude-fixture tests/Fixtures/ServerParity/update-validation.json',
-      '--exclude-fixture tests/Fixtures/ServerParity/service-calls.json',
-    ]);
-  }
+  for (const command of commands) assert.doesNotMatch(command, /--exclude-fixture/);
+  assert.ok(corpus.includes('update-validation.json'));
   assert.ok(corpus.includes('service-calls.json'));
-  assert.match(sqlite, /update_validation_status=0\n\s+bash scripts\/conformance\/server-parity\/update-validation-sqlite\.sh http:\/\/parity-server:8080 http:\/\/parity-rust:8080 \|\| update_validation_status=\$\?/);
-  assert.match(sqlite, /service_calls_status=0\n\s+bash scripts\/conformance\/server-parity\/update-validation-sqlite\.sh http:\/\/parity-server:8080 http:\/\/parity-rust:8080 service-calls \|\| service_calls_status=\$\?/);
-  assert.match(sqlite, /test "\$update_validation_status" -eq 0/);
-  assert.match(sqlite, /test "\$service_calls_status" -eq 0/);
+  assert.doesNotMatch(sqlite, /update-validation-sqlite|run_without_maintenance/);
 });
 
 test('the MySQL and PostgreSQL jobs keep update-validation and service-calls in their main corpus', () => {
@@ -79,24 +74,4 @@ test('the MySQL and PostgreSQL jobs keep update-validation and service-calls in 
     assert.ok(mainCorpusCommands(all[name]).length > 0, name);
     assert.doesNotMatch(all[name], /--exclude-fixture/, name);
   }
-});
-
-test('the separate record stops maintenance for the PHP record only and compares all three targets', () => {
-  const script = readFileSync(resolve(root, 'scripts/conformance/server-parity/update-validation-sqlite.sh'), 'utf8');
-  // update-validation by default, or the named reviewed fixture.
-  assert.match(script, /^name="\$\{3:-update-validation\}"\n\[\[ "\$name" =~ \^\[a-z0-9-\]\+\$ \]\]$/m);
-  assert.match(script, /^fixture="tests\/Fixtures\/ServerParity\/\$name\.json"\ntest -f "\$fixture"$/m);
-  assert.match(script, /^\. scripts\/conformance\/server-parity\/php-maintenance-window\.sh$/m);
-  // The PHP record, and its one retry after a lost SQLite write (#754).
-  const windows = script.match(/^ *run_without_maintenance .*$/gm).map(line => line.trim());
-  assert.deepEqual(windows, [
-    'run_without_maintenance "parity-evidence/$name-maintenance-schedule.txt" -- php_record',
-    'run_without_maintenance "parity-evidence/$name-maintenance-schedule-retry.txt" -- php_record',
-  ]);
-  assert.match(script, /^php_record\(\) \{\n  php_status=0\n  record_started=\$\(date -u \+%Y-%m-%dT%H:%M:%S\.%NZ\)\n  http_record "\$php_url" php \|\| php_status=\$\?\n  record_finished=\$\(date -u \+%Y-%m-%dT%H:%M:%S\.%NZ\)\n\}$/m);
-  assert.match(script, /docker logs --since "\$record_started" --until "\$record_finished" "\$RESOURCE_SCOPE-server"/);
-  assert.match(script, /^http_record "\$native_url" rust$/m);
-  assert.match(script, /--mode embedded --application-root \/app --target embedded --output "\/evidence\/\$name-embedded\.json" --fixture "\$fixture"/);
-  assert.match(script, /"\/evidence\/\$name-php\.json" "\/evidence\/\$name-rust\.json" "\/evidence\/\$name-embedded\.json" \\\n\s+--fixture "\$fixture" > "parity-evidence\/\$name-comparison\.json"/);
-  assert.match(script, /^set -euo pipefail$/m);
 });
