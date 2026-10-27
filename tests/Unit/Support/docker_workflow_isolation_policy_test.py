@@ -33,6 +33,30 @@ class DockerWorkflowIsolationPolicyTest(unittest.TestCase):
                 text=True,
             )
 
+    def test_image_archive_commands_transfer_data_without_creating_resources(self) -> None:
+        result = self.run_policy(
+            """
+            jobs:
+              tools:
+                steps:
+                  - run: docker load --input "$RUNNER_TEMP/tools.tar"
+                  - run: docker save --output "$RUNNER_TEMP/tools.tar" fixture-tools
+            """
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_image_archive_arguments_do_not_hide_unscoped_container_creation(self) -> None:
+        result = self.run_policy(
+            """
+            jobs:
+              tools:
+                steps:
+                  - run: docker save --output "$(docker run -d --name shared image)" fixture-tools
+            """
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("unclassified command docker", result.stderr)
+
     def test_accepts_job_scoped_compose_and_container_names(self) -> None:
         result = self.run_policy(
             """
