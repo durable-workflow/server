@@ -1,6 +1,7 @@
 // Server #754: the SQLite job's separate update-validation record retries the
 // published PHP record once, and only when that record failed after PHP
-// logged "database is locked". Native and embedded records never retry.
+// logged "database is locked". Native and embedded records never retry. The
+// separate service-calls record (Server #796) runs the same script by name.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync} from 'node:fs';
@@ -71,7 +72,7 @@ case "$1" in
 esac
 `;
 
-function run(outcomes) {
+function run(outcomes, ...name) {
   const dir = mkdtempSync(join(tmpdir(), 'update-validation-retry-'));
   for (const name of ['scripts', 'tests']) symlinkSync(join(root, name), join(dir, name));
   for (const name of ['bin', 'parity-evidence', 'parity-state']) mkdirSync(join(dir, name));
@@ -80,7 +81,7 @@ function run(outcomes) {
   for (const tool of ['docker', 'jq']) chmodSync(join(dir, 'bin', tool), 0o755);
   writeFileSync(join(dir, 'state'), 'running\n');
   writeFileSync(join(dir, 'records'), '');
-  const result = spawnSync('bash', ['scripts/conformance/server-parity/update-validation-sqlite.sh', 'http://parity-server:8080', 'http://parity-rust:8080'], {
+  const result = spawnSync('bash', ['scripts/conformance/server-parity/update-validation-sqlite.sh', 'http://parity-server:8080', 'http://parity-rust:8080', ...name], {
     cwd: dir, encoding: 'utf8',
     env: {...process.env, PATH: `${join(dir, 'bin')}:${process.env.PATH}`, OUTCOMES: outcomes,
       RESOURCE_SCOPE: 'dw-parity-7-2-sqlite', GITHUB_RUN_ID: '7', GITHUB_RUN_ATTEMPT: '2', GITHUB_JOB: 'sqlite',
@@ -154,5 +155,26 @@ test('a native or embedded failure is never retried, even after a PHP retry', ()
     const result = run(outcomes);
     assert.equal(result.status, 1, outcomes);
     assert.deepEqual(result.records, records, outcomes);
+  }
+});
+
+test('a named fixture records and retries under its own evidence names', () => {
+  const result = run('php1=fail-locked', 'service-calls');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.records, ['php parity-v1', 'php parity-v1-retry', 'embedded parity-v1-retry', 'rust parity-v1-retry']);
+  assert.match(result.stdout, /^::warning title=Published PHP service-calls record retried::/m);
+  for (const name of ['service-calls-php.json', 'service-calls-embedded.json', 'service-calls-rust.json', 'service-calls-comparison.json',
+    'service-calls-php.attempt-1.json', 'service-calls-php.attempt-1.locked.txt', 'service-calls-maintenance-schedule-retry.txt']) {
+    assert.equal(result.evidence(name), true, name);
+  }
+  assert.equal(result.evidence('update-validation-php.json'), false);
+  assert.equal(result.state, 'running');
+});
+
+test('a fixture name outside the reviewed corpus records nothing', () => {
+  for (const name of ['no-such-fixture', '../ServerParityPending/workflow-task-transient-retry', 'Service-Calls']) {
+    const result = run('', name);
+    assert.notEqual(result.status, 0, name);
+    assert.deepEqual(result.records, [], name);
   }
 });
