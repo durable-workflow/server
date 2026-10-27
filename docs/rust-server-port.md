@@ -71,8 +71,11 @@ Updated October 27, 2026.
   for `update-validation` and `service-calls` (#723, #726, #796).
 
   No expectation is edited to make native pass.
-- **Parity surface.** Native answers 174 of the 175 API route methods in
-  published 2.11.1's route table, which 2.11.4 and 2.11.5 leave unchanged. Eight of those are the prepared
+- **Parity surface.** Native answers all 175 API route methods in
+  published 2.11.1's route table, which 2.11.4 and 2.11.5 leave unchanged.
+  The last, the cancellation scope prefix checkpoint, is served since
+  October 27
+  ([checkpoint](rust-server-port-checkpoints/2026-10-27-scope-checkpoints.md)). Eight of those are the prepared
   local-activity routes, which it answers with PHP's refusal for a bridge
   without the prepared role. Nexus workflow-bound handler kinds answer 501
   until #794 settles their contract. An execution test sends each route
@@ -141,8 +144,11 @@ any other unknown path or method answers PHP's own 404 or 405
     pins the answers to `PreparedLocalActivityController::refused`. Serving
     them is planned in
     [#325 comment 6423707058](https://github.com/durable-workflow/server/issues/325#issuecomment-6423707058).
-  - Cancellation scope checkpoints. (Open, prepare and deliver are served,
-    with the `cancellation-scopes` fixture.)
+  - (Cancellation scopes are served: open, prepare, deliver and the prefix
+    checkpoint, with the `cancellation-scopes` fixture. The published PHP
+    SDK checkpoints a turn's earlier commands before it opens or delivers a
+    scope, and fails the task on any refusal
+    ([checkpoint](rust-server-port-checkpoints/2026-10-27-scope-checkpoints.md)).)
   - (Worker sessions are served: create, heartbeat, close, list and detail,
     with the `worker-sessions` and `worker-session-activities` fixtures.)
   - (Activity cancellation acknowledgement is served:
@@ -395,7 +401,8 @@ contract fixture before its correction.
   refuses a request whose lease is otherwise valid when its owner's
   registration is no longer fresh (`409 stale_worker_registration`). Native's
   workflow task guard does not check registration freshness yet, and the
-  local activity and cancellation scope checkpoints still use the older fence.
+  local activity checkpoints still use the older fence. The cancellation
+  scope checkpoint shares the completion's guard.
   Add a fixture for each before changing them.
 - **Retention of runs with external payloads.** Published PHP deletes a
   pruned run's external payload objects. Native does not delete them yet: it
