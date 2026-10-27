@@ -2,11 +2,13 @@
 # Run one implementation of a server-port matched development comparison on a
 # dedicated host, following the profile's workload, windows and idle checks.
 #
-#   run-server-port-matched.sh PROFILE OUTPUT_DIR php|native [--smoke|--idle-only]
+#   run-server-port-matched.sh PROFILE OUTPUT_DIR php|native|native-image [--smoke|--idle-only]
 #
-# Set DW_PORT_SOURCE_ROOT, DW_PORT_SDK_ROOT and DW_PORT_NATIVE_BINARY as the
-# v2 README describes. Run php and native sequentially, each into its own
-# output directory, never together. --smoke shortens every window to five
+# Set DW_PORT_SOURCE_ROOT and DW_PORT_SDK_ROOT as the v2 README describes, plus
+# DW_PORT_NATIVE_BINARY for native (an optimized binary run in the PHP image)
+# or DW_PORT_NATIVE_IMAGE for native-image (the published native image, by
+# digest). Run the implementations sequentially, each into its own output
+# directory, never together. --smoke shortens every window to five
 # seconds and one repetition to check the setup; it is never a measurement.
 # --idle-only runs only the idle long-poll windows, without the SDK worker or
 # offered work, to compare idle cost on its own.
@@ -19,10 +21,16 @@ out=$2
 impl=$3
 smoke=${4:-}
 case "$smoke" in ""|--smoke|--idle-only) ;; *) echo "Unknown option $smoke." >&2; exit 2 ;; esac
-[[ $impl == php || $impl == native ]] || { echo "Choose php or native." >&2; exit 2; }
+[[ $impl == php || $impl == native || $impl == native-image ]] || { echo "Choose php, native or native-image." >&2; exit 2; }
 : "${DW_PORT_SOURCE_ROOT:?Set the absolute source directory}"
 : "${DW_PORT_SDK_ROOT:?Set the normally installed SDK directory}"
-: "${DW_PORT_NATIVE_BINARY:?Set the absolute optimized binary path}"
+if [[ $impl == native ]]; then
+  : "${DW_PORT_NATIVE_BINARY:?Set the absolute optimized binary path}"
+fi
+if [[ $impl == native-image ]]; then
+  [[ ${DW_PORT_NATIVE_IMAGE:-} =~ ^[a-z0-9./_-]+(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$ ]] \
+    || { echo "Set DW_PORT_NATIVE_IMAGE to the native image by digest (name@sha256:...)." >&2; exit 2; }
+fi
 compose="$DW_PORT_SOURCE_ROOT/scripts/perf/server-port-matched.compose.yml"
 [[ ! -e $out ]] || { echo "Refusing to overwrite $out." >&2; exit 2; }
 mkdir -p "$out"
@@ -37,11 +45,27 @@ for pair in .workload.adapter:.workload.adapter_sha256 .workload.command:.worklo
   got=$(sha256sum "$DW_PORT_SOURCE_ROOT/$file" | cut -d ' ' -f1)
   [[ $got == "$want" ]] || { echo "$file does not match the profile." >&2; exit 1; }
 done
-binary_sha=$(sha256sum "$DW_PORT_NATIVE_BINARY" | cut -d ' ' -f1)
-want_binary=$(j '.artifacts.native_binary_sha256 // empty')
-if [[ -n $want_binary && $binary_sha != "$want_binary" ]]; then
-  echo "The native binary does not match the profile." >&2
-  exit 1
+binary_sha="" native_image=""
+if [[ $impl == native ]]; then
+  binary_sha=$(sha256sum "$DW_PORT_NATIVE_BINARY" | cut -d ' ' -f1)
+  want_binary=$(j '.artifacts.native_binary_sha256 // empty')
+  if [[ -n $want_binary && $binary_sha != "$want_binary" ]]; then
+    echo "The native binary does not match the profile." >&2
+    exit 1
+  fi
+fi
+if [[ $impl == native-image ]]; then
+  # The profile must name the image, so results always bind to it.
+  native_image=$DW_PORT_NATIVE_IMAGE
+  want_image=$(j '.artifacts.native_image // empty')
+  if [[ -z $want_image ]]; then
+    echo "The profile must name artifacts.native_image for native-image runs." >&2
+    exit 1
+  fi
+  if [[ $native_image != "$want_image" ]]; then
+    echo "The native image does not match the profile." >&2
+    exit 1
+  fi
 fi
 
 if [[ $smoke == --smoke ]]; then
@@ -61,7 +85,9 @@ case "$impl" in
        export DW_PORT_RUNTIME_URL=http://php-server:8080 ;;
   native) profiles=(--profile native) services=(mysql native-server)
           export DW_PORT_RUNTIME_URL=http://native-server:8080 ;;
-  *) echo "Choose php or native." >&2; exit 2 ;;
+  native-image) profiles=(--profile native-image) services=(mysql native-image-server)
+                export DW_PORT_RUNTIME_URL=http://native-image-server:8080 ;;
+  *) echo "Choose php, native or native-image." >&2; exit 2 ;;
 esac
 dc() { docker compose -p "$project" -f "$compose" "$@"; }
 probe() { dc run --rm --no-deps probe "$@"; }
@@ -69,7 +95,7 @@ probe() { dc run --rm --no-deps probe "$@"; }
 cgroup_driver=$(docker info --format '{{.CgroupDriver}}')
 jq -n --arg impl "$impl" --arg project "$project" --arg profile "$profile" \
   --arg profile_sha "$(sha256sum "$profile" | cut -d ' ' -f1)" \
-  --arg source "$(git -C "$DW_PORT_SOURCE_ROOT" rev-parse HEAD)" --arg binary "$binary_sha" \
+  --arg source "$(git -C "$DW_PORT_SOURCE_ROOT" rev-parse HEAD)" --arg binary "$binary_sha" --arg native_image "$native_image" \
   --arg smoke "$smoke" --arg kernel "$(uname -r)" --arg cpus "$(nproc)" \
   --arg memory "$(awk '/MemTotal/ {print $2 * 1024}' /proc/meminfo)" \
   --arg docker "$(docker version --format '{{.Server.Version}}')" --arg cgroup "$cgroup_driver" \
@@ -77,7 +103,7 @@ jq -n --arg impl "$impl" --arg project "$project" --arg profile "$profile" \
   --arg filesystem "$(df -T "$(docker info --format '{{.DockerRootDir}}')" | awk 'NR==2 {print $2}')" \
   --arg cpu_model "$(awk -F': ' '/model name/ {print $2; exit}' /proc/cpuinfo)" \
   '{implementation:$impl,compose_project:$project,profile:$profile,profile_sha256:$profile_sha,source_revision:$source,
-    native_binary_sha256:$binary,smoke:($smoke=="--smoke"),idle_only:($smoke=="--idle-only"),machine:{kernel:$kernel,logical_cpus:($cpus|tonumber),
+    native_binary_sha256:$binary,native_image:$native_image,smoke:($smoke=="--smoke"),idle_only:($smoke=="--idle-only"),machine:{kernel:$kernel,logical_cpus:($cpus|tonumber),
     physical_memory_bytes:($memory|tonumber),cpu_model:$cpu_model,docker:$docker,cgroup_driver:$cgroup,
     docker_storage_driver:$storage,docker_root_filesystem:$filesystem}}' > "$out/identity.json"
 
