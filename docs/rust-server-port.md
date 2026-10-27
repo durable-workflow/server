@@ -30,32 +30,34 @@ Updated October 27, 2026.
     maintenance repair loop (opt-in, `DW_RUST_MAINTENANCE_LOOP=1`); takeover
     keeps runtime credentials and update validation tasks; takeover of
     published 2.11.3, fresh and upgraded from 2.9.x.
-- **In the queue or next, in order.**
-  1. [#799](https://github.com/durable-workflow/server/pull/799): the fixture
-     adapters' Cargo cache, saved only by pushes to main.
-  2. Message-stream retention (PHP's `MessageStreamRetentionCleanup`), and
-     takeover that keeps message and workflow streams.
-  3. The native release-candidate image (`Dockerfile.native`), its release
-     workflow and the takeover runbook's image commands.
-  4. The parity reference moves to published 2.11.3. Native already matches it
-     on 62 of 65 fixtures. The move waits on two published 2.11.3 defects
-     General owns: the storage diagnostic (#789) and cross-caller idempotent
-     replay (Workflow #931).
+  - [#799](https://github.com/durable-workflow/server/pull/799): the fixture
+    adapters' Cargo cache, saved only by pushes to main.
+  - [#801](https://github.com/durable-workflow/server/pull/801):
+    message-stream retention (PHP's `MessageStreamRetentionCleanup`), and
+    takeover that keeps message and workflow streams.
+- **In the queue or next.**
+  - [#803](https://github.com/durable-workflow/server/pull/803): the native
+    release-candidate image (`Dockerfile.native`), its release workflow and
+    the takeover runbook's image commands.
+  - The parity reference moves to published 2.11.4
+    ([checkpoint](rust-server-port-checkpoints/2026-10-27-reference-2114.md)).
 - **Still refused at takeover:** workflow-to-workflow messages
   (`workflow_messages`, written only by embedded PHP workflows) and external
   payload references. PHP keeps references in about 30 table and column
   locations in their URI form, so taking them over is its own project; the
   recommendation is that the release candidate keeps refusing them.
-- **Shared Server fixtures.** Native, embedded and published PHP 2.11.1 are
+- **Shared Server fixtures.** Native, embedded and published PHP 2.11.4 are
   compared on SQLite, MySQL 8.0, MariaDB 10.11 and PostgreSQL 17. Where the
   published reference itself misbehaves, an explicit boundary separates it
   from native, and the PHP owner has an issue for each case. Recent ones:
+  - Workflow #931, an idempotency key repeated from another caller namespace
+    (left out of `service-calls` until a release carries the correction);
   - #796, `service-calls` under full-corpus SQLite load;
   - #794, workflow-bound Nexus handlers.
 
   No expectation is edited to make native pass.
 - **Parity surface.** Native answers 174 of the 175 API route methods in
-  published 2.11.1's route table. Eight of those are the prepared
+  published 2.11.1's route table, which 2.11.4 leaves unchanged. Eight of those are the prepared
   local-activity routes, which it answers with PHP's refusal for a bridge
   without the prepared role. Nexus workflow-bound handler kinds answer 501
   until #794 settles their contract. An execution test sends each route
@@ -63,7 +65,7 @@ Updated October 27, 2026.
   `501 rust_capability_not_implemented` must match
   [`unserved-php-routes.v2.11.1.txt`](../rust/tests/fixtures/unserved-php-routes.v2.11.1.txt).
 - **Remaining for the release candidate:**
-  - the 2.11.3 reference move;
+  - landing the 2.11.4 reference move;
   - the scope question with the operator: prepared local activities,
     workflow-bound Nexus handlers and external payload takeover;
   - publishing the native image (General runs the release);

@@ -102,6 +102,11 @@ fn empty_report(request: &PassRequest, throttled: bool) -> Map<String, Value> {
         "deadline_expired_failures": [], "activity_timeout_candidates": 0, "activity_timeouts_enforced": 0,
         "activity_timeout_failures": [], "service_call_timeout_candidates": 0, "service_call_timeouts_enforced": 0,
         "service_call_timeout_failures": [],
+        // Published 2.11.3 (Core 2.14) also reports its service-call dispatch
+        // outbox. Native runs a call's handler when it accepts the call, so it
+        // never has a dispatch to enqueue.
+        "service_call_dispatch_candidates": 0, "service_call_dispatches_enqueued": 0,
+        "service_call_dispatch_failures": [],
     });
     match value {
         Value::Object(map) => map,

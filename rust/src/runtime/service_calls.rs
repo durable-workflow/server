@@ -64,7 +64,8 @@ const EXECUTE_RULES: &laravel_rules::Rules = &[
     ("payload_codec", &[Rule::Nullable, Rule::String, Rule::Max(191)]),
     ("mode_override", &[Rule::Nullable, Rule::String, Rule::In(MODES)]),
     ("wait_for", &[Rule::Nullable, Rule::String, Rule::In(&["accepted", "completed"])]),
-    ("wait_timeout_seconds", &[Rule::Nullable, Rule::Integer, Rule::Min(0), Rule::Max(86400)]),
+    // Published 2.11.3 bounds an update-bound wait at 60 seconds (#775).
+    ("wait_timeout_seconds", &[Rule::Nullable, Rule::Integer, Rule::Min(0), Rule::Max(60)]),
     ("idempotency_key", &[Rule::Nullable, Rule::String, Rule::Max(191)]),
     ("caller_namespace", &[Rule::Nullable, Rule::String, Rule::Max(255)]),
     ("caller_workflow_instance_id", &[Rule::Nullable, Rule::String, Rule::Max(191)]),
@@ -1732,7 +1733,10 @@ store_methods! {
                 return Self::handler_failure(connection, call, "handler_target_missing", "Activity binding has no activity class or type.", attempt, max).await;
             };
             let id = binding_string(&binding, &["activity_execution_id"]).unwrap_or_else(upper_ulid);
-            let mut metadata = json!({"activity_execution_id": id, "activity_class": class, "activity_type": kind});
+            // Core 2.14 names the dispatch attempt's idempotency key; a call
+            // dispatched when it is accepted has none.
+            let mut metadata = json!({"activity_execution_id": id, "activity_class": class, "activity_type": kind,
+                "service_call_idempotency_key": null});
             for (key, value) in [("connection", &execution.connection), ("queue", &execution.queue)] {
                 if let Some(value) = binding_string(&binding, &[key]).or_else(|| value.clone()) {
                     metadata[key] = json!(value);
@@ -1755,7 +1759,7 @@ store_methods! {
         let handler = binding_string(&binding, &["carrier_handler", "handler", "handler_name"]);
         let carrier = binding_string(&binding, &["carrier", "carrier_name"]);
         let id = binding_string(&binding, &["carrier_request_id"]).unwrap_or_else(upper_ulid);
-        let mut metadata = json!({"carrier_request_id": id, "carrier_endpoint": endpoint});
+        let mut metadata = json!({"carrier_request_id": id, "carrier_endpoint": endpoint, "service_call_idempotency_key": null});
         if let Some(handler) = &handler {
             metadata["carrier_handler"] = json!(handler);
         }

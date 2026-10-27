@@ -80,9 +80,10 @@ async fn update_wait_timeout_is_bounded_before_admission() {
 }
 
 // Server #775: a service operation bound to a workflow update hands its wait
-// to the update admission. Native dispatches no workflow-bound handler yet, so
-// neither the execute route nor the workflow-task command can carry a longer
-// wait here.
+// to the update admission. Published 2.11.3 bounds an execute request's wait
+// at 60 seconds before routing, so a longer one is a validation failure.
+// Native dispatches no workflow-bound handler yet, so a wait within the bound
+// reaches the unserved handler kind, and the workflow-task command is refused.
 #[tokio::test]
 async fn service_operations_cannot_carry_an_update_wait_past_the_ceiling() {
     let database = TestDatabase::new().await;
@@ -103,7 +104,10 @@ async fn service_operations_cannot_carry_an_update_wait_past_the_ceiling() {
         let (status, created) = request(&app, "POST", path, body).await;
         assert_eq!(status, StatusCode::CREATED, "{created}");
     }
-    let (status, unserved) = request(&app, "POST", "/api/service-endpoints/billing/services/approvals/operations/approve/execute",
-        json!({"wait_timeout_seconds":61})).await;
+    let execute = "/api/service-endpoints/billing/services/approvals/operations/approve/execute";
+    let (status, refused) = request(&app, "POST", execute, json!({"wait_timeout_seconds":61})).await;
+    assert_eq!((status, refused["reason"].clone()), (StatusCode::UNPROCESSABLE_ENTITY, json!("validation_failed")), "{refused}");
+    assert_eq!(refused["errors"]["wait_timeout_seconds"][0], "The wait timeout seconds field must not be greater than 60.", "{refused}");
+    let (status, unserved) = request(&app, "POST", execute, json!({"wait_timeout_seconds":60})).await;
     assert_eq!((status, unserved["reason"].clone()), (StatusCode::NOT_IMPLEMENTED, json!("rust_capability_not_implemented")), "{unserved}");
 }

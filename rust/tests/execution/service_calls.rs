@@ -312,7 +312,7 @@ async fn execute_requests_are_checked_like_the_controller() {
         (json!({"arguments": {"codec": "avro", "blob": 5}}), "arguments.blob", "The payload envelope blob must be a string."),
         (json!({"search_attributes": {"1bad": "x"}}), "search_attributes", "Search attribute key [1bad] must start with a letter"),
         (json!({"mode_override": "fast"}), "mode_override", "The selected mode override is invalid."),
-        (json!({"wait_timeout_seconds": 86401}), "wait_timeout_seconds", "The wait timeout seconds field must not be greater than 86400."),
+        (json!({"wait_timeout_seconds": 61}), "wait_timeout_seconds", "The wait timeout seconds field must not be greater than 60."),
     ] {
         let (status, refused) = execute(&app, "charge", body.clone()).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}: {refused}");
