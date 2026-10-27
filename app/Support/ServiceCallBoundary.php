@@ -8,7 +8,9 @@ use Workflow\V2\Contracts\ServiceBoundaryPolicy;
 use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallOperationMode;
 use Workflow\V2\Enums\ServiceCallOutcome;
+use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowServiceOperation;
+use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\DefaultServiceBoundaryPolicy;
 use Workflow\V2\Support\ServiceBoundaryAuditRecorder;
 use Workflow\V2\Support\ServiceBoundaryDecision;
@@ -53,15 +55,7 @@ final class ServiceCallBoundary
     {
         $decision = $this->policy->evaluate($request);
 
-        try {
-            $call = $this->recorder->record($request, $decision);
-        } catch (Throwable $throwable) {
-            if ($decision->isAllowed()) {
-                $this->release($request);
-            }
-
-            throw $throwable;
-        }
+        $call = $this->recordAdmission($request, $decision);
 
         return new ServiceCallAdmission($decision, $call, $request);
     }
@@ -114,15 +108,7 @@ final class ServiceCallBoundary
             retryPolicy: $retryPolicy,
         );
         $decision = $this->decisionFor($request, $operation);
-        try {
-            $call = $this->recorder->record($request, $decision);
-        } catch (Throwable $throwable) {
-            if ($decision->isAllowed()) {
-                $this->release($request);
-            }
-
-            throw $throwable;
-        }
+        $call = $this->recordAdmission($request, $decision);
 
         return new ServiceCallAdmission($decision, $call, $request);
     }
@@ -387,6 +373,69 @@ final class ServiceCallBoundary
         }
 
         return $policy;
+    }
+
+    private function recordAdmission(ServiceBoundaryRequest $request, ServiceBoundaryDecision $decision): WorkflowServiceCall
+    {
+        // Admission audit metadata is not the payload reference writer. The
+        // later Core writer must claim prepared bytes under its own locks.
+        return app(RuntimeExternalPayloadWriteClaims::class)->prepare(
+            fn () => $this->recordAdmissionMetadata($request, $decision),
+        );
+    }
+
+    private function recordAdmissionMetadata(ServiceBoundaryRequest $request, ServiceBoundaryDecision $decision): WorkflowServiceCall
+    {
+        $connection = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)->getModel()->getConnection();
+        $level = $connection->transactionLevel();
+        $rollbackRegistered = false;
+        $commitAttempted = false;
+        $canRefund = true;
+        try {
+            $connection->beginTransaction();
+            if ($decision->isAllowed()) {
+                $connection->afterRollBack(function () use ($request, &$canRefund): void {
+                    if ($canRefund) {
+                        $this->rollbackAdmission($request);
+                    }
+                });
+                $rollbackRegistered = true;
+            }
+
+            $call = $this->recorder->record($request, $decision);
+            $commitAttempted = true;
+            $connection->commit();
+
+            return $call;
+        } catch (Throwable $throwable) {
+            if ($connection->transactionLevel() > $level) {
+                $inTransaction = $connection->getPdo()->inTransaction();
+                // A failed COMMIT with no remaining PDO transaction has an
+                // uncertain durable outcome. Reset bookkeeping without a
+                // refund; an ordinary failed writer can safely roll back.
+                $canRefund = ! $commitAttempted || $inTransaction;
+                $connection->rollBack($inTransaction ? $level : 0);
+            }
+            // Beginning a transaction can fail before a rollback callback is
+            // registered. After that point, only an actual rollback refunds:
+            // an after-commit exception cannot undo a durable admission.
+            if ($decision->isAllowed() && ! $rollbackRegistered) {
+                $this->rollbackAdmission($request);
+            }
+
+            throw $throwable;
+        }
+    }
+
+    private function rollbackAdmission(ServiceBoundaryRequest $request): void
+    {
+        if (is_callable([$this->policy, 'rollbackAdmission'])) {
+            $this->policy->rollbackAdmission($request);
+
+            return;
+        }
+
+        $this->release($request);
     }
 
     private static function resolvedBindingKind(WorkflowServiceOperation $operation): ?string

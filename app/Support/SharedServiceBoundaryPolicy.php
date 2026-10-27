@@ -16,7 +16,7 @@ final class SharedServiceBoundaryPolicy implements ServiceBoundaryPolicy
 {
     public const POLICY_NAME = 'server.shared-service-boundary';
 
-    /** @var WeakMap<ServiceBoundaryRequest, array{boundary: string|null, namespace: string|null}> */
+    /** @var WeakMap<ServiceBoundaryRequest, array{boundary: string|null, namespace: string|null, boundary_rate: string|null, namespace_rate: string|null}> */
     private WeakMap $reservations;
 
     /** @param array<string, mixed> $rules */
@@ -85,13 +85,31 @@ final class SharedServiceBoundaryPolicy implements ServiceBoundaryPolicy
 
     public function release(ServiceBoundaryRequest $request): void
     {
+        $this->releaseReservation($request, false);
+    }
+
+    /** Refund only an admission whose durable audit write failed. */
+    public function rollbackAdmission(ServiceBoundaryRequest $request): void
+    {
+        $this->releaseReservation($request, true);
+    }
+
+    private function releaseReservation(ServiceBoundaryRequest $request, bool $refundRate): void
+    {
         $reservation = $this->reservations[$request] ?? null;
 
         if (! is_array($reservation)) {
             return;
         }
 
-        unset($this->reservations[$request]);
+        if (! $refundRate && ($reservation['boundary_rate'] !== null || $reservation['namespace_rate'] !== null)) {
+            // A surrounding writer may still roll back after the handler
+            // releases concurrency. Retain its exact minute debit until the
+            // request dies or that writer's rollback refunds it.
+            $this->reservations[$request] = array_replace($reservation, ['boundary' => null, 'namespace' => null]);
+        } else {
+            unset($this->reservations[$request]);
+        }
 
         try {
             if (! $this->cache->available()) {
@@ -105,13 +123,20 @@ final class SharedServiceBoundaryPolicy implements ServiceBoundaryPolicy
 
             $store->getStore()
                 ->lock($this->lockKey($request), $this->lockTtlSeconds())
-                ->block($this->lockWaitSeconds(), function () use ($reservation): void {
+                ->block($this->lockWaitSeconds(), function () use ($reservation, $refundRate): void {
                     if ($reservation['boundary'] !== null) {
                         $this->decrement($reservation['boundary']);
                     }
 
                     if ($reservation['namespace'] !== null) {
                         $this->decrement($reservation['namespace']);
+                    }
+                    if ($refundRate) {
+                        foreach (['boundary_rate', 'namespace_rate'] as $rate) {
+                            if ($reservation[$rate] !== null) {
+                                $this->decrement($reservation[$rate], $this->rateTtlSeconds());
+                            }
+                        }
                     }
                 });
         } catch (Throwable) {
@@ -184,10 +209,12 @@ final class SharedServiceBoundaryPolicy implements ServiceBoundaryPolicy
         }
 
         if ($limits['boundary_rate'] !== null) {
-            $this->increment($this->boundaryRateKey($request), $this->rateTtlSeconds());
+            $boundaryRateKey = $this->boundaryRateKey($request);
+            $this->increment($boundaryRateKey, $this->rateTtlSeconds());
         }
         if ($limits['namespace_rate'] !== null) {
-            $this->increment($this->namespaceRateKey($request), $this->rateTtlSeconds());
+            $namespaceRateKey = $this->namespaceRateKey($request);
+            $this->increment($namespaceRateKey, $this->rateTtlSeconds());
         }
         if ($limits['boundary_concurrency'] !== null) {
             $boundaryConcurrencyKey = $this->boundaryConcurrencyKey($request);
@@ -198,10 +225,13 @@ final class SharedServiceBoundaryPolicy implements ServiceBoundaryPolicy
             $this->increment($namespaceConcurrencyKey, $this->concurrencyTtlSeconds());
         }
 
-        if (isset($boundaryConcurrencyKey) || isset($namespaceConcurrencyKey)) {
+        if (isset($boundaryConcurrencyKey) || isset($namespaceConcurrencyKey)
+            || isset($boundaryRateKey) || isset($namespaceRateKey)) {
             $this->reservations[$request] = [
                 'boundary' => $boundaryConcurrencyKey ?? null,
                 'namespace' => $namespaceConcurrencyKey ?? null,
+                'boundary_rate' => $boundaryRateKey ?? null,
+                'namespace_rate' => $namespaceRateKey ?? null,
             ];
         }
 
@@ -478,7 +508,7 @@ final class SharedServiceBoundaryPolicy implements ServiceBoundaryPolicy
         $this->cache->store()->put($key, $this->counter($key) + 1, now()->addSeconds($ttlSeconds));
     }
 
-    private function decrement(string $key): void
+    private function decrement(string $key, ?int $ttlSeconds = null): void
     {
         $current = $this->counter($key);
 
@@ -491,7 +521,7 @@ final class SharedServiceBoundaryPolicy implements ServiceBoundaryPolicy
         $this->cache->store()->put(
             $key,
             $current - 1,
-            now()->addSeconds($this->concurrencyTtlSeconds()),
+            now()->addSeconds($ttlSeconds ?? $this->concurrencyTtlSeconds()),
         );
     }
 
