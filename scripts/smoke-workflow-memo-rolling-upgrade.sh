@@ -9,6 +9,15 @@ successor_image="${DW_MEMO_SUCCESSOR_IMAGE:-durable-workflow/server-memo-rolling
 curl_image="${DW_MEMO_ROLLING_CURL_IMAGE:-curlimages/curl:8.10.1}"
 base_project="${COMPOSE_PROJECT_NAME:-dw-memo-rolling-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-smoke}}"
 token="memo-rolling-token"
+memo_stage="build-successor"
+
+report_failure() {
+  local memo_failure_status=$?
+  if (( memo_failure_status != 0 )); then
+    printf '::error title=Memo rolling smoke failed::phase=%s exit=%s\n' "$memo_stage" "$memo_failure_status" >&2
+  fi
+}
+trap report_failure EXIT
 
 json_value() {
   python3 - "$1" "$2" <<'PY'
@@ -51,16 +60,20 @@ for database in "${database_list[@]}"; do
   cleanup() {
     compose down -v --remove-orphans >/dev/null 2>&1 || true
   }
-  trap 'memo_failure_status=$?; if (( memo_failure_status != 0 )); then printf "::error file=scripts/smoke-workflow-memo-rolling-upgrade.sh,line=%s,title=Memo rolling smoke failed::Unexpected exit %s at smoke script line %s.\n" "$LINENO" "$memo_failure_status" "$LINENO" >&2; fi; cleanup' EXIT
+  trap 'report_failure; cleanup' EXIT
 
   request() {
     docker run --rm --network "$network" "$curl_image" -fsS "$@"
   }
 
+  memo_stage="start-database-and-redis"
   compose up -d --wait "$database" redis
+  memo_stage="bootstrap-predecessor"
   compose run --rm predecessor-bootstrap
+  memo_stage="start-predecessor"
   compose up -d --wait predecessor
 
+  memo_stage="register-predecessor-worker"
   request \
     -X POST http://predecessor:8080/api/worker/register \
     -H "Authorization: Bearer $token" \
@@ -70,6 +83,7 @@ for database in "${database_list[@]}"; do
     -d '{"worker_id":"memo-rolling-predecessor-worker","task_queue":"memo-rolling","runtime":"php","supported_workflow_types":["memo.rolling"]}' \
     >/dev/null
 
+  memo_stage="seed-original-workflow"
   original_start="$(request \
     -X POST http://predecessor:8080/api/workflows \
     -H "Authorization: Bearer $token" \
@@ -79,6 +93,7 @@ for database in "${database_list[@]}"; do
     -d '{"workflow_id":"memo-rolling-original","workflow_type":"memo.rolling","task_queue":"memo-rolling","memo":{"scalar":"legacy","list":[1,2.5],"map":{"stage":"before"},"float":7.25,"envelope_looking":{"codec":"avro","blob":"customer-data"}}}')"
   original_run_id="$(json_value "$original_start" run_id)"
 
+  memo_stage="interrupt-memo-backfill"
   set +e
   compose run --rm --no-deps --entrypoint php successor-bootstrap -r '
 require "vendor/autoload.php";
@@ -93,9 +108,12 @@ exit($count === 2 ? 42 : 43);
   set -e
   test "$interruption_status" -eq 42
 
+  memo_stage="bootstrap-successor"
   compose run --rm successor-bootstrap
+  memo_stage="start-successor"
   compose up -d --wait successor
 
+  memo_stage="read-and-write-mixed-revision-memo"
   predecessor_view="$(request \
     -H "Authorization: Bearer $token" \
     -H 'X-Namespace: default' \
@@ -136,6 +154,7 @@ exit($count === 2 ? 42 : 43);
   task_id="$(json_value "$poll" task.task_id)"
   attempt="$(json_value "$poll" task.workflow_task_attempt)"
   lease_owner="$(json_value "$poll" task.lease_owner)"
+  memo_stage="complete-memo-worker-task"
   memo_entries="$(compose run --rm --no-deps --entrypoint php successor-bootstrap -r 'require "vendor/autoload.php"; echo json_encode(Workflow\V2\Support\MemoPayload::mapEnvelope(["scalar" => "successor", "updated" => true]), JSON_THROW_ON_ERROR);')"
 
   completion="$(python3 - "$lease_owner" "$attempt" "$memo_entries" <<'PY'
@@ -174,6 +193,7 @@ PY
     -H 'X-Durable-Workflow-Control-Plane-Version: 2' \
     "http://predecessor:8080/api/workflows/memo-rolling-original/runs/$continued_run_id")"
 
+  memo_stage="verify-mixed-revision-memo"
   python3 - "$predecessor_view" "$successor_view" "$continued_view" <<'PY'
 import json
 import sys
@@ -238,6 +258,7 @@ mysql_memo_value_identities() {
 }
 
 compose up -d --wait mysql redis
+memo_stage="bootstrap-envelope-recovery-predecessor"
 compose run --rm predecessor-bootstrap
 compose up -d --wait predecessor
 
