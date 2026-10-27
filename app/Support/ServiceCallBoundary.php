@@ -307,26 +307,18 @@ final class ServiceCallBoundary
         }
 
         if ($this->policy instanceof DefaultServiceBoundaryPolicy) {
+            $property = (new \ReflectionObject($this->policy))->getProperty('rules');
+            $property->setAccessible(true);
+            $rules = $property->getValue($this->policy);
+
             return (new DefaultServiceBoundaryPolicy(
-                self::withoutAdmissionControls($this->defaultPolicyRules()),
+                self::withoutAdmissionControls(is_array($rules) ? $rules : []),
             ))->evaluate(self::requestWithoutAdmissionControls($request));
         }
 
         $trackedAdmission = true;
 
         return $this->policy->evaluate($request);
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function defaultPolicyRules(): array
-    {
-        $property = (new \ReflectionObject($this->policy))->getProperty('rules');
-        $property->setAccessible(true);
-        $rules = $property->getValue($this->policy);
-
-        return is_array($rules) ? $rules : [];
     }
 
     private static function requestWithoutAdmissionControls(ServiceBoundaryRequest $request): ServiceBoundaryRequest
@@ -395,28 +387,27 @@ final class ServiceCallBoundary
         $commitAttempted = false;
         $canRefund = true;
         $call = null;
+        $refundOnRollback = function () use ($request, &$canRefund): void {
+            if ($canRefund) {
+                $this->rollbackAdmission($request);
+            }
+        };
         try {
             $connection->beginTransaction();
-            if ($request->idempotencyKey !== null) {
-                $canonical = $this->canonicalAdmissionResult($request);
-                $call = $canonical->call;
-                if ($canonical->replayed) {
-                    $request = $canonical->request;
-                    $commitAttempted = true;
-                    $connection->commit();
+            $canonical = $request->idempotencyKey === null ? null : $this->canonicalAdmissionResult($request);
+            $call = $canonical?->call;
+            if ($canonical?->replayed === true) {
+                $request = $canonical->request;
+                $commitAttempted = true;
+                $connection->commit();
 
-                    return $canonical;
-                }
+                return $canonical;
             }
 
             $decision = $decide();
             if ($decision->isAllowed()) {
                 $reserved = true;
-                $connection->afterRollBack(function () use ($request, &$canRefund): void {
-                    if ($canRefund) {
-                        $this->rollbackAdmission($request);
-                    }
-                });
+                $connection->afterRollBack($refundOnRollback);
                 $rollbackRegistered = true;
             }
 
@@ -434,21 +425,19 @@ final class ServiceCallBoundary
                 $this->rollbackAdmission($request);
             }
 
-            if ($outcomeUnknown && $call !== null) {
-                if ($reserved && $request->operationMode === ServiceCallOperationMode::Sync) {
-                    // The HTTP attempt ended before the caller received an
-                    // admission. Keep its committed rate charge, but free the
-                    // synchronous in-flight slot just as dispatch's finally does.
-                    $this->release($request);
-                }
-                throw new ServiceCallAdmissionOutcomeUnknown(
-                    (string) $call->id, $request->targetNamespace,
-                    $request->idempotencyKey !== null && $call->idempotency_scope_hash !== null,
-                    $throwable,
-                );
+            if (! $outcomeUnknown || $call === null) {
+                throw $throwable;
             }
-
-            throw $throwable;
+            if ($reserved && $request->operationMode === ServiceCallOperationMode::Sync) {
+                // Keep the committed rate charge, but free the synchronous
+                // in-flight slot just as dispatch's finally does.
+                $this->release($request);
+            }
+            throw new ServiceCallAdmissionOutcomeUnknown(
+                (string) $call->id, $request->targetNamespace,
+                $request->idempotencyKey !== null && $call->idempotency_scope_hash !== null,
+                $throwable,
+            );
         }
     }
 
