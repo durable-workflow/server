@@ -9,7 +9,9 @@ import assert from 'node:assert/strict';
 // Published defect boundaries (fixture `published_defects`): a bridge update
 // skips external update admission, so an update to an SDK-worker workflow is
 // rejected workflow_definition_unavailable; and a start for an id another
-// namespace holds names that namespace's type (Server #777). At each
+// namespace holds names that namespace's type (published 2.11.1 to 2.11.4)
+// or the namespace difference (2.11.5), not the intended unavailable
+// (Server #777). At each
 // defect's steps the published answers or the intended ones are accepted, as
 // a set per defect; nothing else is relaxed.
 export function checkBridgeAdapters(fixture, observation, workflowId) {

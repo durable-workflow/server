@@ -254,6 +254,14 @@ fn qualified(inventory: &Value) -> Result<&str> {
             "upgrade_source_service_call_dispatches_pending",
         ));
     }
+    // An open call bound to a workflow run would never close under native,
+    // which serves no workflow-bound handler (Server #794).
+    if inventory["service_call_dispatch_inspection"]["workflow_bound_open"] != 0 {
+        return Err(refuse(
+            StatusCode::CONFLICT,
+            "upgrade_source_service_calls_workflow_bound_open",
+        ));
+    }
     // A schedule native cannot run would stop firing after takeover.
     if inventory["schedule_inspection"]["unsupported"] != 0 {
         return Err(refuse(

@@ -10,6 +10,69 @@ export function checkPatchPollPressureResponse(response) {
   if (Object.hasOwn(response, 'message')) assert.equal(typeof response.message, 'string', 'published diagnostic message is text');
 }
 
+// Whether a request deregisters exactly this worker: DELETE
+// /api/worker/registrations/{workerId} with the id as one percent-encoded
+// route segment, as the SDKs send it.
+function deregisters(request, workerId) {
+  const prefix = '/api/worker/registrations/';
+  if (request.method !== 'DELETE' || typeof request.path !== 'string' || !request.path.startsWith(prefix)) return false;
+  const segment = request.path.slice(prefix.length);
+  if (segment === '' || segment.includes('/')) return false;
+  try {
+    return decodeURIComponent(segment) === workerId;
+  } catch {
+    return false;
+  }
+}
+
+// A server whose worker long-poll wait slots are full answers a workflow or
+// activity poll with PHP's typed, retryable 429 (WorkerPollBackpressure, the
+// DW_WORKER_LONG_POLL_MAX_CONCURRENT contract) before holding a wait. It
+// leases nothing. The worker then retries that same poll or, with its work
+// done, deregisters; either way no task, outcome or authority is lost.
+function checkLongPollCapacity(item, index, phase, observation, workflowId) {
+  const kinds = {'/api/worker/workflow-tasks/poll': 'workflow_task', '/api/worker/activity-tasks/poll': 'activity_task'};
+  assert.equal(item.method, 'POST');
+  assert.ok(Object.hasOwn(kinds, item.path), 'only workflow/activity long-poll capacity is tolerated');
+  assert.equal(item.client_cancelled ?? false, false);
+  assert.equal(item.transport_error ?? null, null);
+  const response = item.response;
+  assert.ok(response && typeof response === 'object' && !Array.isArray(response), 'actual capacity response');
+  assert.equal(response.task, null, 'capacity refusal leases no task');
+  assert.equal(response.poll_status, 'long_poll_capacity_exhausted');
+  assert.equal(response.reason, 'long_poll_capacity_exhausted');
+  assert.match(item.response_retry_after ?? '', /^[1-9][0-9]*$/, 'positive explicit Retry-After');
+  assert.ok(Number(item.response_retry_after) <= 25, 'retry hint fits the actual published worker deadline');
+  if (item.response_projection === 'read_or_poll_summary') {
+    // The SDK probe keeps only a poll's core fields (patch-deployment-probe.php);
+    // the full bytes stay in its raw sidecar.
+    assert.ok(Object.keys(response).every(key => ['task', 'poll_status', 'reason', 'message'].includes(key)),
+      'projected capacity summary carries only core poll fields');
+    if (Object.hasOwn(response, 'message')) assert.equal(typeof response.message, 'string');
+  } else {
+    assert.equal(response.retryable, true);
+    assert.equal(response.task_kind, kinds[item.path]);
+    assert.equal(response.namespace, observation.namespace);
+    assert.equal(response.task_queue, observation.task_queue);
+    assert.ok(Number.isSafeInteger(response.retry_after_seconds) && response.retry_after_seconds > 0
+      && response.retry_after_seconds <= 25, 'bounded integer retry hint');
+    assert.equal(item.response_retry_after, String(response.retry_after_seconds), 'Retry-After header agrees with the body');
+  }
+  assert.equal(item.request.worker_id, `${workflowId}:${phase.phase}`);
+  assert.equal(item.request.task_queue, observation.task_queue);
+  assert.ok(typeof item.request.poll_request_id === 'string' && item.request.poll_request_id.length > 0);
+  const later = phase.requests.slice(index + 1);
+  const ok = request => request.status >= 200 && request.status < 300;
+  const retry = later.find(request => request.method === item.method && request.path === item.path
+    && request.request?.poll_request_id === item.request.poll_request_id && ok(request));
+  if (retry) {
+    assert.deepEqual(retry.request, item.request, 'retry changes no poll authority or request fields');
+    return;
+  }
+  assert.ok(later.some(request => deregisters(request, item.request.worker_id) && ok(request)),
+    'the same poll succeeds later, or the refused worker itself stops cleanly after the refusal');
+}
+
 function checkPhpPollPressure(item, index, phase, observation, workflowId) {
   assert.equal(item.method, 'POST');
   assert.equal(item.path, '/api/worker/workflow-tasks/poll', 'PHP pressure is confined to workflow polling');
@@ -221,6 +284,8 @@ export function checkPatchDeployment(fixture, observation, workflowId) {
           'real published SDK registration');
         assert.equal(phase.requests.filter(item => item.method === 'DELETE' && item.path.startsWith('/api/worker/registrations/')).length, 1,
           'real published SDK deregistration');
+        assert.ok(phase.requests.some(item => deregisters(item, `${workflowId}:replacement`)),
+          'the replacement worker deregisters itself');
       } else {
         assert.ok(phase.diagnostics.includes('worker.registered'));
         assert.ok(phase.diagnostics.includes('worker.stopped'));
@@ -262,6 +327,10 @@ export function checkPatchDeployment(fixture, observation, workflowId) {
             && request.request?.poll_request_id === item.request.poll_request_id && request.status >= 200 && request.status < 300);
           assert.ok(retry, 'same original poll request succeeds after pressure');
           assert.deepEqual(retry.request, item.request, 'retry changes no poll authority or request fields');
+          continue;
+        }
+        if (item.status === 429) {
+          checkLongPollCapacity(item, index, phase, observation, workflowId);
           continue;
         }
         assert.ok(item.status >= 200 && item.status < 300, 'all other observed I/O succeeds');

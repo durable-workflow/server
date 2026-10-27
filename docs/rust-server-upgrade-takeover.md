@@ -187,6 +187,15 @@ ones, without naming calls. A pending dispatch makes the inspection
 `upgrade_source_service_call_dispatches_pending` before any change. Let PHP
 finish them before the stop. Completed dispatches do not block takeover.
 
+The same report counts open service calls bound to a workflow run
+(`workflow_bound_open`): calls a Nexus workflow-bound handler accepted that are
+still `pending`, `accepted` or `started`. PHP closes such a call when its linked
+run ends, and 2.11.5's maintenance pass repairs one it missed. Native serves no
+workflow-bound handler yet (Server #794) and closes no linked call, so one
+would stay open after takeover. Any makes the inspection `unqualified`, and
+takeover refuses with `upgrade_source_service_calls_workflow_bound_open` before
+any change. Let the linked runs finish, or cancel the calls, before the stop.
+
 ## Exclusive transaction per backend
 
 The marker, the fingerprint check and the schema changes must not interleave

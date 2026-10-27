@@ -136,6 +136,50 @@
             }
           }
         }
+      },
+      "foreign_instance_names_namespace": {
+        "issue": "https://github.com/durable-workflow/server/issues/777",
+        "summary": "Published 2.11.5's Core 2.15.1 checks a reserved instance's namespace before its type, but its BridgeAdapterController still echoes the control plane's message, so a bridge start for an id another namespace holds is refused with a different-namespace message whatever its type. Server #811 (after 2.11.5) refuses it as unavailable, naming neither the type nor the namespace.",
+        "published": {
+          "start_other_type": {
+            "status": 422,
+            "response": {
+              "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+              "version": 1,
+              "adapter": "acme.crm:v1",
+              "action": "start_workflow",
+              "accepted": false,
+              "outcome": "rejected",
+              "reason": "unknown_target",
+              "idempotency_key": "k-6",
+              "message": "Workflow instance [{id}] cannot be reused with a different namespace.",
+              "target": {
+                "workflow_id": "{id}",
+                "workflow_type": "parity.v1.bridge",
+                "task_queue": "{id}-bra-queue"
+              }
+            }
+          },
+          "start_other_namespace": {
+            "status": 422,
+            "response": {
+              "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
+              "version": 1,
+              "adapter": "acme.crm:v1",
+              "action": "start_workflow",
+              "accepted": false,
+              "outcome": "rejected",
+              "reason": "unknown_target",
+              "idempotency_key": "k-7",
+              "message": "Workflow instance [{id}] cannot be reused with a different namespace.",
+              "target": {
+                "workflow_id": "{id}",
+                "workflow_type": "parity.v1.echo",
+                "task_queue": "{id}-bra-queue"
+              }
+            }
+          }
+        }
       }
     },
     "expected": {
@@ -584,5 +628,5 @@
       ]
     }
   },
-  "contract": "Bridge adapter webhooks (BridgeAdapterController) as published Server 2.11.1 serves them, in their own namespace: the adapter name, payload and action refusals (422, the target redacted to its routing fields); start_workflow accepted (202), returned as a duplicate (200) under the default policy, rejected under reject_duplicate (422), with a workflow ID derived from the adapter and the idempotency key when none is given, and on the default queue for an unconfigured type; signal_workflow and update_workflow refused for an unknown workflow or a malformed target, accepted (202), and deduplicated (200) by adapter, action, idempotency key and target name. Run IDs are labels in order of first appearance and derived workflow IDs are checked against PHP's derivation. Two published defects are bounded: a bridge update to an SDK-worker workflow skips external update admission and is rejected workflow_definition_unavailable, and a start for an id another namespace holds names that namespace's type; for each, the published answers or the intended ones (acceptance and deduplication; a foreign instance refused as unavailable) are accepted. Embedded applications have no HTTP bridge adapters."
+  "contract": "Bridge adapter webhooks (BridgeAdapterController) as published Server 2.11.1 serves them, in their own namespace: the adapter name, payload and action refusals (422, the target redacted to its routing fields); start_workflow accepted (202), returned as a duplicate (200) under the default policy, rejected under reject_duplicate (422), with a workflow ID derived from the adapter and the idempotency key when none is given, and on the default queue for an unconfigured type; signal_workflow and update_workflow refused for an unknown workflow or a malformed target, accepted (202), and deduplicated (200) by adapter, action, idempotency key and target name. Run IDs are labels in order of first appearance and derived workflow IDs are checked against PHP's derivation. Two published defects are bounded: a bridge update to an SDK-worker workflow skips external update admission and is rejected workflow_definition_unavailable, and a start for an id another namespace holds names that namespace's type (published 2.11.1 to 2.11.4) or the namespace difference (2.11.5); for each, the published answers or the intended ones (acceptance and deduplication; a foreign instance refused as unavailable) are accepted. Embedded applications have no HTTP bridge adapters."
 }

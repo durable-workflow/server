@@ -1069,6 +1069,26 @@ fn not_implemented() -> RuntimeError {
     super::refuse(StatusCode::NOT_IMPLEMENTED, "rust_capability_not_implemented")
 }
 
+/// `serviceOperationForbidden`: no ownership or policy detail, no audit row.
+fn service_operation_forbidden() -> RuntimeError {
+    RuntimeError::Protocol {
+        status: StatusCode::FORBIDDEN,
+        response: json!({"reason": "service_operation_forbidden",
+            "message": "The service operation is not authorized for this caller."}),
+    }
+}
+
+/// The replaying request is the call's owner: the same caller namespace and
+/// caller workflow instance and run, through the same catalog objects.
+fn replay_owner(call: &Call, execution: &Execution, [endpoint, service, operation]: [&String; 3]) -> bool {
+    call.caller_namespace.as_ref() == Some(&execution.caller_namespace)
+        && call.caller_instance == execution.caller_instance
+        && call.caller_run == execution.caller_run
+        && call.endpoint_id.as_ref() == Some(endpoint)
+        && call.service_id.as_ref() == Some(service)
+        && call.operation_id.as_ref() == Some(operation)
+}
+
 /// `ServiceCallDeadlinePolicy` failures at execute (`assertDeadlinePolicy`).
 fn invalid(field: &str, message: &str) -> RuntimeError {
     laravel_rules::failure(vec![(field.to_owned(), vec![message.to_owned()])]).expect("a message")
@@ -1466,12 +1486,19 @@ store_methods! {
             mode,
         };
         let kind = binding_kind(operation.kind());
+        // `ServiceCallIdempotency::find`: a key belongs to the target
+        // operation, not to a caller. The first call under it is found
+        // whoever made it, and only its owner may replay it (Workflow #931).
         if let Some(key) = execution.idempotency_key.as_deref().map(str::trim).filter(|key| !key.is_empty())
-            && let Some(mut prior) = Self::query("SELECT c.*,d.call_deadline_at FROM workflow_service_calls c LEFT JOIN dw_service_call_deadlines d ON d.service_call_id=c.id WHERE c.namespace=$1 AND c.workflow_service_operation_id=$2 AND c.caller_namespace=$3 AND c.idempotency_key=$4 ORDER BY c.created_at,c.id LIMIT 1")
-                .bind(self.namespace.as_ref()).bind(operation.row.id.as_str()).bind(execution.caller_namespace.as_str()).bind(key)
+            && let Some(mut prior) = Self::query("SELECT c.*,d.call_deadline_at FROM workflow_service_calls c LEFT JOIN dw_service_call_deadlines d ON d.service_call_id=c.id WHERE c.target_namespace=$1 AND c.endpoint_name=$2 AND c.service_name=$3 AND c.operation_name=$4 AND c.idempotency_key=$5 ORDER BY c.created_at,c.id LIMIT 1")
+                .bind(self.namespace.as_ref()).bind(endpoint.row.name.as_str()).bind(service.row.name.as_str())
+                .bind(operation.row.name.as_str()).bind(key)
                 .fetch_optional(&mut *tx).await?
                 .map(|row| Self::service_call_row(&row)).transpose()?
         {
+            if !replay_owner(&prior, &execution, [&endpoint.row.id, &service.row.id, &operation.row.id]) {
+                return Err(service_operation_forbidden());
+            }
             // `authorizeReplay`: authorization and the circuit, no limits.
             let decision = request.base_decision();
             if !decision.allowed() {

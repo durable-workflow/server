@@ -236,7 +236,10 @@
           "service_call_timeout_failures": [],
           "service_call_dispatch_candidates": 0,
           "service_call_dispatches_enqueued": 0,
-          "service_call_dispatch_failures": []
+          "service_call_dispatch_failures": [],
+          "service_call_linked_candidates": 0,
+          "service_call_links_reconciled": 0,
+          "service_call_linked_failures": []
         }
       ],
       "trimmed filters": [
@@ -275,7 +278,10 @@
           "service_call_timeout_failures": [],
           "service_call_dispatch_candidates": 0,
           "service_call_dispatches_enqueued": 0,
-          "service_call_dispatch_failures": []
+          "service_call_dispatch_failures": [],
+          "service_call_linked_candidates": 0,
+          "service_call_links_reconciled": 0,
+          "service_call_linked_failures": []
         }
       ],
       "empty instance": [
@@ -313,7 +319,10 @@
           "service_call_timeout_failures": [],
           "service_call_dispatch_candidates": 0,
           "service_call_dispatches_enqueued": 0,
-          "service_call_dispatch_failures": []
+          "service_call_dispatch_failures": [],
+          "service_call_linked_candidates": 0,
+          "service_call_links_reconciled": 0,
+          "service_call_linked_failures": []
         }
       ],
       "run ids not a list": [

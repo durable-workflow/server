@@ -36,12 +36,33 @@ shift
 
 image=$(sh "$here/brotli-safe-composer.sh")
 ca=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dw-composer-ca.XXXXXX")
-trap 'rm -rf -- "$ca"' EXIT
+errors=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dw-composer-stderr.XXXXXX")
+trap 'rm -rf -- "$ca" "$errors"' EXIT
 sh "$here/checked-ca.sh" "$ca"
 chmod 0755 "$ca"
 
-status=0
-docker run --user "$(id -u):$(id -g)" -e COMPOSER_HOME=/tmp/composer "${options[@]}" \
-    -e COMPOSER_CAFILE=/checked-ca/ca.pem -e COMPOSER_CAPATH=/checked-ca/no-ca-directory \
-    -v "$ca:/checked-ca:ro" --entrypoint composer "$image" "$@" || status=$?
+# A locked install only downloads pinned dists, so it is safe to repeat. Retry
+# it, at most three attempts in all, only when Composer reports a transient
+# download failure such as GitHub codeload's HTTP 429 rate limit. Any other
+# failure, every other Composer command and every kept (named, not --rm)
+# container fails on its first attempt.
+transient='could not be downloaded \((HTTP/[0-9.]+ (429|5[0-9][0-9])|curl error (6|7|28|35|52|56))'
+attempts=1
+if [[ $1 == install ]] && [[ " ${options[*]} " == *" --rm "* ]]; then attempts=3; fi
+for attempt in $(seq "$attempts"); do
+    # Composer's stderr reaches the caller unchanged and is kept for the check.
+    set +o errexit
+    { docker run --user "$(id -u):$(id -g)" -e COMPOSER_HOME=/tmp/composer "${options[@]}" \
+        -e COMPOSER_CAFILE=/checked-ca/ca.pem -e COMPOSER_CAPATH=/checked-ca/no-ca-directory \
+        -v "$ca:/checked-ca:ro" --entrypoint composer "$image" "$@" 2>&1 1>&3 3>&- | tee "$errors" >&2 3>&-; } 3>&1
+    statuses=("${PIPESTATUS[@]}")
+    set -o errexit
+    status=${statuses[0]}
+    ((statuses[1] == 0)) || status=${statuses[1]}
+    if ((status == 0 || attempt == attempts)) || ! grep -Eq "$transient" "$errors"; then
+        break
+    fi
+    echo "run-composer.sh: transient download failure on attempt $attempt of $attempts; retrying in $((attempt * 20))s" >&2
+    sleep $((attempt * 20))
+done
 exit "$status"
