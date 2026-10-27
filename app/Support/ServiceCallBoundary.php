@@ -11,7 +11,9 @@ use Workflow\V2\Enums\ServiceCallOperationMode;
 use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Enums\ServiceCallStatus;
 use Workflow\V2\Exceptions\ServiceOperationAuthorizationException;
+use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceCall;
+use Workflow\V2\Models\WorkflowServiceEndpoint;
 use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\DefaultServiceBoundaryPolicy;
@@ -405,6 +407,7 @@ final class ServiceCallBoundary
                     // Ownership/catalog refusal has no typed decision. Only a
                     // current policy denial of an owned winner reaches here,
                     // matching the ordinary prelookup replay's failed audit.
+                    $request = $this->currentPolicyRequest($request);
                     $call = $this->recorder->record($request, $denial);
                     $commitAttempted = true;
                     $connection->commit();
@@ -505,6 +508,29 @@ final class ServiceCallBoundary
             'service_name' => $request->serviceName,
             'operation_name' => $request->operationName,
         ], $this->policy);
+    }
+
+    private function currentPolicyRequest(ServiceBoundaryRequest $request): ServiceBoundaryRequest
+    {
+        // Core has validated and locked this owned call's catalog rows. Use
+        // locking reads again so MySQL's default isolation also returns the
+        // exact current policy, rather than an earlier transaction snapshot.
+        $endpoint = ConfiguredV2Models::query('service_endpoint_model', WorkflowServiceEndpoint::class)
+            ->where('namespace', $request->targetNamespace)->where('endpoint_name', $request->endpointName)
+            ->lockForUpdate()->firstOrFail();
+        $service = ConfiguredV2Models::query('service_model', WorkflowService::class)
+            ->where('namespace', $request->targetNamespace)->where('workflow_service_endpoint_id', $endpoint->id)
+            ->where('service_name', $request->serviceName)->lockForUpdate()->firstOrFail();
+        $operation = ConfiguredV2Models::query('service_operation_model', WorkflowServiceOperation::class)
+            ->where('namespace', $request->targetNamespace)->where('workflow_service_endpoint_id', $endpoint->id)
+            ->where('workflow_service_id', $service->id)->where('operation_name', $request->operationName)
+            ->lockForUpdate()->firstOrFail();
+
+        return new ServiceBoundaryRequest(...array_replace(get_object_vars($request), [
+            'endpointBoundaryPolicy' => $endpoint->boundary_policy ?? [],
+            'serviceBoundaryPolicy' => $service->boundary_policy ?? [],
+            'operationBoundaryPolicy' => $operation->boundary_policy ?? [],
+        ]));
     }
 
     private function rollbackAdmission(ServiceBoundaryRequest $request): void

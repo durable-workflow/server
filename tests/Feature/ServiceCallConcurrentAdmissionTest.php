@@ -130,6 +130,8 @@ class ServiceCallConcurrentAdmissionTest extends TestCase
             $issuedField = $kind === 'activity_execution' ? 'activity_execution_id' : 'carrier_request_id';
             $this->assertNotEmpty($winner->metadata[$issuedField] ?? null);
             if ($policyDenied) {
+                $endpoint->update(['boundary_policy' => ['rate_limit' => ['requests_per_minute' => 3]]]);
+                $service->update(['boundary_policy' => ['concurrency_limit' => 2]]);
                 $operation->update(['boundary_policy' => ['circuit_break' => ['open' => true, 'retry_after_seconds' => 17]]]);
             }
             fwrite($sockets[0], "committed\n");
@@ -146,6 +148,13 @@ class ServiceCallConcurrentAdmissionTest extends TestCase
                 $rejection = WorkflowServiceCall::query()->whereKeyNot($winner->id)->sole();
                 $this->assertSame('failed', $rejection->status);
                 $this->assertNull($rejection->idempotency_scope_hash);
+                $recordedPolicy = $rejection->boundary_policy;
+                ksort($recordedPolicy);
+                $this->assertSame([
+                    'circuit_break' => ['open' => true, 'retry_after_seconds' => 17],
+                    'concurrency_limit' => 2,
+                    'rate_limit' => ['requests_per_minute' => 3],
+                ], $recordedPolicy);
             } else {
                 $this->assertSame($winner->id, $result['service_call_id']);
                 $this->assertTrue($result['replayed']);
@@ -157,6 +166,8 @@ class ServiceCallConcurrentAdmissionTest extends TestCase
             $this->assertSame(1, WorkflowServiceCall::query()->whereNotNull('idempotency_scope_hash')->count());
             $this->assertSame($before, $winner->fresh()->getRawOriginal());
             if ($policyDenied) {
+                $endpoint->update(['boundary_policy' => null]);
+                $service->update(['boundary_policy' => null]);
                 $operation->update(['boundary_policy' => null]);
             }
             $this->withHeaders($this->apiHeaders())->postJson($path, ['idempotency_key' => 'different-key'])->assertStatus(429);
