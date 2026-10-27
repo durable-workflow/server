@@ -176,7 +176,7 @@ class ExternalWorkflowUpdateAdmission
             $this->projectRun($run);
 
             return $this->resultPayload($command, $update, $waitFor, false, $waitTimeoutSeconds);
-        }));
+        }, $this->admissionTransactionAttempts()));
 
         if (($result['update_status'] ?? null) === UpdateStatus::Accepted->value
             && $waitFor === UpdateWaitPolicy::WAIT_FOR_COMPLETED
@@ -194,6 +194,26 @@ class ExternalWorkflowUpdateAdmission
     public function validatedArguments(WorkflowRun $run, string $updateName, array $arguments): array
     {
         return $this->validatedArgumentsForRun($run, $updateName, $arguments);
+    }
+
+    protected function admissionTransactionAttempts(): int
+    {
+        $connection = DB::connection();
+        if (! in_array($connection->getDriverName(), ['mysql', 'mariadb'], true)
+            || $connection->transactionLevel() !== 0
+            || $connection->getPdo()->inTransaction()) {
+            return 1;
+        }
+
+        $storage = config('workflows.storage.connection');
+        if (is_string($storage) && $storage !== '' && $storage !== $connection->getName()) {
+            return 1;
+        }
+
+        // Laravel retries only its owned transaction, after rollback. Nested
+        // approval admission belongs to its outer transaction, and failures
+        // from after-commit callbacks must not repeat committed effects.
+        return max(1, (int) config('workflows.storage.transaction_attempts', 5));
     }
 
     /**
@@ -221,7 +241,7 @@ class ExternalWorkflowUpdateAdmission
             return $duplicate === null ? null : $this->resultPayload(
                 $duplicate['command'], $duplicate['update'], $waitFor, false, $waitTimeoutSeconds,
             );
-        }));
+        }, $this->admissionTransactionAttempts()));
 
         return ($result['update_status'] ?? null) === UpdateStatus::Accepted->value
             && $waitFor === UpdateWaitPolicy::WAIT_FOR_COMPLETED

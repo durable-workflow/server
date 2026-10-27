@@ -295,7 +295,7 @@ final class ValidatedExternalWorkflowUpdateAdmission extends ExternalWorkflowUpd
                     $taskId,
                     'The validated update could not be committed to the current workflow run.',
                 );
-        }));
+        }, $this->admissionTransactionAttempts()));
     }
 
     /**
@@ -425,7 +425,7 @@ final class ValidatedExternalWorkflowUpdateAdmission extends ExternalWorkflowUpd
                 $waitTimeoutSeconds,
                 $command,
             );
-        }));
+        }, $this->admissionTransactionAttempts()));
     }
 
     private function isRemoteUpdate(WorkflowRun $run, string $updateName): bool
