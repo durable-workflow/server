@@ -180,6 +180,10 @@ class PhpunitFeatureWorkflowContractTest extends TestCase
         $this->assertStringNotContainsString('cache-hit', $execution['run']);
         $this->assertStringContainsString('composer install --no-interaction --no-progress --prefer-dist', $execution['run']);
         $this->assertStringContainsString('vendor/bin/phpunit tests/Feature', $execution['run']);
+        $this->assertStringContainsString('server-verify-trust durable-workflow-server-corpus-validator final', $execution['run']);
+        $names = array_column($this->featureJob['steps'], 'name');
+        $this->assertLessThan(array_search('Checkout workflow package from GitHub', $names, true),
+            array_search('Save qualified source-free PHP tools from main', $names, true));
     }
 
     public function test_preflight_validates_release_metadata_and_corpus_tools(): void

@@ -177,38 +177,6 @@ jobs:
           docker pull mirror.gcr.io/library/php:8.3-apache
           docker tag mirror.gcr.io/library/php:8.3-apache php:8.3-apache
 
-      - name: Resolve locked workflow package authority
-        id: workflow
-        run: php scripts/ci/resolve-workflow-package-authority.php
-
-      - name: Checkout workflow package from GitHub
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
-        with:
-          repository: durable-workflow/workflow
-          ref: ${{ steps.workflow.outputs.commit }}
-          path: workflow-package
-          persist-credentials: false
-
-      - name: Verify workflow package source provenance
-        shell: bash
-        env:
-          WORKFLOW_PACKAGE_SOURCE: ${{ steps.workflow.outputs.source }}
-          WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.ref }}
-          WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
-        run: |
-          set -euo pipefail
-          resolved_commit="$(git -C workflow-package rev-parse HEAD)"
-          if [[ "$resolved_commit" != "$WORKFLOW_PACKAGE_COMMIT" ]]; then
-            echo "Resolved Workflow commit $resolved_commit does not match $WORKFLOW_PACKAGE_COMMIT" >&2
-            exit 1
-          fi
-          printf '%s\n' \
-            "$WORKFLOW_PACKAGE_SOURCE" \
-            "$WORKFLOW_PACKAGE_REF" \
-            "$resolved_commit" \
-            > workflow-package/.package-provenance
-          rm -rf workflow-package/.git
-
       - name: Key the source-free PHP tool images
         id: php_tools_key
         run: echo "key=server-php-tools-v1-${{ runner.os }}-${{ runner.arch }}-$(date -u +%Y%m%d)-${{ hashFiles('Dockerfile', 'Dockerfile.dockerignore', '.dockerignore', 'docker/**') }}" >> "$GITHUB_OUTPUT"
@@ -248,6 +216,47 @@ jobs:
           docker run --rm --network none --entrypoint server-verify-trust durable-workflow-server-corpus-validator final
           docker run --rm --network none --entrypoint server-verify-brotli durable-workflow-server-corpus-validator
 
+      # Cache writes precede the dependency checkout and all application code.
+      # These images contain only toolchains, qualified by the checks above.
+      - name: Save qualified source-free PHP tools from main
+        if: ${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.php_tools_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/server-php-tools.tar
+          key: ${{ steps.php_tools_key.outputs.key }}
+
+      - name: Resolve locked workflow package authority
+        id: workflow
+        run: php scripts/ci/resolve-workflow-package-authority.php
+
+      - name: Checkout workflow package from GitHub
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          repository: durable-workflow/workflow
+          ref: ${{ steps.workflow.outputs.commit }}
+          path: workflow-package
+          persist-credentials: false
+
+      - name: Verify workflow package source provenance
+        shell: bash
+        env:
+          WORKFLOW_PACKAGE_SOURCE: ${{ steps.workflow.outputs.source }}
+          WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.ref }}
+          WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
+        run: |
+          set -euo pipefail
+          resolved_commit="$(git -C workflow-package rev-parse HEAD)"
+          if [[ "$resolved_commit" != "$WORKFLOW_PACKAGE_COMMIT" ]]; then
+            echo "Resolved Workflow commit $resolved_commit does not match $WORKFLOW_PACKAGE_COMMIT" >&2
+            exit 1
+          fi
+          printf '%s\n' \
+            "$WORKFLOW_PACKAGE_SOURCE" \
+            "$WORKFLOW_PACKAGE_REF" \
+            "$resolved_commit" \
+            > workflow-package/.package-provenance
+          rm -rf workflow-package/.git
+
       - name: Run feature, Nexus, and regression corpus suites
         shell: bash
         env:
@@ -258,6 +267,7 @@ jobs:
             echo "Invalid regression corpus base revision: $CORPUS_BASE_REF" >&2
             exit 1
           fi
+          docker run --rm --network none --entrypoint server-verify-trust durable-workflow-server-corpus-validator final
           docker network create \
             "dw-server-feature-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"
           docker run --detach \
@@ -432,13 +442,6 @@ jobs:
           docker network ls -q --filter "label=com.docker.compose.project=$TLS_TEST_PROJECT" | xargs -r docker network rm >/dev/null 2>&1 || true
           docker volume ls -q --filter "label=com.docker.compose.project=$TLS_TEST_PROJECT" | xargs -r docker volume rm -f >/dev/null 2>&1 || true
           bash scripts/ci/cleanup-database-tls.sh
-
-      - name: Save qualified source-free PHP tools from main
-        if: ${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.php_tools_cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/server-php-tools.tar
-          key: ${{ steps.php_tools_key.outputs.key }}
 
   qualification:
     name: Feature source qualification
