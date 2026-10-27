@@ -8,6 +8,7 @@ use App\Support\ServiceCallBoundary;
 use App\Support\SharedServiceBoundaryPolicy;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Mockery;
@@ -35,6 +36,7 @@ class ServiceCallAdmissionRecoveryTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        Carbon::setTestNow('2026-10-27T04:00:05Z');
         $this->createNamespace('default');
         $this->createNamespace('other');
         config([
@@ -48,6 +50,118 @@ class ServiceCallAdmissionRecoveryTest extends TestCase
         ]);
         $this->app->instance(ServiceBoundaryPolicy::class, $policy);
         $this->app->instance(ServiceCallBoundary::class, new ServiceCallBoundary($policy, new ServiceBoundaryAuditRecorder));
+    }
+
+    protected function tearDown(): void
+    {
+        Carbon::setTestNow();
+        parent::tearDown();
+    }
+
+    #[DataProvider('replayFailureCases')]
+    public function test_an_armed_existing_key_replay_failure_retains_its_canonical_identity(string $kind, string $stage, bool $locked): void
+    {
+        $operation = $this->seedOperation($kind);
+        $body = ['idempotency_key' => 'same-key'];
+        if ($stage === 'describe') {
+            $this->withHeaders($this->apiHeaders())->postJson(self::PATH, $body)->assertOk();
+        } else {
+            app(ServiceCallBoundary::class)->admitFor(
+                principal: Principal::role('operator', 'none'), callerNamespace: 'default',
+                operation: $operation, endpointName: 'billing', serviceName: 'invoices', idempotencyKey: 'same-key',
+            );
+        }
+        $call = WorkflowServiceCall::query()->sole();
+        $real = app(ServiceControlPlane::class);
+        $armed = true;
+        $fail = $locked
+            ? static fn () => throw new QueryException('sqlite', 'fixture replay', [], new PDOException('database is locked'))
+            : static fn () => throw new RuntimeException('fixture replay response failure');
+        $plane = Mockery::mock(ServiceControlPlane::class);
+        $plane->shouldReceive('execute')->andReturnUsing(function (...$arguments) use ($real, &$armed, $stage, $fail) {
+            if ($armed && $stage === 'resume_before_handler') {
+                $fail();
+            }
+            $result = $real->execute(...$arguments);
+            if ($armed && $stage === 'resume_after_handler') {
+                $fail();
+            }
+
+            return $result;
+        });
+        $plane->shouldReceive('describeCall')->andReturnUsing(function (...$arguments) use ($real, &$armed, $stage, $fail) {
+            if ($armed && $stage === 'describe') {
+                $fail();
+            }
+
+            return $real->describeCall(...$arguments);
+        });
+        $this->app->instance(ServiceControlPlane::class, $plane);
+        $this->withHeaders($this->apiHeaders())->postJson(self::PATH, $body)->assertStatus(503)
+            ->assertJsonPath('service_call_id', $call->id)->assertJsonPath('namespace', 'default')
+            ->assertJsonPath('retryable', $locked)
+            ->assertJsonPath('reason', $locked ? 'backend_lock_pressure' : 'service_operation_outcome_unknown');
+        $armed = false;
+        $this->assertDatabaseCount('workflow_service_calls', 1);
+        $field = $kind === 'activity_execution' ? 'activity_execution_id' : 'carrier_request_id';
+        $issued = $call->fresh()->metadata[$field] ?? null;
+        $this->withHeaders($this->apiHeaders())->postJson(self::PATH, $body)->assertOk()
+            ->assertJsonPath('service_call_id', $call->id)->assertJsonPath('idempotent_replay', true);
+        $this->assertDatabaseCount('workflow_service_calls', 1);
+        $this->assertNotEmpty($call->fresh()->metadata[$field] ?? null);
+        if ($issued !== null) {
+            $this->assertSame($issued, $call->fresh()->metadata[$field]);
+        }
+    }
+
+    public static function replayFailureCases(): iterable
+    {
+        foreach (['activity_execution', 'invocable_carrier_request'] as $kind) {
+            foreach (['resume_before_handler', 'resume_after_handler', 'describe'] as $stage) {
+                foreach ([false, true] as $locked) {
+                    yield $kind.'-'.$stage.'-'.(int) $locked => [$kind, $stage, $locked];
+                }
+            }
+        }
+    }
+
+    #[DataProvider('bindingKinds')]
+    public function test_a_same_owner_winner_under_current_circuit_denial_keeps_the_typed_rejection(string $kind): void
+    {
+        $operation = $this->seedOperation($kind);
+        $interleaved = false;
+        $winner = null;
+        $before = null;
+        DB::connection()->beforeStartingTransaction(function () use (&$interleaved, &$winner, &$before, $operation): void {
+            if ($interleaved) {
+                return;
+            }
+            $interleaved = true;
+            $winner = app(ServiceCallBoundary::class)->admitFor(
+                principal: Principal::role('operator', 'none'), callerNamespace: 'default',
+                operation: $operation, endpointName: 'billing', serviceName: 'invoices', idempotencyKey: 'same-key',
+            )->call->fresh();
+            $before = $winner->getRawOriginal();
+            $operation->update(['boundary_policy' => ['circuit_break' => ['open' => true, 'retry_after_seconds' => 17]]]);
+        });
+        $this->withHeaders($this->apiHeaders())->postJson(self::PATH, ['idempotency_key' => 'same-key'])
+            ->assertStatus(503)->assertJsonPath('reason', 'circuit_open')
+            ->assertJsonPath('retry_after_seconds', 17)->assertJsonPath('outcome', 'rejected_circuit_open');
+        $this->assertSame($before, $winner->fresh()->getRawOriginal());
+        $this->assertDatabaseCount('workflow_service_calls', 2);
+        $rejection = WorkflowServiceCall::query()->whereKeyNot($winner->id)->sole();
+        $this->assertSame('failed', $rejection->status);
+        $this->assertNull($rejection->idempotency_scope_hash);
+        $operation->update(['boundary_policy' => null]);
+        $this->withHeaders($this->apiHeaders())->postJson(self::PATH, ['idempotency_key' => 'same-key'])
+            ->assertOk()->assertJsonPath('service_call_id', $winner->id);
+        $this->assertDatabaseCount('workflow_service_calls', 2);
+        $this->withHeaders($this->apiHeaders())->postJson(self::PATH, ['idempotency_key' => 'different-key'])->assertStatus(429);
+    }
+
+    public static function bindingKinds(): array
+    {
+        return [['activity_execution'], ['invocable_carrier_request']];
     }
 
     public function test_canonical_replay_precedes_quota_and_foreign_caller_cannot_create_a_loser(): void

@@ -6,6 +6,7 @@ use App\Support\ServerPollingCache;
 use App\Support\ServiceCallBoundary;
 use App\Support\SharedServiceBoundaryPolicy;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -32,7 +33,7 @@ class ServiceCallConcurrentAdmissionTest extends TestCase
     use ServerTestHelpers;
 
     #[DataProvider('interleavings')]
-    public function test_concurrent_http_winner_keeps_one_identity_and_one_budget_charge(string $kind, bool $foreign, string $pauseAt): void
+    public function test_concurrent_http_winner_keeps_one_canonical_identity_and_one_budget_charge(string $kind, bool $foreign, string $pauseAt, bool $policyDenied): void
     {
         $driver = DB::connection()->getDriverName();
         if (! function_exists('pcntl_fork') || ! function_exists('posix_kill')) {
@@ -41,6 +42,7 @@ class ServiceCallConcurrentAdmissionTest extends TestCase
         if ($driver === 'sqlite' && (config('database.connections.sqlite.database') === ':memory:' || $pauseAt === 'insert')) {
             $this->markTestSkipped('SQLite needs a shared file and acquires its writer lock before insertion.');
         }
+        Carbon::setTestNow('2026-10-27T04:00:05Z');
         $this->createNamespace('default');
         $this->createNamespace('other');
         config([
@@ -60,7 +62,7 @@ class ServiceCallConcurrentAdmissionTest extends TestCase
         $service = WorkflowService::query()->create([
             'namespace' => 'default', 'workflow_service_endpoint_id' => $endpoint->id, 'service_name' => 'invoices',
         ]);
-        WorkflowServiceOperation::query()->create([
+        $operation = WorkflowServiceOperation::query()->create([
             'namespace' => 'default', 'workflow_service_endpoint_id' => $endpoint->id,
             'workflow_service_id' => $service->id, 'operation_name' => 'create',
             'operation_mode' => 'async', 'handler_binding_kind' => $kind, 'handler_target_reference' => 'fixture-target',
@@ -106,6 +108,7 @@ class ServiceCallConcurrentAdmissionTest extends TestCase
                     'service_call_id' => $response->json('service_call_id'),
                     'reason' => $response->json('reason'),
                     'replayed' => $response->json('idempotent_replay'),
+                    'retry_after_seconds' => $response->json('retry_after_seconds'),
                 ], JSON_THROW_ON_ERROR)."\n");
                 $ok = true;
             } catch (Throwable $exception) {
@@ -126,13 +129,23 @@ class ServiceCallConcurrentAdmissionTest extends TestCase
             $before = $winner->getRawOriginal();
             $issuedField = $kind === 'activity_execution' ? 'activity_execution_id' : 'carrier_request_id';
             $this->assertNotEmpty($winner->metadata[$issuedField] ?? null);
+            if ($policyDenied) {
+                $operation->update(['boundary_policy' => ['circuit_break' => ['open' => true, 'retry_after_seconds' => 17]]]);
+            }
             fwrite($sockets[0], "committed\n");
             $result = json_decode((string) fgets($sockets[0]), true, 512, JSON_THROW_ON_ERROR);
             $this->assertArrayNotHasKey('error_class', $result);
-            $this->assertSame($foreign ? 403 : 200, $result['status']);
+            $this->assertSame($foreign ? 403 : ($policyDenied ? 503 : 200), $result['status']);
             if ($foreign) {
                 $this->assertSame('service_operation_forbidden', $result['reason']);
                 $this->assertNull($result['service_call_id']);
+            } elseif ($policyDenied) {
+                $this->assertSame('circuit_open', $result['reason']);
+                $this->assertSame(17, $result['retry_after_seconds']);
+                $this->assertNotSame($winner->id, $result['service_call_id']);
+                $rejection = WorkflowServiceCall::query()->whereKeyNot($winner->id)->sole();
+                $this->assertSame('failed', $rejection->status);
+                $this->assertNull($rejection->idempotency_scope_hash);
             } else {
                 $this->assertSame($winner->id, $result['service_call_id']);
                 $this->assertTrue($result['replayed']);
@@ -140,8 +153,12 @@ class ServiceCallConcurrentAdmissionTest extends TestCase
             pcntl_waitpid($pid, $status);
             $pid = 0;
             $this->assertSame(0, pcntl_wexitstatus($status));
-            $this->assertDatabaseCount('workflow_service_calls', 1);
+            $this->assertDatabaseCount('workflow_service_calls', $policyDenied ? 2 : 1);
+            $this->assertSame(1, WorkflowServiceCall::query()->whereNotNull('idempotency_scope_hash')->count());
             $this->assertSame($before, $winner->fresh()->getRawOriginal());
+            if ($policyDenied) {
+                $operation->update(['boundary_policy' => null]);
+            }
             $this->withHeaders($this->apiHeaders())->postJson($path, ['idempotency_key' => 'different-key'])->assertStatus(429);
         } finally {
             if ($pid > 0) {
@@ -155,13 +172,22 @@ class ServiceCallConcurrentAdmissionTest extends TestCase
         }
     }
 
+    protected function tearDown(): void
+    {
+        Carbon::setTestNow();
+        parent::tearDown();
+    }
+
     public static function interleavings(): iterable
     {
         foreach (['activity_execution', 'invocable_carrier_request'] as $kind) {
             foreach ([false, true] as $foreign) {
                 foreach (['transaction', 'insert'] as $pauseAt) {
-                    yield $kind.'-'.(int) $foreign.'-'.$pauseAt => [$kind, $foreign, $pauseAt];
+                    yield $kind.'-'.(int) $foreign.'-'.$pauseAt => [$kind, $foreign, $pauseAt, false];
                 }
+            }
+            foreach (['transaction', 'insert'] as $pauseAt) {
+                yield $kind.'-policy-denial-'.$pauseAt => [$kind, false, $pauseAt, true];
             }
         }
     }

@@ -1,6 +1,7 @@
 # Worker poll progress transport
 
-Development status: this transport is not in a published Server image or SDK.
+Server 2.11.3 introduced this optional transport. Server 2.11.4 requires an
+explicit progress media type; wildcard Accept values retain ordinary JSON.
 Task-delivery recovery and first-party SDK integration remain part
 of [Server #526](https://github.com/durable-workflow/server/issues/526).
 

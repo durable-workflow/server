@@ -755,63 +755,72 @@ class ServiceCatalogController
                 || $idempotentCall->workflow_service_operation_id !== $operation->id) {
                 return $this->serviceOperationForbidden();
             }
-            $replayRejection = $this->serviceCallBoundary()->replayRejectionFor(
-                principal: $this->principal($request),
-                callerNamespace: $callerNamespace,
-                operation: $operation,
-                endpointName: $endpoint->endpoint_name,
-                serviceName: $service->service_name,
-                callerWorkflowInstanceId: $validated['caller_workflow_instance_id'] ?? null,
-                callerWorkflowRunId: $validated['caller_workflow_run_id'] ?? null,
-                idempotencyKey: $validated['idempotency_key'] ?? null,
-                operationModeOverride: $validated['mode_override'] ?? null,
-                endpointBoundaryPolicy: $this->arrayValue($endpoint->boundary_policy),
-                serviceBoundaryPolicy: $this->arrayValue($service->boundary_policy),
-                operationBoundaryPolicy: $this->arrayValue($operation->boundary_policy),
-                deadlinePolicy: $this->arrayValueOrNull($operation->deadline_policy),
-                idempotencyPolicy: $this->arrayValueOrNull($operation->idempotency_policy),
-                cancellationPolicy: $this->arrayValueOrNull($operation->cancellation_policy),
-                retryPolicy: $this->arrayValueOrNull($operation->retry_policy),
-            );
-
-            if ($replayRejection !== null) {
-                return ControlPlaneProtocol::json(
-                    $this->serializeAdmissionRejection($replayRejection, $endpoint, $service, $operation),
-                    $replayRejection->httpStatus(),
+            try {
+                $replayRejection = $this->serviceCallBoundary()->replayRejectionFor(
+                    principal: $this->principal($request),
+                    callerNamespace: $callerNamespace,
+                    operation: $operation,
+                    endpointName: $endpoint->endpoint_name,
+                    serviceName: $service->service_name,
+                    callerWorkflowInstanceId: $validated['caller_workflow_instance_id'] ?? null,
+                    callerWorkflowRunId: $validated['caller_workflow_run_id'] ?? null,
+                    idempotencyKey: $validated['idempotency_key'] ?? null,
+                    operationModeOverride: $validated['mode_override'] ?? null,
+                    endpointBoundaryPolicy: $this->arrayValue($endpoint->boundary_policy),
+                    serviceBoundaryPolicy: $this->arrayValue($service->boundary_policy),
+                    operationBoundaryPolicy: $this->arrayValue($operation->boundary_policy),
+                    deadlinePolicy: $this->arrayValueOrNull($operation->deadline_policy),
+                    idempotencyPolicy: $this->arrayValueOrNull($operation->idempotency_policy),
+                    cancellationPolicy: $this->arrayValueOrNull($operation->cancellation_policy),
+                    retryPolicy: $this->arrayValueOrNull($operation->retry_policy),
                 );
-            }
 
-            if ((string) $idempotentCall->status === 'accepted'
-                && ! $this->acceptedCallHasIssuedHandler($idempotentCall)) {
-                $options = $this->admittedExecutionOptions($request, $executionOptions, $callerNamespace);
-                $options['service_call_id'] = $idempotentCall->id;
-                $options['boundary_policy_outcome'] = 'accepted';
-
-                try {
-                    $result = $this->serviceControlPlane()->execute(
-                        $endpoint->endpoint_name,
-                        $service->service_name,
-                        $operation->operation_name,
-                        $options,
+                if ($replayRejection !== null) {
+                    return ControlPlaneProtocol::json(
+                        $this->serializeAdmissionRejection($replayRejection, $endpoint, $service, $operation),
+                        $replayRejection->httpStatus(),
                     );
-                } catch (ServiceOperationAuthorizationException) {
-                    return $this->serviceOperationForbidden();
                 }
-                $result['idempotent_replay'] = true;
-            } else {
-                $result = array_replace(
-                    [
-                        'accepted' => ! in_array((string) $idempotentCall->status, ['failed', 'cancelled'], true),
-                        'idempotent_replay' => true,
-                        'reason' => null,
-                    ],
-                    $this->serviceControlPlane()->describeCall($idempotentCall->id, [
-                        'namespace' => $this->namespace($request),
-                    ]),
+
+                if ((string) $idempotentCall->status === 'accepted'
+                    && ! $this->acceptedCallHasIssuedHandler($idempotentCall)) {
+                    $options = $this->admittedExecutionOptions($request, $executionOptions, $callerNamespace);
+                    $options['service_call_id'] = $idempotentCall->id;
+                    $options['boundary_policy_outcome'] = 'accepted';
+
+                    try {
+                        $result = $this->serviceControlPlane()->execute(
+                            $endpoint->endpoint_name,
+                            $service->service_name,
+                            $operation->operation_name,
+                            $options,
+                        );
+                    } catch (ServiceOperationAuthorizationException) {
+                        return $this->serviceOperationForbidden();
+                    }
+                    $result['idempotent_replay'] = true;
+                } else {
+                    $result = array_replace(
+                        [
+                            'accepted' => ! in_array((string) $idempotentCall->status, ['failed', 'cancelled'], true),
+                            'idempotent_replay' => true,
+                            'reason' => null,
+                        ],
+                        $this->serviceControlPlane()->describeCall($idempotentCall->id, [
+                            'namespace' => $this->namespace($request),
+                        ]),
+                    );
+                }
+
+                return ControlPlaneProtocol::json($result, ($result['accepted'] ?? false) === true ? 200 : 409);
+            } catch (ServiceOperationAuthorizationException) {
+                return $this->serviceOperationForbidden();
+            } catch (Throwable $exception) {
+                return $this->serviceOperationOutcomeUnknown(
+                    $request, (string) $idempotentCall->id, (string) $idempotentCall->namespace,
+                    $idempotentCall->idempotency_scope_hash !== null, $exception,
                 );
             }
-
-            return ControlPlaneProtocol::json($result, ($result['accepted'] ?? false) === true ? 200 : 409);
         }
 
         $this->assertDeadlinePolicy($this->arrayValueOrNull($operation->deadline_policy));

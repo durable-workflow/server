@@ -10,6 +10,7 @@ use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallOperationMode;
 use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Enums\ServiceCallStatus;
+use Workflow\V2\Exceptions\ServiceOperationAuthorizationException;
 use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Support\ConfiguredV2Models;
@@ -394,7 +395,22 @@ final class ServiceCallBoundary
         try {
             $connection->beginTransaction();
             if ($request->idempotencyKey !== null) {
-                [$call, $replayed] = $this->canonicalAdmission($request);
+                try {
+                    [$call, $replayed] = $this->canonicalAdmission($request);
+                } catch (ServiceOperationAuthorizationException $exception) {
+                    $denial = $exception->boundaryDecision ?? null;
+                    if (! $denial instanceof ServiceBoundaryDecision || ! $denial->isDenied()) {
+                        throw $exception;
+                    }
+                    // Ownership/catalog refusal has no typed decision. Only a
+                    // current policy denial of an owned winner reaches here,
+                    // matching the ordinary prelookup replay's failed audit.
+                    $call = $this->recorder->record($request, $denial);
+                    $commitAttempted = true;
+                    $connection->commit();
+
+                    return new ServiceCallAdmission($denial, $call, $request, replayed: true);
+                }
                 if ($replayed) {
                     $commitAttempted = true;
                     $connection->commit();
