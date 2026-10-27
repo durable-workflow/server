@@ -21,7 +21,9 @@ receipt=$3
 mkdir -p "$(dirname "$receipt")"
 probe=mirror.gcr.io/library/python@sha256:bf44cdfcb76cd3b41e879bc058fc37ec5872002ccfde7fcb765e218cde0cd79c
 postgres=mirror.gcr.io/library/postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
-mysql=mirror.gcr.io/library/mysql@sha256:62fb722c78b24245ddff1796a0fcee4a49cc5b87e0aaaf20c92d1da9e0a2497b
+# MySQL 8.0 as its multi-architecture index: linux/amd64 is the 62fb722c…
+# image the Shared Server fixtures pin, linux/arm64 is 213bbfaf….
+mysql=mirror.gcr.io/library/mysql@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
 # Every named container and the network derive from RESOURCE_SCOPE: the
 # workflow sets it per run, attempt and job and removes them again in an
 # always step. A local run gets its own scope.

@@ -25,9 +25,19 @@ concurrency:
 
 jobs:
   smoke:
-    name: Build and smoke the native image (linux/amd64)
-    runs-on: ubuntu-latest
+    name: Build and smoke the native image (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
     env:
       RESOURCE_SCOPE: dw-native-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     steps:
@@ -43,7 +53,7 @@ jobs:
         with:
           context: .
           file: Dockerfile.native
-          platforms: linux/amd64
+          platforms: ${{ matrix.platform }}
           pull: true
           provenance: false
           load: true
@@ -51,7 +61,10 @@ jobs:
           tags: ${{ env.RESOURCE_SCOPE }}:smoke
 
       - name: Smoke-test the image
-        run: bash scripts/ci/native-image-smoke.sh "$RESOURCE_SCOPE:smoke" linux/amd64 native-image/smoke-amd64.json
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+        run: bash scripts/ci/native-image-smoke.sh "$RESOURCE_SCOPE:smoke" "$PLATFORM" "native-image/smoke-$ARCH.json"
 
       - name: Remove this job's smoke containers and network
         if: always()
@@ -63,7 +76,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
-          name: native-image-smoke-amd64
+          name: native-image-smoke-${{ matrix.arch }}
           path: native-image
           retention-days: 7
           if-no-files-found: ignore

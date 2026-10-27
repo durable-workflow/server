@@ -8,9 +8,11 @@
 # upgrade-prepare-sqlite and upgrade-takeover
 # (docs/rust-server-upgrade-takeover.md).
 
-# The pinned compiler the Shared Server fixtures build with (Debian 12,
-# glibc 2.36, matching the runtime below).
-FROM mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 AS build
+# Rust 1.99.0 on Debian 12 (glibc 2.36, matching the runtime below), pinned
+# as its multi-architecture index so each architecture builds natively:
+# linux/amd64 b36c246742b4…, linux/arm64 e393e07b3c3c… (Security verified
+# the index, server#803 comment 6434047541).
+FROM mirror.gcr.io/library/rust@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6 AS build
 ARG CARGO_BUILD_JOBS=2
 ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} \
     CARGO_INCREMENTAL=0 \
