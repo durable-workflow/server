@@ -311,6 +311,10 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/worker/workflow-tasks/{task_id}/cancellation-scopes/deliver",
             post(deliver_cancellation_scope),
         )
+        .route(
+            "/api/worker/workflow-tasks/{task_id}/cancellation-scopes/checkpoint",
+            post(checkpoint_cancellation_scope),
+        )
         // Native lacks the prepared local-activity role: refused as PHP
         // refuses them without it (prepared_local.rs).
         .route("/api/worker/workflow-tasks/{task_id}/local-activities/prepare", post(prepared_local_refused))
@@ -863,7 +867,7 @@ fn worker_route(rest: &str) -> Option<Allowed> {
             | ["update-validation-tasks", "poll"]
             | ["update-validation-tasks", _, "approve" | "reject"]
             | ["workflow-tasks", _, "complete" | "fail" | "history" | "heartbeat" | "deliver-cancellation"]
-            | ["workflow-tasks", _, "cancellation-scopes", "open" | "prepare" | "deliver"]
+            | ["workflow-tasks", _, "cancellation-scopes", "open" | "prepare" | "deliver" | "checkpoint"]
             | ["workflow-tasks", _, "local-activities", "prepare" | "recover" | "checkpoint" | "checkpoint-group"]
             | ["workflow-tasks", _, "local-activities", _, "control" | "heartbeat" | "outcome" | "acknowledge-cancellation"]
             | ["activity-tasks", _, "complete" | "fail" | "heartbeat" | "status" | "renew-lease" | "acknowledge-cancellation"]
@@ -2177,43 +2181,7 @@ async fn complete_workflow(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    // PHP validates the message-stream fields first, then its transport
-    // rules, before every guard, ownership included.
-    super::message_streams::check_completion_fields(&body).map_err(worker_refusal)?;
-    let body = super::completion_rules::checked(body).map_err(worker_refusal)?;
-    if body["commands"].as_array().is_some_and(|commands| {
-        commands
-            .iter()
-            .any(|command| command["type"] == "upsert_memo")
-    }) {
-        memo_protocol(&headers)?;
-    }
-    // `guardTypedSearchAttributeCommandsAvailable`.
-    if body["commands"].as_array().is_some_and(|commands| {
-        commands.iter().any(|command| {
-            command["type"] == "upsert_search_attributes" && command.get("attribute_types").is_some()
-        })
-    }) && !protocol_at_least(&headers, 16)?
-    {
-        let minimum = super::search_attribute_upserts::MINIMUM_PROTOCOL_VERSION;
-        return Err(super::RuntimeError::Protocol {
-            status: StatusCode::CONFLICT,
-            response: json!({"task_id":task_id,"workflow_task_attempt":body["workflow_task_attempt"],
-                "outcome":"rejected","recorded":false,"reason":"typed_search_attributes_unavailable",
-                "requested_version":request_protocol(&headers)?,"minimum_protocol_version":minimum,
-                "remediation":format!("Complete typed search-attribute updates only through server nodes advertising worker protocol {minimum} or newer.")}),
-        });
-    }
-    if !super::message_streams::Completion::of(&body).is_empty() && !protocol_at_least(&headers, 15)? {
-        let minimum = super::message_streams::MINIMUM_PROTOCOL_VERSION;
-        return Err(super::RuntimeError::Protocol {
-            status: StatusCode::CONFLICT,
-            response: json!({"task_id":task_id,"workflow_task_attempt":body["workflow_task_attempt"],
-                "outcome":"rejected","reason":"message_streams_unavailable",
-                "requested_version":request_protocol(&headers)?,"minimum_protocol_version":minimum,
-                "remediation":format!("Send the X-Durable-Workflow-Protocol-Version header with worker protocol {minimum} or newer.")}),
-        });
-    }
+    let body = completion_checks(&task_id, &headers, body)?;
     let attempt = body["workflow_task_attempt"].clone();
     runtime
         .complete_workflow(&task_id, body, Some(request.principal().clone()), headers.get("x-durable-workflow-protocol-version").and_then(|value| value.to_str().ok()))
@@ -2228,6 +2196,83 @@ async fn complete_workflow(
             )
         })
         .map(|body| Json(worker_response(body)))
+}
+
+/// The completion request's checks before the runtime, shared by the
+/// completion and the cancellation scope checkpoint.
+fn completion_checks(task_id: &str, headers: &HeaderMap, body: Value) -> Result<Value> {
+    // PHP validates the message-stream fields first, then its transport
+    // rules, before every guard, ownership included.
+    super::message_streams::check_completion_fields(&body).map_err(worker_refusal)?;
+    let body = super::completion_rules::checked(body).map_err(worker_refusal)?;
+    if body["commands"].as_array().is_some_and(|commands| {
+        commands
+            .iter()
+            .any(|command| command["type"] == "upsert_memo")
+    }) {
+        memo_protocol(headers)?;
+    }
+    // `guardTypedSearchAttributeCommandsAvailable`.
+    if body["commands"].as_array().is_some_and(|commands| {
+        commands.iter().any(|command| {
+            command["type"] == "upsert_search_attributes" && command.get("attribute_types").is_some()
+        })
+    }) && !protocol_at_least(headers, 16)?
+    {
+        let minimum = super::search_attribute_upserts::MINIMUM_PROTOCOL_VERSION;
+        return Err(super::RuntimeError::Protocol {
+            status: StatusCode::CONFLICT,
+            response: json!({"task_id":task_id,"workflow_task_attempt":body["workflow_task_attempt"],
+                "outcome":"rejected","recorded":false,"reason":"typed_search_attributes_unavailable",
+                "requested_version":request_protocol(headers)?,"minimum_protocol_version":minimum,
+                "remediation":format!("Complete typed search-attribute updates only through server nodes advertising worker protocol {minimum} or newer.")}),
+        });
+    }
+    if !super::message_streams::Completion::of(&body).is_empty() && !protocol_at_least(headers, 15)? {
+        let minimum = super::message_streams::MINIMUM_PROTOCOL_VERSION;
+        return Err(super::RuntimeError::Protocol {
+            status: StatusCode::CONFLICT,
+            response: json!({"task_id":task_id,"workflow_task_attempt":body["workflow_task_attempt"],
+                "outcome":"rejected","reason":"message_streams_unavailable",
+                "requested_version":request_protocol(headers)?,"minimum_protocol_version":minimum,
+                "remediation":format!("Send the X-Durable-Workflow-Protocol-Version header with worker protocol {minimum} or newer.")}),
+        });
+    }
+    Ok(body)
+}
+
+/// POST …/cancellation-scopes/checkpoint (`checkpointCancellationScopePrefix`):
+/// protocol 1.20, the checkpoint fields, then a completion's checks and
+/// guards, with Core's checkpoint in place of the completion. Every answer
+/// is in the worker envelope; Core's answers carry the history refresh
+/// token, at 200, 404 for an unknown task, or 409.
+async fn checkpoint_cancellation_scope(
+    Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let protocol = request_protocol(&headers)?;
+    if !super::cancellation_scopes::protocol_supported(protocol) {
+        return Ok((StatusCode::CONFLICT, Json(worker_response(json!({"checkpointed": false,
+            "reason": "cancellation_scope_checkpoint_requires_protocol_1_20"})))));
+    }
+    let normalized = super::laravel_rules::normalize(&body);
+    super::laravel_rules::validate(&normalized, super::scope_checkpoint::RULES).map_err(worker_refusal)?;
+    let checkpoint = super::scope_checkpoint::Checkpoint::of(&normalized);
+    let body = completion_checks(&task_id, &headers, body)?;
+    let attempt = body["workflow_task_attempt"].clone();
+    let mut response = runtime
+        .checkpoint_cancellation_scope(&task_id, body, Some(request.principal().clone()), Some(protocol), &checkpoint)
+        .await
+        .map_err(|error| completion_refusal(error, &task_id, "workflow_task_attempt", attempt, "Workflow task not found."))?;
+    let status = super::scope_checkpoint::status(&response);
+    // Server's claim check answers before Core, without the token.
+    if response["reason"] != "active_claim_cancellation_not_supported" {
+        response["history_refresh_page_token"] = json!("MA==");
+    }
+    Ok((status, Json(worker_response(response))))
 }
 
 /// Whether the request's worker protocol is `1.<minor>` or newer.
