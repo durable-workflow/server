@@ -54,6 +54,18 @@ final class RuntimeExternalPayloadWriteClaims
         }
     }
 
+    /** A diagnostic deletes its temporary bytes without persisting a reference. */
+    public function deleteTemporary(string $namespace, string $uri, Closure $delete): void
+    {
+        $this->prepare($delete);
+        foreach (array_keys($this->verified) as $connection) {
+            unset($this->verified[$connection][$uri][$namespace]);
+            if (($this->verified[$connection][$uri] ?? []) === []) {
+                unset($this->verified[$connection][$uri]);
+            }
+        }
+    }
+
     public function verifyInput(string $namespace, string $uri, string|ExternalPayloadStream $data): void
     {
         $bytes = $this->prepare(function () use ($namespace, $uri, $data): ?array {

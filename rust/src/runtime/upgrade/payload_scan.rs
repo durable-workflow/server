@@ -222,8 +222,10 @@ where
         "references_metadata_supported":references_supported,
         "diagnostics":diagnostics, "diagnostics_omitted":omitted,
         "inline_values_verified":inline_supported, "nested_payloads_verified":false,
-        // These tables also hold codec-tagged payloads; takeover refuses a
-        // source with any of their rows, since native lacks the features.
+        // These tables also hold codec-tagged payloads. Takeover carries
+        // their rows over unchanged without validating each inline value;
+        // a stream row holding an external reference is refused through
+        // `stream_reference_inspection`.
         "other_root_payload_columns_verified":false,
         "unscanned_payload_codec_tables":["workflow_durable_stream_items","workflow_inbound_stream_items","workflow_update_validation_tasks"],
         "inline_validation_limits":{"encoded_frame_bytes":65536,"traversal_depth":64,

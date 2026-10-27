@@ -20,7 +20,9 @@ final class WorkerPollResponseProgress
     public function handle(Request $request, Closure $next): Response
     {
         $accept = AcceptHeader::fromString(strtolower($request->headers->get('Accept', '')));
-        $transport = $accept->get(LongPollResponseProgress::MEDIA_TYPE);
+        $transport = $accept->has(LongPollResponseProgress::MEDIA_TYPE)
+            ? $accept->get(LongPollResponseProgress::MEDIA_TYPE)
+            : null;
 
         if (! $request->isMethod('POST') || ! in_array($request->path(), self::PATHS, true)
             || $transport === null || $transport->getQuality() <= 0

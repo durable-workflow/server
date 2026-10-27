@@ -153,6 +153,20 @@ inspection is `unqualified` and takeover refuses with
 `upgrade_source_external_payload_storage_unsupported` before any change. A
 disabled policy does not block takeover.
 
+Inbound message streams and durable workflow streams carry over unchanged:
+native serves them from PHP's own tables. Each closed or errored durable
+stream gets the reclaim deadline native's retention pass reads,
+`dw_stream_reclaims`: PHP 2.11.3's recorded `reclaim_at`, or for earlier
+releases its `closed_at` plus its retention (an hour unless set), as 2.11.3's
+migration backfills it. Every inspection reports
+`stream_reference_inspection`: the number of stream items, durable streams
+and inbound messages holding an external payload reference. Native does not
+resolve those, so any such row makes the inspection `unqualified` and takeover
+refuses with `upgrade_source_external_payloads_unsupported`.
+Workflow-to-workflow messages (`workflow_messages`) are not delivered by
+native yet, so a source holding any refuses with
+`upgrade_source_workflow_messages_unsupported`.
+
 PHP 2.11.3 (Core 2.14) schedules a service call's handler in the
 `workflow_service_call_dispatches` outbox and dispatches it in a later pass.
 Native runs the handler when it accepts the call, so it cannot resume a
