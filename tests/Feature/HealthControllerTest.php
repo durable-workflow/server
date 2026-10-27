@@ -416,6 +416,82 @@ class HealthControllerTest extends TestCase
         $this->assertLessThan(BoundedRedisReadinessProbe::RESPONSE_BOUND_SECONDS, microtime(true) - $started);
     }
 
+    public function test_readiness_shares_the_probe_deadline_between_redis_queue_and_cache(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+        config([
+            'queue.default' => 'redis',
+            'queue.connections.redis.driver' => 'redis',
+            'cache.default' => 'redis',
+        ]);
+
+        $modePath = tempnam(sys_get_temp_dir(), 'redis-readiness-mode-');
+        app()->instance(
+            BoundedRedisReadinessProbe::class,
+            new BoundedRedisReadinessProbe(new RedisReadinessProcess([
+                ...$this->redisReadinessFailureCommand('switchable_success'),
+                $modePath,
+            ])),
+        );
+
+        try {
+            foreach (['success', 'slow_success', 'success'] as $mode) {
+                file_put_contents($modePath, $mode);
+                $started = hrtime(true);
+                $response = $this->getJson('/api/ready');
+                $elapsed = (hrtime(true) - $started) / 1_000_000_000;
+
+                $this->assertLessThan(BoundedRedisReadinessProbe::RESPONSE_BOUND_SECONDS, $elapsed);
+                $response->assertOk()
+                    ->assertJsonPath('status', 'ready')
+                    ->assertJsonPath('checks.queue.status', 'ok')
+                    ->assertJsonPath('checks.cache.status', $mode === 'slow_success' ? 'warning' : 'ok');
+            }
+        } finally {
+            unlink($modePath);
+        }
+    }
+
+    public function test_redis_readiness_refuses_an_expired_parent_budget_without_starting_a_child(): void
+    {
+        $marker = tempnam(sys_get_temp_dir(), 'redis-readiness-child-');
+        unlink($marker);
+        $process = new RedisReadinessProcess([...$this->redisReadinessFailureCommand('success'), $marker]);
+
+        try {
+            try {
+                $process->run(serialize(['value' => 'ready']), hrtime(true) - 1);
+                $this->fail('An expired readiness budget must not start another child.');
+            } catch (RedisReadinessProbeFailure $exception) {
+                $this->assertSame(RedisReadinessProbeFailure::TIMEOUT, $exception->reason);
+            }
+            $this->assertFileDoesNotExist($marker);
+        } finally {
+            if (is_file($marker)) {
+                unlink($marker);
+            }
+        }
+    }
+
+    public function test_redis_readiness_parent_budget_cannot_extend_the_child_timeout(): void
+    {
+        $process = new RedisReadinessProcess($this->redisReadinessFailureCommand('timeout'));
+        $started = hrtime(true);
+
+        try {
+            $process->run('test-input', $started + 5_000_000_000);
+            $this->fail('A larger parent budget must retain the child timeout.');
+        } catch (RedisReadinessProbeFailure $exception) {
+            $this->assertSame(RedisReadinessProbeFailure::TIMEOUT, $exception->reason);
+        }
+        $this->assertLessThan(BoundedRedisReadinessProbe::RESPONSE_BOUND_SECONDS, (hrtime(true) - $started) / 1_000_000_000);
+    }
+
     public function test_bootstrap_admission_does_not_probe_redis_on_every_request(): void
     {
         config([

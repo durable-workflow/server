@@ -33,10 +33,25 @@ final class RedisReadinessProcess
         $this->diagnosticSink = $diagnosticSink;
     }
 
-    public function run(string $input): string
+    public static function deadlineNanoseconds(): int
+    {
+        return hrtime(true) + (int) (self::TIMEOUT_SECONDS * 1_000_000_000);
+    }
+
+    /** An absolute hrtime(true) deadline can shorten, but never extend, the child limit. */
+    public function run(string $input, ?int $deadlineNanoseconds = null): string
     {
         if (strlen($input) > self::MAX_INPUT_BYTES) {
             throw new RuntimeException('Redis readiness child input exceeds the safety limit.');
+        }
+
+        $runStartedAt = hrtime(true);
+        $deadlineNanoseconds = min($deadlineNanoseconds ?? PHP_INT_MAX, self::deadlineNanoseconds());
+        if ($runStartedAt >= $deadlineNanoseconds) {
+            throw new RedisReadinessProbeFailure(
+                RedisReadinessProbeFailure::TIMEOUT,
+                'Redis readiness probe budget is exhausted.',
+            );
         }
 
         $pipes = [];
@@ -64,8 +79,6 @@ final class RedisReadinessProcess
         $stdout = '';
         $stderr = '';
         $inputOffset = 0;
-        $runStartedAt = microtime(true);
-        $deadline = $runStartedAt + self::TIMEOUT_SECONDS;
         $timedOut = false;
         $exitCode = null;
 
@@ -73,23 +86,25 @@ final class RedisReadinessProcess
             while (true) {
                 $status = proc_get_status($process);
 
-                if (! ($status['running'] ?? false)) {
-                    $exitCode = is_int($status['exitcode'] ?? null) ? $status['exitcode'] : null;
-                    $this->drain($pipes[1], $stdout);
+                if (hrtime(true) >= $deadlineNanoseconds) {
+                    $timedOut = true;
+                    if (($status['running'] ?? false) === true) {
+                        proc_terminate($process);
+                        usleep(10_000);
+
+                        if ((proc_get_status($process)['running'] ?? false) === true) {
+                            proc_terminate($process, 9);
+                        }
+                    }
+
                     $this->drain($pipes[2], $stderr);
 
                     break;
                 }
 
-                if (microtime(true) >= $deadline) {
-                    $timedOut = true;
-                    proc_terminate($process);
-                    usleep(10_000);
-
-                    if ((proc_get_status($process)['running'] ?? false) === true) {
-                        proc_terminate($process, 9);
-                    }
-
+                if (! ($status['running'] ?? false)) {
+                    $exitCode = is_int($status['exitcode'] ?? null) ? $status['exitcode'] : null;
+                    $this->drain($pipes[1], $stdout);
                     $this->drain($pipes[2], $stderr);
 
                     break;
@@ -104,7 +119,7 @@ final class RedisReadinessProcess
                     : [];
                 $except = null;
                 $seconds = 0;
-                $microseconds = 20_000;
+                $microseconds = max(1, min(20_000, intdiv($deadlineNanoseconds - hrtime(true), 1000)));
 
                 if ($read !== [] || $write !== []) {
                     @stream_select($read, $write, $except, $seconds, $microseconds);
@@ -162,7 +177,7 @@ final class RedisReadinessProcess
             );
             throw new RedisReadinessProbeFailure(
                 RedisReadinessProbeFailure::TIMEOUT,
-                'Redis readiness child exceeded its 1.5 second deadline.',
+                'Redis readiness child exceeded its 1.5 second deadline or the remaining readiness budget.',
             );
         }
 
@@ -189,7 +204,7 @@ final class RedisReadinessProcess
     private function recordFailureDiagnostic(
         string $reason,
         string $stderr,
-        float $runStartedAt,
+        int $runStartedAt,
         int $spawnElapsedMilliseconds,
     ): void {
         if ($this->diagnosticSink === null && getenv('DW_REDIS_READINESS_DIAGNOSTICS') !== '1') {
@@ -222,7 +237,7 @@ final class RedisReadinessProcess
             'last_stage' => $lastStage,
             'child_stage_elapsed_ms' => $stageElapsedMilliseconds,
             'stages_ms' => $stagesMilliseconds,
-            'parent_elapsed_ms' => (int) round((microtime(true) - $runStartedAt) * 1000),
+            'parent_elapsed_ms' => intdiv(hrtime(true) - $runStartedAt, 1_000_000),
             'spawn_elapsed_ms' => $spawnElapsedMilliseconds,
         ];
         try {

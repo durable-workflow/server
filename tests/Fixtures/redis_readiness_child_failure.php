@@ -5,11 +5,21 @@ declare(strict_types=1);
 $input = (string) stream_get_contents(STDIN);
 
 $mode = $argv[1] ?? '';
+if ($mode === 'switchable_success') {
+    $mode = trim((string) file_get_contents($argv[2]));
+}
 
-if ($mode === 'success') {
+if (in_array($mode, ['success', 'slow_success'], true)) {
     $request = unserialize($input, ['allowed_classes' => false]);
     if (! is_array($request) || ! is_string($request['value'] ?? null)) {
         exit(2);
+    }
+
+    if (($argv[1] ?? '') === 'success' && is_string($argv[2] ?? null)) {
+        file_put_contents($argv[2], 'started');
+    }
+    if ($mode === 'slow_success') {
+        usleep(1_100_000);
     }
 
     echo json_encode(['ok' => true, 'value' => $request['value']], JSON_THROW_ON_ERROR);

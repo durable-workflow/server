@@ -1528,6 +1528,13 @@ issues keep the server unready until corrected. Full rollout-safety and
 operator-metrics snapshots remain explicit diagnostic requests and are not
 executed by recurring liveness/readiness probes.
 
+Redis queue and cache readiness probes share one monotonic 1.5-second budget,
+leaving 500 ms of the two-second response budget for the other checks. A failed
+required Redis queue probe returns HTTP 503 and leaves the cache unverified.
+If the queue succeeds but the optional Redis cache exhausts the remaining
+budget, readiness can stay HTTP 200 with a cache warning. Each response starts
+a fresh budget; wall-clock corrections cannot shorten or extend it.
+
 ### Dedicated Matching-Role Daemon
 
 By default every queue worker runs the in-worker matching-role wake on each

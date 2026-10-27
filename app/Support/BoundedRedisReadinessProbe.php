@@ -23,8 +23,13 @@ final class BoundedRedisReadinessProbe
         private readonly RedisReadinessProcess $process,
     ) {}
 
-    public function roundTrip(string $key, string $value, int $ttlSeconds, ?string $connectionName = null): string
-    {
+    public function roundTrip(
+        string $key,
+        string $value,
+        int $ttlSeconds,
+        ?string $connectionName = null,
+        ?int $deadlineNanoseconds = null,
+    ): string {
         [$connectionName, $configuration] = $this->configuration($connectionName);
         $output = $this->process->run(serialize([
             'version' => 1,
@@ -33,7 +38,7 @@ final class BoundedRedisReadinessProbe
             'key' => $this->cachePrefix().$key,
             'value' => $value,
             'ttl_seconds' => max(1, $ttlSeconds),
-        ]));
+        ]), $deadlineNanoseconds);
 
         try {
             $result = json_decode($output, true, 8, JSON_THROW_ON_ERROR);

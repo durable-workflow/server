@@ -30,7 +30,10 @@ final class ServerReadiness
      */
     public function snapshot(): array
     {
-        $queue = $this->queueCheck(probeRedis: true);
+        // Queue and optional cache probes share the Redis phase budget, leaving
+        // the remaining response time for database and application checks.
+        $redisDeadline = RedisReadinessProcess::deadlineNanoseconds();
+        $queue = $this->queueCheck(probeRedis: true, redisDeadline: $redisDeadline);
         $cache = ($queue['driver'] ?? null) === 'redis'
             && ($queue['status'] ?? null) === 'unavailable'
             && $this->redisCacheIsConfigured()
@@ -39,7 +42,7 @@ final class ServerReadiness
                     'store' => 'redis',
                     'message' => 'Cache health was not checked because the required Redis queue is unavailable.',
                 ]
-                : $this->cacheCheck();
+                : $this->cacheCheck(redisDeadline: $redisDeadline);
 
         $checks = [
             'database' => $this->databaseCheck(probeQuery: true),
@@ -212,7 +215,7 @@ final class ServerReadiness
     /**
      * @return array<string, mixed>
      */
-    private function queueCheck(bool $probeRedis = false): array
+    private function queueCheck(bool $probeRedis = false, ?int $redisDeadline = null): array
     {
         $connection = config('queue.default');
 
@@ -259,7 +262,7 @@ final class ServerReadiness
             try {
                 $key = 'server:readiness:'.bin2hex(random_bytes(8));
                 $value = bin2hex(random_bytes(8));
-                if ($this->redisReadiness->roundTrip($key, $value, 10, trim($redisConnection)) !== $value) {
+                if ($this->redisReadiness->roundTrip($key, $value, 10, trim($redisConnection), $redisDeadline) !== $value) {
                     throw new \RuntimeException(RedisReadinessProcess::FAILURE_MESSAGE);
                 }
 
@@ -370,13 +373,13 @@ final class ServerReadiness
     /**
      * @return array<string, mixed>
      */
-    private function cacheCheck(): array
+    private function cacheCheck(?int $redisDeadline = null): array
     {
         try {
             $key = 'server:readiness:'.bin2hex(random_bytes(8));
             $value = bin2hex(random_bytes(8));
             $read = $this->redisCacheIsConfigured()
-                ? $this->redisReadiness->roundTrip($key, $value, 10)
+                ? $this->redisReadiness->roundTrip($key, $value, 10, deadlineNanoseconds: $redisDeadline)
                 : $this->cacheRoundTrip($key, $value);
 
             if ($read !== $value) {
