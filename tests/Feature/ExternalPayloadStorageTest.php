@@ -4,14 +4,14 @@ namespace Tests\Feature;
 
 use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class ExternalPayloadStorageTest extends TestCase
 {
-    use RefreshDatabase;
+    use DatabaseMigrations;
 
     private string $storageDirectory;
 
@@ -104,7 +104,8 @@ class ExternalPayloadStorageTest extends TestCase
             ->assertJsonPath('large_payload.bytes', 64)
             ->assertJsonPath('large_payload.sha256', hash('sha256', str_repeat('l', 64)));
 
-        $this->assertSame([], glob($this->storageDirectory.'/storage-test-*.bin') ?: []);
+        $this->assertSame([], File::allFiles($this->storageDirectory));
+        $this->assertDatabaseCount('runtime_external_payloads', 0);
     }
 
     public function test_configured_object_storage_diagnostic_round_trips_payloads(): void
@@ -149,6 +150,7 @@ class ExternalPayloadStorageTest extends TestCase
             ->assertJsonPath('large_payload.bytes', 64);
 
         $this->assertSame([], Storage::disk('external-payload-objects')->allFiles());
+        $this->assertDatabaseCount('runtime_external_payloads', 0);
     }
 
     public function test_custom_storage_diagnostic_uses_configured_filesystem_driver(): void

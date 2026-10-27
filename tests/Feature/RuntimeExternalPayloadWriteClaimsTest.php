@@ -65,6 +65,47 @@ class RuntimeExternalPayloadWriteClaimsTest extends TestCase
         $this->assertTrue(WorkflowNamespace::query()->where('name', 'reference-writer')->exists());
     }
 
+    public function test_temporary_deletion_keeps_other_objects_and_namespaces_fenced_until_their_writer_commits(): void
+    {
+        $registry = Mockery::mock(RuntimeExternalPayloadRegistry::class);
+        $sha256 = hash('sha256', 'x');
+        $registry->shouldReceive('claimVerified')->once()->with('billing', 'fixture://writer', 1, $sha256)->andReturnNull();
+        $registry->shouldReceive('claimVerified')->once()->with('foreign', 'fixture://temporary', 1, $sha256)->andReturnNull();
+        $this->app->instance(RuntimeExternalPayloadRegistry::class, $registry);
+        $claims = app(RuntimeExternalPayloadWriteClaims::class);
+        $claims->transport(function () use ($claims, $sha256): void {
+            $claims->verified('billing', 'fixture://temporary', 1, $sha256);
+            $claims->verified('foreign', 'fixture://temporary', 1, $sha256);
+            $claims->verified('billing', 'fixture://writer', 1, $sha256);
+            $claims->deleteTemporary('billing', 'fixture://temporary', function (): void {
+                DB::transaction(fn () => WorkflowNamespace::query()->count());
+            });
+            DB::transaction(fn () => WorkflowNamespace::query()->create(['name' => 'reference-writer', 'retention_days' => 30]));
+        });
+        $this->assertTrue(WorkflowNamespace::query()->where('name', 'reference-writer')->exists());
+    }
+
+    public function test_a_failed_temporary_deletion_preserves_the_reference_claim(): void
+    {
+        $registry = Mockery::mock(RuntimeExternalPayloadRegistry::class);
+        $registry->shouldReceive('claimVerified')->once()->with('default', 'fixture://retained', 1, hash('sha256', 'x'))->andReturnNull();
+        $this->app->instance(RuntimeExternalPayloadRegistry::class, $registry);
+        $claims = app(RuntimeExternalPayloadWriteClaims::class);
+        $claims->transport(function () use ($claims): void {
+            $claims->verified('default', 'fixture://retained', 1, hash('sha256', 'x'));
+            try {
+                $claims->deleteTemporary('default', 'fixture://retained', static function (): void {
+                    throw new RuntimeException('Provider deletion failed.');
+                });
+                $this->fail('A failed deletion must propagate.');
+            } catch (RuntimeException $exception) {
+                $this->assertSame('Provider deletion failed.', $exception->getMessage());
+            }
+            DB::transaction(fn () => WorkflowNamespace::query()->create(['name' => 'retained-reference', 'retention_days' => 30]));
+        });
+        $this->assertTrue(WorkflowNamespace::query()->where('name', 'retained-reference')->exists());
+    }
+
     public function test_an_earlier_commit_does_not_consume_a_later_writers_reference_claim(): void
     {
         $registry = Mockery::mock(RuntimeExternalPayloadRegistry::class);
