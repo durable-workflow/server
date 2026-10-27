@@ -155,6 +155,43 @@ exit($count === 2 ? 42 : 43);
     -H 'X-Namespace: default' \
     -H 'X-Durable-Workflow-Protocol-Version: 1.16' \
     -d '{"worker_id":"memo-rolling-worker","task_queue":"memo-rolling"}')"
+  python3 - "$poll" <<'PY'
+import json
+import sys
+
+value = json.loads(sys.argv[1])
+allowed = {'empty', 'leased', 'throttled', 'unavailable', 'compatibility_blocked',
+           'no_compatible_worker', 'stale_worker_registration', 'no_workflow_capability',
+           'query_task_pending', 'task_queue_changed', 'unsupported', 'rejected', 'conflict'}
+status = value.get('poll_status')
+print('::notice title=Memo poll shape::' + json.dumps({
+    'poll_status': status if status in allowed else 'other',
+    'task_present': isinstance(value.get('task'), dict),
+}), file=sys.stderr)
+PY
+  compose run --rm --no-deps --entrypoint php successor-bootstrap -r '
+require "vendor/autoload.php";
+$app = require "bootstrap/app.php";
+$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+$run = Workflow\V2\Models\WorkflowRun::query()->find($argv[1]);
+$worker = App\Models\WorkerRegistration::query()->where("namespace", "default")->where("worker_id", "memo-rolling-worker")->first();
+$task = Workflow\V2\Models\WorkflowTask::query()->where("workflow_run_id", $argv[1])->where("task_type", "workflow")->first();
+$states = ["pending", "running", "waiting", "ready", "leased", "completed", "failed", "cancelled", "terminated", "timed_out", "continued_as_new"];
+$state = static function ($value) use ($states): string {
+    $value = $value instanceof BackedEnum ? $value->value : $value;
+    return in_array($value, $states, true) ? $value : "other";
+};
+$routing = $run !== null && $worker !== null ? app(App\Support\WorkflowDefinitionRouting::class)->forWorker($run, $worker, "memo-rolling") : [];
+$routingStates = ["not_worker_pinned", "pinning_disabled", "recorded_definition_missing", "worker_definition_missing", "matching_definition", "matching_definition_preferred", "replay_required", "entry_validation_unavailable"];
+fwrite(STDERR, "::notice title=Memo poll eligibility::".json_encode([
+    "run_exists" => $run !== null, "worker_exists" => $worker !== null, "task_exists" => $task !== null,
+    "run_state" => $state($run?->status), "task_state" => $state($task?->status),
+    "run_queue_matches" => $run?->queue === "memo-rolling", "task_queue_matches" => $task?->queue === "memo-rolling",
+    "replay_allowed" => $run !== null && $worker !== null && App\Support\WorkflowReplayEligibility::allows($worker, $run, "1.16"),
+    "definition_allowed" => ($routing["allowed"] ?? false) === true,
+    "definition_status" => in_array($routing["status"] ?? null, $routingStates, true) ? $routing["status"] : "other",
+], JSON_THROW_ON_ERROR)."\n");
+' "$original_run_id"
   task_id="$(json_value "$poll" task.task_id)"
   attempt="$(json_value "$poll" task.workflow_task_attempt)"
   lease_owner="$(json_value "$poll" task.lease_owner)"
