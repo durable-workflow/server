@@ -16,6 +16,8 @@ use Workflow\WorkflowMetadata;
 
 class WorkflowStartService
 {
+    public const ROUTED_START = '__server_routed_start';
+
     public function __construct(
         private readonly WorkflowControlPlane $controlPlane,
         private readonly ConfiguredWorkflowTypeValidator $workflowTypes,
@@ -116,24 +118,6 @@ class WorkflowStartService
         $arguments = $envelope['blob'] ?? Serializer::serializeWithCodec($defaultCodec, []);
         $payloadCodec = $envelope['codec'] ?? $defaultCodec;
 
-        $startCohort = $namespace !== null
-            ? $this->versionPin->resolveForStart($namespace, $taskQueue, $workflowType)
-            : [
-                'build_id' => null,
-                'contract_build_id' => null,
-                'contract_scope' => WorkflowStartVersionPin::CONTRACT_SCOPE_NONE,
-            ];
-        $pinnedBuildId = $startCohort['build_id'];
-        $definitionFingerprint = $namespace !== null
-            ? $this->versionPin->definitionFingerprintForCohort(
-                $namespace,
-                $taskQueue,
-                $workflowType,
-                $startCohort['contract_build_id'],
-                $startCohort['contract_scope'],
-            )
-            : null;
-
         $startOptions = array_filter([
             'arguments' => $arguments,
             'payload_codec' => $payloadCodec,
@@ -157,15 +141,11 @@ class WorkflowStartService
             'fairness_weight' => $this->intValue($validated, 'fairness_weight'),
             'namespace' => $namespace,
             'command_context' => $commandContext,
-            'build_id' => $pinnedBuildId,
-            'external_workflow_definition_fingerprint' => $definitionFingerprint,
+            '_server_allow_ambient_compatibility_fallback' => $allowAmbientCompatibilityFallback,
         ], static fn (mixed $value): bool => $value !== null);
 
-        $result = $this->withAmbientCompatibilityFallback(
-            $pinnedBuildId,
-            $allowAmbientCompatibilityFallback,
-            fn (): array => $this->controlPlane->start($workflowType, $workflowId, $startOptions),
-        );
+        $result = $this->withStartRouting($workflowType, $startOptions,
+            fn (array $routed): array => $this->controlPlane->start($workflowType, $workflowId, $routed));
 
         $started = (bool) ($result['started'] ?? false);
         $reason = isset($result['reason']) && is_string($result['reason'])
@@ -174,17 +154,6 @@ class WorkflowStartService
         $message = isset($result['message']) && is_string($result['message'])
             ? $result['message']
             : null;
-
-        if ($started) {
-            $this->enrichStartedEventWithExternalCommandContract(
-                $namespace,
-                $taskQueue,
-                $workflowType,
-                $startCohort['contract_build_id'],
-                $startCohort['contract_scope'],
-                $result['workflow_run_id'] ?? null,
-            );
-        }
 
         return [
             'started' => $started,
@@ -196,6 +165,69 @@ class WorkflowStartService
             'rejection_reason' => $started ? null : $reason,
             'message' => $message,
         ];
+    }
+
+    /**
+     * Apply the same cohort selection and durable worker contract to every
+     * host start, including workflow-bound service operations.
+     *
+     * @param  array<string, mixed>  $options
+     * @param  callable(array<string, mixed>): array<string, mixed>  $start
+     * @return array<string, mixed>
+     */
+    public function withStartRouting(string $workflowType, array $options, callable $start): array
+    {
+        $namespace = is_string($options['namespace'] ?? null) ? trim($options['namespace']) : null;
+        $taskQueue = $this->resolveTaskQueue($workflowType, $options['queue'] ?? null);
+        $allowAmbientCompatibilityFallback = ($options['_server_allow_ambient_compatibility_fallback'] ?? true) === true;
+        unset($options['_server_allow_ambient_compatibility_fallback']);
+        $startCohort = $namespace !== null
+            ? $this->versionPin->resolveForStart($namespace, $taskQueue, $workflowType)
+            : [
+                'build_id' => null,
+                'contract_build_id' => null,
+                'contract_scope' => WorkflowStartVersionPin::CONTRACT_SCOPE_NONE,
+            ];
+        $pinnedBuildId = $startCohort['build_id'];
+        $definitionFingerprint = $namespace !== null
+            ? $this->versionPin->definitionFingerprintForCohort(
+                $namespace,
+                $taskQueue,
+                $workflowType,
+                $startCohort['contract_build_id'],
+                $startCohort['contract_scope'],
+            )
+            : null;
+
+        $options['queue'] = $taskQueue;
+        if ($pinnedBuildId !== null) {
+            $options['build_id'] = $pinnedBuildId;
+        } else {
+            unset($options['build_id']);
+        }
+        if ($definitionFingerprint !== null) {
+            $options['external_workflow_definition_fingerprint'] = $definitionFingerprint;
+        } else {
+            unset($options['external_workflow_definition_fingerprint']);
+        }
+        $options[self::ROUTED_START] = true;
+        $result = $this->withAmbientCompatibilityFallback(
+            $pinnedBuildId,
+            $allowAmbientCompatibilityFallback,
+            fn (): array => $start($options),
+        );
+        if (($result['started'] ?? false) === true) {
+            $this->enrichStartedEventWithExternalCommandContract(
+                $namespace,
+                $taskQueue,
+                $workflowType,
+                $startCohort['contract_build_id'],
+                $startCohort['contract_scope'],
+                $result['workflow_run_id'] ?? null,
+            );
+        }
+
+        return $result;
     }
 
     private function enrichStartedEventWithExternalCommandContract(
@@ -321,8 +353,8 @@ class WorkflowStartService
 
         return match ($contractScope) {
             WorkflowStartVersionPin::CONTRACT_SCOPE_BUILD_ID => $contractBuildId !== null
-                && $this->workerBuildId($worker) === $contractBuildId,
-            WorkflowStartVersionPin::CONTRACT_SCOPE_UNVERSIONED => $this->workerBuildId($worker) === null,
+                && $this->nullableString($worker->build_id) === $contractBuildId,
+            WorkflowStartVersionPin::CONTRACT_SCOPE_UNVERSIONED => $this->nullableString($worker->build_id) === null,
             default => false,
         };
     }
@@ -345,11 +377,6 @@ class WorkflowStartService
         return $heartbeat->getTimestamp() >= now()
             ->subSeconds($this->workerStaleAfterSeconds())
             ->getTimestamp();
-    }
-
-    private function workerBuildId(WorkerRegistration $worker): ?string
-    {
-        return $this->nullableString($worker->build_id);
     }
 
     private function workerStaleAfterSeconds(): int

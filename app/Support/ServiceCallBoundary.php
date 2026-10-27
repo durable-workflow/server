@@ -3,17 +3,27 @@
 namespace App\Support;
 
 use App\Auth\Principal;
+use Closure;
+use Illuminate\Database\Connection;
 use Throwable;
 use Workflow\V2\Contracts\ServiceBoundaryPolicy;
 use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallOperationMode;
 use Workflow\V2\Enums\ServiceCallOutcome;
+use Workflow\V2\Enums\ServiceCallStatus;
+use Workflow\V2\Exceptions\ServiceOperationAuthorizationException;
+use Workflow\V2\Models\WorkflowService;
+use Workflow\V2\Models\WorkflowServiceCall;
+use Workflow\V2\Models\WorkflowServiceEndpoint;
 use Workflow\V2\Models\WorkflowServiceOperation;
+use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\DefaultServiceBoundaryPolicy;
 use Workflow\V2\Support\ServiceBoundaryAuditRecorder;
 use Workflow\V2\Support\ServiceBoundaryDecision;
 use Workflow\V2\Support\ServiceBoundaryRequest;
+use Workflow\V2\Support\ServiceCallIdempotency;
 use Workflow\V2\Support\ServiceCallPrincipal;
+use Workflow\V2\Support\WorkflowServiceOperationAuthority;
 
 /**
  * Server-side admission gate for cross-namespace service calls.
@@ -51,19 +61,7 @@ final class ServiceCallBoundary
      */
     public function admit(ServiceBoundaryRequest $request): ServiceCallAdmission
     {
-        $decision = $this->policy->evaluate($request);
-
-        try {
-            $call = $this->recorder->record($request, $decision);
-        } catch (Throwable $throwable) {
-            if ($decision->isAllowed()) {
-                $this->release($request);
-            }
-
-            throw $throwable;
-        }
-
-        return new ServiceCallAdmission($decision, $call, $request);
+        return $this->recordAdmission($request, fn () => $this->policy->evaluate($request));
     }
 
     /**
@@ -113,18 +111,8 @@ final class ServiceCallBoundary
             cancellationPolicy: $cancellationPolicy,
             retryPolicy: $retryPolicy,
         );
-        $decision = $this->decisionFor($request, $operation);
-        try {
-            $call = $this->recorder->record($request, $decision);
-        } catch (Throwable $throwable) {
-            if ($decision->isAllowed()) {
-                $this->release($request);
-            }
 
-            throw $throwable;
-        }
-
-        return new ServiceCallAdmission($decision, $call, $request);
+        return $this->recordAdmission($request, fn () => $this->decisionFor($request, $operation));
     }
 
     /**
@@ -319,26 +307,18 @@ final class ServiceCallBoundary
         }
 
         if ($this->policy instanceof DefaultServiceBoundaryPolicy) {
+            $property = (new \ReflectionObject($this->policy))->getProperty('rules');
+            $property->setAccessible(true);
+            $rules = $property->getValue($this->policy);
+
             return (new DefaultServiceBoundaryPolicy(
-                self::withoutAdmissionControls($this->defaultPolicyRules()),
+                self::withoutAdmissionControls(is_array($rules) ? $rules : []),
             ))->evaluate(self::requestWithoutAdmissionControls($request));
         }
 
         $trackedAdmission = true;
 
         return $this->policy->evaluate($request);
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function defaultPolicyRules(): array
-    {
-        $property = (new \ReflectionObject($this->policy))->getProperty('rules');
-        $property->setAccessible(true);
-        $rules = $property->getValue($this->policy);
-
-        return is_array($rules) ? $rules : [];
     }
 
     private static function requestWithoutAdmissionControls(ServiceBoundaryRequest $request): ServiceBoundaryRequest
@@ -387,6 +367,182 @@ final class ServiceCallBoundary
         }
 
         return $policy;
+    }
+
+    private function recordAdmission(ServiceBoundaryRequest $request, Closure $decide): ServiceCallAdmission
+    {
+        // Admission audit metadata is not the payload reference writer. The
+        // later Core writer must claim prepared bytes under its own locks.
+        return app(RuntimeExternalPayloadWriteClaims::class)->prepare(
+            fn () => $this->recordAdmissionMetadata($request, $decide),
+        );
+    }
+
+    private function recordAdmissionMetadata(ServiceBoundaryRequest $request, Closure $decide): ServiceCallAdmission
+    {
+        $connection = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)->getModel()->getConnection();
+        $level = $connection->transactionLevel();
+        $rollbackRegistered = false;
+        $reserved = false;
+        $commitAttempted = false;
+        $canRefund = true;
+        $call = null;
+        $refundOnRollback = function () use ($request, &$canRefund): void {
+            if ($canRefund) {
+                $this->rollbackAdmission($request);
+            }
+        };
+        try {
+            $connection->beginTransaction();
+            $canonical = $request->idempotencyKey === null ? null : $this->canonicalAdmissionResult($request);
+            $call = $canonical?->call;
+            if ($canonical?->replayed === true) {
+                $request = $canonical->request;
+                $commitAttempted = true;
+                $connection->commit();
+
+                return $canonical;
+            }
+
+            $decision = $decide();
+            if ($decision->isAllowed()) {
+                $reserved = true;
+                $connection->afterRollBack($refundOnRollback);
+                $rollbackRegistered = true;
+            }
+
+            $call = $this->recorder->record($request, $decision, $call);
+            $commitAttempted = true;
+            $connection->commit();
+
+            return new ServiceCallAdmission($decision, $call, $request);
+        } catch (Throwable $throwable) {
+            $outcomeUnknown = $this->rollbackAdmissionWriter($connection, $level, $commitAttempted, $canRefund);
+            // Beginning a transaction can fail before a rollback callback is
+            // registered. After that point, only an actual rollback refunds:
+            // an after-commit exception cannot undo a durable admission.
+            if ($reserved && ! $rollbackRegistered) {
+                $this->rollbackAdmission($request);
+            }
+
+            if (! $outcomeUnknown || $call === null) {
+                throw $throwable;
+            }
+            if ($reserved && $request->operationMode === ServiceCallOperationMode::Sync) {
+                // Keep the committed rate charge, but free the synchronous
+                // in-flight slot just as dispatch's finally does.
+                $this->release($request);
+            }
+            throw new ServiceCallAdmissionOutcomeUnknown(
+                (string) $call->id, $request->targetNamespace,
+                $request->idempotencyKey !== null && $call->idempotency_scope_hash !== null,
+                $throwable,
+            );
+        }
+    }
+
+    private function rollbackAdmissionWriter(Connection $connection, int $level, bool $commitAttempted, bool &$canRefund): bool
+    {
+        $outcomeUnknown = $commitAttempted && ! $connection->getPdo()->inTransaction();
+        if ($connection->transactionLevel() > $level) {
+            $inTransaction = $connection->getPdo()->inTransaction();
+            // A failed COMMIT with no PDO transaction has an uncertain durable
+            // outcome. Reset bookkeeping without refunding its admission.
+            $canRefund = ! $commitAttempted || $inTransaction;
+            $connection->rollBack($inTransaction ? $level : 0);
+        }
+
+        return $outcomeUnknown;
+    }
+
+    private function canonicalAdmissionResult(ServiceBoundaryRequest $request): ServiceCallAdmission
+    {
+        try {
+            [$call, $replayed] = $this->canonicalAdmission($request);
+
+            return new ServiceCallAdmission(ServiceBoundaryDecision::allow(), $call, $request, replayed: $replayed);
+        } catch (ServiceOperationAuthorizationException $exception) {
+            $denial = $exception->boundaryDecision ?? null;
+            if (! $denial instanceof ServiceBoundaryDecision || ! $denial->isDenied()) {
+                throw $exception;
+            }
+            // Ownership/catalog refusal has no typed decision. Only a current
+            // policy denial of an owned winner records this failed audit.
+            $request = $this->currentPolicyRequest($request);
+
+            return new ServiceCallAdmission($denial, $this->recorder->record($request, $denial), $request, replayed: true);
+        }
+    }
+
+    /** @return array{WorkflowServiceCall, bool} */
+    private function canonicalAdmission(ServiceBoundaryRequest $request): array
+    {
+        $scope = [$request->targetNamespace, $request->endpointName, $request->serviceName,
+            $request->operationName, $request->idempotencyKey];
+        $call = ServiceCallIdempotency::find($scope);
+        if ($call === null) {
+            $candidate = $this->recorder->make($request, ServiceBoundaryDecision::allow());
+            $candidate->status = ServiceCallStatus::Pending->value;
+            $candidate->accepted_at = null;
+            $candidate->call_deadline_at = null;
+            $call = ServiceCallIdempotency::save($candidate, $scope);
+            if ($call === $candidate) {
+                return [$call, false];
+            }
+        }
+
+        $this->authorizeCanonicalAdmission($call, $request);
+        $call = ServiceCallIdempotency::save($call, $scope);
+        $this->authorizeCanonicalAdmission($call, $request);
+
+        return [$call, true];
+    }
+
+    private function authorizeCanonicalAdmission(WorkflowServiceCall $call, ServiceBoundaryRequest $request): void
+    {
+        WorkflowServiceOperationAuthority::authorizeExistingCall($call, $request->principal, [
+            'namespace' => $request->targetNamespace,
+            'caller_namespace' => $request->callerNamespace,
+            'caller_workflow_instance_id' => $request->callerWorkflowInstanceId,
+            'caller_workflow_run_id' => $request->callerWorkflowRunId,
+            'endpoint_name' => $request->endpointName,
+            'service_name' => $request->serviceName,
+            'operation_name' => $request->operationName,
+        ], $this->policy);
+    }
+
+    private function currentPolicyRequest(ServiceBoundaryRequest $request): ServiceBoundaryRequest
+    {
+        // Core has validated and locked this owned call's catalog rows. Use
+        // locking reads again so MySQL's default isolation also returns the
+        // exact current policy, rather than an earlier transaction snapshot.
+        $endpoint = ConfiguredV2Models::query('service_endpoint_model', WorkflowServiceEndpoint::class)
+            ->where('namespace', $request->targetNamespace)->where('endpoint_name', $request->endpointName)
+            ->lockForUpdate()->firstOrFail();
+        $service = ConfiguredV2Models::query('service_model', WorkflowService::class)
+            ->where('namespace', $request->targetNamespace)->where('workflow_service_endpoint_id', $endpoint->id)
+            ->where('service_name', $request->serviceName)->lockForUpdate()->firstOrFail();
+        $operation = ConfiguredV2Models::query('service_operation_model', WorkflowServiceOperation::class)
+            ->where('namespace', $request->targetNamespace)->where('workflow_service_endpoint_id', $endpoint->id)
+            ->where('workflow_service_id', $service->id)->where('operation_name', $request->operationName)
+            ->lockForUpdate()->firstOrFail();
+
+        return new ServiceBoundaryRequest(...array_replace(get_object_vars($request), [
+            'endpointBoundaryPolicy' => $endpoint->boundary_policy ?? [],
+            'serviceBoundaryPolicy' => $service->boundary_policy ?? [],
+            'operationBoundaryPolicy' => $operation->boundary_policy ?? [],
+        ]));
+    }
+
+    private function rollbackAdmission(ServiceBoundaryRequest $request): void
+    {
+        if (is_callable([$this->policy, 'rollbackAdmission'])) {
+            $this->policy->rollbackAdmission($request);
+
+            return;
+        }
+
+        $this->release($request);
     }
 
     private static function resolvedBindingKind(WorkflowServiceOperation $operation): ?string

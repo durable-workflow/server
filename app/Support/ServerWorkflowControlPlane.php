@@ -16,6 +16,8 @@ use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\CommandResponse;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
+use Workflow\V2\Support\ServiceCallEffectIdentity;
+use Workflow\V2\Support\UpdateWaitPolicy;
 use Workflow\V2\Workflow;
 
 final class ServerWorkflowControlPlane implements RuntimeSignalControlPlane, WorkflowControlPlane
@@ -32,21 +34,27 @@ final class ServerWorkflowControlPlane implements RuntimeSignalControlPlane, Wor
 
     public function start(string $workflowType, ?string $instanceId = null, array $options = []): array
     {
-        $namespace = $this->namespace($options);
+        $start = function (array $routed) use ($workflowType, $instanceId): array {
+            unset($routed[WorkflowStartService::ROUTED_START]);
+            $namespace = $this->namespace($routed);
+            if ($namespace === null) {
+                return $this->inner->start($workflowType, $instanceId, $routed);
+            }
 
-        if ($namespace === null) {
-            return $this->inner->start($workflowType, $instanceId, $options);
-        }
+            return $this->durableStateQuota->mutate(
+                $namespace,
+                [
+                    NamespaceDurableStateQuota::WORKFLOW_INSTANCES,
+                    NamespaceDurableStateQuota::WORKFLOW_RUNS,
+                    NamespaceDurableStateQuota::OPEN_WORKFLOW_RUNS,
+                ],
+                fn (): array => $this->inner->start($workflowType, $instanceId, $routed),
+            );
+        };
 
-        return $this->durableStateQuota->mutate(
-            $namespace,
-            [
-                NamespaceDurableStateQuota::WORKFLOW_INSTANCES,
-                NamespaceDurableStateQuota::WORKFLOW_RUNS,
-                NamespaceDurableStateQuota::OPEN_WORKFLOW_RUNS,
-            ],
-            fn (): array => $this->inner->start($workflowType, $instanceId, $options),
-        );
+        return ($options[WorkflowStartService::ROUTED_START] ?? false) === true
+            ? $start($options)
+            : app(WorkflowStartService::class)->withStartRouting($workflowType, $options, $start);
     }
 
     public function signal(string $instanceId, string $name, array $options = []): array
@@ -139,6 +147,27 @@ final class ServerWorkflowControlPlane implements RuntimeSignalControlPlane, Wor
                     ControlPlaneRequestContract::UPDATE_WAIT_TIMEOUT_SECONDS_MAX,
                 )],
             ]);
+        }
+
+        $namespace = $this->namespace($options);
+        if ($namespace !== null) {
+            $context = $this->commandContext($options) ?? CommandContext::controlPlane();
+            $identity = ServiceCallEffectIdentity::fromOptions($options);
+            if ($identity instanceof ServiceCallEffectIdentity) {
+                $context = $context->with(['service_call' => $identity->commandContext()]);
+            }
+            $result = app(ExternalWorkflowUpdateAdmission::class)->admit(
+                $namespace,
+                $instanceId,
+                $name,
+                is_array($options['arguments'] ?? null) ? $options['arguments'] : [],
+                $context,
+                UpdateWaitPolicy::requestedWaitFor($options['wait_for'] ?? UpdateWaitPolicy::WAIT_FOR_ACCEPTED),
+                is_numeric($seconds) ? (int) $seconds : null,
+            );
+            if ($result !== null) {
+                return $result;
+            }
         }
 
         return $this->mutations->run(

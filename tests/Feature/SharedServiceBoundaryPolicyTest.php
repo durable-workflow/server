@@ -7,6 +7,7 @@ use App\Support\ServiceCallAdmission;
 use App\Support\SharedServiceBoundaryPolicy;
 use Illuminate\Contracts\Cache\Factory as CacheFactory;
 use Illuminate\Filesystem\Filesystem;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Mockery;
 use RuntimeException;
@@ -114,6 +115,34 @@ class SharedServiceBoundaryPolicyTest extends TestCase
             ServiceCallOutcome::RejectedConcurrencyLimited,
             $policy->evaluate($this->request())->outcome,
         );
+    }
+
+    public function test_failed_admission_refunds_a_rate_only_reservation_once(): void
+    {
+        $policy = $this->policy(['rate_limit' => ['requests_per_minute' => 2]]);
+        $first = $this->request();
+        $this->assertTrue($policy->evaluate($first)->isAllowed());
+        $this->assertTrue($policy->evaluate($this->request())->isAllowed());
+        $policy->rollbackAdmission($first);
+        $policy->rollbackAdmission($first);
+        $this->assertTrue($policy->evaluate($this->request())->isAllowed());
+        $this->assertSame(ServiceCallOutcome::RejectedThrottled, $policy->evaluate($this->request())->outcome);
+    }
+
+    public function test_refunding_an_old_minute_does_not_credit_the_new_minutes_admission(): void
+    {
+        Carbon::setTestNow('2026-10-27T01:00:59Z');
+        try {
+            $policy = $this->policy(['rate_limit' => ['requests_per_minute' => 1]]);
+            $first = $this->request();
+            $this->assertTrue($policy->evaluate($first)->isAllowed());
+            Carbon::setTestNow('2026-10-27T01:01:00Z');
+            $this->assertTrue($policy->evaluate($this->request())->isAllowed());
+            $policy->rollbackAdmission($first);
+            $this->assertSame(ServiceCallOutcome::RejectedThrottled, $policy->evaluate($this->request())->outcome);
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function test_sync_only_rate_budget_does_not_throttle_async_calls(): void

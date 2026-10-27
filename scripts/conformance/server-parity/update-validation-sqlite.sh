@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
+#   update-validation-sqlite.sh <php url> <native url> [fixture name]
+#
 # Server #723. The SQLite job records the update-validation fixture apart from
-# its main corpus, for all three targets, and compares the three records.
+# its main corpus, for all three targets, and compares the three records. The
+# optional third argument names another fixture recorded the same way:
+# service-calls, whose published PHP record under SQLite writer contention has
+# refused the first call to a limited operation with 429 (Server #796).
 #
 # The published PHP record runs with PHP's maintenance loop stopped. On SQLite
 # the API server and that loop share one database file. Under the loop's writer
@@ -26,10 +31,13 @@
 set -euo pipefail
 php_url="$1"
 native_url="$2"
+name="${3:-update-validation}"
+[[ "$name" =~ ^[a-z0-9-]+$ ]]
 [[ -n "$RESOURCE_SCOPE" ]]
 [[ -n "$DW_PARITY_RUNNER_REVISION" ]]
-fixture=tests/Fixtures/ServerParity/update-validation.json
-image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.1.json)
+fixture="tests/Fixtures/ServerParity/$name.json"
+test -f "$fixture"
+image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.4.json)
 . scripts/conformance/server-parity/php-maintenance-window.sh
 
 prefix=parity-v1
@@ -38,7 +46,7 @@ http_record() {
   docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
     -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
     -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
-    --mode http --url "$url" --target "$target" --output "/evidence/update-validation-$target.json" --fixture "$fixture" \
+    --mode http --url "$url" --target "$target" --output "/evidence/$name-$target.json" --fixture "$fixture" \
     --prefix "$prefix"
 }
 
@@ -53,35 +61,35 @@ php_record() {
   record_finished=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
 }
 
-run_without_maintenance parity-evidence/update-validation-maintenance-schedule.txt -- php_record
+run_without_maintenance "parity-evidence/$name-maintenance-schedule.txt" -- php_record
 if ((php_status != 0)); then
-  locked=parity-evidence/update-validation-php.attempt-1.locked.txt
+  locked="parity-evidence/$name-php.attempt-1.locked.txt"
   { docker logs --since "$record_started" --until "$record_finished" "$RESOURCE_SCOPE-server" 2>&1 || true; } \
     | grep -m 5 'database is locked' | cut -c 1-400 > "$locked" || true
   if [[ ! -s "$locked" ]]; then
     rm -f "$locked"
     exit "$php_status"
   fi
-  for name in update-validation-php.json update-validation-php.failure-excerpt.txt; do
-    if [[ -e "parity-evidence/$name" ]]; then
-      mv "parity-evidence/$name" "parity-evidence/${name/update-validation-php./update-validation-php.attempt-1.}"
+  for file in "$name-php.json" "$name-php.failure-excerpt.txt"; do
+    if [[ -e "parity-evidence/$file" ]]; then
+      mv "parity-evidence/$file" "parity-evidence/${file/$name-php./$name-php.attempt-1.}"
     fi
   done
-  excerpt=$(tr '\n' ' ' < parity-evidence/update-validation-php.attempt-1.failure-excerpt.txt 2>/dev/null || true)
-  echo "::warning title=Published PHP update-validation record retried::The PHP record failed (${excerpt:-no excerpt}) after published PHP logged 'database is locked'; recording all three targets under a fresh prefix (Server #754)."
+  excerpt=$(tr '\n' ' ' < "parity-evidence/$name-php.attempt-1.failure-excerpt.txt" 2>/dev/null || true)
+  echo "::warning title=Published PHP $name record retried::The PHP record failed (${excerpt:-no excerpt}) after published PHP logged 'database is locked'; recording all three targets under a fresh prefix (Server #754)."
   prefix=parity-v1-retry
-  run_without_maintenance parity-evidence/update-validation-maintenance-schedule-retry.txt -- php_record
+  run_without_maintenance "parity-evidence/$name-maintenance-schedule-retry.txt" -- php_record
   ((php_status == 0)) || exit "$php_status"
 fi
 docker run --rm --user=1000:1000 --entrypoint node \
   -v "$PWD:/source:ro" -v "$PWD/parity-state:/state" -v "$PWD/parity-evidence:/evidence" -w /source \
   -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/embedded.sqlite -e DW_MODE=embedded \
   -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
-  --mode embedded --application-root /app --target embedded --output /evidence/update-validation-embedded.json --fixture "$fixture" \
+  --mode embedded --application-root /app --target embedded --output "/evidence/$name-embedded.json" --fixture "$fixture" \
   --prefix "$prefix"
 http_record "$native_url" rust
 docker run --rm --user=1000:1000 --entrypoint node \
   -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
   scripts/conformance/server-parity.mjs compare \
-  /evidence/update-validation-php.json /evidence/update-validation-rust.json /evidence/update-validation-embedded.json \
-  --fixture "$fixture" > parity-evidence/update-validation-comparison.json
+  "/evidence/$name-php.json" "/evidence/$name-rust.json" "/evidence/$name-embedded.json" \
+  --fixture "$fixture" > "parity-evidence/$name-comparison.json"

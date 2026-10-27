@@ -1,0 +1,49 @@
+# Durable Workflow native (Rust) server, published as a release candidate
+# (Server #325). It is opt-in: the server refuses to start without
+# DW_RUST_EXPERIMENTAL=1. The published PHP image remains the default.
+#
+# The same image runs the takeover commands an operator uses to move a
+# stopped, backed-up PHP database to native: upgrade-inspect,
+# upgrade-queue-inspect, upgrade-payload-inspect, upgrade-fingerprint,
+# upgrade-prepare-sqlite and upgrade-takeover
+# (docs/rust-server-upgrade-takeover.md).
+
+# Rust 1.99.0 on Debian 12 (glibc 2.36, matching the runtime below), pinned
+# as its multi-architecture index so each architecture builds natively:
+# linux/amd64 b36c246742b4…, linux/arm64 e393e07b3c3c… (Security verified
+# the index, server#803 comment 6434047541).
+FROM mirror.gcr.io/library/rust@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6 AS build
+ARG CARGO_BUILD_JOBS=2
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} \
+    CARGO_INCREMENTAL=0 \
+    CARGO_PROFILE_RELEASE_DEBUG=0
+WORKDIR /source/rust
+COPY rust/ /source/rust/
+# --locked: every crate is the one Cargo.lock names, checksum included.
+RUN cargo build --release --locked \
+    && install -m 0755 target/release/durable-workflow-server /durable-workflow-server
+
+# A digest-pinned slim runtime: glibc for the binary, nothing else. TLS uses
+# rustls with compiled-in web PKI roots, and SQLite is bundled.
+FROM mirror.gcr.io/library/debian@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
+COPY --from=build /durable-workflow-server /usr/local/bin/durable-workflow-server
+# The PHP image's paths, so a taken-over installation keeps its volumes:
+# SQLite in /app/database, and external payload objects under /app/storage,
+# whose absolute file:// paths PHP records in the database. Native's default
+# local payload root is <working directory>/storage/app/external-payloads.
+RUN install -d -o 1000 -g 1000 -m 0750 /app /app/database /app/storage
+# Native runs the repair pass itself: this image has no separate scheduler
+# container, as published PHP's Compose deployment does.
+ENV DW_BIND_ADDRESS=0.0.0.0:8080 \
+    DW_RUST_MAINTENANCE_LOOP=1 \
+    DB_DATABASE=/app/database/database.sqlite
+USER 1000:1000
+WORKDIR /app
+VOLUME ["/app/database", "/app/storage"]
+EXPOSE 8080
+# Native stops gracefully on SIGTERM; PHP's image declares SIGWINCH.
+STOPSIGNAL SIGTERM
+ENTRYPOINT ["/usr/local/bin/durable-workflow-server"]
+LABEL org.opencontainers.image.title="Durable Workflow Server (native release candidate)" \
+      org.opencontainers.image.source="https://github.com/durable-workflow/server" \
+      org.opencontainers.image.licenses="MIT"
