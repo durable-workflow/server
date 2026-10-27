@@ -113,13 +113,14 @@ exit($count === 2 ? 42 : 43);
   memo_stage="start-successor"
   compose up -d --wait successor
 
-  memo_stage="read-and-write-mixed-revision-memo"
+  memo_stage="read-original-through-predecessor"
   predecessor_view="$(request \
     -H "Authorization: Bearer $token" \
     -H 'X-Namespace: default' \
     -H 'X-Durable-Workflow-Control-Plane-Version: 2' \
     "http://predecessor:8080/api/workflows/memo-rolling-original/runs/$original_run_id")"
 
+  memo_stage="write-memo-through-predecessor-after-migration"
   predecessor_write="$(request \
     -X POST http://predecessor:8080/api/workflows \
     -H "Authorization: Bearer $token" \
@@ -129,12 +130,14 @@ exit($count === 2 ? 42 : 43);
     -d '{"workflow_id":"memo-rolling-predecessor-write","workflow_type":"memo.rolling","task_queue":"memo-rolling-unpolled","memo":{"writer":"predecessor"}}')"
   predecessor_write_run_id="$(json_value "$predecessor_write" run_id)"
 
+  memo_stage="read-predecessor-write-through-successor"
   successor_view="$(request \
     -H "Authorization: Bearer $token" \
     -H 'X-Namespace: default' \
     -H 'X-Durable-Workflow-Control-Plane-Version: 2' \
     "http://successor:8080/api/workflows/memo-rolling-predecessor-write/runs/$predecessor_write_run_id")"
 
+  memo_stage="register-successor-worker"
   request \
     -X POST http://successor:8080/api/worker/register \
     -H "Authorization: Bearer $token" \
@@ -144,6 +147,7 @@ exit($count === 2 ? 42 : 43);
     -d '{"worker_id":"memo-rolling-worker","task_queue":"memo-rolling","runtime":"php","supported_workflow_types":["memo.rolling"],"capabilities":["memo_upserts"]}' \
     >/dev/null
 
+  memo_stage="poll-successor-worker"
   poll="$(request \
     -X POST http://successor:8080/api/worker/workflow-tasks/poll \
     -H "Authorization: Bearer $token" \
