@@ -209,6 +209,45 @@ jobs:
             > workflow-package/.package-provenance
           rm -rf workflow-package/.git
 
+      - name: Key the source-free PHP tool images
+        id: php_tools_key
+        run: echo "key=server-php-tools-v1-${{ runner.os }}-${{ runner.arch }}-$(date -u +%Y%m%d)-${{ hashFiles('Dockerfile', 'Dockerfile.dockerignore', '.dockerignore', 'docker/**') }}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the source-free PHP tool images
+        id: php_tools_cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/server-php-tools.tar
+          key: ${{ steps.php_tools_key.outputs.key }}
+
+      - name: Prepare the source-free PHP tool images
+        shell: bash
+        env:
+          PHP_TOOLS_CACHE_HIT: ${{ steps.php_tools_cache.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          if [[ "$PHP_TOOLS_CACHE_HIT" == true ]]; then
+            docker load --input "$RUNNER_TEMP/server-php-tools.tar"
+          else
+            docker build --target base -t durable-workflow-server-phpunit-base .
+            docker build -t durable-workflow-server-corpus-validator - <<'DOCKERFILE'
+          FROM durable-workflow-server-phpunit-base
+          RUN apt-get update \
+              && apt-get install -y --no-install-recommends git \
+              && rm -rf /var/lib/apt/lists/* \
+              && server-verify-trust final
+          DOCKERFILE
+            docker save --output "$RUNNER_TEMP/server-php-tools.tar" \
+              durable-workflow-server-phpunit-base durable-workflow-server-corpus-validator
+          fi
+          # The key includes every base build input and the UTC day. Only a
+          # successful push to main saves tools; source and vendors stay fresh.
+          docker run --rm --entrypoint sh durable-workflow-server-phpunit-base \
+            -c 'node --version >/dev/null && python3 -m venv /tmp/dw-conformance-venv && test -x /tmp/dw-conformance-venv/bin/python3'
+          docker run --rm --network none --entrypoint server-verify-trust durable-workflow-server-phpunit-base
+          docker run --rm --network none --entrypoint server-verify-trust durable-workflow-server-corpus-validator final
+          docker run --rm --network none --entrypoint server-verify-brotli durable-workflow-server-corpus-validator
+
       - name: Run feature, Nexus, and regression corpus suites
         shell: bash
         env:
@@ -219,17 +258,6 @@ jobs:
             echo "Invalid regression corpus base revision: $CORPUS_BASE_REF" >&2
             exit 1
           fi
-          docker build --target base -t durable-workflow-server-phpunit-base .
-          docker run --rm --entrypoint sh durable-workflow-server-phpunit-base \
-            -c 'node --version >/dev/null && python3 -m venv /tmp/dw-conformance-venv && test -x /tmp/dw-conformance-venv/bin/python3'
-          docker run --rm --network none --entrypoint server-verify-trust durable-workflow-server-phpunit-base
-          docker build -t durable-workflow-server-corpus-validator - <<'DOCKERFILE'
-          FROM durable-workflow-server-phpunit-base
-          RUN apt-get update \
-              && apt-get install -y --no-install-recommends git \
-              && rm -rf /var/lib/apt/lists/* \
-              && server-verify-trust final
-          DOCKERFILE
           docker network create \
             "dw-server-feature-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"
           docker run --detach \
@@ -404,6 +432,13 @@ jobs:
           docker network ls -q --filter "label=com.docker.compose.project=$TLS_TEST_PROJECT" | xargs -r docker network rm >/dev/null 2>&1 || true
           docker volume ls -q --filter "label=com.docker.compose.project=$TLS_TEST_PROJECT" | xargs -r docker volume rm -f >/dev/null 2>&1 || true
           bash scripts/ci/cleanup-database-tls.sh
+
+      - name: Save qualified source-free PHP tools from main
+        if: ${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.php_tools_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/server-php-tools.tar
+          key: ${{ steps.php_tools_key.outputs.key }}
 
   qualification:
     name: Feature source qualification

@@ -116,9 +116,6 @@ class PhpunitFeatureWorkflowContractTest extends TestCase
         foreach ([
             'if [[ ! "$CORPUS_BASE_REF" =~ ^[0-9a-f]{40}$ ]] || [[ "$CORPUS_BASE_REF" =~ ^0+$ ]]',
             'exit 1',
-            'docker build --target base -t durable-workflow-server-phpunit-base .',
-            'FROM durable-workflow-server-phpunit-base',
-            'apt-get install -y --no-install-recommends git',
             'docker run --rm -i',
             '-e CORPUS_BASE_REF',
             'tar --no-same-owner -xf - -C /app',
@@ -151,6 +148,38 @@ class PhpunitFeatureWorkflowContractTest extends TestCase
         $this->assertLessThan($phpunitOffset, $composerOffset);
         $this->assertLessThan($validatorOffset, $gitOffset);
         $this->assertLessThan($validatorOffset, $phpunitOffset);
+    }
+
+    public function test_php_tools_cache_preserves_trust_and_fresh_source_qualification(): void
+    {
+        $key = $this->step('Key the source-free PHP tool images');
+        $restore = $this->step('Restore the source-free PHP tool images');
+        $prepare = $this->step('Prepare the source-free PHP tool images');
+        $save = $this->step('Save qualified source-free PHP tools from main');
+        $execution = $this->step('Run feature, Nexus, and regression corpus suites');
+
+        $this->assertStringContainsString('$(date -u +%Y%m%d)', $key['run']);
+        $this->assertStringContainsString("hashFiles('Dockerfile', 'Dockerfile.dockerignore', '.dockerignore', 'docker/**')", $key['run']);
+        $this->assertStringContainsString('${{ runner.os }}-${{ runner.arch }}', $key['run']);
+        $this->assertSame('${{ steps.php_tools_key.outputs.key }}', $restore['with']['key']);
+        $this->assertSame($restore['with'], $save['with']);
+        $this->assertSame('${{ runner.temp }}/server-php-tools.tar', $restore['with']['path']);
+        $this->assertArrayNotHasKey('restore-keys', $restore['with']);
+        $this->assertSame("\${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.php_tools_cache.outputs.cache-hit != 'true' }}", $save['if']);
+
+        foreach (['docker load --input', 'docker build --target base -t durable-workflow-server-phpunit-base .',
+            'FROM durable-workflow-server-phpunit-base', 'apt-get install -y --no-install-recommends git',
+            'docker save --output', 'server-verify-trust durable-workflow-server-phpunit-base',
+            'server-verify-trust durable-workflow-server-corpus-validator final',
+            'server-verify-brotli durable-workflow-server-corpus-validator'] as $required) {
+            $this->assertStringContainsString($required, $prepare['run']);
+        }
+        $this->assertLessThan(strpos($prepare['run'], 'server-verify-trust durable-workflow-server-phpunit-base'), strpos($prepare['run'], "\nfi\n"));
+        $this->assertArrayNotHasKey('if', $prepare);
+        $this->assertArrayNotHasKey('if', $execution);
+        $this->assertStringNotContainsString('cache-hit', $execution['run']);
+        $this->assertStringContainsString('composer install --no-interaction --no-progress --prefer-dist', $execution['run']);
+        $this->assertStringContainsString('vendor/bin/phpunit tests/Feature', $execution['run']);
     }
 
     public function test_preflight_validates_release_metadata_and_corpus_tools(): void
