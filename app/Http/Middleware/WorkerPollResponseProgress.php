@@ -6,6 +6,7 @@ use App\Support\LongPollResponseProgress;
 use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\AcceptHeader;
+use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Response;
 
 final class WorkerPollResponseProgress
@@ -20,7 +21,9 @@ final class WorkerPollResponseProgress
     public function handle(Request $request, Closure $next): Response
     {
         $accept = AcceptHeader::fromString(strtolower($request->headers->get('Accept', '')));
-        $transport = $accept->get(LongPollResponseProgress::MEDIA_TYPE);
+        $transport = $accept->has(LongPollResponseProgress::MEDIA_TYPE)
+            ? $accept->get(LongPollResponseProgress::MEDIA_TYPE)
+            : null;
 
         if (! $request->isMethod('POST') || ! in_array($request->path(), self::PATHS, true)
             || $transport === null || $transport->getQuality() <= 0
@@ -29,6 +32,9 @@ final class WorkerPollResponseProgress
         }
 
         $progress = app()->make(LongPollResponseProgress::class, ['request' => $request]);
+        $progress->projectResponsesUsing(
+            static fn (JsonResponse $response): JsonResponse => app(RuntimeExternalPayloadTransport::class)->projectResponse($request, $response),
+        );
         $request->attributes->set(LongPollResponseProgress::REQUEST_ATTRIBUTE, $progress);
 
         return $progress->response(static fn (): Response => $next($request));

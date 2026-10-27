@@ -43,6 +43,23 @@ class WorkerPollResponseProgressTest extends TestCase
         }
     }
 
+    #[DataProvider('wildcardPollKinds')]
+    public function test_wildcard_accept_does_not_opt_legacy_polls_into_a_progress_envelope(string $kind, string $accept): void
+    {
+        $original = new JsonResponse(['task' => ['task_id' => 'legacy-fixture'], 'poll_status' => 'leased']);
+        $response = $this->throughTransport(static fn () => $original, $accept, '/api/worker/'.$kind.'-tasks/poll');
+        $this->assertSame($original, $response);
+    }
+
+    public static function wildcardPollKinds(): iterable
+    {
+        foreach (['workflow', 'activity', 'query', 'update-validation'] as $kind) {
+            foreach (['*/*', 'application/*'] as $accept) {
+                yield $kind.'-'.$accept => [$kind, $accept];
+            }
+        }
+    }
+
     #[DataProvider('pollKinds')]
     public function test_negotiation_preserves_early_status_and_raw_json_body(string $kind): void
     {

@@ -1729,6 +1729,10 @@ def command_arguments_are_modeled(
                 not contains_shell_expansion(token) or token == "${build_args[@]}"
                 for token in tokens[1:]
             )
+        if tokens[:1] in (["load"], ["save"]):
+            # Archive arguments are data. Refuse evaluated commands inside
+            # them rather than letting a transfer hide resource creation.
+            return not shell_evaluation_fragments(raw_arguments)
         return command_matches_prefix(
             tokens,
             ("container", "kill"),

@@ -6,6 +6,26 @@ use std::borrow::Cow;
 
 use super::{Result, mysql, postgres, schema};
 
+/// Counts every durable stream item, durable stream and inbound message that
+/// holds an external payload reference. The arguments name the JSON payload
+/// and metadata columns as the backend reads them as text.
+macro_rules! stream_references {
+    ($payload:literal, $metadata:literal) => {
+        concat!(
+            "SELECT (SELECT COUNT(*) FROM workflow_durable_stream_items WHERE payload_reference IS NOT NULL OR ",
+            super::retention::reference!($payload),
+            ")+(SELECT COUNT(*) FROM workflow_durable_streams WHERE ",
+            super::retention::reference!($metadata),
+            ")+(SELECT COUNT(*) FROM workflow_inbound_stream_items WHERE ",
+            super::retention::reference!("payload_blob"),
+            ") AS n"
+        )
+    };
+}
+
+/// `STREAM_REFERENCES` for backends that store JSON as text.
+const PLAIN_STREAM_REFERENCES: &str = stream_references!("payload", "metadata");
+
 pub(super) trait Backend: Database {
     const PHP_CONNECTION: &str;
     type EncodedTime: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
@@ -94,6 +114,10 @@ pub(super) trait Backend: Database {
     // reference, which native does not settle (Server #774). PostgreSQL
     // stores these payloads as `json`, matched through its text.
     const STREAM_ITEM_REFERENCES: &str = concat!("SELECT COUNT(*) FROM workflow_durable_stream_items WHERE stream_id=$1 AND (payload_reference IS NOT NULL OR ", super::retention::reference!("payload::text"), ")");
+    // Every stream item, durable stream and inbound message that holds an
+    // external payload reference, which takeover refuses as it refuses any
+    // other external payload.
+    const STREAM_REFERENCES: &str = stream_references!("payload::text", "metadata::text");
     const RUN_STREAM_REFERENCES: &str = concat!(
         "SELECT (SELECT COUNT(*) FROM workflow_durable_stream_items WHERE workflow_run_id=$1 AND (payload_reference IS NOT NULL OR ", super::retention::reference!("payload::text"), "))",
         "+(SELECT COUNT(*) FROM workflow_durable_streams WHERE workflow_run_id=$2 AND ", super::retention::reference!("metadata::text"), ")"
@@ -217,6 +241,7 @@ ORDER BY t.available_order,t.id LIMIT 100
 "#;
     const SELECTION_RESOLUTION_SQL: &str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SelectionResolved' AND json_extract(payload,'$.selection_group_id')=$2 ORDER BY sequence LIMIT 1";
     const STREAM_ITEM_REFERENCES: &str = concat!("SELECT COUNT(*) FROM workflow_durable_stream_items WHERE stream_id=$1 AND (payload_reference IS NOT NULL OR ", super::retention::reference!("payload"), ")");
+    const STREAM_REFERENCES: &str = PLAIN_STREAM_REFERENCES;
     const RUN_STREAM_REFERENCES: &str = concat!(
         "SELECT (SELECT COUNT(*) FROM workflow_durable_stream_items WHERE workflow_run_id=$1 AND (payload_reference IS NOT NULL OR ", super::retention::reference!("payload"), "))",
         "+(SELECT COUNT(*) FROM workflow_durable_streams WHERE workflow_run_id=$2 AND ", super::retention::reference!("metadata"), ")"
@@ -477,6 +502,7 @@ impl Backend for MySql {
     const STREAM_SWEEP_BOUNDARY: &str = "SELECT `offset` FROM workflow_durable_stream_items WHERE stream_id=$1 ORDER BY `offset` LIMIT 1 OFFSET $2";
     const STREAM_SWEEP_THROUGH: &str = "DELETE FROM workflow_durable_stream_items WHERE stream_id=$1 AND `offset`<=$2";
     const STREAM_ITEM_REFERENCES: &str = concat!("SELECT COUNT(*) FROM workflow_durable_stream_items WHERE stream_id=$1 AND (payload_reference IS NOT NULL OR ", super::retention::reference!("payload"), ")");
+    const STREAM_REFERENCES: &str = PLAIN_STREAM_REFERENCES;
     const RUN_STREAM_REFERENCES: &str = concat!(
         "SELECT (SELECT COUNT(*) FROM workflow_durable_stream_items WHERE workflow_run_id=$1 AND (payload_reference IS NOT NULL OR ", super::retention::reference!("payload"), "))",
         "+(SELECT COUNT(*) FROM workflow_durable_streams WHERE workflow_run_id=$2 AND ", super::retention::reference!("metadata"), ")"

@@ -221,19 +221,9 @@ fn report(backend: &str, layout: &str, digest: &Value, inventory: &Value, conver
 /// Published PHP features native does not implement yet. A source holding any
 /// of their rows is refused, rather than taken over without them. Derived
 /// projections and PHP's own queue and poll bookkeeping are left in place.
-const UNSUPPORTED_FEATURES: [(&str, &[&str]); 3] = [
-    ("upgrade_source_runtime_credentials_unsupported", &["runtime_credentials"]),
-    (
-        "upgrade_source_message_streams_unsupported",
-        &[
-            "workflow_messages",
-            "workflow_durable_streams",
-            "workflow_durable_stream_items",
-            "workflow_inbound_streams",
-            "workflow_inbound_stream_items",
-        ],
-    ),
-    ("upgrade_source_update_validation_unsupported", &["workflow_update_validation_tasks"]),
+const UNSUPPORTED_FEATURES: [(&str, &[&str]); 1] = [
+    // Workflow-to-workflow messages, which native does not deliver yet.
+    ("upgrade_source_workflow_messages_unsupported", &["workflow_messages"]),
 ];
 
 /// Takeover needs every inspection result it relies on, and refuses what
@@ -254,6 +244,14 @@ fn qualified(inventory: &Value) -> Result<&str> {
         return Err(refuse(
             StatusCode::CONFLICT,
             "upgrade_source_external_payload_storage_unsupported",
+        ));
+    }
+    // A service call PHP 2.11.3 scheduled but has not dispatched would never
+    // run under native.
+    if inventory["service_call_dispatch_inspection"]["pending"] != 0 {
+        return Err(refuse(
+            StatusCode::CONFLICT,
+            "upgrade_source_service_call_dispatches_pending",
         ));
     }
     // A schedule native cannot run would stop firing after takeover.
@@ -289,6 +287,7 @@ fn qualified(inventory: &Value) -> Result<&str> {
         || total("unqualified_references") != 0
         || total("other_unvalidated") != 0
         || inventory["table_rows"]["runtime_external_payloads"] != 0
+        || inventory["stream_reference_inspection"]["references"] != 0
     {
         return Err(refuse(
             StatusCode::CONFLICT,
@@ -336,7 +335,7 @@ where
 fn php_incarnations(layout: &str) -> Result<bool> {
     match layout.trim_end_matches("+mariadb-driver") {
         "frozen" => Ok(false),
-        "php-2.8.0" | "php-2.9.7" | "php-2.11.1" | "php-2.11.1-from-2.9.7" => Ok(true),
+        layout if !super::layout_lineage(layout).is_empty() => Ok(true),
         _ => Err(refuse(
             StatusCode::CONFLICT,
             "upgrade_source_layout_unconverted",
@@ -358,7 +357,7 @@ where
 {
     let php_incarnations = php_incarnations(layout)?;
     let (copied, created) = adopt_incarnations::<DB>(tx, php_incarnations).await?;
-    let holders = adopt_session_holders::<DB>(tx).await?;
+    let holders = adopt_session_holders::<DB>(tx, super::has_release(layout, "php-2.11.3")).await?;
     // The frozen layout has no call deadlines; every later one does.
     let deadlines = if php_incarnations {
         DB::affected(query::<DB>(SERVICE_CALL_DEADLINES).execute(&mut *tx).await?)
@@ -375,7 +374,7 @@ where
         .execute(&mut *tx)
         .await?;
     }
-    let delivery_references = if matches!(layout, "php-2.9.7" | "php-2.11.1" | "php-2.11.1-from-2.9.7") {
+    let delivery_references = if super::has_release(layout, "php-2.9.7") {
         // PHP's own queue delivery lookup metadata; native does not use PHP's
         // queue, and the queue inspection bound every job to its task row.
         let references = count::<DB>(tx, DELIVERY_REFERENCES).await?;
@@ -386,7 +385,7 @@ where
     } else {
         0
     };
-    let observability_contexts = if matches!(layout, "php-2.11.1" | "php-2.11.1-from-2.9.7") {
+    let observability_contexts = if super::has_release(layout, "php-2.11.1") {
         // Core 2.10's trace carriers on runs, commands and tasks (decided on
         // #325). Native has no carrier; they are not business state or
         // history, and the verified backup keeps them.
@@ -401,14 +400,92 @@ where
     } else {
         0
     };
-    Ok(json!({
+    let reclaims = adopt_stream_reclaims::<DB>(tx, super::has_release(layout, "php-2.11.3")).await?;
+    let release_2113 = if super::has_release(layout, "php-2.11.3") {
+        let messages = count::<DB>(tx, FULL_FAILURE_MESSAGES).await?;
+        let dispatches = count::<DB>(tx, COMPLETED_DISPATCHES).await?;
+        sqlx::raw_sql(RELEASE_2113_SQL).execute(&mut *tx).await?;
+        json!({"full_failure_messages_removed": messages, "service_call_dispatches_removed": dispatches})
+    } else {
+        json!({})
+    };
+    let mut converted = json!({
         "incarnations_copied":copied, "incarnations_created":created,
         "session_holders_recorded":holders,
         "service_call_deadlines_copied":deadlines,
         "queue_delivery_references_removed":delivery_references,
-        "observability_contexts_removed":observability_contexts
-    }))
+        "observability_contexts_removed":observability_contexts,
+        "stream_reclaims_recorded":reclaims
+    });
+    if let (Value::Object(converted), Value::Object(release)) = (&mut converted, release_2113) {
+        converted.extend(release);
+    }
+    Ok(converted)
 }
+
+/// Native keeps each closed or errored durable stream's reclaim deadline in
+/// `dw_stream_reclaims`, which its retention pass reads. PHP 2.11.3 records it
+/// as `workflow_durable_streams.reclaim_at` (null once the stream's items are
+/// gone). Earlier releases recorded none, so the deadline is `closed_at` plus
+/// the stream's retention, an hour unless set, as 2.11.3's own migration
+/// backfills it. A repeated call records only streams not recorded yet.
+/// Returns how many it recorded.
+pub(super) async fn adopt_stream_reclaims<DB: Backend>(tx: &mut DB::Connection, recorded: bool) -> Result<usize>
+where
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+    for<'q> String: Encode<'q, DB> + Type<DB>,
+{
+    let rows = query::<DB>(if recorded {
+        "SELECT id,namespace,workflow_run_id,reclaim_at FROM workflow_durable_streams WHERE reclaim_at IS NOT NULL AND id NOT IN (SELECT stream_id FROM dw_stream_reclaims) ORDER BY id"
+    } else {
+        "SELECT id,namespace,workflow_run_id,closed_at,retention_seconds FROM workflow_durable_streams WHERE status IN ('closed','errored') AND closed_at IS NOT NULL AND id NOT IN (SELECT stream_id FROM dw_stream_reclaims) ORDER BY id"
+    })
+    .fetch_all(&mut *tx)
+    .await?;
+    for row in &rows {
+        let reclaim_at = if recorded {
+            DB::instant(row, "reclaim_at")?
+        } else {
+            DB::instant(row, "closed_at")?
+                + chrono::Duration::seconds(DB::optional_number(row, "retention_seconds")?.unwrap_or(3600))
+        };
+        query::<DB>("INSERT INTO dw_stream_reclaims(stream_id,namespace,workflow_run_id,reclaim_at) VALUES ($1,$2,$3,$4)")
+            .bind(DB::optional_integer(Some(DB::number(row, "id")?)))
+            .bind(DB::string(row, "namespace")?)
+            .bind(DB::string(row, "workflow_run_id")?)
+            .bind(DB::bind_time(reclaim_at))
+            .execute(&mut *tx)
+            .await?;
+    }
+    Ok(rows.len())
+}
+
+/// Core 2.14's full failure messages: a message beyond the old TEXT capacity,
+/// or with a NUL, keeps a labelled preview in `message` and its full bytes in
+/// `message_full`. Native has no second column; it reads the preview, as
+/// PHP's own older readers do, and retained history keeps the full failure.
+pub(super) const FULL_FAILURE_MESSAGES: &str =
+    "SELECT COUNT(*) AS n FROM workflow_failures WHERE message_full IS NOT NULL";
+
+/// Dispatches PHP 2.11.3 completed; takeover refused any still pending.
+pub(super) const COMPLETED_DISPATCHES: &str =
+    "SELECT COUNT(*) AS n FROM workflow_service_call_dispatches";
+
+/// The rest of PHP 2.11.3's additions, which native does not keep:
+/// - the service-call idempotency scope digest and its unique index, derived
+///   from the call's own target namespace, names and key;
+/// - the completed dispatch outbox;
+/// - each session's holder incarnation, copied to native's holders first;
+/// - each durable stream's reclaim deadline, which only a stream has, and
+///   takeover refuses any stream.
+const RELEASE_2113_SQL: &str = "ALTER TABLE workflow_failures DROP COLUMN message_full; \
+     DROP INDEX wf_service_calls_idem_scope_unique; \
+     ALTER TABLE workflow_service_calls DROP COLUMN idempotency_scope_hash; \
+     DROP TABLE workflow_service_call_dispatches; \
+     ALTER TABLE workflow_worker_sessions DROP COLUMN lease_owner_incarnation; \
+     DROP INDEX wf_durable_streams_ns_reclaim_idx; \
+     ALTER TABLE workflow_durable_streams DROP COLUMN reclaim_at;";
 
 /// The tables Core 2.10 gave a trace carrier, with the count of carried values.
 pub(super) const OBSERVABILITY_CONTEXTS: [(&str, &str); 3] = [
@@ -420,16 +497,26 @@ pub(super) const OBSERVABILITY_CONTEXTS: [(&str, &str); 3] = [
 const DELIVERY_REFERENCES: &str =
     "SELECT COUNT(*) AS n FROM workflow_tasks WHERE queue_delivery_reference IS NOT NULL";
 
-/// Records each active PHP worker session's holder as native records one:
-/// the lease owner's current registration incarnation, which native compares
-/// on every read. Without it native would read the session as held by a
-/// replaced registration and orphan it. Returns how many were recorded.
-pub(super) async fn adopt_session_holders<DB: Backend>(tx: &mut DB::Connection) -> Result<usize>
+/// Records each active PHP worker session's holder as native records one,
+/// which native compares on every read. Without it native would read the
+/// session as held by a replaced registration and orphan it. PHP 2.11.3
+/// records the holder itself (`lease_owner_incarnation`, the same SHA-256 of
+/// the registration token), so a session PHP already orphaned stays orphaned.
+/// Earlier releases record none: the lease owner's current registration
+/// holds it. Returns how many were recorded.
+pub(super) async fn adopt_session_holders<DB: Backend>(tx: &mut DB::Connection, recorded: bool) -> Result<usize>
 where
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
     DB::Arguments: IntoArguments<DB>,
     for<'q> String: Encode<'q, DB> + Type<DB>,
 {
+    if recorded {
+        let copied = query::<DB>("INSERT INTO dw_worker_session_holders(namespace,session_id,incarnation,updated_at) SELECT namespace,session_id,lease_owner_incarnation,$1 FROM workflow_worker_sessions WHERE status='active' AND lease_owner IS NOT NULL AND lease_owner_incarnation IS NOT NULL")
+            .bind(DB::bind_time(super::super::store::now()))
+            .execute(&mut *tx)
+            .await?;
+        return Ok(DB::affected(copied) as usize);
+    }
     // Newest active incarnation first, as native's current-token read picks.
     let rows = query::<DB>("SELECT s.namespace,s.session_id,i.token FROM workflow_worker_sessions s JOIN dw_worker_registration_incarnations i ON i.namespace=s.namespace AND i.worker_id=s.lease_owner AND i.status='active' WHERE s.status='active' AND s.lease_owner IS NOT NULL ORDER BY s.namespace,s.session_id,i.created_at DESC")
         .fetch_all(&mut *tx)

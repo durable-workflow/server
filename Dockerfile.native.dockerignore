@@ -1,0 +1,6 @@
+# The native build reads only the Rust crate: its sources, migrations,
+# recorded upgrade layouts, schema, test fixtures and vendored patches.
+*
+!rust
+rust/target
+rust/*.md

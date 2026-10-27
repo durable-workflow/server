@@ -119,6 +119,8 @@ pub(super) async fn php_source_catalog(connection: &mut PgConnection) -> Result<
             include_str!("../../upgrade/php-2.9.7/postgres.json"),
             include_str!("../../upgrade/php-2.11.1/postgres.json"),
             include_str!("../../upgrade/php-2.11.1-from-2.9.7/postgres.json"),
+            include_str!("../../upgrade/php-2.11.3/postgres.json"),
+            include_str!("../../upgrade/php-2.11.3-from-2.9.7/postgres.json"),
         ],
         |row| (row.0.clone(), row.1.clone()),
     )?;
@@ -846,6 +848,17 @@ mod tests {
     const TRACE_CARRIERS: &str = "ALTER TABLE workflow_runs ADD COLUMN observability_context json;
          ALTER TABLE workflow_commands ADD COLUMN observability_context json;
          ALTER TABLE workflow_tasks ADD COLUMN observability_context json;";
+    /// PHP 2.11.3's changes (Core 2.14.2 and Server), in its migrations' order.
+    const RELEASE_2113: &str = "ALTER TABLE workflow_failures ADD COLUMN message_full text;
+         ALTER TABLE workflow_service_calls ADD COLUMN idempotency_scope_hash character(64);
+         CREATE UNIQUE INDEX wf_service_calls_idem_scope_unique ON workflow_service_calls (idempotency_scope_hash);
+         CREATE TABLE workflow_service_call_dispatches (service_call_id varchar(26) NOT NULL, state varchar(32) NOT NULL, dispatch_options json NOT NULL, attempt integer NOT NULL DEFAULT '1', max_attempts integer NOT NULL DEFAULT '1', available_at timestamp(6) without time zone NOT NULL, claim_generation bigint NOT NULL DEFAULT '0', claim_token character(64), claimed_at timestamp(6) without time zone, claim_expires_at timestamp(6) without time zone, authorized_catalog_revision character(64), authorized_policy_revision character(64), dispatch_attempted_at timestamp(6) without time zone, repair_available_at timestamp(6) without time zone, completed_at timestamp(6) without time zone, last_error text, created_at timestamp(6) without time zone, updated_at timestamp(6) without time zone, PRIMARY KEY (service_call_id));
+         CREATE INDEX wf_service_dispatch_due_idx ON workflow_service_call_dispatches (state, available_at);
+         CREATE INDEX wf_service_dispatch_claim_idx ON workflow_service_call_dispatches (state, claim_expires_at);
+         CREATE INDEX wf_service_dispatch_repair_idx ON workflow_service_call_dispatches (state, repair_available_at);
+         ALTER TABLE workflow_worker_sessions ADD COLUMN lease_owner_incarnation character(64);
+         ALTER TABLE workflow_durable_streams ADD COLUMN reclaim_at timestamp(6) without time zone;
+         CREATE INDEX wf_durable_streams_ns_reclaim_idx ON workflow_durable_streams (namespace, reclaim_at, id);";
 
     /// The frozen PHP layout with a release's changes applied in order.
     async fn php_release(db: &Database, changes: &[&'static str]) -> PgConnection {
@@ -882,6 +895,9 @@ mod tests {
             .execute(&mut connection)
             .await
             .unwrap();
+            for statement in crate::runtime::runtime_credentials::PHP_CREDENTIAL_ROWS {
+                sqlx::raw_sql(statement).execute(&mut connection).await.unwrap();
+            }
             connection.close().await.unwrap();
             let fingerprint = backup_fingerprint(&db).await;
             let report = takeover::take_over_postgres(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES)
@@ -902,6 +918,56 @@ mod tests {
             let carriers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND column_name IN ('observability_context','queue_delivery_reference')")
                 .fetch_one(&mut connection).await.unwrap();
             assert_eq!(carriers, 0, "{release}: the PHP-only columns are gone");
+            connection.close().await.unwrap();
+            let storage = PostgresStorage::open(db.options.clone()).await.unwrap();
+            storage.close().await;
+            PostgresStorage::check(db.options.clone()).await.unwrap();
+            let runtime = crate::runtime::Runtime::open_postgres(db.options.clone(), "test-token".into()).await.unwrap();
+            crate::runtime::runtime_credentials::assert_php_credentials_served(&runtime).await;
+            runtime.close().await;
+            db.remove().await;
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable PostgreSQL; run the qualification_ tests explicitly"]
+    async fn qualification_takeover_converts_php_2113_and_native_opens_it() {
+        for (release, changes) in [
+            ("php-2.11.3", [PHP_280_CHANGES, TRACE_CARRIERS, QUEUE_DELIVERY, RELEASE_2113]),
+            ("php-2.11.3-from-2.9.7", [PHP_280_CHANGES, QUEUE_DELIVERY, TRACE_CARRIERS, RELEASE_2113]),
+        ] {
+            let db = Database::new().await;
+            let mut connection = php_release(&db, &changes).await;
+            let recorded = super::super::worker_sessions::incarnation_digest("0123456789abcdef0123456789abcdef");
+            for statement in [
+                "INSERT INTO workflow_worker_registrations(worker_id,namespace,task_queue,runtime,registration_token,created_at,updated_at) VALUES ('current','default','q','php','0123456789abcdef0123456789abcdef','2026-10-20 09:00:00','2026-10-20 09:00:00')".to_owned(),
+                "INSERT INTO workflow_worker_registration_incarnations VALUES ('0123456789abcdef0123456789abcdef','default','current','active',0,NULL,'2026-10-20 09:00:00','2026-10-20 09:00:00')".to_owned(),
+                format!("INSERT INTO workflow_worker_sessions(namespace,session_id,queue,status,lease_owner,lease_owner_incarnation,lease_expires_at,ttl_expires_at,created_at,updated_at) VALUES ('default','held','q','active','current','{recorded}','2030-01-01 00:00:00','2030-01-01 00:00:00','2026-10-20 09:00:00','2026-10-20 09:00:00')"),
+                "INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,exception_class,message,file,message_full,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kfail','01jrun0000000000000000000a','activity_execution','a','activity','RuntimeException','preview','','base64:ZnVsbA==','2026-10-26 10:00:00','2026-10-26 10:00:00')".to_owned(),
+                "INSERT INTO workflow_service_calls(id,namespace,endpoint_name,service_name,operation_name,caller_namespace,target_namespace,status,outcome,operation_mode,idempotency_key,idempotency_scope_hash,accepted_at,completed_at,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kcall','default','pay','billing','charge','default','default','completed','succeeded','async','order-1','0000000000000000000000000000000000000000000000000000000000000001','2026-10-26 10:00:00','2026-10-26 10:00:01','2026-10-26 10:00:00','2026-10-26 10:00:01')".to_owned(),
+                "INSERT INTO workflow_service_call_dispatches(service_call_id,state,dispatch_options,available_at,completed_at,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kcall','completed','{}','2026-10-26 10:00:00','2026-10-26 10:00:01','2026-10-26 10:00:00','2026-10-26 10:00:01')".to_owned(),
+            ] {
+                sqlx::raw_sql(sqlx::AssertSqlSafe(statement)).execute(&mut connection).await.unwrap();
+            }
+            connection.close().await.unwrap();
+            let fingerprint = backup_fingerprint(&db).await;
+            let report = takeover::take_over_postgres(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES)
+                .await
+                .unwrap();
+            assert_eq!(report["status"], "taken_over", "{report}");
+            assert_eq!(report["source_layout"], release);
+            assert_eq!(report["converted"]["session_holders_recorded"], 1, "{report}");
+            assert_eq!(report["converted"]["full_failure_messages_removed"], 1, "{report}");
+            assert_eq!(report["converted"]["service_call_dispatches_removed"], 1, "{report}");
+            let mut connection = db.connection().await;
+            let holder: String = sqlx::query_scalar("SELECT incarnation FROM dw_worker_session_holders WHERE namespace='default' AND session_id='held'")
+                .fetch_one(&mut connection).await.unwrap();
+            assert_eq!(holder, recorded);
+            let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND (table_name,column_name) IN (('workflow_failures','message_full'),('workflow_service_calls','idempotency_scope_hash'),('workflow_worker_sessions','lease_owner_incarnation'),('workflow_durable_streams','reclaim_at'))")
+                .fetch_one(&mut connection).await.unwrap();
+            let dispatches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='workflow_service_call_dispatches'")
+                .fetch_one(&mut connection).await.unwrap();
+            assert_eq!((left, dispatches), (0, 0), "{release}: PHP 2.11.3's additions are gone");
             connection.close().await.unwrap();
             let storage = PostgresStorage::open(db.options.clone()).await.unwrap();
             storage.close().await;

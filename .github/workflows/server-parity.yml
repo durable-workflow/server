@@ -11,6 +11,8 @@ on:
       - scripts/conformance/server-parity*
       - scripts/conformance/server-parity/**
       - scripts/ci/pull-images.sh
+      - scripts/ci/patched-pip.sh
+      - scripts/ci/sdk-adapter-cache-key.sh
       - tests/Fixtures/ServerParity/**
       - tests/Fixtures/ServerParityBaselines/**
       - tests/Fixtures/ServerParityNormalization/**
@@ -67,6 +69,7 @@ on:
       - tests/Unit/ServerParityUpdateValidationRetryTest.mjs
       - tests/Unit/ServerParityKilledAuthorPollTest.mjs
       - tests/Unit/ServerParityImagePullTest.mjs
+      - tests/Unit/ServerParityAdapterCacheTest.mjs
       - tests/Unit/ServerParityMessageStreamsContractTest.mjs
       - tests/Unit/ServerParityWorkflowStreamWritesContractTest.mjs
       - tests/Unit/ServerParityWaitingHistoryContractTest.mjs
@@ -142,6 +145,24 @@ jobs:
             mirror.gcr.io/library/rust@sha256:300ec56abce8cc9448ddea2172747d048ed902a3090e6b57babb2bf19f754081 \
             mirror.gcr.io/library/python@sha256:bf44cdfcb76cd3b41e879bc058fc37ec5872002ccfde7fcb765e218cde0cd79c \
             "$(baseline php-2.11.1)"
+      # The adapters' pinned, --locked dependencies build the same way every
+      # run. Restore their public Cargo registry data and build tree, keyed
+      # by the toolchain image, the runner and every tracked adapter input.
+      # Only successful pushes to main save them, so no pull request or merge
+      # group writes what a later run reads. Every run still builds, stamps
+      # and hashes its own adapters, and the final adapters are never cached.
+      - name: Key the adapters' Cargo cache by every tracked adapter input
+        id: adapter_key
+        run: bash scripts/ci/sdk-adapter-cache-key.sh
+      - name: Restore the adapters' Cargo registry and build tree
+        id: adapter_cargo
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            sdk-cargo/registry
+            sdk-cargo/git
+            sdk-target
+          key: ${{ steps.adapter_key.outputs.key }}
       - name: Build the locked published SDK adapter once
         run: bash scripts/conformance/server-parity/published-sdk-patch-adapters.sh
       - name: Build genuine legacy-marker adapters with the existing cache
@@ -156,6 +177,15 @@ jobs:
         run: bash scripts/conformance/server-parity/corrected-marker-adapters.sh
       - name: Build the separate current query consumers once
         run: bash scripts/conformance/server-parity/query-authority-adapters.sh
+      - name: Save the adapters' Cargo registry and build tree from main
+        if: ${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.adapter_cargo.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            sdk-cargo/registry
+            sdk-cargo/git
+            sdk-target
+          key: ${{ steps.adapter_key.outputs.key }}
       - name: Share current query consumers without compiler caches
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -493,8 +523,8 @@ jobs:
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
             "$layout" artisan server:bootstrap --force > parity-evidence/published-bootstrap.txt
-          # Compiling the library tests with two jobs peaks near 4.2 GB; a 4 GB limit OOM-killed rustc (exit 101).
-          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --cpus=2 --memory=6g --memory-swap=6g \
+          # Compiling the test targets with two jobs peaked at 6.8 GB cold (cgroup memory.peak, October 27); a 6 GB limit OOM-killed rustc (signal 9, PR #801).
+          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --cpus=2 --memory=8g --memory-swap=8g \
             -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 -e DW_PARITY_PART -e DW_EXECUTION_SHARDS \
             -e DW_TEST_MYSQL_URL=mysql://root:parity-disposable-password@parity-mysql:3306/php_ref \
             -e DW_EXECUTION_MYSQL_URL=mysql://root:parity-disposable-password@parity-mysql:3306/php_ref \
@@ -867,6 +897,22 @@ jobs:
           DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.1
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:bf8bed13f5f809ee3425233180a581353eac4683adbee5c4ecbf63bb18bbd102
         run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh mysql
+      - name: Back up, take over and resume a published PHP 2.11.3 upgrade source
+        if: ${{ matrix.part == 'cohorts' }}
+        timeout-minutes: 8
+        env:
+          DW_PARITY_UPGRADE_LABEL: php2113
+          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.3
+          DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:923a8924ecad13485562d7af30dc87d7fd6d9d7d4758ec8113bac0766fa8603e
+        run: bash scripts/conformance/server-parity/upgrade-source-profile.sh mysql
+      - name: Retire PHP 2.11.3 upgrade source cohort
+        if: ${{ always() && matrix.part == 'cohorts' }}
+        timeout-minutes: 3
+        env:
+          DW_PARITY_UPGRADE_LABEL: php2113
+          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.3
+          DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:923a8924ecad13485562d7af30dc87d7fd6d9d7d4758ec8113bac0766fa8603e
+        run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh mysql
       - name: Start the native node the corrected marker cohort uses
         id: prepare_corrected
         if: ${{ matrix.part == 'corrected-markers' }}
@@ -1137,8 +1183,8 @@ jobs:
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
             "$layout" artisan server:bootstrap --force > parity-evidence/published-bootstrap.txt
-          # Compiling the library tests with two jobs peaks near 4.2 GB; a 4 GB limit OOM-killed rustc (exit 101).
-          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --cpus=2 --memory=6g --memory-swap=6g \
+          # Compiling the test targets with two jobs peaked at 6.8 GB cold (cgroup memory.peak, October 27); a 6 GB limit OOM-killed rustc (signal 9, PR #801).
+          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --cpus=2 --memory=8g --memory-swap=8g \
             -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 -e DW_PARITY_PART \
             -e DW_TEST_POSTGRES_URL=postgres://parity:parity-disposable-password@parity-pg:5432/php_ref \
             -e DW_EXECUTION_POSTGRES_URL=postgres://parity:parity-disposable-password@parity-pg:5432/php_ref \
@@ -1517,6 +1563,22 @@ jobs:
           DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.1
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:bf8bed13f5f809ee3425233180a581353eac4683adbee5c4ecbf63bb18bbd102
         run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh pgsql
+      - name: Back up, take over and resume a published PHP 2.11.3 upgrade source
+        if: ${{ matrix.part == 'cohorts' }}
+        timeout-minutes: 8
+        env:
+          DW_PARITY_UPGRADE_LABEL: php2113
+          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.3
+          DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:923a8924ecad13485562d7af30dc87d7fd6d9d7d4758ec8113bac0766fa8603e
+        run: bash scripts/conformance/server-parity/upgrade-source-profile.sh pgsql
+      - name: Retire PHP 2.11.3 upgrade source cohort
+        if: ${{ always() && matrix.part == 'cohorts' }}
+        timeout-minutes: 3
+        env:
+          DW_PARITY_UPGRADE_LABEL: php2113
+          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.3
+          DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:923a8924ecad13485562d7af30dc87d7fd6d9d7d4758ec8113bac0766fa8603e
+        run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh pgsql
       - name: Start the native node the corrected marker cohort uses
         id: prepare_corrected
         if: ${{ matrix.part == 'corrected-markers' }}
@@ -1800,8 +1862,8 @@ jobs:
           }
           trap rust_test_failures ERR
           mkdir -p cargo-home rust-target parity-evidence
-          # Compiling the library tests with two jobs peaks near 4.2 GB; a 4 GB limit OOM-killed rustc (exit 101).
-          docker run --rm --user="$(id -u):$(id -g)" --cpus=2 --memory=6g --memory-swap=6g \
+          # Compiling the test targets with two jobs peaked at 6.8 GB cold (cgroup memory.peak, October 27); a 6 GB limit OOM-killed rustc (signal 9, PR #801).
+          docker run --rm --user="$(id -u):$(id -g)" --cpus=2 --memory=8g --memory-swap=8g \
             -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
             -e DW_UPGRADE_TEST_WRITABLE=/evidence -e DW_UPGRADE_TEST_READONLY=/source/parity-evidence \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
@@ -1841,7 +1903,7 @@ jobs:
           bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
-            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParitySdkDirectionLanesTest.mjs tests/Unit/ServerParityCodecDeadlineCellsTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityFailureLocationTest.mjs tests/Unit/ServerParityFailureExcerptTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs tests/Unit/ServerParityRecordLocalActivityContractTest.mjs tests/Unit/ServerParityActivityCancellationAckContractTest.mjs tests/Unit/ServerParityServiceCatalogContractTest.mjs tests/Unit/ServerParityServiceEndpointsContractTest.mjs tests/Unit/ServerParityServiceCallsContractTest.mjs tests/Unit/ServerParityWorkflowImportContractTest.mjs tests/Unit/ServerParityWaterlineImportContractTest.mjs tests/Unit/ServerParitySystemMetricsContractTest.mjs tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs tests/Unit/ServerParityPrometheusMetricsContractTest.mjs tests/Unit/ServerParityPayloadCleanupContractTest.mjs tests/Unit/ServerParityRepairPassContractTest.mjs tests/Unit/ServerParityClusterInfoContractTest.mjs tests/Unit/ServerParityNamespaceDeleteContractTest.mjs tests/Unit/ServerParityMessageStreamsContractTest.mjs tests/Unit/ServerParityCancellationScopesContractTest.mjs tests/Unit/ServerParityWorkflowPollRequestContractTest.mjs tests/Unit/ServerParityUpdateValidationContractTest.mjs tests/Unit/ServerParityFixtureSelectionTest.mjs tests/Unit/ServerParityUpdateValidationRetryTest.mjs tests/Unit/ServerParityKilledAuthorPollTest.mjs tests/Unit/ServerParityImagePullTest.mjs tests/Unit/ServerParityWorkerSessionsContractTest.mjs tests/Unit/ServerParityWorkerSessionActivitiesContractTest.mjs tests/Unit/ServerParityNexusOperationsContractTest.mjs tests/Unit/ServerParityBridgeAdaptersContractTest.mjs tests/Unit/ServerParityWorkflowStreamWritesContractTest.mjs > parity-evidence/comparator-tests.txt
+            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParitySdkDirectionLanesTest.mjs tests/Unit/ServerParityCodecDeadlineCellsTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityFailureLocationTest.mjs tests/Unit/ServerParityFailureExcerptTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs tests/Unit/ServerParityRecordLocalActivityContractTest.mjs tests/Unit/ServerParityActivityCancellationAckContractTest.mjs tests/Unit/ServerParityServiceCatalogContractTest.mjs tests/Unit/ServerParityServiceEndpointsContractTest.mjs tests/Unit/ServerParityServiceCallsContractTest.mjs tests/Unit/ServerParityWorkflowImportContractTest.mjs tests/Unit/ServerParityWaterlineImportContractTest.mjs tests/Unit/ServerParitySystemMetricsContractTest.mjs tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs tests/Unit/ServerParityPrometheusMetricsContractTest.mjs tests/Unit/ServerParityPayloadCleanupContractTest.mjs tests/Unit/ServerParityRepairPassContractTest.mjs tests/Unit/ServerParityClusterInfoContractTest.mjs tests/Unit/ServerParityNamespaceDeleteContractTest.mjs tests/Unit/ServerParityMessageStreamsContractTest.mjs tests/Unit/ServerParityCancellationScopesContractTest.mjs tests/Unit/ServerParityWorkflowPollRequestContractTest.mjs tests/Unit/ServerParityUpdateValidationContractTest.mjs tests/Unit/ServerParityFixtureSelectionTest.mjs tests/Unit/ServerParityUpdateValidationRetryTest.mjs tests/Unit/ServerParityKilledAuthorPollTest.mjs tests/Unit/ServerParityImagePullTest.mjs tests/Unit/ServerParityAdapterCacheTest.mjs tests/Unit/ServerParityWorkerSessionsContractTest.mjs tests/Unit/ServerParityWorkerSessionActivitiesContractTest.mjs tests/Unit/ServerParityNexusOperationsContractTest.mjs tests/Unit/ServerParityBridgeAdaptersContractTest.mjs tests/Unit/ServerParityWorkflowStreamWritesContractTest.mjs > parity-evidence/comparator-tests.txt
           docker run --rm --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
             --network=none --entrypoint node -v "$PWD:/source:ro" -w /source \
             "$image" --test tests/Unit/ServerParityCodecDeadlineLoadTest.mjs > parity-evidence/codec-load-tests.txt
@@ -2181,6 +2243,24 @@ jobs:
           DW_PARITY_UPGRADE_LABEL: php2111
           DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.1
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:bf8bed13f5f809ee3425233180a581353eac4683adbee5c4ecbf63bb18bbd102
+        run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh sqlite
+      - name: Back up, take over and resume a published PHP 2.11.3 upgrade source
+        if: ${{ matrix.part == 'cohorts' }}
+        timeout-minutes: 8
+        env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          DW_PARITY_UPGRADE_LABEL: php2113
+          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.3
+          DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:923a8924ecad13485562d7af30dc87d7fd6d9d7d4758ec8113bac0766fa8603e
+        run: bash scripts/conformance/server-parity/upgrade-source-profile.sh sqlite
+      - name: Retire PHP 2.11.3 upgrade source cohort
+        if: ${{ always() && matrix.part == 'cohorts' }}
+        timeout-minutes: 3
+        env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          DW_PARITY_UPGRADE_LABEL: php2113
+          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.3
+          DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:923a8924ecad13485562d7af30dc87d7fd6d9d7d4758ec8113bac0766fa8603e
         run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh sqlite
       - name: Start the native node the corrected marker cohort uses
         id: prepare_corrected
