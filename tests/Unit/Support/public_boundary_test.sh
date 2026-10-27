@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-scanner="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/scripts/check-public-boundary.sh}"
+repository="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+scanner="${1:-$repository/scripts/check-public-boundary.sh}"
 sandbox="$(mktemp -d)"
 trap 'rm -r "$sandbox"' EXIT
 
@@ -43,5 +44,35 @@ check 1 invalid-range 'unavailable-ref..HEAD'
 check 1 invalid-selected-commit '-1 unavailable-ref'
 check 1 empty-range 'HEAD..HEAD'
 check 1 original-empty-manual-range "..$forbidden"
+
+# The old tip remains fetchable but is no longer advertised after a force push.
+# Its shared ancestor has forbidden metadata that is outside the push range.
+git switch --quiet -c old-tip
+git commit --quiet --allow-empty -m 'Old branch tip'
+old_tip="$(git rev-parse HEAD)"
+git switch --quiet main
+git commit --quiet --allow-empty -m 'First introduced commit'
+git commit --quiet --allow-empty -m 'Second introduced commit'
+new_tip="$(git rev-parse HEAD)"
+git clone --quiet --bare . "$sandbox/remote.git"
+git --git-dir="$sandbox/remote.git" update-ref -d refs/heads/old-tip
+git --git-dir="$sandbox/remote.git" config uploadpack.allowAnySHA1InWant true
+git clone --quiet --no-local --single-branch --branch main "file://$sandbox/remote.git" "$sandbox/push"
+cd "$sandbox/push"
+if git cat-file -e "$old_tip^{commit}" 2>/dev/null; then
+  printf 'FAIL divergent-push: old tip was already present\n' >&2
+  exit 1
+fi
+
+# Execute the workflow's actual fetch command with the fixture event SHA.
+fetch_command="$(sed -n 's/^[[:space:]]*\(git fetch --no-tags .*\)$/\1/p' "$repository/.github/workflows/public-boundary.yml")"
+before_expression='${{ github.event.before }}'
+fetch_command="${fetch_command//"$before_expression"/$old_tip}"
+bash -c "$fetch_command" > "$sandbox/fetch-output" 2>&1
+check 0 divergent-push "$old_tip..$new_tip"
+if [[ "$(git rev-list --count "$old_tip..$new_tip")" != 2 ]]; then
+  printf 'FAIL divergent-push: range includes commits outside this push\n' >&2
+  exit 1
+fi
 
 printf 'Public boundary metadata cases passed.\n'

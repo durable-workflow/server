@@ -34,7 +34,7 @@ jobs:
             range="-1 ${{ github.sha }}"
           else
             if ! git cat-file -e '${{ github.event.before }}^{commit}' 2>/dev/null; then
-              git fetch --no-tags --depth=1 origin '${{ github.event.before }}'
+              git fetch --no-tags origin '${{ github.event.before }}'
             fi
             range="${{ github.event.before }}..${{ github.sha }}"
           fi
