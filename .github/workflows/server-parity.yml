@@ -886,7 +886,7 @@ jobs:
         timeout-minutes: 8
         env:
           DW_PARITY_UPGRADE_LABEL: php2111
-          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.3
+          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.1
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:bf8bed13f5f809ee3425233180a581353eac4683adbee5c4ecbf63bb18bbd102
         run: bash scripts/conformance/server-parity/upgrade-source-profile.sh mysql
       - name: Retire PHP 2.11.1 upgrade source cohort
@@ -894,7 +894,7 @@ jobs:
         timeout-minutes: 3
         env:
           DW_PARITY_UPGRADE_LABEL: php2111
-          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.3
+          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.1
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:bf8bed13f5f809ee3425233180a581353eac4683adbee5c4ecbf63bb18bbd102
         run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh mysql
       - name: Back up, take over and resume a published PHP 2.11.3 upgrade source
@@ -1552,7 +1552,7 @@ jobs:
         timeout-minutes: 8
         env:
           DW_PARITY_UPGRADE_LABEL: php2111
-          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.3
+          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.1
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:bf8bed13f5f809ee3425233180a581353eac4683adbee5c4ecbf63bb18bbd102
         run: bash scripts/conformance/server-parity/upgrade-source-profile.sh pgsql
       - name: Retire PHP 2.11.1 upgrade source cohort
@@ -1560,7 +1560,7 @@ jobs:
         timeout-minutes: 3
         env:
           DW_PARITY_UPGRADE_LABEL: php2111
-          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.3
+          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.1
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:bf8bed13f5f809ee3425233180a581353eac4683adbee5c4ecbf63bb18bbd102
         run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh pgsql
       - name: Back up, take over and resume a published PHP 2.11.3 upgrade source
@@ -2232,7 +2232,7 @@ jobs:
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           DW_PARITY_UPGRADE_LABEL: php2111
-          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.3
+          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.1
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:bf8bed13f5f809ee3425233180a581353eac4683adbee5c4ecbf63bb18bbd102
         run: bash scripts/conformance/server-parity/upgrade-source-profile.sh sqlite
       - name: Retire PHP 2.11.1 upgrade source cohort
@@ -2241,7 +2241,7 @@ jobs:
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           DW_PARITY_UPGRADE_LABEL: php2111
-          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.3
+          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.1
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:bf8bed13f5f809ee3425233180a581353eac4683adbee5c4ecbf63bb18bbd102
         run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh sqlite
       - name: Back up, take over and resume a published PHP 2.11.3 upgrade source
