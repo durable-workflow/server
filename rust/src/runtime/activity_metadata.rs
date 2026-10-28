@@ -168,7 +168,19 @@ fn group(entry: &Value) -> Option<Value> {
     Some(result)
 }
 
-fn path(value: &Value) -> Vec<Value> {
+/// `ParallelChildGroup::payloadForPath(metadataPathFromPayload($payload))`:
+/// the innermost group's fields and the whole normalized path, or nothing.
+pub(super) fn payload_for_path(payload: &Value) -> serde_json::Map<String, Value> {
+    let path = path(payload);
+    let Some(Value::Object(innermost)) = path.last().cloned() else {
+        return serde_json::Map::new();
+    };
+    let mut metadata = innermost;
+    metadata.insert("parallel_group_path".into(), Value::Array(path));
+    metadata
+}
+
+pub(super) fn path(value: &Value) -> Vec<Value> {
     let entries: Vec<_> = match value["parallel_group_path"].as_array() {
         Some(entries) => entries.iter().filter_map(group).collect(),
         None => value["parallel_group_path"]

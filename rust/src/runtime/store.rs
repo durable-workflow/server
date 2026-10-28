@@ -92,9 +92,45 @@ pub(super) struct SignalWrite<'a> {
 /// The runtime-owned message-stream delivery signal (`WorkflowStub::MESSAGE_STREAM_RUNTIME_SIGNAL`).
 const MESSAGE_STREAM_SIGNAL: &str = super::message_streams::INTERNAL_SIGNAL;
 pub(super) const TASK_CANDIDATES_SQL: &str = "SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ORDER BY t.priority,t.available_at,t.id LIMIT 100";
+/// A signal record's place in `PendingMessageTask::signalFollows`: its
+/// command sequence (unsequenced last), receipt and creation times, id.
+struct SignalOrder {
+    sequence: Option<i64>,
+    received_at: Option<DateTime<Utc>>,
+    created_at: Option<DateTime<Utc>>,
+    id: String,
+}
+
+impl SignalOrder {
+    fn read<DB: Backend>(row: &DB::Row) -> Result<Self> {
+        Ok(Self {
+            sequence: DB::optional_number(row, "command_sequence")?,
+            received_at: DB::optional_instant(row, "received_at")?,
+            created_at: DB::optional_instant(row, "created_at")?,
+            id: DB::string(row, "id")?,
+        })
+    }
+
+    fn follows(&self, attempted: &Self) -> bool {
+        if self.sequence != attempted.sequence {
+            return match (self.sequence, attempted.sequence) {
+                (None, _) => true,
+                (_, None) => false,
+                (Some(candidate), Some(attempted)) => candidate > attempted,
+            };
+        }
+        for (candidate, attempted) in [(self.received_at, attempted.received_at), (self.created_at, attempted.created_at)] {
+            if candidate != attempted {
+                return candidate.is_some_and(|candidate| attempted.is_none_or(|attempted| candidate > attempted));
+            }
+        }
+        self.id > attempted.id
+    }
+}
+
 /// `nextEligibleSignal`: a run's received signals in PHP's order: command
 /// sequence (unsequenced last), receipt time, then id.
-const RECEIVED_SIGNALS: &str = "SELECT id,signal_name,signal_wait_id,command_sequence,workflow_command_id FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received' AND closed_at IS NULL ORDER BY CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END,command_sequence,received_at,id LIMIT 100";
+const RECEIVED_SIGNALS: &str = "SELECT id,signal_name,signal_wait_id,command_sequence,workflow_command_id,received_at,created_at FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received' AND closed_at IS NULL ORDER BY CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END,command_sequence,received_at,id LIMIT 100";
 
 pub(super) const POLL_RECEIPT_CLEANUP_SQL: &str = "DELETE FROM dw_poll_receipts WHERE expires_at<=$1 AND task_id IN (SELECT id FROM workflow_tasks WHERE status!='leased' OR lease_expires_at<=$2)";
 pub(super) const WORKER_REGISTRATION_SQL: &str = "INSERT INTO workflow_worker_registrations(namespace,worker_id,task_queue,runtime,sdk_version,build_id,supported_workflow_types,supported_activity_types,capabilities,capability_manifest,last_heartbeat_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(worker_id,namespace) DO UPDATE SET task_queue=excluded.task_queue,runtime=excluded.runtime,sdk_version=excluded.sdk_version,build_id=excluded.build_id,supported_workflow_types=excluded.supported_workflow_types,supported_activity_types=excluded.supported_activity_types,capabilities=excluded.capabilities,capability_manifest=excluded.capability_manifest,last_heartbeat_at=excluded.last_heartbeat_at,updated_at=excluded.updated_at";
@@ -1321,13 +1357,7 @@ where
         include_received: bool,
     ) -> bool {
         waits.advanceable_condition()
-            || signal_wait_id.is_some_and(|signal_wait_id| {
-                waits.current_signals().any(|wait| {
-                    wait.name == name
-                        && wait.id == signal_wait_id
-                        && (include_received || wait.status == super::wait_history::SignalStatus::Open)
-                })
-            })
+            || signal_wait_id.is_some_and(|signal_wait_id| waits.signal_advanceable(name, signal_wait_id, include_received))
             || declared.is_some_and(|names| names.iter().any(|declared| declared == name))
     }
 
@@ -1348,42 +1378,45 @@ where
         run_id: &str,
         applied: Option<&str>,
     ) -> Result<bool> {
-        let (waits, declared) = Self::signal_delivery(tx, run_id).await?;
-        let after = match applied {
-            Some(signal) => Self::query("SELECT command_sequence FROM workflow_signal_records WHERE id=$1 AND workflow_run_id=$2")
+        Ok(Self::next_eligible_signal(tx, run_id, applied, false).await?.is_some())
+    }
+
+    /// `PendingMessageTask::nextEligibleSignal`: the first received signal,
+    /// in Core's order, that can advance the run. With the signal a task
+    /// just attempted, only one that follows it (`signalFollows`); none
+    /// otherwise, so a signal the task left received is not offered again.
+    async fn next_eligible_signal(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        attempted: Option<&str>,
+        include_received: bool,
+    ) -> Result<Option<DB::Row>> {
+        let signals = Self::query(RECEIVED_SIGNALS).bind(run_id).fetch_all(&mut **tx).await?;
+        if signals.is_empty() {
+            return Ok(None);
+        }
+        let attempted = match attempted {
+            Some(signal) => Self::query("SELECT id,command_sequence,received_at,created_at FROM workflow_signal_records WHERE id=$1 AND workflow_run_id=$2")
                 .bind(signal).bind(run_id).fetch_optional(&mut **tx).await?
-                .map(|row| DB::optional_number(&row, "command_sequence").map(|sequence| (sequence, signal.to_owned())))
-                .transpose()?,
+                .map(|row| SignalOrder::read::<DB>(&row)).transpose()?,
             None => None,
         };
-        let signals = Self::query(RECEIVED_SIGNALS).bind(run_id).fetch_all(&mut **tx).await?;
+        let (waits, declared) = Self::signal_delivery(tx, run_id).await?;
         for signal in signals {
             if !Self::signal_can_advance(
                 &waits,
                 declared.as_deref(),
                 &DB::string(&signal, "signal_name")?,
                 DB::optional_string(&signal, "signal_wait_id")?.as_deref(),
-                false,
+                include_received,
             ) {
                 continue;
             }
-            // `signalFollows`: a later command sequence, an unsequenced
-            // signal after a sequenced one, then the identifier order.
-            if let Some((applied_sequence, applied_id)) = &after {
-                let sequence = DB::optional_number(&signal, "command_sequence")?;
-                let follows = match (sequence, applied_sequence) {
-                    (Some(sequence), Some(applied)) if sequence != *applied => sequence > *applied,
-                    (None, Some(_)) => true,
-                    (Some(_), None) => false,
-                    _ => DB::string(&signal, "id")?.as_str() > applied_id.as_str(),
-                };
-                if !follows {
-                    continue;
-                }
+            if attempted.as_ref().is_none_or(|attempted| SignalOrder::read::<DB>(&signal).is_ok_and(|order| order.follows(attempted))) {
+                return Ok(Some(signal));
             }
-            return Ok(true);
         }
-        Ok(false)
+        Ok(None)
     }
 
     /// `PendingMessageTask::createForRun`: while the run has no open
@@ -1395,7 +1428,7 @@ where
         queue: &str,
         include_received: bool,
     ) -> Result<()> {
-        Self::next_message_task(tx, run_id, queue, include_received).await.map(drop)
+        Self::next_message_task(tx, run_id, queue, None, include_received).await.map(drop)
     }
 
     /// `PendingMessageTask::createForRun`: the run's next update or signal
@@ -1405,6 +1438,7 @@ where
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
         queue: &str,
+        attempted: Option<&str>,
         include_received: bool,
     ) -> Result<Option<String>> {
         let status = Self::query("SELECT status FROM workflow_runs WHERE id=$1")
@@ -1448,16 +1482,14 @@ where
             .await?;
             return Ok(Some(task_id));
         }
-        let (waits, declared) = Self::signal_delivery(tx, run_id).await?;
-        let signals = Self::query(RECEIVED_SIGNALS).bind(run_id).fetch_all(&mut **tx).await?;
-        for signal in signals {
+        let Some(signal) = Self::next_eligible_signal(tx, run_id, attempted, include_received).await? else {
+            return Ok(None);
+        };
+        {
             let name = DB::string(&signal, "signal_name")?;
             // A signal recorded without a wait id (an imported one) keeps
             // none, as `WorkflowTaskPayload::forSignal` omits a null field.
             let signal_wait_id = DB::optional_string(&signal, "signal_wait_id")?;
-            if !Self::signal_can_advance(&waits, declared.as_deref(), &name, signal_wait_id.as_deref(), include_received) {
-                continue;
-            }
             // `WorkflowTaskPayload::forSignal`.
             let signal_id = DB::string(&signal, "id")?;
             let mut payload = json!({"workflow_wait_kind":"signal",
@@ -1468,9 +1500,8 @@ where
                 payload["signal_wait_id"] = json!(signal_wait_id);
             }
             let task_id = Self::create_task(tx, run_id, queue, "workflow", payload).await?;
-            return Ok(Some(task_id));
+            Ok(Some(task_id))
         }
-        Ok(None)
     }
 
     /// `recordAppliedSignalForSignalResume`: a signal-resumed task applies
@@ -1486,6 +1517,7 @@ where
         task: &DB::Row,
         transition_codec: Arc<Semaphore>,
         checkpoint: bool,
+        commands: &[Value],
     ) -> Result<()> {
         let payload = DB::document_row(task, "payload")?;
         if payload["resume_source_kind"] != "workflow_signal" {
@@ -1511,15 +1543,16 @@ where
         // buffered (`signal-command:`) before any wait took its identity is
         // delivered to the latest wait of its name still open, and keeps that
         // identity (`openWaitIdForName`).
-        let mut opening = wait_id.as_deref().and_then(|id| waits.opening(&name, id));
+        let recorded_wait_id = wait_id.clone();
+        let mut opening = wait_id.as_deref().and_then(|id| waits.signal_opening(&name, id));
         if opening.is_none()
             && wait_id.as_deref().is_some_and(|id| id.starts_with("signal-command:"))
             && let Some(active) = waits.latest_open_signal(&name)
         {
-            opening = waits.opening(&name, &active.id);
+            opening = waits.signal_opening(&name, &active.id);
             wait_id = Some(active.id.clone());
         }
-        let sequence = opening.flatten();
+        let sequence = opening.and_then(|opening| opening.sequence);
         // A declared signal applies without a sequence
         // (`UnprojectedSignalDelivery`); a wait a cancellation scope cancelled
         // keeps its received signal (`ScopedWaitCancellation::cancelled`).
@@ -1567,8 +1600,11 @@ where
                 .bind(DB::string(&signal, "workflow_instance_id")?)
                 .execute(&mut **tx)
                 .await?;
+            // Application keeps the identity it applied under; a condition
+            // wait consuming the signal leaves its identity as it was.
+            let stored_wait_id = if applies { wait_id.as_deref() } else { recorded_wait_id.as_deref() };
             Self::query("UPDATE workflow_signal_records SET status='applied',signal_wait_id=$1,workflow_sequence=$2,applied_at=$3,closed_at=$4 WHERE id=$5")
-                .bind(wait_id.as_deref()).bind(DB::optional_integer(record_sequence)).bind(DB::bind_time(applied_at))
+                .bind(stored_wait_id).bind(DB::optional_integer(record_sequence)).bind(DB::bind_time(applied_at))
                 .bind(DB::bind_time(applied_at)).bind(signal_id).execute(&mut **tx).await?;
             let run = Self::query(
                 "SELECT workflow_instance_id,message_cursor_position FROM workflow_runs WHERE id=$1",
@@ -1601,16 +1637,67 @@ where
                 if let Some(sequence) = sequence {
                     applied["sequence"] = json!(sequence);
                 }
+                // The opening's parallel group (`payloadForPath`), then the
+                // selection winner the application decides.
+                let group = opening.map(|opening| super::activity_metadata::payload_for_path(&opening.payload)).unwrap_or_default();
+                applied.as_object_mut().unwrap().extend(group.clone());
                 Self::append(tx, run_id, "SignalApplied", applied, Some(task_id), Some(&command_id)).await?;
+                if let Some(id) = wait_id.as_deref() {
+                    Self::claim_wait_selection(tx, run_id, &group, "signal", id, "SignalApplied").await?;
+                }
             }
         }
         if let Some(condition) = condition {
-            Self::append(tx, run_id, "ConditionWaitSatisfied", condition.satisfied(&payload), Some(task_id), None).await?;
+            let condition_opening = waits.condition_opening(&condition.id);
+            let satisfied = condition.satisfied(condition_opening, &payload);
+            Self::append(tx, run_id, "ConditionWaitSatisfied", satisfied.clone(), Some(task_id), None).await?;
+            // A task that reopens the same occurrence claims no winner.
+            let reopened = condition.occurrence().is_some_and(|occurrence| commands.iter().any(|command| {
+                command["type"] == "open_condition_wait" && command["condition_wait_occurrence_id"] == occurrence
+            }));
+            if !reopened {
+                let group = condition_opening.map(|opening| super::activity_metadata::payload_for_path(&opening.payload)).unwrap_or_default();
+                Self::claim_wait_selection(tx, run_id, &group, "condition", &condition.id, "ConditionWaitSatisfied").await?;
+            }
             if let Some(sequence) = condition.sequence {
                 Self::cancel_wait_timeout(tx, run_id, &json!({"sequence":sequence,"condition_wait_id":condition.id}), task_id, now()).await?;
             }
         }
         Ok(())
+    }
+
+    /// `ParallelChildGroup::claimSelectionWinner` for a wait member: the
+    /// first member of a selection to resolve wins it (`SelectionResolved`).
+    /// Native serves a selection directly over its waits; one nested in
+    /// another group, or with a member wider than one sequence, stays an
+    /// explicit unqualified shape rather than a silent divergence.
+    async fn claim_wait_selection(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        group: &serde_json::Map<String, Value>,
+        kind: &str,
+        identity: &str,
+        event_type: &str,
+    ) -> Result<()> {
+        let path = group.get("parallel_group_path").and_then(Value::as_array).cloned().unwrap_or_default();
+        if !path.iter().any(super::selections::is_selection) {
+            return Ok(());
+        }
+        let unqualified = || refuse(StatusCode::UNPROCESSABLE_ENTITY, "development_selection_shape_unqualified");
+        let [member] = path.as_slice() else { return Err(unqualified()) };
+        let index = member["parallel_group_index"].as_i64().ok_or_else(unqualified)?;
+        let base = member["parallel_group_base_sequence"].as_i64().ok_or_else(unqualified)?;
+        let mut metadata = member.clone();
+        if metadata["selection_member_size"].as_i64().unwrap_or(1) != 1 || metadata["selection_member_kind"] != kind {
+            return Err(unqualified());
+        }
+        if metadata.get("selection_member_base_sequence").is_none() {
+            metadata["selection_member_base_sequence"] = json!(base + index);
+        }
+        if metadata.get("selection_member_index").is_none() {
+            metadata["selection_member_index"] = json!(index);
+        }
+        Self::resolve_selection(tx, run_id, &metadata, kind, identity, event_type).await
     }
 
     pub(crate) async fn register(
@@ -2653,7 +2740,7 @@ where
         }
         // `acknowledgeWorkflowTaskWaitingForHistory` completes a signal task
         // through the bridge, which records its signal as applied.
-        Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec, false).await?;
+        Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec, false, &[]).await?;
         payload["waiting_for_history_acknowledged"] = json!(true);
         tx.summary_changed(&run_id);
         payload["waiting_for_history_message"] = json!(message);
@@ -3023,7 +3110,7 @@ where
         let mut sequence = Self::authored_sequence(&mut tx, &run_id).await?;
         // The tasks this batch's commands create, in order, as PHP reports them.
         let mut created = Vec::new();
-        Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec, false).await?;
+        Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec, false, commands).await?;
         // Published parseCommands applies every other command first, whatever
         // the terminal command's position in the batch.
         let apply = Apply {
@@ -3132,7 +3219,10 @@ where
         }
         // PHP reports the run's next message task with the tasks the
         // commands created.
-        if let Some(next) = Self::next_message_task(&mut tx, &run_id, &DB::string(&run, "queue")?, false).await? {
+        // `createForRun($run, workflowSignalIdForTask($task), false)`.
+        let attempted = task_payload["workflow_signal_id"].as_str().or_else(|| task_payload["resume_source_id"].as_str())
+            .filter(|signal| !signal.is_empty());
+        if let Some(next) = Self::next_message_task(&mut tx, &run_id, &DB::string(&run, "queue")?, attempted, false).await? {
             created.push(next);
         }
         Self::record_completion(&mut tx, task_id, &json!({COMPLETION_RECEIPT: {"request": body, "created_task_ids": created}})).await?;
