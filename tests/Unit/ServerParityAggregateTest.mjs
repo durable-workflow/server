@@ -9,6 +9,7 @@ import {execFileSync, spawnSync} from 'node:child_process';
 import {copyFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
+import {pathToFileURL} from 'node:url';
 import {matchingFiles, nulSeparatedPaths, patternRegExp, pushPathPatterns} from '../../scripts/conformance/server-parity/changes.mjs';
 import {decide} from '../../scripts/conformance/server-parity/aggregate.mjs';
 
@@ -263,7 +264,7 @@ test('pull request classification runs every fixture when HEAD is not that pull 
   }
 });
 
-for (const event of ['push', 'merge_group', 'workflow_dispatch', '']) {
+for (const event of ['push', 'workflow_dispatch', '']) {
   test(`${event || 'an unnamed event'} runs every fixture job`, () => {
     const {root, head} = pullRequest(({write}) => write('docs/note.md', 'x\n'));
     try {
@@ -273,3 +274,170 @@ for (const event of ['push', 'merge_group', 'workflow_dispatch', '']) {
     }
   });
 }
+
+// A checked-out merge-group candidate and an independently readable main ref.
+// The local origin models GitHub without network access or another checkout.
+function mergeGroup(change, {nativePredecessor = false} = {}) {
+  const {root} = pullRequest(change);
+  const git = (...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args],
+    {cwd: root, encoding: 'utf8'}).trim();
+  const base = git('rev-parse', 'HEAD^1');
+  const firstGroup = git('rev-parse', 'HEAD');
+  let predecessor;
+  if (nativePredecessor) {
+    git('checkout', '-q', '-b', 'queued-native', base);
+    mkdirSync(join(root, 'rust'), {recursive: true});
+    writeFileSync(join(root, 'rust/queued.rs'), 'native predecessor\n');
+    git('add', 'rust');
+    git('commit', '-q', '-m', 'queued native change');
+    predecessor = git('rev-parse', 'HEAD');
+    git('merge', '-q', '--no-ff', '-m', 'combined queue group', firstGroup);
+  }
+  const groupHead = git('rev-parse', 'HEAD');
+  git('checkout', '-q', '--detach');
+  git('update-ref', 'refs/heads/main', base);
+  git('remote', 'add', 'origin', root);
+  return {root, base, groupHead, predecessor, git};
+}
+
+function groupEvent(group, overrides = {}) {
+  return {EVENT_NAME: 'merge_group', MERGE_GROUP_BASE_REF: 'refs/heads/main',
+    MERGE_GROUP_BASE_SHA: group.base, MERGE_GROUP_HEAD_SHA: group.groupHead, ...overrides};
+}
+
+test('the workflow supplies the merge-group identity to the classifier', () => {
+  const changes = jobs(workflowText).changes;
+  for (const [name, field] of [['BASE_REF', 'base_ref'], ['BASE_SHA', 'base_sha'], ['HEAD_SHA', 'head_sha']]) {
+    assert.ok(changes.includes(`MERGE_GROUP_${name}: \${{ github.event.merge_group.${field} }}`));
+  }
+});
+
+for (const [label, change, expected] of [
+  ['PHP-only changes skip the fixtures', ({write}) => write('app/Controller.php', '<?php\n'), 'run=false'],
+  ['documentation-only changes skip the fixtures', ({write}) => write('docs/note.md', 'x\n'), 'run=false'],
+  ['native changes run the fixtures', ({write}) => write('rust/src/lib.rs', 'x\n'), 'run=true'],
+  ['shared fixtures run the fixtures', ({write}) => write('tests/Fixtures/ServerParity/new.json', '{}\n'), 'run=true'],
+  ['moving a fixture out runs the fixtures', ({root, write}) => {
+    write('docs/.keep', '');
+    renameSync(join(root, 'tests/Fixtures/ServerParity/case.json'), join(root, 'docs/case.json'));
+  }, 'run=true'],
+  ['unclassifiable file names run the fixtures', ({root}) => {
+    mkdirSync(join(root, 'docs'), {recursive: true});
+    writeFileSync(Buffer.concat([Buffer.from(join(root, 'docs/')), Buffer.from([0xff])]), 'x\n');
+  }, 'run=true'],
+]) {
+  test(`merge group classification: ${label}`, () => {
+    const group = mergeGroup(change);
+    try {
+      assert.equal(classify(group.root, groupEvent(group)), expected);
+    } finally {
+      rmSync(group.root, {recursive: true, force: true});
+    }
+  });
+}
+
+for (const [label, overrides] of [
+  ['missing metadata', {MERGE_GROUP_BASE_SHA: '', MERGE_GROUP_HEAD_SHA: '', MERGE_GROUP_BASE_REF: ''}],
+  ['a missing base', {MERGE_GROUP_BASE_SHA: ''}],
+  ['a missing head', {MERGE_GROUP_HEAD_SHA: ''}],
+  ['a different target branch', {MERGE_GROUP_BASE_REF: 'refs/heads/other'}],
+  ['a mismatched checkout', {MERGE_GROUP_HEAD_SHA: '0'.repeat(40)}],
+  ['an unavailable base object', {MERGE_GROUP_BASE_SHA: '0'.repeat(40)}],
+  ['a Git option in place of an object identity', {MERGE_GROUP_BASE_SHA: '--output=/tmp/not-an-object'}],
+]) {
+  test(`merge group classification runs all fixtures with ${label}`, () => {
+    const group = mergeGroup(({write}) => write('app/Controller.php', '<?php\n'));
+    try {
+      assert.equal(classify(group.root, groupEvent(group, overrides)), 'run=true');
+    } finally {
+      rmSync(group.root, {recursive: true, force: true});
+    }
+  });
+}
+
+for (const precedingBase of [false, true]) {
+  test(`a PHP tail cannot hide a queued native predecessor (predecessor as base: ${precedingBase})`, () => {
+    const group = mergeGroup(({write}) => write('app/Controller.php', '<?php\n'), {nativePredecessor: true});
+    try {
+      const event = groupEvent(group, precedingBase ? {MERGE_GROUP_BASE_SHA: group.predecessor} : {});
+      assert.equal(classify(group.root, event), 'run=true');
+    } finally {
+      rmSync(group.root, {recursive: true, force: true});
+    }
+  });
+}
+
+test('a group runs all fixtures when main cannot be verified', () => {
+  const group = mergeGroup(({write}) => write('app/Controller.php', '<?php\n'));
+  try {
+    group.git('remote', 'remove', 'origin');
+    assert.equal(classify(group.root, groupEvent(group)), 'run=true');
+  } finally {
+    rmSync(group.root, {recursive: true, force: true});
+  }
+});
+
+test('an unavailable main retains full qualification without logging remote details', () => {
+  const group = mergeGroup(({write}) => write('app/Controller.php', '<?php\n'));
+  try {
+    group.git('remote', 'set-url', 'origin', join(group.root, 'private-remote-marker/missing.git'));
+    const outcome = spawnSync('bash', [classifierWrapper],
+      {cwd: group.root, env: {...process.env, ...groupEvent(group)}, encoding: 'utf8'});
+    assert.equal(outcome.status, 0, outcome.stderr);
+    assert.equal(outcome.stdout.trim(), 'run=true');
+    assert.doesNotMatch(outcome.stderr, /private-remote-marker/);
+  } finally {
+    rmSync(group.root, {recursive: true, force: true});
+  }
+});
+
+test('a group runs all fixtures if main has advanced since the event', () => {
+  const group = mergeGroup(({write}) => write('app/Controller.php', '<?php\n'));
+  try {
+    group.git('checkout', '-q', 'main');
+    writeFileSync(join(group.root, 'MOVED.md'), 'main advanced\n');
+    group.git('add', 'MOVED.md');
+    group.git('commit', '-q', '-m', 'advance main');
+    group.git('checkout', '-q', '--detach', group.groupHead);
+    assert.equal(classify(group.root, groupEvent(group)), 'run=true');
+  } finally {
+    rmSync(group.root, {recursive: true, force: true});
+  }
+});
+
+test('a base equal to the checked-out head is not a verifiable merge group', () => {
+  const group = mergeGroup(({write}) => write('app/Controller.php', '<?php\n'));
+  try {
+    group.git('update-ref', 'refs/heads/main', group.groupHead);
+    assert.equal(classify(group.root, groupEvent(group, {MERGE_GROUP_BASE_SHA: group.groupHead})), 'run=true');
+  } finally {
+    rmSync(group.root, {recursive: true, force: true});
+  }
+});
+
+test('a current main that is not an ancestor of the candidate retains full qualification', () => {
+  const group = mergeGroup(({write}) => write('app/Controller.php', '<?php\n'));
+  try {
+    group.git('checkout', '-q', 'main');
+    writeFileSync(join(group.root, 'SIDE.md'), 'main advanced separately\n');
+    group.git('add', 'SIDE.md');
+    group.git('commit', '-q', '-m', 'diverging main');
+    const base = group.git('rev-parse', 'HEAD');
+    group.git('checkout', '-q', '--detach', group.groupHead);
+    assert.equal(classify(group.root, groupEvent(group, {MERGE_GROUP_BASE_SHA: base})), 'run=true');
+  } finally {
+    rmSync(group.root, {recursive: true, force: true});
+  }
+});
+
+test('a shallow checkout without its base retains full qualification', () => {
+  const group = mergeGroup(({write}) => write('app/Controller.php', '<?php\n'));
+  try {
+    group.git('branch', 'queue-candidate', group.groupHead);
+    const shallow = join(group.root, 'shallow');
+    group.git('clone', '-q', '--depth', '1', '--branch', 'queue-candidate', pathToFileURL(group.root).href, shallow);
+    assert.equal(classify(shallow, groupEvent(group)), 'run=true');
+  } finally {
+    rmSync(group.root, {recursive: true, force: true});
+  }
+});
