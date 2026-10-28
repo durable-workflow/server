@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
+import {existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {summarizeEvidence} from '../../scripts/conformance/server-parity/artifact-summary.mjs';
@@ -175,4 +175,18 @@ test('a tail-only test report also keeps its failing tests', t => {
   assert.equal(existsSync(join(output, 'rust-tests.txt.failures.txt')), false, 'a passing report has no failures file');
   assert.equal(readFileSync(join(output, 'codec-load-tests.txt'), 'utf8'), small);
   assert.equal(existsSync(join(output, 'codec-load-tests.txt.failures.txt')), false, 'a whole report needs no excerpt');
+});
+
+test('a failure excerpt is derived output and is read in bounded chunks', t => {
+  const {source, output} = fixture(t);
+  const failure = 'not ok 7 - early λ failure\n  ---\n  error: boom\n  ...\n';
+  const report = join(source, 'comparator-tests.txt');
+  writeFileSync(report, failure);
+  // A sparse 256 MiB report: the scan must stream it, not load it whole.
+  truncateSync(report, 256 * 1024 * 1024);
+  const summary = summarizeEvidence(source, output, {outcome: 'failure'});
+  assert.equal(readFileSync(join(output, 'comparator-tests.txt.failures.txt'), 'utf8'), failure);
+  assert.deepEqual([summary.scanned_files, summary.retained.length, summary.omitted_files], [1, 2, 0],
+    'derived output does not count against source omission');
+  assert.equal(summary.retained.find(file => file.derived_from).failures, 1);
 });

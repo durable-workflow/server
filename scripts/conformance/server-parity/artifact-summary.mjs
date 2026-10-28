@@ -1,6 +1,7 @@
-import {constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, closeSync, writeFileSync} from 'node:fs';
+import {constants, existsSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, closeSync, writeFileSync} from 'node:fs';
 import {basename, dirname, join, relative, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
+import {StringDecoder} from 'node:string_decoder';
 
 const FILE_LIMIT = 64 * 1024;
 const CONTENT_LIMIT = 2 * 1024 * 1024;
@@ -26,22 +27,56 @@ const TEST_SUMMARY = /^(rust|mysql|postgres|comparator|codec-load|artifact-summa
 
 // A node:test (TAP) report's failing tests: each `not ok` line with its
 // indented YAML diagnostic block, ending at the block's `...` line. A large
-// report keeps only its tail, which can miss a failure reported early.
-export function tapFailures(text) {
-  const lines = text.split('\n');
-  const blocks = [];
-  for (let index = 0; index < lines.length; index++) {
-    const match = /^(\s*)not ok \d+ /.exec(lines[index]);
-    if (!match) continue;
-    const block = [lines[index]];
-    const end = `${match[1]}  ...`;
-    for (let next = index + 1; next < lines.length && next <= index + 200; next++) {
-      block.push(lines[next]);
-      if (lines[next] === end) break;
+// report keeps only its tail, which can miss a failure reported early. The
+// report is read in fixed chunks, one bounded line at a time: memory stays
+// within `limit` plus one chunk and one line, whatever the report's size.
+// Failures past the excerpt limit are still counted.
+const SCAN_CHUNK = 64 * 1024;
+const LINE_LIMIT = 8 * 1024;
+const BLOCK_LINES = 200;
+
+export function scanTapFailures(path, limit) {
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const chunk = Buffer.alloc(SCAN_CHUNK);
+  const decoder = new StringDecoder('utf8');
+  const kept = [];
+  let keptBytes = 0;
+  let count = 0;
+  let pending = '';
+  let block = null;
+  const keep = text => {
+    const size = Buffer.byteLength(text) + 1;
+    if (keptBytes + size > limit) return;
+    kept.push(text);
+    keptBytes += size;
+  };
+  const line = text => {
+    if (block !== null) {
+      if (block.lines < BLOCK_LINES) {
+        keep(text);
+        block.lines++;
+      }
+      if (text === block.end || block.lines >= BLOCK_LINES) block = null;
+      return;
     }
-    blocks.push(block.join('\n'));
-  }
-  return blocks;
+    const match = /^(\s*)not ok \d+ /.exec(text);
+    if (match) {
+      count++;
+      keep(text);
+      block = {end: `${match[1]}  ...`, lines: 1};
+    }
+  };
+  try {
+    let read;
+    while ((read = readSync(descriptor, chunk, 0, SCAN_CHUNK, null)) > 0) {
+      const parts = (pending + decoder.write(chunk.subarray(0, read))).split('\n');
+      pending = parts.pop().slice(0, LINE_LIMIT);
+      for (const part of parts) line(part.slice(0, LINE_LIMIT));
+    }
+    pending = (pending + decoder.end()).slice(0, LINE_LIMIT);
+    if (pending !== '') line(pending);
+  } finally { closeSync(descriptor); }
+  return {text: kept.length > 0 ? `${kept.join('\n')}\n` : '', count};
 }
 
 function inventory(root, path = root, files = []) {
@@ -94,14 +129,14 @@ export function summarizeEvidence(source, destination, {outcome = 'unknown', rev
     bytes += size;
     // A tail-only test report also keeps its failing tests, bounded.
     if (size < file.source_bytes && TEST_SUMMARY.test(basename(file.path)) && retained.length < ENTRY_LIMIT) {
-      const failures = tapFailures(readFileSync(join(source, file.path), 'utf8'));
-      if (failures.length > 0) {
-        const excerpt = Buffer.from(`${failures.join('\n')}\n`).subarray(0, Math.min(FILE_LIMIT, CONTENT_LIMIT - bytes));
+      const failures = scanTapFailures(join(source, file.path), Math.min(FILE_LIMIT, CONTENT_LIMIT - bytes));
+      if (failures.count > 0) {
+        const excerpt = Buffer.from(failures.text);
         if (excerpt.length > 0) {
           const path = `${file.path}.failures.txt`;
           writeFileSync(join(destination, path), excerpt);
           retained.push({path, source_bytes: file.source_bytes, retained_bytes: excerpt.length, tail_only: false,
-            derived_from: file.path, failures: failures.length});
+            derived_from: file.path, failures: failures.count});
           bytes += excerpt.length;
         }
       }
@@ -111,7 +146,7 @@ export function summarizeEvidence(source, destination, {outcome = 'unknown', rev
     schema: 'durable-workflow.server-parity-artifact-summary.v1', outcome, revision,
     scanned_files: files.length, scanned_bytes: files.reduce((sum, file) => sum + file.source_bytes, 0),
     retained_bytes: bytes, retained,
-    omitted_files: files.length - retained.length,
+    omitted_files: files.length - retained.filter(file => file.derived_from === undefined).length,
     limits: {file_bytes: FILE_LIMIT, content_bytes: CONTENT_LIMIT, entries: ENTRY_LIMIT,
       excluded_directories: ['vendor', 'node_modules', 'target', '.git', 'objects']},
     scope: 'Test summaries and bounded diagnostic tails only. Raw records, HTTP journals, databases and payload bytes are not retained. This summary does not rerun or qualify assertions.',
