@@ -89,6 +89,15 @@ test('literal native inputs and parity imports are covered by the shared input l
   assert.deepEqual(uncovered, [], `Native inputs absent from the shared path list: ${uncovered.join(', ')}`);
 });
 
+test('literal workflow helper invocations are covered by input selection', () => {
+  const patterns = pushPathPatterns(workflowText);
+  const commands = workflowText.split('\n').filter(line => !line.trimStart().startsWith('#')).join('\n');
+  const scripts = [...commands.matchAll(/\b(?:bash|sh|php|node|python[0-9.]*)\s+(scripts\/[A-Za-z0-9_./-]+)/g)]
+    .map(match => match[1]);
+  assert.ok(scripts.length > 0);
+  assert.deepEqual([...new Set(scripts)].filter(path => matchingFiles(patterns, [path]).length === 0), []);
+});
+
 test('path patterns accept no regular-expression syntax and match every other character literally', () => {
   for (const pattern of ['rust\\**', 'rust/\\d', 'a+b', 'a?b', 'a(b)', 'a[b]', 'a|b', 'a^b', 'a$b', 'a{1}', 'docs/{a,b}/**', 'a b', '']) {
     assert.throws(() => patternRegExp(pattern), /Unsupported path filter pattern/, JSON.stringify(pattern));
@@ -230,6 +239,7 @@ function pullRequest(change) {
   mkdirSync(join(root, dirname(classifierWrapper)), {recursive: true});
   for (const file of [classifierWrapper, 'scripts/conformance/server-parity/changes.mjs']) copyFileSync(file, join(root, file));
   write('README.md', 'base\n');
+  write('config/dw-contract.php', '<?php\nreturn [];\n');
   write('tests/Fixtures/ServerParity/case.json', '{}\n');
   git('add', '-A');
   git('commit', '-q', '-m', 'base');
@@ -256,6 +266,8 @@ function classify(root, env) {
 for (const [label, change, expected] of [
   ['a documentation-only change skips the fixtures', ({write}) => write('docs/note.md', 'x\n'), 'run=false'],
   ['a Rust change runs the fixtures', ({write}) => write('rust/src/lib.rs', 'x\n'), 'run=true'],
+  ['a configuration-audit contract edit runs the fixtures', ({write}) =>
+    write('config/dw-contract.php', "<?php\nreturn ['fixture.option' => ['env' => 'FIXTURE_OPTION']];\n"), 'run=true'],
   ['a Rust file whose name holds a newline runs the fixtures', ({write}) => write('rust/hidden\nfixture.rs', 'x\n'), 'run=true'],
   ['a Rust file whose name holds a tab runs the fixtures', ({write}) => write('rust/hidden\tfixture.rs', 'x\n'), 'run=true'],
   ['a fixture whose name holds a newline runs the fixtures', ({write}) => write('tests/Fixtures/ServerParity/a\nb.json', '{}\n'), 'run=true'],
