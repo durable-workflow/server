@@ -643,3 +643,211 @@ async fn a_closed_received_signal_does_not_buffer_the_next_one() {
     assert!(!opened.as_str().unwrap().starts_with("signal-command:"), "the closed record lends no identity: {opened}");
     assert_eq!(ids(&history, "SignalReceived")[1], opened, "the second signal reserves the open wait");
 }
+
+/// One text column of one stored row, read straight from the database.
+async fn stored_text(database: &TestDatabase, query: &str) -> Option<String> {
+    let query = sqlx::AssertSqlSafe(query.to_owned());
+    match database {
+        TestDatabase::Sqlite(dir) => {
+            let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", dir.path().join("runtime.sqlite").display())).await.unwrap();
+            let value = sqlx::query_scalar(query).fetch_one(&pool).await.unwrap();
+            pool.close().await;
+            value
+        }
+        TestDatabase::Postgres { options, .. } => {
+            let pool = sqlx::postgres::PgPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap();
+            let value = sqlx::query_scalar(query).fetch_one(&pool).await.unwrap();
+            pool.close().await;
+            value
+        }
+        TestDatabase::MySql { options, .. } => {
+            let pool = sqlx::mysql::MySqlPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap();
+            let value = sqlx::query_scalar(query).fetch_one(&pool).await.unwrap();
+            pool.close().await;
+            value
+        }
+    }
+}
+
+// Core's completion offers the next message after the signal the task just
+// attempted (`createForRun($run, workflowSignalIdForTask($task), false)`).
+// A declared signal whose wait a cancellation scope cancelled stays
+// received when its task completes; it is not offered again, so the run
+// does not loop on it.
+#[tokio::test]
+async fn a_completed_signal_task_does_not_reoffer_its_own_signal() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register_declared(&app, "reoffer-worker", &["go"]).await;
+    let run = start(&app, "reoffer").await;
+    let task = poll(&app, "reoffer-worker", "workflow").await;
+    let (status, body) = finish_task(&app, &task, json!([{"type":"open_signal_wait","signal_name":"go"}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    signal(&app, "reoffer", "go").await;
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    let wait = ids(&history, "SignalWaitOpened")[0].clone();
+    append_event(&database, &run, "SignalWaitCancelled", json!({"signal_name":"go","signal_wait_id":wait,"sequence":1})).await;
+    let delivered = poll(&app, "reoffer-worker", "workflow").await;
+    assert_eq!(delivered["signal_wait_id"], wait, "{delivered}");
+    let (status, body) = finish_task(&app, &delivered, json!([{"type":"open_signal_wait","signal_name":"other"}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["created_task_ids"], json!([]), "{body}");
+    assert!(poll(&app, "reoffer-worker", "workflow").await.is_null());
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    assert!(events(&history, "SignalApplied").is_empty(), "the cancelled wait keeps its signal received");
+    runtime.close().await;
+    database.remove().await;
+}
+
+// The same rule when the completion itself opens a condition wait the
+// unapplied signal could satisfy: Core does not offer that signal back to
+// the completion that left it (an undeclared one, held by a wait a
+// cancellation scope cancelled).
+#[tokio::test]
+async fn a_signal_task_that_opens_a_condition_wait_is_not_handed_its_signal_again() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "again-worker", json!(["echo"]), json!([])).await;
+    let run = start(&app, "again").await;
+    let task = poll(&app, "again-worker", "workflow").await;
+    let (status, body) = finish_task(&app, &task, json!([{"type":"open_signal_wait","signal_name":"x"}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    signal(&app, "again", "x").await;
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    let wait = ids(&history, "SignalWaitOpened")[0].clone();
+    append_event(&database, &run, "SignalWaitCancelled", json!({"signal_name":"x","signal_wait_id":wait,"sequence":1})).await;
+    let delivered = poll(&app, "again-worker", "workflow").await;
+    assert_eq!(delivered["signal_name"], "x", "{delivered}");
+    let (status, body) = finish_task(&app, &delivered, json!([{"type":"open_condition_wait","condition_key":"again"}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["created_task_ids"], json!([]), "{body}");
+    assert!(poll(&app, "again-worker", "workflow").await.is_null());
+    runtime.close().await;
+    database.remove().await;
+}
+
+fn select_member(base: i64, index: i64, key: &str, kind: &str) -> Value {
+    json!({"parallel_group_id":format!("select-calls:{base}:2"),"parallel_group_kind":"mixed","parallel_group_mode":"select",
+        "parallel_group_base_sequence":base,"parallel_group_size":2,"parallel_group_index":index,"selection_member_key":key,
+        "selection_member_index":index,"selection_member_base_sequence":base + index,"selection_member_size":1,
+        "selection_member_kind":kind})
+}
+
+// Native does not open waits as members of a parallel group: it refuses
+// the batch with its explicit unqualified-shape answer, where published
+// 2.11.5 accepts it.
+#[tokio::test]
+async fn opening_waits_as_selection_members_is_explicitly_unqualified() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "select-open-worker", json!(["echo"]), json!([])).await;
+    start(&app, "select-open").await;
+    let task = poll(&app, "select-open-worker", "workflow").await;
+    let member = |index: i64, key: &str| {
+        let mut command = select_member(1, index, key, "signal");
+        command["type"] = json!("open_signal_wait");
+        command["signal_name"] = json!(key);
+        command["parallel_group_path"] = json!([select_member(1, index, key, "signal")]);
+        command
+    };
+    let (status, body) = finish_task(&app, &task, json!([member(0, "a"), member(1, "b")])).await;
+    assert_eq!((status, body["reason"].clone()), (StatusCode::UNPROCESSABLE_ENTITY, json!("development_selection_shape_unqualified")), "{body}");
+    runtime.close().await;
+    database.remove().await;
+}
+
+// Published 2.11.5, recorded in a lab: a signal applied to a wait that is a
+// selection member carries the member's parallel group, and the first
+// member to resolve wins the selection (`SelectionResolved`, identified by
+// its wait). The losing wait stays open and takes its own signal. Native
+// serves this for waits a taken-over PHP history opened.
+#[tokio::test]
+async fn a_signal_applied_to_a_selection_member_wins_the_selection() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "select-worker", json!(["echo"]), json!([])).await;
+    let run = start(&app, "select-waits").await;
+    let task = poll(&app, "select-worker", "workflow").await;
+    let (status, body) = finish_task(&app, &task, json!([timer()])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    for (index, key) in [(0, "a"), (1, "b")] {
+        let mut opened = select_member(2, index, key, "signal");
+        opened["parallel_group_path"] = json!([select_member(2, index, key, "signal")]);
+        opened["signal_name"] = json!(key);
+        opened["signal_wait_id"] = json!(format!("wait-{key}"));
+        opened["sequence"] = json!(2 + index);
+        append_event(&database, &run, "SignalWaitOpened", opened).await;
+    }
+    signal(&app, "select-waits", "b").await;
+    let delivered = poll(&app, "select-worker", "workflow").await;
+    assert_eq!(delivered["signal_wait_id"], "wait-b", "{delivered}");
+    let (status, body) = finish_task(&app, &delivered, json!([timer()])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    let order = kinds(&history);
+    let applied_at = order.iter().position(|kind| kind == "SignalApplied").unwrap();
+    assert_eq!(order[applied_at + 1], "SelectionResolved", "{order:?}");
+    let applied = &events(&history, "SignalApplied")[0]["payload"];
+    let mut leaf = select_member(2, 1, "b", "signal");
+    for (key, value) in leaf.as_object().unwrap() {
+        assert_eq!(&applied[key], value, "{key}: {applied}");
+    }
+    leaf = select_member(2, 1, "b", "signal");
+    assert_eq!(applied["parallel_group_path"], json!([leaf]), "{applied}");
+    let resolved = &events(&history, "SelectionResolved")[0]["payload"];
+    for (key, value) in [("selection_group_id", json!("select-calls:2:2")), ("selection_group_base_sequence", json!(2)),
+        ("selection_group_size", json!(2)), ("member_key", json!("b")), ("member_index", json!(1)),
+        ("member_base_sequence", json!(3)), ("member_size", json!(1)), ("operation_kind", json!("signal")),
+        ("operation_identity", json!("wait-b")), ("outcome", json!("completed")), ("resolution_event_type", json!("SignalApplied"))] {
+        assert_eq!(resolved[key], value, "{key}: {resolved}");
+    }
+    signal(&app, "select-waits", "a").await;
+    let loser = poll(&app, "select-worker", "workflow").await;
+    assert_eq!(loser["signal_wait_id"], "wait-a", "the losing wait stays open: {loser}");
+    runtime.close().await;
+    database.remove().await;
+}
+
+// `markConditionWaitSignalConsumed` leaves the signal's identity as it
+// was: only an application persists an identity the signal was rebound to.
+#[tokio::test]
+async fn a_condition_consuming_a_signal_keeps_its_recorded_identity() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "consume-worker", json!(["echo"]), json!([])).await;
+    let run = start(&app, "consume-identity").await;
+    let task = poll(&app, "consume-worker", "workflow").await;
+    signal(&app, "consume-identity", "go").await;
+    let (status, body) = finish_task(&app, &task, json!([
+        {"type":"open_signal_wait","signal_name":"go"},
+        {"type":"open_condition_wait","condition_key":"ready"},
+    ])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let buffered = ids(&run_history(&app, &run["workflow_id"], &run["run_id"]).await, "SignalReceived")[0].clone();
+    // The wait reads as an older history wrote it, with no id: Core knows it
+    // as `signal:1:go`, so applying rebinds the buffered signal to that
+    // identity, finds no opening that names it and leaves the condition
+    // wait to consume the signal.
+    let strip = match &database {
+        TestDatabase::Sqlite(_) => "json_remove(payload,'$.signal_wait_id')",
+        TestDatabase::Postgres { .. } => "(payload::jsonb - 'signal_wait_id')::json",
+        TestDatabase::MySql { .. } => "JSON_REMOVE(payload,'$.signal_wait_id')",
+    };
+    database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_history_events SET payload={strip} WHERE event_type='SignalWaitOpened'"))).await;
+    let delivered = poll(&app, "consume-worker", "workflow").await;
+    assert_eq!(delivered["signal_wait_id"], buffered, "{delivered}");
+    let (status, body) = finish_task(&app, &delivered, json!([timer()])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    assert!(events(&history, "SignalApplied").is_empty(), "{:?}", kinds(&history));
+    assert_eq!(events(&history, "ConditionWaitSatisfied")[0]["payload"]["signal_wait_id"], buffered);
+    let stored = stored_text(&database, "SELECT signal_wait_id FROM workflow_signal_records").await;
+    assert_eq!(stored.as_deref(), buffered.as_str());
+    runtime.close().await;
+    database.remove().await;
+}
