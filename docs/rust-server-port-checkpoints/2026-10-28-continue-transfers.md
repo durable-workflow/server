@@ -60,6 +60,17 @@
     (the stored query rows are unchanged)
   - `a_live_query_survives_continuation_and_is_answered_from_the_predecessor`,
     which replaces the old refusal and deadline test.
+- **Closing a continued run.** The native image corpus found that native
+  refused to cancel or terminate any continued run
+  (`422 termination_propagation_not_available`). It counted the
+  `continue_as_new` link from the predecessor as an unsupported incoming
+  link. PHP's close resolves only `child_workflow` parents (`WorkflowStub`),
+  and the fixture terminates each successor with 200. Native now ignores
+  that link on close.
+  `a_continued_child_terminates_and_resolves_its_parent_like_php` covers a
+  continued child: its parent records `ChildRunTerminated` for run 2 and
+  resumes. A `redrive` link still makes native refuse; PHP ignores it too,
+  but no fixture records that yet.
 - **Takeover.** Nothing new to carry. A PHP database may hold calls whose
   caller is a continued run, and native leaves them as PHP does. Open
   `workflow_run`-bound linked calls are still refused at takeover.
