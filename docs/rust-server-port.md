@@ -496,9 +496,11 @@ contract fixture before its correction.
   the predecessor is still leased and answered from its history. The
   `continue-transfers` fixture records both against published 2.11.5, and
   `continue_as_new_transfer_unqualified` is gone. HTTP cancel and terminate
-  and parent-close policies now share one rule. A continued or redriven
-  run, and a run with a live query, closes as in PHP. Native used to refuse
-  (`..._propagation_not_available`), or record `ParentClosePolicyFailed`
+  and parent-close policies now share one rule, which reads no links and no
+  queries. A continued, redriven or imported-linked run, a run with a live
+  query, and a child that continued after its parent closed now close as in
+  PHP. Native used to refuse (`..._propagation_not_available`,
+  `child_call_mismatch`), or record `ParentClosePolicyFailed`
   ([checkpoint](rust-server-port-checkpoints/2026-10-28-continue-transfers.md)).
 - **Trace context (Core 2.10, published in Server 2.11.1).** Core adds
   nullable `observability_context` columns on runs, commands and tasks.
