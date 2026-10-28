@@ -450,6 +450,9 @@ async fn a_caller_run_continues_as_new_and_its_call_stays_with_the_predecessor()
         (json!("accepted"), json!("accepted"), started["run_id"].clone()));
     let successor = poll(&app, "caller-worker", "workflow").await;
     assert_eq!(successor["run_id"], runs["runs"][1]["run_id"]);
+    let (status, terminated) = request(&app, "POST", "/api/workflows/service-caller/terminate",
+        json!({"reason": "continue transfers"})).await;
+    assert_eq!(status, StatusCode::OK, "{terminated}");
     runtime.close().await;
     database.remove().await;
 }

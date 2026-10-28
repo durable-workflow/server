@@ -232,9 +232,13 @@ where
         );
         if !closed {
             // A cancelled or terminated child resolves its parent with
-            // ChildRunCancelled or ChildRunTerminated, as in PHP.
+            // ChildRunCancelled or ChildRunTerminated, as in PHP. A
+            // `continue_as_new` link names the closed predecessor, which
+            // PHP's close does not follow (`WorkflowStub` resolves only
+            // `child_workflow` parents), so a continued run closes as any
+            // other run does.
             let unsupported_links = Self::scalar(
-                "SELECT COUNT(*) FROM workflow_links WHERE child_workflow_run_id=$1 AND link_type!='child_workflow'",
+                "SELECT COUNT(*) FROM workflow_links WHERE child_workflow_run_id=$1 AND link_type NOT IN ('child_workflow','continue_as_new')",
             )
             .bind(&run_id)
             .fetch_one(&mut *tx)
