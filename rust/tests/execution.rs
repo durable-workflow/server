@@ -337,6 +337,9 @@ mod workflow_import_fences;
 #[path = "execution/close_inventory.rs"]
 mod close_inventory;
 
+#[path = "execution/start_search_attributes.rs"]
+mod start_search_attributes;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {
@@ -5218,17 +5221,12 @@ async fn authentication_precedes_protocol_and_namespace_checks() {
         .await
         .unwrap();
     assert_eq!(namespace.status(), StatusCode::NOT_FOUND);
-    let unsupported = request(&app,"POST","/api/workflows",json!({"workflow_id":"unsupported","workflow_type":"echo",
-        "task_queue":"test","input":envelope(Payload::Null),"search_attributes":{"ignored":"must not be accepted"}})).await;
-    // Start-time search attributes are refused until native stores them.
-    assert_eq!(unsupported.0, StatusCode::NOT_IMPLEMENTED);
-    assert_eq!(unsupported.1["reason"], "start_search_attributes_unavailable");
-    assert_eq!(
-        request(&app, "GET", "/api/workflows/unsupported", Value::Null)
-            .await
-            .0,
-        StatusCode::NOT_FOUND
-    );
+    // A namespace without registered definitions infers each value's type.
+    let attributed = request(&app,"POST","/api/workflows",json!({"workflow_id":"attributed","workflow_type":"echo",
+        "task_queue":"test","input":envelope(Payload::Null),"search_attributes":{"Stage":"accepted"}})).await;
+    assert_eq!(attributed.0, StatusCode::CREATED, "{}", attributed.1);
+    let described = request(&app, "GET", "/api/workflows/attributed", Value::Null).await;
+    assert_eq!(described.1["search_attributes"], json!({"Stage": "accepted"}), "{}", described.1);
     runtime.close().await;
     database.remove().await;
 }

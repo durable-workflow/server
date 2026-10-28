@@ -15,6 +15,7 @@ import {checkStorageTest} from './storage-test-contract.mjs';
 import {checkActivityLeaseRenewal} from './activity-lease-renewal-contract.mjs';
 import {checkConcurrentWaits} from './concurrent-waits-contract.mjs';
 import {checkContinueTransfers} from './continue-transfers-contract.mjs';
+import {checkStartSearchAttributes} from './start-search-attributes-contract.mjs';
 import {checkParentCloseCancellation} from './parent-close-cancellation-contract.mjs';
 import {checkBridgeAdapters} from './bridge-adapters-contract.mjs';
 import {checkNexusOperations} from './nexus-operations-contract.mjs';
@@ -172,6 +173,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const activityLeaseRenewal = fixture.activity_lease_renewal ? checkActivityLeaseRenewal(fixture, observation, workflowId) : null;
   const concurrentWaits = fixture.concurrent_waits ? checkConcurrentWaits(fixture, observation) : null;
   const continueTransfers = fixture.continue_transfers ? checkContinueTransfers(fixture, observation) : null;
+  const startSearchAttributes = fixture.start_search_attributes ? checkStartSearchAttributes(fixture, observation) : null;
   const parentCloseCancellation = fixture.parent_close_cancellation ? checkParentCloseCancellation(fixture, observation) : null;
   const bridgeAdapters = fixture.bridge_adapters ? checkBridgeAdapters(fixture, observation, workflowId) : null;
   const nexusOperations = fixture.nexus_operations ? checkNexusOperations(fixture, observation, workflowId) : null;
@@ -747,6 +749,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(activityLeaseRenewal ? {activity_lease_renewal: activityLeaseRenewal} : {}),
     ...(concurrentWaits ? {concurrent_waits: concurrentWaits} : {}),
     ...(continueTransfers ? {continue_transfers: continueTransfers} : {}),
+    ...(startSearchAttributes ? {start_search_attributes: startSearchAttributes} : {}),
     ...(parentCloseCancellation ? {parent_close_cancellation: parentCloseCancellation} : {}),
     ...(bridgeAdapters ? {bridge_adapters: bridgeAdapters} : {}),
     ...(nexusOperations ? {nexus_operations: nexusOperations} : {}),
