@@ -473,11 +473,15 @@ contract fixture before its correction.
   - **Root conflicts.** PHP records a rejected command when a child refuses
     a request under another root. Native records only the refusal on the
     parent's events.
-- **Several open waits at once.** Published PHP lets a run hold any number
-  of open activities, timers, children and waits. Native now starts children
-  alongside other open work, but still refuses
-  `409 pending_durable_operations` when a task opens a wait while another
-  wait is open.
+- **Several open waits at once** (October 28, closed). Published PHP lets a
+  run hold any number of open activities, timers, children and waits, and
+  native now does too: a task may open a wait while others are open, an
+  accepted signal reserves the latest open wait of its name (or is buffered
+  behind an earlier pending signal of that name), and the resumed task
+  applies it at its own wait's sequence and satisfies the latest open
+  condition wait. The `concurrent-waits` fixture records it against
+  published 2.11.5
+  ([checkpoint](rust-server-port-checkpoints/2026-10-28-concurrent-waits.md)).
 - **Continue-as-new transfers.** Native continues a run over open
   activities, timers, children and waits, and from a child run, as PHP does
   ([checkpoint](rust-server-port-checkpoints/2026-10-23-command-batches.md)).
