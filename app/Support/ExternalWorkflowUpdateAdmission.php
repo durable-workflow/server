@@ -48,6 +48,7 @@ class ExternalWorkflowUpdateAdmission
         CommandContext $commandContext,
         string $waitFor = UpdateWaitPolicy::WAIT_FOR_ACCEPTED,
         ?int $waitTimeoutSeconds = null,
+        ?string $expectedRunId = null,
     ): ?array {
         $result = $this->mutations->run(fn (): ?array => DB::transaction(function () use (
             $namespace,
@@ -57,6 +58,7 @@ class ExternalWorkflowUpdateAdmission
             $commandContext,
             $waitFor,
             $waitTimeoutSeconds,
+            $expectedRunId,
         ): ?array {
             /** @var WorkflowInstance|null $instance */
             $instance = WorkflowInstance::query()
@@ -88,6 +90,12 @@ class ExternalWorkflowUpdateAdmission
                     false,
                     $waitTimeoutSeconds,
                 );
+            }
+
+            // Retrying after rollback may observe a continuation. A retained
+            // receipt still wins, but a fresh run-targeted request cannot follow it.
+            if ($expectedRunId !== null && $run->id !== $expectedRunId) {
+                return $this->selectedRunFailure($workflowId, $expectedRunId);
             }
 
             if (! $this->shouldHandle($run, $updateName)) {
@@ -214,6 +222,20 @@ class ExternalWorkflowUpdateAdmission
         // approval admission belongs to its outer transaction, and failures
         // from after-commit callbacks must not repeat committed effects.
         return max(1, (int) config('workflows.storage.transaction_attempts', 5));
+    }
+
+    /** @return array<string, mixed> */
+    protected function selectedRunFailure(string $workflowId, string $runId): array
+    {
+        return [
+            'workflow_id' => $workflowId,
+            'run_id' => $runId,
+            'accepted' => false,
+            'reason' => 'historical_run_command_rejected',
+            'target_scope' => 'run',
+            'status' => 409,
+            'message' => 'Commands cannot target historical runs. Use the instance-level endpoint to command the current run, or omit the run ID.',
+        ];
     }
 
     /**

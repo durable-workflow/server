@@ -46,6 +46,7 @@ class ExternalWorkflowUpdateDeadlockTest extends TestCase
         $race['response']->assertAccepted()->assertJsonPath('update_status', 'accepted');
         $this->assertCommittedOnce($run);
         if ($approval !== null) {
+            $race['response']->assertJsonPath('update_id', $approval->id);
             $this->assertSame($approvalBefore, $approval->fresh()->getRawOriginal());
             $this->assertSame(1, WorkflowUpdateValidationTask::query()->count());
         }
@@ -77,6 +78,29 @@ class ExternalWorkflowUpdateDeadlockTest extends TestCase
         $this->assertSame(1213, $this->errorCode($race['error']));
         $this->assertSame(1, $race['attempts']);
         $this->assertFalse(DB::table('update_deadlock_weights')->where('id', 2000)->exists());
+        $this->assertNotAdmitted($run);
+    }
+
+    #[DataProvider('admissions')]
+    public function test_selected_run_is_not_retargeted_when_a_deadlock_releases_its_instance(string $driver, bool $validated): void
+    {
+        [$run] = $this->fixture($driver, $validated, continuation: true);
+        $continue = $this->continuation($run);
+        $race = $this->deadlock($run, afterInstanceLock: $continue);
+
+        $this->assertNull($race['error'], $race['error']?->getMessage() ?? '');
+        $this->assertSame(1, $race['attempts']);
+        $this->assertNotSame($run->id, DB::table('workflow_instances')->where('id', $run->workflow_instance_id)->value('current_run_id'));
+        $this->assertSame(409, $race['response']->status(), json_encode([
+            'attempts' => $race['attempts'],
+            'reason' => $race['response']->json('reason'),
+            'run_id' => $race['response']->json('run_id'),
+            'update_status' => $race['response']->json('update_status'),
+            'update_rows' => DB::table('workflow_updates')->count(),
+        ], JSON_THROW_ON_ERROR));
+        $race['response']->assertJsonPath('run_id', $run->id)->assertJsonPath(
+            'reason', $validated ? 'stale_update_validation_completion' : 'historical_run_command_rejected',
+        );
         $this->assertNotAdmitted($run);
     }
 
@@ -136,7 +160,7 @@ class ExternalWorkflowUpdateDeadlockTest extends TestCase
     }
 
     /** @return array{WorkflowRun, ?WorkflowUpdateValidationTask} */
-    private function fixture(string $driver, bool $validated): array
+    private function fixture(string $driver, bool $validated, bool $continuation = false): array
     {
         $this->initializeActorDatabase($driver);
         Schema::dropIfExists('update_deadlock_weights');
@@ -150,7 +174,9 @@ class ExternalWorkflowUpdateDeadlockTest extends TestCase
         ]);
         WorkerRegistration::query()->where('worker_id', 'update-owner')->update([
             'workflow_command_contracts' => json_encode([self::TYPE => [
-                'queries' => [], 'query_contracts' => [], 'signals' => [], 'signal_contracts' => [],
+                'queries' => [], 'query_contracts' => [],
+                'signals' => $continuation ? ['finish'] : [],
+                'signal_contracts' => $continuation ? [['name' => 'finish', 'parameters' => []]] : [],
                 'updates' => ['approve'], 'update_validators' => $validated ? ['approve'] : [],
                 'update_contracts' => [['name' => 'approve', 'parameters' => [[
                     'name' => 'amount', 'position' => 0, 'required' => true, 'type' => 'int',
@@ -162,6 +188,7 @@ class ExternalWorkflowUpdateDeadlockTest extends TestCase
             'workflow_id' => 'deadlock-update', 'workflow_type' => self::TYPE, 'task_queue' => 'updates',
         ], $this->apiHeaders())->assertCreated();
         $run = WorkflowRun::query()->findOrFail($start->json('run_id'));
+        $this->assertSame($validated ? 'required' : 'not_required', app(WorkflowUpdateValidationTaskBroker::class)->declaration($run, 'approve')['state']);
         $claim = $this->postJson('/api/worker/workflow-tasks/poll', [
             'worker_id' => 'update-owner', 'task_queue' => 'updates', 'timeout_seconds' => 0,
         ], $this->workerHeaders())->assertOk()->json('task');
@@ -191,15 +218,23 @@ class ExternalWorkflowUpdateDeadlockTest extends TestCase
         return [$run, $approval];
     }
 
-    private function deadlock(WorkflowRun $run, bool $callerOwned = false): array
+    private function deadlock(WorkflowRun $run, bool $callerOwned = false, ?callable $afterInstanceLock = null): array
     {
         // This actor holds the task range while admission holds the instance.
         // Its larger write set makes admission the real InnoDB deadlock victim.
-        $actor = $this->startActor(static function () use ($run): string {
-            return DB::transaction(static function () use ($run): string {
+        $actor = $this->startActor(static function () use ($run, $afterInstanceLock): string {
+            return DB::transaction(static function () use ($run, $afterInstanceLock): string {
                 DB::table('update_deadlock_weights')->insert(array_map(static fn (int $id): array => ['id' => $id], range(1, 1000)));
+                if ($afterInstanceLock !== null) {
+                    // A continuation needs a leased workflow task, so admission
+                    // cannot deadlock on creating a ready task in this case.
+                    DB::table('workflow_history_events')->where('workflow_run_id', $run->id)->lockForUpdate()->get();
+                }
                 DB::table('workflow_tasks')->where('workflow_run_id', $run->id)->lockForUpdate()->get();
                 DB::table('workflow_instances')->where('id', $run->workflow_instance_id)->lockForUpdate()->first();
+                if ($afterInstanceLock !== null) {
+                    $afterInstanceLock();
+                }
 
                 return 'committed';
             });
@@ -225,6 +260,33 @@ class ExternalWorkflowUpdateDeadlockTest extends TestCase
         $this->assertSame('committed', $this->finishActor($actor));
 
         return compact('response', 'error', 'attempts');
+    }
+
+    private function continuation(WorkflowRun $run): \Closure
+    {
+        $this->postJson('/api/workflows/'.$run->workflow_instance_id.'/signal/finish', [
+            'input' => [],
+        ], $this->apiHeaders())->assertSuccessful();
+        $claim = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'update-owner', 'task_queue' => 'updates', 'timeout_seconds' => 0,
+        ], $this->workerHeaders())->assertOk()->json('task');
+        $this->assertIsArray($claim);
+
+        return function () use ($claim): void {
+            $this->postJson('/api/worker/workflow-tasks/'.$claim['task_id'].'/complete', [
+                'lease_owner' => $claim['lease_owner'], 'workflow_task_attempt' => $claim['workflow_task_attempt'],
+                'commands' => [['type' => 'continue_as_new', 'workflow_type' => self::TYPE,
+                    'arguments' => Serializer::serializeWithCodec('avro', [])]],
+            ], $this->workerHeaders())->assertOk();
+            $next = $this->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'update-owner', 'task_queue' => 'updates', 'timeout_seconds' => 0,
+            ], $this->workerHeaders())->assertOk()->json('task');
+            $this->assertIsArray($next);
+            $this->postJson('/api/worker/workflow-tasks/'.$next['task_id'].'/complete', [
+                'lease_owner' => $next['lease_owner'], 'workflow_task_attempt' => $next['workflow_task_attempt'],
+                'commands' => [['type' => 'open_signal_wait', 'signal_name' => 'finish']],
+            ], $this->workerHeaders())->assertOk();
+        };
     }
 
     private function insertsUpdate(QueryExecuted $query): bool
