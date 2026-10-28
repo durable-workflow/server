@@ -479,7 +479,9 @@ contract fixture before its correction.
   accepted signal reserves the latest open wait of its name (or is buffered
   behind an earlier pending signal of that name), and the resumed task
   applies it at its own wait's sequence and satisfies the latest open
-  condition wait. The `concurrent-waits` fixture records it against
+  condition wait whose timeout has not fired. A declared buffered signal
+  rebinds to the open wait of its name, and a later wait takes a pending
+  signal's identity. The `concurrent-waits` fixture records it against
   published 2.11.5
   ([checkpoint](rust-server-port-checkpoints/2026-10-28-concurrent-waits.md)).
 - **Continue-as-new transfers.** Native continues a run over open
