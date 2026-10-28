@@ -1124,13 +1124,9 @@ impl Runtime {
                 "query_arguments_exceed_budget",
             ));
         }
-        let values = super::queries::decode(
-            self.signal_codec.clone(),
-            arguments.clone(),
-            true,
-            "invalid_query_arguments",
-        )
-        .await?;
+        // Read, not refused: only a declared query contract needs them
+        // (`validateContractedQueryArguments`).
+        let values = super::queries::read_arguments(self.signal_codec.clone(), arguments.clone()).await?;
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store

@@ -275,10 +275,20 @@ contract fixture before its correction.
   each priority tier across fairness keys by their weights
   (`TaskFairnessScheduler`); native stores the keys and weights but does not
   rebalance yet.
-- **Undecodable query input before routing.** Native decodes query
-  arguments at admission and refuses an undecodable blob with
-  `invalid_query_arguments`. Published PHP first looks for a query worker,
-  and answers `409 query_worker_unavailable` when there is none.
+- **Named and validated query arguments.** For a declared query with a
+  durable parameter contract, published PHP normalizes the arguments through
+  `WorkflowQueryContract::validatedArgumentsForRun`, then gives the worker the
+  re-encoded positional result:
+  - a string-keyed map is taken as named arguments;
+  - positional arguments are matched to the parameters;
+  - defaults are filled in, variadics collected, and unknown names
+    reported;
+  - a violation answers `422 invalid_query_arguments`, "argument validation
+    failed", with per-parameter messages in `validation_errors`.
+
+  Native checks positional arguments only. It refuses a map as "must decode
+  to an array", reports a violation as a bare `invalid_query_arguments`, and
+  gives the worker the arguments as sent.
 - **When an external payload reference is claimed.** Published PHP retains
   a referenced object once it fetches the bytes, before the command is
   recorded, so a refused command still retains it. Native claims it in the
@@ -449,10 +459,6 @@ contract fixture before its correction.
   then did not stop within the 5-second shutdown budget. Forty local
   repetitions of that case alone passed. Find what holds the query thread
   after the fence before changing either side.
-- **Start build-id pin.** Published PHP pins a new run to its start cohort's
-  build id: a promoted build-id rollout, else the single build id among the
-  live workers for the type, else among all the queue's live workers. Native
-  starts every run unpinned, and has no build-id rollouts.
 - **Named-namespace routes native does not serve.** Native now serves every
   workflow command and operation it implements in any namespace, as PHP
   does ([checkpoint](rust-server-port-checkpoints/2026-10-23-named-namespace-commands.md)).
@@ -530,6 +536,22 @@ contract fixture before its correction.
   `start-search-attributes` fixture records typed, inferred, null, empty
   and refused starts against published 2.11.5
   ([checkpoint](rust-server-port-checkpoints/2026-10-28-start-search-attributes.md)).
+- **Query arguments the server cannot decode** (October 28, closed).
+  Published PHP decodes a query's arguments only to check them against a
+  query contract the run's start recorded
+  (`validateContractedQueryArguments`). A run that declares no queries
+  routes the query with its arguments as given, so its worker receives even
+  a blob that does not decode. A declared query refuses such arguments
+  before routing, with PHP's message and `validation_errors`. Native used to
+  refuse any undecodable blob at admission with a bare
+  `invalid_query_arguments`. The `query-arguments` fixture records both
+  against published 2.11.5
+  ([checkpoint](rust-server-port-checkpoints/2026-10-28-query-arguments.md)).
+- **Start build-id pin** (closed; entry corrected October 28). Native pins
+  a new run to its start cohort's build id as published PHP does: a promoted
+  build-id rollout, else the single build id among the live workers for the
+  type, else among all the queue's live workers (`start_in`,
+  `deployments.rs`, `build_pins.rs`). The open-gap entry predated #696.
 - **Trace context (Core 2.10, published in Server 2.11.1).** Core adds
   nullable `observability_context` columns on runs, commands and tasks.
   Native has no carrier: it accepts and ignores a top-level carrier on
