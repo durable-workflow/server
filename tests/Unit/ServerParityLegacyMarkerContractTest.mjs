@@ -130,8 +130,6 @@ for (const id of ['legacy-two-markers-pending', 'legacy-two-markers-completed', 
     for (const [name, mutate] of [
       ['cancelled HTTP response', x => x.refusal.client_cancelled = true],
       ['transport failure', x => x.refusal.transport_error = 'connection reset'],
-      ['activity capacity', x => x.refusal.path = '/api/worker/activity-tasks/poll'],
-      ['workflow capacity', x => x.refusal.path = '/api/worker/workflow-tasks/poll'],
       ['completion capacity', x => x.refusal.path = '/api/worker/query-tasks/task/complete'],
       ['HTTP authentication refusal', x => x.refusal.status = 401],
       ['leased task', x => x.refusal.response.task = {task_id: 'lost-task'}],
@@ -191,18 +189,30 @@ for (const id of ['legacy-two-markers-pending', 'legacy-two-markers-completed', 
       ['refusal has another reason', x => x.refusal.response.reason = 'unauthorized'],
     ]) test(`${id} ${phase} ${kind}: rejects capacity ${name}`, () => {
       const state = capacityRecoveryModel();
-      // Disable the separate query-shutdown alternative by placing withdrawal
+      // Disable the separate idle-shutdown alternative by placing withdrawal
       // before refusal, so these mutations isolate recovery evidence.
-      if (kind === 'query') {
-        state.requests.splice(state.requests.indexOf(state.withdrawal), 1);
-        state.requests.splice(state.requests.indexOf(state.refusal), 0, state.withdrawal);
-      }
+      state.requests.splice(state.requests.indexOf(state.withdrawal), 1);
+      state.requests.splice(state.requests.indexOf(state.refusal), 0, state.withdrawal);
       mutate(state);
       assert.throws(() => checkLegacyMarkerDeployment(fixture, state.raw, 'test'));
     });
-    if (kind !== 'query') test(`${id} ${phase} ${kind}: rejects withdrawal without an admitted replacement poll`, () => {
+    function idleShutdownModel() {
       const state = capacityRecoveryModel();
       state.requests.splice(state.requests.indexOf(state.recovery), 1);
+      return state;
+    }
+    test(`${id} ${phase} ${kind}: accepts an idle refusal then the worker's own withdrawal after its commit`, () => {
+      checkLegacyMarkerDeployment(fixture, idleShutdownModel().raw, 'test');
+    });
+    for (const [name, mutate] of [
+      ['no withdrawal after the refusal', x => {
+        x.requests.splice(x.requests.indexOf(x.withdrawal), 1);
+        x.requests.splice(x.requests.indexOf(x.refusal), 0, x.withdrawal);
+      }],
+      ['withdrawal before its own commit', x => {x.requests.splice(x.requests.indexOf(x.withdrawal), 1); x.requests.unshift(x.withdrawal);}],
+      ['another worker withdraws', x => x.withdrawal.response.worker_id = 'other-worker'],
+    ]) test(`${id} ${phase} ${kind}: rejects idle refusal with ${name}`, () => {
+      const state = idleShutdownModel(); mutate(state);
       assert.throws(() => checkLegacyMarkerDeployment(fixture, state.raw, 'test'));
     });
   }
