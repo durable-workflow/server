@@ -4018,10 +4018,7 @@ class WorkerController
                 // Release that ownership and schedule the next eligible
                 // message together so its delivery does not depend on a
                 // later timer, signal or repair pass.
-                $nextMessageTask = PendingMessageTask::createForRun(
-                    $run,
-                    includeReceivedProjectedSignalWait: false,
-                );
+                $nextMessageTask = PendingMessageTask::createForRun($run);
 
                 if ($nextMessageTask instanceof WorkflowTask) {
                     $createdTaskIds[] = $nextMessageTask->id;
