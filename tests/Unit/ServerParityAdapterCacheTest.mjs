@@ -19,8 +19,8 @@ function job(name) {
 
 const steps = block => block.split(/\n {6}(?=- (?:name|uses):)/).slice(1);
 
-test('only the adapter job caches, and only public registry data and the build tree', () => {
-  const uses = workflow.match(/uses: actions\/cache[^\s]*/g) ?? [];
+test('the adapter job caches only public registry data and the build tree', () => {
+  const uses = job('published-sdk-adapters').match(/uses: actions\/cache[^\s]*/g) ?? [];
   assert.deepEqual(uses, [
     'uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9',
     'uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9',

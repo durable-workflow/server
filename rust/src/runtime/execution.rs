@@ -1528,6 +1528,30 @@ impl Runtime {
         worker: Option<super::runtime_credentials::Principal>,
         protocol: Option<&str>,
     ) -> Result<Value> {
+        self.complete_or_checkpoint(task_id, body, worker, protocol, None).await
+    }
+
+    /// POST …/cancellation-scopes/checkpoint, after its route checks: the
+    /// completion's payload preparation, then the store's checkpoint.
+    pub(crate) async fn checkpoint_cancellation_scope(
+        &self,
+        task_id: &str,
+        body: Value,
+        worker: Option<super::runtime_credentials::Principal>,
+        protocol: Option<&str>,
+        checkpoint: &super::scope_checkpoint::Checkpoint,
+    ) -> Result<Value> {
+        self.complete_or_checkpoint(task_id, body, worker, protocol, Some(checkpoint)).await
+    }
+
+    async fn complete_or_checkpoint(
+        &self,
+        task_id: &str,
+        body: Value,
+        worker: Option<super::runtime_credentials::Principal>,
+        protocol: Option<&str>,
+        checkpoint: Option<&super::scope_checkpoint::Checkpoint>,
+    ) -> Result<Value> {
         self.check_command_payloads(&body).await?;
         let external = self.prepare_command_payloads(&body).await?;
         let body = super::completion_rules::canonical_payloads(body)?;
@@ -1572,17 +1596,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural)
+                    .complete_or_checkpoint(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural, checkpoint)
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural)
+                    .complete_or_checkpoint(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural, checkpoint)
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural)
+                    .complete_or_checkpoint(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural, checkpoint)
                     .await
             }
         }

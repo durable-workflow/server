@@ -1114,7 +1114,7 @@ const DELIVERY_RULES: &laravel_rules::Rules = &[
     ("operation_sequence_span", &[Rule::Sometimes, Rule::Required, Rule::Integer, Rule::Min(1)]),
 ];
 
-fn protocol_supported(protocol: &str) -> bool {
+pub(super) fn protocol_supported(protocol: &str) -> bool {
     super::cooperative::supports(&json!(["cooperative_cancellation"]), protocol)
 }
 
