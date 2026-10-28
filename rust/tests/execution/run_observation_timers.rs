@@ -448,3 +448,27 @@ async fn run_observation_timers_cancel_atomically_with_projection_failure() {
     runtime.close().await;
     database.remove().await;
 }
+
+/// The workflow task a fired timer resumes carries
+/// `WorkflowTaskPayload::forTimerResolution`'s fields, as published PHP's does.
+#[tokio::test]
+async fn a_fired_timer_resumes_with_the_timer_resolution_payload() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    let (run, wait) = schedule(&app, "default", "timer-resume-payload", 1).await;
+    let fired = wait_for_fire(&app, "default", &run, deadline).await;
+    let event = fired["events"].as_array().unwrap().iter().find(|event| event["event_type"] == "TimerFired").unwrap().clone();
+    let timer_id = wait["dependency_id"].as_str().unwrap().to_owned();
+    let run_id = run["run_id"].as_str().unwrap();
+    let sql = |cast: &str| format!("SELECT id,{cast} FROM workflow_tasks WHERE workflow_run_id='{run_id}' AND task_type='workflow' AND status='ready'");
+    let rows = text_rows(&database, &sql("payload"), &sql("payload::text"), &sql("CAST(payload AS CHAR)")).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let payload: Value = serde_json::from_str(&rows[0].1).unwrap();
+    assert_eq!(payload, json!({"workflow_wait_kind":"timer","open_wait_id":format!("timer:{timer_id}"),
+        "resume_source_kind":"timer","resume_source_id":timer_id,"timer_id":timer_id,
+        "workflow_sequence":event["payload"]["sequence"],"workflow_event_type":"TimerFired"}));
+    runtime.close().await;
+    database.remove().await;
+}

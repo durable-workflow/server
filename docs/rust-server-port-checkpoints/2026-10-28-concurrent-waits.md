@@ -142,8 +142,9 @@
   wait takes the buffered identity; both are recorded above.
 - **Observed differences outside this change**, recorded against 2.11.5 in
   a lab and left for their owners:
-  - Native's task for a fired workflow timer omits `resume_source_kind` and
-    `resume_source_id`; PHP sends `timer` and the timer id.
+  - (Resolved October 28: native's task for a fired workflow timer now
+    carries Core's `forTimerResolution` fields, `resume_source_kind: timer`
+    and the timer id among them.)
   - Native's signal task payload omits PHP's `condition_wait_id: null`.
   - Laravel model ids, including command ids and so buffered
     `signal-command:` identities, are lowercase in PHP and uppercase in
