@@ -205,6 +205,29 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    /// Whether native cannot close this open run yet, checked before anything
+    /// is written. HTTP cancel and terminate and a parent-close policy share
+    /// this rule.
+    ///
+    /// PHP's close reads no incoming link to decide whether it may close: it
+    /// follows `child_workflow` links only to resolve the parent, and never
+    /// reads `continue_as_new`, `redrive` or imported untyped links. Live
+    /// queries never hold a close either: PHP's query broker has no
+    /// run-status check, so a query admitted before the close is still leased
+    /// and answered. Only a `request_cancellation` child refuses: PHP gives it
+    /// a new cancellation origin (`ParentCloseCancellation::ensureOrigin`),
+    /// which native does not have yet.
+    pub(super) async fn close_unavailable(
+        connection: &mut DB::Connection,
+        run_id: &str,
+    ) -> Result<bool> {
+        let cooperative_children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','terminated','failed') AND parent_close_policy='request_cancellation'")
+            .bind(run_id)
+            .fetch_one(&mut *connection)
+            .await?;
+        Ok(cooperative_children != 0)
+    }
+
     pub(crate) async fn close_workflow(
         &self,
         command: TerminalCommand,
@@ -230,35 +253,14 @@ where
             DB::string(&run, "status")?.as_str(),
             "pending" | "running" | "waiting"
         );
-        if !closed {
-            // A cancelled or terminated child resolves its parent with
-            // ChildRunCancelled or ChildRunTerminated, as in PHP.
-            let unsupported_links = Self::scalar(
-                "SELECT COUNT(*) FROM workflow_links WHERE child_workflow_run_id=$1 AND link_type!='child_workflow'",
-            )
-            .bind(&run_id)
-            .fetch_one(&mut *tx)
-            .await?;
-            // Open children follow their parent-close policies below. Only a
-            // `request_cancellation` child still refuses: PHP gives it a new
-            // cancellation origin (`ParentCloseCancellation::ensureOrigin`),
-            // which native does not have yet.
-            let pending_children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','terminated','failed') AND parent_close_policy='request_cancellation'")
-                .bind(&run_id).fetch_one(&mut *tx).await?;
-            let pending_queries =
-                self.query_entries(&mut tx)
-                    .await?
-                    .into_iter()
-                    .any(|(_, task)| {
-                        task["run_id"] == run_id
-                            && matches!(task["status"].as_str(), Some("pending" | "leased"))
-                    });
-            if unsupported_links != 0 || pending_children != 0 || pending_queries {
-                return Err(refuse(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    command.propagation_unavailable(),
-                ));
-            }
+        // A cancelled or terminated child resolves its parent with
+        // ChildRunCancelled or ChildRunTerminated, as in PHP. Open children
+        // follow their parent-close policies below.
+        if !closed && Self::close_unavailable(&mut tx, &run_id).await? {
+            return Err(refuse(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                command.propagation_unavailable(),
+            ));
         }
         let activities = Self::query("SELECT * FROM activity_executions WHERE workflow_run_id=$1 AND status IN ('pending','running') ORDER BY id LIMIT 1001")
             .bind(&run_id).fetch_all(&mut *tx).await?;

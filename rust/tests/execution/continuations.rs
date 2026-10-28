@@ -141,8 +141,11 @@ async fn continuation_inherits_committed_upserts_before_successor_commands() {
     database.remove().await;
 }
 
+/// Core's continue-as-new touches no query task (continue-transfers
+/// fixture): a run continues with pending and leased queries, and their
+/// stored claims stay exactly as they were.
 #[tokio::test]
-async fn continuation_refuses_pending_query_beyond_the_cache_scan_prefix() {
+async fn continuation_leaves_pending_and_leased_queries_with_the_predecessor() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
@@ -155,76 +158,29 @@ async fn continuation_refuses_pending_query_beyond_the_cache_scan_prefix() {
         _ => "\"key\"",
     };
     let expires = chrono::Utc::now().timestamp() + 600;
-    // Construct the storage boundary explicitly. The predecessor query sorts
-    // after all 65 unrelated entries and cannot appear in a prefix scan.
-    // SQL interpolation here uses only this test's generated ULID, numeric
-    // counters and fixed keys/statuses, never application-supplied input.
-    for index in 0..65 {
+    // SQL interpolation here uses only this test's generated ULID, a fixed
+    // expiry and fixed keys/statuses, never application-supplied input.
+    for status in ["pending", "leased"] {
         database.execute(sqlx::AssertSqlSafe(format!(
-            "INSERT INTO dw_query_cache({column},value,expiration) VALUES ('dw-native-query:000{index:03}','{{\"run_id\":\"other\",\"status\":\"completed\"}}',{expires})"
+            "INSERT INTO dw_query_cache({column},value,expiration) VALUES ('dw-native-query:{status}','{{\"run_id\":\"{run}\",\"status\":\"{status}\"}}',{expires})"
         ))).await;
     }
-    database.execute(sqlx::AssertSqlSafe(format!(
-        "INSERT INTO dw_query_cache({column},value,expiration) VALUES ('dw-native-query:zzz','{{\"run_id\":\"{run}\",\"status\":\"pending\"}}',{expires})"
-    ))).await;
     let path = format!(
         "/api/worker/workflow-tasks/{}/complete",
         task["task_id"].as_str().unwrap()
     );
-    let history_path = format!("/api/workflows/continuation-query-boundary/runs/{run}/history");
-    let before = request(&app, "GET", &history_path, Value::Null).await.1;
     let body = completion(&task, json!([{"type":"continue_as_new"}]));
-    for status in ["pending", "leased"] {
-        database.execute(sqlx::AssertSqlSafe(format!(
-            "UPDATE dw_query_cache SET value='{{\"run_id\":\"{run}\",\"status\":\"{status}\"}}' WHERE {column}='dw-native-query:zzz'"
-        ))).await;
-        let refused = request(&app, "POST", &path, body.clone()).await;
-        assert_eq!(refused.0, StatusCode::CONFLICT);
-        assert_eq!(refused.1["reason"], "continue_as_new_transfer_unqualified");
-        assert_eq!(
-            request(&app, "GET", &history_path, Value::Null).await.1,
-            before
-        );
-        assert_eq!(
-            request(
-                &app,
-                "GET",
-                "/api/workflows/continuation-query-boundary/runs",
-                Value::Null
-            )
-            .await
-            .1["runs"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
-    }
-    database.execute(sqlx::AssertSqlSafe(format!(
-        "UPDATE dw_query_cache SET value='{{\"run_id\":\"{run}\",\"status\":\"completed\"}}' WHERE {column}='dw-native-query:zzz'"
-    ))).await;
-    database.execute(sqlx::AssertSqlSafe(format!(
-        "INSERT INTO dw_query_cache({column},value,expiration) VALUES ('foreign-query:pending','{{\"run_id\":\"{run}\",\"status\":\"pending\"}}',{expires})"
-    ))).await;
-    database.execute(sqlx::AssertSqlSafe(format!(
-        "INSERT INTO dw_query_cache({column},value,expiration) VALUES ('dw-native-query:expired','{{\"run_id\":\"{run}\",\"status\":\"pending\"}}',0)"
-    ))).await;
     let committed = request(&app, "POST", &path, body).await;
     assert_eq!(committed.0, StatusCode::OK, "{}", committed.1);
-    assert_eq!(
-        request(
-            &app,
-            "GET",
-            "/api/workflows/continuation-query-boundary/runs",
-            Value::Null
-        )
-        .await
-        .1["runs"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
+    let runs = request(&app, "GET", "/api/workflows/continuation-query-boundary/runs", Value::Null).await.1;
+    assert_eq!(runs["runs"].as_array().unwrap().len(), 2);
+    assert_eq!(runs["runs"][0]["run_id"], original["run_id"]);
+    let sql = format!("SELECT {column},value FROM dw_query_cache WHERE {column} LIKE 'dw-native-query:%' ORDER BY {column}");
+    let stored = text_rows(&database, &sql, &sql, &sql).await;
+    assert_eq!(stored, vec![
+        ("dw-native-query:leased".to_owned(), format!("{{\"run_id\":\"{run}\",\"status\":\"leased\"}}")),
+        ("dw-native-query:pending".to_owned(), format!("{{\"run_id\":\"{run}\",\"status\":\"pending\"}}")),
+    ]);
     runtime.close().await;
     database.remove().await;
 }

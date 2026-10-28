@@ -203,6 +203,38 @@ async fn a_child_that_continues_as_new_stays_its_parents_child_like_php() {
     assert!(resumed["task_id"].is_string(), "{resumed}");
 }
 
+// A continued run closes as any other run: PHP's close follows only
+// `child_workflow` links, not the `continue_as_new` link from its
+// predecessor. A terminated continued child resolves its parent's call.
+#[tokio::test]
+async fn a_continued_child_terminates_and_resolves_its_parent_like_php() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register(&app, "worker", json!(["echo"]), json!([])).await;
+    let parent = start(&app, "terminated-continued-parent").await;
+    let task = poll(&app, "worker", "workflow").await;
+    let (status, body) = finish_task(&app, &task, json!([child()])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &parent["workflow_id"], &parent["run_id"]).await;
+    let first_start = first(&history, "ChildRunStarted")["payload"].clone();
+    let kid = first_start["child_workflow_instance_id"].as_str().unwrap().to_owned();
+    let task = task_for(&app, "worker", &kid).await;
+    let (status, body) = finish_task(&app, &task, json!([{"type":"continue_as_new"}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let continued = current(&app, &kid).await;
+
+    let (status, body) = request(&app, "POST", &format!("/api/workflows/{kid}/terminate"),
+        json!({"reason":"continued child"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &parent["workflow_id"], &parent["run_id"]).await;
+    let terminated = &first(&history, "ChildRunTerminated")["payload"];
+    assert_eq!(terminated["child_workflow_run_id"], continued["run_id"], "{terminated}");
+    assert_eq!(terminated["child_call_id"], first_start["child_call_id"], "{terminated}");
+    assert_eq!(terminated["child_run_number"], 2, "{terminated}");
+    let resumed = task_for(&app, "worker", "terminated-continued-parent").await;
+    assert!(resumed["task_id"].is_string(), "{resumed}");
+}
+
 // A child that continues as new into another workflow type still resolves
 // its parent's call, which keeps the type it started with.
 #[tokio::test]

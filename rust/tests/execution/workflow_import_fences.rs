@@ -507,3 +507,31 @@ async fn the_signing_key_is_refused_in_the_url_and_never_repeated() {
     assert_eq!(status, StatusCode::CREATED, "{report}");
     assert!(!report.to_string().contains(SENTINEL), "{report}");
 }
+
+// An imported link without a type is written as `parent` or `child`. PHP's
+// close reads no incoming link to decide whether it may close, so a run named
+// by one still cancels or terminates.
+#[tokio::test]
+async fn a_run_named_by_an_imported_untyped_link_still_closes() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    for command in ["cancel", "terminate"] {
+        let child = format!("untyped-child-{command}");
+        let started = start(&app, &child).await;
+        let child_run = started["run_id"].as_str().unwrap().to_owned();
+        let parent = bundle("terminated", &format!("wi-untyped-parent-{command}"), &[], |document| {
+            let mut entry = link("children", &child, &child_run);
+            entry.as_object_mut().unwrap().remove("type");
+            document["links"]["children"] = json!([entry]);
+        });
+        let (status, report) = import(&app, "default", &parent).await;
+        assert_eq!(status, StatusCode::CREATED, "{report}");
+        assert_eq!(report["rows"]["workflow_links"], 1, "{report}");
+        assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_links WHERE link_type='child'").await,
+            if command == "cancel" { 1 } else { 2 }, "the untyped link is stored as `child`");
+
+        let (status, closed) = request(&app, "POST", &format!("/api/workflows/{child}/{command}"),
+            json!({"reason":"untyped link"})).await;
+        assert_eq!(status, StatusCode::OK, "{command}: {closed}");
+    }
+}

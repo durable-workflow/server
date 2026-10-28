@@ -73,7 +73,6 @@ pub(super) trait Backend: Database {
     const LOCAL_ACTIVITY_EXECUTIONS: &str = "SELECT status FROM activity_executions WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE namespace=$1) AND activity_options->>'execution_mode'='local'";
     const LOCAL_ACTIVITY_ATTEMPTS: &str = "SELECT p.status FROM activity_attempts p JOIN activity_executions a ON a.id=p.activity_execution_id WHERE p.workflow_run_id IN (SELECT id FROM workflow_runs WHERE namespace=$1) AND a.activity_options->>'execution_mode'='local'";
     const QUERY_CACHE_SCAN: &str = "SELECT \"key\",value,expiration FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND value::jsonb->>'namespace'=$1 ORDER BY \"key\" LIMIT 65";
-    const QUERY_CACHE_PENDING_FOR_RUN: &str = "SELECT value::jsonb->>'query_admitted_at' AS query_admitted_at,value::jsonb->>'query_deadline_at' AS query_deadline_at,value::jsonb->>'receipt_expires_at' AS receipt_expires_at FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND expiration>$2 AND value::jsonb->>'run_id'=$1 AND value::jsonb->>'status' IN ('pending','leased') ORDER BY \"key\" LIMIT 65";
     const QUERY_CACHE_GET: &str =
         "SELECT value,expiration FROM dw_query_cache WHERE \"key\"=$1";
     const QUERY_CACHE_INSERT: &str =
@@ -219,7 +218,6 @@ SELECT id,ordinal FROM ordinals WHERE position IS NOT ordinal ORDER BY ordinal L
     const ACTIVITY_RESULT_EVENT_SQL: &str = "SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled') AND (json_extract(payload,'$.activity_execution_id') COLLATE BINARY=$2 OR json_extract(payload,'$.activity.id') COLLATE BINARY=$3) ORDER BY sequence DESC LIMIT 1";
     const QUERY_CACHE_SCAN: &str = "SELECT \"key\",value,expiration FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND json_extract(value,'$.namespace')=$1 ORDER BY \"key\" LIMIT 65";
     const SESSION_RUNNING_ATTEMPTS: &str = "SELECT COUNT(*) FROM activity_attempts p JOIN activity_executions e ON e.id=p.activity_execution_id JOIN workflow_tasks t ON t.id=p.workflow_task_id WHERE t.namespace=$1 AND p.status='running' AND p.lease_expires_at>$2 AND p.lease_owner=$3 AND json_extract(e.activity_options,'$.worker_session.session_id')=$4 AND p.workflow_task_id<>$5";
-    const QUERY_CACHE_PENDING_FOR_RUN: &str = "SELECT json_extract(value,'$.query_admitted_at') AS query_admitted_at,json_extract(value,'$.query_deadline_at') AS query_deadline_at,json_extract(value,'$.receipt_expires_at') AS receipt_expires_at FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND expiration>$2 AND json_extract(value,'$.run_id')=$1 AND json_extract(value,'$.status') IN ('pending','leased') ORDER BY \"key\" LIMIT 65";
     const POLL_WAKE_QUERIES_SQL: &str = "SELECT \"key\" AS id FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND expiration>$1 AND json_extract(value,'$.namespace')=$2 AND json_extract(value,'$.task_queue')=$3 AND json_extract(value,'$.query_deadline_at')>$4 AND (json_extract(value,'$.status')='pending' OR (json_extract(value,'$.status')='leased' AND json_extract(value,'$.lease_expires_at')<=$5)) ORDER BY \"key\" LIMIT 65";
     const POLL_WAKE_TASKS_SQL: &str = r#"
 WITH utc_tasks AS (
@@ -540,7 +538,6 @@ impl Backend for MySql {
     type EncodedTime = DateTime<Utc>;
     type EncodedOptionalTime = Option<DateTime<Utc>>;
     type EncodedDocument = Json<Value>;
-    const QUERY_CACHE_PENDING_FOR_RUN: &str = "SELECT JSON_UNQUOTE(JSON_EXTRACT(value,'$.query_admitted_at')) AS query_admitted_at,JSON_UNQUOTE(JSON_EXTRACT(value,'$.query_deadline_at')) AS query_deadline_at,JSON_UNQUOTE(JSON_EXTRACT(value,'$.receipt_expires_at')) AS receipt_expires_at FROM dw_query_cache WHERE `key` LIKE 'dw-native-query:%' AND JSON_UNQUOTE(JSON_EXTRACT(value,'$.run_id'))=? AND expiration>? AND JSON_UNQUOTE(JSON_EXTRACT(value,'$.status')) IN ('pending','leased') ORDER BY `key` LIMIT 65";
     const QUERY_CACHE_GET: &str =
         "SELECT value,expiration FROM dw_query_cache WHERE `key`=$1";
     const QUERY_CACHE_INSERT: &str =
@@ -584,7 +581,6 @@ impl Backend for MySql {
             || sql == Self::ACTIVITY_RESULT_EVENT_SQL
             || sql == Self::OBSERVATION_FAILURE_EVENT
             || sql == Self::POLL_WAKE_QUERIES_SQL
-            || sql == Self::QUERY_CACHE_PENDING_FOR_RUN
             || sql == Self::QUERY_CACHE_SCAN
             || sql == Self::SESSION_RUNNING_ATTEMPTS
         {
@@ -694,16 +690,6 @@ mod timestamp_tests {
     use super::*;
     use chrono::SecondsFormat;
     use serde_json::json;
-
-    #[test]
-    fn mysql_pending_query_guard_keeps_json_paths_and_positional_bindings() {
-        let sql = MySql::QUERY_CACHE_PENDING_FOR_RUN;
-        assert_eq!(MySql::statement(sql), sql);
-        assert_eq!(sql.matches('?').count(), 2);
-        assert!(sql.contains("JSON_EXTRACT(value,'$.run_id')"));
-        assert!(sql.contains("JSON_EXTRACT(value,'$.status')"));
-        assert!(!sql.contains("$1") && !sql.contains("$2"));
-    }
 
     #[test]
     fn mysql_statement_converts_numbered_positions_and_keeps_json_paths() {

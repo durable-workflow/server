@@ -364,6 +364,28 @@ where
         let parent_run = DB::string(link, "parent_workflow_run_id")?;
         let sequence = DB::number(link, "sequence")?;
         let link_id = DB::string(link, "id")?;
+        // `createParentResumeTasks` resolves only an open parent run, before
+        // reading the call: a closed or replaced parent takes no resolution,
+        // and its call stays as the parent left it. An abandoned child, or a
+        // child that continued as new after its parent closed (its call still
+        // names the first run, `markChildCallContinued`), closes then.
+        let Some(parent) = Self::query("SELECT r.*,i.current_run_id FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE r.id=$1")
+            .bind(&parent_run).fetch_optional(&mut **tx).await?
+        else {
+            return Ok(());
+        };
+        if !matches!(
+            DB::string(&parent, "status")?.as_str(),
+            "pending" | "running" | "waiting"
+        ) || DB::string(&parent, "current_run_id")? != parent_run
+        {
+            return Ok(());
+        }
+        if DB::string(&parent, "workflow_instance_id")?
+            != DB::string(link, "parent_workflow_instance_id")?
+        {
+            return Err(refuse(StatusCode::CONFLICT, "child_call_mismatch"));
+        }
         // A child that continued as new keeps its first call: its started
         // event names the continue-as-new link and the original call, and the
         // parent's link to it is a new one (`applyContinueAsNew`).
@@ -418,21 +440,6 @@ where
                 .bind(DB::number(call, "id")?)
                 .execute(&mut **tx)
                 .await?;
-        }
-        let parent = Self::query("SELECT r.*,i.current_run_id FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE r.id=$1").bind(&parent_run).fetch_one(&mut **tx).await?;
-        if DB::string(&parent, "workflow_instance_id")?
-            != DB::string(link, "parent_workflow_instance_id")?
-        {
-            return Err(refuse(StatusCode::CONFLICT, "child_call_mismatch"));
-        }
-        if !matches!(
-            DB::string(&parent, "status")?.as_str(),
-            "pending" | "running" | "waiting"
-        ) || DB::string(&parent, "current_run_id")? != parent_run
-        {
-            // Abandoned children may finish after their original parent closes.
-            // Never enqueue a task for a closed or replacement parent run.
-            return Ok(());
         }
         let parent_resume = Self::child_parent_resume(tx, &parent).await?;
         let mut payload = json!({"sequence":sequence,"workflow_link_id":link_id,"child_call_id":call_id,"child_workflow_instance_id":DB::string(child,"workflow_instance_id")?,"child_workflow_run_id":child_run,"child_workflow_class":DB::string(child,"workflow_class")?,"child_workflow_type":DB::string(child,"workflow_type")?,"child_run_number":DB::number(child,"run_number")?,"child_status":status,"closed_reason":status,"closed_at":closed_at});

@@ -111,3 +111,31 @@ async fn redrive_resumes_a_failed_run_at_its_failed_activity_like_php() {
     runtime.close().await;
     database.remove().await;
 }
+
+// A redriven run closes as any other run. Its `redrive` link names the
+// failed run it came from, and PHP's close follows only `child_workflow`
+// links (`WorkflowStub::attemptCancel`, `attemptTerminate`).
+#[tokio::test]
+async fn a_redriven_run_cancels_and_terminates_like_php() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let registered = request(&app, "POST", "/api/worker/register", json!({"worker_id":"worker","task_queue":"test",
+        "runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":["a","b"],
+        "workflow_definition_fingerprints":{"echo":FINGERPRINT}})).await;
+    assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+    for (workflow, command) in [("rd-cancel", "cancel"), ("rd-terminate", "terminate")] {
+        let source = failed_at_second_activity(&app, workflow).await;
+        let path = format!("/api/workflows/{workflow}/runs/{}/redrive", source["run_id"].as_str().unwrap());
+        let (status, redriven) = request(&app, "POST", &path, json!({})).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{redriven}");
+        let (status, closed) = request(&app, "POST", &format!("/api/workflows/{workflow}/{command}"),
+            json!({"reason":"redriven run"})).await;
+        assert_eq!(status, StatusCode::OK, "{command}: {closed}");
+        let (_, described) = request(&app, "GET", &format!("/api/workflows/{workflow}"), Value::Null).await;
+        assert_eq!((described["run_id"].clone(), described["status"].clone()),
+            (redriven["run_id"].clone(), json!(if command == "cancel" { "cancelled" } else { "terminated" })), "{described}");
+    }
+    runtime.close().await;
+    database.remove().await;
+}

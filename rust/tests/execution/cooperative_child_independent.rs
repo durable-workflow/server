@@ -253,10 +253,14 @@ async fn independent(parent_state: &str, terminal: &str, missing: bool, rollback
         )
         .await;
     }
+    // An open parent resolves its call. A closed parent takes no resolution
+    // (`dispatchParentResumeTasksForRun` skips a terminal parent before
+    // `markChildCallResolved`), so its abandoned call stays `started`.
+    let call_status = if parent_state == "closed" { "started" } else { "cancelled" };
     assert_eq!(
         task_retry::rows(
             &database,
-            "SELECT COUNT(*) FROM workflow_child_calls WHERE status='cancelled'"
+            Box::leak(format!("SELECT COUNT(*) FROM workflow_child_calls WHERE status='{call_status}'").into_boxed_str())
         )
         .await,
         1

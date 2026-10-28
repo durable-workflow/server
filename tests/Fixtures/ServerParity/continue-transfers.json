@@ -1,0 +1,221 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "continue-transfers",
+  "review_state": "reviewed",
+  "contract": "Continue-as-new and close over what a run leaves behind (published Server 2.11.5, Workflow 2.15.1 DefaultWorkflowTaskBridge::applyContinueAsNew, WorkflowStub::attemptTerminate, ParentClosePolicyEnforcer, LinkedServiceCallCloser, WorkflowQueryTaskBroker), over raw worker HTTP on protocol 1.20 in its own namespace. Core continues or closes a run whatever it has open and touches neither service calls nor query tasks. A run that is the caller of an accepted async service call, and the linked run of another through an activity_execution binding, continues as new: the completion is accepted with one created task, both calls stay accepted with the predecessor, the predecessor is completed and no longer current, and the successor's first task is ready at attempt 1. A query admitted while the run's workflow task is leased waits behind the lease, so a query poll ends workflow_task_leased. When the leased task continues as new, or the run is terminated over HTTP, the query task stays bound to that run: the next query poll leases it, the worker answers it, and the waiting client receives the answer with that run's id. A parent that started a child under the terminate parent-close policy is terminated after the child continued as new: the parent records ParentClosePolicyApplied for the child's current run, which is terminated. Run ids are labels by first appearance. Embedded applications have no worker protocol.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "continue transfers λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "continue transfers λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "continue_transfers": {
+    "workflow_type": "parity.v1.continue_transfers",
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "query": "state",
+    "expected": {
+      "service_call": {
+        "executed": {
+          "status": 200,
+          "accepted": true
+        },
+        "linked_executed": {
+          "status": 200,
+          "accepted": true
+        },
+        "call_before": {
+          "status": 200,
+          "call_status": "accepted",
+          "outcome": "accepted",
+          "caller_workflow_run_id": "{run:1}",
+          "resolved_binding_kind": "activity_execution",
+          "linked_workflow_run_id": null
+        },
+        "linked_before": {
+          "status": 200,
+          "call_status": "accepted",
+          "outcome": "accepted",
+          "caller_workflow_run_id": null,
+          "resolved_binding_kind": "activity_execution",
+          "linked_workflow_run_id": "{run:1}"
+        },
+        "continued": {
+          "status": 200,
+          "outcome": "completed",
+          "reason": null,
+          "run_status": "completed",
+          "created_tasks": 1
+        },
+        "runs": [
+          {
+            "run_id": "{run:1}",
+            "run_number": 1,
+            "status": "completed",
+            "is_current_run": false
+          },
+          {
+            "run_id": "{run:2}",
+            "run_number": 2,
+            "status": "pending",
+            "is_current_run": true
+          }
+        ],
+        "call_after": {
+          "status": 200,
+          "call_status": "accepted",
+          "outcome": "accepted",
+          "caller_workflow_run_id": "{run:1}",
+          "resolved_binding_kind": "activity_execution",
+          "linked_workflow_run_id": null
+        },
+        "linked_after": {
+          "status": 200,
+          "call_status": "accepted",
+          "outcome": "accepted",
+          "caller_workflow_run_id": null,
+          "resolved_binding_kind": "activity_execution",
+          "linked_workflow_run_id": "{run:1}"
+        },
+        "successor": {
+          "run_id": "{run:2}",
+          "workflow_task_attempt": 1,
+          "terminated": 200
+        }
+      },
+      "live_query": {
+        "admitted": "workflow_task_leased",
+        "continued": {
+          "status": 200,
+          "outcome": "completed",
+          "reason": null,
+          "run_status": "completed",
+          "created_tasks": 1
+        },
+        "query_task": {
+          "status": 200,
+          "leased": true,
+          "run_id": "{run:3}",
+          "query_name": "state"
+        },
+        "answered": 200,
+        "client": {
+          "status": 200,
+          "run_id": "{run:3}",
+          "result_envelope": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          }
+        },
+        "runs": [
+          {
+            "run_id": "{run:3}",
+            "run_number": 1,
+            "status": "completed",
+            "is_current_run": false
+          },
+          {
+            "run_id": "{run:4}",
+            "run_number": 2,
+            "status": "pending",
+            "is_current_run": true
+          }
+        ],
+        "successor": {
+          "run_id": "{run:4}",
+          "workflow_task_attempt": 1,
+          "terminated": 200
+        }
+      },
+      "closed_query": {
+        "admitted": "workflow_task_leased",
+        "terminated": 200,
+        "query_task": {
+          "status": 200,
+          "leased": true,
+          "run_id": "{run:5}",
+          "query_name": "state"
+        },
+        "answered": 200,
+        "client": {
+          "status": 200,
+          "run_id": "{run:5}",
+          "result_envelope": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          }
+        },
+        "runs": [
+          {
+            "run_id": "{run:5}",
+            "run_number": 1,
+            "status": "terminated",
+            "is_current_run": true
+          }
+        ]
+      },
+      "policy_child": {
+        "scheduled": {
+          "status": 200,
+          "outcome": "completed"
+        },
+        "child_task": {
+          "run_id": "{run:7}",
+          "child": true
+        },
+        "child_continued": {
+          "status": 200,
+          "outcome": "completed",
+          "reason": null,
+          "run_status": "completed",
+          "created_tasks": 1
+        },
+        "terminated": 200,
+        "policy_events": [
+          {
+            "event_type": "ParentClosePolicyApplied",
+            "child_run_id": "{run:8}",
+            "policy": "terminate",
+            "error": null
+          }
+        ],
+        "child_runs": [
+          {
+            "run_id": "{run:7}",
+            "run_number": 1,
+            "status": "completed",
+            "is_current_run": false
+          },
+          {
+            "run_id": "{run:8}",
+            "run_number": 2,
+            "status": "terminated",
+            "is_current_run": true
+          }
+        ]
+      }
+    }
+  }
+}

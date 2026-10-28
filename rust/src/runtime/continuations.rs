@@ -1,6 +1,6 @@
-//! Atomic first continuation slice. Received signals and pending updates move
-//! to the continued run like PHP; related children, typed visibility and
-//! streams require separate transfer qualification.
+//! Atomic continue-as-new. Received signals, pending updates and message
+//! stream cursors move to the continued run like PHP; everything else the
+//! run has open stays with the closed predecessor.
 use super::transaction::Transaction;
 use super::{
     Result,
@@ -108,64 +108,21 @@ where
                 "continue_as_new_run_not_current",
             ));
         }
-        // Published PHP continues a run whatever it has open. Its activities,
-        // timers, children and waits stay with the closed predecessor, and no
-        // parent-close policy applies. Message streams pass to the next run
-        // when the completion records its stream acknowledgements. Durable
-        // output streams are rows of their run and stay with the predecessor;
-        // PHP's continue-as-new does not touch them either.
-        // Service calls and live queries are not transferred by native yet.
-        for (sql, selected) in [
-            (
-                "SELECT COUNT(*) FROM workflow_service_calls WHERE caller_workflow_run_id=$1",
-                old.as_str(),
-            ),
-            (
-                "SELECT COUNT(*) FROM workflow_service_calls WHERE linked_workflow_run_id=$1",
-                old.as_str(),
-            ),
-        ] {
-            if Self::scalar(sql)
-                .bind(selected)
-                .fetch_one(&mut **tx)
-                .await?
-                != 0
-            {
-                return Err(refuse(
-                    StatusCode::CONFLICT,
-                    "continue_as_new_transfer_unqualified",
-                ));
-            }
-        }
-        // Select this run before applying the bound. Receipt retention does
-        // not extend original query execution, and unrelated cache prefixes
-        // cannot hide a live claim. Read timing only, never history snapshots.
-        let queries = Self::query(DB::QUERY_CACHE_PENDING_FOR_RUN)
-            .bind(&old)
-            .bind(now().timestamp())
-            .fetch_all(&mut **tx)
-            .await?;
-        if queries.len() > super::queries::MAX_ENTRIES {
-            return Err(refuse(
-                StatusCode::CONFLICT,
-                "continue_as_new_transfer_unqualified",
-            ));
-        }
-        let observed = super::query_authority::now();
-        for query in queries {
-            let timing = json!({
-                "query_admitted_at":DB::optional_string(&query,"query_admitted_at")?,
-                "query_deadline_at":DB::optional_string(&query,"query_deadline_at")?,
-                "receipt_expires_at":DB::optional_string(&query,"receipt_expires_at")?,
-            });
-            if super::query_authority::deadline(&timing).is_none_or(|deadline| observed < deadline)
-            {
-                return Err(refuse(
-                    StatusCode::CONFLICT,
-                    "continue_as_new_transfer_unqualified",
-                ));
-            }
-        }
+        // Published PHP continues a run whatever it has open
+        // (`applyContinueAsNew`). Its activities, timers, children and waits
+        // stay with the closed predecessor, and no parent-close policy
+        // applies. Message streams pass to the next run when the completion
+        // records its stream acknowledgements. Durable output streams are
+        // rows of their run and stay with the predecessor. Core touches
+        // neither service calls nor query tasks: a call keeps the predecessor
+        // as its caller (`ServiceCallWorkflowDelivery` skips a terminal
+        // caller), and a query admitted against the predecessor is still
+        // leased and answered from its history (continue-transfers fixture).
+        // Core moves only open calls with the `workflow_run` binding to the
+        // next run (`LinkedServiceCallCloser::advanceForContinuation`). Native
+        // resolves no call to that binding, and takeover refuses an open one.
+        // A call linked to this run through an `activity_execution` binding
+        // stays with the predecessor, as in Core.
         let rows = Self::query(DB::MEMO_READ)
             .bind(&old)
             .fetch_all(&mut **tx)
