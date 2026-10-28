@@ -166,9 +166,9 @@ async fn a_buffered_signal_gives_its_identity_to_one_new_wait_only() {
         (1, json!(1), buffered));
 }
 
-// Published 2.11.5, recorded: a signal that reserved an open wait does not
-// lend that identity to a wait a later (timer-resumed) task opens; the new
-// wait gets a fresh identity and the completion records.
+// Published 2.11.5, recorded in a lab: a signal that reserved an open wait
+// does not lend that identity to a wait a later (timer-resumed) task
+// opens; the new wait gets a fresh identity and the completion records.
 #[tokio::test]
 async fn a_reserved_wait_identity_is_not_taken_by_a_later_wait() {
     let database = TestDatabase::new().await;
@@ -193,6 +193,12 @@ async fn a_reserved_wait_identity_is_not_taken_by_a_later_wait() {
     assert_eq!(opened.len(), 2, "{history}");
     assert_ne!(opened[1], first, "two waits never share an identity");
     assert!(!opened[1].as_str().unwrap().starts_with("signal-command:"), "{opened:?}");
+    // The signal arrived while a task was leased, so none was created for
+    // it then. After a completion Core does not count a wait a received
+    // signal holds (`includeReceivedProjectedSignalWait: false`), so no
+    // task follows either.
+    assert_eq!(body["created_task_ids"], json!([]), "{body}");
+    assert!(poll(&app, "reserved-worker", "workflow").await.is_null());
 }
 
 // Published 2.11.5, recorded: two waits for `dup`; the first signal
@@ -350,13 +356,6 @@ async fn a_signal_outlives_a_condition_wait_whose_timeout_fired_first() {
         (1, json!(3), json!("x")), "{:?}", kinds(&history));
 }
 
-/// Forgets each signal and condition wait's native opening record, so the
-/// run's waits are read from history as for a run opened before native
-/// kept that record.
-async fn forget_opening_records(database: &TestDatabase) {
-    database.execute("UPDATE workflow_run_waits SET payload=NULL WHERE kind IN ('signal','condition')").await;
-}
-
 /// Appends a cancelled selection over `size` workflow sequences from `base`,
 /// as an imported or PHP-written history records it.
 async fn cancel_selection(database: &TestDatabase, run: &Value, base: i64, size: i64) {
@@ -372,77 +371,71 @@ async fn cancel_selection(database: &TestDatabase, run: &Value, base: i64, size:
 // Core 2.15.1 `closeCancelledSelectionWaits`: a cancelled selection closes
 // the open waits in its member range at that point of history. A wait
 // opened later in that range stays open, and a wait a received signal
-// already holds is not open, so the signal still resumes it. Read from
-// the projection and from history alike.
+// already holds is not open, so the signal still resumes it.
 #[tokio::test]
 async fn a_cancelled_selection_closes_only_the_waits_open_at_that_point() {
-    for from_history in [false, true] {
-        let database = TestDatabase::new().await;
-        let app = router(database.open().await.unwrap());
-        register(&app, "selection-worker", json!(["echo"]), json!([])).await;
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register(&app, "selection-worker", json!(["echo"]), json!([])).await;
 
-        // A wait opened after the cancellation, inside its range, stays open.
-        let run = start(&app, "selection-later").await;
-        let task = poll(&app, "selection-worker", "workflow").await;
-        let (status, body) = finish_task(&app, &task, json!([
-            {"type":"open_signal_wait","signal_name":"a"},
-            {"type":"start_timer","delay_seconds":1},
-        ])).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        cancel_selection(&database, &run, 1, 3).await;
-        if from_history {
-            forget_opening_records(&database).await;
-        }
-        let resumed = next_task(&app, "selection-worker").await;
-        let (status, body) = finish_task(&app, &resumed, json!([{"type":"open_signal_wait","signal_name":"b"}])).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
-        let later = events(&history, "SignalWaitOpened")[1]["payload"].clone();
-        assert_eq!(later["sequence"], 3, "{later}");
-        signal(&app, "selection-later", "a").await;
-        signal(&app, "selection-later", "b").await;
-        let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
-        let received = ids(&history, "SignalReceived");
-        assert!(received[0].as_str().unwrap().starts_with("signal-command:"), "`a` was closed: {received:?}");
-        assert_eq!(received[1], later["signal_wait_id"], "`b` is open");
-        let delivered = poll(&app, "selection-worker", "workflow").await;
-        assert_eq!(delivered["signal_wait_id"], later["signal_wait_id"], "{delivered}");
-        let (status, body) = finish_task(&app, &delivered, json!([timer()])).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        assert!(poll(&app, "selection-worker", "workflow").await.is_null());
+    // A wait opened after the cancellation, inside its range, stays open.
+    let run = start(&app, "selection-later").await;
+    let task = poll(&app, "selection-worker", "workflow").await;
+    let (status, body) = finish_task(&app, &task, json!([
+        {"type":"open_signal_wait","signal_name":"a"},
+        {"type":"start_timer","delay_seconds":1},
+    ])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    cancel_selection(&database, &run, 1, 3).await;
+    let resumed = next_task(&app, "selection-worker").await;
+    let (status, body) = finish_task(&app, &resumed, json!([{"type":"open_signal_wait","signal_name":"b"}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    let later = events(&history, "SignalWaitOpened")[1]["payload"].clone();
+    assert_eq!(later["sequence"], 3, "{later}");
+    signal(&app, "selection-later", "a").await;
+    signal(&app, "selection-later", "b").await;
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    let received = ids(&history, "SignalReceived");
+    assert!(received[0].as_str().unwrap().starts_with("signal-command:"), "`a` was closed: {received:?}");
+    assert_eq!(received[1], later["signal_wait_id"], "`b` is open");
+    let delivered = poll(&app, "selection-worker", "workflow").await;
+    assert_eq!(delivered["signal_wait_id"], later["signal_wait_id"], "{delivered}");
+    let (status, body) = finish_task(&app, &delivered, json!([timer()])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(poll(&app, "selection-worker", "workflow").await.is_null());
 
-        // A wait a received signal holds survives the cancellation; an open
-        // one does not.
-        let run = start(&app, "selection-held").await;
-        let task = poll(&app, "selection-worker", "workflow").await;
-        let (status, body) = finish_task(&app, &task, json!([
-            {"type":"open_signal_wait","signal_name":"a"},
-            {"type":"open_signal_wait","signal_name":"b"},
-        ])).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        signal(&app, "selection-held", "a").await;
-        cancel_selection(&database, &run, 1, 2).await;
-        if from_history {
-            forget_opening_records(&database).await;
-        }
-        let delivered = poll(&app, "selection-worker", "workflow").await;
-        let (status, body) = finish_task(&app, &delivered, json!([timer()])).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        signal(&app, "selection-held", "b").await;
-        let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
-        let applied = events(&history, "SignalApplied");
-        assert_eq!((applied.len(), applied[0]["payload"]["sequence"].clone()), (1, json!(1)), "{:?}", kinds(&history));
-        assert!(ids(&history, "SignalReceived")[1].as_str().unwrap().starts_with("signal-command:"), "`b` was closed");
-        assert!(poll(&app, "selection-worker", "workflow").await.is_null());
-        database.remove().await;
-    }
+    // A wait a received signal holds survives the cancellation; an open
+    // one does not.
+    let run = start(&app, "selection-held").await;
+    let task = poll(&app, "selection-worker", "workflow").await;
+    let (status, body) = finish_task(&app, &task, json!([
+        {"type":"open_signal_wait","signal_name":"a"},
+        {"type":"open_signal_wait","signal_name":"b"},
+    ])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    signal(&app, "selection-held", "a").await;
+    cancel_selection(&database, &run, 1, 2).await;
+    let delivered = poll(&app, "selection-worker", "workflow").await;
+    let (status, body) = finish_task(&app, &delivered, json!([timer()])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    signal(&app, "selection-held", "b").await;
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    let applied = events(&history, "SignalApplied");
+    assert_eq!((applied.len(), applied[0]["payload"]["sequence"].clone()), (1, json!(1)), "{:?}", kinds(&history));
+    assert!(ids(&history, "SignalReceived")[1].as_str().unwrap().starts_with("signal-command:"), "`b` was closed");
+    assert!(poll(&app, "selection-worker", "workflow").await.is_null());
+    database.remove().await;
 }
 
 // Core 2.15.1 `SignalWaits::forRun`: a wait recorded without its id (an
-// older or imported history) is known as `signal:{sequence}:{name}`, and
-// a signal reserves and resumes it under that identity.
+// older or imported history) is known as `signal:{sequence}:{name}`, and a
+// signal reserves it and is delivered under that identity. Applying looks
+// for a `SignalWaitOpened` that names the identity
+// (`recordAppliedSignalForSignalResume`), which a derived one never is, so
+// Core completes the task and leaves the signal received.
 #[tokio::test]
-async fn a_wait_recorded_without_an_id_takes_its_derived_identity() {
+async fn a_wait_recorded_without_an_id_is_reserved_under_its_derived_identity() {
     let database = TestDatabase::new().await;
     let app = router(database.open().await.unwrap());
     register(&app, "legacy-worker", json!(["echo"]), json!([])).await;
@@ -456,7 +449,6 @@ async fn a_wait_recorded_without_an_id_takes_its_derived_identity() {
         TestDatabase::MySql { .. } => "JSON_REMOVE(payload,'$.signal_wait_id')",
     };
     database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_history_events SET payload={strip} WHERE event_type='SignalWaitOpened'"))).await;
-    forget_opening_records(&database).await;
     signal(&app, "legacy-wait", "go").await;
     let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
     assert_eq!(ids(&history, "SignalReceived"), [json!("signal:1:go")]);
@@ -465,8 +457,8 @@ async fn a_wait_recorded_without_an_id_takes_its_derived_identity() {
     let (status, body) = finish_task(&app, &resumed, json!([timer()])).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
-    let applied = &events(&history, "SignalApplied")[0]["payload"];
-    assert_eq!((applied["sequence"].clone(), applied["signal_wait_id"].clone()), (json!(1), json!("signal:1:go")));
+    assert!(events(&history, "SignalApplied").is_empty(), "{:?}", kinds(&history));
+    assert!(poll(&app, "legacy-worker", "workflow").await.is_null(), "the held wait is not delivered again");
 }
 
 // Core 2.15.1 `WorkflowTaskPayload::forSignal`: a signal stored without a
@@ -491,4 +483,161 @@ async fn a_signal_stored_without_a_wait_id_is_delivered_and_applied() {
     let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
     let applied = &events(&history, "SignalApplied")[0]["payload"];
     assert!(applied.get("signal_wait_id").is_none() && applied.get("sequence").is_none(), "{applied}");
+}
+
+/// Appends one history event as PHP or an import would have written it.
+async fn append_event(database: &TestDatabase, run: &Value, event_type: &str, payload: Value) {
+    let run = run["run_id"].as_str().unwrap();
+    let payload = payload.to_string();
+    let id = ulid::Ulid::new().to_string();
+    database.execute(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,recorded_at,created_at,updated_at) SELECT '{id}',id,last_history_sequence+1,'{event_type}','{payload}','2026-10-28 00:00:00.000000','2026-10-28 00:00:00.000000','2026-10-28 00:00:00.000000' FROM workflow_runs WHERE id='{run}'"
+    ))).await;
+    database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_runs SET last_history_sequence=last_history_sequence+1 WHERE id='{run}'"))).await;
+}
+
+async fn timer_fired(app: &Router, run: &Value) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while events(&run_history(app, &run["workflow_id"], &run["run_id"]).await, "TimerFired").is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the timeout fires");
+}
+
+// Over the worker protocol Core records no `ConditionWaitTimedOut` (only
+// its in-process executor does): a fired condition timeout leaves the wait
+// open and unable to take a signal. Such a stale wait does not excuse a
+// signal task whose signal nothing can take; native still refuses that
+// completion. Only a timeout that fired after the signal arrived does.
+#[tokio::test]
+async fn a_stale_fired_condition_wait_does_not_excuse_an_unapplied_signal() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register(&app, "stale-worker", json!(["echo"]), json!([])).await;
+    let run = start(&app, "stale-condition").await;
+    let task = poll(&app, "stale-worker", "workflow").await;
+    let (status, body) = finish_task(&app, &task, json!([
+        {"type":"open_condition_wait","condition_key":"stale","timeout_seconds":1},
+    ])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    timer_fired(&app, &run).await;
+    let fired = next_task(&app, "stale-worker").await;
+    let (status, body) = finish_task(&app, &fired, json!([{"type":"open_condition_wait","condition_key":"live"}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    assert!(kinds(&history).iter().all(|kind| kind != "ConditionWaitTimedOut"), "{:?}", kinds(&history));
+    signal(&app, "stale-condition", "x").await;
+    // The live condition wait that made the signal deliverable goes away
+    // before the task applies it.
+    append_event(&database, &run, "SelectionOperationCancelled", json!({"member_base_sequence":2,"member_size":1})).await;
+    let delivered = poll(&app, "stale-worker", "workflow").await;
+    assert_eq!(delivered["signal_name"], "x", "{delivered}");
+    let (status, body) = finish_task(&app, &delivered, json!([timer()])).await;
+    assert_eq!((status, body["reason"].clone()), (StatusCode::CONFLICT, json!("signal_wait_mismatch")), "{body}");
+}
+
+// The open-wait view and the "already opened" check read the same
+// history, so a wait opened under an identity stays taken even when its
+// projection row is gone.
+#[tokio::test]
+async fn an_opened_identity_stays_taken_without_its_projection_row() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register(&app, "taken-worker", json!(["echo"]), json!([])).await;
+    let run = start(&app, "taken-identity").await;
+    let task = poll(&app, "taken-worker", "workflow").await;
+    let (status, body) = finish_task(&app, &task, json!([
+        {"type":"open_signal_wait","signal_name":"dup"},
+        {"type":"start_timer","delay_seconds":1},
+    ])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let resumed = next_task(&app, "taken-worker").await;
+    signal(&app, "taken-identity", "dup").await;
+    database.execute("DELETE FROM workflow_run_waits").await;
+    let (status, body) = finish_task(&app, &resumed, json!([{"type":"open_signal_wait","signal_name":"dup"}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    let opened = ids(&history, "SignalWaitOpened");
+    assert_eq!(opened.len(), 2, "{history}");
+    assert_ne!(opened[0], opened[1], "two waits never share an identity");
+}
+
+// Core resolves `SignalWaitCancelled` only by the id it names: one written
+// without an id (PHP-written or imported) cancels nothing, and the wait
+// still takes its signal.
+#[tokio::test]
+async fn a_wait_cancellation_without_an_id_cancels_nothing() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register(&app, "idless-worker", json!(["echo"]), json!([])).await;
+    let run = start(&app, "idless-cancel").await;
+    let task = poll(&app, "idless-worker", "workflow").await;
+    let (status, body) = finish_task(&app, &task, json!([{"type":"open_signal_wait","signal_name":"go"}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    append_event(&database, &run, "SignalWaitCancelled", json!({"signal_name":"go","sequence":1})).await;
+    database.execute("UPDATE workflow_run_waits SET payload=NULL").await;
+    signal(&app, "idless-cancel", "go").await;
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    let opened = ids(&history, "SignalWaitOpened")[0].clone();
+    assert_eq!(ids(&history, "SignalReceived"), [opened.clone()]);
+    let delivered = poll(&app, "idless-worker", "workflow").await;
+    assert_eq!(delivered["signal_wait_id"], opened, "{delivered}");
+    let (status, body) = finish_task(&app, &delivered, json!([timer()])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    assert_eq!(events(&history, "SignalApplied")[0]["payload"]["sequence"], 1);
+}
+
+// Published 2.11.5, recorded in a lab: `ConditionWaitSatisfied` carries the
+// wait's identity, key, sequence, timeout timer and seconds, the resuming
+// signal task's signal fields and that task's snapshot; nothing of the
+// opening event (its task, or fields only an opening has).
+#[tokio::test]
+async fn condition_satisfaction_is_built_from_the_wait_and_the_resuming_task() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register(&app, "satisfied-worker", json!(["echo"]), json!([])).await;
+    let run = start(&app, "satisfied-shape").await;
+    let task = poll(&app, "satisfied-worker", "workflow").await;
+    let (status, body) = finish_task(&app, &task, json!([
+        {"type":"open_condition_wait","condition_key":"ready","timeout_seconds":600},
+    ])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    signal(&app, "satisfied-shape", "x").await;
+    let resumed = poll(&app, "satisfied-worker", "workflow").await;
+    let (status, body) = finish_task(&app, &resumed, json!([timer()])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    let satisfied = &events(&history, "ConditionWaitSatisfied")[0]["payload"];
+    let mut keys: Vec<_> = satisfied.as_object().unwrap().keys().cloned().collect();
+    keys.sort();
+    assert_eq!(keys, ["condition_key", "condition_wait_id", "sequence", "signal_name", "signal_wait_id", "task",
+        "timeout_seconds", "timer_id", "workflow_signal_id"], "{satisfied}");
+    assert_eq!(satisfied["task"]["id"], resumed["task_id"], "{satisfied}");
+    assert_eq!(satisfied["signal_wait_id"], resumed["signal_wait_id"]);
+    let scheduled = &events(&history, "TimerScheduled")[0]["payload"];
+    assert_eq!(satisfied["timer_id"], scheduled["timer_id"]);
+}
+
+// Acceptance counts a pending signal with the same predicate delivery and
+// wait opening use (received and not closed), so a closed record (as PHP
+// or an import may leave one) does not buffer the next signal.
+#[tokio::test]
+async fn a_closed_received_signal_does_not_buffer_the_next_one() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register(&app, "closed-worker", json!(["echo"]), json!([])).await;
+    let run = start(&app, "closed-pending").await;
+    let task = poll(&app, "closed-worker", "workflow").await;
+    signal(&app, "closed-pending", "go").await;
+    database.execute("UPDATE workflow_signal_records SET closed_at='2026-10-28 00:00:00.000000'").await;
+    let (status, body) = finish_task(&app, &task, json!([{"type":"open_signal_wait","signal_name":"go"}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    signal(&app, "closed-pending", "go").await;
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    let opened = ids(&history, "SignalWaitOpened")[0].clone();
+    assert!(!opened.as_str().unwrap().starts_with("signal-command:"), "the closed record lends no identity: {opened}");
+    assert_eq!(ids(&history, "SignalReceived")[1], opened, "the second signal reserves the open wait");
 }
