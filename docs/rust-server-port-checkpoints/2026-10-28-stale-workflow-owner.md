@@ -102,6 +102,8 @@
   `recovery_repairs_the_abandoned_task_as_php_does` and
   `recovery_finds_abandoned_leases_anywhere_and_honors_the_scan_limit`. All
   five fail on the earlier head.
-- **Still open.** Cooperative cancellation delivery (`cooperative.rs`) judges
-  the owner's freshness with a fixed 60 seconds rather than the configured
-  stale window.
+- **Follow-up, done.** Cooperative cancellation delivery (`cooperative.rs`)
+  judged the owner's freshness with a fixed 60 seconds. It now uses the
+  shared `lease_owner_fresh` with the configured stale window, as
+  `CooperativeCancellationController` uses `WorkerPollFence::isFresh`, and
+  so do the cancellation-scope routes.
