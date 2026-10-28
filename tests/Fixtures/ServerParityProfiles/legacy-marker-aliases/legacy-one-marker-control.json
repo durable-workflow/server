@@ -73,7 +73,7 @@
     },
     "cancel_poll_on_shutdown": ["workflow", "activity", "query"],
     "cancel_unsent_poll_on_shutdown": true,
-    "poll_capacity": {"status": 429, "poll_status": "long_poll_capacity_exhausted", "retry_after_seconds": 1, "kinds": ["workflow", "activity", "query"], "recovery": "same_authority_and_options", "allow_query_shutdown_after_commit": true}
+    "poll_capacity": {"status": 429, "poll_status": "long_poll_capacity_exhausted", "retry_after_seconds": 1, "kinds": ["workflow", "activity", "query"], "recovery": "same_authority_and_options", "allow_shutdown_after_commit": ["workflow", "activity", "query"]}
   },
   "expected_events": [
     "StartAccepted",
