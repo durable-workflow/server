@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Support\AvroPayloadEnvelopeResolver;
 use App\Support\ControlPlaneProtocol;
+use App\Support\LegacyV1Projection;
 use App\Support\MessageStreamService;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
@@ -42,6 +43,15 @@ final class MessageStreamController
                 'outcome' => 'rejected',
                 'reason' => 'instance_not_found',
             ], 404);
+        }
+
+        $run = NamespaceWorkflowScope::currentRun($namespace, $workflowId);
+        if (LegacyV1Projection::isProjectedRun($run)) {
+            return ControlPlaneProtocol::jsonForRequest(
+                $request,
+                LegacyV1Projection::readOnlyMessageAppend($run, $streamName),
+                409,
+            );
         }
 
         $validator = Validator::make($request->all(), [

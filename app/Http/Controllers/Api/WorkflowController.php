@@ -1320,18 +1320,7 @@ class WorkflowController
 
     private function projectedV1OperationResponse(Request $request, WorkflowRun $run, string $operation): JsonResponse
     {
-        return ControlPlaneProtocol::jsonForRequest($request, [
-            'message' => sprintf(
-                'Operation [%s] is unavailable because this execution is a read-only projection owned by the source v1 runtime.',
-                $operation,
-            ),
-            'reason' => 'v1_projection_read_only',
-            'remediation' => 'Run commands against the source v1 application until it completes; repeat projection never dispatches or advances standalone execution.',
-            'workflow_id' => $run->workflow_instance_id,
-            'run_id' => $run->id,
-            'operation' => $operation,
-            'execution_owner' => 'v1',
-        ], 409);
+        return ControlPlaneProtocol::jsonForRequest($request, LegacyV1Projection::readOnlyOperation($run, $operation), 409);
     }
 
     /**

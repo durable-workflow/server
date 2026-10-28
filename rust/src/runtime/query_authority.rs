@@ -13,6 +13,9 @@ pub struct QueryTaskConfig {
     pub lease_timeout_seconds: i64,
     pub receipt_ttl_seconds: i64,
     pub worker_stale_after_seconds: i64,
+    /// `server.polling.expired_workflow_task_recovery_scan_limit`: how many
+    /// abandoned workflow task leases a probe recovers at most.
+    pub workflow_task_recovery_scan_limit: i64,
     /// The worker heartbeat cadence advertised on registration and heartbeat.
     pub worker_heartbeat_interval_seconds: i64,
     /// How long a claimed workflow task stays leased, as PHP's DW_WORKFLOW_TASK_TIMEOUT.
@@ -39,6 +42,7 @@ impl Default for QueryTaskConfig {
             lease_timeout_seconds: 60,
             receipt_ttl_seconds: 180,
             worker_stale_after_seconds: 30,
+            workflow_task_recovery_scan_limit: 5,
             worker_heartbeat_interval_seconds: 10,
             workflow_task_lease_seconds: 60,
             activity_task_lease_seconds: 300,
@@ -106,6 +110,12 @@ impl QueryTaskConfig {
                 "DW_WORKER_STALE_AFTER_SECONDS",
                 "WORKFLOW_SERVER_WORKER_STALE_AFTER_SECONDS",
                 heartbeat.saturating_mul(3).max(30),
+            )?
+            .max(1),
+            workflow_task_recovery_scan_limit: integer(
+                "DW_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT",
+                "WORKFLOW_SERVER_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT",
+                5,
             )?
             .max(1),
             // PHP clamps the advertised cadence to one second through an hour.

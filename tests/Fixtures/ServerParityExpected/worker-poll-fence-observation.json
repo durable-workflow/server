@@ -198,5 +198,123 @@
   "recovery_old_completion": {
     "status": 409,
     "reason": "workflow_task_attempt_mismatch"
+  },
+  "stale_owner_leased": {
+    "status": 200,
+    "poll_status": "leased",
+    "own_run": true,
+    "attempt": 1,
+    "reason": null
+  },
+  "stale_owner_heartbeat": {
+    "status": 409,
+    "reason": "stale_worker_registration",
+    "error": "Workflow task lease owner is no longer an active worker.",
+    "task_status": "leased",
+    "keys": [
+      "error",
+      "lease_expires_at",
+      "lease_owner",
+      "protocol_version",
+      "reason",
+      "task_id",
+      "task_status",
+      "workflow_task_attempt"
+    ],
+    "own_task": true,
+    "own_attempt": true,
+    "own_owner": true,
+    "lease_expires_at": "present"
+  },
+  "stale_owner_history": {
+    "status": 409,
+    "reason": "stale_worker_registration",
+    "error": "Workflow task lease owner is no longer an active worker.",
+    "task_status": "leased",
+    "keys": [
+      "error",
+      "lease_expires_at",
+      "lease_owner",
+      "protocol_version",
+      "reason",
+      "task_id",
+      "task_status",
+      "workflow_task_attempt"
+    ],
+    "own_task": true,
+    "own_attempt": true,
+    "own_owner": true,
+    "lease_expires_at": "present"
+  },
+  "stale_owner_scope_checkpoint": {
+    "status": 409,
+    "reason": "stale_worker_registration",
+    "error": "Workflow task lease owner is no longer an active worker.",
+    "task_status": "leased",
+    "keys": [
+      "error",
+      "lease_expires_at",
+      "lease_owner",
+      "protocol_version",
+      "reason",
+      "task_id",
+      "task_status",
+      "workflow_task_attempt"
+    ],
+    "own_task": true,
+    "own_attempt": true,
+    "own_owner": true,
+    "lease_expires_at": "present"
+  },
+  "stale_owner_fail": {
+    "status": 409,
+    "reason": "stale_worker_registration",
+    "error": "Workflow task lease owner is no longer an active worker.",
+    "task_status": "leased",
+    "keys": [
+      "error",
+      "lease_expires_at",
+      "lease_owner",
+      "protocol_version",
+      "reason",
+      "task_id",
+      "task_status",
+      "workflow_task_attempt"
+    ],
+    "own_task": true,
+    "own_attempt": true,
+    "own_owner": true,
+    "lease_expires_at": "present"
+  },
+  "stale_owner_complete": {
+    "status": 409,
+    "reason": "stale_worker_registration",
+    "error": "Workflow task lease owner is no longer an active worker.",
+    "task_status": "leased",
+    "keys": [
+      "error",
+      "lease_expires_at",
+      "lease_owner",
+      "protocol_version",
+      "reason",
+      "task_id",
+      "task_status",
+      "workflow_task_attempt"
+    ],
+    "own_task": true,
+    "own_attempt": true,
+    "own_owner": true,
+    "lease_expires_at": "present"
+  },
+  "stale_owner_recovered": {
+    "status": 200,
+    "poll_status": "leased",
+    "own_run": true,
+    "attempt": 2,
+    "reason": null
+  },
+  "stale_owner_complete_after_recovery": {
+    "status": 409,
+    "reason": "lease_owner_mismatch"
   }
 }

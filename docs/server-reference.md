@@ -1930,6 +1930,7 @@ inside the package's `config/workflows.php` via
 | `DW_V2_LIMIT_MEMO_SIZE_BYTES` | `262144` | Package-level memo byte ceiling. |
 | `DW_V2_LIMIT_SEARCH_ATTRIBUTE_SIZE_BYTES` | `40960` | Package-level search-attribute byte ceiling. |
 | `DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE` | `5000` | Package-level history-transaction event ceiling. |
+| `DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES` | `16777216` | Package-level history-transaction byte ceiling, also applied to Waterline v1 projection imports. Zero disables this dimension. |
 | `DW_V2_LIMIT_WARNING_THRESHOLD_PERCENT` | `80` | Percent of a structural limit at which the package warns. |
 | `DW_V2_TASK_DISPATCH_MODE` | `queue` | Package-level workflow-task dispatch mode. Usually overridden by the server via `DW_TASK_DISPATCH_MODE`. |
 | `DW_V2_MATCHING_ROLE_QUEUE_WAKE` | `true` | Whether queue workers run the in-worker matching-role wake on every Looping event. In the supplied Compose stacks, `false` also skips the scheduler's unscoped repair pass. Set it to `false` only when a dedicated `php artisan workflow:v2:repair-pass --loop` daemon owns the sweep. |

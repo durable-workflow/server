@@ -231,6 +231,7 @@ impl Runtime {
         store.activity_task_lease_seconds = queries.activity_task_lease_seconds;
         store.update_wait_seconds = queries.update_wait_completion_timeout_seconds;
         store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
+        store.workflow_task_recovery_scan_limit = queries.workflow_task_recovery_scan_limit;
         Self::from_storage(Storage::Sqlite(store), token, external, queries, structural).await
     }
 
@@ -250,6 +251,7 @@ impl Runtime {
         store.activity_task_lease_seconds = queries.activity_task_lease_seconds;
         store.update_wait_seconds = queries.update_wait_completion_timeout_seconds;
         store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
+        store.workflow_task_recovery_scan_limit = queries.workflow_task_recovery_scan_limit;
         Self::from_storage(Storage::Postgres(store), token, external, queries, structural).await
     }
 
@@ -269,6 +271,7 @@ impl Runtime {
         store.activity_task_lease_seconds = queries.activity_task_lease_seconds;
         store.update_wait_seconds = queries.update_wait_completion_timeout_seconds;
         store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
+        store.workflow_task_recovery_scan_limit = queries.workflow_task_recovery_scan_limit;
         Self::from_storage(Storage::MySql(store), token, external, queries, structural).await
     }
 
