@@ -408,13 +408,6 @@ where
         if depth >= MAX_POLICY_DEPTH {
             return Ok(Some(unavailable));
         }
-        let activities = Self::scalar("SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status IN ('pending','running')")
-            .bind(&run_id).fetch_one(&mut **tx).await?;
-        let timers = Self::scalar("SELECT COUNT(*) FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending'")
-            .bind(&run_id).fetch_one(&mut **tx).await?;
-        if activities > 1000 || timers > 1000 {
-            return Ok(Some("cancellation_inventory_exceeds_budget"));
-        }
         let (reason, blob) = super::cancellation::prepare_reason(&json!({"reason": reason}), Arc::new(Semaphore::new(1))).await?;
         let command_id = id();
         let command_sequence = DB::number(&run, "last_command_sequence")?

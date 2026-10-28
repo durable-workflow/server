@@ -342,6 +342,22 @@ contract fixture before its correction.
     publish the active `history_transaction_size`, `history_transaction_bytes`
     and `history_transaction_rows` (0 when disabled), as Workflow #934's
     `StructuralLimits::snapshot()` does.
+- **Closing a run with over 1,000 open activities or timers, ahead of
+  published PHP** (October 28). Workflow's `attemptTerminalCommand` cancels
+  every open activity and timer, and a run may hold up to 2,000 of each by
+  default (`StructuralLimits`). Native used to refuse such a close: HTTP
+  cancel and terminate answered `503 cancellation_inventory_exceeds_budget`,
+  a parent-close policy recorded `ParentClosePolicyFailed`, and a
+  cooperative cancellation could not complete. Native now closes it in one
+  transaction, as the run timeout already did.
+
+  Published 2.11.5 cannot close such a run in practice. On SQLite, its
+  terminate time grows faster than the inventory: 4.0 s for 198 open timers,
+  10.3 s for 396 and 28.9 s for 792. At 1,089 open timers or activities it
+  exceeds PHP's 30-second execution limit, answers 500, and leaves the run
+  open. No published reference can record a passing close, so native
+  follows Workflow's source here
+  ([checkpoint](rust-server-port-checkpoints/2026-10-28-close-inventory.md)).
 - **Waterline v1 projections, ahead of published PHP.**
   - Native refuses a message stream append to a projection with
     `409 v1_projection_read_only`, at the route before the body is read and
@@ -456,8 +472,7 @@ contract fixture before its correction.
     `request_context_invalid`, and a PHP-written stop receipt as
     `callback_state: unknown`.
   - **Children native cannot close yet.** When a policy would cancel or
-    terminate a child with more than 1,000 open activities or timers, or
-    32 levels below the closing parent, native records
+    terminate a child 32 levels below the closing parent, native records
     `ParentClosePolicyFailed` with the refusal it would give an HTTP cancel
     or terminate and leaves the child open. PHP closes it.
 - **Several open waits at once** (October 28, closed). Published PHP lets a

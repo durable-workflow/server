@@ -235,16 +235,6 @@ where
         // follow their parent-close policies below. Like PHP's close, it
         // reads no incoming link and no live query to decide whether the run
         // may close.
-        let activities = Self::query("SELECT * FROM activity_executions WHERE workflow_run_id=$1 AND status IN ('pending','running') ORDER BY id LIMIT 1001")
-            .bind(&run_id).fetch_all(&mut *tx).await?;
-        let timers = Self::query("SELECT * FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending' ORDER BY id LIMIT 1001")
-            .bind(&run_id).fetch_all(&mut *tx).await?;
-        if !closed && (activities.len() > 1000 || timers.len() > 1000) {
-            return Err(refuse(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "cancellation_inventory_exceeds_budget",
-            ));
-        }
         let command_id = id();
         let command_sequence = DB::number(&run, "last_command_sequence")?
             .checked_add(1)
@@ -294,9 +284,10 @@ where
     ) -> Result<()> {
         let run_id = DB::string(run, "id")?;
         let workflow_id = DB::string(run, "workflow_instance_id")?;
-        let activities = Self::query("SELECT * FROM activity_executions WHERE workflow_run_id=$1 AND status IN ('pending','running') ORDER BY id LIMIT 1001")
+        // `attemptTerminalCommand` cancels every open activity and timer.
+        let activities = Self::query("SELECT * FROM activity_executions WHERE workflow_run_id=$1 AND status IN ('pending','running') ORDER BY id")
             .bind(&run_id).fetch_all(&mut **tx).await?;
-        let timers = Self::query("SELECT * FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending' ORDER BY id LIMIT 1001")
+        let timers = Self::query("SELECT * FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending' ORDER BY id")
             .bind(&run_id).fetch_all(&mut **tx).await?;
         let mut identity = json!({"workflow_command_id":command_id,"workflow_instance_id":workflow_id,"workflow_run_id":run_id});
         if let Some(reason) = reason {

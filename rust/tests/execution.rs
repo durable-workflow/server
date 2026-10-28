@@ -334,6 +334,9 @@ mod worker_sessions;
 #[path = "execution/workflow_import_fences.rs"]
 mod workflow_import_fences;
 
+#[path = "execution/close_inventory.rs"]
+mod close_inventory;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {

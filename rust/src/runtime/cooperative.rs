@@ -887,16 +887,11 @@ where
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "cancellation_request_missing"))?;
         let deadline = DB::optional_instant(run, "cancellation_deadline_at")?
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "cancellation_deadline_missing"))?;
-        let activities=Self::query("SELECT * FROM activity_executions WHERE workflow_run_id=$1 AND status IN ('pending','running') ORDER BY id LIMIT 1001")
+        // The cancelled close takes every open activity and timer with it.
+        let activities=Self::query("SELECT * FROM activity_executions WHERE workflow_run_id=$1 AND status IN ('pending','running') ORDER BY id")
             .bind(&run_id).fetch_all(&mut **tx).await?;
-        let timers=Self::query("SELECT * FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending' ORDER BY id LIMIT 1001")
+        let timers=Self::query("SELECT * FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending' ORDER BY id")
             .bind(&run_id).fetch_all(&mut **tx).await?;
-        if activities.len() > 1000 || timers.len() > 1000 {
-            return Err(refuse(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "cancellation_inventory_exceeds_budget",
-            ));
-        }
         let delivery=Self::query("SELECT id,workflow_command_id,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='CooperativeCancellationDelivered' ORDER BY sequence LIMIT 1")
             .bind(&run_id).fetch_optional(&mut **tx).await?;
         let mut delivery_id = None;
