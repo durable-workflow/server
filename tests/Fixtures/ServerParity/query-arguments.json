@@ -1,0 +1,94 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "query-arguments",
+  "review_state": "reviewed",
+  "contract": "Query arguments the server cannot decode (published Server 2.11.5 WorkflowController::query and WorkflowQueryTaskBroker::query with validateContractedQueryArguments), over raw HTTP on protocol 1.20 in a fresh namespace. The server decodes a query's arguments only to check them against a query contract the run's start recorded. A run whose query-capable worker declares no queries routes the query with its arguments as given: the worker leases a query task carrying the undecodable blob, or the blob of a single string, unchanged, answers it, and the waiting client receives 200. A run whose worker declared the query refuses the same arguments before routing with 422 invalid_query_arguments, the message 'Workflow query [state] arguments could not be decoded.' or 'Workflow query [state] arguments must decode to an array.', and validation_errors.arguments naming the cause; no query task is created. Embedded applications have no worker protocol.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "query arguments λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "query arguments λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "query_argument_routing": {
+    "workflow_type": "parity.v1.query_arguments",
+    "query": "state",
+    "blobs": {
+      "empty": "wwHioz3/VYAiNwwA",
+      "undecodable": "AAAA",
+      "not_a_list": "wwHioz3/VYAiNwoUbm90IGEgbGlzdA=="
+    },
+    "expected": {
+      "uncontracted": {
+        "undecodable": {
+          "leased": true,
+          "arguments": {
+            "codec": "avro",
+            "blob": "AAAA"
+          },
+          "answered": 200,
+          "client": {
+            "status": 200,
+            "reason": null
+          }
+        },
+        "not_a_list": {
+          "leased": true,
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwoUbm90IGEgbGlzdA=="
+          },
+          "answered": 200,
+          "client": {
+            "status": 200,
+            "reason": null
+          }
+        }
+      },
+      "contracted": {
+        "undecodable": {
+          "status": 422,
+          "reason": "invalid_query_arguments",
+          "message": "Workflow query [state] arguments could not be decoded.",
+          "validation_errors": {
+            "arguments": [
+              "Query arguments could not be decoded."
+            ]
+          }
+        },
+        "not_a_list": {
+          "status": 422,
+          "reason": "invalid_query_arguments",
+          "message": "Workflow query [state] arguments must decode to an array.",
+          "validation_errors": {
+            "arguments": [
+              "Query arguments must decode to an array."
+            ]
+          }
+        }
+      }
+    }
+  }
+}
