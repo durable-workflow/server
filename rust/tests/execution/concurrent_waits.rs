@@ -375,7 +375,8 @@ async fn cancel_selection(database: &TestDatabase, run: &Value, base: i64, size:
 #[tokio::test]
 async fn a_cancelled_selection_closes_only_the_waits_open_at_that_point() {
     let database = TestDatabase::new().await;
-    let app = router(database.open().await.unwrap());
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
     register(&app, "selection-worker", json!(["echo"]), json!([])).await;
 
     // A wait opened after the cancellation, inside its range, stays open.
@@ -425,6 +426,7 @@ async fn a_cancelled_selection_closes_only_the_waits_open_at_that_point() {
     assert_eq!((applied.len(), applied[0]["payload"]["sequence"].clone()), (1, json!(1)), "{:?}", kinds(&history));
     assert!(ids(&history, "SignalReceived")[1].as_str().unwrap().starts_with("signal-command:"), "`b` was closed");
     assert!(poll(&app, "selection-worker", "workflow").await.is_null());
+    runtime.close().await;
     database.remove().await;
 }
 
