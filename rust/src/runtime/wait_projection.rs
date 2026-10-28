@@ -278,7 +278,6 @@ where
         event_type: &str,
         payload: &Value,
         at: DateTime<Utc>,
-        history_sequence: i64,
     ) -> Result<()> {
         if event_type == "ConditionWaitOpened" {
             let wait_id = super::text(payload, "condition_wait_id")?;
@@ -295,11 +294,10 @@ where
                     )
                 },
             );
-            Self::query("INSERT INTO workflow_run_waits(id,workflow_run_id,workflow_instance_id,wait_id,position,kind,sequence,status,source_status,summary,opened_at,target_name,target_type,task_backed,external_only,resume_source_kind,history_authority,payload,created_at,updated_at) SELECT $1,id,workflow_instance_id,$2,$3,'condition',$4,'open','waiting',$5,$6,$7,'condition',FALSE,TRUE,'external_input','typed_history',$8,$9,$10 FROM workflow_runs WHERE id=$11")
+            Self::query("INSERT INTO workflow_run_waits(id,workflow_run_id,workflow_instance_id,wait_id,position,kind,sequence,status,source_status,summary,opened_at,target_name,target_type,task_backed,external_only,resume_source_kind,history_authority,created_at,updated_at) SELECT $1,id,workflow_instance_id,$2,$3,'condition',$4,'open','waiting',$5,$6,$7,'condition',FALSE,TRUE,'external_input','typed_history',$8,$9 FROM workflow_runs WHERE id=$10")
                 .bind(projection_id).bind(wait_id).bind(sequence - 1).bind(sequence)
                 .bind(summary)
-                .bind(DB::bind_time(at)).bind(key).bind(DB::document(&opened_record(payload, history_sequence)))
-                .bind(DB::bind_time(at)).bind(DB::bind_time(at))
+                .bind(DB::bind_time(at)).bind(key).bind(DB::bind_time(at)).bind(DB::bind_time(at))
                 .bind(run_id).execute(&mut **tx).await?;
         } else if event_type == "ConditionWaitSatisfied" {
             // Receipt alone is not satisfaction. Only the worker's committed
@@ -345,7 +343,6 @@ where
         event_type: &str,
         payload: &Value,
         at: DateTime<Utc>,
-        history_sequence: i64,
     ) -> Result<()> {
         if event_type == "SignalWaitOpened" {
             let wait_id = super::text(payload, "signal_wait_id")?;
@@ -360,11 +357,10 @@ where
             } else {
                 format!("Waiting for signal {name}.")
             };
-            Self::query("INSERT INTO workflow_run_waits(id,workflow_run_id,workflow_instance_id,wait_id,position,kind,sequence,status,source_status,summary,opened_at,target_name,task_backed,external_only,resume_source_kind,history_authority,payload,created_at,updated_at) SELECT $1,id,workflow_instance_id,$2,$3,'signal',$4,'open','waiting',$5,$6,$7,FALSE,TRUE,'signal','typed_history',$8,$9,$10 FROM workflow_runs WHERE id=$11")
+            Self::query("INSERT INTO workflow_run_waits(id,workflow_run_id,workflow_instance_id,wait_id,position,kind,sequence,status,source_status,summary,opened_at,target_name,task_backed,external_only,resume_source_kind,history_authority,created_at,updated_at) SELECT $1,id,workflow_instance_id,$2,$3,'signal',$4,'open','waiting',$5,$6,$7,FALSE,TRUE,'signal','typed_history',$8,$9 FROM workflow_runs WHERE id=$10")
                 .bind(projection_id).bind(wait_id).bind(sequence - 1).bind(sequence)
                 .bind(summary)
-                .bind(DB::bind_time(at)).bind(name).bind(DB::document(&opened_record(payload, history_sequence)))
-                .bind(DB::bind_time(at)).bind(DB::bind_time(at))
+                .bind(DB::bind_time(at)).bind(name).bind(DB::bind_time(at)).bind(DB::bind_time(at))
                 .bind(run_id).execute(&mut **tx).await?;
         } else if payload["timer_kind"] == "signal_timeout"
             && matches!(
@@ -465,17 +461,6 @@ where
         Ok(())
     }
 }
-/// The projection row's record of the event that opened a signal or
-/// condition wait, which `open_waits` reads instead of the run's history:
-/// the opening payload and its history position.
-pub(super) const OPENED_RECORD: &str = "native_opened_wait";
-
-fn opened_record(payload: &Value, history_sequence: i64) -> Value {
-    let mut record = serde_json::Map::new();
-    record.insert(OPENED_RECORD.to_owned(), serde_json::json!({"payload": payload, "history_sequence": history_sequence}));
-    Value::Object(record)
-}
-
 fn signal_duration(seconds: i64) -> String {
     format!("{seconds} second{}", if seconds == 1 { "" } else { "s" })
 }
