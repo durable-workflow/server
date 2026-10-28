@@ -484,13 +484,19 @@ contract fixture before its correction.
   signal's identity. The `concurrent-waits` fixture records it against
   published 2.11.5
   ([checkpoint](rust-server-port-checkpoints/2026-10-28-concurrent-waits.md)).
-- **Continue-as-new transfers.** Native continues a run over open
-  activities, timers, children and waits, and from a child run, as PHP does
+- **Continue-as-new transfers** (October 28, closed). Native continues a
+  run over open activities, timers, children and waits, and from a child
+  run, as PHP does
   ([checkpoint](rust-server-port-checkpoints/2026-10-23-command-batches.md)).
-  It still refuses continue-as-new while the instance has durable or inbound
-  streams, the run has service calls, or a query is live
-  (`continue_as_new_transfer_unqualified`); PHP continues it. A new workflow
-  type or queue on the command now applies, as in PHP.
+  A new workflow type or queue on the command applies, as in PHP. Native
+  also continues a run over streams, service calls and live queries, as
+  published PHP does: Core's `applyContinueAsNew` moves message stream
+  cursors and touches neither service calls nor query tasks. A call keeps
+  the predecessor as its caller and stays open. A query admitted against
+  the predecessor is still leased and answered from its history. The
+  `continue-transfers` fixture records both against published 2.11.5, and
+  `continue_as_new_transfer_unqualified` is gone
+  ([checkpoint](rust-server-port-checkpoints/2026-10-28-continue-transfers.md)).
 - **Trace context (Core 2.10, published in Server 2.11.1).** Core adds
   nullable `observability_context` columns on runs, commands and tasks.
   Native has no carrier: it accepts and ignores a top-level carrier on
