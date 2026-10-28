@@ -125,8 +125,10 @@ fn string(value: &Value) -> Option<String> {
 }
 
 /// `intValue`: an integer, or a numeric string.
+/// A JSON float is not an integer (`is_int`); a numeric string is cast as
+/// PHP's `(int)` casts it, so `"1.0"` and `"1e0"` read as 1.
 fn int(value: &Value) -> Option<i64> {
-    value.as_i64().or_else(|| value.as_str().and_then(|text| text.trim().parse().ok()))
+    value.as_i64().or_else(|| value.as_str().and_then(super::php_value::int_cast))
 }
 
 /// Whether a cancelled selection's member range holds a sequence.
@@ -589,6 +591,20 @@ mod tests {
             let waits = fold(&[("ConditionWaitOpened", opened)]);
             let satisfied = waits.conditions[0].satisfied(waits.condition_opening("w"), &json!({}));
             assert!(satisfied.get("parallel_group_id").is_none(), "{satisfied}");
+        }
+    }
+
+    // `SignalWaits::intValue` and `ConditionWaits::intValue`: an integer, or
+    // any `is_numeric` string cast to one; a float or other text is none.
+    #[test]
+    fn int_values_follow_php_numeric_strings() {
+        for (value, expected) in [
+            (json!(3), Some(3)), (json!("3"), Some(3)), (json!(" 3 "), Some(3)), (json!("+3"), Some(3)),
+            (json!("1.0"), Some(1)), (json!("1e0"), Some(1)), (json!("2.9"), Some(2)), (json!("-1.5"), Some(-1)),
+            (json!(1.0), None), (json!("1x"), None), (json!("0x1A"), None), (json!(""), None), (json!(null), None),
+            (json!(true), None), (json!("1e30"), None),
+        ] {
+            assert_eq!(int(&value), expected, "{value}");
         }
     }
 
