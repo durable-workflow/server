@@ -443,6 +443,27 @@ fn typed(value: &Value, kind: &str) -> Option<Typed> {
     })
 }
 
+/// A start's search attributes after the controller's registry validation:
+/// the values as the request named them, which the start events record,
+/// and their validated types.
+pub(super) struct StartSearchAttributes {
+    pub(super) authored: Map<String, Value>,
+    pub(super) types: BTreeMap<String, &'static str>,
+}
+
+impl StartSearchAttributes {
+    /// Core's start seeding (`UpsertSearchAttributesCall`, then
+    /// `SearchAttributeUpsertService::validateAttributeSet`). The controller
+    /// reports the `LogicException` either throws under `workflow_type`.
+    pub(super) fn prepare(&self) -> Result<PreparedUpsert> {
+        let prepared = prepare(&self.authored, &self.types, "workflow_type")?;
+        match attribute_set_refusal(prepared.rows.values()) {
+            None => Ok(prepared),
+            Some(message) => Err(failure_messages(vec![("workflow_type".to_owned(), vec![message])]).expect("message")),
+        }
+    }
+}
+
 /// A validated, normalized upsert ready to store.
 pub(super) struct PreparedUpsert {
     /// Normalized values; `null` deletes the key.
@@ -458,11 +479,11 @@ pub(super) struct PreparedUpsert {
 pub(super) fn prepare(
     attributes: &Map<String, Value>,
     attribute_types: &BTreeMap<String, &'static str>,
-    index: usize,
+    field: &str,
 ) -> Result<PreparedUpsert> {
     let invalid = || refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_commands");
     let attributes = normalized_call(attributes).map_err(|message| {
-        failure_messages(vec![(format!("commands.{index}.attributes"), vec![message])]).expect("message")
+        failure_messages(vec![(field.to_owned(), vec![message])]).expect("message")
     })?;
     let mut rows = BTreeMap::new();
     for (key, kind) in attribute_types {
@@ -489,18 +510,25 @@ pub(super) fn prepare(
 /// `validateAttributeSet` over the merged rows. PHP raises an uncaught
 /// `InvalidArgumentException` here; native refuses the completion instead.
 pub(super) fn check_attribute_set<'a>(rows: impl Iterator<Item = &'a Typed>) -> Result<()> {
+    match attribute_set_refusal(rows) {
+        None => Ok(()),
+        Some(message) => Err(super::RuntimeError::Protocol {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            response: json!({"reason":"search_attribute_limit_exceeded","message":message,"recorded":false}),
+        }),
+    }
+}
+
+/// `validateAttributeSet`'s message for a set over the per-run limits.
+fn attribute_set_refusal<'a>(rows: impl Iterator<Item = &'a Typed>) -> Option<String> {
     let (count, bytes) = rows.fold((0usize, 0usize), |(count, bytes), row| (count + 1, bytes + row.size()));
-    let message = if count > MAX_ATTRIBUTES_PER_RUN {
-        format!("Search attributes count exceeds maximum ({count} > {MAX_ATTRIBUTES_PER_RUN})")
+    if count > MAX_ATTRIBUTES_PER_RUN {
+        Some(format!("Search attributes count exceeds maximum ({count} > {MAX_ATTRIBUTES_PER_RUN})"))
     } else if bytes > MAX_TOTAL_SIZE_BYTES {
-        format!("Total search attributes size exceeds maximum ({bytes} > {MAX_TOTAL_SIZE_BYTES} bytes)")
+        Some(format!("Total search attributes size exceeds maximum ({bytes} > {MAX_TOTAL_SIZE_BYTES} bytes)"))
     } else {
-        return Ok(());
-    };
-    Err(super::RuntimeError::Protocol {
-        status: StatusCode::UNPROCESSABLE_ENTITY,
-        response: json!({"reason":"search_attribute_limit_exceeded","message":message,"recorded":false}),
-    })
+        None
+    }
 }
 
 /// The upsert's `attributes`, as PHP decodes them: a JSON list becomes an
@@ -594,6 +622,94 @@ where
         })
     }
 
+    /// `SearchAttributeUpsertService::upsert`'s writes: each key set to
+    /// `null` is deleted and each other key stores its typed row at
+    /// `sequence`.
+    pub(super) async fn write_typed_rows(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        workflow_id: &str,
+        prepared: &PreparedUpsert,
+        sequence: i64,
+    ) -> Result<()> {
+        let written = now();
+        for (key, value) in &prepared.attributes {
+            if value.is_null() {
+                Self::query(DB::SEARCH_ATTRIBUTE_DELETE)
+                    .bind(run_id)
+                    .bind(key.as_str())
+                    .execute(&mut **tx)
+                    .await?;
+                continue;
+            }
+            let row = &prepared.rows[key];
+            let text = |kind| match row {
+                Typed::String(text) if kind == "string" => Some(text.as_str()),
+                Typed::Keyword(text) if kind == "keyword" => Some(text.as_str()),
+                _ => None,
+            };
+            Self::query(DB::SEARCH_ATTRIBUTE_UPSERT)
+                .bind(run_id)
+                .bind(workflow_id)
+                .bind(key.as_str())
+                .bind(row.kind())
+                .bind(text("string"))
+                .bind(text("keyword"))
+                .bind(match row {
+                    Typed::KeywordList(items) => Some(DB::document(&json!(items))),
+                    _ => None,
+                })
+                .bind(DB::optional_integer(match row {
+                    Typed::Int(number) => Some(*number),
+                    _ => None,
+                }))
+                .bind(DB::optional_float_value(match row {
+                    Typed::Float(number) => Some(*number),
+                    _ => None,
+                }))
+                .bind(DB::optional_flag(match row {
+                    Typed::Bool(flag) => Some(*flag),
+                    _ => None,
+                }))
+                .bind(DB::optional_time(match row {
+                    Typed::Datetime(time) => Some(*time),
+                    _ => None,
+                }))
+                .bind(sequence)
+                .bind(DB::bind_time(written))
+                .bind(DB::bind_time(written))
+                .execute(&mut **tx)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// A start's `search_attributes` (Server `WorkflowController::start`):
+    /// `SearchAttributeValueValidator::validateForNamespace` against the
+    /// namespace's registry, before the reservation and routing checks.
+    /// Returns nothing for an absent, null or empty value. Core normalizes
+    /// and stores them later, inside the start (`StartSearchAttributes::prepare`).
+    pub(super) async fn validate_start_search_attributes(
+        tx: &mut Transaction<'_, DB>,
+        namespace: &str,
+        value: &Value,
+    ) -> Result<Option<StartSearchAttributes>> {
+        let Some(attributes) = attribute_map(&json!({"attributes": value})).filter(|attributes| !attributes.is_empty()) else {
+            return Ok(None);
+        };
+        let definitions = Self::query("SELECT name,type FROM search_attribute_definitions WHERE namespace=$1")
+            .bind(namespace)
+            .fetch_all(&mut **tx)
+            .await?
+            .iter()
+            .map(|row| Ok((DB::string(row, "name")?, DB::string(row, "type")?)))
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        let types = validate(&definitions, &attributes, &Map::new(), &Limits::from_env()?).map_err(|messages| {
+            failure_messages(vec![("search_attributes".to_owned(), messages)]).expect("messages")
+        })?;
+        Ok(Some(StartSearchAttributes { authored: attributes, types }))
+    }
+
     /// The bridge's `applyUpsertSearchAttributes` after the Server's
     /// `validateWorkflowTaskSearchAttributeCommands`.
     pub(super) async fn upsert_search_attributes(
@@ -643,7 +759,7 @@ where
         let types = validate(&definitions, &attributes, &declared, &Limits::from_env()?).map_err(|messages| {
             failure_messages(vec![(format!("commands.{index}.attributes"), messages)]).expect("messages")
         })?;
-        let prepared = prepare(&attributes, &types, index)?;
+        let prepared = prepare(&attributes, &types, &format!("commands.{index}.attributes"))?;
         let existing = Self::typed_rows(&mut **tx, &run_id).await?;
         let mut stored = existing.clone();
         let mut merged: BTreeMap<String, Value> =
@@ -659,55 +775,7 @@ where
         }
         check_attribute_set(stored.values())?;
         let workflow_id = DB::string(run, "workflow_instance_id")?;
-        let written = now();
-        for (key, value) in &prepared.attributes {
-            if value.is_null() {
-                Self::query(DB::SEARCH_ATTRIBUTE_DELETE)
-                    .bind(&run_id)
-                    .bind(key.as_str())
-                    .execute(&mut **tx)
-                    .await?;
-                continue;
-            }
-            let row = &prepared.rows[key];
-            let text = |kind| match row {
-                Typed::String(text) if kind == "string" => Some(text.as_str()),
-                Typed::Keyword(text) if kind == "keyword" => Some(text.as_str()),
-                _ => None,
-            };
-            Self::query(DB::SEARCH_ATTRIBUTE_UPSERT)
-                .bind(&run_id)
-                .bind(workflow_id.as_str())
-                .bind(key.as_str())
-                .bind(row.kind())
-                .bind(text("string"))
-                .bind(text("keyword"))
-                .bind(match row {
-                    Typed::KeywordList(items) => Some(DB::document(&json!(items))),
-                    _ => None,
-                })
-                .bind(DB::optional_integer(match row {
-                    Typed::Int(number) => Some(*number),
-                    _ => None,
-                }))
-                .bind(DB::optional_float_value(match row {
-                    Typed::Float(number) => Some(*number),
-                    _ => None,
-                }))
-                .bind(DB::optional_flag(match row {
-                    Typed::Bool(flag) => Some(*flag),
-                    _ => None,
-                }))
-                .bind(DB::optional_time(match row {
-                    Typed::Datetime(time) => Some(*time),
-                    _ => None,
-                }))
-                .bind(sequence)
-                .bind(DB::bind_time(written))
-                .bind(DB::bind_time(written))
-                .execute(&mut **tx)
-                .await?;
-        }
+        Self::write_typed_rows(tx, &run_id, &workflow_id, &prepared, sequence).await?;
         // PHP serializes an empty map as a JSON list.
         let object = |map: Map<String, Value>| if map.is_empty() { json!([]) } else { Value::Object(map) };
         Self::append(
@@ -834,7 +902,7 @@ mod tests {
             ("Ratio".to_owned(), "float"),
             ("Tags".to_owned(), "keyword_list"),
         ]);
-        let prepared = prepare(&attributes, &types, 0).unwrap();
+        let prepared = prepare(&attributes, &types, "commands.0.attributes").unwrap();
         assert_eq!(prepared.attributes["Tags"], json!(["urgent", "urgent"]));
         // A blank string deletes its key but keeps its declared type.
         assert_eq!(prepared.attributes["Name"], Value::Null);
@@ -844,7 +912,7 @@ mod tests {
         assert_eq!(prepared.rows["Count"], Typed::Int(9_007_199_254_740_993));
         assert_eq!(prepared.rows["At"].json(), json!("2026-10-08T12:34:56.123456Z"));
         let long_key = "k".repeat(65);
-        assert!(prepare(&map(json!({long_key: 1})), &BTreeMap::new(), 0).is_err());
+        assert!(prepare(&map(json!({long_key: 1})), &BTreeMap::new(), "commands.0.attributes").is_err());
         let many: Vec<Typed> = (0..101).map(Typed::Int).collect();
         assert!(check_attribute_set(many.iter()).is_err());
         assert!(check_attribute_set(many[..100].iter()).is_ok());

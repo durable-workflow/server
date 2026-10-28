@@ -362,7 +362,7 @@ where
             Some(memo) => super::memos::initial(memo)?,
             None => Default::default(),
         };
-        let started = Self::start_in(tx, &start, &self.namespace, Some(&memo), None, None, self.worker_stale_after_seconds).await?;
+        let started = Self::start_in(tx, &start, &self.namespace, super::store::StartMetadata { memo: Some(&memo), search_attributes: None }, None, None, self.worker_stale_after_seconds).await?;
         let workflow = started["workflow_id"].as_str().unwrap_or_default().to_owned();
         let run = started["run_id"].as_str().unwrap_or_default().to_owned();
         let fires = DB::number(row, "fires_count")?;

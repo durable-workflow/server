@@ -270,10 +270,6 @@ contract fixture before its correction.
   Waterline's activity-result view waits on
   `capabilities.workflow_activity_result_inspection`, which stays held until
   that read is qualified. `version` is `0.0.0`.
-- **Search attributes on start.** Published PHP validates `search_attributes`
-  against the namespace registry and stores them as typed rows. Native
-  answers a start that names any with
-  `501 start_search_attributes_unavailable`; an empty object is accepted.
 - **Fairness within a priority tier.** Native claims tasks by priority, then
   availability, as PHP's candidate query orders them. PHP then rebalances
   each priority tier across fairness keys by their weights
@@ -526,6 +522,14 @@ contract fixture before its correction.
   `parent-close-cancellation` fixture's `conflict` case records it against
   published 2.11.5
   ([checkpoint](rust-server-port-checkpoints/2026-10-28-root-conflict-rows.md)).
+- **Search attributes on start** (October 28, closed). Published PHP
+  validates a start's `search_attributes` against the namespace's registry,
+  stores them as the run's first typed rows and records them on
+  `StartAccepted` and `WorkflowStarted`. Native now does the same. It used
+  to answer `501 start_search_attributes_unavailable`. The
+  `start-search-attributes` fixture records typed, inferred, null, empty
+  and refused starts against published 2.11.5
+  ([checkpoint](rust-server-port-checkpoints/2026-10-28-start-search-attributes.md)).
 - **Trace context (Core 2.10, published in Server 2.11.1).** Core adds
   nullable `observability_context` columns on runs, commands and tasks.
   Native has no carrier: it accepts and ignores a top-level carrier on
@@ -561,6 +565,7 @@ contract fixture before its correction.
   published MySQL schema. Native compares them exactly on every backend.
 - **Visibility query key order.** When one command or query has several
   errors, native reports them in sorted key order rather than request order.
+  The same holds for several invalid search attributes on one start.
 - **Inherited memos and search attributes on child runs.** Published PHP
   copies the parent's memos and search attributes to a child run and to a
   retried child (`inheritTypedVisibilityMetadata`). Native copies both only

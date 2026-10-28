@@ -414,6 +414,10 @@ where
                 .await?;
         }
         let request = super::start_request::validate(&body)?;
+        // The controller validates search attribute values against the
+        // namespace's registry before the reservation and routing checks.
+        let search_attributes =
+            Self::validate_start_search_attributes(&mut tx, &self.namespace, &body["search_attributes"]).await?;
         if bridge {
             let refusal = |decision: Value| super::RuntimeError::Protocol { status: StatusCode::CONFLICT,
                 response: json!({"reason":"bridge_start_refused","bridge":decision}) };
@@ -456,7 +460,7 @@ where
             &mut tx,
             &body,
             &self.namespace,
-            Some(&memo),
+            StartMetadata { memo: Some(&memo), search_attributes: search_attributes.as_ref() },
             arguments.as_deref(),
             context.as_ref(),
             self.worker_stale_after_seconds,
@@ -473,12 +477,13 @@ where
         tx: &mut Transaction<'_, DB>,
         body: &Value,
         namespace: &str,
-        memo: Option<&super::memos::PreparedMemo>,
+        metadata: StartMetadata<'_>,
         external_arguments: Option<&str>,
         context: Option<&Value>,
         stale_after: i64,
     ) -> Result<Value> {
         let request = super::start_request::validate(body)?;
+        let StartMetadata { memo, search_attributes } = metadata;
         // PHP names an instance the request leaves unnamed.
         let workflow_id = request.workflow_id.clone().unwrap_or_else(id);
         let workflow_id = workflow_id.as_str();
@@ -506,6 +511,10 @@ where
             }
             return Self::start_existing(tx, &existing, &request, workflow_id, namespace, &arguments, context).await;
         }
+        // Core normalizes the values while seeding the new run, after the
+        // reservation, routing and duplicate checks; its refusals name
+        // `workflow_type`, as the controller reports Core's LogicException.
+        let prepared_attributes = search_attributes.map(|attributes| attributes.prepare()).transpose()?;
         let run_id = id();
         let command_id = id();
         let started_at = now();
@@ -552,6 +561,11 @@ where
                     .await?;
             }
         }
+        // `seedTypedVisibilityMetadata`: the start's values are the run's
+        // first typed rows, at sequence 0.
+        if let Some(prepared) = &prepared_attributes {
+            Self::write_typed_rows(tx, &run_id, workflow_id, prepared, 0).await?;
+        }
         Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,source,status,outcome,workflow_type,payload_codec,payload,command_sequence,accepted_at,applied_at,context) VALUES ($1,$2,$3,$4,'start','control_plane','accepted','started_new',$5,'avro',$6,1,$7,$8,$9)")
             .bind(&command_id).bind(workflow_id).bind(&run_id).bind(&run_id).bind(workflow_type).bind(&arguments).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at))
             .bind(DB::optional_document(context.unwrap_or(&Value::Null))).execute(&mut **tx).await?;
@@ -565,7 +579,9 @@ where
         let mut accepted = identity.clone();
         accepted["business_key"] = json!(request.business_key);
         accepted["visibility_labels"] = Value::Null;
-        accepted["search_attributes"] = Value::Null;
+        // The values as the request named them, nulls included.
+        let authored_attributes = search_attributes.map(|attributes| Value::Object(attributes.authored.clone())).unwrap_or(Value::Null);
+        accepted["search_attributes"] = authored_attributes.clone();
         accepted["outcome"] = json!("started_new");
         Self::append(
             tx,
@@ -587,6 +603,7 @@ where
             started["workflow_definition_fingerprint_source"] = json!("worker");
         }
         started["compatibility"] = json!(pin);
+        started["search_attributes"] = authored_attributes;
         // PHP filters null fields out of the started payload, then adds the
         // declared contract.
         if let Some(fields) = started.as_object_mut() {
@@ -5067,3 +5084,10 @@ pub(crate) fn capabilities() -> Value {
 #[cfg(test)]
 #[path = "store_record_tests.rs"]
 mod record_tests;
+
+/// What a start records besides its request: the prepared initial memo and
+/// the validated search attributes.
+pub(super) struct StartMetadata<'a> {
+    pub(super) memo: Option<&'a super::memos::PreparedMemo>,
+    pub(super) search_attributes: Option<&'a super::search_attribute_upserts::StartSearchAttributes>,
+}

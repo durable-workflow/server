@@ -1,0 +1,538 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "start-search-attributes",
+  "review_state": "reviewed",
+  "contract": "Search attribute values on a workflow start (published Server 2.11.5 WorkflowController::start and SearchAttributeValueValidator::validateForNamespace, Workflow 2.15.1 DefaultWorkflowControlPlane::seedTypedVisibilityMetadata), over raw HTTP in two fresh namespaces: one with registered keyword, text, double, int, bool, datetime and keyword_list definitions, one with none. A valid start is accepted (201 started_new); the run description and the visibility list carry the typed values (a datetime normalized to microseconds), and StartAccepted and WorkflowStarted record the values as the request named them, with no SearchAttributesUpserted event. A null value is recorded on the events but not stored. An empty object records null on StartAccepted and leaves the field off WorkflowStarted. An unregistered key, a value of the wrong registered type, numeric strings for int and double, and a list instead of a map are refused with 422 validation_failed and the published messages under search_attributes, and no run is created. Without definitions, scalar types are inferred (a datetime-looking value stays a string) and a list value is refused unless registered as keyword_list. Core normalizes the values while seeding the new run, after the controller's validation and its reservation and routing checks, and the controller reports Core's LogicException under workflow_type: without definitions, a 65-character key passes the registry's 128-byte limit but is refused by Core's 64-character key rule, and 101 attributes are refused by Core's per-run count; a workflow id reserved in another namespace is refused as reserved before either. Several errors appear in request order; the case with two errors names its keys in sorted order, which native's key order also gives. Embedded applications have no HTTP registry.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "start search attributes λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "start search attributes λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "start_search_attributes": {
+    "workflow_type": "parity.v1.start_search_attributes",
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "definitions": [
+      [
+        "CustomerTier",
+        "keyword"
+      ],
+      [
+        "Note",
+        "text"
+      ],
+      [
+        "Amount",
+        "double"
+      ],
+      [
+        "Count",
+        "int"
+      ],
+      [
+        "Flag",
+        "bool"
+      ],
+      [
+        "When",
+        "datetime"
+      ],
+      [
+        "Tags",
+        "keyword_list"
+      ]
+    ],
+    "cases": {
+      "typed": {
+        "namespace": "registered",
+        "search_attributes": {
+          "CustomerTier": "gold",
+          "Note": "café note λ",
+          "Amount": 12.5,
+          "Count": 3,
+          "Flag": true,
+          "When": "2026-10-28T10:00:00Z",
+          "Tags": [
+            "a",
+            "b"
+          ]
+        },
+        "list_query": "CustomerTier = \"gold\""
+      },
+      "unknown": {
+        "namespace": "registered",
+        "search_attributes": {
+          "Unregistered": "x"
+        }
+      },
+      "wrong_type": {
+        "namespace": "registered",
+        "search_attributes": {
+          "Count": "three"
+        }
+      },
+      "numeric_string": {
+        "namespace": "registered",
+        "search_attributes": {
+          "Amount": "1.5",
+          "Count": "7"
+        }
+      },
+      "empty": {
+        "namespace": "registered",
+        "search_attributes": {}
+      },
+      "list": {
+        "namespace": "registered",
+        "search_attributes": [
+          "gold"
+        ]
+      },
+      "inferred": {
+        "namespace": "open",
+        "search_attributes": {
+          "Region": "eu",
+          "Size": 4,
+          "Ratio": 0.25,
+          "Enabled": false,
+          "Labels": [
+            "x",
+            "y"
+          ]
+        }
+      },
+      "inferred_scalar": {
+        "namespace": "open",
+        "search_attributes": {
+          "Region": "eu",
+          "Size": 4,
+          "Ratio": 0.25,
+          "Enabled": false,
+          "Seen": "2026-10-28T10:00:00Z"
+        }
+      },
+      "null_value": {
+        "namespace": "registered",
+        "search_attributes": {
+          "CustomerTier": null,
+          "Count": 5
+        }
+      },
+      "long_key": {
+        "namespace": "open",
+        "search_attributes": {
+          "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": "x"
+        }
+      },
+      "long_key_reserved": {
+        "namespace": "open",
+        "reuse_workflow_id": "typed",
+        "search_attributes": {
+          "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": "x"
+        }
+      },
+      "too_many": {
+        "namespace": "open",
+        "search_attributes": {
+          "Attr000": 0,
+          "Attr001": 1,
+          "Attr002": 2,
+          "Attr003": 3,
+          "Attr004": 4,
+          "Attr005": 5,
+          "Attr006": 6,
+          "Attr007": 7,
+          "Attr008": 8,
+          "Attr009": 9,
+          "Attr010": 10,
+          "Attr011": 11,
+          "Attr012": 12,
+          "Attr013": 13,
+          "Attr014": 14,
+          "Attr015": 15,
+          "Attr016": 16,
+          "Attr017": 17,
+          "Attr018": 18,
+          "Attr019": 19,
+          "Attr020": 20,
+          "Attr021": 21,
+          "Attr022": 22,
+          "Attr023": 23,
+          "Attr024": 24,
+          "Attr025": 25,
+          "Attr026": 26,
+          "Attr027": 27,
+          "Attr028": 28,
+          "Attr029": 29,
+          "Attr030": 30,
+          "Attr031": 31,
+          "Attr032": 32,
+          "Attr033": 33,
+          "Attr034": 34,
+          "Attr035": 35,
+          "Attr036": 36,
+          "Attr037": 37,
+          "Attr038": 38,
+          "Attr039": 39,
+          "Attr040": 40,
+          "Attr041": 41,
+          "Attr042": 42,
+          "Attr043": 43,
+          "Attr044": 44,
+          "Attr045": 45,
+          "Attr046": 46,
+          "Attr047": 47,
+          "Attr048": 48,
+          "Attr049": 49,
+          "Attr050": 50,
+          "Attr051": 51,
+          "Attr052": 52,
+          "Attr053": 53,
+          "Attr054": 54,
+          "Attr055": 55,
+          "Attr056": 56,
+          "Attr057": 57,
+          "Attr058": 58,
+          "Attr059": 59,
+          "Attr060": 60,
+          "Attr061": 61,
+          "Attr062": 62,
+          "Attr063": 63,
+          "Attr064": 64,
+          "Attr065": 65,
+          "Attr066": 66,
+          "Attr067": 67,
+          "Attr068": 68,
+          "Attr069": 69,
+          "Attr070": 70,
+          "Attr071": 71,
+          "Attr072": 72,
+          "Attr073": 73,
+          "Attr074": 74,
+          "Attr075": 75,
+          "Attr076": 76,
+          "Attr077": 77,
+          "Attr078": 78,
+          "Attr079": 79,
+          "Attr080": 80,
+          "Attr081": 81,
+          "Attr082": 82,
+          "Attr083": 83,
+          "Attr084": 84,
+          "Attr085": 85,
+          "Attr086": 86,
+          "Attr087": 87,
+          "Attr088": 88,
+          "Attr089": 89,
+          "Attr090": 90,
+          "Attr091": 91,
+          "Attr092": 92,
+          "Attr093": 93,
+          "Attr094": 94,
+          "Attr095": 95,
+          "Attr096": 96,
+          "Attr097": 97,
+          "Attr098": 98,
+          "Attr099": 99,
+          "Attr100": 100
+        }
+      }
+    },
+    "expected": {
+      "typed": {
+        "start": {
+          "status": 201,
+          "reason": null,
+          "outcome": "started_new",
+          "message": null,
+          "errors": null
+        },
+        "described": {
+          "Amount": 12.5,
+          "Count": 3,
+          "CustomerTier": "gold",
+          "Flag": true,
+          "Note": "café note λ",
+          "Tags": [
+            "a",
+            "b"
+          ],
+          "When": "2026-10-28T10:00:00.000000Z"
+        },
+        "events": {
+          "StartAccepted": {
+            "CustomerTier": "gold",
+            "Note": "café note λ",
+            "Amount": 12.5,
+            "Count": 3,
+            "Flag": true,
+            "When": "2026-10-28T10:00:00Z",
+            "Tags": [
+              "a",
+              "b"
+            ]
+          },
+          "WorkflowStarted": {
+            "CustomerTier": "gold",
+            "Note": "café note λ",
+            "Amount": 12.5,
+            "Count": 3,
+            "Flag": true,
+            "When": "2026-10-28T10:00:00Z",
+            "Tags": [
+              "a",
+              "b"
+            ]
+          }
+        },
+        "listed": {
+          "status": 200,
+          "workflow_ids": [
+            "parity-v1-start-search-attributes-ssa-typed"
+          ],
+          "search_attributes": [
+            {
+              "Amount": 12.5,
+              "Count": 3,
+              "CustomerTier": "gold",
+              "Flag": true,
+              "Note": "café note λ",
+              "Tags": [
+                "a",
+                "b"
+              ],
+              "When": "2026-10-28T10:00:00.000000Z"
+            }
+          ]
+        }
+      },
+      "unknown": {
+        "start": {
+          "status": 422,
+          "reason": "validation_failed",
+          "outcome": null,
+          "message": "Search attribute [Unregistered] is not registered for this namespace.",
+          "errors": {
+            "search_attributes": [
+              "Search attribute [Unregistered] is not registered for this namespace."
+            ]
+          }
+        }
+      },
+      "wrong_type": {
+        "start": {
+          "status": 422,
+          "reason": "validation_failed",
+          "outcome": null,
+          "message": "Search attribute [Count] is registered as int and must be an integer.",
+          "errors": {
+            "search_attributes": [
+              "Search attribute [Count] is registered as int and must be an integer."
+            ]
+          }
+        }
+      },
+      "numeric_string": {
+        "start": {
+          "status": 422,
+          "reason": "validation_failed",
+          "outcome": null,
+          "message": "Search attribute [Amount] is registered as float and must be a number. (and 1 more error)",
+          "errors": {
+            "search_attributes": [
+              "Search attribute [Amount] is registered as float and must be a number.",
+              "Search attribute [Count] is registered as int and must be an integer."
+            ]
+          }
+        }
+      },
+      "empty": {
+        "start": {
+          "status": 201,
+          "reason": null,
+          "outcome": "started_new",
+          "message": null,
+          "errors": null
+        },
+        "described": [],
+        "events": {
+          "StartAccepted": null,
+          "WorkflowStarted": "absent"
+        },
+        "listed": {
+          "status": 200,
+          "workflow_ids": [
+            "parity-v1-start-search-attributes-ssa-empty"
+          ],
+          "search_attributes": [
+            []
+          ]
+        }
+      },
+      "list": {
+        "start": {
+          "status": 422,
+          "reason": "validation_failed",
+          "outcome": null,
+          "message": "Search attribute keys must be non-empty strings.",
+          "errors": {
+            "search_attributes": [
+              "Search attribute keys must be non-empty strings."
+            ]
+          }
+        }
+      },
+      "inferred": {
+        "start": {
+          "status": 422,
+          "reason": "validation_failed",
+          "outcome": null,
+          "message": "Search attribute [Labels] must be a scalar value or null unless it is registered as keyword_list.",
+          "errors": {
+            "search_attributes": [
+              "Search attribute [Labels] must be a scalar value or null unless it is registered as keyword_list."
+            ]
+          }
+        }
+      },
+      "inferred_scalar": {
+        "start": {
+          "status": 201,
+          "reason": null,
+          "outcome": "started_new",
+          "message": null,
+          "errors": null
+        },
+        "described": {
+          "Enabled": false,
+          "Ratio": 0.25,
+          "Region": "eu",
+          "Seen": "2026-10-28T10:00:00Z",
+          "Size": 4
+        },
+        "events": {
+          "StartAccepted": {
+            "Region": "eu",
+            "Size": 4,
+            "Ratio": 0.25,
+            "Enabled": false,
+            "Seen": "2026-10-28T10:00:00Z"
+          },
+          "WorkflowStarted": {
+            "Region": "eu",
+            "Size": 4,
+            "Ratio": 0.25,
+            "Enabled": false,
+            "Seen": "2026-10-28T10:00:00Z"
+          }
+        },
+        "listed": {
+          "status": 200,
+          "workflow_ids": [
+            "parity-v1-start-search-attributes-ssa-inferred_scalar"
+          ],
+          "search_attributes": [
+            {
+              "Enabled": false,
+              "Ratio": 0.25,
+              "Region": "eu",
+              "Seen": "2026-10-28T10:00:00Z",
+              "Size": 4
+            }
+          ]
+        }
+      },
+      "null_value": {
+        "start": {
+          "status": 201,
+          "reason": null,
+          "outcome": "started_new",
+          "message": null,
+          "errors": null
+        },
+        "described": {
+          "Count": 5
+        },
+        "events": {
+          "StartAccepted": {
+            "CustomerTier": null,
+            "Count": 5
+          },
+          "WorkflowStarted": {
+            "CustomerTier": null,
+            "Count": 5
+          }
+        },
+        "listed": {
+          "status": 200,
+          "workflow_ids": [
+            "parity-v1-start-search-attributes-ssa-null_value"
+          ],
+          "search_attributes": [
+            {
+              "Count": 5
+            }
+          ]
+        }
+      },
+      "long_key": {
+        "start": {
+          "status": 422,
+          "reason": "validation_failed",
+          "outcome": null,
+          "message": "Workflow v2 search attribute keys must be 1-64 URL-safe characters using letters, numbers, \".\", \"_\", \"-\", and \":\".",
+          "errors": {
+            "workflow_type": [
+              "Workflow v2 search attribute keys must be 1-64 URL-safe characters using letters, numbers, \".\", \"_\", \"-\", and \":\"."
+            ]
+          }
+        }
+      },
+      "long_key_reserved": {
+        "start": {
+          "status": 409,
+          "reason": "workflow_id_reserved_in_namespace",
+          "outcome": "rejected_workflow_id_reserved_in_namespace",
+          "message": "Workflow [parity-v1-start-search-attributes-ssa-typed] is already reserved in another namespace.",
+          "errors": null
+        }
+      },
+      "too_many": {
+        "start": {
+          "status": 422,
+          "reason": "validation_failed",
+          "outcome": null,
+          "message": "Search attributes count exceeds maximum (101 > 100)",
+          "errors": {
+            "workflow_type": [
+              "Search attributes count exceeds maximum (101 > 100)"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

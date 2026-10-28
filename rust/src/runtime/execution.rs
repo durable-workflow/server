@@ -565,11 +565,6 @@ impl Runtime {
         let mut body = super::start_request::normalized(body);
         super::input_envelope::transport(&body)?;
         super::start_request::validate(&body)?;
-        if body["search_attributes"].as_object().is_some_and(|fields| !fields.is_empty())
-            || body["search_attributes"].as_array().is_some_and(|items| !items.is_empty())
-        {
-            return Err(refuse(StatusCode::NOT_IMPLEMENTED, "start_search_attributes_unavailable"));
-        }
         match self.plain_arguments(&body).await? {
             Some(blob) => body["input"] = json!({"codec": "avro", "blob": blob}),
             // PHP 2.5.14 answers an undecodable start blob with a 500

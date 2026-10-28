@@ -175,7 +175,7 @@ pub(super) async fn deregister(
     .await
 }
 
-async fn named(
+pub(super) async fn named(
     app: &Router,
     namespace: &str,
     method: &str,
