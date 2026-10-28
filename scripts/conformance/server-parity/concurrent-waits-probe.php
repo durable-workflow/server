@@ -16,7 +16,13 @@ use GuzzleHttp\HandlerStack;
 // `first` signal then resumes its own wait at its own sequence and the run
 // completes. The same-name run opens two waits for `dup`: the first `dup`
 // signal reserves the later wait, the second is buffered behind it, and the
-// resumed task applies the first at the later wait's sequence.
+// resumed task applies the first at the later wait's sequence. Nothing
+// delivers the buffered signal: its identity names no open wait and the
+// workflow does not declare `dup`. Two variants follow it. When the worker
+// declares `dup`, the buffered signal is delivered and its application
+// takes the earlier wait (`recordAppliedSignalForSignalResume`). When the
+// resumed task opens another `dup` wait, that wait takes the buffered
+// identity (`pendingSignalWaitIdForOpenSignalWait`) and the signal resumes it.
 //
 // Identities become labels by first appearance (`{wait:N}`, `{signal:N}`,
 // `{timer:N}`, `{task:N}`, buffered ids `{buffered:N}`); instants are dropped.
@@ -115,14 +121,18 @@ function finishHttpConcurrentWaits(Client $admin, array $fixture, string $workfl
     };
     $empty = ['codec' => 'avro', 'blob' => $definition['empty_blob']];
     $type = $definition['workflow_type'];
-    $start = static function (string $suffix) use ($raw, $ok, $type, $empty, $workflowId): array {
+    $start = static function (string $suffix, array $signals = []) use ($raw, $ok, $type, $empty, $workflowId): array {
         $id = $workflowId.'-'.$suffix;
         $queue = $id.'-queue';
         $worker = $id.'-worker';
-        $ok($raw('POST', '/api/worker/register', ['worker_id' => $worker, 'task_queue' => $queue, 'runtime' => 'php',
+        $registration = ['worker_id' => $worker, 'task_queue' => $queue, 'runtime' => 'php',
             'sdk_version' => 'raw-http', 'supported_workflow_types' => [$type], 'supported_activity_types' => [],
             'capabilities' => [], 'capability_manifest' => array_fill_keys(['local_activities', 'worker_sessions', 'sticky_execution'],
-                ['supported' => false, 'minimum_protocol_version' => '1.18', 'reason' => 'raw_http'])]), 201, 'registration');
+                ['supported' => false, 'minimum_protocol_version' => '1.18', 'reason' => 'raw_http'])];
+        if ($signals !== []) {
+            $registration['workflow_command_contracts'] = [$type => ['signals' => $signals]];
+        }
+        $ok($raw('POST', '/api/worker/register', $registration), 201, 'registration');
         $started = $ok($raw('POST', '/api/workflows', ['workflow_id' => $id, 'workflow_type' => $type,
             'task_queue' => $queue, 'input' => $empty]), 201, 'start');
 
@@ -200,8 +210,34 @@ function finishHttpConcurrentWaits(Client $admin, array $fixture, string $workfl
     $sameState['completed'] = $complete($task, [$timer]);
     $sameState['applied_history'] = $history($same);
     $sameState['applied_waits'] = $waits($same);
+    $sameState['buffered_resume'] = $resume($claim($same));
+    $sameState['buffered_history'] = $history($same);
     $sameState['terminated'] = $raw('POST', '/api/workflows/'.$same['workflow_id'].'/terminate', ['reason' => 'concurrent waits fixture'])['status'];
     $state['same_name'] = $sameState;
+
+    // The same, with `dup` declared, or with the resumed task opening
+    // another `dup` wait.
+    foreach (['same_name_declared' => ['declared', ['dup'], [$timer]],
+        'same_name_reopen' => ['reopen', [], [['type' => 'open_signal_wait', 'signal_name' => 'dup']]]] as $key => [$suffix, $signals, $next]) {
+        $run = $start($suffix, $signals);
+        $task = $claim($run);
+        $variant = ['opened' => $complete($task, [['type' => 'open_signal_wait', 'signal_name' => 'dup'],
+            ['type' => 'open_signal_wait', 'signal_name' => 'dup']])];
+        $variant['signal_one'] = $signal($run, 'dup');
+        $variant['signal_two'] = $signal($run, 'dup');
+        $variant['received'] = $history($run);
+        $task = $claim($run);
+        $variant['resume'] = $resume($task);
+        $variant['completed'] = $complete($task, $next);
+        $variant['applied_history'] = $history($run);
+        $task = $claim($run);
+        $variant['buffered_resume'] = $resume($task);
+        $variant['buffered_completed'] = $task === null ? null : $complete($task, [$timer]);
+        $variant['buffered_history'] = $history($run);
+        $variant['buffered_waits'] = $waits($run);
+        $variant['terminated'] = $raw('POST', '/api/workflows/'.$run['workflow_id'].'/terminate', ['reason' => 'concurrent waits fixture'])['status'];
+        $state[$key] = $variant;
+    }
 
     return $state;
 }

@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 // Reviewed concurrent waits (concurrent-waits-probe.php), recorded against
 // published Server 2.11.5: two signal waits and a condition wait opened in
 // one completion, each resolved by its own signal, and two waits for one
-// signal name. The fixture's `expected` holds the whole normalized
+// signal name, whose buffered second signal is delivered only when the
+// workflow declares its name or a later wait takes its identity. The
+// fixture's `expected` holds the whole normalized
 // observation; identities are labels by first appearance and instants are
 // dropped, so every step compares exactly.
 export function checkConcurrentWaits(fixture, observation) {
