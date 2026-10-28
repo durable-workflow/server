@@ -109,6 +109,32 @@
     and wait opening (received and not closed). Core counts accepted,
     unapplied signal commands; the two agree for every record native
     writes.
+- **Final review** (Core 2.15.1 source; lab recordings against 2.11.5):
+  - A completion offers the run's next message after the signal its task
+    attempted (`createForRun($run, workflowSignalIdForTask($task), false)`,
+    `signalFollows`), so a signal the task left received is not handed
+    straight back to it. The waiting acknowledgement passes no attempted
+    signal, as Core's does.
+  - Delivery returns before reading the run's waits when no signal is
+    received (`nextEligibleSignal`).
+  - `SignalApplied` and `ConditionWaitSatisfied` carry the opening's
+    parallel group (`payloadForPath(metadataPathFromPayload($opened))`, the
+    existing port of Core's normalization). The opening is the first
+    `SignalWaitOpened`/`ConditionWaitOpened` naming the wait's id; its
+    sequence counts only as an integer.
+  - Selection over waits: on 2.11.5 a worker may open waits as selection
+    members, and the first member to resolve records `SelectionResolved`;
+    the losing wait stays open and takes its own signal. Native applies a
+    signal or condition to such a member and records `SelectionResolved`
+    the same way, for waits a taken-over history opened. Native does not
+    open waits as group members: that batch keeps its explicit
+    `422 development_selection_shape_unqualified`, a recorded divergence
+    the shared fixture therefore does not carry. A member of a nested
+    selection, or one wider than a sequence, gets the same refusal when its
+    signal applies.
+  - A condition wait that consumes a signal leaves the signal's recorded
+    identity as it was (`markConditionWaitSignalConsumed`).
+  - The fold indexes waits by id, so it is linear in the history it reads.
 - **Correction.** The first version of this checkpoint said 2.11.5 never
   delivers a buffered signal while another wait of its name is open. That
   holds only for an undeclared signal with no later wait of its name. A
