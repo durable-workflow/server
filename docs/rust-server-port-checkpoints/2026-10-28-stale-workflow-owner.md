@@ -56,10 +56,16 @@
     recording a zero-wait replacement poll recovered nothing, so the
     replacement now holds its polls and retries.
   - Whether recovery fences the stale owner (its later heartbeat refused
-    `worker_registration_superseded`) is not recorded. Published PHP fenced
-    it in 3 of 4 recordings with its maintenance loop running; in the other,
-    the task was recovered without a fence. Native fences on the poll path,
-    as `recoverAbandonedTaskLease` does, and its execution tests cover that. Recorded against published 2.11.5 on SQLite with its
+    `worker_registration_superseded`) is not recorded. PHP fences only an
+    owner whose lease is still unexpired when recovery runs
+    (`recoverAbandonedTaskLease`); an expired lease goes through
+    `recoverExpiredTaskLease`, which fences no one. Because the probe's stale
+    wait overlaps its other cases, the lease can already have expired by the
+    time the replacement polls. Published PHP fenced the owner in 3 of 4
+    recordings, and the fourth most likely took the expired-lease branch.
+    The recordings did not keep the claim's expiry and the recovery time, so
+    this is not attributed to a PHP defect (General's review on #829). Native
+    takes the same two branches, and its execution tests cover both. Recorded against published 2.11.5 on SQLite with its
   maintenance loop running.
 - **Native.**
   - `workflow_task_guard` checks the owner's registration last, with the
