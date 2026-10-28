@@ -9,13 +9,13 @@ const observation = () => structuredClone({mode: 'http', parent_close_cancellati
 const cases = ['completed', 'failed', 'terminated'];
 
 test('the published answers pass', () => {
-  assert.deepStrictEqual(checkParentCloseCancellation(fixture, observation()), {scope: 'parent_close_cancellation', cases: 3});
+  assert.deepStrictEqual(checkParentCloseCancellation(fixture, observation()), {scope: 'parent_close_cancellation', cases: 4});
 });
 
 test('embedded applications have no worker protocol', () => {
   assert.deepStrictEqual(checkParentCloseCancellation(fixture,
     {mode: 'embedded', parent_close_cancellation: {applicable: false, reason: 'embedded_has_no_worker_protocol'}}),
-  {scope: 'parent_close_cancellation', cases: 3});
+  {scope: 'parent_close_cancellation', cases: 4});
   assert.throws(() => checkParentCloseCancellation(fixture, {mode: 'embedded', parent_close_cancellation: {applicable: true}}));
 });
 
@@ -57,6 +57,20 @@ test('each child takes a descendant request under the origin and receives it', (
   }
 });
 
+test('a child under another root refuses and records the rejected request', () => {
+  const state = expected.conflict;
+  assert.deepStrictEqual([state.child_requested.status, state.parent_status], [202, 'terminated']);
+  const [failed] = state.policy_events;
+  assert.deepStrictEqual([failed.event_type, failed.payload.error, failed.payload.cancellation],
+    ['ParentClosePolicyFailed', 'cancellation_root_conflict', null]);
+  assert.equal(failed.payload.request_diagnostics.incoming_root_request_id, state.origin.cancellation.request_id);
+  const [own, rejected] = state.children[0].commands;
+  assert.equal(failed.payload.request_diagnostics.existing_request_id, own.id);
+  assert.deepStrictEqual([rejected.id, rejected.sequence, rejected.status, rejected.source, rejected.target_scope,
+    rejected.rejection_reason, rejected.outcome],
+  [failed.payload.request_id, 2, 'rejected', 'workflow', 'instance', 'cancellation_root_conflict', undefined]);
+});
+
 for (const [name, mutate] of [
   ['a refused completion', state => {
     state.completed.completed = {status: 409, outcome: null, reason: 'pending_durable_operations', run_status: null, created_tasks: 0};
@@ -89,6 +103,11 @@ for (const [name, mutate] of [
   ['a policy failure', state => {
     state.terminated.policy_events[1].event_type = 'ParentClosePolicyFailed';
   }],
+  ['a conflict without its rejected command', state => {
+    state.conflict.policy_events[0].payload.request_id = null;
+    state.conflict.children[0].commands.pop();
+  }],
+  ['a conflict without diagnostics', state => { state.conflict.policy_events[0].payload.request_diagnostics = []; }],
   ['an unexpected step', state => { state.completed.extra = true; }],
   ['an unexpected case', state => { state.extra = {}; }],
 ]) test(`the contract rejects ${name}`, () => {

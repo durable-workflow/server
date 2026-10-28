@@ -631,3 +631,60 @@ async fn a_child_continued_after_its_parent_closed_still_closes() {
         database.remove().await;
     }
 }
+
+// A child that already holds a request under another root refuses the
+// policy's request (`cancellation_root_conflict`). As PHP's `rejectCommand`
+// does, the child records a rejected request at its next command sequence,
+// as the parent's workflow command, with the conflict as its payload. The
+// parent's `ParentClosePolicyFailed` names that command and its diagnostics.
+#[tokio::test]
+async fn a_root_conflict_records_the_rejected_request_on_the_child() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    cooperative_worker(&app, "worker").await;
+    let started = start(&app, "conflict-parent").await;
+    let task = cooperative_poll(&app, "worker").await;
+    let (status, body) = cooperative_finish(&app, &task, json!([child_with("request_cancellation")])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &json!("conflict-parent"), &started["run_id"]).await;
+    let (child_id, child_run) = scheduled_children(&history).remove(0);
+    let (status, body) = request(&app, "POST", &format!("/api/workflows/{}/request-cancellation", child_id.as_str().unwrap()),
+        json!({"reason":"child asked first"})).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let (status, body) = request(&app, "POST", "/api/workflows/conflict-parent/terminate", json!({"reason":"parent closes"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let history = run_history(&app, &json!("conflict-parent"), &started["run_id"]).await;
+    let kinds = types(&history);
+    assert_eq!(kinds[kinds.len() - 3..], ["WorkflowTerminated", "ParentCloseCancellationRequested", "ParentClosePolicyFailed"], "{history}");
+    let origin = &history.as_array().unwrap()[kinds.len() - 2]["payload"]["cancellation"];
+    let failed = &history.as_array().unwrap().last().unwrap()["payload"];
+    let child_history = run_history(&app, &child_id, &child_run).await;
+    assert_eq!(types(&child_history), ["WorkflowStarted", "CooperativeCancellationRequested"], "{child_history}");
+    let own = &child_history[1]["payload"];
+    let rejected = failed["request_id"].as_str().unwrap_or_else(|| panic!("a rejected command: {failed}")).to_owned();
+    assert_eq!(*failed, json!({"child_instance_id": child_id, "child_run_id": child_run, "policy": "request_cancellation",
+        "reason": "Parent workflow closed (terminated); parent-close policy: request_cancellation.",
+        "error": "cancellation_root_conflict",
+        "request_diagnostics": {"existing_request_id": own["workflow_command_id"], "existing_root_request_id": own["workflow_command_id"],
+            "existing_cleanup_deadline_at": own["cleanup_deadline_at"], "incoming_root_request_id": origin["root_request_id"],
+            "incoming_cleanup_deadline_at": origin["cleanup_deadline_at"]},
+        "request_id": rejected, "cancellation": null}));
+    assert_eq!(
+        count(&database, format!("SELECT COUNT(*) FROM workflow_commands WHERE id='{rejected}' AND workflow_run_id='{}' AND command_type='request_cancellation' AND status='rejected' AND outcome IS NULL AND rejection_reason='cancellation_root_conflict' AND source='workflow' AND target_scope='instance' AND requested_workflow_run_id IS NULL AND command_sequence=2 AND payload IS NOT NULL AND rejected_at IS NOT NULL",
+            child_run.as_str().unwrap())).await,
+        1
+    );
+    assert_eq!(count(&database, format!("SELECT COUNT(*) FROM workflow_runs WHERE id='{}' AND last_command_sequence=2", child_run.as_str().unwrap())).await, 1);
+    // The run description lists it after the child's own request.
+    let (status, described) = request(&app, "GET", &format!("/api/workflows/{}", child_id.as_str().unwrap()), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{described}");
+    let listed: Vec<_> = described["commands"].as_array().unwrap().iter()
+        .map(|command| (command["sequence"].clone(), command["status"].clone(), command["source"].clone(), command["reason"].clone()))
+        .collect();
+    assert_eq!(listed, [(json!(1), json!("accepted"), json!("control_plane"), json!("child asked first")),
+        (json!(2), json!("rejected"), json!("workflow"), json!("cancellation_root_conflict"))], "{described}");
+    runtime.close().await;
+    database.remove().await;
+}
