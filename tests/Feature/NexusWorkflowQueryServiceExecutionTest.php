@@ -11,12 +11,16 @@ use App\Support\QueryTaskPollRequestStore;
 use App\Support\ServerPollingCache;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowQueryTaskBroker;
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Foundation\Testing\DatabaseMigrations;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\ServiceControlPlane;
+use Workflow\V2\Jobs\RunServiceCall;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
@@ -24,8 +28,38 @@ use Workflow\V2\Models\WorkflowServiceOperation;
 
 class NexusWorkflowQueryServiceExecutionTest extends TestCase
 {
-    use RefreshDatabase;
+    use DatabaseMigrations;
     use ServerTestHelpers;
+
+    private ?string $queryDatabase = null;
+
+    protected function beforeRefreshingDatabase(): void
+    {
+        if (config('database.default') !== 'sqlite') {
+            return;
+        }
+        // Query waits deliberately disconnect. Give each test a real database
+        // that survives reconnects without sharing a previous app's handles.
+        $this->queryDatabase = tempnam(sys_get_temp_dir(), 'dw-nexus-query-');
+        config(['database.connections.sqlite.database' => $this->queryDatabase]);
+        DB::purge('sqlite');
+    }
+
+    protected function tearDown(): void
+    {
+        try {
+            parent::tearDown();
+        } finally {
+            if ($this->queryDatabase !== null) {
+                foreach (['', '-wal', '-shm', '-journal'] as $suffix) {
+                    $path = $this->queryDatabase.$suffix;
+                    if (is_file($path)) {
+                        unlink($path);
+                    }
+                }
+            }
+        }
+    }
 
     protected function setUp(): void
     {
@@ -34,6 +68,40 @@ class NexusWorkflowQueryServiceExecutionTest extends TestCase
         Queue::fake();
 
         $this->createNamespace('default');
+    }
+
+    #[DataProvider('pendingQueryWaits')]
+    public function test_accepted_or_bounded_wait_query_keeps_one_recoverable_dispatch_and_replay_identity(string $waitFor, ?int $seconds): void
+    {
+        $this->bindScriptedQueryWorker([['outcome' => 'completed', 'result' => ['maximum' => PHP_INT_MAX, 'nil' => null, 'text' => '雪']]]);
+        $this->registerQueryWorker('python-query-worker', 'python-queries', ['python.queryable']);
+        $this->startRemoteWorkflow('shared-greeter-workflow');
+        $this->primeQueryTaskPoller('python-query-worker');
+        $this->createWorkflowQueryOperation([]);
+        $body = ['wait_for' => $waitFor, 'idempotency_key' => 'durable-query-once'];
+        if ($seconds !== null) {
+            $body['wait_timeout_seconds'] = $seconds;
+            $this->app->forgetInstance(LongPoller::class);
+        }
+        $path = '/api/service-endpoints/greeter/services/shared/operations/greet/execute';
+        $first = $this->postJson($path, $body, $this->apiHeaders());
+        $first->assertOk()->assertJsonPath('accepted', true)->assertJsonPath('status', 'accepted');
+        $id = $first->json('service_call_id');
+        $replay = $this->postJson($path, $body, $this->apiHeaders());
+        $replay->assertOk()->assertJsonPath('service_call_id', $id)->assertJsonPath('idempotent_replay', true);
+        Queue::assertPushed(RunServiceCall::class, 1);
+        Queue::pushed(RunServiceCall::class)->sole()->handle(app(ServiceControlPlane::class));
+        $completed = $this->postJson($path, $body, $this->apiHeaders());
+        $completed->assertOk()->assertJsonPath('service_call_id', $id)->assertJsonPath('status', 'completed');
+        $this->assertSame(['maximum' => PHP_INT_MAX, 'nil' => null, 'text' => '雪'], Serializer::unserialize($completed->json('result_envelope.blob')));
+        Queue::assertPushed(RunServiceCall::class, 1);
+    }
+
+    public static function pendingQueryWaits(): iterable
+    {
+        yield 'accepted only' => ['accepted', null];
+        yield 'zero completion wait' => ['completed', 0];
+        yield 'expired bounded completion wait' => ['completed', 1];
     }
 
     public function test_workflow_query_service_operation_retries_through_public_query_worker_and_completes(): void
@@ -239,10 +307,38 @@ class NexusWorkflowQueryServiceExecutionTest extends TestCase
     ): void {
         $signals = app(LongPollSignalStore::class);
         $cache = app(ServerPollingCache::class);
+        $this->app->instance(LongPoller::class, new class($signals, app(LongPollWaitSlotStore::class)) extends LongPoller
+        {
+            private int $handled = 0;
+
+            public function until(
+                callable $probe,
+                callable $ready,
+                ?int $timeoutSeconds = null,
+                ?int $intervalMilliseconds = null,
+                array $wakeChannels = [],
+                ?callable $nextProbeAt = null,
+                bool $reserveWorkerWaitSlot = false,
+                string $waitSlotPool = 'worker',
+                ?string $waitSlotNamespace = null,
+                array $interruptChannels = [],
+                ?callable $onInterrupt = null,
+            ): mixed {
+                $jobs = Queue::pushed(RunServiceCall::class);
+                while ($this->handled < $jobs->count()) {
+                    $job = $jobs->values()->get($this->handled++);
+                    $job->handle(app(ServiceControlPlane::class));
+                    $jobs = Queue::pushed(RunServiceCall::class);
+                }
+
+                return $probe();
+            }
+        });
         $workerStep = function (array $task) use (&$outcomes, $namespace, $workerId, $taskQueue): void {
             if (($task['status'] ?? null) !== 'pending' || ! is_string($task['query_task_id'] ?? null)) {
                 return;
             }
+            $this->assertSame(0, DB::connection()->transactionLevel(), 'Query worker completion must not inherit an HTTP admission transaction.');
 
             $poll = $this->postJson('/api/worker/query-tasks/poll', [
                 'worker_id' => $workerId,

@@ -8,6 +8,7 @@ use App\Support\AvroPayloadEnvelopeResolver;
 use App\Support\BackendLockPressure;
 use App\Support\ControlPlaneFailureDiagnostics;
 use App\Support\ControlPlaneProtocol;
+use App\Support\LongPoller;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\PayloadCodecContract;
 use App\Support\SearchAttributeValueValidator;
@@ -28,6 +29,7 @@ use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Support\ServiceCallDeadlinePolicy;
 use Workflow\V2\Support\ServiceCallIdempotency;
 use Workflow\V2\Support\ServiceCallPrincipal;
+use Workflow\V2\Support\ServiceCallScheduler;
 use Workflow\V2\Support\UpdateWaitPolicy;
 
 class ServiceCatalogController
@@ -787,6 +789,7 @@ class ServiceCatalogController
                     $options = $this->admittedExecutionOptions($request, $executionOptions, $callerNamespace);
                     $options['service_call_id'] = $idempotentCall->id;
                     $options['boundary_policy_outcome'] = 'accepted';
+                    $options = $this->hostQueryOptions($operation, $options);
 
                     try {
                         $result = $this->serviceControlPlane()->execute(
@@ -811,6 +814,8 @@ class ServiceCatalogController
                         ]),
                     );
                 }
+
+                $result = $this->waitForHostQuery($request, $result, $waitFor, $validated['wait_timeout_seconds'] ?? null);
 
                 return ControlPlaneProtocol::json($result, ($result['accepted'] ?? false) === true ? 200 : 409);
             } catch (ServiceOperationAuthorizationException) {
@@ -862,6 +867,7 @@ class ServiceCatalogController
         $options = $this->admittedExecutionOptions($request, $executionOptions, $callerNamespace);
         $options['service_call_id'] = $admission->call->id;
         $options['boundary_policy_outcome'] = $admission->decision->outcome->value;
+        $options = $this->hostQueryOptions($operation, $options);
 
         try {
             if ($admission->replayed && ((string) $admission->call->status !== 'accepted'
@@ -883,6 +889,7 @@ class ServiceCatalogController
             if ($admission->replayed) {
                 $result['idempotent_replay'] = true;
             }
+            $result = $this->waitForHostQuery($request, $result, $waitFor, $validated['wait_timeout_seconds'] ?? null);
 
             return ControlPlaneProtocol::json(
                 array_replace(
@@ -904,6 +911,49 @@ class ServiceCatalogController
                 $this->serviceCallBoundary()->release($admission->request);
             }
         }
+    }
+
+    /**
+     * @param  array<string, mixed>  $options
+     * @return array<string, mixed>
+     */
+    private function hostQueryOptions(WorkflowServiceOperation $operation, array $options): array
+    {
+        if (! in_array($operation->handler_binding_kind, ['query_workflow', 'workflow_query'], true)) {
+            return $options;
+        }
+
+        // The broker may wait for a route and then for its response. Keep that
+        // entire worker wait inside one valid durable claim, outside SQL.
+        $queryTimeout = max(0, (int) config('server.query_tasks.timeout', 45));
+
+        return ServiceCallScheduler::withHostQueryAuthority($options, 2 * $queryTimeout + 30);
+    }
+
+    /**
+     * @param  array<string, mixed>  $result
+     * @return array<string, mixed>
+     */
+    private function waitForHostQuery(Request $request, array $result, string $waitFor, ?int $timeoutSeconds): array
+    {
+        $id = $result['service_call_id'] ?? null;
+        if ($waitFor !== 'completed' || ! is_string($id)
+            || ($result['resolved_binding_kind'] ?? null) !== 'workflow_query'
+            || in_array($result['status'] ?? null, ['completed', 'failed', 'cancelled'], true)
+            || ! ServiceCallScheduler::hasDispatch($id)) {
+            return $result;
+        }
+
+        $observed = app(LongPoller::class)->until(
+            fn (): array => $this->serviceControlPlane()->describeCall($id, ['namespace' => $this->namespace($request)]),
+            static fn (array $call): bool => in_array($call['status'] ?? null, ['completed', 'failed', 'cancelled'], true),
+            $timeoutSeconds ?? UpdateWaitPolicy::completionTimeoutSeconds(),
+            UpdateWaitPolicy::pollIntervalMilliseconds(),
+        );
+
+        return array_replace($result, $observed, [
+            'accepted' => ! in_array($observed['status'] ?? null, ['failed', 'cancelled'], true),
+        ]);
     }
 
     private function serviceOperationOutcomeUnknown(
