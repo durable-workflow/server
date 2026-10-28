@@ -190,9 +190,15 @@ function finishHttpContinueTransfers(Client $admin, array $fixture, string $work
             'activity_type' => 'charge-activity', 'owning_workflow_instance_id' => $calling['workflow_id'],
             'owning_workflow_run_id' => $calling['run_id']]]), 201, 'linked operation');
     $task = $claim($calling);
+    // Keyed executes: under SQLite lock pressure published PHP answers a keyed
+    // execute with the retryable `backend_lock_pressure` refusal, which the
+    // retry middleware repeats with the same key, rather than an unkeyed
+    // `service_operation_outcome_unknown` (ServiceCatalogController, Server #796).
     $executed = $raw('POST', '/api/service-endpoints/can/services/billing/operations/charge/execute', ['arguments' => $empty,
-        'caller_workflow_instance_id' => $calling['workflow_id'], 'caller_workflow_run_id' => $calling['run_id']]);
-    $linkedExecuted = $raw('POST', '/api/service-endpoints/can/services/billing/operations/linked/execute', ['arguments' => $empty]);
+        'caller_workflow_instance_id' => $calling['workflow_id'], 'caller_workflow_run_id' => $calling['run_id'],
+        'idempotency_key' => $calling['workflow_id'].'-charge']);
+    $linkedExecuted = $raw('POST', '/api/service-endpoints/can/services/billing/operations/linked/execute', ['arguments' => $empty,
+        'idempotency_key' => $calling['workflow_id'].'-linked']);
     $describeCall = static function (string $operation, ?string $call) use ($raw, $label): array {
         $shown = $raw('GET', '/api/service-endpoints/can/services/billing/operations/'.$operation.'/service-calls/'.$call, null);
 
