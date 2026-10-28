@@ -490,7 +490,8 @@ async fn recovery_repairs_the_abandoned_task_as_php_does() {
     register_for(&app, "repair-replacement", "repair-queue").await;
     assert_eq!(poll_for(&app, "repair-replacement", "repair-queue", 0).await["task"]["workflow_task_attempt"], 2);
     let sql = "SELECT command_type,context FROM workflow_commands WHERE command_type='repair'";
-    let repairs = text_rows(&database, sql, sql, "SELECT command_type,CAST(context AS CHAR) FROM workflow_commands WHERE command_type='repair'").await;
+    let repairs = text_rows(&database, sql, "SELECT command_type,context::text FROM workflow_commands WHERE command_type='repair'",
+        "SELECT command_type,CAST(context AS CHAR) FROM workflow_commands WHERE command_type='repair'").await;
     assert_eq!(repairs.len(), 1, "{repairs:?}");
     let context: Value = serde_json::from_str(&repairs[0].1).unwrap();
     assert_eq!(context["metadata"], json!({"trigger":"expired_workflow_task_lease","task_id":task["task_id"],
