@@ -322,6 +322,10 @@ PHP;
     $state['stale_owner_recovered'] = $outcome($workflowTask($replacement), $staleWorker);
     $old = $raw('POST', $taskPath.'/complete', $claim + ['commands' => [['type' => 'complete_workflow', 'result' => $empty]]]);
     $state['stale_owner_complete_after_recovery'] = ['status' => $old['status'], 'reason' => $old['response']['reason'] ?? null];
+    // Recovery fenced the stale owner's registration: its heartbeat is refused.
+    $fenced = $raw('POST', '/api/worker/heartbeat', ['worker_id' => $staleWorker['worker_id']]);
+    $state['stale_owner_heartbeat_after_recovery'] = ['status' => $fenced['status'], 'reason' => $fenced['response']['reason'] ?? null,
+        'own_worker' => ($fenced['response']['worker_id'] ?? null) === $staleWorker['worker_id']];
 
     return $state;
 }
