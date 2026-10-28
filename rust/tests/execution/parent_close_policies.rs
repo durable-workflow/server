@@ -278,3 +278,91 @@ async fn a_child_native_cannot_close_records_the_policy_failure() {
     runtime.close().await;
     database.remove().await;
 }
+
+// A parent-close policy closes a child that continued as new: the policy
+// reaches the child instance's current run, whose `continue_as_new` link from
+// its predecessor PHP's close does not follow.
+#[tokio::test]
+async fn a_policy_close_reaches_a_child_that_continued_as_new() {
+    for (policy, verb, status) in [("terminate", "terminate", "terminated"), ("request_cancel", "cancel", "cancelled")] {
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap();
+        let app = router(runtime.clone());
+        update_worker(&app, "parent-worker").await;
+        register(&app, "child-worker", json!(["child"]), json!([])).await;
+        let (parent, child_id, child_run) = parent_with_child(&app, "continued-parent", policy, "terminate").await;
+        let child_task = poll(&app, "child-worker", "workflow").await;
+        assert_eq!(child_task["run_id"], child_run, "{child_task}");
+        let (code, body) = finish_task(&app, &child_task, json!([{"type":"continue_as_new"}])).await;
+        assert_eq!(code, StatusCode::OK, "{body}");
+        let child = child_id.as_str().unwrap();
+        let (_, continued) = request(&app, "GET", &format!("/api/workflows/{child}"), Value::Null).await;
+        assert_ne!(continued["run_id"], child_run, "{continued}");
+        close_parent(&app, &database, "continued-parent", "terminate").await;
+
+        let parent_history = run_history(&app, &json!("continued-parent"), &parent["run_id"]).await;
+        let last = parent_history.as_array().unwrap().last().unwrap();
+        assert_eq!(last["event_type"], "ParentClosePolicyApplied", "{policy}: {parent_history}");
+        assert_eq!((last["payload"]["child_instance_id"].clone(), last["payload"]["child_run_id"].clone()),
+            (child_id.clone(), continued["run_id"].clone()), "{policy}: {last}");
+        let (_, described) = request(&app, "GET", &format!("/api/workflows/{child}"), Value::Null).await;
+        assert_eq!((described["run_id"].clone(), described["status"].clone()),
+            (continued["run_id"].clone(), json!(status)), "{policy} ({verb}): {described}");
+        runtime.close().await;
+        database.remove().await;
+    }
+}
+
+// A live query on the child holds no parent-close policy, as it holds no
+// HTTP close: the policy closes the child, and the query admitted before it
+// is still leased and answered.
+#[tokio::test]
+async fn a_policy_close_reaches_a_child_with_a_live_query() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    update_worker(&app, "parent-worker").await;
+    let (status, body) = request(&app, "POST", "/api/worker/register", json!({"worker_id":"child-worker",
+        "task_queue":"test","runtime":"php","supported_workflow_types":["child"],"supported_activity_types":[],
+        "capabilities":["query_tasks"],"workflow_command_contracts":{"child":{"queries":["state"],
+        "query_contracts":[{"name":"state","parameters":[]}]}}})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (parent, child_id, child_run) = parent_with_child(&app, "queried-parent", "terminate", "terminate").await;
+    let child = child_id.as_str().unwrap().to_owned();
+    let leased = poll(&app, "child-worker", "workflow").await;
+    assert_eq!(leased["run_id"], child_run, "{leased}");
+    let waiting = {
+        let app = app.clone();
+        let path = format!("/api/workflows/{child}/query/state");
+        tokio::spawn(async move { request(&app, "POST", &path, json!({"input":envelope(Payload::Array(vec![]))})).await })
+    };
+    let mut held = false;
+    for _ in 0..20 {
+        let (status, body) = request(&app, "POST", "/api/worker/query-tasks/poll",
+            json!({"worker_id":"child-worker","task_queue":"test","timeout_seconds":1})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        if body["poll_status"] == "workflow_task_leased" {
+            held = true;
+            break;
+        }
+    }
+    assert!(held, "the child's query was never admitted behind its leased task");
+    close_parent(&app, &database, "queried-parent", "terminate").await;
+
+    let parent_history = run_history(&app, &json!("queried-parent"), &parent["run_id"]).await;
+    let last = parent_history.as_array().unwrap().last().unwrap();
+    assert_eq!(last["event_type"], "ParentClosePolicyApplied", "{parent_history}");
+    let (_, described) = request(&app, "GET", &format!("/api/workflows/{child}"), Value::Null).await;
+    assert_eq!(described["status"], "terminated", "{described}");
+    let claim = await_query(&app, "child-worker").await;
+    assert_eq!(claim["run_id"], child_run, "{claim}");
+    let answered = request(&app, "POST", &format!("/api/worker/query-tasks/{}/complete", claim["query_task_id"].as_str().unwrap()),
+        json!({"lease_owner":"child-worker","query_task_attempt":claim["query_task_attempt"],
+            "result_envelope":envelope(Payload::Array(vec![]))})).await;
+    assert_eq!(answered.0, StatusCode::OK, "{}", answered.1);
+    let caller = waiting.await.unwrap();
+    assert_eq!(caller.0, StatusCode::OK, "{}", caller.1);
+    assert_eq!(caller.1["run_id"], child_run);
+    runtime.close().await;
+    database.remove().await;
+}

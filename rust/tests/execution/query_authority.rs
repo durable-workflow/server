@@ -751,8 +751,10 @@ async fn a_live_query_survives_continuation_and_is_answered_from_the_predecessor
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap().with_query_task_config(
         durable_workflow_server::runtime::QueryTaskConfig {
-            timeout_seconds: 4,
-            lease_timeout_seconds: 4,
+            // Room for the timer, the resume and the continuation on a
+            // loaded CI database: nothing here waits for the deadline.
+            timeout_seconds: 30,
+            lease_timeout_seconds: 30,
             ..Default::default()
         },
     );
@@ -811,15 +813,6 @@ async fn a_live_query_survives_continuation_and_is_answered_from_the_predecessor
     let continued = request(&app, "POST", &path, body).await;
     assert_eq!(continued.0, StatusCode::OK, "{}", continued.1);
     assert_eq!(cache_snapshot(&database, id).await, snapshot);
-    let runs = request(
-        &app,
-        "GET",
-        "/api/workflows/query-authority-continuation/runs",
-        Value::Null,
-    )
-    .await;
-    assert_eq!(runs.1["runs"].as_array().unwrap().len(), 2);
-    assert_eq!(runs.1["runs"][0]["run_id"], started["run_id"]);
     let answered = request(
         &app,
         "POST",
@@ -831,6 +824,15 @@ async fn a_live_query_survives_continuation_and_is_answered_from_the_predecessor
     let caller = waiting.await.unwrap();
     assert_eq!(caller.0, StatusCode::OK, "{}", caller.1);
     assert_eq!(caller.1["run_id"], started["run_id"]);
+    let runs = request(
+        &app,
+        "GET",
+        "/api/workflows/query-authority-continuation/runs",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(runs.1["runs"].as_array().unwrap().len(), 2);
+    assert_eq!(runs.1["runs"][0]["run_id"], started["run_id"]);
     let successor = poll(&app, "authority-worker", "workflow").await;
     assert_ne!(successor["run_id"], started["run_id"]);
     assert_eq!(
@@ -1114,4 +1116,67 @@ async fn same_worker_id_across_namespaces_and_replacement_keep_separate_original
     );
     original.runtime.close().await;
     original.database.remove().await;
+}
+
+/// Polls for query work until a query poll ends held by the run's leased
+/// workflow task (`performPoll`'s `workflow_task_leased`): the client's query
+/// is then admitted against the run.
+async fn await_held_query(app: &Router, worker: &str) {
+    for _ in 0..20 {
+        let (status, body) = request(app, "POST", "/api/worker/query-tasks/poll",
+            json!({"worker_id":worker,"task_queue":"test","timeout_seconds":1})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["task"].is_null(), "{body}");
+        if body["poll_status"] == "workflow_task_leased" {
+            return;
+        }
+    }
+    panic!("the query was never admitted behind the leased workflow task");
+}
+
+// A live query holds no close. PHP's cancel and terminate never consult query
+// tasks, and its query broker claims a task whatever its run's status, so a
+// query admitted before the close is still leased and answered.
+#[tokio::test]
+async fn a_live_query_holds_no_close_and_is_answered_from_the_closed_run() {
+    for (command, status) in [("cancel", "cancelled"), ("terminate", "terminated")] {
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap().with_query_task_config(
+            durable_workflow_server::runtime::QueryTaskConfig {
+                timeout_seconds: 30,
+                lease_timeout_seconds: 30,
+                ..Default::default()
+            },
+        );
+        let app = router(runtime.clone());
+        query_worker(&app, "authority-worker").await;
+        let name = format!("query-authority-{command}");
+        let started = start(&app, &name).await;
+        let leased = poll(&app, "authority-worker", "workflow").await;
+        assert_eq!(leased["run_id"], started["run_id"], "{leased}");
+        let waiting = {
+            let app = app.clone();
+            let path = format!("/api/workflows/{name}/query/state");
+            tokio::spawn(async move {
+                request(&app, "POST", &path, json!({"input":envelope(Payload::Array(vec![Payload::Long(7)]))})).await
+            })
+        };
+        await_held_query(&app, "authority-worker").await;
+
+        let (code, closed) = request(&app, "POST", &format!("/api/workflows/{name}/{command}"),
+            json!({"reason":"live query"})).await;
+        assert_eq!(code, StatusCode::OK, "{command}: {closed}");
+        let (_, described) = request(&app, "GET", &format!("/api/workflows/{name}"), Value::Null).await;
+        assert_eq!(described["status"], status, "{described}");
+        let claim = await_query(&app, "authority-worker").await;
+        assert_eq!(claim["run_id"], started["run_id"], "{claim}");
+        let id = claim["query_task_id"].as_str().unwrap();
+        let answered = request(&app, "POST", &format!("/api/worker/query-tasks/{id}/complete"), submitted(&claim)).await;
+        assert_eq!(answered.0, StatusCode::OK, "{}", answered.1);
+        let caller = waiting.await.unwrap();
+        assert_eq!(caller.0, StatusCode::OK, "{command}: {}", caller.1);
+        assert_eq!(caller.1["run_id"], started["run_id"]);
+        runtime.close().await;
+        database.remove().await;
+    }
 }

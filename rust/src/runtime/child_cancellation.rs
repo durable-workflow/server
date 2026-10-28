@@ -268,28 +268,8 @@ where
         if depth >= MAX_POLICY_DEPTH {
             return Ok(Some(unavailable));
         }
-        let unsupported_links = Self::scalar("SELECT COUNT(*) FROM workflow_links WHERE child_workflow_run_id=$1 AND link_type!='child_workflow'")
-            .bind(&run_id).fetch_one(&mut **tx).await?;
-        let cooperative_children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','terminated','failed') AND parent_close_policy='request_cancellation'")
-            .bind(&run_id).fetch_one(&mut **tx).await?;
-        if unsupported_links != 0 || cooperative_children != 0 {
+        if Self::close_unavailable(&mut **tx, &run_id).await? {
             return Ok(Some(unavailable));
-        }
-        let queries = Self::query(DB::QUERY_CACHE_PENDING_FOR_RUN)
-            .bind(&run_id)
-            .bind(now().timestamp())
-            .fetch_all(&mut **tx)
-            .await?;
-        let observed = super::query_authority::now();
-        for query in &queries {
-            let timing = json!({
-                "query_admitted_at": DB::optional_string(query, "query_admitted_at")?,
-                "query_deadline_at": DB::optional_string(query, "query_deadline_at")?,
-                "receipt_expires_at": DB::optional_string(query, "receipt_expires_at")?,
-            });
-            if super::query_authority::deadline(&timing).is_none_or(|deadline| observed < deadline) {
-                return Ok(Some(unavailable));
-            }
         }
         let activities = Self::scalar("SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status IN ('pending','running')")
             .bind(&run_id).fetch_one(&mut **tx).await?;

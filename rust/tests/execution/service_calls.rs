@@ -456,3 +456,37 @@ async fn a_caller_run_continues_as_new_and_its_call_stays_with_the_predecessor()
     runtime.close().await;
     database.remove().await;
 }
+
+// A call linked to a run through an `activity_execution` binding stays with
+// the predecessor when that run continues as new: Core moves only open calls
+// with the `workflow_run` binding (`LinkedServiceCallCloser`).
+#[tokio::test]
+async fn a_call_linked_through_an_activity_binding_stays_with_the_continued_run() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    catalog(&app, &[]).await;
+    register(&app, "linked-worker", json!(["echo"]), json!([])).await;
+    let started = start(&app, "service-linked").await;
+    let run = started["run_id"].clone();
+    let (status, body) = request(&app, "POST", OPERATIONS, json!({"operation_name": "charge-linked", "operation_mode": "async",
+        "handler_binding_kind": "activity_execution", "handler_binding": {"activity_type": "t",
+            "owning_workflow_instance_id": "service-linked", "owning_workflow_run_id": run}})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, call) = execute(&app, "charge-linked", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{call}");
+    assert_eq!((call["resolved_binding_kind"].clone(), call["linked_workflow_run_id"].clone()),
+        (json!("activity_execution"), run.clone()), "{call}");
+    let id = call["service_call_id"].as_str().unwrap().to_owned();
+
+    let task = poll(&app, "linked-worker", "workflow").await;
+    let path = format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap());
+    let (status, continued) = request(&app, "POST", &path, completion(&task, json!([{"type":"continue_as_new"}]))).await;
+    assert_eq!(status, StatusCode::OK, "{continued}");
+    let (status, shown) = request(&app, "GET", &format!("{OPERATIONS}/charge-linked/service-calls/{id}"), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{shown}");
+    assert_eq!((shown["status"].clone(), shown["linked_workflow_run_id"].clone(), shown["resolved_target_reference"].clone()),
+        (json!("accepted"), run, call["resolved_target_reference"].clone()), "{shown}");
+    runtime.close().await;
+    database.remove().await;
+}

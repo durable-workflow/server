@@ -118,8 +118,11 @@ where
         // as its caller (`ServiceCallWorkflowDelivery` skips a terminal
         // caller), and a query admitted against the predecessor is still
         // leased and answered from its history (continue-transfers fixture).
-        // Native binds no call to a workflow run (Server #794), and takeover
-        // refuses an open one, so no linked call follows the continuation.
+        // Core moves only open calls with the `workflow_run` binding to the
+        // next run (`LinkedServiceCallCloser::advanceForContinuation`). Native
+        // resolves no call to that binding, and takeover refuses an open one.
+        // A call linked to this run through an `activity_execution` binding
+        // stays with the predecessor, as in Core.
         let rows = Self::query(DB::MEMO_READ)
             .bind(&old)
             .fetch_all(&mut **tx)
