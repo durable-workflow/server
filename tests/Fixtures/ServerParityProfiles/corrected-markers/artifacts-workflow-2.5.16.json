@@ -45,7 +45,7 @@
   "sdk_composer_lock_sha256": "42e814ee38813d3dafcf2e4cc371327d661536adda653e6cf1518a91a46087ca",
   "sdk_python": "2.5.13",
   "sdk_rust": "3.5.4",
-  "rust_consumer_cargo_lock_sha256": "904d81cb766cd55a791585eb3424a21c36930d5bd6e2307c407981ab342b9c4d",
+  "rust_consumer_cargo_lock_sha256": "ca48fac011532e1bab82e484091ac49e3c21a42cef32ef02713c8ecfe5bffaaa",
   "published_sdk_artifacts": {
     "php": {
       "version": "2.3.9",

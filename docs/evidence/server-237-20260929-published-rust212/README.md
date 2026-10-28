@@ -66,3 +66,14 @@ The [offer log](offer4000.log) records 4,000 acknowledged signals in 344.375 sec
 The [durable state](durable-state.tsv) contains 8,046 contiguous first-run events and two completed successor events, 4,000 each of `SignalReceived` and `SideEffectRecorded`, eight each of `ActivityScheduled`, `ActivityStarted`, `ActivityCompleted`, `TimerScheduled` and `TimerFired`, one `WorkflowContinuedAsNew`, and one `WorkflowCompleted`. All eight activity and timer tasks and 19 workflow tasks completed with no attempt count above one. No task remained ready or leased. The database schema directory occupied [240,685,056 bytes](mysql-schema-bytes.tsv) after both the earlier PHP run and this Rust run, versus 144,166,912 bytes after PHP alone. This observed increase includes MySQL allocation overhead and cannot be attributed solely to Rust history bytes. The Server logs contain no HTTP 5xx or PHP memory fatal during this Rust run.
 
 This is one functional recovery run, not a throughput comparison. It did not exercise PostgreSQL, external payloads or a backend interruption. The separate [published-artifact replay result](../server-237-20260929-published-python237/replay/replay-conformance-record.json) passed 31/31 scenarios for the exact Server, PHP, Python, Rust, Workflow, Waterline and CLI tuple. Server #237's broader database, recovery, retention and repeat-observation matrix remains open.
+
+## Frozen dependency disposition
+
+[Cargo.lock](Cargo.lock) is part of this frozen record. It is kept byte for
+byte so the recorded build stays reproducible, and it is not built, shipped or
+run by any current workflow. It resolves `rustls` 0.23.45, which the
+GHSA-c8m5-c952-6cm4, GHSA-h2v8-394m-p7vv, GHSA-vp88-798v-h67f and
+GHSA-w44r-93j7-qv28 advisories cover. Updating it would change the evidence it
+records. The active native runtime and every current fixture and benchmark
+lock resolve `rustls` 0.23.46 or later (Server #325; Security's reachability
+review is on #827).

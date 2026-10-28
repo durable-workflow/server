@@ -234,47 +234,267 @@ async fn a_policy_close_applies_the_childs_own_policies_in_turn() {
     database.remove().await;
 }
 
-// A child native cannot close yet (here: one with an open
-// `request_cancellation` grandchild, which needs PHP's new cancellation
-// origin) stays open; the parent still closes and records
-// `ParentClosePolicyFailed` with the reason, as PHP does for a child it
-// cannot close.
+/// A worker that takes cooperative cancellation on protocol 1.20, which a
+/// `request_cancellation` child start needs.
+async fn cooperative_worker(app: &Router, worker: &str) {
+    let registered = request_protocol(app, "POST", "/api/worker/register",
+        json!({"worker_id":worker,"task_queue":"test","runtime":"php","supported_workflow_types":["echo","child"],
+            "supported_activity_types":["activity-echo"],"capabilities":["cooperative_cancellation"]}), "1.20").await;
+    assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+}
+
+async fn cooperative_poll(app: &Router, worker: &str) -> Value {
+    let (status, body) = request_protocol(app, "POST", "/api/worker/workflow-tasks/poll",
+        json!({"worker_id":worker,"task_queue":"test","timeout_seconds":0}), "1.20").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["task"].clone()
+}
+
+async fn cooperative_finish(app: &Router, task: &Value, commands: Value) -> (StatusCode, Value) {
+    request_protocol(app, "POST", &format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap()),
+        completion(task, commands), "1.20").await
+}
+
+fn instant(value: &Value) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::parse_from_rfc3339(value.as_str().unwrap_or_else(|| panic!("an instant: {value}")))
+        .unwrap()
+        .with_timezone(&chrono::Utc)
+}
+
+/// Checks a run's `ParentCloseCancellationRequested` origin after its
+/// terminal event and each child's descendant request under it, as
+/// published Server 2.11.5 records them (parent-close-cancellation fixture).
+/// Returns the origin's context.
+async fn assert_parent_close_origin(app: &Router, database: &TestDatabase, instance: &str, run: &Value,
+    terminal: &str, closed_reason: &str, children: &[(Value, Value)]) -> Value {
+    let label = format!("{instance}/{terminal}");
+    let history = run_history(app, &json!(instance), run).await;
+    let kinds = types(&history);
+    let at = kinds.iter().position(|kind| kind == terminal).unwrap_or_else(|| panic!("{label}: {history}"));
+    let mut tail = vec!["ParentCloseCancellationRequested".to_owned()];
+    tail.extend(children.iter().map(|_| "ParentClosePolicyApplied".to_owned()));
+    assert_eq!(kinds[at + 1..], tail[..], "{label}: {history}");
+    let events = history.as_array().unwrap();
+    let origin = &events[at + 1]["payload"];
+    assert_eq!(
+        count(database, format!("SELECT COUNT(*) FROM workflow_history_events WHERE id='{}' AND workflow_run_id='{}' AND event_type='{terminal}'",
+            origin["parent_terminal_history_event_id"].as_str().unwrap(), run.as_str().unwrap())).await,
+        1,
+        "{label}: the origin names the terminal event"
+    );
+    assert_eq!(origin["parent_terminal_event_type"], terminal, "{label}");
+    let context = origin["cancellation"].clone();
+    let reason = format!("Parent workflow closed ({closed_reason}); parent-close policy: request_cancellation.");
+    let request = context["request_id"].clone();
+    assert!(request.is_string(), "{label}: {context}");
+    assert_eq!(context, json!({"schema": "durable-workflow.cancellation-context/v1", "request_id": request,
+        "root_request_id": request, "root_workflow_instance_id": instance, "root_workflow_run_id": run,
+        "parent_request_id": null, "reason": reason,
+        "requester": {"type": "workflow", "id": instance, "label": "Parent-close policy"},
+        "source": "parent_close_policy", "requested_at": context["requested_at"],
+        "cleanup_deadline_at": context["cleanup_deadline_at"],
+        "lineage": [{"request_id": request, "workflow_instance_id": instance, "workflow_run_id": run}]}), "{label}");
+    // Requested at the terminal event's time, with a 600-second budget.
+    assert_eq!(context["requested_at"], events[at]["timestamp"], "{label}");
+    assert_eq!(instant(&context["cleanup_deadline_at"]) - instant(&context["requested_at"]), chrono::Duration::seconds(600), "{label}");
+    for (index, (child_instance, child_run)) in children.iter().enumerate() {
+        let applied = &events[at + 2 + index]["payload"];
+        let child_history = run_history(app, child_instance, child_run).await;
+        assert_eq!(types(&child_history), ["WorkflowStarted", "CooperativeCancellationRequested"], "{label}");
+        let requested = &child_history[1]["payload"];
+        let command = requested["workflow_command_id"].clone();
+        let mut lineage = context["lineage"].as_array().unwrap().clone();
+        lineage.push(json!({"request_id": command, "workflow_instance_id": child_instance, "workflow_run_id": child_run}));
+        let descendant = json!({"schema": "durable-workflow.cancellation-context/v1", "request_id": command,
+            "root_request_id": request, "root_workflow_instance_id": instance, "root_workflow_run_id": run,
+            "parent_request_id": request, "reason": reason, "requester": context["requester"],
+            "source": "parent_close_policy", "requested_at": context["requested_at"],
+            "cleanup_deadline_at": context["cleanup_deadline_at"], "lineage": lineage});
+        assert_eq!(requested["cancellation"], descendant, "{label}");
+        assert_eq!(requested["cleanup_deadline_at"], context["cleanup_deadline_at"], "{label}");
+        assert_eq!(requested["reason"], reason, "{label}");
+        // `CommandContext::workflow`: the parent asks, naming the child's link.
+        let snapshot = &requested["command"];
+        assert_eq!((snapshot["source"].clone(), snapshot["caller_label"].clone(), snapshot["target_scope"].clone()),
+            (json!("workflow"), json!("Workflow"), json!("instance")), "{label}: {snapshot}");
+        assert_eq!(snapshot["context"]["workflow"]["parent_instance_id"], instance, "{label}: {snapshot}");
+        assert_eq!(snapshot["context"]["workflow"]["parent_run_id"], *run, "{label}: {snapshot}");
+        assert_eq!(snapshot["context"]["workflow"]["sequence"], index as i64 + 1, "{label}: {snapshot}");
+        assert_eq!(*applied, json!({"child_instance_id": child_instance, "child_run_id": child_run,
+            "policy": "request_cancellation", "reason": reason, "request_id": command, "cancellation": descendant}), "{label}");
+        assert_eq!(
+            count(database, format!("SELECT COUNT(*) FROM workflow_runs WHERE id='{}' AND status='pending' AND cancellation_request_command_id='{}'",
+                child_run.as_str().unwrap(), command.as_str().unwrap())).await,
+            1,
+            "{label}"
+        );
+    }
+    context
+}
+
+/// The children a run's history scheduled, in order.
+fn scheduled_children(history: &Value) -> Vec<(Value, Value)> {
+    history
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["event_type"] == "ChildWorkflowScheduled")
+        .map(|event| (event["payload"]["child_workflow_instance_id"].clone(), event["payload"]["child_workflow_run_id"].clone()))
+        .collect()
+}
+
+// Published PHP (`ParentCloseCancellation::ensureOrigin`): a parent without
+// a cooperative request of its own closes whatever `request_cancellation`
+// children are open. It records one policy-owned root after its terminal
+// event, and each child takes a descendant request under it, which its next
+// workflow task carries. Every close applies it: complete and fail in the
+// batch that starts the child, terminate (here with two children) and
+// cancel over HTTP, and a run deadline.
 #[tokio::test]
-async fn a_child_native_cannot_close_records_the_policy_failure() {
+async fn a_closed_parent_gives_its_request_cancellation_children_its_own_root() {
+    for (close, terminal, closed_reason, count_children) in [
+        ("complete", "WorkflowCompleted", "completed", 1),
+        ("fail", "WorkflowFailed", "failed", 1),
+        ("terminate", "WorkflowTerminated", "terminated", 2),
+        ("cancel", "WorkflowCancelled", "cancelled", 1),
+        ("timeout", "WorkflowTimedOut", "timed_out", 1),
+    ] {
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap();
+        let app = router(runtime.clone());
+        cooperative_worker(&app, "worker").await;
+        let (status, started) = request(&app, "POST", "/api/workflows", json!({"workflow_id":"origin-parent","workflow_type":"echo",
+            "task_queue":"test","input":envelope(Payload::Array(vec![])),"run_timeout_seconds":600})).await;
+        assert_eq!(status, StatusCode::CREATED, "{started}");
+        let task = cooperative_poll(&app, "worker").await;
+        let mut commands: Vec<Value> = (0..count_children).map(|_| child_with("request_cancellation")).collect();
+        match close {
+            "complete" => commands.push(json!({"type":"complete_workflow","result":envelope(Payload::Long(7))})),
+            "fail" => commands.push(json!({"type":"fail_workflow","message":"parent failed"})),
+            "timeout" => commands.push(json!({"type":"schedule_activity","activity_type":"activity-echo","arguments":envelope(Payload::Array(vec![]))})),
+            _ => {}
+        }
+        let (status, body) = cooperative_finish(&app, &task, json!(commands)).await;
+        assert_eq!(status, StatusCode::OK, "{close}: {body}");
+        match close {
+            "terminate" | "cancel" => {
+                let (status, body) = request(&app, "POST", &format!("/api/workflows/origin-parent/{close}"),
+                    json!({"reason":"parent closes"})).await;
+                assert_eq!(status, StatusCode::OK, "{close}: {body}");
+            }
+            "timeout" => {
+                let claimed = poll(&app, "worker", "activity").await;
+                let (status, body) = request(&app, "POST",
+                    &format!("/api/worker/activity-tasks/{}/complete", claimed["task_id"].as_str().unwrap()),
+                    json!({"lease_owner":"worker","activity_attempt_id":claimed["activity_attempt_id"],"result":envelope(Payload::Long(1))})).await;
+                assert_eq!(status, StatusCode::OK, "{body}");
+                database.execute("UPDATE workflow_runs SET run_deadline_at='2000-01-01 00:00:00' WHERE workflow_instance_id='origin-parent'").await;
+                // The children's first tasks are ready too; take the parent's.
+                let mut resumed = cooperative_poll(&app, "worker").await;
+                let mut skipped = Vec::new();
+                while resumed["workflow_id"] != "origin-parent" {
+                    skipped.push(resumed["run_id"].clone());
+                    resumed = cooperative_poll(&app, "worker").await;
+                }
+                let (status, body) = cooperative_finish(&app, &resumed,
+                    json!([{"type":"complete_workflow","result":envelope(Payload::Long(2))}])).await;
+                assert_eq!((status, body["reason"].clone()), (StatusCode::CONFLICT, json!("run_timed_out")), "{body}");
+                // Release the skipped child claims so the check below can poll them.
+                database.execute("UPDATE workflow_tasks SET status='ready',lease_owner=NULL,lease_expires_at=NULL WHERE status='leased'").await;
+                assert_eq!(skipped.len(), 1, "one child task was ahead of the parent's");
+            }
+            _ => {}
+        }
+        let (status, described) = request(&app, "GET", "/api/workflows/origin-parent", Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{described}");
+        assert_eq!(described["closed_reason"], closed_reason, "{close}: {described}");
+        let history = run_history(&app, &json!("origin-parent"), &started["run_id"]).await;
+        let children = scheduled_children(&history);
+        assert_eq!(children.len(), count_children, "{close}: {history}");
+        let context = assert_parent_close_origin(&app, &database, "origin-parent", &started["run_id"], terminal, closed_reason, &children).await;
+        // Each child's next task carries its request under that root.
+        let mut delivered = Vec::new();
+        for _ in 0..count_children {
+            let task = cooperative_poll(&app, "worker").await;
+            assert!(!task.is_null(), "{close}: a child task");
+            delivered.push((task["run_id"].clone(), task["cancellation_request"]["request_id"].clone(),
+                task["cancellation_request"]["cleanup_deadline_at"].clone()));
+        }
+        assert!(cooperative_poll(&app, "worker").await.is_null(), "{close}: nothing else is ready");
+        for (child_instance, child_run) in &children {
+            let child_history = run_history(&app, child_instance, child_run).await;
+            let command = child_history[1]["payload"]["workflow_command_id"].clone();
+            assert!(delivered.contains(&(child_run.clone(), command, context["cleanup_deadline_at"].clone())), "{close}: {delivered:?}");
+        }
+        assert_eq!(
+            task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_commands WHERE command_type='request_cancellation' AND source='workflow' AND target_scope='instance' AND requested_workflow_run_id IS NULL AND status='accepted'").await,
+            count_children as i64,
+            "{close}"
+        );
+        runtime.close().await;
+        database.remove().await;
+    }
+}
+
+// A child closed by its parent's policy applies its own policies in turn: a
+// `request_cancellation` grandchild takes the closed child's own root.
+#[tokio::test]
+async fn a_policy_close_gives_a_request_cancellation_grandchild_the_childs_own_root() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
     update_worker(&app, "parent-worker").await;
-    let registered = request_protocol(&app, "POST", "/api/worker/register",
-        json!({"worker_id":"child-worker","task_queue":"test","runtime":"php","supported_workflow_types":["child"],
-            "supported_activity_types":[],"capabilities":["cooperative_cancellation"]}), "1.20").await;
-    assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
-    let (parent, child_id, child_run) = parent_with_child(&app, "blocked-parent", "terminate", "terminate").await;
-    let polled = request_protocol(&app, "POST", "/api/worker/workflow-tasks/poll",
-        json!({"worker_id":"child-worker","task_queue":"test","timeout_seconds":2}), "1.20").await;
-    let child_task = polled.1["task"].clone();
-    assert_eq!(child_task["run_id"], child_run, "{}", polled.1);
-    let (status, body) = request_protocol(&app, "POST",
-        &format!("/api/worker/workflow-tasks/{}/complete", child_task["task_id"].as_str().unwrap()),
-        completion(&child_task, json!([child_with("request_cancellation")])), "1.20").await;
+    cooperative_worker(&app, "child-worker").await;
+    let (parent, child_id, child_run) = parent_with_child(&app, "nested-origin", "terminate", "terminate").await;
+    let child_task = cooperative_poll(&app, "child-worker").await;
+    assert_eq!(child_task["run_id"], child_run);
+    let (status, body) = cooperative_finish(&app, &child_task, json!([child_with("request_cancellation")])).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let child_before = run_history(&app, &child_id, &child_run).await;
-    close_parent(&app, &database, "blocked-parent", "terminate").await;
+    close_parent(&app, &database, "nested-origin", "terminate").await;
 
-    let parent_history = run_history(&app, &json!("blocked-parent"), &parent["run_id"]).await;
-    let failed = parent_history.as_array().unwrap().last().unwrap();
-    assert_eq!(failed["event_type"], "ParentClosePolicyFailed", "{parent_history}");
-    assert_eq!(
-        failed["payload"],
-        json!({"child_instance_id": child_id, "child_run_id": child_run, "policy": "terminate",
-            "reason": "Parent workflow closed (terminated); parent-close policy: terminate.",
-            "error": "termination_propagation_not_available"})
-    );
-    assert_eq!(run_history(&app, &child_id, &child_run).await, child_before, "nothing was written to the child");
-    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_commands WHERE source='php'").await, 0);
-    let (status, described) = request(&app, "GET", "/api/workflows/blocked-parent", Value::Null).await;
+    let parent_history = run_history(&app, &json!("nested-origin"), &parent["run_id"]).await;
+    let applied = parent_history.as_array().unwrap().last().unwrap();
+    assert_eq!(applied["event_type"], "ParentClosePolicyApplied", "{parent_history}");
+    assert_eq!(applied["payload"]["child_run_id"], child_run);
+    assert!(!types(&parent_history).contains(&"ParentCloseCancellationRequested".to_owned()), "{parent_history}");
+    let child_history = run_history(&app, &child_id, &child_run).await;
+    let grandchildren = scheduled_children(&child_history);
+    assert_eq!(grandchildren.len(), 1, "{child_history}");
+    assert_parent_close_origin(&app, &database, child_id.as_str().unwrap(), &child_run, "WorkflowTerminated", "terminated", &grandchildren).await;
+    let (status, described) = request(&app, "GET", "/api/workflows/nested-origin", Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{described}");
     assert_eq!(described["status"], "terminated");
+    runtime.close().await;
+    database.remove().await;
+}
+
+// A parent whose accepted request has no readable context keeps it as its
+// root, as PHP's `ensureOrigin` does: it records no origin of its own, and
+// the child's request is refused with `cancellation_parent_context_unavailable`.
+#[tokio::test]
+async fn a_parent_request_without_its_context_refuses_the_childs_request() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    cooperative_worker(&app, "worker").await;
+    let started = start(&app, "lost-context").await;
+    let task = cooperative_poll(&app, "worker").await;
+    let (status, body) = cooperative_finish(&app, &task, json!([child_with("request_cancellation")])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    database.execute("UPDATE workflow_runs SET cancellation_request_command_id='01missingrequest0000000000' WHERE workflow_instance_id='lost-context'").await;
+    let (status, body) = request(&app, "POST", "/api/workflows/lost-context/terminate", json!({"reason":"parent closes"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &json!("lost-context"), &started["run_id"]).await;
+    let children = scheduled_children(&history);
+    let kinds = types(&history);
+    assert_eq!(kinds[kinds.len() - 2..], ["WorkflowTerminated", "ParentClosePolicyFailed"], "{history}");
+    assert_eq!(
+        history.as_array().unwrap().last().unwrap()["payload"],
+        json!({"child_instance_id": children[0].0, "child_run_id": children[0].1, "policy": "request_cancellation",
+            "reason": "Parent workflow closed (terminated); parent-close policy: request_cancellation.",
+            "error": "cancellation_parent_context_unavailable", "request_diagnostics": [], "request_id": null, "cancellation": null})
+    );
+    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_commands WHERE command_type='request_cancellation'").await, 0);
     runtime.close().await;
     database.remove().await;
 }
