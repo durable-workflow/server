@@ -3165,14 +3165,7 @@ where
                 } else {
                     // Published PHP completes a run whatever is still open. Its
                     // activities, timers and waits stay as they are, and its
-                    // open children follow their parent-close policies. Only a
-                    // `request_cancellation` child still refuses: PHP gives it a
-                    // new cancellation origin, which native does not have yet.
-                    let enforced = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','terminated','failed') AND parent_close_policy='request_cancellation'")
-                    .bind(&run_id).fetch_one(&mut *tx).await?;
-                    if enforced != 0 {
-                        return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
-                    }
+                    // open children follow their parent-close policies.
                     let output = match external.get(&index) {
                         Some(prepared) => prepared.stored(),
                         None => envelope(command, "result")?,

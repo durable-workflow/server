@@ -455,21 +455,11 @@ contract fixture before its correction.
     after a takeover a PHP-written scoped request reads as
     `request_context_invalid`, and a PHP-written stop receipt as
     `callback_state: unknown`.
-  - **Parent close, `request_cancellation` without a cooperative request.**
-    Published PHP applies every parent-close policy when a parent completes,
-    fails, is cancelled, is terminated or times out
-    (`ParentClosePolicyEnforcer`). Native does too, except that it applies
-    `request_cancellation` only when the parent closes under a cooperative
-    cancellation request. Otherwise PHP first creates a new cancellation
-    origin (`ParentCloseCancellation::ensureOrigin`), which native does not
-    have. Native therefore refuses a parent's completion, cancellation and
-    termination while such a child is open. It leaves that child open when
-    the parent fails or times out.
   - **Children native cannot close yet.** When a policy would cancel or
-    terminate a child that itself has an open `request_cancellation` child,
-    a live query, or more than 1,000 open activities or timers, native
-    records `ParentClosePolicyFailed` with the refusal it would give an HTTP
-    cancel or terminate and leaves the child open. PHP closes it.
+    terminate a child with more than 1,000 open activities or timers, or
+    32 levels below the closing parent, native records
+    `ParentClosePolicyFailed` with the refusal it would give an HTTP cancel
+    or terminate and leaves the child open. PHP closes it.
   - **Root conflicts.** PHP records a rejected command when a child refuses
     a request under another root. Native records only the refusal on the
     parent's events.
@@ -502,6 +492,18 @@ contract fixture before its correction.
   PHP. Native used to refuse (`..._propagation_not_available`,
   `child_call_mismatch`), or record `ParentClosePolicyFailed`
   ([checkpoint](rust-server-port-checkpoints/2026-10-28-continue-transfers.md)).
+- **Parent close, `request_cancellation` without a cooperative request**
+  (October 28, closed). Published PHP applies the policy whenever a parent
+  completes, fails, is cancelled, is terminated or times out. A parent
+  without its own cooperative request first records a policy-owned root,
+  `ParentCloseCancellationRequested`, after its terminal event
+  (`ParentCloseCancellation::ensureOrigin`). Each open child then takes a
+  descendant request under it. Native now does the same. It used to refuse
+  the parent's completion, cancellation and termination while such a child
+  was open, and to leave the child open when the parent failed or timed out.
+  The `parent-close-cancellation` fixture records the completed, failed and
+  terminated cases against published 2.11.5
+  ([checkpoint](rust-server-port-checkpoints/2026-10-28-parent-close-origin.md)).
 - **Trace context (Core 2.10, published in Server 2.11.1).** Core adds
   nullable `observability_context` columns on runs, commands and tasks.
   Native has no carrier: it accepts and ignores a top-level carrier on
