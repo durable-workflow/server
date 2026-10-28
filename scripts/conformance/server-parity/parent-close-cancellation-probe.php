@@ -112,7 +112,7 @@ function finishHttpParentCloseCancellation(Client $admin, array $fixture, string
         }
         $command['id'] = $label($command['id'] ?? null, 'request');
         $command['resolved_run_id'] = $label($command['resolved_run_id'] ?? null, 'run');
-        unset($command['payload']);
+        unset($command['payload'], $command['request_path'], $command['request_route_name'], $command['request_fingerprint']);
         foreach (['accepted_at', 'applied_at', 'rejected_at'] as $field) {
             if (array_key_exists($field, $command)) {
                 $command[$field] = is_string($command[$field]);
@@ -125,6 +125,22 @@ function finishHttpParentCloseCancellation(Client $admin, array $fixture, string
             $workflow['child_call_id'] = $label($workflow['child_call_id'] ?? null, 'call');
             unset($workflow);
         }
+        ksort($command);
+
+        return $command;
+    };
+
+    // A command as the run description lists it: who recorded it and its
+    // outcome. Request fingerprints and route names are server-specific.
+    $describedCommand = static function (array $command) use ($label): array {
+        $command['id'] = $label($command['id'] ?? null, 'request');
+        $command['resolved_run_id'] = $label($command['resolved_run_id'] ?? null, 'run');
+        foreach (['accepted_at', 'applied_at', 'rejected_at'] as $field) {
+            if (array_key_exists($field, $command)) {
+                $command[$field] = is_string($command[$field]);
+            }
+        }
+        unset($command['request_path'], $command['request_route_name'], $command['request_fingerprint']);
         ksort($command);
 
         return $command;
@@ -156,6 +172,17 @@ function finishHttpParentCloseCancellation(Client $admin, array $fixture, string
         $observed = ['completed' => ['status' => $completed['status'], 'outcome' => $completed['response']['outcome'] ?? null,
             'reason' => $completed['response']['reason'] ?? null, 'run_status' => $completed['response']['run_status'] ?? null,
             'created_tasks' => count($completed['response']['created_task_ids'] ?? [])]];
+        // A child that already has its own request, under another root.
+        if ($shape['child_request'] ?? false) {
+            foreach ($history($id, $started['run_id']) as $event) {
+                if (($event['event_type'] ?? null) === 'ChildWorkflowScheduled') {
+                    $requested = $raw('POST', '/api/workflows/'.rawurlencode($event['payload']['child_workflow_instance_id'])
+                        .'/request-cancellation', ['reason' => 'child asked first']);
+                    $observed['child_requested'] = ['status' => $requested['status'],
+                        'outcome' => $requested['response']['outcome'] ?? null];
+                }
+            }
+        }
         if ($shape['close'] === 'terminate') {
             $terminated = $raw('POST', '/api/workflows/'.$id.'/terminate', ['reason' => 'parent close fixture']);
             $observed['terminated'] = ['status' => $terminated['status'], 'outcome' => $terminated['response']['outcome'] ?? null,
@@ -203,6 +230,12 @@ function finishHttpParentCloseCancellation(Client $admin, array $fixture, string
             if (array_key_exists('cancellation', $payload)) {
                 $payload['cancellation'] = $context($payload['cancellation'], $instant);
             }
+            if (is_array($payload['request_diagnostics'] ?? null)) {
+                foreach ($payload['request_diagnostics'] as $field => $value) {
+                    $payload['request_diagnostics'][$field] = str_ends_with((string) $field, '_at')
+                        ? $instant($value) : $label($value, 'request');
+                }
+            }
 
             return ['event_type' => $event['event_type'], 'payload' => $payload];
         }, array_filter($events, static fn (array $event): bool => str_starts_with((string) ($event['event_type'] ?? ''),
@@ -219,8 +252,10 @@ function finishHttpParentCloseCancellation(Client $admin, array $fixture, string
             $requested = array_values(array_filter($childEvents, static fn (array $row): bool =>
                 ($row['event_type'] ?? null) === 'CooperativeCancellationRequested'));
             $request = $requested[0]['payload'] ?? null;
+            $described = $raw('GET', '/api/workflows/'.rawurlencode($childId), null)['response'];
             $children[] = ['instance' => $label($childId, 'instance'), 'run' => $label($childRun, 'run'),
-                'status' => $raw('GET', '/api/workflows/'.rawurlencode($childId), null)['response']['status'] ?? null,
+                'status' => $described['status'] ?? null,
+                'commands' => array_map($describedCommand, is_array($described['commands'] ?? null) ? $described['commands'] : []),
                 'events' => array_map(static fn (array $row): ?string => $row['event_type'] ?? null, $childEvents),
                 'request' => $request === null ? null : [
                     'workflow_command_id' => $label($request['workflow_command_id'] ?? null, 'request'),

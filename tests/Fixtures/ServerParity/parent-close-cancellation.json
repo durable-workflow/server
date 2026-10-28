@@ -2,7 +2,7 @@
   "schema": "durable-workflow.server-parity-fixture/v1",
   "id": "parent-close-cancellation",
   "review_state": "reviewed",
-  "contract": "A parent closes while children it started under the request_cancellation parent-close policy are open, without a cooperative cancellation request of its own (published Server 2.11.5, Workflow 2.15.1 ParentClosePolicyEnforcer, ParentCloseCancellation::ensureOrigin, WorkflowStub::attemptRequestCancellationFromParent), over raw worker HTTP on protocol 1.20 in its own namespace with a cooperative_cancellation worker. The parent completes in the batch that starts its child, fails in that batch, or is terminated over HTTP with two such children open. Every close is accepted. After its terminal event the parent records one ParentCloseCancellationRequested origin: a policy-owned root request (source parent_close_policy, requester Parent-close policy, a lineage of one) at the terminal event's timestamp with a 600-second cleanup budget. It then records ParentClosePolicyApplied for each open child in link order. Each child takes a descendant request_cancellation command under that root with the root's deadline, recorded as the parent's workflow command (source workflow, instance scope, naming the parent run, the child's sequence and link), records CooperativeCancellationRequested, stays pending, and receives the request in its first workflow task's cancellation_request. Ids are labels by first appearance; instants are relations to the origin. Embedded applications have no worker protocol.",
+  "contract": "A parent closes while children it started under the request_cancellation parent-close policy are open, without a cooperative cancellation request of its own (published Server 2.11.5, Workflow 2.15.1 ParentClosePolicyEnforcer, ParentCloseCancellation::ensureOrigin, WorkflowStub::attemptRequestCancellationFromParent), over raw worker HTTP on protocol 1.20 in its own namespace with a cooperative_cancellation worker. The parent completes in the batch that starts its child, fails in that batch, or is terminated over HTTP with two such children open, or with one child that already holds its own request. Every close is accepted. After its terminal event the parent records one ParentCloseCancellationRequested origin: a policy-owned root request (source parent_close_policy, requester Parent-close policy, a lineage of one) at the terminal event's timestamp with a 600-second cleanup budget. It then records ParentClosePolicyApplied for each open child in link order. Each child takes a descendant request_cancellation command under that root with the root's deadline, recorded as the parent's workflow command (source workflow, instance scope, naming the parent run, the child's sequence and link), records CooperativeCancellationRequested, stays pending, and receives the request in its first workflow task's cancellation_request. A child that already holds a request under another root refuses: it records a rejected request_cancellation command at its next command sequence (source workflow, instance scope, rejection_reason cancellation_root_conflict, no outcome), listed in its run description, and the parent records ParentClosePolicyFailed naming that command with the conflict's diagnostics. Ids are labels by first appearance; instants are relations to the origin. Embedded applications have no worker protocol.",
   "workflow_type": "parity.v1.echo",
   "input": {
     "message": "parent close cancellation λ",
@@ -47,6 +47,11 @@
       "terminated": {
         "children": 2,
         "close": "terminate"
+      },
+      "conflict": {
+        "children": 1,
+        "close": "terminate",
+        "child_request": true
       }
     },
     "expected": {
@@ -144,6 +149,37 @@
             "instance": "{instance:2}",
             "run": "{run:2}",
             "status": "pending",
+            "commands": [
+              {
+                "accepted_at": true,
+                "applied_at": true,
+                "auth_method": "none",
+                "auth_status": "not_applicable",
+                "caller_label": "Workflow",
+                "context": {
+                  "caller": {
+                    "type": "workflow",
+                    "label": "Workflow"
+                  },
+                  "auth": {
+                    "status": "not_applicable",
+                    "method": "none"
+                  }
+                },
+                "id": "{request:2}",
+                "outcome": "cancellation_requested",
+                "payload_preview_omitted": false,
+                "reason": "Parent workflow closed (completed); parent-close policy: request_cancellation.",
+                "resolved_run_id": "{run:2}",
+                "sequence": 1,
+                "source": "workflow",
+                "status": "accepted",
+                "target_scope": "instance",
+                "type": "request_cancellation",
+                "workflow_class": "parity.v1.parent_close_cancellation",
+                "workflow_type": "parity.v1.parent_close_cancellation"
+              }
+            ],
             "events": [
               "WorkflowStarted",
               "CooperativeCancellationRequested"
@@ -335,6 +371,37 @@
             "instance": "{instance:4}",
             "run": "{run:4}",
             "status": "pending",
+            "commands": [
+              {
+                "accepted_at": true,
+                "applied_at": true,
+                "auth_method": "none",
+                "auth_status": "not_applicable",
+                "caller_label": "Workflow",
+                "context": {
+                  "caller": {
+                    "type": "workflow",
+                    "label": "Workflow"
+                  },
+                  "auth": {
+                    "status": "not_applicable",
+                    "method": "none"
+                  }
+                },
+                "id": "{request:4}",
+                "outcome": "cancellation_requested",
+                "payload_preview_omitted": false,
+                "reason": "Parent workflow closed (failed); parent-close policy: request_cancellation.",
+                "resolved_run_id": "{run:4}",
+                "sequence": 1,
+                "source": "workflow",
+                "status": "accepted",
+                "target_scope": "instance",
+                "type": "request_cancellation",
+                "workflow_class": "parity.v1.parent_close_cancellation",
+                "workflow_type": "parity.v1.parent_close_cancellation"
+              }
+            ],
             "events": [
               "WorkflowStarted",
               "CooperativeCancellationRequested"
@@ -574,6 +641,37 @@
             "instance": "{instance:6}",
             "run": "{run:6}",
             "status": "pending",
+            "commands": [
+              {
+                "accepted_at": true,
+                "applied_at": true,
+                "auth_method": "none",
+                "auth_status": "not_applicable",
+                "caller_label": "Workflow",
+                "context": {
+                  "caller": {
+                    "type": "workflow",
+                    "label": "Workflow"
+                  },
+                  "auth": {
+                    "status": "not_applicable",
+                    "method": "none"
+                  }
+                },
+                "id": "{request:6}",
+                "outcome": "cancellation_requested",
+                "payload_preview_omitted": false,
+                "reason": "Parent workflow closed (terminated); parent-close policy: request_cancellation.",
+                "resolved_run_id": "{run:6}",
+                "sequence": 1,
+                "source": "workflow",
+                "status": "accepted",
+                "target_scope": "instance",
+                "type": "request_cancellation",
+                "workflow_class": "parity.v1.parent_close_cancellation",
+                "workflow_type": "parity.v1.parent_close_cancellation"
+              }
+            ],
             "events": [
               "WorkflowStarted",
               "CooperativeCancellationRequested"
@@ -654,6 +752,37 @@
             "instance": "{instance:7}",
             "run": "{run:7}",
             "status": "pending",
+            "commands": [
+              {
+                "accepted_at": true,
+                "applied_at": true,
+                "auth_method": "none",
+                "auth_status": "not_applicable",
+                "caller_label": "Workflow",
+                "context": {
+                  "caller": {
+                    "type": "workflow",
+                    "label": "Workflow"
+                  },
+                  "auth": {
+                    "status": "not_applicable",
+                    "method": "none"
+                  }
+                },
+                "id": "{request:7}",
+                "outcome": "cancellation_requested",
+                "payload_preview_omitted": false,
+                "reason": "Parent workflow closed (terminated); parent-close policy: request_cancellation.",
+                "resolved_run_id": "{run:7}",
+                "sequence": 1,
+                "source": "workflow",
+                "status": "accepted",
+                "target_scope": "instance",
+                "type": "request_cancellation",
+                "workflow_class": "parity.v1.parent_close_cancellation",
+                "workflow_type": "parity.v1.parent_close_cancellation"
+              }
+            ],
             "events": [
               "WorkflowStarted",
               "CooperativeCancellationRequested"
@@ -759,6 +888,259 @@
               "request_id": "{request:7}",
               "requested_at": true,
               "cleanup_deadline_at": "{origin_cleanup_deadline_at}",
+              "delivery_sequence": null,
+              "delivered_at": null,
+              "history_refresh_page_token": "MA=="
+            }
+          },
+          null
+        ]
+      },
+      "conflict": {
+        "completed": {
+          "status": 200,
+          "outcome": "completed",
+          "reason": null,
+          "run_status": "waiting",
+          "created_tasks": 1
+        },
+        "child_requested": {
+          "status": 202,
+          "outcome": null
+        },
+        "terminated": {
+          "status": 200,
+          "outcome": "terminated",
+          "reason": "parent close fixture"
+        },
+        "parent_status": "terminated",
+        "parent_events": [
+          "StartAccepted",
+          "WorkflowStarted",
+          "ChildWorkflowScheduled",
+          "ChildRunStarted",
+          "TerminateRequested",
+          "WorkflowTerminated",
+          "ParentCloseCancellationRequested",
+          "ParentClosePolicyFailed"
+        ],
+        "origin": {
+          "parent_terminal_history_event_id": true,
+          "parent_terminal_event_type": "WorkflowTerminated",
+          "requested_at_is_closure": true,
+          "deadline_is_requested_plus_600_seconds": true,
+          "cancellation": {
+            "schema": "durable-workflow.cancellation-context/v1",
+            "request_id": "{request:8}",
+            "root_request_id": "{request:8}",
+            "root_workflow_instance_id": "{instance:8}",
+            "root_workflow_run_id": "{run:8}",
+            "parent_request_id": null,
+            "reason": "Parent workflow closed (terminated); parent-close policy: request_cancellation.",
+            "requester": {
+              "type": "workflow",
+              "id": "{instance:8}",
+              "label": "Parent-close policy"
+            },
+            "source": "parent_close_policy",
+            "requested_at": "{origin_requested_at}",
+            "cleanup_deadline_at": "{origin_cleanup_deadline_at}",
+            "lineage": [
+              {
+                "request_id": "{request:8}",
+                "workflow_instance_id": "{instance:8}",
+                "workflow_run_id": "{run:8}"
+              }
+            ]
+          }
+        },
+        "policy_events": [
+          {
+            "event_type": "ParentClosePolicyFailed",
+            "payload": {
+              "child_instance_id": "{instance:9}",
+              "child_run_id": "{run:9}",
+              "policy": "request_cancellation",
+              "reason": "Parent workflow closed (terminated); parent-close policy: request_cancellation.",
+              "error": "cancellation_root_conflict",
+              "request_diagnostics": {
+                "existing_request_id": "{request:10}",
+                "existing_root_request_id": "{request:10}",
+                "existing_cleanup_deadline_at": "{instant}",
+                "incoming_root_request_id": "{request:8}",
+                "incoming_cleanup_deadline_at": "{origin_cleanup_deadline_at}"
+              },
+              "request_id": "{request:9}",
+              "cancellation": null
+            }
+          }
+        ],
+        "children": [
+          {
+            "instance": "{instance:9}",
+            "run": "{run:9}",
+            "status": "pending",
+            "commands": [
+              {
+                "accepted_at": true,
+                "applied_at": true,
+                "auth_method": "token",
+                "auth_status": "authorized",
+                "caller_label": "Standalone Server",
+                "context": {
+                  "caller": {
+                    "type": "server",
+                    "label": "Standalone Server"
+                  },
+                  "auth": {
+                    "status": "authorized",
+                    "method": "token",
+                    "role": "admin"
+                  },
+                  "principal": {
+                    "type": "auth:token",
+                    "id": "legacy-token",
+                    "label": "Admin"
+                  }
+                },
+                "id": "{request:10}",
+                "outcome": "cancellation_requested",
+                "payload_preview_omitted": false,
+                "principal": {
+                  "type": "auth:token",
+                  "id": "legacy-token",
+                  "label": "Admin"
+                },
+                "principal_id": "legacy-token",
+                "principal_label": "Admin",
+                "principal_type": "auth:token",
+                "reason": "child asked first",
+                "request_method": "POST",
+                "resolved_run_id": "{run:9}",
+                "sequence": 1,
+                "source": "control_plane",
+                "status": "accepted",
+                "target_scope": "instance",
+                "type": "request_cancellation",
+                "workflow_class": "parity.v1.parent_close_cancellation",
+                "workflow_type": "parity.v1.parent_close_cancellation"
+              },
+              {
+                "auth_method": "none",
+                "auth_status": "not_applicable",
+                "caller_label": "Workflow",
+                "context": {
+                  "caller": {
+                    "type": "workflow",
+                    "label": "Workflow"
+                  },
+                  "auth": {
+                    "status": "not_applicable",
+                    "method": "none"
+                  }
+                },
+                "id": "{request:9}",
+                "payload_preview_omitted": false,
+                "reason": "cancellation_root_conflict",
+                "rejected_at": true,
+                "rejection_reason": "cancellation_root_conflict",
+                "resolved_run_id": "{run:9}",
+                "sequence": 2,
+                "source": "workflow",
+                "status": "rejected",
+                "target_scope": "instance",
+                "type": "request_cancellation",
+                "workflow_class": "parity.v1.parent_close_cancellation",
+                "workflow_type": "parity.v1.parent_close_cancellation"
+              }
+            ],
+            "events": [
+              "WorkflowStarted",
+              "CooperativeCancellationRequested"
+            ],
+            "request": {
+              "workflow_command_id": "{request:10}",
+              "workflow_instance_id": "{instance:9}",
+              "workflow_run_id": "{run:9}",
+              "command_type": "request_cancellation",
+              "reason": "child asked first",
+              "cleanup_deadline_at": "{instant}",
+              "cancellation": {
+                "schema": "durable-workflow.cancellation-context/v1",
+                "request_id": "{request:10}",
+                "root_request_id": "{request:10}",
+                "root_workflow_instance_id": "{instance:9}",
+                "root_workflow_run_id": "{run:9}",
+                "parent_request_id": null,
+                "reason": "child asked first",
+                "requester": {
+                  "type": "auth:token",
+                  "id": "{instance:10}",
+                  "label": "Admin"
+                },
+                "source": "control_plane",
+                "requested_at": "{instant}",
+                "cleanup_deadline_at": "{instant}",
+                "lineage": [
+                  {
+                    "request_id": "{request:10}",
+                    "workflow_instance_id": "{instance:9}",
+                    "workflow_run_id": "{run:9}"
+                  }
+                ]
+              },
+              "command": {
+                "accepted_at": true,
+                "applied_at": true,
+                "auth_method": "token",
+                "auth_status": "authorized",
+                "caller_label": "Standalone Server",
+                "context": {
+                  "principal": {
+                    "type": "auth:token",
+                    "id": "legacy-token",
+                    "label": "Admin"
+                  }
+                },
+                "id": "{request:10}",
+                "outcome": "cancellation_requested",
+                "payload_codec": "avro",
+                "principal_id": "legacy-token",
+                "principal_label": "Admin",
+                "principal_type": "auth:token",
+                "request_method": "POST",
+                "resolved_run_id": "{run:9}",
+                "sequence": 1,
+                "source": "control_plane",
+                "status": "accepted",
+                "target_scope": "instance",
+                "type": "request_cancellation"
+              },
+              "fields": [
+                "cancellation",
+                "cleanup_deadline_at",
+                "command",
+                "command_type",
+                "reason",
+                "workflow_command_id",
+                "workflow_instance_id",
+                "workflow_run_id"
+              ]
+            }
+          }
+        ],
+        "child_tasks": [
+          {
+            "run_id": "{run:9}",
+            "history_events": [
+              "WorkflowStarted",
+              "CooperativeCancellationRequested"
+            ],
+            "resume_source_kind": null,
+            "cancellation_request": {
+              "request_id": "{request:10}",
+              "requested_at": true,
+              "cleanup_deadline_at": "{instant}",
               "delivery_sequence": null,
               "delivered_at": null,
               "history_refresh_page_token": "MA=="

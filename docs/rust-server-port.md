@@ -460,9 +460,6 @@ contract fixture before its correction.
     32 levels below the closing parent, native records
     `ParentClosePolicyFailed` with the refusal it would give an HTTP cancel
     or terminate and leaves the child open. PHP closes it.
-  - **Root conflicts.** PHP records a rejected command when a child refuses
-    a request under another root. Native records only the refusal on the
-    parent's events.
 - **Several open waits at once** (October 28, closed). Published PHP lets a
   run hold any number of open activities, timers, children and waits, and
   native now does too: a task may open a wait while others are open, an
@@ -504,6 +501,16 @@ contract fixture before its correction.
   The `parent-close-cancellation` fixture records the completed, failed and
   terminated cases against published 2.11.5
   ([checkpoint](rust-server-port-checkpoints/2026-10-28-parent-close-origin.md)).
+- **Root conflicts** (October 28, closed). When a child refuses a parent's
+  request because it already holds one under another root, or because it is
+  no longer active, PHP's `rejectCommand` records a rejected
+  `request_cancellation` command on the child, at its next command sequence,
+  with the requester's context. The conflict's diagnostics are its payload,
+  and the parent's `ParentClosePolicyFailed` names it. Native now records it
+  too, in both the policy and the cascade path. The
+  `parent-close-cancellation` fixture's `conflict` case records it against
+  published 2.11.5
+  ([checkpoint](rust-server-port-checkpoints/2026-10-28-root-conflict-rows.md)).
 - **Trace context (Core 2.10, published in Server 2.11.1).** Core adds
   nullable `observability_context` columns on runs, commands and tasks.
   Native has no carrier: it accepts and ignores a top-level carrier on

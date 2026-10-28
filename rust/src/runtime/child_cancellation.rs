@@ -25,6 +25,24 @@ const MAX_POLICY_DEPTH: u8 = 32;
 /// `ParentCloseCancellation::CLEANUP_TIMEOUT_SECONDS`.
 const PARENT_CLOSE_CLEANUP_SECONDS: i64 = 600;
 
+/// Who asks a child to cancel: the command context, scope and source its
+/// request records, and the run it names when it targets one.
+struct Caller {
+    context: Value,
+    target_scope: &'static str,
+    source: &'static str,
+    requested: Option<String>,
+}
+
+/// A parent's request to a child: accepted or rejected, the command that
+/// records it, and a refusal's diagnostics.
+struct RequestOutcome {
+    outcome: &'static str,
+    rejection: Option<&'static str>,
+    command_id: String,
+    diagnostics: Option<Value>,
+}
+
 /// The child at a delivery's sequence, from its consistent link.
 pub(super) struct ChildBoundary {
     pub(super) child_instance: String,
@@ -114,7 +132,7 @@ where
             .bind(&boundary.child_run).fetch_optional(&mut **tx).await?;
         let snapshot = Self::task_snapshot(task)?;
         if !requested && terminal.is_none() {
-            let (outcome, rejection) =
+            let RequestOutcome { outcome, rejection, .. } =
                 Self::request_child_cancellation_from_parent(tx, boundary, parent_context, None, codec).await?;
             let mut payload = Self::child_cancellation_payload(tx, sequence, boundary, parent_context).await?;
             payload["request_outcome"] = json!(outcome);
@@ -267,31 +285,59 @@ where
             "auth": {"status": "not_applicable", "method": "none"},
             "workflow": {"parent_instance_id": DB::string(parent, "workflow_instance_id")?, "parent_run_id": parent_run,
                 "sequence": DB::optional_number(link, "sequence")?.unwrap_or(0), "child_call_id": DB::string(link, "id")?}});
-        let existing = Self::current_cancellation_context(tx, &boundary.child_run).await?;
-        let (outcome, rejection) =
+        let requested =
             Self::request_child_cancellation_from_parent(tx, boundary, context, Some(&policy_caller), Arc::new(Semaphore::new(1))).await?;
         let mut payload = json!({"child_instance_id": boundary.child_instance, "child_run_id": boundary.child_run,
             "policy": "request_cancellation", "reason": reason});
-        let kind = if outcome == "accepted" {
+        let kind = if requested.outcome == "accepted" {
             let child = Self::current_cancellation_context(tx, &boundary.child_run).await?.unwrap_or(Value::Null);
             payload["request_id"] = child["request_id"].clone();
             payload["cancellation"] = child;
             "ParentClosePolicyApplied"
         } else {
-            payload["error"] = json!(rejection.unwrap_or("cancellation_request_rejected"));
-            payload["request_diagnostics"] = match &existing {
-                Some(existing) if rejection == Some("cancellation_root_conflict") => json!({
-                    "existing_request_id": existing["request_id"], "existing_root_request_id": existing["root_request_id"],
-                    "existing_cleanup_deadline_at": existing["cleanup_deadline_at"],
-                    "incoming_root_request_id": context["root_request_id"], "incoming_cleanup_deadline_at": context["cleanup_deadline_at"]}),
-                _ => json!([]),
-            };
-            payload["request_id"] = Value::Null;
+            // The rejected command's id, and its payload values as the
+            // request's diagnostics (`CommandResult::payloadValues`).
+            payload["error"] = json!(requested.rejection.unwrap_or("cancellation_request_rejected"));
+            payload["request_diagnostics"] = requested.diagnostics.unwrap_or_else(|| json!([]));
+            payload["request_id"] = json!(requested.command_id);
             payload["cancellation"] = Value::Null;
             "ParentClosePolicyFailed"
         };
         Self::append(tx, &parent_run, kind, payload, None, None).await?;
         Ok(())
+    }
+
+    /// `WorkflowStub::rejectCommand` for a refused request from a parent: a
+    /// rejected `request_cancellation` command on the child at its next
+    /// command sequence, with the requester's context and any diagnostics as
+    /// its payload. Returns its id.
+    async fn record_rejected_request(
+        tx: &mut Transaction<'_, DB>,
+        run: &DB::Row,
+        caller: &Caller,
+        reason: &str,
+        diagnostics: Option<Value>,
+        codec: Arc<Semaphore>,
+    ) -> Result<String> {
+        let run_id = DB::string(run, "id")?;
+        let sequence = DB::number(run, "last_command_sequence")?
+            .checked_add(1)
+            .ok_or_else(|| refuse(StatusCode::CONFLICT, "command_sequence_exhausted"))?;
+        let blob = match diagnostics {
+            Some(diagnostics) => Some(encode_command(diagnostics, codec).await?),
+            None => None,
+        };
+        let command_id = id();
+        Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,requested_workflow_run_id,resolved_workflow_run_id,command_type,target_scope,source,context,status,workflow_type,workflow_class,payload_codec,payload,rejection_reason,command_sequence,rejected_at) VALUES ($1,$2,$3,$4,$5,'request_cancellation',$6,$7,$8,'rejected',$9,$10,'avro',$11,$12,$13,$14)")
+            .bind(&command_id).bind(DB::string(run, "workflow_instance_id")?).bind(&run_id).bind(caller.requested.as_deref()).bind(&run_id)
+            .bind(caller.target_scope).bind(caller.source).bind(DB::document(&caller.context))
+            .bind(DB::string(run, "workflow_type")?).bind(DB::string(run, "workflow_class")?)
+            .bind(blob.as_deref()).bind(reason).bind(sequence).bind(DB::bind_time(now()))
+            .execute(&mut **tx).await?;
+        Self::query("UPDATE workflow_runs SET last_command_sequence=$1 WHERE id=$2")
+            .bind(sequence).bind(&run_id).execute(&mut **tx).await?;
+        tx.summary_changed(&run_id);
+        Ok(command_id)
     }
 
     /// `ParentCloseCancellation::ensureOrigin`: a closed parent without a
@@ -405,18 +451,36 @@ where
         parent: &Value,
         policy_caller: Option<&Value>,
         codec: Arc<Semaphore>,
-    ) -> Result<(&'static str, Option<&'static str>)> {
+    ) -> Result<RequestOutcome> {
         let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
             .bind(&boundary.child_run).fetch_one(&mut **tx).await?;
-        if !matches!(DB::string(&run, "status")?.as_str(), "pending" | "running" | "waiting") {
-            return Ok(("rejected", Some("run_not_active")));
+        // `CommandContext::phpApi`: the run-targeted stub's default context,
+        // with no principal.
+        let caller = match policy_caller {
+            Some(caller) => Caller { context: caller.clone(), target_scope: "instance", source: "workflow", requested: None },
+            None => Caller {
+                context: json!({"caller": {"type": "php", "label": "PHP API"}, "auth": {"status": "not_applicable", "method": "none"}}),
+                target_scope: "run",
+                source: "php",
+                requested: Some(boundary.child_run.clone()),
+            },
+        };
+        // A request already accepted keeps its root: the same root is this
+        // request, another one refuses, before the run's status is read.
+        if let Some(existing_request) = DB::optional_string(&run, "cancellation_request_command_id")? {
+            let existing = Self::current_cancellation_context(tx, &boundary.child_run).await?.unwrap_or(Value::Null);
+            if existing["root_request_id"] == parent["root_request_id"] {
+                return Ok(RequestOutcome { outcome: "accepted", rejection: None, command_id: existing_request, diagnostics: None });
+            }
+            let diagnostics = json!({"existing_request_id": existing_request, "existing_root_request_id": existing["root_request_id"],
+                "existing_cleanup_deadline_at": DB::optional_instant(&run, "cancellation_deadline_at")?.map(timestamp),
+                "incoming_root_request_id": parent["root_request_id"], "incoming_cleanup_deadline_at": parent["cleanup_deadline_at"]});
+            let command_id = Self::record_rejected_request(tx, &run, &caller, "cancellation_root_conflict", Some(diagnostics.clone()), codec).await?;
+            return Ok(RequestOutcome { outcome: "rejected", rejection: Some("cancellation_root_conflict"), command_id, diagnostics: Some(diagnostics) });
         }
-        if let Some(existing) = Self::current_cancellation_context(tx, &boundary.child_run).await? {
-            return Ok(if existing["root_request_id"] == parent["root_request_id"] {
-                ("accepted", None)
-            } else {
-                ("rejected", Some("cancellation_root_conflict"))
-            });
+        if !matches!(DB::string(&run, "status")?.as_str(), "pending" | "running" | "waiting") {
+            let command_id = Self::record_rejected_request(tx, &run, &caller, "run_not_active", None, codec).await?;
+            return Ok(RequestOutcome { outcome: "rejected", rejection: Some("run_not_active"), command_id, diagnostics: None });
         }
         let deadline = parent["cleanup_deadline_at"]
             .as_str()
@@ -431,16 +495,9 @@ where
         let sequence = DB::number(&run, "last_command_sequence")?
             .checked_add(1)
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "command_sequence_exhausted"))?;
-        // `CommandContext::phpApi`: the run-targeted stub's default context,
-        // with no principal.
-        let (command_context, target_scope, source, requested) = match policy_caller {
-            Some(caller) => (caller.clone(), "instance", "workflow", None),
-            None => (json!({"caller": {"type": "php", "label": "PHP API"}, "auth": {"status": "not_applicable", "method": "none"}}),
-                "run", "php", Some(boundary.child_run.as_str())),
-        };
         Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,requested_workflow_run_id,resolved_workflow_run_id,command_type,target_scope,source,context,status,outcome,workflow_type,workflow_class,payload_codec,payload,command_sequence,accepted_at,applied_at) VALUES ($1,$2,$3,$4,$5,'request_cancellation',$6,$7,$8,'accepted','cancellation_requested',$9,$10,'avro',$11,$12,$13,$14)")
-            .bind(&request_id).bind(&boundary.child_instance).bind(&boundary.child_run).bind(requested).bind(&boundary.child_run)
-            .bind(target_scope).bind(source).bind(DB::document(&command_context)).bind(DB::string(&run, "workflow_type")?).bind(DB::string(&run, "workflow_class")?)
+            .bind(&request_id).bind(&boundary.child_instance).bind(&boundary.child_run).bind(caller.requested.as_deref()).bind(&boundary.child_run)
+            .bind(caller.target_scope).bind(caller.source).bind(DB::document(&caller.context)).bind(DB::string(&run, "workflow_type")?).bind(DB::string(&run, "workflow_class")?)
             .bind(&blob).bind(sequence).bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut **tx).await?;
         // The child's own request time; its budget is the root's.
         Self::query("UPDATE workflow_runs SET cancellation_request_command_id=$1,cancellation_requested_at=$2,cancellation_deadline_at=$3,last_progress_at=$4,last_command_sequence=$5 WHERE id=$6")
@@ -460,6 +517,6 @@ where
                 "resume_source_kind": "cancellation_request", "resume_source_id": request_id, "workflow_command_id": request_id})).await?;
         }
         tx.summary_changed(&boundary.child_run);
-        Ok(("accepted", None))
+        Ok(RequestOutcome { outcome: "accepted", rejection: None, command_id: request_id, diagnostics: None })
     }
 }
