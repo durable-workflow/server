@@ -16,20 +16,24 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Testing\TestResponse;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\StoragePressureFixture;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\Support\OpenApiSchema;
 use Tests\TestCase;
 use Workflow\Serializers\AvroBinaryValue;
 use Workflow\Serializers\Serializer;
-use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\ParallelChildGroup;
 
@@ -213,6 +217,82 @@ final class PreparedLocalActivityProtocolTest extends TestCase
         $this->localRequest($task, 'checkpoint', [...$body, 'commands' => [['type' => 'complete_workflow']]])
             ->assertStatus(409)->assertJsonPath('reason', 'invalid_local_activity_checkpoint_commands');
         $this->prepare($task, ['sequence' => 2])->assertOk()->assertJsonPath('prepared', true);
+    }
+
+    public static function updateTailCheckpoints(): iterable
+    {
+        foreach (['local-activities', 'cancellation-scopes'] as $kind) {
+            foreach (['complete_update', 'fail_update'] as $outcome) {
+                foreach (['checkpoint', 'scope'] as $followup) {
+                    foreach ([false, true] as $markerAfter) {
+                        yield "{$kind} {$outcome} {$followup} marker=".(int) $markerAfter => [$kind, $outcome, $followup, $markerAfter];
+                    }
+                }
+            }
+        }
+    }
+
+    #[DataProvider('updateTailCheckpoints')]
+    public function test_update_tail_checkpoint_cursor_admits_the_next_worker_operation(
+        string $kind,
+        string $outcome,
+        string $followup,
+        bool $markerAfter,
+    ): void {
+        $this->assertTrue(PreparedLocalActivityPolicy::backendSupported());
+        $task = $this->claim();
+        $claim = WorkflowTask::query()->findOrFail($task['task_id']);
+        $expiry = $claim->lease_expires_at->toISOString();
+        $run = WorkflowRun::query()->findOrFail($task['run_id']);
+        // The accepted update is the durable precondition of an outcome
+        // checkpoint. This case exercises its worker transport and follow-up.
+        $command = WorkflowCommand::query()->create([
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id, 'command_type' => 'update',
+            'status' => 'accepted', 'command_sequence' => 1,
+        ]);
+        $update = WorkflowUpdate::query()->create([
+            'workflow_command_id' => $command->id,
+            'workflow_instance_id' => $run->workflow_instance_id, 'workflow_run_id' => $run->id,
+            'update_name' => 'set', 'status' => 'accepted', 'command_sequence' => 1,
+            'payload_codec' => 'avro', 'arguments' => Serializer::serializeWithCodec('avro', []),
+            'accepted_at' => now(),
+        ]);
+        WorkflowHistoryEvent::record($run, HistoryEventType::UpdateAccepted, [
+            'workflow_command_id' => $command->id, 'update_id' => $update->id,
+            'update_name' => $update->update_name, 'arguments' => $update->arguments,
+        ], $claim, $command);
+        $commands = [['type' => $outcome, 'update_id' => $update->id, ...($outcome === 'complete_update'
+            ? ['result' => Serializer::serializeWithCodec('avro', 7), 'payload_codec' => 'avro']
+            : ['message' => 'Expected update failure'])]];
+        $marker = static fn (string $id): array => ['type' => 'record_version_marker', 'change_id' => $id,
+            'min_supported' => 1, 'max_supported' => 1, 'version' => 1];
+        if ($markerAfter) {
+            $commands[] = $marker('after-update');
+        }
+        $fence = ['lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt']];
+        $checkpoint = fn (array $body): TestResponse => $this->withHeaders($this->headers())
+            ->postJson("/api/worker/workflow-tasks/{$task['task_id']}/{$kind}/checkpoint", [...$fence, ...$body]);
+        $body = ['checkpoint_id' => 'update-tail', 'start_sequence' => 1, 'commands' => $commands];
+        $next = $markerAfter ? 3 : 1;
+        $checkpoint($body)->assertOk()->assertJsonPath('checkpointed', true)->assertJsonPath('next_sequence', $next);
+        $historyCount = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count();
+        $checkpoint($body)->assertOk()->assertJsonPath('duplicate', true)->assertJsonPath('next_sequence', $next);
+        $this->assertSame($historyCount, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
+        $this->assertSame($outcome === 'complete_update' ? 'completed' : 'failed', $update->fresh()->status->value);
+
+        if ($followup === 'checkpoint') {
+            $checkpoint(['checkpoint_id' => 'next', 'start_sequence' => $next, 'commands' => [$marker('next')]])
+                ->assertOk()->assertJsonPath('checkpointed', true)->assertJsonPath('next_sequence', $next + 1);
+        } else {
+            $this->withHeaders($this->headers())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/cancellation-scopes/open", [
+                ...$fence, 'sequence' => $next,
+            ])->assertOk()->assertJsonPath('opened', true);
+        }
+        $this->assertSame(TaskStatus::Leased, $claim->refresh()->status);
+        $this->assertSame($task['lease_owner'], $claim->lease_owner);
+        $this->assertSame($task['workflow_task_attempt'], $claim->attempt_count);
+        $this->assertSame($expiry, $claim->lease_expires_at->toISOString());
     }
 
     public function test_checkpoint_rejects_completion_only_metadata(): void
