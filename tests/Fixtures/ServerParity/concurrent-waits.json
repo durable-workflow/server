@@ -1,0 +1,706 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "concurrent-waits",
+  "review_state": "reviewed",
+  "contract": "Several waits open at once (Workflow DefaultWorkflowTaskBridge applyOpenSignalWait/applyOpenConditionWait, SignalWaits, PendingMessageTask, recordAppliedSignalForSignalResume, recordSatisfiedConditionWaitForSignalResume), over raw worker HTTP on protocol 1.20 in its own namespace. One completion may open any number of signal and condition waits, each with its own sequence, wait id and timeout timer. An accepted signal reserves the latest open wait of its name, unless an earlier signal of that name is still pending, in which case it is buffered. The resumed task applies the signal at its own wait's sequence and cancels that wait's timeout, and also satisfies the latest open condition wait and cancels its timer. A buffered signal whose identity names no open wait is not delivered unless the workflow declares its name; a declared one is delivered and applied at the latest open wait of its name (recordAppliedSignalForSignalResume, openWaitIdForName), and a wait opened later for that name takes the buffered identity (pendingSignalWaitIdForOpenSignalWait). The run summary names the latest open wait; the observation lists every durable wait. Embedded applications have no worker protocol.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "concurrent waits λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "concurrent waits λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "concurrent_waits": {
+    "workflow_type": "parity.v1.concurrent_waits",
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "timeout_seconds": 600,
+    "timer_seconds": 600,
+    "expected": {
+      "mixed": {
+        "opened": {
+          "status": 200,
+          "outcome": "completed",
+          "reason": null,
+          "run_status": "waiting",
+          "created_tasks": 2
+        },
+        "opened_history": [
+          [
+            "SignalWaitOpened",
+            {
+              "sequence": 1,
+              "signal_name": "first",
+              "signal_wait_id": "{wait:1}"
+            }
+          ],
+          [
+            "SignalWaitOpened",
+            {
+              "sequence": 2,
+              "signal_name": "second",
+              "signal_wait_id": "{wait:2}",
+              "timeout_seconds": 600
+            }
+          ],
+          [
+            "TimerScheduled",
+            {
+              "delay_seconds": 600,
+              "sequence": 2,
+              "signal_name": "second",
+              "signal_wait_id": "{wait:2}",
+              "timer_id": "{timer:1}",
+              "timer_kind": "signal_timeout"
+            }
+          ],
+          [
+            "ConditionWaitOpened",
+            {
+              "condition_key": "ready",
+              "condition_wait_id": "{wait:3}",
+              "sequence": 3,
+              "timeout_seconds": 600
+            }
+          ],
+          [
+            "TimerScheduled",
+            {
+              "condition_key": "ready",
+              "condition_wait_id": "{wait:3}",
+              "delay_seconds": 600,
+              "sequence": 3,
+              "timer_id": "{timer:2}",
+              "timer_kind": "condition_timeout"
+            }
+          ]
+        ],
+        "opened_describe": {
+          "status": "waiting",
+          "wait_kind": "condition",
+          "wait_reason": "Waiting for condition ready or timeout"
+        },
+        "opened_waits": [
+          {
+            "id": "{wait:1}",
+            "kind": "signal",
+            "state": "resume_time_unknown",
+            "reason": "Waiting for signal first.",
+            "target_name": "first",
+            "task_status": null
+          },
+          {
+            "id": "{wait:2}",
+            "kind": "signal",
+            "state": "planned",
+            "reason": "Waiting for signal second or timeout after 600 seconds.",
+            "target_name": "second",
+            "task_status": "ready"
+          },
+          {
+            "id": "{wait:3}",
+            "kind": "condition",
+            "state": "planned",
+            "reason": "Waiting for condition or timeout after 600 seconds.",
+            "target_name": "ready",
+            "task_status": "ready"
+          }
+        ],
+        "signal_second": {
+          "status": 202,
+          "outcome": "signal_received",
+          "reason": null
+        },
+        "second_received": [
+          [
+            "SignalReceived",
+            {
+              "signal_id": "{signal:1}",
+              "signal_name": "second",
+              "signal_wait_id": "{wait:2}"
+            }
+          ]
+        ],
+        "second_resume": {
+          "resume_source_kind": "workflow_signal",
+          "workflow_wait_kind": "signal",
+          "signal_name": "second",
+          "signal_wait_id": "{wait:2}",
+          "workflow_signal_id": "{signal:1}",
+          "condition_wait_id": null
+        },
+        "second_completed": {
+          "status": 200,
+          "outcome": "completed",
+          "reason": null,
+          "run_status": "waiting",
+          "created_tasks": 1
+        },
+        "second_history": [
+          [
+            "MessageCursorAdvanced",
+            []
+          ],
+          [
+            "TimerCancelled",
+            {
+              "delay_seconds": 600,
+              "sequence": 2,
+              "signal_name": "second",
+              "signal_wait_id": "{wait:2}",
+              "timer_id": "{timer:1}",
+              "timer_kind": "signal_timeout"
+            }
+          ],
+          [
+            "SignalApplied",
+            {
+              "sequence": 2,
+              "signal_id": "{signal:1}",
+              "signal_name": "second",
+              "signal_wait_id": "{wait:2}"
+            }
+          ],
+          [
+            "ConditionWaitSatisfied",
+            {
+              "condition_key": "ready",
+              "condition_wait_id": "{wait:3}",
+              "sequence": 3,
+              "signal_name": "second",
+              "signal_wait_id": "{wait:2}",
+              "timeout_seconds": 600,
+              "timer_id": "{timer:2}",
+              "workflow_signal_id": "{signal:1}"
+            }
+          ],
+          [
+            "TimerCancelled",
+            {
+              "condition_key": "ready",
+              "condition_wait_id": "{wait:3}",
+              "delay_seconds": 600,
+              "sequence": 3,
+              "timer_id": "{timer:2}",
+              "timer_kind": "condition_timeout"
+            }
+          ],
+          [
+            "TimerScheduled",
+            {
+              "delay_seconds": 600,
+              "sequence": 4,
+              "timer_id": "{timer:3}"
+            }
+          ]
+        ],
+        "second_describe": {
+          "status": "waiting",
+          "wait_kind": "timer",
+          "wait_reason": "Waiting for timer"
+        },
+        "second_waits": [
+          {
+            "id": "{wait:1}",
+            "kind": "signal",
+            "state": "resume_time_unknown",
+            "reason": "Waiting for signal first.",
+            "target_name": "first",
+            "task_status": null
+          },
+          {
+            "id": "{wait:4}",
+            "kind": "timer",
+            "state": "planned",
+            "reason": "Waiting for timer.",
+            "target_name": null,
+            "task_status": "ready"
+          }
+        ],
+        "signal_first": {
+          "status": 202,
+          "outcome": "signal_received",
+          "reason": null
+        },
+        "first_resume": {
+          "resume_source_kind": "workflow_signal",
+          "workflow_wait_kind": "signal",
+          "signal_name": "first",
+          "signal_wait_id": "{wait:1}",
+          "workflow_signal_id": "{signal:2}",
+          "condition_wait_id": null
+        },
+        "first_completed": {
+          "status": 200,
+          "outcome": "completed",
+          "reason": null,
+          "run_status": "completed",
+          "created_tasks": 0
+        },
+        "first_history": [
+          [
+            "SignalReceived",
+            {
+              "signal_id": "{signal:2}",
+              "signal_name": "first",
+              "signal_wait_id": "{wait:1}"
+            }
+          ],
+          [
+            "MessageCursorAdvanced",
+            []
+          ],
+          [
+            "SignalApplied",
+            {
+              "sequence": 1,
+              "signal_id": "{signal:2}",
+              "signal_name": "first",
+              "signal_wait_id": "{wait:1}"
+            }
+          ],
+          [
+            "WorkflowCompleted",
+            []
+          ]
+        ],
+        "first_describe": {
+          "status": "completed",
+          "wait_kind": null,
+          "wait_reason": null
+        }
+      },
+      "same_name": {
+        "opened": {
+          "status": 200,
+          "outcome": "completed",
+          "reason": null,
+          "run_status": "waiting",
+          "created_tasks": 0
+        },
+        "opened_history": [
+          [
+            "SignalWaitOpened",
+            {
+              "sequence": 1,
+              "signal_name": "dup",
+              "signal_wait_id": "{wait:5}"
+            }
+          ],
+          [
+            "SignalWaitOpened",
+            {
+              "sequence": 2,
+              "signal_name": "dup",
+              "signal_wait_id": "{wait:6}"
+            }
+          ]
+        ],
+        "signal_one": {
+          "status": 202,
+          "outcome": "signal_received",
+          "reason": null
+        },
+        "signal_two": {
+          "status": 202,
+          "outcome": "signal_received",
+          "reason": null
+        },
+        "received": [
+          [
+            "SignalReceived",
+            {
+              "signal_id": "{signal:3}",
+              "signal_name": "dup",
+              "signal_wait_id": "{wait:6}"
+            }
+          ],
+          [
+            "SignalReceived",
+            {
+              "signal_id": "{signal:4}",
+              "signal_name": "dup",
+              "signal_wait_id": "{buffered:1}"
+            }
+          ]
+        ],
+        "resume": {
+          "resume_source_kind": "workflow_signal",
+          "workflow_wait_kind": "signal",
+          "signal_name": "dup",
+          "signal_wait_id": "{wait:6}",
+          "workflow_signal_id": "{signal:3}",
+          "condition_wait_id": null
+        },
+        "completed": {
+          "status": 200,
+          "outcome": "completed",
+          "reason": null,
+          "run_status": "waiting",
+          "created_tasks": 1
+        },
+        "applied_history": [
+          [
+            "MessageCursorAdvanced",
+            []
+          ],
+          [
+            "SignalApplied",
+            {
+              "sequence": 2,
+              "signal_id": "{signal:3}",
+              "signal_name": "dup",
+              "signal_wait_id": "{wait:6}"
+            }
+          ],
+          [
+            "TimerScheduled",
+            {
+              "delay_seconds": 600,
+              "sequence": 3,
+              "timer_id": "{timer:4}"
+            }
+          ]
+        ],
+        "applied_waits": [
+          {
+            "id": "{wait:5}",
+            "kind": "signal",
+            "state": "resume_time_unknown",
+            "reason": "Waiting for signal dup.",
+            "target_name": "dup",
+            "task_status": null
+          },
+          {
+            "id": "{wait:7}",
+            "kind": "timer",
+            "state": "planned",
+            "reason": "Waiting for timer.",
+            "target_name": null,
+            "task_status": "ready"
+          }
+        ],
+        "buffered_history": [],
+        "buffered_resume": null,
+        "terminated": 200
+      },
+      "same_name_declared": {
+        "opened": {
+          "created_tasks": 0,
+          "outcome": "completed",
+          "reason": null,
+          "run_status": "waiting",
+          "status": 200
+        },
+        "signal_one": {
+          "outcome": "signal_received",
+          "reason": null,
+          "status": 202
+        },
+        "signal_two": {
+          "outcome": "signal_received",
+          "reason": null,
+          "status": 202
+        },
+        "received": [
+          [
+            "SignalWaitOpened",
+            {
+              "sequence": 1,
+              "signal_name": "dup",
+              "signal_wait_id": "{wait:8}"
+            }
+          ],
+          [
+            "SignalWaitOpened",
+            {
+              "sequence": 2,
+              "signal_name": "dup",
+              "signal_wait_id": "{wait:9}"
+            }
+          ],
+          [
+            "SignalReceived",
+            {
+              "signal_id": "{signal:5}",
+              "signal_name": "dup",
+              "signal_wait_id": "{wait:9}"
+            }
+          ],
+          [
+            "SignalReceived",
+            {
+              "signal_id": "{signal:6}",
+              "signal_name": "dup",
+              "signal_wait_id": "{buffered:2}"
+            }
+          ]
+        ],
+        "resume": {
+          "condition_wait_id": null,
+          "resume_source_kind": "workflow_signal",
+          "signal_name": "dup",
+          "signal_wait_id": "{wait:9}",
+          "workflow_signal_id": "{signal:5}",
+          "workflow_wait_kind": "signal"
+        },
+        "completed": {
+          "created_tasks": 2,
+          "outcome": "completed",
+          "reason": null,
+          "run_status": "waiting",
+          "status": 200
+        },
+        "applied_history": [
+          [
+            "MessageCursorAdvanced",
+            []
+          ],
+          [
+            "SignalApplied",
+            {
+              "sequence": 2,
+              "signal_id": "{signal:5}",
+              "signal_name": "dup",
+              "signal_wait_id": "{wait:9}"
+            }
+          ],
+          [
+            "TimerScheduled",
+            {
+              "delay_seconds": 600,
+              "sequence": 3,
+              "timer_id": "{timer:5}"
+            }
+          ]
+        ],
+        "buffered_resume": {
+          "condition_wait_id": null,
+          "resume_source_kind": "workflow_signal",
+          "signal_name": "dup",
+          "signal_wait_id": "{buffered:2}",
+          "workflow_signal_id": "{signal:6}",
+          "workflow_wait_kind": "signal"
+        },
+        "buffered_completed": {
+          "created_tasks": 1,
+          "outcome": "completed",
+          "reason": null,
+          "run_status": "waiting",
+          "status": 200
+        },
+        "buffered_history": [
+          [
+            "MessageCursorAdvanced",
+            []
+          ],
+          [
+            "SignalApplied",
+            {
+              "sequence": 1,
+              "signal_id": "{signal:6}",
+              "signal_name": "dup",
+              "signal_wait_id": "{wait:8}"
+            }
+          ],
+          [
+            "TimerScheduled",
+            {
+              "delay_seconds": 600,
+              "sequence": 4,
+              "timer_id": "{timer:6}"
+            }
+          ]
+        ],
+        "buffered_waits": [
+          {
+            "id": "{wait:10}",
+            "kind": "timer",
+            "reason": "Waiting for timer.",
+            "state": "planned",
+            "target_name": null,
+            "task_status": "ready"
+          },
+          {
+            "id": "{wait:11}",
+            "kind": "timer",
+            "reason": "Waiting for timer.",
+            "state": "planned",
+            "target_name": null,
+            "task_status": "ready"
+          }
+        ],
+        "terminated": 200
+      },
+      "same_name_reopen": {
+        "opened": {
+          "created_tasks": 0,
+          "outcome": "completed",
+          "reason": null,
+          "run_status": "waiting",
+          "status": 200
+        },
+        "signal_one": {
+          "outcome": "signal_received",
+          "reason": null,
+          "status": 202
+        },
+        "signal_two": {
+          "outcome": "signal_received",
+          "reason": null,
+          "status": 202
+        },
+        "received": [
+          [
+            "SignalWaitOpened",
+            {
+              "sequence": 1,
+              "signal_name": "dup",
+              "signal_wait_id": "{wait:12}"
+            }
+          ],
+          [
+            "SignalWaitOpened",
+            {
+              "sequence": 2,
+              "signal_name": "dup",
+              "signal_wait_id": "{wait:13}"
+            }
+          ],
+          [
+            "SignalReceived",
+            {
+              "signal_id": "{signal:7}",
+              "signal_name": "dup",
+              "signal_wait_id": "{wait:13}"
+            }
+          ],
+          [
+            "SignalReceived",
+            {
+              "signal_id": "{signal:8}",
+              "signal_name": "dup",
+              "signal_wait_id": "{buffered:3}"
+            }
+          ]
+        ],
+        "resume": {
+          "condition_wait_id": null,
+          "resume_source_kind": "workflow_signal",
+          "signal_name": "dup",
+          "signal_wait_id": "{wait:13}",
+          "workflow_signal_id": "{signal:7}",
+          "workflow_wait_kind": "signal"
+        },
+        "completed": {
+          "created_tasks": 1,
+          "outcome": "completed",
+          "reason": null,
+          "run_status": "waiting",
+          "status": 200
+        },
+        "applied_history": [
+          [
+            "MessageCursorAdvanced",
+            []
+          ],
+          [
+            "SignalApplied",
+            {
+              "sequence": 2,
+              "signal_id": "{signal:7}",
+              "signal_name": "dup",
+              "signal_wait_id": "{wait:13}"
+            }
+          ],
+          [
+            "SignalWaitOpened",
+            {
+              "sequence": 3,
+              "signal_name": "dup",
+              "signal_wait_id": "{buffered:3}"
+            }
+          ]
+        ],
+        "buffered_resume": {
+          "condition_wait_id": null,
+          "resume_source_kind": "workflow_signal",
+          "signal_name": "dup",
+          "signal_wait_id": "{buffered:3}",
+          "workflow_signal_id": "{signal:8}",
+          "workflow_wait_kind": "signal"
+        },
+        "buffered_completed": {
+          "created_tasks": 1,
+          "outcome": "completed",
+          "reason": null,
+          "run_status": "waiting",
+          "status": 200
+        },
+        "buffered_history": [
+          [
+            "MessageCursorAdvanced",
+            []
+          ],
+          [
+            "SignalApplied",
+            {
+              "sequence": 3,
+              "signal_id": "{signal:8}",
+              "signal_name": "dup",
+              "signal_wait_id": "{buffered:3}"
+            }
+          ],
+          [
+            "TimerScheduled",
+            {
+              "delay_seconds": 600,
+              "sequence": 4,
+              "timer_id": "{timer:7}"
+            }
+          ]
+        ],
+        "buffered_waits": [
+          {
+            "id": "{wait:12}",
+            "kind": "signal",
+            "reason": "Waiting for signal dup.",
+            "state": "resume_time_unknown",
+            "target_name": "dup",
+            "task_status": null
+          },
+          {
+            "id": "{wait:14}",
+            "kind": "timer",
+            "reason": "Waiting for timer.",
+            "state": "planned",
+            "target_name": null,
+            "task_status": "ready"
+          }
+        ],
+        "terminated": 200
+      }
+    }
+  }
+}

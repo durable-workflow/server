@@ -761,6 +761,15 @@ async fn external_activity_argument_batch_shares_admission_and_rolls_back_all_re
     // answer 503 at this deadline; the margin keeps a loaded host from doing so.
     config.timeout = Duration::from_secs(20);
     let (database, runtime, app) = setup(config, &temp.path().join("objects")).await;
+    // One pending timer at most, so a second timer in the batch is refused
+    // after both activities claimed their arguments.
+    let app = {
+        drop(app);
+        router(runtime.clone().with_structural_limits(durable_workflow_server::runtime::StructuralLimits {
+            pending_timers: Some(1),
+            ..durable_workflow_server::runtime::StructuralLimits::default()
+        }))
+    };
     let mut arguments = Vec::new();
     let mut blobs = Vec::new();
     for text in ["x", "y"] {
@@ -842,11 +851,12 @@ async fn external_activity_argument_batch_shares_admission_and_rolls_back_all_re
     let before = json_request(&app, "GET", &history_path, "operator-token", Value::Null)
         .await
         .1;
-    // A second open wait is refused after both activities claimed their
-    // arguments, so the whole batch, claims included, must roll back.
+    // A second timer passes the pending-timer limit after both activities
+    // claimed their arguments, so the whole batch, claims included, must
+    // roll back.
     let mut invalid = commands.clone();
-    invalid.push(json!({"type":"open_signal_wait","signal_name":"first"}));
-    invalid.push(json!({"type":"open_signal_wait","signal_name":"second"}));
+    invalid.push(json!({"type":"start_timer","delay_seconds":60}));
+    invalid.push(json!({"type":"start_timer","delay_seconds":60}));
     let (status, refusal) = tokio::time::timeout(
         Duration::from_secs(30),
         json_request(
@@ -859,8 +869,8 @@ async fn external_activity_argument_batch_shares_admission_and_rolls_back_all_re
     )
     .await
     .unwrap();
-    assert_eq!(status, StatusCode::CONFLICT, "{refusal}");
-    assert_eq!(refusal["reason"], "pending_durable_operations");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refusal}");
+    assert_eq!(refusal["reason"], "structural_limit_exceeded");
     assert_eq!(unclaimed(&database).await, 2);
     assert_eq!(
         json_request(&app, "GET", &history_path, "operator-token", Value::Null)

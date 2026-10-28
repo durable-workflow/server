@@ -701,7 +701,7 @@ where
             // workflow task. Otherwise the open task's completion delivers
             // the run's next message. PHP instead merges it into a ready task.
             if blocking.is_none() && open_tasks == 0 {
-                Self::enqueue_next_message(&mut tx, &run_id, &DB::string(&run, "queue")?).await
+                Self::enqueue_next_message(&mut tx, &run_id, &DB::string(&run, "queue")?, true).await
                     .map_err(|error| at_update_lookup(error, UpdateLookup::TaskEnqueue))?;
             }
             update_id

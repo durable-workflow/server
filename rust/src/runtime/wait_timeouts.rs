@@ -81,7 +81,7 @@ where
         run: &DB::Row,
         wait: &Value,
         task_id: &str,
-    ) -> Result<()> {
+    ) -> Result<Option<String>> {
         let direct = wait.get("signal_name").is_some();
         let Some((seconds, fire_at)) = timeout_for(
             wait,
@@ -92,7 +92,7 @@ where
             },
         )?
         else {
-            return Ok(());
+            return Ok(None);
         };
         let run_id = DB::string(run, "id")?;
         let timer_id = id();
@@ -130,7 +130,7 @@ where
                 None,
             )
             .await?;
-            Self::create_task(
+            let resume = Self::create_task(
                 tx,
                 &run_id,
                 &DB::string(run, "queue")?,
@@ -138,6 +138,9 @@ where
                 resolution(&payload),
             )
             .await?;
+            // The completion reports the task it created, as
+            // `applyOpenSignalWait` and `applyOpenConditionWait` do.
+            Ok(Some(resume))
         } else {
             let mut task_payload = wait_fields(wait);
             task_payload["timer_id"] = json!(timer_id);
@@ -157,80 +160,8 @@ where
             Self::query("UPDATE workflow_run_waits SET task_id=$1,task_type='timer',task_status='ready',task_backed=TRUE WHERE workflow_run_id=$2 AND wait_id=$3 AND kind=$4")
                 .bind(&timer_task).bind(&run_id).bind(super::text(wait,if direct {"signal_wait_id"} else {"condition_wait_id"})?)
                 .bind(if direct {"signal"} else {"condition"}).execute(&mut **tx).await?;
+            Ok(Some(timer_task))
         }
-        Ok(())
-    }
-
-    pub(super) async fn signal_timeout_finished(
-        tx: &mut Transaction<'_, DB>,
-        run_id: &str,
-        wait: &Value,
-    ) -> Result<bool> {
-        if wait.get("signal_name").is_none() || wait["timeout_seconds"].is_null() {
-            return Ok(false);
-        }
-        let timer = Self::query(
-            "SELECT id,status FROM workflow_run_timers WHERE workflow_run_id=$1 AND sequence=$2",
-        )
-        .bind(run_id)
-        .bind(wait["sequence"].as_i64().unwrap_or(0))
-        .fetch_optional(&mut **tx)
-        .await?;
-        let Some(timer) = timer else {
-            return Ok(false);
-        };
-        if DB::string(&timer, "status")? == "pending" {
-            return Ok(false);
-        }
-        // Receipt before firing still wins when the worker applies that input.
-        Ok(Self::scalar("SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND signal_wait_id=$2 AND status='received'")
-            .bind(run_id).bind(super::text(wait,"signal_wait_id")?).fetch_one(&mut **tx).await? == 0)
-    }
-
-    pub(super) async fn condition_timer(
-        tx: &mut Transaction<'_, DB>,
-        run_id: &str,
-        wait: &Value,
-    ) -> Result<Option<(String, bool)>> {
-        if wait.get("condition_wait_id").is_none() || wait["timeout_seconds"].is_null() {
-            return Ok(None);
-        }
-        let Some(timer) = Self::query(
-            "SELECT id,status FROM workflow_run_timers WHERE workflow_run_id=$1 AND sequence=$2",
-        )
-        .bind(run_id)
-        .bind(wait["sequence"].as_i64().unwrap_or(0))
-        .fetch_optional(&mut **tx)
-        .await?
-        else {
-            return Ok(None);
-        };
-        let timer_id = DB::string(&timer, "id")?;
-        let Some(scheduled) = Self::query(DB::TIMER_SCHEDULE_SQL)
-            .bind(run_id)
-            .bind(&timer_id)
-            .fetch_optional(&mut **tx)
-            .await?
-        else {
-            return Ok(None);
-        };
-        let payload = DB::document_row(&scheduled, "payload")?;
-        if payload["timer_kind"] != "condition_timeout"
-            || payload["condition_wait_id"] != wait["condition_wait_id"]
-        {
-            return Ok(None);
-        }
-        Ok(Some((timer_id, DB::string(&timer, "status")? == "fired")))
-    }
-
-    pub(super) async fn condition_timeout_fired(
-        tx: &mut Transaction<'_, DB>,
-        run_id: &str,
-        wait: &Value,
-    ) -> Result<bool> {
-        Ok(Self::condition_timer(tx, run_id, wait)
-            .await?
-            .is_some_and(|(_, fired)| fired))
     }
 
     pub(super) async fn cancel_wait_timeout(

@@ -370,7 +370,11 @@ where
         {
             Self::project_signal_timeout_event(tx, run_id, event_type, payload, at).await?;
         } else if matches!(event_type, "SignalReceived" | "SignalApplied") {
-            let wait_id = super::text(payload, "signal_wait_id")?;
+            // A signal stored without a wait id (an imported one) names no
+            // wait to resolve.
+            let Some(wait_id) = payload["signal_wait_id"].as_str().filter(|id| !id.trim().is_empty()) else {
+                return Ok(());
+            };
             let name = super::text(payload, "signal_name")?;
             let command_id = super::text(payload, "workflow_command_id")?;
             let command = Self::query("SELECT command_sequence,status,outcome FROM workflow_commands WHERE id=$1 AND workflow_run_id=$2")

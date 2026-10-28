@@ -294,9 +294,14 @@ async fn signals_across_cold_nodes(namespace: &str) {
 }
 
 #[tokio::test]
-async fn run_observation_signals_named_namespace_retains_batched_admission_gate() {
+async fn run_observation_signals_named_namespace_rolls_back_a_refused_batch() {
     let database = TestDatabase::new().await;
-    let runtime = database.open().await.unwrap();
+    // One pending timer at most, so the batch below is refused at its second
+    // timer, after both of its waits were written.
+    let runtime = database.open().await.unwrap().with_structural_limits(durable_workflow_server::runtime::StructuralLimits {
+        pending_timers: Some(1),
+        ..durable_workflow_server::runtime::StructuralLimits::default()
+    });
     let app = router(runtime.clone());
     namespaces::create(&app, "signal-observation").await;
     register_signal_worker(&app, "signal-observation").await;
@@ -309,19 +314,52 @@ async fn run_observation_signals_named_namespace_retains_batched_admission_gate(
         &task,
         json!([
             {"type":"open_signal_wait","signal_name":"payload"},
-            {"type":"open_signal_wait","signal_name":"payload"}
+            {"type":"open_signal_wait","signal_name":"payload"},
+            {"type":"start_timer","delay_seconds":60},
+            {"type":"start_timer","delay_seconds":60}
         ]),
     )
     .await;
-    // A named namespace accepts every command, but native still opens one
-    // wait at a time.
-    assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
-    assert_eq!(refused.1["reason"], "pending_durable_operations", "{}", refused.1);
+    // A named namespace accepts every command; a refusal later in the batch
+    // rolls back the waits it already opened.
+    assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", refused.1);
+    assert_eq!(refused.1["reason"], "structural_limit_exceeded", "{}", refused.1);
     assert_eq!(
         read(&app, "signal-observation", &run, "history").await,
         before
     );
     assert_eq!(stored_wait_count(&database).await, 0);
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn run_observation_signals_named_namespace_records_distinct_waits_for_one_name() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    namespaces::create(&app, "signal-observation").await;
+    register_signal_worker(&app, "signal-observation").await;
+    let run = namespaces::start_scoped(&app, "signal-observation", "signal-named-pair").await;
+    let task = claim(&app, "signal-observation").await;
+    let opened = finish(
+        &app,
+        "signal-observation",
+        &task,
+        json!([
+            {"type":"open_signal_wait","signal_name":"payload"},
+            {"type":"open_signal_wait","signal_name":"payload"}
+        ]),
+    )
+    .await;
+    assert_eq!(opened.0, StatusCode::OK, "{}", opened.1);
+    let history = read(&app, "signal-observation", &run, "history").await;
+    let ids: Vec<_> = history["events"].as_array().unwrap().iter()
+        .filter(|event| event["event_type"] == "SignalWaitOpened")
+        .map(|event| event["payload"]["signal_wait_id"].clone()).collect();
+    assert_eq!(ids.len(), 2, "{history}");
+    assert_ne!(ids[0], ids[1], "each wait has its own identity");
+    assert_eq!(stored_wait_count(&database).await, 2);
     runtime.close().await;
     database.remove().await;
 }
