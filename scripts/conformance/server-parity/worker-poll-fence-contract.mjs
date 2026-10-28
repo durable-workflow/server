@@ -22,8 +22,9 @@ import assert from 'node:assert/strict';
 //   fail and complete with 409 stale_worker_registration, the claim's task,
 //   attempt, owner and lease; another worker's poll on its queue recovers it
 //   at the next attempt, and the old claim's completion is then refused
-//   lease_owner_mismatch; recovery fences the stale owner's registration, so
-//   its heartbeat is refused worker_registration_superseded.
+//   lease_owner_mismatch. Whether the stale owner is fenced as superseded is
+//   not recorded: published PHP fences it when a poll recovers the abandoned
+//   lease, but not always under its maintenance loop (1 of 4 recordings).
 // Registration changes are more than a second apart: PHP keeps registration
 // times in whole seconds.
 export function checkWorkerPollFence(fixture, observation, workflowId) {
@@ -79,7 +80,5 @@ export function checkWorkerPollFence(fixture, observation, workflowId) {
   equal(state.stale_owner_recovered, leased(2), "another worker's poll recovers the stale owner's task at the next attempt");
   equal(state.stale_owner_complete_after_recovery, {status: 409, reason: 'lease_owner_mismatch'},
     "the stale owner's old claim cannot complete the recovered task");
-  equal(state.stale_owner_heartbeat_after_recovery, {status: 409, reason: 'worker_registration_superseded', own_worker: true},
-    "recovery fences the stale owner's registration: its heartbeat is refused");
   return projection;
 }

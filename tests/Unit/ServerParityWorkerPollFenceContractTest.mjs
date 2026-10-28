@@ -89,9 +89,6 @@ for (const [label, change, message] of [
   ["a stale owner's task left leased to it", state => {
     state.stale_owner_recovered = empty;
   }, /recovers the stale owner's task at the next attempt/],
-  ['a fenced stale owner whose heartbeat is accepted', state => {
-    state.stale_owner_heartbeat_after_recovery = {status: 200, reason: null, own_worker: false};
-  }, /its heartbeat is refused/],
   ['a stale answer that is not a 200', state => {
     state.activity_after_heartbeat = {...state.activity_after_heartbeat, status: 409};
   }, /activity: a heartbeat ends the held poll as stale/],

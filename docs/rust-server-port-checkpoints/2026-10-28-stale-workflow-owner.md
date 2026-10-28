@@ -48,11 +48,18 @@
   workflow task first, runs the other cases, and once `stale_wait_seconds`
   (34) have passed since the claim, sends heartbeat, history, scope checkpoint,
   fail and complete with it (all refused as above). It then has another
-  worker poll the queue (recovered at attempt 2), completes with the old
-  claim (`lease_owner_mismatch`) and heartbeats the old owner
-  (`worker_registration_superseded`). The wait overlaps the other cases; the
-  probe took about 62 s against published 2.11.5. The probe budget rises from
-  150 to 180 s. Recorded against published 2.11.5 on SQLite with its
+  worker's held polls (up to three, 4 s each) recover the queue (leased at
+  attempt 2), and the old claim's completion gets `lease_owner_mismatch`.
+  The wait overlaps the other cases; the probe took about 62 s against
+  published 2.11.5, and its budget rises from 150 to 195 s.
+  - Published PHP's poll-side recovery is best effort. In one full-corpus
+    recording a zero-wait replacement poll recovered nothing, so the
+    replacement now holds its polls and retries.
+  - Whether recovery fences the stale owner (its later heartbeat refused
+    `worker_registration_superseded`) is not recorded. Published PHP fenced
+    it in 3 of 4 recordings with its maintenance loop running; in the other,
+    the task was recovered without a fence. Native fences on the poll path,
+    as `recoverAbandonedTaskLease` does, and its execution tests cover that. Recorded against published 2.11.5 on SQLite with its
   maintenance loop running.
 - **Native.**
   - `workflow_task_guard` checks the owner's registration last, with the

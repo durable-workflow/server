@@ -318,14 +318,20 @@ PHP;
         + ['failure' => ['message' => 'stale owner', 'type' => 'StaleOwner']]));
     $state['stale_owner_complete'] = $refusal($raw('POST', $taskPath.'/complete', $claim
         + ['commands' => [['type' => 'complete_workflow', 'result' => $empty]]]));
+    // Published PHP's poll-side recovery is best effort: a probe can pass a
+    // task over (its per-task recovery marker lasts 5 s, and its claim and
+    // admission gates run first). The replacement's held polls, up to three,
+    // record the first one that leases.
     $replacement = $register('stale-replacement', null, $staleWorker['task_queue']);
-    $state['stale_owner_recovered'] = $outcome($workflowTask($replacement), $staleWorker);
+    for ($poll = 0; $poll < 3; $poll++) {
+        $state['stale_owner_recovered'] = $outcome($raw('POST', '/api/worker/workflow-tasks/poll',
+            $replacement + ['timeout_seconds' => $definition['hold_seconds']]), $staleWorker);
+        if ($state['stale_owner_recovered']['poll_status'] === 'leased') {
+            break;
+        }
+    }
     $old = $raw('POST', $taskPath.'/complete', $claim + ['commands' => [['type' => 'complete_workflow', 'result' => $empty]]]);
     $state['stale_owner_complete_after_recovery'] = ['status' => $old['status'], 'reason' => $old['response']['reason'] ?? null];
-    // Recovery fenced the stale owner's registration: its heartbeat is refused.
-    $fenced = $raw('POST', '/api/worker/heartbeat', ['worker_id' => $staleWorker['worker_id']]);
-    $state['stale_owner_heartbeat_after_recovery'] = ['status' => $fenced['status'], 'reason' => $fenced['response']['reason'] ?? null,
-        'own_worker' => ($fenced['response']['worker_id'] ?? null) === $staleWorker['worker_id']];
 
     return $state;
 }

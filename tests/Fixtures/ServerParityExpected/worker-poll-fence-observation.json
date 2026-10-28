@@ -316,10 +316,5 @@
   "stale_owner_complete_after_recovery": {
     "status": 409,
     "reason": "lease_owner_mismatch"
-  },
-  "stale_owner_heartbeat_after_recovery": {
-    "status": 409,
-    "reason": "worker_registration_superseded",
-    "own_worker": true
   }
 }

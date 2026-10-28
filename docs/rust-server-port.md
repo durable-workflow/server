@@ -411,7 +411,7 @@ contract fixture before its correction.
   `DW_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT`), repairing it as PHP does,
   and fences the owner as superseded, whose heartbeat is then refused.
   Published behavior kept: a draining build's worker is not fresh either. The `worker-poll-fence`
-  fixture records all of it against published 2.11.5. The local activity
+  fixture records the refusals and the recovery against published 2.11.5. The local activity
   checkpoints need no change: native refuses them before reading the task,
   as PHP without the prepared role does. Still open: cooperative cancellation
   delivery (`cooperative.rs`) judges freshness with a fixed 60 seconds rather
