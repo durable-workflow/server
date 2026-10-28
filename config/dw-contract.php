@@ -1013,6 +1013,12 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_SIZE',
         ],
+        'DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES' => [
+            'description' => 'Package-level history-transaction byte ceiling, also applied to Waterline v1 projection imports. Zero disables this dimension.',
+            'default' => '16777216',
+            'since' => '2.11.5',
+            'legacy' => 'WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_BYTES',
+        ],
         'DW_V2_LIMIT_WARNING_THRESHOLD_PERCENT' => [
             'description' => 'Percent of a structural limit at which the package emits an approaching-limit warning.',
             'default' => '80',

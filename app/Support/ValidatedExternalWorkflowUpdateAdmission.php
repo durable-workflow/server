@@ -42,6 +42,7 @@ final class ValidatedExternalWorkflowUpdateAdmission extends ExternalWorkflowUpd
         CommandContext $commandContext,
         string $waitFor = UpdateWaitPolicy::WAIT_FOR_ACCEPTED,
         ?int $waitTimeoutSeconds = null,
+        ?string $expectedRunId = null,
     ): ?array {
         $retained = $this->retainedReceipt($namespace, $workflowId, $commandContext, $waitFor, $waitTimeoutSeconds);
         if ($retained !== null) {
@@ -54,6 +55,7 @@ final class ValidatedExternalWorkflowUpdateAdmission extends ExternalWorkflowUpd
             $updateName,
             $arguments,
             $commandContext,
+            $expectedRunId,
         );
 
         if (is_array($validation['result'] ?? null)) {
@@ -84,6 +86,7 @@ final class ValidatedExternalWorkflowUpdateAdmission extends ExternalWorkflowUpd
                 $commandContext,
                 $waitFor,
                 $waitTimeoutSeconds,
+                $expectedRunId,
             );
         }
 
@@ -116,6 +119,7 @@ final class ValidatedExternalWorkflowUpdateAdmission extends ExternalWorkflowUpd
                 $validatedContext,
                 $waitFor,
                 $waitTimeoutSeconds,
+                $expectedRunId,
             ) ?? $result;
         }
 
@@ -132,6 +136,7 @@ final class ValidatedExternalWorkflowUpdateAdmission extends ExternalWorkflowUpd
         string $updateName,
         array $arguments,
         CommandContext $commandContext,
+        ?string $expectedRunId,
     ): array {
         /** @var WorkflowInstance|null $instance */
         $instance = WorkflowInstance::query()
@@ -141,6 +146,10 @@ final class ValidatedExternalWorkflowUpdateAdmission extends ExternalWorkflowUpd
         $run = $instance instanceof WorkflowInstance && is_string($instance->current_run_id)
             ? WorkflowRun::query()->find($instance->current_run_id)
             : null;
+
+        if ($run instanceof WorkflowRun && $expectedRunId !== null && $run->id !== $expectedRunId) {
+            return ['result' => $this->selectedRunFailure($workflowId, $expectedRunId)];
+        }
 
         if (! $run instanceof WorkflowRun || ! $this->isRemoteUpdate($run, $updateName)) {
             return [];
@@ -295,7 +304,7 @@ final class ValidatedExternalWorkflowUpdateAdmission extends ExternalWorkflowUpd
                     $taskId,
                     'The validated update could not be committed to the current workflow run.',
                 );
-        }));
+        }, $this->admissionTransactionAttempts()));
     }
 
     /**
@@ -425,7 +434,7 @@ final class ValidatedExternalWorkflowUpdateAdmission extends ExternalWorkflowUpd
                 $waitTimeoutSeconds,
                 $command,
             );
-        }));
+        }, $this->admissionTransactionAttempts()));
     }
 
     private function isRemoteUpdate(WorkflowRun $run, string $updateName): bool

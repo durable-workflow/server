@@ -63,8 +63,11 @@ positions and cached reuse, and original task/run relationships remain exact.
 The separately named `artifacts-workflow-2.5.16.json` selects the normally
 resolved policy correction in `embedded-workflow-2.5.16/`. Only Workflow changes
 in that complete Composer lock. The earlier 2.5.14 manifest, locks and failed
-policy recording remain unchanged; the published Server reference still carries
-its own declared 2.5.14 package. Set `DW_PARITY_CORRECTED_ARTIFACTS` to the new
+policy recording remain unchanged apart from Server #820's bounded security
+refresh, which moved only `symfony/http-foundation` and `symfony/yaml` to
+7.4.21 in all three role locks (GHSA-r925-mgvr-h9cc, GHSA-2v3c-qxhr-7vpv) and
+kept every Workflow package and loaded-source hash; the published Server
+reference still carries its own declared 2.5.14 package. Set `DW_PARITY_CORRECTED_ARTIFACTS` to the new
 manifest for this explicit embedded cohort, with separate
 `DW_PARITY_CORRECTED_STATE`, `DW_PARITY_CORRECTED_EVIDENCE` and
 `DW_PARITY_CORRECTED_PREFIX` values. The embedded launcher accepts `markers`

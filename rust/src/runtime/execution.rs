@@ -231,6 +231,7 @@ impl Runtime {
         store.activity_task_lease_seconds = queries.activity_task_lease_seconds;
         store.update_wait_seconds = queries.update_wait_completion_timeout_seconds;
         store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
+        store.workflow_task_recovery_scan_limit = queries.workflow_task_recovery_scan_limit;
         Self::from_storage(Storage::Sqlite(store), token, external, queries, structural).await
     }
 
@@ -250,6 +251,7 @@ impl Runtime {
         store.activity_task_lease_seconds = queries.activity_task_lease_seconds;
         store.update_wait_seconds = queries.update_wait_completion_timeout_seconds;
         store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
+        store.workflow_task_recovery_scan_limit = queries.workflow_task_recovery_scan_limit;
         Self::from_storage(Storage::Postgres(store), token, external, queries, structural).await
     }
 
@@ -269,6 +271,7 @@ impl Runtime {
         store.activity_task_lease_seconds = queries.activity_task_lease_seconds;
         store.update_wait_seconds = queries.update_wait_completion_timeout_seconds;
         store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
+        store.workflow_task_recovery_scan_limit = queries.workflow_task_recovery_scan_limit;
         Self::from_storage(Storage::MySql(store), token, external, queries, structural).await
     }
 
@@ -1528,6 +1531,30 @@ impl Runtime {
         worker: Option<super::runtime_credentials::Principal>,
         protocol: Option<&str>,
     ) -> Result<Value> {
+        self.complete_or_checkpoint(task_id, body, worker, protocol, None).await
+    }
+
+    /// POST …/cancellation-scopes/checkpoint, after its route checks: the
+    /// completion's payload preparation, then the store's checkpoint.
+    pub(crate) async fn checkpoint_cancellation_scope(
+        &self,
+        task_id: &str,
+        body: Value,
+        worker: Option<super::runtime_credentials::Principal>,
+        protocol: Option<&str>,
+        checkpoint: &super::scope_checkpoint::Checkpoint,
+    ) -> Result<Value> {
+        self.complete_or_checkpoint(task_id, body, worker, protocol, Some(checkpoint)).await
+    }
+
+    async fn complete_or_checkpoint(
+        &self,
+        task_id: &str,
+        body: Value,
+        worker: Option<super::runtime_credentials::Principal>,
+        protocol: Option<&str>,
+        checkpoint: Option<&super::scope_checkpoint::Checkpoint>,
+    ) -> Result<Value> {
         self.check_command_payloads(&body).await?;
         let external = self.prepare_command_payloads(&body).await?;
         let body = super::completion_rules::canonical_payloads(body)?;
@@ -1572,17 +1599,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural)
+                    .complete_or_checkpoint(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural, checkpoint)
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural)
+                    .complete_or_checkpoint(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural, checkpoint)
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .complete_workflow(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural)
+                    .complete_or_checkpoint(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural, checkpoint)
                     .await
             }
         }

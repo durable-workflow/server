@@ -25,7 +25,7 @@ for (const language of ['rust', 'python']) for (const checkpoint of ['pending', 
       typed_output: structuredClone(fixture.typed_value), events: structuredClone(events), decisions: [[false, false]], worker_finished: true,
       consumer: mode === 'embedded' ? {applicable: false, reason: 'embedded_executes_php_author_definitions'} : structuredClone(fixture.patch_deployment.consumer),
       requests: [{method: 'POST', path: '/api/worker/register', status: 200}, ...(checkpoint === 'pending' ? [activity] : []),
-        completion([{type: 'complete_workflow'}]), {method: 'DELETE', path: '/api/worker/registrations/replacement', status: 200}]};
+        completion([{type: 'complete_workflow'}]), {method: 'DELETE', path: '/api/worker/registrations/test%3Areplacement', status: 200}]};
     return {...structuredClone(replacement), patch_deployment: {checkpoint: fixture.patch_deployment.checkpoint,
       change_id: fixture.patch_deployment.change_id, original: structuredClone(original), replacement: structuredClone(replacement)}};
   }
@@ -53,6 +53,7 @@ for (const language of ['rust', 'python']) for (const checkpoint of ['pending', 
     ['unrecorded registration', x => x.requests = x.requests.filter(r => r.path !== '/api/worker/register')],
     ['missing shutdown', x => x.worker_finished = false],
     ['missing deregistration', x => x.requests = x.requests.filter(r => r.method !== 'DELETE')],
+    ['unrelated deregistration', x => x.requests.find(r => r.method === 'DELETE').path = '/api/worker/registrations/unrelated-worker'],
     ['SDK refusal hidden', x => x.requests[0].status = 409],
     ['new activity emitted', x => x.requests.find(r => r.path.endsWith('/complete') && r.path.includes('workflow-tasks')).request.commands.push({type: 'schedule_activity'})],
     ['new marker emitted', x => x.requests.find(r => r.path.endsWith('/complete') && r.path.includes('workflow-tasks')).request.commands.push({type: 'record_version_marker'})],
@@ -143,8 +144,37 @@ for (const language of ['rust', 'python']) for (const checkpoint of ['pending', 
     ['other worker', requests => requests.at(-2).request.worker_id = 'other-worker'],
     ['missing poll identity', requests => delete requests.at(-2).request.poll_request_id],
     ['neither retried nor stopped', requests => requests.push(requests.splice(-2, 1)[0])],
+    ['only an unrelated worker stopped', requests => requests.at(-1).path = '/api/worker/registrations/unrelated-worker'],
+    ['the refused worker id as a prefix', requests => requests.at(-1).path = '/api/worker/registrations/test%3Areplacement-2'],
+    ['another route segment', requests => requests.at(-1).path = '/api/worker/registrations/test%3Areplacement/deregister'],
+    ['undecodable segment', requests => requests.at(-1).path = '/api/worker/registrations/test%3Areplacement%'],
+    ['a string retry hint', requests => requests.at(-2).response.retry_after_seconds = '1'],
+    ['a fractional retry hint', requests => { requests.at(-2).response.retry_after_seconds = 1.5; requests.at(-2).response_retry_after = '1.5'; }],
+    ['a zero retry hint', requests => { requests.at(-2).response.retry_after_seconds = 0; requests.at(-2).response_retry_after = '0'; }],
   ]) test(`${language} ${checkpoint}: capacity model rejects ${name}`, () => {
     const raw = capacityModel(); mutate(raw.patch_deployment.replacement.requests);
+    assert.throws(() => checkPatchDeployment(fixture, raw, 'test'));
+  });
+  // The SDK probe projects poll responses to their core fields
+  // (patch-deployment-probe.php, `read_or_poll_summary`).
+  function projectedCapacityModel() {
+    const raw = capacityModel();
+    const refusal = raw.patch_deployment.replacement.requests.at(-2);
+    refusal.response = {task: null, poll_status: 'long_poll_capacity_exhausted', reason: 'long_poll_capacity_exhausted',
+      message: 'Retry the poll after the advertised delay.'};
+    refusal.response_projection = 'read_or_poll_summary';
+    return raw;
+  }
+  test(`${language} ${checkpoint}: model accepts a projected long-poll capacity summary`, () =>
+    checkPatchDeployment(fixture, projectedCapacityModel(), 'test'));
+  for (const [name, mutate] of [
+    ['an unreviewed projected field', refusal => refusal.response.status = 'completed'],
+    ['a projected leased task', refusal => refusal.response.task = {task_id: 'unknown-task'}],
+    ['other projected pressure', refusal => refusal.response.poll_status = 'backend_lock_pressure'],
+    ['a missing Retry-After', refusal => refusal.response_retry_after = null],
+    ['an oversized Retry-After', refusal => refusal.response_retry_after = '26'],
+  ]) test(`${language} ${checkpoint}: projected capacity model rejects ${name}`, () => {
+    const raw = projectedCapacityModel(); mutate(raw.patch_deployment.replacement.requests.at(-2));
     assert.throws(() => checkPatchDeployment(fixture, raw, 'test'));
   });
   test(`${language} ${checkpoint}: capacity model rejects a changed retry request`, () => {

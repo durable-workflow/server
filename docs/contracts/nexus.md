@@ -320,6 +320,22 @@ The contract is symmetric across modes: a sync caller has the same
 durable record as an async caller. Sync mode is a delivery preference
 on top of the durable record, not an alternative to it.
 
+Workflow-query bindings persist their dispatch before contacting the worker.
+`wait_for=accepted` returns that durable call immediately. `wait_for=completed`
+waits outside a database transaction for up to `wait_timeout_seconds` (the
+configured completion wait by default, at most 60 seconds). Zero performs an
+immediate observation. When that wait ends with the query still pending, the
+response remains accepted with the original `service_call_id`; inspect that call
+or replay the same idempotency key to observe its result. A concurrent replay
+shares the existing dispatch. Query failures use the recorded service retry
+policy, and every business attempt contacts the worker separately.
+
+The API and PHP queue worker must share their polling cache so SDK workers can
+receive queries dispatched by the queue worker. Use Redis for separate hosts.
+For SQLite on one host, mount the same directory into both containers and set
+`DW_POLLING_CACHE_PATH` to a path inside that shared directory. Private file
+caches in separate containers cannot exchange query tasks or their results.
+
 ## Original call deadlines
 
 An operation's `deadline_policy` is either null, a positive integer

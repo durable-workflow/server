@@ -41,7 +41,8 @@ Updated October 27, 2026.
     the takeover runbook's image commands.
   - The parity reference moved to published 2.11.4 (#805,
     [checkpoint](rust-server-port-checkpoints/2026-10-27-reference-2114.md)),
-    and moves to published 2.11.5, without the SQLite maintenance pause
+    and moved to published 2.11.5 (#815); the SQLite maintenance pause stays
+    for `service-calls` only
     ([checkpoint](rust-server-port-checkpoints/2026-10-27-reference-2115.md)).
   - [#814](https://github.com/durable-workflow/server/pull/814): the shared
     fixtures accept published PHP's typed `429 long_poll_capacity_exhausted`
@@ -68,11 +69,17 @@ Updated October 27, 2026.
 
   Closed by 2.11.5: Workflow #931 (`service-calls` repeats a key from
   another caller again, now refused 403), and the SQLite maintenance pause
-  for `update-validation` and `service-calls` (#723, #726, #796).
+  for `update-validation` (#723, #726). `service-calls` still records apart
+  with the loop stopped: under full-corpus load 2.11.5 can exhaust its SQLite
+  contention retries on a service-call insert (#796, open;
+  [checkpoint](rust-server-port-checkpoints/2026-10-27-sqlite-service-calls-pause.md)).
 
   No expectation is edited to make native pass.
-- **Parity surface.** Native answers 174 of the 175 API route methods in
-  published 2.11.1's route table, which 2.11.4 and 2.11.5 leave unchanged. Eight of those are the prepared
+- **Parity surface.** Native answers all 175 API route methods in
+  published 2.11.1's route table, which 2.11.4 and 2.11.5 leave unchanged.
+  The last, the cancellation scope prefix checkpoint, is served since
+  October 27
+  ([checkpoint](rust-server-port-checkpoints/2026-10-27-scope-checkpoints.md)). Eight of those are the prepared
   local-activity routes, which it answers with PHP's refusal for a bridge
   without the prepared role. Nexus workflow-bound handler kinds answer 501
   until #794 settles their contract. An execution test sends each route
@@ -141,8 +148,11 @@ any other unknown path or method answers PHP's own 404 or 405
     pins the answers to `PreparedLocalActivityController::refused`. Serving
     them is planned in
     [#325 comment 6423707058](https://github.com/durable-workflow/server/issues/325#issuecomment-6423707058).
-  - Cancellation scope checkpoints. (Open, prepare and deliver are served,
-    with the `cancellation-scopes` fixture.)
+  - (Cancellation scopes are served: open, prepare, deliver and the prefix
+    checkpoint, with the `cancellation-scopes` fixture. The published PHP
+    SDK checkpoints a turn's earlier commands before it opens or delivers a
+    scope, and fails the task on any refusal
+    ([checkpoint](rust-server-port-checkpoints/2026-10-27-scope-checkpoints.md)).)
   - (Worker sessions are served: create, heartbeat, close, list and detail,
     with the `worker-sessions` and `worker-session-activities` fixtures.)
   - (Activity cancellation acknowledgement is served:
@@ -391,12 +401,21 @@ contract fixture before its correction.
   and native then correctly fences the attempt. A heartbeat timeout comfortably
   above the request timeout, still inside the 9-second load wave, needs its own
   reviewed profile change.
-- **A valid workflow task claim held by a stale worker.** Published PHP
-  refuses a request whose lease is otherwise valid when its owner's
-  registration is no longer fresh (`409 stale_worker_registration`). Native's
-  workflow task guard does not check registration freshness yet, and the
-  local activity and cancellation scope checkpoints still use the older fence.
-  Add a fixture for each before changing them.
+- **A valid workflow task claim held by a stale worker** (October 28,
+  [checkpoint](rust-server-port-checkpoints/2026-10-28-stale-workflow-owner.md)).
+  Native's workflow task guard now ends with the owner's registration, as
+  published PHP's does: heartbeat, history, fail, complete and the
+  cancellation-scope checkpoint refuse a claim whose owner is missing or no
+  longer fresh with `409 stale_worker_registration`. A workflow probe that
+  claims nothing recovers such a task on its queue (up to
+  `DW_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT`), repairing it as PHP does,
+  and fences the owner as superseded, whose heartbeat is then refused.
+  Published behavior kept: a draining build's worker is not fresh either. The `worker-poll-fence`
+  fixture records the refusals and the recovery against published 2.11.5. The local activity
+  checkpoints need no change: native refuses them before reading the task,
+  as PHP without the prepared role does. Still open: cooperative cancellation
+  delivery (`cooperative.rs`) judges freshness with a fixed 60 seconds rather
+  than `DW_WORKER_STALE_AFTER_SECONDS`.
 - **Retention of runs with external payloads.** Published PHP deletes a
   pruned run's external payload objects. Native does not delete them yet: it
   skips such a run with `external_payload_cleanup_unavailable` and keeps its

@@ -10,6 +10,8 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Support\HistoryBudget;
+use Workflow\V2\Support\StructuralLimits;
 
 final class LegacyV1Projection
 {
@@ -18,7 +20,7 @@ final class LegacyV1Projection
     private const OPAQUE_PAYLOAD_REMEDIATION = 'Treat the preserved value as opaque; export decoded JSON from the source application if portable payload access is required.';
 
     /**
-     * @param array<string, mixed> $source
+     * @param  array<string, mixed>  $source
      * @return array<string, mixed>
      */
     public static function import(string $sourceId, array $source, ?string $namespace, bool $dryRun = false): array
@@ -112,10 +114,7 @@ final class LegacyV1Projection
                 $events = $normalized['events'];
                 $status = $normalized['status'];
                 $closedAt = $normalized['closed_at'];
-                $historySize = array_sum(array_map(
-                    static fn (array $event): int => strlen((string) json_encode($event, JSON_UNESCAPED_SLASHES)),
-                    $events,
-                ));
+                $historySize = $normalized['history_size_bytes'];
 
                 WorkflowInstance::query()->create([
                     'id' => $workflowId,
@@ -233,6 +232,35 @@ final class LegacyV1Projection
             && $run->import_source === LegacyV1ProjectionContract::IMPORT_SOURCE;
     }
 
+    /** @return array<string, mixed> */
+    public static function readOnlyOperation(WorkflowRun $run, string $operation): array
+    {
+        return [
+            'message' => sprintf(
+                'Operation [%s] is unavailable because this execution is a read-only projection owned by the source v1 runtime.',
+                $operation,
+            ),
+            'reason' => 'v1_projection_read_only',
+            'remediation' => 'Run commands against the source v1 application until it completes; repeat projection never dispatches or advances standalone execution.',
+            'workflow_id' => $run->workflow_instance_id,
+            'run_id' => $run->id,
+            'operation' => $operation,
+            'execution_owner' => 'v1',
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public static function readOnlyMessageAppend(WorkflowRun $run, string $streamName): array
+    {
+        return [
+            ...self::readOnlyOperation($run, 'message_stream_append'),
+            'accepted' => false,
+            'duplicate' => false,
+            'stream_name' => $streamName,
+            'outcome' => 'rejected',
+        ];
+    }
+
     /**
      * @return array<string, mixed>|null
      */
@@ -274,7 +302,7 @@ final class LegacyV1Projection
      * Add provenance to a history bundle and refresh its checksum so the
      * exported document remains self-consistent.
      *
-     * @param array<string, mixed> $bundle
+     * @param  array<string, mixed>  $bundle
      * @return array<string, mixed>
      */
     public static function decorateHistoryExport(array $bundle, WorkflowRun $run): array
@@ -333,7 +361,7 @@ final class LegacyV1Projection
     }
 
     /**
-     * @param array<string, mixed> $source
+     * @param  array<string, mixed>  $source
      * @return array<string, mixed>
      */
     private static function normalize(string $sourceId, array $source, ?string $namespace): array
@@ -375,6 +403,26 @@ final class LegacyV1Projection
             ];
         }
 
+        $terminal = in_array($status, ['completed', 'failed', 'cancelled', 'terminated'], true);
+        $eventCount = 1 + (int) $terminal;
+        foreach (['logs', 'signals', 'exceptions'] as $collection) {
+            if (! is_array($source[$collection] ?? null)) {
+                continue;
+            }
+            foreach ($source[$collection] as $row) {
+                $eventCount += (int) is_array($row);
+            }
+        }
+        $eventLimit = StructuralLimits::historyTransactionSizeLimit();
+        if ($eventLimit > 0 && $eventCount > $eventLimit) {
+            return [
+                'valid' => false,
+                'namespace' => $namespace,
+                'errors' => [self::limitError('history_transaction_size', $eventCount, $eventLimit)],
+                'unsupported_fields' => [],
+            ];
+        }
+
         $mapped = self::mappedIdentity($sourceId, $qualifiedId);
         $source['class'] = $class;
         $source['connection'] = self::string($source['connection'] ?? null);
@@ -410,7 +458,6 @@ final class LegacyV1Projection
         ];
         $startedAt = self::timestamp($source['created_at'] ?? null);
         $lastProgressAt = self::timestamp($source['updated_at'] ?? null) ?? $startedAt;
-        $terminal = in_array($status, ['completed', 'failed', 'cancelled', 'terminated'], true);
         $closedAt = $terminal ? $lastProgressAt : null;
         $normalizedForHash = [
             'origin' => $origin,
@@ -427,13 +474,22 @@ final class LegacyV1Projection
             'created_at' => self::timestampString($startedAt),
             'updated_at' => self::timestampString($lastProgressAt),
         ];
-        $dedupeKey = hash('sha256', json_encode(self::canonicalize($normalizedForHash), JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
         $migration = [
             'origin' => $origin,
             'identity' => $identity,
             'task_queue_context' => $taskQueue,
             'unsupported_fields' => $unsupported,
         ];
+        $built = self::events($source, $migration, $status, $startedAt, $lastProgressAt, $mapped['run_id']);
+        if (isset($built['limit_error'])) {
+            return [
+                'valid' => false,
+                'namespace' => $namespace,
+                'errors' => [$built['limit_error']],
+                'unsupported_fields' => [],
+            ];
+        }
+        $dedupeKey = hash('sha256', json_encode(self::canonicalize($normalizedForHash), JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
 
         return [
             'valid' => true,
@@ -451,14 +507,15 @@ final class LegacyV1Projection
             'import_id' => $mapped['import_id'],
             'dedupe_key' => $dedupeKey,
             'unsupported_fields' => $unsupported,
-            'events' => self::events($source, $migration, $status, $startedAt, $lastProgressAt, $mapped['run_id']),
+            'events' => $built['events'],
+            'history_size_bytes' => $built['history_size_bytes'],
         ];
     }
 
     /**
-     * @param array<string, mixed> $source
-     * @param array<string, mixed> $migration
-     * @return list<array<string, mixed>>
+     * @param  array<string, mixed>  $source
+     * @param  array<string, mixed>  $migration
+     * @return array{events: list<array<string, mixed>>, history_size_bytes: int}|array{limit_error: array<string, mixed>}
      */
     private static function events(array $source, array $migration, string $status, ?Carbon $startedAt, ?Carbon $lastProgressAt, string $runId): array
     {
@@ -467,7 +524,7 @@ final class LegacyV1Projection
             'recorded_at' => $startedAt,
             'boundary' => 0,
             'order' => 0,
-            'payload' => [
+            'build_payload' => static fn (): array => [
                 'migration_projection' => $migration,
                 'legacy_payloads' => [
                     'arguments' => self::opaquePayload($source['arguments'] ?? null),
@@ -481,7 +538,7 @@ final class LegacyV1Projection
                 'recorded_at' => self::timestamp($log['created_at'] ?? $log['now'] ?? null),
                 'boundary' => 1,
                 'order' => 100 + $index,
-                'payload' => [
+                'build_payload' => static fn (): array => [
                     'migration_projection' => [
                         'source_record' => 'workflow_log',
                         'legacy_id' => $log['id'] ?? null,
@@ -502,7 +559,7 @@ final class LegacyV1Projection
                 'recorded_at' => self::timestamp($signal['created_at'] ?? $signal['received_at'] ?? null),
                 'boundary' => 1,
                 'order' => 200 + $index,
-                'payload' => [
+                'build_payload' => static fn (): array => [
                     'migration_projection' => [
                         'source_record' => 'workflow_signal',
                         'legacy_id' => $signal['id'] ?? null,
@@ -519,7 +576,7 @@ final class LegacyV1Projection
                 'recorded_at' => self::timestamp($exception['created_at'] ?? null),
                 'boundary' => 1,
                 'order' => 300 + $index,
-                'payload' => [
+                'build_payload' => static fn (): array => [
                     'migration_projection' => [
                         'source_record' => 'workflow_exception',
                         'legacy_id' => $exception['id'] ?? null,
@@ -545,7 +602,7 @@ final class LegacyV1Projection
                 'recorded_at' => $lastProgressAt,
                 'boundary' => 2,
                 'order' => PHP_INT_MAX,
-                'payload' => [
+                'build_payload' => static fn (): array => [
                     'migration_projection' => [
                         'source_status' => $source['status'] ?? null,
                         'execution_owner' => 'v1',
@@ -564,19 +621,42 @@ final class LegacyV1Projection
             return [$left['boundary'], $leftTime, $left['order']] <=> [$right['boundary'], $rightTime, $right['order']];
         });
 
+        $historySize = 0;
+        $byteLimit = StructuralLimits::historyTransactionBytesLimit();
         foreach ($events as $index => &$event) {
+            $buildPayload = $event['build_payload'];
+            unset($event['boundary'], $event['order'], $event['build_payload']);
+            $event['payload'] = $buildPayload();
             $sequence = $index + 1;
             $event['sequence'] = $sequence;
             $event['id'] = substr(hash('sha256', $runId."\0".$sequence."\0".$event['event_type']), 0, 26);
-            unset($event['boundary'], $event['order']);
+            $historySize += HistoryBudget::sizeOfEvent(new WorkflowHistoryEvent($event));
+            if ($byteLimit > 0 && $historySize > $byteLimit) {
+                return ['limit_error' => self::limitError('history_transaction_bytes', $historySize, $byteLimit)];
+            }
         }
         unset($event);
 
-        return $events;
+        return ['events' => $events, 'history_size_bytes' => $historySize];
+    }
+
+    /** @return array<string, mixed> */
+    private static function limitError(string $dimension, int $used, int $limit): array
+    {
+        [$measure, $setting] = $dimension === 'history_transaction_size'
+            ? ['history events', 'DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE']
+            : ['history bytes', 'DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES'];
+
+        return [
+            'reason' => 'v1_projection_too_large',
+            'message' => "The projection would write {$used} {$measure} in one transaction; at most {$limit} are allowed ({$dimension}).",
+            'remediation' => "Keep the workflow on its v1 runtime, or raise {$setting} on this server before importing it.",
+            'limit' => compact('dimension', 'used', 'limit'),
+        ];
     }
 
     /**
-     * @param array<string, mixed> $source
+     * @param  array<string, mixed>  $source
      * @return list<array{field: string, reason: string, remediation: string}>
      */
     private static function unsupportedFields(array $source, string $status): array
@@ -652,8 +732,8 @@ final class LegacyV1Projection
     }
 
     /**
-     * @param array<string, mixed> $normalized
-     * @param array<string, mixed> $extra
+     * @param  array<string, mixed>  $normalized
+     * @param  array<string, mixed>  $extra
      * @return array<string, mixed>
      */
     private static function report(array $normalized, string $status, array $extra = []): array
@@ -661,7 +741,7 @@ final class LegacyV1Projection
         $errors = is_array($normalized['errors'] ?? null) ? array_values($normalized['errors']) : [];
         $rejection = [];
         if ($status === 'rejected' && is_array($errors[0] ?? null)) {
-            $rejection = array_intersect_key($errors[0], array_flip(['reason', 'message', 'remediation']));
+            $rejection = array_intersect_key($errors[0], array_flip(['reason', 'message', 'remediation', 'limit']));
         }
 
         return [

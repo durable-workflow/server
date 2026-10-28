@@ -4,7 +4,8 @@ import test from 'node:test';
 import {checkCancellationScopes} from '../../scripts/conformance/server-parity/cancellation-scopes-contract.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/cancellation-scopes.json', import.meta.url)));
-// The observation published Server 2.11.1 returned for this fixture.
+// The observation published Server 2.11.1 returned for this fixture, with
+// the scope_checkpoints steps published Server 2.11.5 returned.
 const recorded = JSON.parse(readFileSync(
   new URL('../Fixtures/ServerParityExpected/cancellation-scopes-observation.json', import.meta.url)));
 const id = 'pr1-cancellation-scopes';
@@ -18,7 +19,7 @@ const check = state => checkCancellationScopes(fixture, state, id);
 const intended = JSON.parse(JSON.stringify(fixture.cancellation_scopes.expected).replaceAll('{id}', id));
 const event = (history, type) => history.find(item => item.event_type === type);
 
-test('the published 2.11.1 recording satisfies the contract', () => {
+test('the published 2.11.1 and 2.11.5 recording satisfies the contract', () => {
   assert.deepStrictEqual(check(observation()), {scope: 'cancellation_scopes'});
 });
 
@@ -47,6 +48,22 @@ for (const [label, change, message] of [
       state[step].response.reason = 'cancellation_scope_not_recorded';
     }
   }, /cancellation scopes prepare_root_scope/],
+  // Native answered 501 for the checkpoint before it served it.
+  ['an unimplemented checkpoint', state => {
+    state.scope_checkpoints.prefix = {status: 501, response: {reason: 'rust_capability_not_implemented'}};
+  }, /cancellation scopes scope_checkpoints/],
+  ['a checkpoint retry that commits again', state => {
+    state.scope_checkpoints.prefix_again.response.duplicate = false;
+  }, /cancellation scopes scope_checkpoints/],
+  ['a retry with another fingerprint', state => {
+    state.scope_checkpoints.prefix_again.response.fingerprint = '{sha256:1}';
+  }, /cancellation scopes scope_checkpoints/],
+  ['a prefix that releases the claim', state => {
+    state.scope_checkpoints.open_after = {status: 409, response: {opened: false, reason: 'cancellation_scope_workflow_claim_mismatch'}};
+  }, /cancellation scopes scope_checkpoints/],
+  ['a refusal answered without the refresh token', state => {
+    delete state.scope_checkpoints.mismatch.response.history_refresh_page_token;
+  }, /cancellation scopes scope_checkpoints/],
   ['a replayed open that records a second scope', state => {
     state.open_s1_again.response.duplicate = false;
   }, /cancellation scopes open_s1_again/],

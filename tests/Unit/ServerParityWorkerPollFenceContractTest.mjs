@@ -4,7 +4,8 @@ import test from 'node:test';
 import {checkWorkerPollFence} from '../../scripts/conformance/server-parity/worker-poll-fence-contract.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/worker-poll-fence.json', import.meta.url)));
-// The observation published Server 2.11.1 returned for this fixture.
+// The observation published Server 2.11.1 returned for this fixture, with the
+// stale-owner claim steps published 2.11.5 returned.
 const recorded = JSON.parse(readFileSync(
   new URL('../Fixtures/ServerParityExpected/worker-poll-fence-observation.json', import.meta.url)));
 const id = 'pr1-worker-poll-fence';
@@ -68,6 +69,26 @@ for (const [label, change, message] of [
   ['a held poll refused when its registration is removed', state => {
     state.workflow_after_removal = {status: 409, poll_status: null, own_run: null, attempt: null, reason: 'worker_not_registered'};
   }, /a registration removed while a poll waits ends it as stale/],
+  // Native before the workflow-task ownership guard checked the owner's
+  // registration: a stale owner's claim was accepted.
+  ['a stale owner whose completion is accepted', state => {
+    state.stale_owner_complete = {...state.stale_owner_complete, status: 200, reason: null};
+  }, /a stale owner's claim is refused on complete/],
+  ['a stale owner whose heartbeat renews the lease', state => {
+    state.stale_owner_heartbeat = {...state.stale_owner_heartbeat, status: 200, reason: null, error: null};
+  }, /a stale owner's claim is refused on heartbeat/],
+  ['a stale owner refusal without the claim', state => {
+    state.stale_owner_history = {...state.stale_owner_history, own_task: false};
+  }, /a stale owner's claim is refused on history/],
+  ['a stale owner refusal in another shape', state => {
+    state.stale_owner_fail = {...state.stale_owner_fail, keys: ['reason']};
+  }, /a stale owner's claim is refused on fail/],
+  ['a scope checkpoint applied for a stale owner', state => {
+    state.stale_owner_scope_checkpoint = {...state.stale_owner_scope_checkpoint, status: 200, reason: null};
+  }, /a stale owner's claim is refused on scope_checkpoint/],
+  ["a stale owner's task left leased to it", state => {
+    state.stale_owner_recovered = empty;
+  }, /recovers the stale owner's task at the next attempt/],
   ['a stale answer that is not a 200', state => {
     state.activity_after_heartbeat = {...state.activity_after_heartbeat, status: 409};
   }, /activity: a heartbeat ends the held poll as stale/],

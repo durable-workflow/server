@@ -448,6 +448,53 @@ function finishHttpCancellationScopes(Client $admin, array $fixture, string $wor
     $state['legacy_claim_open'] = $route('open', $w, $own($w) + ['sequence' => 1]);
     $state['legacy_claim_prepare'] = $route('prepare', $w, $boundary($w, 'NO-SUCH-SCOPE', 'NO-SUCH-REQUEST', 1, 'timer'));
 
+    // ---- R5: a cooperative claim checkpoints the commands of its turn
+    // before opening a scope (POST …/cancellation-scopes/checkpoint). Every
+    // step sits under one key, which sorts after the others, and every new
+    // identity is named, so no earlier label changes. ----
+    $marker = static fn (string $change): array => ['type' => 'record_version_marker', 'change_id' => $change, 'version' => 1,
+        'min_supported' => 1, 'max_supported' => 1];
+    $prefix = [['type' => 'record_side_effect', 'result' => $empty], $marker('before-scope')];
+    $checkpoint = static fn (array $task, ?array $body, ?string $protocol = '1.20'): array => $route('checkpoint', $task, $body, $protocol);
+    $ck = [];
+    // Claims that cannot checkpoint: R3's plain claim and R4's protocol 1.19 claim.
+    $ck['plain_claim'] = $checkpoint($v, $own($v) + ['checkpoint_id' => 'ck-plain', 'start_sequence' => 1, 'commands' => $prefix]);
+    $ck['legacy_claim'] = $checkpoint($w, $own($w) + ['checkpoint_id' => 'ck-legacy', 'start_sequence' => 1, 'commands' => $prefix]);
+    $queue5 = $workflowId.'-r5-queue';
+    $worker5 = $workflowId.'-r5-worker';
+    $register($worker5, $queue5, ['cooperative_cancellation']);
+    $r5 = $start('R5', $queue5);
+    $x = $poll($worker5, $queue5, 'R5.T1');
+    $first = $own($x) + ['checkpoint_id' => 'ck-1', 'start_sequence' => 1, 'commands' => $prefix];
+    // Gates and validation, in the controller's order, then Core's refusals.
+    $ck['protocol_1_19'] = $checkpoint($x, $first, '1.19');
+    $ck['missing_fields'] = $checkpoint($x, $own($x) + ['commands' => $prefix, 'sticky_cache' => ['ttl_seconds' => 1]]);
+    $ck['invalid_fields'] = $checkpoint($x, $own($x) + ['checkpoint_id' => ['ck'], 'start_sequence' => 0, 'commands' => $prefix,
+        'message_stream_cursors' => [['stream_name' => 's', 'through_position' => 0]]]);
+    $ck['foreign_owner'] = $checkpoint($x, ['lease_owner' => 'someone-else'] + $first);
+    $ck['terminal'] = $checkpoint($x, ['commands' => [$marker('terminal'), ['type' => 'complete_workflow', 'result' => $empty]]] + $first);
+    $ck['signal_wait'] = $checkpoint($x, ['commands' => [['type' => 'open_signal_wait', 'signal_name' => 'go']]] + $first);
+    // The prefix commits at 1 and 2 under the claim; a retry answers its
+    // receipt, and the same id with other commands, or a new id at a used
+    // sequence, is refused.
+    $ck['prefix'] = $checkpoint($x, $first);
+    $name($ck['prefix']['response']['fingerprint'] ?? null, 'R5.prefix.fingerprint');
+    $ck['prefix_again'] = $checkpoint($x, $first);
+    $ck['mismatch'] = $checkpoint($x, ['commands' => [$marker('other')]] + $first);
+    $ck['sequence_behind'] = $checkpoint($x, ['checkpoint_id' => 'ck-2', 'commands' => [$marker('late')]] + $first);
+    $ck['history_after_prefix'] = $history($r5);
+    // A second prefix replaces the receipt: a timer at 3, with its task.
+    $ck['timer'] = $checkpoint($x, ['checkpoint_id' => 'ck-2', 'start_sequence' => 3, 'commands' => [$timer(null)]] + $first);
+    $name($ck['timer']['response']['fingerprint'] ?? null, 'R5.timer.fingerprint');
+    $name($ck['timer']['response']['created_task_ids'][0] ?? null, 'R5.timer.task');
+    $ck['first_after_second'] = $checkpoint($x, $first);
+    // The claim is unchanged: the scope opens at 4 and the turn completes.
+    $ck['open_after'] = $route('open', $x, $own($x) + ['sequence' => 4]);
+    $name($ck['open_after']['response']['scope_id'] ?? null, 'R5.S1');
+    $ck['complete'] = $complete($x, [['type' => 'complete_workflow', 'result' => $empty]]);
+    $ck['history'] = $history($r5);
+    $state['scope_checkpoints'] = $ck;
+
     return cancellationScopesNormalize($state, $names);
 }
 
