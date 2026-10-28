@@ -602,7 +602,7 @@ mod tests {
             (json!(3), Some(3)), (json!("3"), Some(3)), (json!(" 3 "), Some(3)), (json!("+3"), Some(3)),
             (json!("1.0"), Some(1)), (json!("1e0"), Some(1)), (json!("2.9"), Some(2)), (json!("-1.5"), Some(-1)),
             (json!(1.0), None), (json!("1x"), None), (json!("0x1A"), None), (json!(""), None), (json!(null), None),
-            (json!(true), None), (json!("1e30"), None),
+            (json!(true), None), (json!("1e30"), Some(i64::MAX)), (json!("9200000000000000000.0"), Some(9_200_000_000_000_000_000)),
         ] {
             assert_eq!(int(&value), expected, "{value}");
         }

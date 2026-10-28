@@ -585,9 +585,19 @@ pub(super) fn int_cast(text: &str) -> Option<i64> {
     if let Ok(number) = trimmed.strip_prefix('+').unwrap_or(trimmed).parse::<i64>() {
         return Some(number);
     }
-    // Out-of-range or fractional values truncate; PHP 8 saturates neither,
-    // and an out-of-range float cast is undefined, so refuse it.
-    (value.is_finite() && value.abs() < 9.2e18).then(|| value.trunc() as i64)
+    // A string past the integer range is a double, which PHP 8 casts with
+    // `zend_dval_to_lval_cap`: infinity is 0, a value outside
+    // [-2^63, 2^63) saturates, and the rest truncates.
+    const LIMIT: f64 = 9_223_372_036_854_775_808.0;
+    Some(if !value.is_finite() {
+        0
+    } else if value >= LIMIT {
+        i64::MAX
+    } else if value < -LIMIT {
+        i64::MIN
+    } else {
+        value.trunc() as i64
+    })
 }
 
 #[cfg(test)]
@@ -646,5 +656,20 @@ mod tests {
         assert_eq!(numeric("1e"), None);
         assert_eq!(numeric("."), None);
         assert_eq!(int_cast("12.9"), Some(12));
+        // PHP 8.3's `(int)` of these numeric strings.
+        for (text, expected) in [
+            ("9200000000000000000.0", Some(9_200_000_000_000_000_000)),
+            ("1e30", Some(i64::MAX)),
+            ("9223372036854775807", Some(i64::MAX)),
+            ("9223372036854775808", Some(i64::MAX)),
+            ("-9223372036854775808", Some(i64::MIN)),
+            ("-9223372036854775809", Some(i64::MIN)),
+            ("-1e30", Some(i64::MIN)),
+            ("1e999", Some(0)),
+            (" -2.9 ", Some(-2)),
+            ("1x", None),
+        ] {
+            assert_eq!(int_cast(text), expected, "{text}");
+        }
     }
 }
