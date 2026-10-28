@@ -3,7 +3,8 @@
 //! re-registration or a heartbeat ends it with `stale_worker_registration`,
 //! leasing nothing, and the worker's next poll leases the work. A worker that
 //! reports its process keeps its poll across a heartbeat from the same
-//! process.
+//! process. A workflow task claim whose owner has gone stale is refused
+//! `stale_worker_registration` and recovered by the next poll on its queue.
 use super::*;
 use std::time::Duration;
 
@@ -316,4 +317,72 @@ async fn a_reregistration_ends_a_held_query_poll_whatever_its_metadata_and_timin
         assert_eq!((status, next["task"]["query_name"].clone()), (StatusCode::OK, json!("state")), "{case}: {next}");
         query.abort();
     }
+}
+
+/// A workflow task claim whose owner's registration has gone stale is
+/// refused on every workflow-task route that checks the claim, as published
+/// 2.11.5's ownership guard refuses it; another worker's poll on the queue
+/// recovers the task at the next attempt, fencing the stale owner as
+/// superseded, and the old claim then belongs to another worker.
+#[tokio::test]
+async fn a_stale_owners_workflow_task_claim_is_refused_and_recovered() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register_on_own_queue(&app, "stale-owner", None).await;
+    start_on(&app, "stale-owner").await;
+    let task = poll_now(&app, "stale-owner", "workflow").await["task"].clone();
+    let id = task["task_id"].as_str().unwrap().to_owned();
+    let claim = json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"]});
+    let with = |extra: Value| {
+        let mut body = claim.clone();
+        for (key, value) in extra.as_object().unwrap() {
+            body[key] = value.clone();
+        }
+        body
+    };
+    // A fresh owner's claim is valid.
+    let (status, body) = request(&app, "POST", &format!("/api/worker/workflow-tasks/{id}/heartbeat"), claim.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    database.execute("UPDATE workflow_worker_registrations SET last_heartbeat_at='2000-01-01 00:00:00' WHERE worker_id='stale-owner'").await;
+    let token = task["next_history_page_token"].as_str().unwrap_or("MQ==").to_owned();
+    for (route, extra) in [
+        ("heartbeat", json!({})),
+        ("history", json!({"next_history_page_token":token})),
+        ("cancellation-scopes/checkpoint", json!({"checkpoint_id":"stale-owner","start_sequence":1,
+            "commands":[{"type":"start_timer","delay_seconds":60}]})),
+        ("fail", json!({"failure":{"message":"stale owner","type":"StaleOwner"}})),
+        ("complete", json!({"commands":[{"type":"complete_workflow","result":envelope(Payload::Array(vec![]))}]})),
+    ] {
+        // As the shared fixture's probe sends them, at protocol 1.20.
+        let (status, body) = request_protocol(&app, "POST", &format!("/api/worker/workflow-tasks/{id}/{route}"), with(extra), "1.20").await;
+        assert_eq!(status, StatusCode::CONFLICT, "{route}: {body}");
+        assert_eq!(
+            (body["reason"].clone(), body["error"].clone(), body["task_status"].clone(), body["task_id"].clone(),
+                body["workflow_task_attempt"].clone(), body["lease_owner"].clone(), body["lease_expires_at"].is_string()),
+            (json!("stale_worker_registration"), json!("Workflow task lease owner is no longer an active worker."),
+                json!("leased"), json!(id), task["workflow_task_attempt"].clone(), task["lease_owner"].clone(), true),
+            "{route}: {body}"
+        );
+    }
+
+    // Another worker's poll on the queue recovers the task at the next attempt.
+    let (status, body) = request(&app, "POST", "/api/worker/register", json!({"worker_id":"stale-replacement",
+        "task_queue":"stale-owner","runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":["act"]})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, recovered) = request(&app, "POST", "/api/worker/workflow-tasks/poll",
+        json!({"worker_id":"stale-replacement","task_queue":"stale-owner","timeout_seconds":0})).await;
+    assert_eq!(status, StatusCode::OK, "{recovered}");
+    assert_eq!(
+        (recovered["poll_status"].clone(), recovered["task"]["workflow_id"].clone(), recovered["task"]["workflow_task_attempt"].clone()),
+        (json!("leased"), json!("stale-owner-run"), json!(2)),
+        "{recovered}"
+    );
+    let (status, body) = request(&app, "POST", &format!("/api/worker/workflow-tasks/{id}/complete"),
+        with(json!({"commands":[{"type":"complete_workflow","result":envelope(Payload::Array(vec![]))}]}))).await;
+    assert_eq!((status, body["reason"].clone()), (StatusCode::CONFLICT, json!("lease_owner_mismatch")), "{body}");
+    // The stale owner was fenced as superseded: its heartbeat no longer
+    // revives the old registration.
+    let (_, heartbeat) = request(&app, "POST", "/api/worker/heartbeat", json!({"worker_id":"stale-owner"})).await;
+    assert_eq!(heartbeat["reason"], "worker_registration_superseded", "{heartbeat}");
 }

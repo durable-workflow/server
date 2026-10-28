@@ -2013,6 +2013,9 @@ where
             },
         )?;
         let build = worker_build::<DB>(&worker)?;
+        if kind == "workflow" {
+            self.expire_stale_owner_leases(tx, queue).await?;
+        }
         let candidates = Self::query(DB::TASK_CANDIDATES_SQL)
             .bind(self.namespace.as_ref())
             .bind(queue)
@@ -2381,7 +2384,7 @@ where
         if DB::string(&task, "task_type")? != "workflow" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
-        Self::workflow_task_guard(&mut tx, &task, &body).await?;
+        Self::workflow_task_guard(&mut tx, &task, &body, self.worker_stale_after_seconds).await?;
         let run = Self::active_run(&mut tx, &DB::string(&task, "workflow_run_id")?).await?;
         let expires = self.cancellation_lease_expiry(&run)?;
         tx.summary_changed(&DB::string(&run, "id")?);
@@ -2415,7 +2418,7 @@ where
         if DB::string(&task, "task_type")? != "workflow" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
-        Self::workflow_task_guard(&mut tx, &task, &body).await?;
+        Self::workflow_task_guard(&mut tx, &task, &body, self.worker_stale_after_seconds).await?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let (mut events, next) = Self::history_page_connection(&mut tx, &run_id, after, size).await?;
         Self::with_signal_sequences(&mut tx, &run_id, &mut events).await?;
@@ -2515,7 +2518,7 @@ where
         if DB::string(&task, "task_type")? != "workflow" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
-        Self::workflow_task_guard(&mut tx, &task, &body).await?;
+        Self::workflow_task_guard(&mut tx, &task, &body, self.worker_stale_after_seconds).await?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
         let mut payload = DB::document_row(&task, "payload")?;
@@ -2846,7 +2849,7 @@ where
                 "outcome": "completed", "recorded": false, "reason": "already_completed", "created_task_ids": created}),
             );
         }
-        Self::workflow_task_guard(&mut tx, &task, &body).await?;
+        Self::workflow_task_guard(&mut tx, &task, &body, self.worker_stale_after_seconds).await?;
         // PHP admits cancellation scopes before it guards worker-session
         // commands, and guards both before validating streams.
         Self::cancellation_scope_admission(&mut tx, &task, &body, commands, protocol).await?;
@@ -3865,11 +3868,14 @@ where
 
     /// PHP's workflow task ownership guard, in PHP's order: a task that is
     /// no longer leased first (run_closed when its run has closed), then the
-    /// lease's expiry, owner and attempt.
+    /// lease's expiry, owner and attempt, and finally the owner's
+    /// registration: a claim whose owner is missing or no longer fresh
+    /// (`WorkerPollFence::isFresh`) is refused `stale_worker_registration`.
     pub(super) async fn workflow_task_guard(
         tx: &mut Transaction<'_, DB>,
         task: &DB::Row,
         body: &Value,
+        stale_after_seconds: i64,
     ) -> Result<()> {
         use super::query_authority::wire;
         let lease_owner = text(body, "lease_owner")?;
@@ -3939,6 +3945,75 @@ where
                 "workflow_task_attempt_mismatch",
                 json!({"current_attempt":current}),
             ));
+        }
+        let worker = Self::query("SELECT status,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
+            .bind(DB::string(task, "namespace")?)
+            .bind(lease_owner)
+            .fetch_optional(&mut **tx)
+            .await?;
+        let fresh = match &worker {
+            Some(row) => super::worker_poll_fence::WorkerPollFence::fresh::<DB>(row, stale_after_seconds)?,
+            None => false,
+        };
+        if !fresh {
+            return Err(refused(
+                "Workflow task lease owner is no longer an active worker.",
+                "stale_worker_registration",
+                json!({"task_status":"leased","lease_owner":lease_owner,"lease_expires_at":wire(expires)}),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `WorkflowTaskPoller`'s abandoned-lease recovery, before a workflow
+    /// poll selects its candidates: a leased workflow task on the polled
+    /// queue whose owner's registration is missing or no longer fresh has its
+    /// lease expired now, and an existing owner is fenced as superseded
+    /// (`recoverAbandonedTaskLease`). The poll then leases it at the next
+    /// attempt as it leases any expired lease.
+    async fn expire_stale_owner_leases(&self, tx: &mut Transaction<'_, DB>, queue: &str) -> Result<()> {
+        let leased = Self::query("SELECT id,lease_owner FROM workflow_tasks WHERE namespace=$1 AND queue=$2 AND task_type='workflow' AND status='leased' AND lease_owner IS NOT NULL ORDER BY id LIMIT 100")
+            .bind(self.namespace.as_ref())
+            .bind(queue)
+            .fetch_all(&mut **tx)
+            .await?;
+        let mut owners: std::collections::BTreeMap<String, bool> = std::collections::BTreeMap::new();
+        for task in leased {
+            let owner = DB::string(&task, "lease_owner")?;
+            if owner.trim().is_empty() {
+                continue;
+            }
+            let fresh = match owners.get(&owner) {
+                Some(fresh) => *fresh,
+                None => {
+                    let row = Self::query("SELECT status,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
+                        .bind(self.namespace.as_ref())
+                        .bind(&owner)
+                        .fetch_optional(&mut **tx)
+                        .await?;
+                    let fresh = match &row {
+                        Some(row) => super::worker_poll_fence::WorkerPollFence::fresh::<DB>(row, self.worker_stale_after_seconds)?,
+                        None => false,
+                    };
+                    if !fresh && row.is_some() {
+                        Self::query("UPDATE workflow_worker_registrations SET status='superseded' WHERE namespace=$1 AND worker_id=$2")
+                            .bind(self.namespace.as_ref())
+                            .bind(&owner)
+                            .execute(&mut **tx)
+                            .await?;
+                    }
+                    owners.insert(owner.clone(), fresh);
+                    fresh
+                }
+            };
+            if !fresh {
+                Self::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE id=$2 AND status='leased' AND lease_owner=$3")
+                    .bind(DB::bind_time(now()))
+                    .bind(DB::string(&task, "id")?)
+                    .bind(&owner)
+                    .execute(&mut **tx)
+                    .await?;
+            }
         }
         Ok(())
     }
