@@ -6,9 +6,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync, spawnSync} from 'node:child_process';
-import {copyFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync} from 'node:fs';
+import {copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {dirname, join, resolve} from 'node:path';
+import {dirname, join, relative, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {matchingFiles, nulSeparatedPaths, patternRegExp, pushPathPatterns} from '../../scripts/conformance/server-parity/changes.mjs';
 import {decide} from '../../scripts/conformance/server-parity/aggregate.mjs';
@@ -59,6 +59,34 @@ test('path patterns follow GitHub filter semantics for the forms in use', () => 
   assert.ok(!patternRegExp('tests/Unit/ServerParityRunnerTest.mjs').test('tests/Unit/ServerParityRunnerTestXmjs'));
   assert.throws(() => patternRegExp('docs/{a,b}/**'), /Unsupported path filter pattern/);
   assert.deepEqual(matchingFiles(['rust/**', 'docs/x.md'], ['README.md', 'rust/Cargo.toml', 'docs/x.md']), ['rust/Cargo.toml', 'docs/x.md']);
+});
+
+test('literal native inputs and parity imports are covered by the shared input list', () => {
+  const sourceFiles = (directory, suffix) => readdirSync(directory, {withFileTypes: true}).flatMap(entry => {
+    const path = join(directory, entry.name);
+    return entry.isDirectory() ? sourceFiles(path, suffix) : entry.isFile() && path.endsWith(suffix) ? [path] : [];
+  });
+  const patterns = pushPathPatterns(workflowText);
+  const manifest = resolve('rust');
+  const inputs = new Set();
+  for (const file of ['rust/src', 'rust/tests', 'rust/examples'].flatMap(directory => sourceFiles(directory, '.rs'))) {
+    const source = readFileSync(file, 'utf8');
+    for (const match of source.matchAll(/include_(?:str|bytes)!\s*\(\s*"([^"]+)"/g)) {
+      inputs.add(relative('.', resolve(dirname(file), match[1])).replaceAll('\\', '/'));
+    }
+    // The config audit also reads a manifest-relative repository input.
+    for (const match of source.matchAll(/concat!\s*\(\s*env!\("CARGO_MANIFEST_DIR"\)\s*,\s*"([^"]+)"/g)) {
+      inputs.add(relative('.', resolve(`${manifest}${match[1]}`)).replaceAll('\\', '/'));
+    }
+  }
+  for (const file of ['scripts/conformance/server-parity.mjs',
+    ...sourceFiles('scripts/conformance/server-parity', '.mjs')]) {
+    for (const match of readFileSync(file, 'utf8').matchAll(/(?:from\s*|import\s*)['"](\.[^'"]+)['"]/g)) {
+      inputs.add(relative('.', resolve(dirname(file), match[1])).replaceAll('\\', '/'));
+    }
+  }
+  const uncovered = [...inputs].filter(path => matchingFiles(patterns, [path]).length === 0);
+  assert.deepEqual(uncovered, [], `Native inputs absent from the shared path list: ${uncovered.join(', ')}`);
 });
 
 test('path patterns accept no regular-expression syntax and match every other character literally', () => {
@@ -316,6 +344,19 @@ for (const [label, change, expected] of [
   ['PHP-only changes skip the fixtures', ({write}) => write('app/Controller.php', '<?php\n'), 'run=false'],
   ['documentation-only changes skip the fixtures', ({write}) => write('docs/note.md', 'x\n'), 'run=false'],
   ['native changes run the fixtures', ({write}) => write('rust/src/lib.rs', 'x\n'), 'run=true'],
+  ['parent Cargo configuration runs the fixtures', ({write}) => write('.cargo/config.toml', '[build]\n'), 'run=true'],
+  ['parent Cargo manifests run the fixtures', ({write}) => write('Cargo.toml', '[workspace]\n'), 'run=true'],
+  ['parent Cargo locks run the fixtures', ({write}) => write('Cargo.lock', 'version = 3\n'), 'run=true'],
+  ['checkout attributes run the fixtures', ({write}) => write('.gitattributes', '*.json text\n'), 'run=true'],
+  ['CI helper changes run the fixtures', ({write}) => write('scripts/ci/run-composer.sh', '#!/bin/sh\n'), 'run=true'],
+  ['a transitive parity import runs the fixtures', ({write}) => write('scripts/conformance/proxy-target.mjs', 'export {};\n'), 'run=true'],
+  ['shared contract test changes run the fixtures', ({write}) => write('tests/Unit/ServerParityAggregateTest.mjs', 'export {};\n'), 'run=true'],
+  ['shared observation helper changes run the fixtures', ({write}) => write('tests/Support/ServerParityNewObservation.mjs', 'export {};\n'), 'run=true'],
+  ['the native configuration audit input runs the fixtures', ({write}) => write('config/dw-contract.php', '<?php\n'), 'run=true'],
+  ['codec fixtures run the fixtures', ({write}) => write('tests/Fixtures/CodecRegression/value.json', '{}\n'), 'run=true'],
+  ['upgrade fixtures run the fixtures', ({write}) => write('tests/Fixtures/ServerUpgrade/run.json', '{}\n'), 'run=true'],
+  ['activity metadata fixtures run the fixtures', ({write}) => write('tests/Fixtures/ActivityMetadataProjection/v1.json', '{}\n'), 'run=true'],
+  ['history budget fixtures run the fixtures', ({write}) => write('tests/Fixtures/HistoryBudget/pressure.json', '{}\n'), 'run=true'],
   ['shared fixtures run the fixtures', ({write}) => write('tests/Fixtures/ServerParity/new.json', '{}\n'), 'run=true'],
   ['moving a fixture out runs the fixtures', ({root, write}) => {
     write('docs/.keep', '');
