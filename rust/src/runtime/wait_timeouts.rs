@@ -140,7 +140,7 @@ where
             .await?;
             // The completion reports the task it created, as
             // `applyOpenSignalWait` and `applyOpenConditionWait` do.
-            return Ok(Some(resume));
+            Ok(Some(resume))
         } else {
             let mut task_payload = wait_fields(wait);
             task_payload["timer_id"] = json!(timer_id);
@@ -160,9 +160,8 @@ where
             Self::query("UPDATE workflow_run_waits SET task_id=$1,task_type='timer',task_status='ready',task_backed=TRUE WHERE workflow_run_id=$2 AND wait_id=$3 AND kind=$4")
                 .bind(&timer_task).bind(&run_id).bind(super::text(wait,if direct {"signal_wait_id"} else {"condition_wait_id"})?)
                 .bind(if direct {"signal"} else {"condition"}).execute(&mut **tx).await?;
-            return Ok(Some(timer_task));
+            Ok(Some(timer_task))
         }
-        Ok(None)
     }
 
     pub(super) async fn signal_timeout_finished(
