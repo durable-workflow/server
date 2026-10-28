@@ -56,6 +56,9 @@ final class MessageStreamService
             }
 
             $run = NamespaceWorkflowScope::currentRun($namespace, $workflowId);
+            if (LegacyV1Projection::isProjectedRun($run)) {
+                return ['status' => 409, ...LegacyV1Projection::readOnlyMessageAppend($run, $streamName)];
+            }
             if (! $run instanceof WorkflowRun || $run->status->isTerminal()) {
                 return $this->rejection('run_not_active', 409, $workflowId, $streamName, $messageId);
             }
@@ -168,7 +171,7 @@ final class MessageStreamService
             }
 
             $run = NamespaceWorkflowScope::currentRun($namespace, $workflowId);
-            if (! $run instanceof WorkflowRun || $run->status->isTerminal()) {
+            if (! $run instanceof WorkflowRun || LegacyV1Projection::isProjectedRun($run) || $run->status->isTerminal()) {
                 return;
             }
 
