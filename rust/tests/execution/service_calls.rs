@@ -420,3 +420,36 @@ async fn the_repair_pass_times_out_calls_past_their_deadline() {
     let (_, again) = request(&app, "POST", "/api/system/repair/pass", json!({})).await;
     assert_eq!((again["service_call_timeout_candidates"].clone(), again["service_call_timeouts_enforced"].clone()), (json!(0), json!(0)));
 }
+
+/// Core's continue-as-new touches no service call (continue-transfers
+/// fixture): a run that is the caller of an accepted call continues as new,
+/// and the call keeps the predecessor as its caller and stays accepted.
+#[tokio::test]
+async fn a_caller_run_continues_as_new_and_its_call_stays_with_the_predecessor() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    catalog(&app, &[("charge", activity("charge-activity"))]).await;
+    register(&app, "caller-worker", json!(["echo"]), json!([])).await;
+    let started = start(&app, "service-caller").await;
+    let task = poll(&app, "caller-worker", "workflow").await;
+    let (status, call) = execute(&app, "charge", json!({"arguments": {"codec": "avro", "blob": "wwHioz3/VYAiNwwA"},
+        "caller_workflow_instance_id": "service-caller", "caller_workflow_run_id": started["run_id"]})).await;
+    assert_eq!(status, StatusCode::OK, "{call}");
+    let id = call["service_call_id"].as_str().unwrap().to_owned();
+    let path = format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap());
+    let (status, continued) = request(&app, "POST", &path, completion(&task, json!([{"type":"continue_as_new"}]))).await;
+    assert_eq!(status, StatusCode::OK, "{continued}");
+    assert_eq!(continued["outcome"], "completed");
+    let runs = request(&app, "GET", "/api/workflows/service-caller/runs", Value::Null).await.1;
+    assert_eq!(runs["runs"].as_array().unwrap().len(), 2);
+    assert_eq!(runs["runs"][1]["is_current_run"], true);
+    let (status, shown) = request(&app, "GET", &format!("{OPERATIONS}/charge/service-calls/{id}"), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{shown}");
+    assert_eq!((shown["status"].clone(), shown["outcome"].clone(), shown["caller_workflow_run_id"].clone()),
+        (json!("accepted"), json!("accepted"), started["run_id"].clone()));
+    let successor = poll(&app, "caller-worker", "workflow").await;
+    assert_eq!(successor["run_id"], runs["runs"][1]["run_id"]);
+    runtime.close().await;
+    database.remove().await;
+}

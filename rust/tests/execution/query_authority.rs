@@ -747,7 +747,7 @@ async fn identical_committed_result_reconciles_before_and_after_original_expiry(
 }
 
 #[tokio::test]
-async fn original_query_deadline_releases_continuation_without_consuming_its_snapshot() {
+async fn a_live_query_survives_continuation_and_is_answered_from_the_predecessor() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap().with_query_task_config(
         durable_workflow_server::runtime::QueryTaskConfig {
@@ -804,16 +804,10 @@ async fn original_query_deadline_releases_continuation_without_consuming_its_sna
         "/api/worker/workflow-tasks/{}/complete",
         resumed["task_id"].as_str().unwrap()
     );
+    // Core's continue-as-new touches no query task (continue-transfers
+    // fixture): the live claim's exact bytes and expiry survive it, and the
+    // predecessor's query is still answered to the waiting caller.
     let body = completion(&resumed, json!([{"type":"continue_as_new"}]));
-    let live = request(&app, "POST", &path, body.clone()).await;
-    assert_eq!(live.0, StatusCode::CONFLICT, "{}", live.1);
-    assert_eq!(live.1["reason"], "continue_as_new_transfer_unqualified");
-    assert_eq!(cache_snapshot(&database, id).await, snapshot);
-    let caller = waiting.await.unwrap();
-    assert_eq!(caller.0, StatusCode::GATEWAY_TIMEOUT);
-    // No query poll or outcome has swept the retained claim. Its exact bytes
-    // and SQL expiry must survive continuation on the same workflow lease.
-    assert_eq!(cache_snapshot(&database, id).await, snapshot);
     let continued = request(&app, "POST", &path, body).await;
     assert_eq!(continued.0, StatusCode::OK, "{}", continued.1);
     assert_eq!(cache_snapshot(&database, id).await, snapshot);
@@ -826,15 +820,17 @@ async fn original_query_deadline_releases_continuation_without_consuming_its_sna
     .await;
     assert_eq!(runs.1["runs"].as_array().unwrap().len(), 2);
     assert_eq!(runs.1["runs"][0]["run_id"], started["run_id"]);
-    let late = request(
+    let answered = request(
         &app,
         "POST",
         &format!("/api/worker/query-tasks/{id}/complete"),
         submitted(&claim),
     )
     .await;
-    assert_eq!(late.0, StatusCode::CONFLICT, "{}", late.1);
-    assert_eq!(late.1["reason"], "query_task_timed_out");
+    assert_eq!(answered.0, StatusCode::OK, "{}", answered.1);
+    let caller = waiting.await.unwrap();
+    assert_eq!(caller.0, StatusCode::OK, "{}", caller.1);
+    assert_eq!(caller.1["run_id"], started["run_id"]);
     let successor = poll(&app, "authority-worker", "workflow").await;
     assert_ne!(successor["run_id"], started["run_id"]);
     assert_eq!(
