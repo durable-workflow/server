@@ -3,9 +3,9 @@
 //
 // Pull requests run the workflow without a path filter, so its terminal
 // result always reports. This script applies the workflow's own push path
-// filter to the pull request's changes, so one list governs both triggers.
-// Every other event runs every fixture job, and so does any pull request
-// whose changes cannot be classified.
+// filter to pull requests and verified merge groups. A merge group can skip
+// only against current main, so an unmerged predecessor cannot hide inputs.
+// Other events and any unclassifiable range run every fixture job.
 //
 // Writes `run=true` or `run=false` to stdout, for $GITHUB_OUTPUT.
 import {execFileSync} from 'node:child_process';
@@ -64,18 +64,49 @@ export function matchingFiles(patterns, files) {
   return files.filter(file => expressions.some(expression => expression.test(file)));
 }
 
-function classify({event, headSha, workflowPath}) {
-  if (event !== 'pull_request') return {run: true, reason: `${event} runs every fixture job`};
-  // The checkout is the pull request's merge commit: base, then head. Git runs
-  // without a shell, and its file list is read as bytes.
+function classify({event, headSha, mergeBaseRef, mergeBaseSha, mergeHeadSha, workflowPath}) {
+  if (!['pull_request', 'merge_group'].includes(event)) return {run: true, reason: `${event} runs every fixture job`};
+  // Git runs without a shell, and its file list is read as bytes.
   const git = (...args) => execFileSync('git', args);
   let files;
   let matched;
   try {
-    const parents = git('rev-list', '--parents', '-n', '1', 'HEAD').toString('utf8').trim().split(' ');
-    if (parents.length !== 3 || parents[2] !== headSha) throw new Error('HEAD is not this pull request\'s merge commit');
-    files = nulSeparatedPaths(git('diff', '--name-only', '-z', '--no-renames', 'HEAD^1', 'HEAD'));
+    let base = 'HEAD^1';
+    let head = 'HEAD';
+    if (event === 'pull_request') {
+      const parents = git('rev-list', '--parents', '-n', '1', 'HEAD').toString('utf8').trim().split(' ');
+      if (parents.length !== 3 || parents[2] !== headSha) throw new Error('HEAD is not this pull request\'s merge commit');
+    } else {
+      if (mergeBaseRef !== 'refs/heads/main'
+          || !/^[a-f0-9]{40}$/.test(mergeBaseSha) || !/^[a-f0-9]{40}$/.test(mergeHeadSha)
+          || mergeBaseSha === mergeHeadSha) throw new Error('The merge-group identity is incomplete or unsupported');
+      if (git('rev-parse', 'HEAD').toString('utf8').trim() !== mergeHeadSha) {
+        throw new Error('HEAD is not this merge group');
+      }
+      git('merge-base', '--is-ancestor', mergeBaseSha, mergeHeadSha);
+      base = mergeBaseSha;
+      head = mergeHeadSha;
+    }
+    files = nulSeparatedPaths(git('diff', '--name-only', '-z', '--no-renames', base, head));
     matched = matchingFiles(pushPathPatterns(readFileSync(workflowPath, 'utf8')), files);
+    if (event === 'merge_group' && matched.length === 0) {
+      // A preceding queued group may be the candidate's parent without being
+      // main yet. Do not skip that predecessor's qualification. Reading the
+      // public remote ref adds no credential or mutable checkout dependency.
+      // A moving/unavailable main or a shallow missing base runs everything.
+      let currentMain;
+      try {
+        currentMain = execFileSync('git', ['ls-remote', '--exit-code', 'origin', mergeBaseRef],
+          {encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe']}).trim().split(/\s+/);
+      } catch {
+        // Git errors may contain a remote URL. The decision only needs to
+        // explain that main could not be verified, not reproduce that URL.
+        throw new Error('Current main could not be verified');
+      }
+      if (currentMain.length !== 2 || currentMain[0] !== mergeBaseSha || currentMain[1] !== mergeBaseRef) {
+        throw new Error('The merge-group base is not verified current main');
+      }
+    }
   } catch (error) {
     return {run: true, reason: `changes could not be classified (${error.message}); running every fixture job`};
   }
@@ -88,6 +119,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const decision = classify({
     event: process.env.EVENT_NAME ?? '',
     headSha: process.env.PR_HEAD_SHA ?? '',
+    mergeBaseRef: process.env.MERGE_GROUP_BASE_REF ?? '',
+    mergeBaseSha: process.env.MERGE_GROUP_BASE_SHA ?? '',
+    mergeHeadSha: process.env.MERGE_GROUP_HEAD_SHA ?? '',
     workflowPath: '.github/workflows/server-parity.yml',
   });
   console.error(decision.reason);
