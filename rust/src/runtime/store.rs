@@ -3871,7 +3871,10 @@ where
             ) {
                 super::wait_timeouts::resolution(&payload)
             } else {
-                json!({"timer_id":timer_id})
+                // `WorkflowTaskPayload::forTimerResolution` for a plain timer.
+                json!({"workflow_wait_kind":"timer","open_wait_id":format!("timer:{timer_id}"),
+                    "resume_source_kind":"timer","resume_source_id":timer_id,"timer_id":timer_id,
+                    "workflow_sequence":payload["sequence"],"workflow_event_type":"TimerFired"})
             };
             super::selections::merge(&mut payload, &metadata);
             // `RunTimerTask`: the timer task is leased to itself while its
