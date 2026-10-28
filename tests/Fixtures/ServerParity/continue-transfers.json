@@ -1,0 +1,129 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "continue-transfers",
+  "review_state": "reviewed",
+  "contract": "Continue-as-new over what a run leaves behind (Workflow DefaultWorkflowTaskBridge::applyContinueAsNew, ServiceCallWorkflowDelivery, WorkflowQueryTaskBroker), over raw worker HTTP on protocol 1.20 in its own namespace. Core continues a run whatever it has open and touches neither service calls nor query tasks. A run that is the caller of an accepted async service call continues as new: the completion is accepted, the call keeps the predecessor as its caller and stays accepted, and the successor's first task is ready. A query admitted while the run's workflow task is leased waits behind the lease; the leased task continues as new, the query task, still bound to the predecessor, is leased by the next query poll and answered, and the waiting client receives the answer. Embedded applications have no worker protocol.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "continue transfers λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "continue transfers λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "continue_transfers": {
+    "workflow_type": "parity.v1.continue_transfers",
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "query": "state",
+    "expected": {
+      "service_call": {
+        "executed": {
+          "status": 200,
+          "accepted": true
+        },
+        "call_before": {
+          "status": 200,
+          "call_status": "accepted",
+          "outcome": "accepted",
+          "caller_workflow_run_id": "{run:1}"
+        },
+        "continued": {
+          "status": 200,
+          "outcome": "completed",
+          "reason": null,
+          "run_status": "completed",
+          "created_tasks": 1
+        },
+        "runs": [
+          {
+            "run_id": "{run:1}",
+            "run_number": 1,
+            "status": "completed",
+            "is_current_run": false
+          },
+          {
+            "run_id": "{run:2}",
+            "run_number": 2,
+            "status": "pending",
+            "is_current_run": true
+          }
+        ],
+        "call_after": {
+          "status": 200,
+          "call_status": "accepted",
+          "outcome": "accepted",
+          "caller_workflow_run_id": "{run:1}"
+        },
+        "successor": {
+          "run_id": "{run:2}",
+          "workflow_task_attempt": 1,
+          "terminated": 200
+        }
+      },
+      "live_query": {
+        "continued": {
+          "status": 200,
+          "outcome": "completed",
+          "reason": null,
+          "run_status": "completed",
+          "created_tasks": 1
+        },
+        "query_task": {
+          "status": 200,
+          "leased": true,
+          "run_id": "{run:3}",
+          "query_name": "state"
+        },
+        "answered": 200,
+        "client": {
+          "status": 200,
+          "run_id": "{run:3}",
+          "result_envelope": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          }
+        },
+        "runs": [
+          {
+            "run_id": "{run:3}",
+            "run_number": 1,
+            "status": "completed",
+            "is_current_run": false
+          },
+          {
+            "run_id": "{run:4}",
+            "run_number": 2,
+            "status": "pending",
+            "is_current_run": true
+          }
+        ],
+        "successor": {
+          "run_id": "{run:4}",
+          "workflow_task_attempt": 1,
+          "terminated": 200
+        }
+      }
+    }
+  }
+}
