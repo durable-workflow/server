@@ -57,7 +57,7 @@ on:
       - tests/Unit/ServerParityWorkerReplacementContractTest.mjs
       - tests/Unit/ServerParityOperatorMetricsContractTest.mjs
       - tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs
-      - tests/Unit/ServerParityConcurrentWaitsContractTest.mjs tests/Unit/ServerParityContinueTransfersContractTest.mjs
+      - tests/Unit/ServerParityConcurrentWaitsContractTest.mjs
       - tests/Unit/ServerParityContinueTransfersContractTest.mjs
       - tests/Unit/ServerParityBridgeAdaptersContractTest.mjs
       - tests/Unit/ServerParityNexusOperationsContractTest.mjs
