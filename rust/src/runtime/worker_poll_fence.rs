@@ -165,6 +165,13 @@ impl WorkerPollFence {
     }
 }
 
+/// `WorkerPollFence::isFresh` for a lease owner, whose registration may be
+/// missing: a missing registration is not fresh. A row that holds no
+/// registration (an outer join's nulls) reads as missing.
+pub(super) fn owner_fresh<DB: Backend>(row: Option<&DB::Row>, stale_after_seconds: i64) -> Result<bool> {
+    row.map_or(Ok(false), |row| WorkerPollFence::fresh::<DB>(row, stale_after_seconds))
+}
+
 /// The poll answer for a fenced-off registration.
 pub(super) fn stale_answer() -> Value {
     json!({"task": null, "poll_status": STALE, "server_capabilities": super::store::capabilities()})
@@ -183,6 +190,19 @@ pub(super) fn is_stale_claim(error: &super::RuntimeError) -> bool {
 }
 
 store_methods! {
+    /// Whether a lease owner's registration is fresh, read in the caller's
+    /// transaction ([`owner_fresh`]).
+    pub(super) async fn lease_owner_fresh(
+        tx: &mut super::transaction::Transaction<'_, DB>,
+        namespace: &str,
+        owner: &str,
+        stale_after_seconds: i64,
+    ) -> Result<bool> {
+        let row = Self::query("SELECT status,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
+            .bind(namespace).bind(owner).fetch_optional(&mut **tx).await?;
+        owner_fresh::<DB>(row.as_ref(), stale_after_seconds)
+    }
+
     /// `WorkerPollFence::snapshot` at admission, after `isFresh`.
     pub(super) async fn admit_worker_poll(&self, worker_id: &str, queue: &str) -> Result<PollAdmission> {
         let row = Self::query(FENCE_ROW).bind(self.namespace.as_ref()).bind(worker_id).fetch_optional(&self.pool).await?;

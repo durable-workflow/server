@@ -386,3 +386,143 @@ async fn a_stale_owners_workflow_task_claim_is_refused_and_recovered() {
     let (_, heartbeat) = request(&app, "POST", "/api/worker/heartbeat", json!({"worker_id":"stale-owner"})).await;
     assert_eq!(heartbeat["reason"], "worker_registration_superseded", "{heartbeat}");
 }
+
+async fn register_for(app: &Router, worker: &str, queue: &str) {
+    let (status, body) = request(app, "POST", "/api/worker/register", json!({"worker_id":worker,"task_queue":queue,
+        "runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":["act"]})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+async fn start_run(app: &Router, queue: &str, workflow_id: &str) {
+    let (status, body) = request(app, "POST", "/api/workflows", json!({"workflow_id":workflow_id,"workflow_type":"echo",
+        "task_queue":queue,"input":envelope(Payload::Array(vec![]))})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+async fn poll_for(app: &Router, worker: &str, queue: &str, timeout: i64) -> Value {
+    let (status, body) = request(app, "POST", "/api/worker/workflow-tasks/poll",
+        json!({"worker_id":worker,"task_queue":queue,"timeout_seconds":timeout})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body
+}
+
+async fn registration_status(database: &TestDatabase, worker: &str) -> String {
+    let sql = format!("SELECT worker_id,status FROM workflow_worker_registrations WHERE worker_id='{worker}'");
+    text_rows(database, &sql, &sql, &sql).await.pop().map(|(_, status)| status).unwrap_or_default()
+}
+
+async fn silence(database: &TestDatabase, worker: &str) {
+    database.execute(sqlx::AssertSqlSafe(format!(
+        "UPDATE workflow_worker_registrations SET last_heartbeat_at='2000-01-01 00:00:00' WHERE worker_id='{worker}'"))).await;
+}
+
+/// An owner whose lease has already expired is not fenced: the expired lease
+/// is leased again (`recoverExpiredTaskLease` fences no one). Only an
+/// unexpired lease whose owner is stale is abandoned and fenced.
+#[tokio::test]
+async fn only_an_unexpired_abandoned_lease_fences_its_owner() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register_for(&app, "expired-owner", "expired-queue").await;
+    start_run(&app, "expired-queue", "expired-run").await;
+    assert_eq!(poll_for(&app, "expired-owner", "expired-queue", 0).await["poll_status"], "leased");
+    silence(&database, "expired-owner").await;
+    database.execute("UPDATE workflow_tasks SET lease_expires_at='2000-01-01 00:00:00' WHERE lease_owner='expired-owner'").await;
+    register_for(&app, "expired-replacement", "expired-queue").await;
+    let polled = poll_for(&app, "expired-replacement", "expired-queue", 0).await;
+    assert_eq!((polled["poll_status"].clone(), polled["task"]["workflow_task_attempt"].clone()), (json!("leased"), json!(2)), "{polled}");
+    assert_eq!(registration_status(&database, "expired-owner").await, "active");
+}
+
+/// Ready work is claimed before abandoned leases are recovered, as
+/// `WorkflowTaskPoller::nextTask` recovers only after claiming nothing: the
+/// stale owner stays unfenced until a probe finds nothing else.
+#[tokio::test]
+async fn ready_work_is_claimed_before_abandoned_leases_are_recovered() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register_for(&app, "order-owner", "order-queue").await;
+    start_run(&app, "order-queue", "order-abandoned").await;
+    assert_eq!(poll_for(&app, "order-owner", "order-queue", 0).await["task"]["workflow_id"], "order-abandoned");
+    silence(&database, "order-owner").await;
+    start_run(&app, "order-queue", "order-ready").await;
+    register_for(&app, "order-replacement", "order-queue").await;
+    let first = poll_for(&app, "order-replacement", "order-queue", 0).await;
+    assert_eq!(first["task"]["workflow_id"], "order-ready", "{first}");
+    assert_eq!(registration_status(&database, "order-owner").await, "active");
+    let second = poll_for(&app, "order-replacement", "order-queue", 0).await;
+    assert_eq!((second["task"]["workflow_id"].clone(), second["task"]["workflow_task_attempt"].clone()),
+        (json!("order-abandoned"), json!(2)), "{second}");
+    assert_eq!(registration_status(&database, "order-owner").await, "superseded");
+}
+
+/// A held poll's later probes recover a lease abandoned while it waits.
+#[tokio::test]
+async fn a_held_poll_recovers_a_lease_abandoned_while_it_waits() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register_for(&app, "held-owner", "held-queue").await;
+    start_run(&app, "held-queue", "held-run").await;
+    assert_eq!(poll_for(&app, "held-owner", "held-queue", 0).await["poll_status"], "leased");
+    register_for(&app, "held-replacement", "held-queue").await;
+    let held = {
+        let app = app.clone();
+        tokio::spawn(async move { poll_for(&app, "held-replacement", "held-queue", 5).await })
+    };
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    silence(&database, "held-owner").await;
+    let polled = held.await.unwrap();
+    assert_eq!((polled["poll_status"].clone(), polled["task"]["workflow_id"].clone(), polled["task"]["workflow_task_attempt"].clone()),
+        (json!("leased"), json!("held-run"), json!(2)), "{polled}");
+}
+
+/// Recovery repairs the task as `recoverExpiredTaskLease` does: a repair
+/// command triggered by `expired_workflow_task_lease` with the old lease
+/// owner and attempt, and the task's repair count.
+#[tokio::test]
+async fn recovery_repairs_the_abandoned_task_as_php_does() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register_for(&app, "repair-owner", "repair-queue").await;
+    start_run(&app, "repair-queue", "repair-run").await;
+    let task = poll_for(&app, "repair-owner", "repair-queue", 0).await["task"].clone();
+    silence(&database, "repair-owner").await;
+    register_for(&app, "repair-replacement", "repair-queue").await;
+    assert_eq!(poll_for(&app, "repair-replacement", "repair-queue", 0).await["task"]["workflow_task_attempt"], 2);
+    let sql = "SELECT command_type,context FROM workflow_commands WHERE command_type='repair'";
+    let repairs = text_rows(&database, sql, sql, "SELECT command_type,CAST(context AS CHAR) FROM workflow_commands WHERE command_type='repair'").await;
+    assert_eq!(repairs.len(), 1, "{repairs:?}");
+    let context: Value = serde_json::from_str(&repairs[0].1).unwrap();
+    assert_eq!(context["metadata"], json!({"trigger":"expired_workflow_task_lease","task_id":task["task_id"],
+        "lease_owner":"repair-owner","workflow_task_attempt":1}));
+    let sql = format!("SELECT id,CAST(repair_count AS TEXT) FROM workflow_tasks WHERE id='{}'", task["task_id"].as_str().unwrap());
+    let mysql = sql.replace("AS TEXT", "AS CHAR");
+    assert_eq!(text_rows(&database, &sql, &sql, &mysql).await[0].1, "1");
+}
+
+/// Abandoned leases are found past a hundred fresh owners' leases on the
+/// queue, and a probe recovers at most the scan limit (five by default).
+#[tokio::test]
+async fn recovery_finds_abandoned_leases_anywhere_and_honors_the_scan_limit() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register_for(&app, "busy-owner", "busy-queue").await;
+    for index in 0..101 {
+        start_run(&app, "busy-queue", &format!("busy-{index:03}")).await;
+        assert_eq!(poll_for(&app, "busy-owner", "busy-queue", 0).await["poll_status"], "leased");
+    }
+    register_for(&app, "quiet-owner", "busy-queue").await;
+    for index in 0..7 {
+        start_run(&app, "busy-queue", &format!("quiet-{index}")).await;
+        assert_eq!(poll_for(&app, "quiet-owner", "busy-queue", 0).await["poll_status"], "leased");
+    }
+    silence(&database, "quiet-owner").await;
+    register_for(&app, "busy-replacement", "busy-queue").await;
+    let polled = poll_for(&app, "busy-replacement", "busy-queue", 0).await;
+    assert!(polled["task"]["workflow_id"].as_str().unwrap().starts_with("quiet-"), "{polled}");
+    let sql = "SELECT COALESCE(lease_owner,'none'),status FROM workflow_tasks WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE workflow_instance_id LIKE 'quiet-%')";
+    let rows = text_rows(&database, sql, sql, sql).await;
+    let still_abandoned = rows.iter().filter(|(owner, status)| owner == "quiet-owner" && status == "leased").count();
+    // Five recovered (one of them leased by this poll), two left for the next probe.
+    assert_eq!(still_abandoned, 2, "{rows:?}");
+}

@@ -406,9 +406,11 @@ contract fixture before its correction.
   Native's workflow task guard now ends with the owner's registration, as
   published PHP's does: heartbeat, history, fail, complete and the
   cancellation-scope checkpoint refuse a claim whose owner is missing or no
-  longer fresh with `409 stale_worker_registration`. A workflow poll recovers
-  such a task on its queue at the next attempt and fences the owner as
-  superseded, whose heartbeat is then refused. The `worker-poll-fence`
+  longer fresh with `409 stale_worker_registration`. A workflow probe that
+  claims nothing recovers such a task on its queue (up to
+  `DW_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT`), repairing it as PHP does,
+  and fences the owner as superseded, whose heartbeat is then refused.
+  Published behavior kept: a draining build's worker is not fresh either. The `worker-poll-fence`
   fixture records all of it against published 2.11.5. The local activity
   checkpoints need no change: native refuses them before reading the task,
   as PHP without the prepared role does. Still open: cooperative cancellation

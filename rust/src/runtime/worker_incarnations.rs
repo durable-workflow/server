@@ -266,7 +266,7 @@ where
         )
     }
 
-    async fn repair_abandoned_task(
+    pub(super) async fn repair_abandoned_task(
         &self,
         tx: &mut Transaction<'_, DB>,
         task: &DB::Row,
