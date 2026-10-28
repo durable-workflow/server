@@ -151,3 +151,28 @@ test('a failed record outline survives a full collection of setup logs and stays
   summarizeEvidence(source, success, {outcome: 'success'});
   assert.equal(existsSync(join(success, 'legacy-marker/php/record.failure-excerpt.txt')), false);
 });
+
+test('a tail-only test report also keeps its failing tests', t => {
+  const {source, output} = fixture(t);
+  const failure = [
+    'not ok 59 - only the adapter job caches',
+    '  ---',
+    "  location: 'tests/Unit/ServerParityAdapterCacheTest.mjs:22:1'",
+    "  error: 'Expected values to be strictly deep-equal'",
+    '  ...',
+  ].join('\n');
+  const passing = Array.from({length: 4000}, (_, index) => `# Subtest: passing ${index}\nok ${index + 100} - passing ${index}\n  ---\n  duration_ms: 0.1\n  ...`).join('\n');
+  writeFileSync(join(source, 'comparator-tests.txt'), `${failure}\n${passing}\n# pass 4000\n# fail 1\n`);
+  writeFileSync(join(source, 'rust-tests.txt'), `${'ok 1 - fine\n'.repeat(10000)}# fail 0\n`);
+  const small = 'not ok 1 - small failure\n  ---\n  ...\n# fail 1\n';
+  writeFileSync(join(source, 'codec-load-tests.txt'), small);
+  const summary = summarizeEvidence(source, output, {outcome: 'failure'});
+  const tail = readFileSync(join(output, 'comparator-tests.txt'), 'utf8');
+  assert.equal(tail.includes('not ok 59'), false, 'the failure is outside the retained tail');
+  assert.equal(readFileSync(join(output, 'comparator-tests.txt.failures.txt'), 'utf8'), `${failure}\n`);
+  const derived = summary.retained.find(file => file.path === 'comparator-tests.txt.failures.txt');
+  assert.deepEqual([derived.derived_from, derived.failures, derived.tail_only], ['comparator-tests.txt', 1, false]);
+  assert.equal(existsSync(join(output, 'rust-tests.txt.failures.txt')), false, 'a passing report has no failures file');
+  assert.equal(readFileSync(join(output, 'codec-load-tests.txt'), 'utf8'), small);
+  assert.equal(existsSync(join(output, 'codec-load-tests.txt.failures.txt')), false, 'a whole report needs no excerpt');
+});

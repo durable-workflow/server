@@ -1,4 +1,4 @@
-import {constants, existsSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, closeSync, writeFileSync} from 'node:fs';
+import {constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, closeSync, writeFileSync} from 'node:fs';
 import {basename, dirname, join, relative, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 
@@ -10,7 +10,7 @@ function priority(path, failed) {
   const name = basename(path);
   if (/\.status$/.test(name) || /-status\.txt$/.test(name)) return -1;
   if (failed && /(?:^|\/)query-authority\/clients\/(?:php|rust)\/[^/]+\/(?:client\.stderr|observer\.log)$/.test(path)) return 0;
-  if (/^(rust|mysql|postgres|comparator|codec-load|artifact-summary)(-execution)?-tests\.txt$/.test(name)) return 0;
+  if (TEST_SUMMARY.test(name)) return 0;
   if (/^(comparison|compare)([-.].*)?\.json$/.test(name) || /-comparison\.json$/.test(name)) return 1;
   if (failed && (/^(?:php|embedded|rust)-record\.txt$/.test(name) || /\.failure-excerpt\.txt$/.test(name)
       || /^sdk-(?:signals|queries)-profile\.log$/.test(name))) return 1;
@@ -20,6 +20,28 @@ function priority(path, failed) {
   if (/(?:-status|-integrity|-version|-revision|-controls|-contract)\.txt$/.test(name) || /\.status$/.test(name)
       || /^(SHA256SUMS|source-hashes\.sha256)$/.test(name)) return 4;
   return null;
+}
+
+const TEST_SUMMARY = /^(rust|mysql|postgres|comparator|codec-load|artifact-summary)(-execution)?-tests\.txt$/;
+
+// A node:test (TAP) report's failing tests: each `not ok` line with its
+// indented YAML diagnostic block, ending at the block's `...` line. A large
+// report keeps only its tail, which can miss a failure reported early.
+export function tapFailures(text) {
+  const lines = text.split('\n');
+  const blocks = [];
+  for (let index = 0; index < lines.length; index++) {
+    const match = /^(\s*)not ok \d+ /.exec(lines[index]);
+    if (!match) continue;
+    const block = [lines[index]];
+    const end = `${match[1]}  ...`;
+    for (let next = index + 1; next < lines.length && next <= index + 200; next++) {
+      block.push(lines[next]);
+      if (lines[next] === end) break;
+    }
+    blocks.push(block.join('\n'));
+  }
+  return blocks;
 }
 
 function inventory(root, path = root, files = []) {
@@ -70,6 +92,20 @@ export function summarizeEvidence(source, destination, {outcome = 'unknown', rev
     } finally { closeSync(descriptor); }
     retained.push({path: file.path, source_bytes: file.source_bytes, retained_bytes: size, tail_only: size < file.source_bytes});
     bytes += size;
+    // A tail-only test report also keeps its failing tests, bounded.
+    if (size < file.source_bytes && TEST_SUMMARY.test(basename(file.path)) && retained.length < ENTRY_LIMIT) {
+      const failures = tapFailures(readFileSync(join(source, file.path), 'utf8'));
+      if (failures.length > 0) {
+        const excerpt = Buffer.from(`${failures.join('\n')}\n`).subarray(0, Math.min(FILE_LIMIT, CONTENT_LIMIT - bytes));
+        if (excerpt.length > 0) {
+          const path = `${file.path}.failures.txt`;
+          writeFileSync(join(destination, path), excerpt);
+          retained.push({path, source_bytes: file.source_bytes, retained_bytes: excerpt.length, tail_only: false,
+            derived_from: file.path, failures: failures.length});
+          bytes += excerpt.length;
+        }
+      }
+    }
   }
   const summary = {
     schema: 'durable-workflow.server-parity-artifact-summary.v1', outcome, revision,
