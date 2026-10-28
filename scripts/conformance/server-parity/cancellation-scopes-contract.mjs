@@ -6,7 +6,13 @@ import assert from 'node:assert/strict';
 // impose, recorded against published Server 2.11.1. The probe normalizes the
 // observation: identities and digests become labels, the run requests'
 // instants named anchors and other instants their format, and clock-dependent
-// relations measured facts. The fixture's `expected` holds the whole
+// relations measured facts. `scope_checkpoints`, recorded against published
+// Server 2.11.5, adds the prefix checkpoint a cooperative worker sends
+// before opening a scope (POST …/cancellation-scopes/checkpoint): its gates
+// and validation, Core's refusals, the committed prefix, the retained
+// receipt and its retry, the claim kept for the scope and the completion.
+// Each receipt's fingerprint is a server's own digest of the prefix, named
+// by the probe, so only its reuse is compared. The fixture's `expected` holds the whole
 // normalized observation, with the probe's workflow prefix as `{id}`. Every
 // step compares exactly.
 //

@@ -1,4 +1,5 @@
 # Published Server 2.11.1 API routes that native answers with 501
 # rust_capability_not_implemented, in route-table order. Checked by
-# rust/tests/execution/route_coverage.rs.
-POST /api/worker/workflow-tasks/{taskId}/cancellation-scopes/checkpoint
+# rust/tests/execution/route_coverage.rs. None remain: the last,
+# POST /api/worker/workflow-tasks/{taskId}/cancellation-scopes/checkpoint,
+# is served since October 27, 2026.

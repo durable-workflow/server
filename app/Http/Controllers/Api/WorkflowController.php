@@ -777,6 +777,7 @@ class WorkflowController
             commandContext: $commandContext,
             waitFor: $waitFor,
             waitTimeoutSeconds: $validated['wait_timeout_seconds'] ?? null,
+            expectedRunId: $this->controlPlaneRunId($request),
         ));
 
         if ($externalResult !== null) {
