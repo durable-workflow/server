@@ -22,6 +22,9 @@ use tokio::sync::Semaphore;
 /// How many levels of children one parent close may close through policies.
 const MAX_POLICY_DEPTH: u8 = 32;
 
+/// `ParentCloseCancellation::CLEANUP_TIMEOUT_SECONDS`.
+const PARENT_CLOSE_CLEANUP_SECONDS: i64 = 600;
+
 /// The child at a delivery's sequence, from its consistent link.
 pub(super) struct ChildBoundary {
     pub(super) child_instance: String,
@@ -112,7 +115,7 @@ where
         let snapshot = Self::task_snapshot(task)?;
         if !requested && terminal.is_none() {
             let (outcome, rejection) =
-                Self::request_child_cancellation_from_parent(tx, boundary, parent_context, codec).await?;
+                Self::request_child_cancellation_from_parent(tx, boundary, parent_context, None, codec).await?;
             let mut payload = Self::child_cancellation_payload(tx, sequence, boundary, parent_context).await?;
             payload["request_outcome"] = json!(outcome);
             payload["rejection_reason"] = json!(rejection);
@@ -158,12 +161,11 @@ where
     ///   PHP's `attemptCancel` and `attemptTerminate` do, which applies the
     ///   child's own policies in turn;
     /// - `request_cancellation` asks the child to cancel under the parent's
-    ///   cooperative request, once. Without one, PHP first creates a new
-    ///   origin (`ParentCloseCancellation::ensureOrigin`), which native does
-    ///   not have yet: those children stay open (the port's gap list).
+    ///   cooperative request, once. A parent without one first records its
+    ///   own policy-owned root (`ParentCloseCancellation::ensureOrigin`).
     pub(super) async fn enforce_parent_close_policies(tx: &mut Transaction<'_, DB>, parent: &DB::Row, closed_reason: &str, depth: u8) -> Result<()> {
         let parent_run = DB::string(parent, "id")?;
-        let context = Self::current_cancellation_context(tx, &parent_run).await?;
+        let mut context = Self::current_cancellation_context(tx, &parent_run).await?;
         let links = Self::query("SELECT * FROM workflow_links WHERE parent_workflow_run_id=$1 AND link_type='child_workflow' AND parent_close_policy IN ('request_cancel','terminate','request_cancellation') ORDER BY sequence,id LIMIT 1001")
             .bind(&parent_run).fetch_all(&mut **tx).await?;
         for link in links {
@@ -209,46 +211,126 @@ where
                 Self::append(tx, &parent_run, kind, payload, None, None).await?;
                 continue;
             }
-            let Some(context) = &context else {
-                continue;
-            };
-            let applied = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='ParentClosePolicyApplied'")
-                .bind(&parent_run).fetch_all(&mut **tx).await?;
-            let mut already = false;
-            for event in &applied {
-                let payload = DB::document_row(event, "payload")?;
-                already |= payload["child_run_id"] == boundary.child_run.as_str() && payload["policy"] == "request_cancellation";
-            }
-            if already {
-                continue;
-            }
-            let reason = format!("Parent workflow closed ({closed_reason}); parent-close policy: request_cancellation.");
-            let existing = Self::current_cancellation_context(tx, &boundary.child_run).await?;
-            let (outcome, rejection) =
-                Self::request_child_cancellation_from_parent(tx, &boundary, &context, Arc::new(Semaphore::new(1))).await?;
-            let mut payload = json!({"child_instance_id": boundary.child_instance, "child_run_id": boundary.child_run,
-                "policy": "request_cancellation", "reason": reason});
-            let kind = if outcome == "accepted" {
-                let child = Self::current_cancellation_context(tx, &boundary.child_run).await?.unwrap_or(Value::Null);
-                payload["request_id"] = child["request_id"].clone();
-                payload["cancellation"] = child;
-                "ParentClosePolicyApplied"
-            } else {
-                payload["error"] = json!(rejection.unwrap_or("cancellation_request_rejected"));
-                payload["request_diagnostics"] = match &existing {
-                    Some(existing) if rejection == Some("cancellation_root_conflict") => json!({
-                        "existing_request_id": existing["request_id"], "existing_root_request_id": existing["root_request_id"],
-                        "existing_cleanup_deadline_at": existing["cleanup_deadline_at"],
-                        "incoming_root_request_id": context["root_request_id"], "incoming_cleanup_deadline_at": context["cleanup_deadline_at"]}),
-                    _ => json!([]),
-                };
-                payload["request_id"] = Value::Null;
-                payload["cancellation"] = Value::Null;
-                "ParentClosePolicyFailed"
-            };
-            Self::append(tx, &parent_run, kind, payload, None, None).await?;
+            Self::apply_request_cancellation_policy(tx, parent, &link, &boundary, closed_reason, &mut context).await?;
         }
         Ok(())
+    }
+
+    /// The `request_cancellation` policy for one open child: once per
+    /// child, under the parent's own request, or else under the root
+    /// `ensureOrigin` records the first time it is needed (`context`).
+    async fn apply_request_cancellation_policy(
+        tx: &mut Transaction<'_, DB>,
+        parent: &DB::Row,
+        link: &DB::Row,
+        boundary: &ChildBoundary,
+        closed_reason: &str,
+        context: &mut Option<Value>,
+    ) -> Result<()> {
+        let parent_run = DB::string(parent, "id")?;
+        let applied = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='ParentClosePolicyApplied'")
+            .bind(&parent_run).fetch_all(&mut **tx).await?;
+        let mut already = false;
+        for event in &applied {
+            let payload = DB::document_row(event, "payload")?;
+            already |= payload["child_run_id"] == boundary.child_run.as_str() && payload["policy"] == "request_cancellation";
+        }
+        if already {
+            return Ok(());
+        }
+        let reason = format!("Parent workflow closed ({closed_reason}); parent-close policy: request_cancellation.");
+        // A parent with an accepted request keeps it as the root, even
+        // one whose context is unavailable; otherwise it records its own.
+        let mut failure = "cancellation_parent_context_unavailable";
+        if context.is_none() && DB::optional_string(parent, "cancellation_request_command_id")?.is_none() {
+            match Self::ensure_parent_close_origin(tx, &parent_run, &reason).await? {
+                Some(origin) => *context = Some(origin),
+                None => failure = "cancellation_parent_closure_unavailable",
+            }
+        }
+        let Some(context) = context.as_ref() else {
+            // PHP records the refused request, or the exception
+            // `ensureOrigin` throws, as the policy's failure.
+            let mut payload = json!({"child_instance_id": boundary.child_instance, "child_run_id": boundary.child_run,
+                "policy": "request_cancellation", "reason": reason, "error": failure});
+            if failure == "cancellation_parent_context_unavailable" {
+                payload["request_diagnostics"] = json!([]);
+                payload["request_id"] = Value::Null;
+                payload["cancellation"] = Value::Null;
+            }
+            Self::append(tx, &parent_run, "ParentClosePolicyFailed", payload, None, None).await?;
+            return Ok(());
+        };
+        // `CommandContext::workflow`: the enforcer asks as the parent,
+        // naming the child's link and its sequence.
+        let policy_caller = json!({"caller": {"type": "workflow", "label": "Workflow"},
+            "auth": {"status": "not_applicable", "method": "none"},
+            "workflow": {"parent_instance_id": DB::string(parent, "workflow_instance_id")?, "parent_run_id": parent_run,
+                "sequence": DB::optional_number(link, "sequence")?.unwrap_or(0), "child_call_id": DB::string(link, "id")?}});
+        let existing = Self::current_cancellation_context(tx, &boundary.child_run).await?;
+        let (outcome, rejection) =
+            Self::request_child_cancellation_from_parent(tx, boundary, context, Some(&policy_caller), Arc::new(Semaphore::new(1))).await?;
+        let mut payload = json!({"child_instance_id": boundary.child_instance, "child_run_id": boundary.child_run,
+            "policy": "request_cancellation", "reason": reason});
+        let kind = if outcome == "accepted" {
+            let child = Self::current_cancellation_context(tx, &boundary.child_run).await?.unwrap_or(Value::Null);
+            payload["request_id"] = child["request_id"].clone();
+            payload["cancellation"] = child;
+            "ParentClosePolicyApplied"
+        } else {
+            payload["error"] = json!(rejection.unwrap_or("cancellation_request_rejected"));
+            payload["request_diagnostics"] = match &existing {
+                Some(existing) if rejection == Some("cancellation_root_conflict") => json!({
+                    "existing_request_id": existing["request_id"], "existing_root_request_id": existing["root_request_id"],
+                    "existing_cleanup_deadline_at": existing["cleanup_deadline_at"],
+                    "incoming_root_request_id": context["root_request_id"], "incoming_cleanup_deadline_at": context["cleanup_deadline_at"]}),
+                _ => json!([]),
+            };
+            payload["request_id"] = Value::Null;
+            payload["cancellation"] = Value::Null;
+            "ParentClosePolicyFailed"
+        };
+        Self::append(tx, &parent_run, kind, payload, None, None).await?;
+        Ok(())
+    }
+
+    /// `ParentCloseCancellation::ensureOrigin`: a closed parent without a
+    /// request of its own records one policy-owned root after its terminal
+    /// event, requested at that event's time with a 600-second cleanup
+    /// budget. Returns that root's context, recorded once per closed run, or
+    /// nothing when the run has no timed terminal event
+    /// (`cancellation_parent_closure_unavailable`).
+    async fn ensure_parent_close_origin(tx: &mut Transaction<'_, DB>, parent_run: &str, reason: &str) -> Result<Option<Value>> {
+        let Some(closure) = Self::query("SELECT id,sequence,event_type,recorded_at FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('WorkflowCompleted','WorkflowFailed','WorkflowCancelled','WorkflowTerminated','WorkflowTimedOut') ORDER BY sequence DESC LIMIT 1")
+            .bind(parent_run).fetch_optional(&mut **tx).await?
+        else {
+            return Ok(None);
+        };
+        let Some(requested_at) = DB::optional_instant(&closure, "recorded_at")? else {
+            return Ok(None);
+        };
+        let closure_sequence = DB::number(&closure, "sequence")?;
+        let origin = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='ParentCloseCancellationRequested' AND sequence>$2 ORDER BY sequence LIMIT 1")
+            .bind(parent_run).bind(closure_sequence).fetch_optional(&mut **tx).await?;
+        if let Some(origin) = origin {
+            return Ok(Some(DB::document_row(&origin, "payload")?["cancellation"].clone()));
+        }
+        let instance = Self::query("SELECT workflow_instance_id FROM workflow_runs WHERE id=$1")
+            .bind(parent_run).fetch_one(&mut **tx).await?;
+        let instance = DB::string(&instance, "workflow_instance_id")?;
+        let request_id = id();
+        let context = json!({"schema": "durable-workflow.cancellation-context/v1", "request_id": request_id,
+            "root_request_id": request_id, "root_workflow_instance_id": instance, "root_workflow_run_id": parent_run,
+            "parent_request_id": null, "reason": reason,
+            "requester": {"type": "workflow", "id": instance, "label": "Parent-close policy"},
+            "source": "parent_close_policy", "requested_at": timestamp(requested_at),
+            "cleanup_deadline_at": timestamp(requested_at + chrono::Duration::seconds(PARENT_CLOSE_CLEANUP_SECONDS)),
+            "lineage": [{"request_id": request_id, "workflow_instance_id": instance, "workflow_run_id": parent_run}]});
+        Self::append(tx, parent_run, "ParentCloseCancellationRequested", json!({
+            "parent_terminal_history_event_id": DB::string(&closure, "id")?,
+            "parent_terminal_event_type": DB::string(&closure, "event_type")?,
+            "cancellation": context}), None, None).await?;
+        Ok(Some(context))
     }
 
     /// `WorkflowStub::attemptCancel` and `attemptTerminate` as the enforcer
@@ -278,9 +360,6 @@ where
         // Each level is one recursive close in this transaction. PHP has no
         // bound; native stops at a depth no ordinary workflow tree reaches.
         if depth >= MAX_POLICY_DEPTH {
-            return Ok(Some(unavailable));
-        }
-        if Self::close_unavailable(&mut **tx, &run_id).await? {
             return Ok(Some(unavailable));
         }
         let activities = Self::scalar("SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status IN ('pending','running')")
@@ -316,10 +395,15 @@ where
     /// it has passed. A child that already has a request under the same root
     /// keeps it; one under another root refuses. Returns the outcome and
     /// rejection reason.
+    ///
+    /// The cascade loads the child's run, so its request targets that run as
+    /// a PHP API command. A parent-close policy loads the child's instance
+    /// and asks under `policy_caller`, the workflow command context.
     async fn request_child_cancellation_from_parent(
         tx: &mut Transaction<'_, DB>,
         boundary: &ChildBoundary,
         parent: &Value,
+        policy_caller: Option<&Value>,
         codec: Arc<Semaphore>,
     ) -> Result<(&'static str, Option<&'static str>)> {
         let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
@@ -349,10 +433,14 @@ where
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "command_sequence_exhausted"))?;
         // `CommandContext::phpApi`: the run-targeted stub's default context,
         // with no principal.
-        let command_context = json!({"caller": {"type": "php", "label": "PHP API"}, "auth": {"status": "not_applicable", "method": "none"}});
-        Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,requested_workflow_run_id,resolved_workflow_run_id,command_type,target_scope,source,context,status,outcome,workflow_type,workflow_class,payload_codec,payload,command_sequence,accepted_at,applied_at) VALUES ($1,$2,$3,$4,$5,'request_cancellation','run','php',$6,'accepted','cancellation_requested',$7,$8,'avro',$9,$10,$11,$12)")
-            .bind(&request_id).bind(&boundary.child_instance).bind(&boundary.child_run).bind(&boundary.child_run).bind(&boundary.child_run)
-            .bind(DB::document(&command_context)).bind(DB::string(&run, "workflow_type")?).bind(DB::string(&run, "workflow_class")?)
+        let (command_context, target_scope, source, requested) = match policy_caller {
+            Some(caller) => (caller.clone(), "instance", "workflow", None),
+            None => (json!({"caller": {"type": "php", "label": "PHP API"}, "auth": {"status": "not_applicable", "method": "none"}}),
+                "run", "php", Some(boundary.child_run.as_str())),
+        };
+        Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,requested_workflow_run_id,resolved_workflow_run_id,command_type,target_scope,source,context,status,outcome,workflow_type,workflow_class,payload_codec,payload,command_sequence,accepted_at,applied_at) VALUES ($1,$2,$3,$4,$5,'request_cancellation',$6,$7,$8,'accepted','cancellation_requested',$9,$10,'avro',$11,$12,$13,$14)")
+            .bind(&request_id).bind(&boundary.child_instance).bind(&boundary.child_run).bind(requested).bind(&boundary.child_run)
+            .bind(target_scope).bind(source).bind(DB::document(&command_context)).bind(DB::string(&run, "workflow_type")?).bind(DB::string(&run, "workflow_class")?)
             .bind(&blob).bind(sequence).bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut **tx).await?;
         // The child's own request time; its budget is the root's.
         Self::query("UPDATE workflow_runs SET cancellation_request_command_id=$1,cancellation_requested_at=$2,cancellation_deadline_at=$3,last_progress_at=$4,last_command_sequence=$5 WHERE id=$6")

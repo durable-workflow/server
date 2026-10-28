@@ -433,6 +433,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $activityLeaseRenewal = isset($fixture['activity_lease_renewal']) ? finishHttpActivityLeaseRenewal($client, $fixture, $workflowId, $url) : null;
     $concurrentWaits = isset($fixture['concurrent_waits']) ? finishHttpConcurrentWaits($client, $fixture, $workflowId, $url) : null;
     $continueTransfers = isset($fixture['continue_transfers']) ? finishHttpContinueTransfers($client, $fixture, $workflowId, $url) : null;
+    $parentCloseCancellation = isset($fixture['parent_close_cancellation']) ? finishHttpParentCloseCancellation($client, $fixture, $workflowId, $url) : null;
     $bridgeAdapters = isset($fixture['bridge_adapters']) ? finishHttpBridgeAdapters($client, $fixture, $workflowId, $url) : null;
     $nexusOperations = isset($fixture['nexus_operations']) ? finishHttpNexusOperations($client, $fixture, $workflowId, $url) : null;
     $recordLocalActivity = isset($fixture['record_local_activity']) ? finishHttpRecordLocalActivity($client, $fixture, $workflowId, $url) : null;
@@ -560,6 +561,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'activity_lease_renewal' => $activityLeaseRenewal,
         'concurrent_waits' => $concurrentWaits,
         'continue_transfers' => $continueTransfers,
+        'parent_close_cancellation' => $parentCloseCancellation,
         'bridge_adapters' => $bridgeAdapters,
         'nexus_operations' => $nexusOperations,
         'record_local_activity' => $recordLocalActivity,
@@ -890,6 +892,7 @@ try {
     require __DIR__.'/activity-lease-renewal-probe.php';
     require __DIR__.'/concurrent-waits-probe.php';
     require __DIR__.'/continue-transfers-probe.php';
+    require __DIR__.'/parent-close-cancellation-probe.php';
     require __DIR__.'/bridge-adapters-probe.php';
     require __DIR__.'/nexus-operations-probe.php';
     require __DIR__.'/record-local-activity-probe.php';
@@ -1077,6 +1080,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['continue_transfers'])) {
         $observation['continue_transfers'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
+    }
+    if ($mode === 'embedded' && isset($fixture['parent_close_cancellation'])) {
+        $observation['parent_close_cancellation'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
     }
     if ($mode === 'embedded' && isset($fixture['activity_lease_renewal'])) {
         $observation['activity_lease_renewal'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
