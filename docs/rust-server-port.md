@@ -401,13 +401,21 @@ contract fixture before its correction.
   and native then correctly fences the attempt. A heartbeat timeout comfortably
   above the request timeout, still inside the 9-second load wave, needs its own
   reviewed profile change.
-- **A valid workflow task claim held by a stale worker.** Published PHP
-  refuses a request whose lease is otherwise valid when its owner's
-  registration is no longer fresh (`409 stale_worker_registration`). Native's
-  workflow task guard does not check registration freshness yet, and the
-  local activity checkpoints still use the older fence. The cancellation
-  scope checkpoint shares the completion's guard.
-  Add a fixture for each before changing them.
+- **A valid workflow task claim held by a stale worker** (October 28,
+  [checkpoint](rust-server-port-checkpoints/2026-10-28-stale-workflow-owner.md)).
+  Native's workflow task guard now ends with the owner's registration, as
+  published PHP's does: heartbeat, history, fail, complete and the
+  cancellation-scope checkpoint refuse a claim whose owner is missing or no
+  longer fresh with `409 stale_worker_registration`. A workflow probe that
+  claims nothing recovers such a task on its queue (up to
+  `DW_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT`), repairing it as PHP does,
+  and fences the owner as superseded, whose heartbeat is then refused.
+  Published behavior kept: a draining build's worker is not fresh either. The `worker-poll-fence`
+  fixture records the refusals and the recovery against published 2.11.5. The local activity
+  checkpoints need no change: native refuses them before reading the task,
+  as PHP without the prepared role does. Still open: cooperative cancellation
+  delivery (`cooperative.rs`) judges freshness with a fixed 60 seconds rather
+  than `DW_WORKER_STALE_AFTER_SECONDS`.
 - **Retention of runs with external payloads.** Published PHP deletes a
   pruned run's external payload objects. Native does not delete them yet: it
   skips such a run with `external_payload_cleanup_unavailable` and keeps its

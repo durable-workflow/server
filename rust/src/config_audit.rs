@@ -583,7 +583,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting { name: "DW_DEFAULT_NAMESPACE", legacy: Some("WORKFLOW_SERVER_DEFAULT_NAMESPACE"), disposition: Refused(AnyCase("default"), DEFAULT_NAMESPACE) },
     Setting { name: "DW_DUE_TIMER_RECOVERY_SCAN_LIMIT", legacy: Some("WORKFLOW_SERVER_DUE_TIMER_RECOVERY_SCAN_LIMIT"), disposition: Ignored },
     Setting { name: "DW_ENV_AUDIT_STRICT", legacy: None, disposition: Honored },
-    Setting { name: "DW_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT", legacy: Some("WORKFLOW_SERVER_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT"), disposition: Ignored },
+    Setting { name: "DW_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT", legacy: Some("WORKFLOW_SERVER_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT"), disposition: Honored },
     Setting { name: "DW_EXPIRED_WORKFLOW_TASK_RECOVERY_TTL_SECONDS", legacy: Some("WORKFLOW_SERVER_EXPIRED_WORKFLOW_TASK_RECOVERY_TTL_SECONDS"), disposition: Ignored },
     Setting { name: "DW_EXPOSE_PACKAGE_PROVENANCE", legacy: Some("WORKFLOW_SERVER_EXPOSE_PACKAGE_PROVENANCE"), disposition: Refused(FilterBool(false), PROVENANCE) },
     Setting { name: "DW_EXTERNAL_EXECUTOR_CONFIG_OVERLAY", legacy: Some("WORKFLOW_SERVER_EXTERNAL_EXECUTOR_CONFIG_OVERLAY"), disposition: Refused(Empty, EXTERNAL_EXECUTOR) },

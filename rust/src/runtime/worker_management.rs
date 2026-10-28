@@ -475,18 +475,24 @@ where
                     "worker_id": worker_id}),
             });
         };
+        // A registration fenced after its leases were recovered stays fenced:
+        // its worker restarts under a new worker ID (PHP 2.11.1 onward).
+        if DB::optional_string(&worker, "status")?.as_deref() == Some("superseded") {
+            return Err(RuntimeError::Protocol {
+                status: StatusCode::CONFLICT,
+                response: json!({"error": "Worker registration was fenced after its leases were recovered.",
+                    "reason": "worker_registration_superseded", "worker_id": worker_id,
+                    "remediation": "Restart and register the worker with a new worker_id."}),
+            });
+        }
         let capacity = [
             DB::number(&worker, "max_concurrent_workflow_tasks")?,
             DB::number(&worker, "max_concurrent_activity_tasks")?,
             DB::number(&worker, "max_concurrent_worker_sessions")?,
         ];
-        // A heartbeat keeps a draining build's worker draining, and a fenced
-        // registration fenced.
-        let status = match DB::optional_string(&worker, "status")?.as_deref() {
-            Some("superseded") => "superseded",
-            _ => Self::registration_status(&mut tx, self.namespace.as_ref(), &DB::string(&worker, "task_queue")?,
-                DB::optional_string(&worker, "build_id")?.as_deref()).await?,
-        };
+        // A heartbeat keeps a draining build's worker draining.
+        let status = Self::registration_status(&mut tx, self.namespace.as_ref(), &DB::string(&worker, "task_queue")?,
+            DB::optional_string(&worker, "build_id")?.as_deref()).await?;
         Self::query("UPDATE workflow_worker_registrations SET last_heartbeat_at=$1,updated_at=$2,status=$3 WHERE worker_id=$4 AND namespace=$5")
             .bind(DB::bind_time(now())).bind(DB::bind_time(now())).bind(status).bind(worker_id).bind(self.namespace.as_ref())
             .execute(&mut *tx).await?;

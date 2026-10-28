@@ -120,6 +120,11 @@ pub(super) struct Store<DB: Backend> {
     pub(super) search_attribute_limit: i64,
     /// When a silent registration stops counting (`server.workers.stale_after_seconds`).
     pub(super) worker_stale_after_seconds: i64,
+    /// How many abandoned workflow task leases a probe recovers at most
+    /// (`server.polling.expired_workflow_task_recovery_scan_limit`).
+    pub(super) workflow_task_recovery_scan_limit: i64,
+    /// Bounds the repair payload encoding of recovered workflow tasks.
+    pub(super) repair_codec: Arc<Semaphore>,
     /// When this server last ran a task repair pass, shared by its namespaces
     /// as PHP shares its loop throttle key.
     pub(super) repair_pass_at: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
@@ -257,6 +262,8 @@ where
             update_wait_seconds: 10,
             search_attribute_limit: 100,
             worker_stale_after_seconds: 30,
+            workflow_task_recovery_scan_limit: 5,
+            repair_codec: Arc::new(Semaphore::new(1)),
             repair_pass_at: Arc::default(),
         }
     }
@@ -273,6 +280,8 @@ where
             update_wait_seconds: self.update_wait_seconds,
             search_attribute_limit: self.search_attribute_limit,
             worker_stale_after_seconds: self.worker_stale_after_seconds,
+            workflow_task_recovery_scan_limit: self.workflow_task_recovery_scan_limit,
+            repair_codec: self.repair_codec.clone(),
             repair_pass_at: self.repair_pass_at.clone(),
         }
     }
@@ -1816,13 +1825,23 @@ where
                 Some(fence) => self.worker_poll_fence_holds(fence, worker_id).await?,
                 None => true,
             };
-            let claimed = if !current {
+            let mut claimed = if !current {
                 Err(super::worker_poll_fence::stale_claim())
             } else if std::mem::take(&mut first) || self.task_poll_ready(&body, kind, poll_request.as_ref()).await? {
                 self.claim(&body, kind, protocol_version, page, poll_request.as_ref(), fence.as_ref()).await
             } else {
                 Ok(None)
             };
+            // As `WorkflowTaskPoller::nextTask`: a workflow probe that claimed
+            // nothing recovers the queue's abandoned leases, and claims again
+            // when it recovered one.
+            if current
+                && kind == "workflow"
+                && matches!(claimed, Ok(None))
+                && self.recover_abandoned_workflow_leases(text(&body, "task_queue")?).await?
+            {
+                claimed = self.claim(&body, kind, protocol_version, page, poll_request.as_ref(), fence.as_ref()).await;
+            }
             let claimed = match claimed {
                 // A fenced poll records stale_worker_registration like any
                 // other no-task answer: a live lease a duplicate committed
@@ -2381,7 +2400,7 @@ where
         if DB::string(&task, "task_type")? != "workflow" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
-        Self::workflow_task_guard(&mut tx, &task, &body).await?;
+        Self::workflow_task_guard(&mut tx, &task, &body, self.worker_stale_after_seconds).await?;
         let run = Self::active_run(&mut tx, &DB::string(&task, "workflow_run_id")?).await?;
         let expires = self.cancellation_lease_expiry(&run)?;
         tx.summary_changed(&DB::string(&run, "id")?);
@@ -2415,7 +2434,7 @@ where
         if DB::string(&task, "task_type")? != "workflow" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
-        Self::workflow_task_guard(&mut tx, &task, &body).await?;
+        Self::workflow_task_guard(&mut tx, &task, &body, self.worker_stale_after_seconds).await?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let (mut events, next) = Self::history_page_connection(&mut tx, &run_id, after, size).await?;
         Self::with_signal_sequences(&mut tx, &run_id, &mut events).await?;
@@ -2515,7 +2534,7 @@ where
         if DB::string(&task, "task_type")? != "workflow" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
-        Self::workflow_task_guard(&mut tx, &task, &body).await?;
+        Self::workflow_task_guard(&mut tx, &task, &body, self.worker_stale_after_seconds).await?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
         let mut payload = DB::document_row(&task, "payload")?;
@@ -2846,7 +2865,7 @@ where
                 "outcome": "completed", "recorded": false, "reason": "already_completed", "created_task_ids": created}),
             );
         }
-        Self::workflow_task_guard(&mut tx, &task, &body).await?;
+        Self::workflow_task_guard(&mut tx, &task, &body, self.worker_stale_after_seconds).await?;
         // PHP admits cancellation scopes before it guards worker-session
         // commands, and guards both before validating streams.
         Self::cancellation_scope_admission(&mut tx, &task, &body, commands, protocol).await?;
@@ -3865,11 +3884,14 @@ where
 
     /// PHP's workflow task ownership guard, in PHP's order: a task that is
     /// no longer leased first (run_closed when its run has closed), then the
-    /// lease's expiry, owner and attempt.
+    /// lease's expiry, owner and attempt, and finally the owner's
+    /// registration: a claim whose owner is missing or no longer fresh
+    /// (`WorkerPollFence::isFresh`) is refused `stale_worker_registration`.
     pub(super) async fn workflow_task_guard(
         tx: &mut Transaction<'_, DB>,
         task: &DB::Row,
         body: &Value,
+        stale_after_seconds: i64,
     ) -> Result<()> {
         use super::query_authority::wire;
         let lease_owner = text(body, "lease_owner")?;
@@ -3940,7 +3962,94 @@ where
                 json!({"current_attempt":current}),
             ));
         }
+        if !Self::lease_owner_fresh(tx, &DB::string(task, "namespace")?, lease_owner, stale_after_seconds).await? {
+            return Err(refused(
+                "Workflow task lease owner is no longer an active worker.",
+                "stale_worker_registration",
+                json!({"task_status":"leased","lease_owner":lease_owner,"lease_expires_at":wire(expires)}),
+            ));
+        }
         Ok(())
+    }
+
+    /// `WorkflowTaskPoller::recoverUnavailableLeases`, for a workflow probe
+    /// that claimed nothing. Native's candidates already lease expired
+    /// leases again (`recoverExpiredTaskLease` fences no one), so what remains
+    /// is an abandoned lease: unexpired, on the polled queue, held by an
+    /// owner whose registration is missing or no longer fresh. Up to the scan
+    /// limit (DW_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT), earliest lease
+    /// first, each is recovered as `recoverAbandonedTaskLease` recovers it:
+    /// checked again under the transition lock, its owner fenced as
+    /// superseded and the task repaired (`expired_workflow_task_lease`), ready
+    /// for the next claim. Whether anything was recovered.
+    async fn recover_abandoned_workflow_leases(&self, queue: &str) -> Result<bool> {
+        // One read outside the transition lock: the queue's lease owners
+        // with their registrations; an owner without one joins nulls.
+        let owners = Self::query("SELECT DISTINCT t.lease_owner,w.status,w.last_heartbeat_at FROM workflow_tasks t LEFT JOIN workflow_worker_registrations w ON w.namespace=t.namespace AND w.worker_id=t.lease_owner WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type='workflow' AND t.status='leased' AND t.lease_owner IS NOT NULL")
+            .bind(self.namespace.as_ref())
+            .bind(queue)
+            .fetch_all(&self.pool)
+            .await?;
+        let mut stale = Vec::new();
+        for row in &owners {
+            let owner = DB::string(row, "lease_owner")?;
+            if !owner.trim().is_empty() && !super::worker_poll_fence::owner_fresh::<DB>(Some(row), self.worker_stale_after_seconds)? {
+                stale.push(owner);
+            }
+        }
+        if stale.is_empty() {
+            return Ok(false);
+        }
+        let limit = self.workflow_task_recovery_scan_limit.max(1);
+        let at = now();
+        let mut candidates = Vec::new();
+        for owner in &stale {
+            let rows = Self::query("SELECT id,lease_owner,attempt_count,lease_expires_at FROM workflow_tasks WHERE namespace=$1 AND queue=$2 AND task_type='workflow' AND status='leased' AND lease_owner=$3 ORDER BY lease_expires_at,id LIMIT $4")
+                .bind(self.namespace.as_ref())
+                .bind(queue)
+                .bind(owner.as_str())
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?;
+            for row in rows {
+                if let Some(expires) = DB::optional_instant(&row, "lease_expires_at")?.filter(|expires| *expires > at) {
+                    candidates.push((expires, DB::string(&row, "id")?, owner.clone(), DB::number(&row, "attempt_count")?));
+                }
+            }
+        }
+        candidates.sort();
+        candidates.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        let mut recovered = false;
+        for (_, id, owner, attempt) in candidates {
+            let mut tx = self.begin().await?;
+            let Some(task) = Self::query("SELECT * FROM workflow_tasks WHERE id=$1 AND namespace=$2")
+                .bind(&id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?
+            else {
+                tx.rollback().await?;
+                continue;
+            };
+            // The lease attempt is the hand-off boundary: a completion that
+            // committed first, a renewal, or an owner that reported again
+            // leaves the task alone.
+            let unchanged = DB::string(&task, "task_type")? == "workflow"
+                && DB::string(&task, "status")? == "leased"
+                && DB::optional_string(&task, "lease_owner")?.as_deref() == Some(owner.as_str())
+                && DB::number(&task, "attempt_count")? == attempt
+                && DB::optional_instant(&task, "lease_expires_at")?.is_some_and(|expires| expires > now());
+            if !unchanged || Self::lease_owner_fresh(&mut tx, self.namespace.as_ref(), &owner, self.worker_stale_after_seconds).await? {
+                tx.rollback().await?;
+                continue;
+            }
+            Self::query("UPDATE workflow_worker_registrations SET status='superseded' WHERE namespace=$1 AND worker_id=$2")
+                .bind(self.namespace.as_ref())
+                .bind(owner.as_str())
+                .execute(&mut *tx)
+                .await?;
+            self.repair_abandoned_task(&mut tx, &task, self.repair_codec.clone()).await?;
+            tx.commit().await?;
+            recovered = true;
+        }
+        Ok(recovered)
     }
 
     pub(super) fn fence(task: &DB::Row, body: &Value) -> Result<()> {
