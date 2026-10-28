@@ -6,6 +6,8 @@ use DurableWorkflow\Client;
 use GuzzleHttp\Client as WorkerPollFenceHttp;
 use GuzzleHttp\HandlerStack;
 
+require_once __DIR__.'/held-request.php';
+
 // Worker poll fences (`WorkerPollFence`) over raw worker HTTP in a fresh
 // namespace. A held workflow or activity poll belongs to the registration it
 // started under. For each kind, one worker records: a held poll that work
@@ -49,65 +51,10 @@ function finishHttpWorkerPollFence(Client $admin, array $fixture, string $workfl
 
         return $recorded['response'];
     };
-    // A poll held in a child process. It retries only the documented
-    // lock-pressure poll refusal, which leased nothing.
-    $hold = static function (string $path, array $body) use ($url, $headers): array {
-        $child = <<<'PHP'
-[, $url, $path, $headers, $body, $retryRule] = $argv;
-require $retryRule;
-$lines = '';
-foreach (json_decode($headers, true) as $name => $value) {
-    $lines .= "{$name}: {$value}\r\n";
-}
-$context = stream_context_create(['http' => ['method' => 'POST', 'header' => $lines."Content-Type: application/json\r\n",
-    'content' => $body, 'ignore_errors' => true, 'timeout' => 60]]);
-$retries = [];
-$waited = 0.0;
-while (true) {
-    $response = file_get_contents(rtrim($url, '/').$path, false, $context);
-    preg_match('#^HTTP/\S+ (\d{3})#', $http_response_header[0] ?? '', $status);
-    $status = (int) ($status[1] ?? 0);
-    $decoded = json_decode((string) $response, true);
-    $delay = lockPressureOperationRetryDelay('POST', $path, $status, $decoded, count($retries), $waited);
-    if ($delay === null) {
-        break;
-    }
-    $retries[] = $delay;
-    usleep((int) round($delay * 1_000_000));
-    $waited += $delay;
-}
-if ($retries !== []) {
-    fwrite(STDERR, json_encode(['lock_pressure_poll_retries' => ['path' => $path, 'delays' => $retries]]).PHP_EOL);
-}
-echo json_encode(['status' => $status, 'response' => $decoded]);
-PHP;
-        $process = proc_open([PHP_BINARY, '-r', $child, '--', $url, $path, json_encode($headers, JSON_THROW_ON_ERROR),
-            json_encode($body, JSON_THROW_ON_ERROR), __DIR__.'/lock-pressure-retry.php'],
-            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
-        if (! is_resource($process)) {
-            throw new RuntimeException('The held poll could not start.');
-        }
-        // Let the request reach the server and begin waiting.
-        usleep(700000);
-
-        return [$process, $pipes];
-    };
-    $collect = static function (array $pending): array {
-        [$process, $pipes] = $pending;
-        $output = stream_get_contents($pipes[1]);
-        $errors = stream_get_contents($pipes[2]);
-        proc_close($process);
-        $result = json_decode((string) $output, true);
-        if (! is_array($result)) {
-            throw new RuntimeException('The held poll failed: '.trim((string) $errors));
-        }
-        if (trim((string) $errors) !== '') {
-            fwrite(STDERR, (string) $errors);
-        }
-        unset($result['response']['server_capabilities'], $result['response']['control_plane']);
-
-        return $result;
-    };
+    // A poll held in a child process (held-request.php), given time to
+    // reach the server and begin waiting.
+    $hold = static fn (string $path, array $body): array => startHeldRequest($url, $headers, $path, $body, 0.7);
+    $collect = static fn (array $pending): array => collectHeldRequest($pending);
     $empty = ['codec' => 'avro', 'blob' => $definition['empty_blob']];
     // Each case has its own worker and queue, so it sees only its own work.
     // PHP keeps registration times in whole seconds, so a registration

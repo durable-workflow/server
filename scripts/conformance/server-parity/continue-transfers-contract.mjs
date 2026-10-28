@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 
-// Reviewed continue-as-new over what a run leaves behind
+// Reviewed continue-as-new and close over what a run leaves behind
 // (continue-transfers-probe.php), recorded against published Server 2.11.5:
-// a run that is the caller of an accepted service call, and a run with a
-// query admitted while its workflow task is leased, each continue as new.
-// Core touches neither the call nor the query: the call keeps the
-// predecessor as its caller, and the query is answered from the predecessor.
+// a run that is the caller of an accepted service call and the linked run of
+// another continues as new; a run with a query admitted while its workflow
+// task is leased continues as new, and another such run is terminated; a
+// parent is terminated after its child continued as new. Core touches
+// neither the calls nor the queries: the calls stay with the predecessor,
+// each query is answered from the run it was admitted against, and the
+// parent-close policy reaches the child's current run.
 // The fixture's `expected` holds the whole normalized observation; run ids
 // are labels by first appearance, so every step compares exactly.
 export function checkContinueTransfers(fixture, observation) {
