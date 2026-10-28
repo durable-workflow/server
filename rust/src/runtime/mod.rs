@@ -99,6 +99,7 @@ mod previews;
 mod prometheus_metrics;
 mod queries;
 mod query_authority;
+mod query_contract;
 mod repair_candidates;
 mod repair_pass;
 mod retention;

@@ -275,20 +275,6 @@ contract fixture before its correction.
   each priority tier across fairness keys by their weights
   (`TaskFairnessScheduler`); native stores the keys and weights but does not
   rebalance yet.
-- **Named and validated query arguments.** For a declared query with a
-  durable parameter contract, published PHP normalizes the arguments through
-  `WorkflowQueryContract::validatedArgumentsForRun`, then gives the worker the
-  re-encoded positional result:
-  - a string-keyed map is taken as named arguments;
-  - positional arguments are matched to the parameters;
-  - defaults are filled in, variadics collected, and unknown names
-    reported;
-  - a violation answers `422 invalid_query_arguments`, "argument validation
-    failed", with per-parameter messages in `validation_errors`.
-
-  Native checks positional arguments only. It refuses a map as "must decode
-  to an array", reports a violation as a bare `invalid_query_arguments`, and
-  gives the worker the arguments as sent.
 - **When an external payload reference is claimed.** Published PHP retains
   a referenced object once it fetches the bytes, before the command is
   recorded, so a refused command still retains it. Native claims it in the
@@ -552,6 +538,29 @@ contract fixture before its correction.
   build-id rollout, else the single build id among the live workers for the
   type, else among all the queue's live workers (`start_in`,
   `deployments.rs`, `build_pins.rs`). The open-gap entry predated #696.
+- **Named and validated query arguments** (October 28, closed). For a
+  declared query, published PHP matches the arguments to the query's durable
+  parameter contract (`WorkflowQueryContract::validatedArgumentsForRun`):
+  - a string-keyed map is taken as named arguments;
+  - positional arguments are matched in order;
+  - defaults are filled in and variadics collected;
+  - unknown names, missing required arguments, nulls, wrong types and extra
+    arguments are each reported. Declared types may be nullable, unions,
+    intersections, scalars, `array`, `object` or class names.
+
+  A violation answers `422 invalid_query_arguments`, "argument validation
+  failed", with per-argument messages in `validation_errors`. The worker
+  receives the normalized positional list, encoded again. A declared query
+  without a parameter contract takes a list as given and refuses named
+  arguments. Native now does the same (`query_contract.rs`). It used to
+  check positional arguments only, refuse a map, report a violation as a
+  bare `invalid_query_arguments`, and refuse some contracts as unsupported.
+  `Avro::fromDatum` returns an empty or integer-keyed map as an object, not
+  an array, and a named variadic map spreads in wire order. A registered
+  JSON default takes PHP's array shape. The `query-contract-arguments`
+  fixture records twenty-two cases against
+  published 2.11.5
+  ([checkpoint](rust-server-port-checkpoints/2026-10-28-query-contract-arguments.md)).
 - **Trace context (Core 2.10, published in Server 2.11.1).** Core adds
   nullable `observability_context` columns on runs, commands and tasks.
   Native has no carrier: it accepts and ignores a top-level carrier on
@@ -647,6 +656,18 @@ contract fixture before its correction.
 - **Command route names.** Published PHP records each request's route name in
   its command context, and its unnamed workflow routes get a name generated
   per deployment. Native records names only for the named schedule routes.
+- **Registered default key order.** A worker registers query parameter
+  defaults as JSON. PHP keeps each object's keys in the registered order,
+  and a default map reaches the worker in that order. Native's JSON objects
+  keep keys sorted (`serde_json` without `preserve_order`), so:
+  - a named default map such as `{"z": 20, "a": 10}` reaches the worker in
+    sorted order;
+  - `{"1": "a", "0": "b"}` becomes a list on native, where PHP's array is
+    not a list and its encoder fails with a 500.
+
+  Both need registered-order JSON in native contracts and a fixture case
+  each; this remains open #325 parity work
+  ([checkpoint](rust-server-port-checkpoints/2026-10-28-query-contract-arguments.md)).
 
 ## Contract and verification inventory
 

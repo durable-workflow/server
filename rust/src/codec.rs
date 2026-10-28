@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 use std::io::{self, Read};
 mod ordered;
 mod validation;
+mod wire_order;
+pub use wire_order::OrderedValue;
 
 use apache_avro::{
     GenericSingleObjectReader, GenericSingleObjectWriter, Schema, types::Value as Datum,

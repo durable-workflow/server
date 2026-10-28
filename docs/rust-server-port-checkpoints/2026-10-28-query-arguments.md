@@ -19,7 +19,7 @@
     named arguments (`WorkflowQueryContract::normalizeNamedArguments`), and
     the worker receives the positional result. Native still refuses a map as
     "must decode to an array". The port log records the gap (found in
-    review).
+    review); the query-contract-arguments slice closes it.
   - **No declared queries.** The query is routed with its arguments as
     given. A query-capable worker leases a task carrying the blob unchanged,
     and the client receives the worker's answer.

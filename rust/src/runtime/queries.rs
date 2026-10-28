@@ -7,7 +7,7 @@ use super::{
     envelope,
     query_authority::{self as authority, QueryTaskConfig},
     refuse,
-    store::{Store, validate_arguments},
+    store::Store,
     text, wire,
 };
 use axum::http::StatusCode;
@@ -131,12 +131,11 @@ pub(super) async fn decode(
 /// A query's arguments as the server reads them: a list of values, or why
 /// they are not one. Only a declared query contract reads them
 /// (`validateContractedQueryArguments`); otherwise the worker receives the
-/// arguments as given. A map is refused as not a list, although PHP decodes
-/// a string-keyed map to an array and normalizes it as named arguments
-/// (`WorkflowQueryContract::normalizeNamedArguments`); the port's gap list
-/// records that.
+/// arguments as given. A string-keyed map decodes to a PHP array too, of
+/// named arguments (`WorkflowQueryContract::normalizeNamedArguments`); only a
+/// scalar is not an array.
 pub(super) enum QueryArguments {
-    Decoded(Vec<crate::codec::Value>),
+    Decoded(super::query_contract::Arguments),
     Undecodable,
     NotAList,
 }
@@ -152,9 +151,9 @@ pub(super) async fn read_arguments(semaphore: Arc<Semaphore>, blob: String) -> R
         let Ok(codec) = crate::codec::ValueCodec::new() else {
             return QueryArguments::Undecodable;
         };
-        match codec.decode(&blob) {
-            Ok(crate::codec::Value::Array(values)) => QueryArguments::Decoded(values),
-            Ok(_) => QueryArguments::NotAList,
+        match codec.decode_ordered(&blob) {
+            Ok(value) => super::query_contract::Arguments::from_value(value)
+                .map_or(QueryArguments::NotAList, QueryArguments::Decoded),
             Err(_) => QueryArguments::Undecodable,
         }
     })
@@ -213,54 +212,63 @@ fn admits_queries(status: &str) -> bool {
 }
 
 /// `validateContractedQueryArguments`: a run that declares no queries leaves
-/// the name and arguments to the worker. A declared query's arguments must
-/// decode to a list, and its parameter contract, when it has one, checks
-/// them.
+/// the name and arguments to the worker (`None`). A declared query's
+/// arguments must decode to a PHP array; `WorkflowQueryContract` then matches
+/// them to the query's parameter contract, and the worker receives the
+/// normalized positional list.
 fn check_query_contract(
     contract: &Value,
     workflow_id: &str,
     run_id: &str,
     name: &str,
     arguments: &QueryArguments,
-) -> Result<()> {
+) -> Result<Option<Vec<crate::codec::OrderedValue>>> {
     let declared = |field: &str| contract[field].as_array().is_some_and(|items| !items.is_empty());
     if !declared("declared_queries") && !declared("declared_query_contracts") {
-        return Ok(());
+        return Ok(None);
     }
     if !contract["declared_queries"].as_array().is_some_and(|names| names.iter().any(|v| v == name)) {
         return Err(query_refusal(StatusCode::NOT_FOUND, workflow_id, run_id, name, "rejected_unknown_query",
             &format!("Workflow query [{name}] is not declared on workflow [{workflow_id}].")));
     }
-    // A declared query's arguments must decode to a list before routing.
-    let (message, error) = match arguments {
-        QueryArguments::Decoded(values) => return check_declared_arguments(contract, name, values),
-        QueryArguments::Undecodable => ("could not be decoded", "Query arguments could not be decoded."),
-        QueryArguments::NotAList => ("must decode to an array", "Query arguments must decode to an array."),
+    let refused = |message: String, errors: Value| {
+        let mut refusal = query_refusal(StatusCode::UNPROCESSABLE_ENTITY, workflow_id, run_id, name, "invalid_query_arguments", &message);
+        if let super::RuntimeError::Protocol { response, .. } = &mut refusal {
+            response["validation_errors"] = errors;
+        }
+        refusal
     };
-    let mut refusal = query_refusal(StatusCode::UNPROCESSABLE_ENTITY, workflow_id, run_id, name, "invalid_query_arguments",
-        &format!("Workflow query [{name}] arguments {message}."));
-    if let super::RuntimeError::Protocol { response, .. } = &mut refusal {
-        response["validation_errors"] = json!({"arguments": [error]});
+    let arguments = match arguments {
+        QueryArguments::Decoded(arguments) => arguments,
+        QueryArguments::Undecodable => return Err(refused(format!("Workflow query [{name}] arguments could not be decoded."),
+            json!({"arguments": ["Query arguments could not be decoded."]}))),
+        QueryArguments::NotAList => return Err(refused(format!("Workflow query [{name}] arguments must decode to an array."),
+            json!({"arguments": ["Query arguments must decode to an array."]}))),
+    };
+    let parameters = contract["declared_query_contracts"]
+        .as_array()
+        .and_then(|contracts| contracts.iter().find(|entry| entry["name"] == name));
+    match super::query_contract::validate(parameters, name, arguments.clone()) {
+        Ok(normalized) => Ok(Some(normalized)),
+        Err(super::query_contract::Refusal::Invalid(errors)) => Err(refused(
+            format!("Workflow query [{name}] argument validation failed."), super::query_contract::errors_json(&errors))),
+        // Published PHP fails here with an uncaught Avro `invalid_map_key`
+        // (500). Native keeps the status and says which default failed.
+        Err(super::query_contract::Refusal::UnencodableDefault(parameter)) => Err(query_refusal(
+            StatusCode::INTERNAL_SERVER_ERROR, workflow_id, run_id, name, "query_default_unencodable",
+            &format!("Workflow query [{name}] parameter [{parameter}] has a registered default with an integer key outside a list, which the Avro Value codec cannot encode."))),
     }
-    Err(refusal)
 }
 
-/// A declared query's parameter contract, when it has one.
-fn check_declared_arguments(contract: &Value, name: &str, values: &[crate::codec::Value]) -> Result<()> {
-    if contract["declared_query_contracts"]
-        .as_array()
-        .is_some_and(|contracts| contracts.iter().any(|entry| entry["name"] == name))
-    {
-        validate_arguments(
-            contract,
-            "declared_query_contracts",
-            name,
-            values,
-            "unsupported_query_contract",
-            "invalid_query_arguments",
-        )?;
+/// The arguments a routed query's task carries: a declared query's
+/// normalized list encoded again, or the request's arguments as given.
+fn routed_arguments(normalized: Option<Vec<crate::codec::OrderedValue>>, arguments: &str) -> Result<String> {
+    match normalized {
+        Some(values) => crate::codec::ValueCodec::new()
+            .and_then(|codec| codec.encode_ordered_value(&crate::codec::OrderedValue::Array(values)))
+            .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "query_codec_unavailable")),
+        None => Ok(arguments.to_owned()),
     }
-    Ok(())
 }
 
 impl<DB: Backend> Store<DB>
@@ -403,7 +411,10 @@ where
         }
         let contract = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
             .bind(&run_id).fetch_one(&self.pool).await?;
-        check_query_contract(&DB::document_row(&contract, "payload")?, workflow_id, &run_id, name, values)?;
+        // The worker receives a declared query's normalized arguments, encoded
+        // again (`Serializer::serializeWithCodec`).
+        let normalized = check_query_contract(&DB::document_row(&contract, "payload")?, workflow_id, &run_id, name, values)?;
+        let arguments = routed_arguments(normalized, arguments)?;
         let route = self.query_route(&run, config.worker_stale_after_seconds).await?;
         if !route.servable {
             return Ok(QueryAttempt::Unroutable { run_id, route });

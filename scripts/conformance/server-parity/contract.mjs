@@ -17,6 +17,7 @@ import {checkConcurrentWaits} from './concurrent-waits-contract.mjs';
 import {checkContinueTransfers} from './continue-transfers-contract.mjs';
 import {checkStartSearchAttributes} from './start-search-attributes-contract.mjs';
 import {checkQueryArgumentRouting} from './query-arguments-contract.mjs';
+import {checkQueryContractArguments} from './query-contract-arguments-contract.mjs';
 import {checkParentCloseCancellation} from './parent-close-cancellation-contract.mjs';
 import {checkBridgeAdapters} from './bridge-adapters-contract.mjs';
 import {checkNexusOperations} from './nexus-operations-contract.mjs';
@@ -176,6 +177,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const continueTransfers = fixture.continue_transfers ? checkContinueTransfers(fixture, observation) : null;
   const startSearchAttributes = fixture.start_search_attributes ? checkStartSearchAttributes(fixture, observation) : null;
   const queryArguments = fixture.query_argument_routing ? checkQueryArgumentRouting(fixture, observation) : null;
+  const queryContractArguments = fixture.query_contract_arguments ? checkQueryContractArguments(fixture, observation) : null;
   const parentCloseCancellation = fixture.parent_close_cancellation ? checkParentCloseCancellation(fixture, observation) : null;
   const bridgeAdapters = fixture.bridge_adapters ? checkBridgeAdapters(fixture, observation, workflowId) : null;
   const nexusOperations = fixture.nexus_operations ? checkNexusOperations(fixture, observation, workflowId) : null;
@@ -753,6 +755,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(continueTransfers ? {continue_transfers: continueTransfers} : {}),
     ...(startSearchAttributes ? {start_search_attributes: startSearchAttributes} : {}),
     ...(queryArguments ? {query_argument_routing: queryArguments} : {}),
+    ...(queryContractArguments ? {query_contract_arguments: queryContractArguments} : {}),
     ...(parentCloseCancellation ? {parent_close_cancellation: parentCloseCancellation} : {}),
     ...(bridgeAdapters ? {bridge_adapters: bridgeAdapters} : {}),
     ...(nexusOperations ? {nexus_operations: nexusOperations} : {}),
