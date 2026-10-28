@@ -81,7 +81,7 @@ where
         run: &DB::Row,
         wait: &Value,
         task_id: &str,
-    ) -> Result<()> {
+    ) -> Result<Option<String>> {
         let direct = wait.get("signal_name").is_some();
         let Some((seconds, fire_at)) = timeout_for(
             wait,
@@ -92,7 +92,7 @@ where
             },
         )?
         else {
-            return Ok(());
+            return Ok(None);
         };
         let run_id = DB::string(run, "id")?;
         let timer_id = id();
@@ -130,7 +130,7 @@ where
                 None,
             )
             .await?;
-            Self::create_task(
+            let resume = Self::create_task(
                 tx,
                 &run_id,
                 &DB::string(run, "queue")?,
@@ -138,6 +138,9 @@ where
                 resolution(&payload),
             )
             .await?;
+            // The completion reports the task it created, as
+            // `applyOpenSignalWait` and `applyOpenConditionWait` do.
+            return Ok(Some(resume));
         } else {
             let mut task_payload = wait_fields(wait);
             task_payload["timer_id"] = json!(timer_id);
@@ -157,8 +160,9 @@ where
             Self::query("UPDATE workflow_run_waits SET task_id=$1,task_type='timer',task_status='ready',task_backed=TRUE WHERE workflow_run_id=$2 AND wait_id=$3 AND kind=$4")
                 .bind(&timer_task).bind(&run_id).bind(super::text(wait,if direct {"signal_wait_id"} else {"condition_wait_id"})?)
                 .bind(if direct {"signal"} else {"condition"}).execute(&mut **tx).await?;
+            return Ok(Some(timer_task));
         }
-        Ok(())
+        Ok(None)
     }
 
     pub(super) async fn signal_timeout_finished(

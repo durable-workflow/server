@@ -180,6 +180,8 @@ mod repair_pass;
 mod activity_lease_expiry;
 #[path = "execution/structural_limits.rs"]
 mod structural_limits;
+#[path = "execution/concurrent_waits.rs"]
+mod concurrent_waits;
 #[path = "execution/standalone_activities.rs"]
 mod standalone_activities;
 #[path = "execution/archive.rs"]

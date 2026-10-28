@@ -94,7 +94,7 @@ const MESSAGE_STREAM_SIGNAL: &str = super::message_streams::INTERNAL_SIGNAL;
 pub(super) const TASK_CANDIDATES_SQL: &str = "SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ORDER BY t.priority,t.available_at,t.id LIMIT 100";
 /// `nextEligibleSignal`: a run's received signals in PHP's order: command
 /// sequence (unsequenced last), receipt time, then id.
-const RECEIVED_SIGNALS: &str = "SELECT id,signal_name,signal_wait_id,command_sequence FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received' AND closed_at IS NULL ORDER BY CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END,command_sequence,received_at,id LIMIT 100";
+const RECEIVED_SIGNALS: &str = "SELECT id,signal_name,signal_wait_id,command_sequence,workflow_command_id FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received' AND closed_at IS NULL ORDER BY CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END,command_sequence,received_at,id LIMIT 100";
 pub(super) const POLL_RECEIPT_CLEANUP_SQL: &str = "DELETE FROM dw_poll_receipts WHERE expires_at<=$1 AND task_id IN (SELECT id FROM workflow_tasks WHERE status!='leased' OR lease_expires_at<=$2)";
 pub(super) const WORKER_REGISTRATION_SQL: &str = "INSERT INTO workflow_worker_registrations(namespace,worker_id,task_queue,runtime,sdk_version,build_id,supported_workflow_types,supported_activity_types,capabilities,capability_manifest,last_heartbeat_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(worker_id,namespace) DO UPDATE SET task_queue=excluded.task_queue,runtime=excluded.runtime,sdk_version=excluded.sdk_version,build_id=excluded.build_id,supported_workflow_types=excluded.supported_workflow_types,supported_activity_types=excluded.supported_activity_types,capabilities=excluded.capabilities,capability_manifest=excluded.capability_manifest,last_heartbeat_at=excluded.last_heartbeat_at,updated_at=excluded.updated_at";
 /// A registration's build id as the pollers compare it: trimmed, and none
@@ -1108,13 +1108,20 @@ where
         arguments: &str,
         queue: &str,
     ) -> Result<()> {
-        let wait = Self::open_wait(tx, write.run_id).await?;
+        // `signalWaitIdForAcceptedCommand`: behind an earlier pending signal
+        // of the same name the signal is buffered; otherwise it reserves the
+        // latest open wait of its name that no received signal holds yet.
         let mut wait_id = format!("signal-command:{}", write.command_id);
-        if let Some(wait) = wait.as_ref().filter(|wait| wait["signal_name"] == write.name) {
-            let reserved = Self::scalar("SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND signal_wait_id=$2 AND status='received'")
-                .bind(write.run_id).bind(text(wait, "signal_wait_id")?).fetch_one(&mut **tx).await?;
-            if reserved == 0 {
-                wait_id = text(wait, "signal_wait_id")?.to_owned();
+        let pending = Self::scalar("SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND signal_name=$2 AND status='received'")
+            .bind(write.run_id).bind(write.name).fetch_one(&mut **tx).await?;
+        if pending == 0 {
+            for wait in Self::open_waits(tx, write.run_id).await?.iter().rev().filter(|wait| wait["signal_name"] == write.name) {
+                let reserved = Self::scalar("SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND signal_wait_id=$2 AND status='received'")
+                    .bind(write.run_id).bind(text(wait, "signal_wait_id")?).fetch_one(&mut **tx).await?;
+                if reserved == 0 {
+                    wait_id = text(wait, "signal_wait_id")?.to_owned();
+                    break;
+                }
             }
         }
         let accepted_at = now();
@@ -1250,26 +1257,62 @@ where
             .max(DB::optional_number(&run, "cancellation_delivery_sequence")?.unwrap_or(0)))
     }
 
-    pub(super) async fn open_wait(
+    /// Every open signal and condition wait, in authored order, as
+    /// `SignalWaits::forRun` and `ConditionWaits::forRun` find them: a run
+    /// may hold any number at once. A wait closes by its own identity
+    /// (`SignalApplied` or `SignalWaitCancelled` for its signal wait id,
+    /// `ConditionWaitSatisfied`, `ConditionWaitTimedOut` or
+    /// `ConditionWaitCancelled` for its condition wait id), when a cancelled
+    /// selection covers its sequence, or when its signal timeout has fired
+    /// without a received signal. A fired condition timeout leaves the wait
+    /// here; callers check it.
+    pub(super) async fn open_waits(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
-    ) -> Result<Option<Value>> {
-        let Some(row) = Self::query("SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('SignalWaitOpened','ConditionWaitOpened') ORDER BY sequence DESC LIMIT 1")
-            .bind(run_id).fetch_optional(&mut **tx).await? else { return Ok(None); };
-        let resolution = if DB::string(&row, "event_type")? == "SignalWaitOpened" {
-            "SignalApplied"
-        } else {
-            "ConditionWaitSatisfied"
-        };
-        if Self::query("SELECT id FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type=$2 AND sequence>$3 LIMIT 1")
-            .bind(run_id).bind(resolution).bind(DB::number(&row, "sequence")?).fetch_optional(&mut **tx).await?.is_some() {
-            return Ok(None);
+    ) -> Result<Vec<Value>> {
+        let rows = Self::query("SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('SignalWaitOpened','ConditionWaitOpened','SignalApplied','SignalWaitCancelled','ConditionWaitSatisfied','ConditionWaitTimedOut','ConditionWaitCancelled','SelectionOperationCancelled') ORDER BY sequence")
+            .bind(run_id).fetch_all(&mut **tx).await?;
+        let mut opened = Vec::new();
+        let mut closed = std::collections::HashSet::new();
+        let mut selections = Vec::new();
+        for row in rows {
+            let payload = DB::document_row(&row, "payload")?;
+            match DB::string(&row, "event_type")?.as_str() {
+                "SignalWaitOpened" | "ConditionWaitOpened" => opened.push(payload),
+                "SignalApplied" | "SignalWaitCancelled" => {
+                    if let Some(id) = payload["signal_wait_id"].as_str() {
+                        closed.insert(format!("signal:{id}"));
+                    }
+                }
+                "SelectionOperationCancelled" => {
+                    if let (Some(base), Some(size)) = (payload["member_base_sequence"].as_i64(), payload["member_size"].as_i64()) {
+                        selections.push((base, size));
+                    }
+                }
+                _ => {
+                    if let Some(id) = payload["condition_wait_id"].as_str() {
+                        closed.insert(format!("condition:{id}"));
+                    }
+                }
+            }
         }
-        let payload = DB::document_row(&row, "payload")?;
-        if Self::signal_timeout_finished(tx, run_id, &payload).await? {
-            return Ok(None);
+        let mut open = Vec::new();
+        for wait in opened {
+            let key = match (wait["signal_wait_id"].as_str(), wait["condition_wait_id"].as_str()) {
+                (Some(id), _) if wait.get("signal_name").is_some() => format!("signal:{id}"),
+                (_, Some(id)) => format!("condition:{id}"),
+                _ => continue,
+            };
+            let sequence = wait["sequence"].as_i64();
+            if closed.contains(&key)
+                || sequence.is_some_and(|sequence| selections.iter().any(|(base, size)| sequence >= *base && sequence < base + size))
+                || Self::signal_timeout_finished(tx, run_id, &wait).await?
+            {
+                continue;
+            }
+            open.push(wait);
         }
-        Ok(Some(payload))
+        Ok(open)
     }
 
     /// `UnprojectedSignalDelivery::allows`: the server cannot load an
@@ -1301,14 +1344,14 @@ where
     /// whether an open condition wait can still be satisfied) and its
     /// declared signals.
     fn signal_can_advance(
-        wait: Option<&Value>,
+        waits: &[Value],
         condition_open: bool,
         declared: Option<&[String]>,
         name: &str,
         signal_wait_id: &str,
     ) -> bool {
         condition_open
-            || wait.is_some_and(|wait| {
+            || waits.iter().any(|wait| {
                 wait.get("signal_name").is_some()
                     && wait["signal_name"] == name
                     && wait["signal_wait_id"] == signal_wait_id
@@ -1316,18 +1359,22 @@ where
             || declared.is_some_and(|names| names.iter().any(|declared| declared == name))
     }
 
-    /// The run's open wait, whether it is a condition wait that can still be
-    /// satisfied, and its declared signals.
+    /// The run's open waits, whether one of them is a condition wait that can
+    /// still be satisfied (`hasAdvanceableConditionWait`), and its declared
+    /// signals.
     async fn signal_delivery(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
-    ) -> Result<(Option<Value>, bool, Option<Vec<String>>)> {
-        let wait = Self::open_wait(tx, run_id).await?;
-        let condition_open = match &wait {
-            Some(wait) if wait.get("signal_name").is_none() => !Self::condition_timeout_fired(tx, run_id, wait).await?,
-            _ => false,
-        };
-        Ok((wait, condition_open, Self::declared_signals(tx, run_id).await?))
+    ) -> Result<(Vec<Value>, bool, Option<Vec<String>>)> {
+        let waits = Self::open_waits(tx, run_id).await?;
+        let mut condition_open = false;
+        for wait in waits.iter().filter(|wait| wait.get("signal_name").is_none()) {
+            if !Self::condition_timeout_fired(tx, run_id, wait).await? {
+                condition_open = true;
+                break;
+            }
+        }
+        Ok((waits, condition_open, Self::declared_signals(tx, run_id).await?))
     }
 
     /// `PendingMessageTask::hasDeliverableSignal`: a received signal that can
@@ -1339,7 +1386,7 @@ where
         run_id: &str,
         applied: Option<&str>,
     ) -> Result<bool> {
-        let (wait, condition_open, declared) = Self::signal_delivery(tx, run_id).await?;
+        let (waits, condition_open, declared) = Self::signal_delivery(tx, run_id).await?;
         let after = match applied {
             Some(signal) => Self::query("SELECT command_sequence FROM workflow_signal_records WHERE id=$1 AND workflow_run_id=$2")
                 .bind(signal).bind(run_id).fetch_optional(&mut **tx).await?
@@ -1350,7 +1397,7 @@ where
         let signals = Self::query(RECEIVED_SIGNALS).bind(run_id).fetch_all(&mut **tx).await?;
         for signal in signals {
             if !Self::signal_can_advance(
-                wait.as_ref(),
+                &waits,
                 condition_open,
                 declared.as_deref(),
                 &DB::string(&signal, "signal_name")?,
@@ -1437,15 +1484,20 @@ where
             .await?;
             return Ok(Some(task_id));
         }
-        let (wait, condition_open, declared) = Self::signal_delivery(tx, run_id).await?;
+        let (waits, condition_open, declared) = Self::signal_delivery(tx, run_id).await?;
         let signals = Self::query(RECEIVED_SIGNALS).bind(run_id).fetch_all(&mut **tx).await?;
         for signal in signals {
             let name = DB::string(&signal, "signal_name")?;
             let signal_wait_id = DB::string(&signal, "signal_wait_id")?;
-            if !Self::signal_can_advance(wait.as_ref(), condition_open, declared.as_deref(), &name, &signal_wait_id) {
+            if !Self::signal_can_advance(&waits, condition_open, declared.as_deref(), &name, &signal_wait_id) {
                 continue;
             }
-            let task_id = Self::create_task(tx, run_id, queue, "workflow", json!({"resume_source_kind":"workflow_signal","workflow_signal_id":DB::string(&signal,"id")?,"signal_name":name,"signal_wait_id":signal_wait_id})).await?;
+            // `WorkflowTaskPayload::forSignal`.
+            let signal_id = DB::string(&signal, "id")?;
+            let task_id = Self::create_task(tx, run_id, queue, "workflow", json!({"workflow_wait_kind":"signal",
+                "open_wait_id":format!("signal-application:{signal_id}"),"resume_source_kind":"workflow_signal",
+                "resume_source_id":signal_id,"workflow_signal_id":signal_id,"signal_name":name,"signal_wait_id":signal_wait_id,
+                "workflow_command_id":DB::string(&signal, "workflow_command_id")?})).await?;
             return Ok(Some(task_id));
         }
         Ok(None)
@@ -1483,34 +1535,48 @@ where
         }
         let name = DB::string(&signal, "signal_name")?;
         let wait_id = DB::string(&signal, "signal_wait_id")?;
-        let open = Self::open_wait(tx, run_id).await?;
-        // An open condition wait takes any signal, a signal wait only its
-        // own. Otherwise PHP applies a signal the run's durable contract
-        // declares without a workflow sequence (`UnprojectedSignalDelivery`).
-        let wait = open.clone().filter(|wait| {
-            wait.get("signal_name").is_none() || (wait["signal_name"] == name && wait["signal_wait_id"] == wait_id)
-        });
+        let open = Self::open_waits(tx, run_id).await?;
+        // The signal's own open signal wait, by its reserved identity.
+        let signal_wait = open.iter()
+            .find(|wait| wait.get("signal_name").is_some() && wait["signal_name"] == name && wait["signal_wait_id"] == wait_id)
+            .cloned();
+        // `latestOpenConditionWait`: the latest open condition wait whose
+        // timeout has not fired, else the latest open one.
+        let mut condition = None;
+        let mut condition_timer = None;
+        for candidate in open.iter().rev().filter(|wait| wait.get("signal_name").is_none()) {
+            let timer = Self::condition_timer(tx, run_id, candidate).await?;
+            let fired = timer.as_ref().is_some_and(|(_, fired)| *fired);
+            if condition.is_none() || !fired {
+                condition = Some(candidate.clone());
+                condition_timer = timer;
+            }
+            if !fired {
+                break;
+            }
+        }
+        // Otherwise PHP applies a signal the run's durable contract declares
+        // without a workflow sequence (`UnprojectedSignalDelivery`).
         let declared = Self::declared_signals(tx, run_id)
             .await?
             .is_some_and(|names| names.contains(&name));
-        if wait.is_none() && !declared {
+        if signal_wait.is_none() && condition.is_none() && !declared {
             if checkpoint {
                 return Ok(());
             }
-            let reason = if open.is_some() { "signal_wait_mismatch" } else { "signal_wait_not_open" };
+            let reason = if open.is_empty() { "signal_wait_not_open" } else { "signal_wait_mismatch" };
             return Err(refuse(StatusCode::CONFLICT, reason));
         }
-        let direct = wait.as_ref().is_some_and(|wait| wait.get("signal_name").is_some());
+        let direct = signal_wait.is_some();
         // `recordAppliedSignalForSignalResume` applies a signal its open
         // signal wait matches, or one the durable contract declares, with
         // `SignalApplied`. Otherwise `markConditionWaitSignalConsumed`: the
         // open condition wait consumes it at the wait's sequence, without
-        // that event (an undeclared or runtime-reserved signal).
+        // that event (an undeclared or runtime-reserved signal). Either way
+        // `recordSatisfiedConditionWaitForSignalResume` then satisfies the
+        // latest open condition wait.
         let applies = direct || declared;
-        let condition_timer = match &wait {
-            Some(wait) if !direct => Self::condition_timer(tx, run_id, wait).await?,
-            _ => None,
-        };
+        let wait = signal_wait.clone().or_else(|| condition.clone());
         let sequence = wait
             .as_ref()
             .map(|wait| wait["sequence"].as_i64().ok_or_else(|| refuse(StatusCode::CONFLICT, "invalid_stored_wait")))
@@ -1558,7 +1624,7 @@ where
             .execute(&mut **tx)
             .await?;
         Self::append(tx, run_id, "MessageCursorAdvanced", json!({"stream_key":format!("instance:{}",DB::string(&run,"workflow_instance_id")?),"previous_position":previous,"new_position":position,"task":Self::task_snapshot(task)?}), Some(task_id), None).await?;
-        if let Some(wait) = wait.as_ref().filter(|_| direct) {
+        if let Some(wait) = signal_wait.as_ref() {
             Self::cancel_wait_timeout(tx, run_id, wait, task_id, applied_at).await?;
         }
         let mut applied = json!({"workflow_command_id":command_id,"signal_id":signal_id,"signal_name":name,"signal_wait_id":wait_id,"value":wire(&prepared.value)});
@@ -1576,8 +1642,7 @@ where
             )
             .await?;
         }
-        if !direct
-            && let Some(mut satisfied) = wait
+        if let Some(mut satisfied) = condition
             && !condition_timer.as_ref().is_some_and(|(_, fired)| *fired)
         {
             if let Some((timer, _)) = &condition_timer {
@@ -3364,12 +3429,9 @@ where
         } else if command["type"] == "open_condition_wait"
             || command["type"] == "open_signal_wait"
         {
+            // A run may hold any number of open waits
+            // (`applyOpenSignalWait`, `applyOpenConditionWait`).
             sequence += 1;
-            if let Some(wait) = Self::open_wait(tx, &run_id).await?
-                && !Self::condition_timeout_fired(tx, &run_id, &wait).await?
-            {
-                return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
-            }
             let direct = command["type"] == "open_signal_wait";
             let mut payload = command.clone();
             payload.as_object_mut().unwrap().remove("type");
@@ -3430,8 +3492,10 @@ where
                 None,
             )
             .await?;
-            if !direct || pending_wait_id.is_none() {
-                Self::schedule_wait_timeout(tx, &run, &payload, task_id).await?;
+            if (!direct || pending_wait_id.is_none())
+                && let Some(timeout_task) = Self::schedule_wait_timeout(tx, &run, &payload, task_id).await?
+            {
+                created.push(timeout_task);
             }
         } else {
             return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "unsupported_workflow_command"));

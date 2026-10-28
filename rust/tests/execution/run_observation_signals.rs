@@ -294,7 +294,7 @@ async fn signals_across_cold_nodes(namespace: &str) {
 }
 
 #[tokio::test]
-async fn run_observation_signals_named_namespace_retains_batched_admission_gate() {
+async fn run_observation_signals_named_namespace_records_several_open_waits() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
@@ -303,7 +303,7 @@ async fn run_observation_signals_named_namespace_retains_batched_admission_gate(
     let run = namespaces::start_scoped(&app, "signal-observation", "signal-named-refusal").await;
     let task = claim(&app, "signal-observation").await;
     let before = read(&app, "signal-observation", &run, "history").await;
-    let refused = finish(
+    let opened = finish(
         &app,
         "signal-observation",
         &task,
@@ -313,15 +313,11 @@ async fn run_observation_signals_named_namespace_retains_batched_admission_gate(
         ]),
     )
     .await;
-    // A named namespace accepts every command, but native still opens one
-    // wait at a time.
-    assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
-    assert_eq!(refused.1["reason"], "pending_durable_operations", "{}", refused.1);
-    assert_eq!(
-        read(&app, "signal-observation", &run, "history").await,
-        before
-    );
-    assert_eq!(stored_wait_count(&database).await, 0);
+    // A named namespace accepts every command, and a run may hold several
+    // open waits at once, as PHP's applyOpenSignalWait allows.
+    assert_eq!(opened.0, StatusCode::OK, "{}", opened.1);
+    assert_ne!(read(&app, "signal-observation", &run, "history").await, before);
+    assert_eq!(stored_wait_count(&database).await, 2);
     runtime.close().await;
     database.remove().await;
 }
