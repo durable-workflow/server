@@ -310,19 +310,47 @@ class WorkflowStreamPayloadRaceTest extends TestCase
                 && str_contains($sql, 'runtime_external_payloads');
         };
 
-        $start = $this->startActor(fn (): array => $this->httpStart('wf-claim-wins-new', $object['reference']), $finalClaim);
+        $start = $this->startActor(fn (): array => $this->httpStart('wf-claim-wins-new', $object['reference']), [
+            $finalClaim,
+            static fn (string $sql, string $driver, int $level): bool => $sql === 'commit' && $level === 0,
+        ]);
         $this->runUntilPaused($start);
         $cleanup = $this->startActor(fn (): array => HistoryRetentionEnforcer::pruneRun('default', $oldRunId));
         $this->release($cleanup);
         $this->awaitWait($cleanup, 'runtime_external_payload_object_locks');
-        $this->resume($start);
-        $this->assertSame(201, $this->finishActor($start)['status']);
+        // Cleanup must see the committed reference before the start runs its
+        // post-commit dispatch/projection work or returns its HTTP response.
+        $this->resumeUntilPaused($start);
         $this->assertTrue($this->finishActor($cleanup)['pruned']);
         DB::purge();
         DB::reconnect();
         $arguments = (string) WorkflowRun::query()->where('workflow_instance_id', 'wf-claim-wins-new')->value('arguments');
         $this->assertSame($object['uri'], ExternalPayloads::storedEnvelope($arguments)['external_storage']['uri']);
         $this->assertObjectKept($object);
+        $this->resume($start);
+        $this->assertSame(201, $this->finishActor($start)['status']);
+    }
+
+    #[DataProvider('drivers')]
+    public function test_pruned_run_metadata_does_not_keep_a_payload_after_its_last_live_reference_is_pruned(string $driver): void
+    {
+        $this->initializeDatabase($driver);
+        $object = $this->registerObject('pruned-input');
+        $this->assertSame(201, $this->httpStart('wf-pruned-input', $object['reference'])['status']);
+        $run = WorkflowRun::query()->where('workflow_instance_id', 'wf-pruned-input')->sole();
+        $run->forceFill(['status' => RunStatus::Completed, 'closed_at' => now()])->save();
+        RunSummaryProjector::project($run->fresh());
+        $otherRunId = $this->summarizedRun('wf-last-input-reference', RunStatus::Completed);
+        $this->addStream($otherRunId, 'last', [$object['uri']]);
+
+        $this->assertTrue(HistoryRetentionEnforcer::pruneRun('default', $run->id)['pruned']);
+        $pruned = $run->fresh();
+        $this->assertNotNull($pruned->details_pruned_at);
+        $this->assertSame($object['uri'], ExternalPayloads::storedEnvelope($pruned->arguments)['external_storage']['uri']);
+        $this->assertObjectKept($object);
+
+        $this->assertTrue(HistoryRetentionEnforcer::pruneRun('default', $otherRunId)['pruned']);
+        $this->assertObjectDeleted($object);
     }
 
     private function httpStart(string $workflowId, array $reference): array
@@ -415,8 +443,9 @@ class WorkflowStreamPayloadRaceTest extends TestCase
     }
 
     /**
-     * A run with its summary, as every started run has. Payload cleanup
-     * counts a reference as retained while its run's summary remains.
+     * A run with its summary so the retention entry point can locate it.
+     * Reference checks also cover committed unpruned runs whose dispatch
+     * has not published a summary yet.
      */
     private function summarizedRun(string $workflowId, RunStatus $status = RunStatus::Running): string
     {

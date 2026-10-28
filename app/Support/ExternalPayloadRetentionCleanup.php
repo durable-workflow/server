@@ -663,12 +663,16 @@ class ExternalPayloadRetentionCleanup
 
     /**
      * @param  list<string>  $deletedRunIds
-     * @return Builder<WorkflowRunSummary>
+     * @return Builder<WorkflowRun>
      */
     private function retainedRunIdsQuery(array $deletedRunIds): Builder
     {
-        return WorkflowRunSummary::query()
+        // A start commits its run before dispatch publishes the summary. Its
+        // durable references already protect their objects during that gap.
+        // Pruned primary rows retain metadata but no longer own payloads.
+        return WorkflowRun::query()
             ->select('id')
+            ->whereNull('details_pruned_at')
             ->whereNotIn('id', $deletedRunIds);
     }
 
