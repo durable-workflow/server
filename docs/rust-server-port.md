@@ -413,9 +413,10 @@ contract fixture before its correction.
   Published behavior kept: a draining build's worker is not fresh either. The `worker-poll-fence`
   fixture records the refusals and the recovery against published 2.11.5. The local activity
   checkpoints need no change: native refuses them before reading the task,
-  as PHP without the prepared role does. Still open: cooperative cancellation
-  delivery (`cooperative.rs`) judges freshness with a fixed 60 seconds rather
-  than `DW_WORKER_STALE_AFTER_SECONDS`.
+  as PHP without the prepared role does. Cooperative cancellation delivery and
+  the cancellation-scope routes use the same freshness check with
+  `DW_WORKER_STALE_AFTER_SECONDS`; delivery used a fixed 60 seconds until
+  October 28 (`cooperative_delivery_uses_the_configured_stale_window`).
 - **Retention of runs with external payloads.** Published PHP deletes a
   pruned run's external payload objects. Native does not delete them yet: it
   skips such a run with `external_payload_cleanup_unavailable` and keeps its

@@ -296,12 +296,9 @@ where
                 "active_claim_cancellation_not_supported",
             ));
         }
-        let worker=Self::query("SELECT status,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
-            .bind(DB::string(&task, "namespace")?).bind(super::text(&body,"lease_owner")?).fetch_optional(&mut *tx).await?
-            .ok_or_else(|| refuse(StatusCode::CONFLICT,"stale_worker_registration"))?;
-        if DB::string(&worker, "status")? != "active"
-            || DB::instant(&worker, "last_heartbeat_at")? <= now() - chrono::Duration::seconds(60)
-        {
+        // `WorkerPollFence::isFresh`, with the configured stale window.
+        let owner = super::text(&body, "lease_owner")?;
+        if !Self::lease_owner_fresh(&mut tx, &DB::string(&task, "namespace")?, owner, self.worker_stale_after_seconds).await? {
             return Err(refuse(StatusCode::CONFLICT, "stale_worker_registration"));
         }
         let run_id = DB::string(&task, "workflow_run_id")?;

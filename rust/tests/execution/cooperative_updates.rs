@@ -347,3 +347,26 @@ async fn cooperative_updates_original_deadline_closes_update_after_cold_reopen()
     again.close().await;
     database.remove().await;
 }
+
+/// `WorkerPollFence::isFresh` decides cooperative delivery with the configured
+/// stale window (default 30 seconds), as PHP's
+/// `CooperativeCancellationController` does. A lease owner last heard from 45
+/// seconds ago is refused; native used a fixed 60 seconds and delivered.
+#[tokio::test]
+async fn cooperative_delivery_uses_the_configured_stale_window() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let (_run, _update, _update_task, root) = pending(&database, &app).await;
+    let pending_request = request_root(&app, 30).await;
+    let heard = (chrono::Utc::now() - chrono::Duration::seconds(45)).format("%Y-%m-%d %H:%M:%S");
+    database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_worker_registrations SET last_heartbeat_at='{heard}' WHERE worker_id='cooperative-update-worker'"))).await;
+    let body = json!({"lease_owner":root["lease_owner"],"workflow_task_attempt":root["workflow_task_attempt"],
+        "request_id":pending_request["request_id"],"sequence":2,"call_kind":"timer"});
+    let path = format!("/api/worker/workflow-tasks/{}/deliver-cancellation", root["task_id"].as_str().unwrap());
+    let refused = request_protocol(&app, "POST", &path, body.clone(), "1.20").await;
+    assert_eq!((refused.0, refused.1["reason"].clone()), (StatusCode::CONFLICT, json!("stale_worker_registration")), "{}", refused.1);
+    // A heartbeat inside the window makes the same delivery succeed.
+    let beat = request_protocol(&app, "POST", "/api/worker/heartbeat", json!({"worker_id":"cooperative-update-worker"}), "1.20").await;
+    assert_eq!(beat.0, StatusCode::OK, "{}", beat.1);
+    deliver(&app, &root, &pending_request).await;
+}

@@ -19,7 +19,7 @@ export function checkLegacyMarkerArtifacts(fixture, artifacts) {
   assert.equal(spec.cancel_unsent_poll_on_shutdown, true, 'explicit locally cancelled, unforwarded poll policy');
   assert.deepEqual(spec.poll_capacity, {status: 429, poll_status: 'long_poll_capacity_exhausted',
     retry_after_seconds: 1, kinds: ['workflow', 'activity', 'query'], recovery: 'same_authority_and_options',
-    allow_query_shutdown_after_commit: true}, 'explicit published no-task poll admission policy');
+    allow_shutdown_after_commit: ['workflow', 'activity', 'query']}, 'explicit published no-task poll admission policy');
   for (const selected of [spec.producer, spec.consumer]) {
     assert(['python', 'rust'].includes(selected.language));
     const installed = artifacts.published_sdk_artifacts?.[selected.language];
@@ -268,8 +268,12 @@ export function checkLegacyMarkerDeployment(fixture, observation, workflowId) {
             && item.response.worker_id === worker);
           const committed = phase.requests.slice(0, withdrawal).some(item => item.status === 200
             && [...completions(phase), ...activities(phase)].includes(item) && item.request.lease_owner === worker);
-          assert(recovered || kind === 'query' && spec.poll_capacity.allow_query_shutdown_after_commit && withdrawal > index && committed,
-            'poll admission recovers with identical authority/options, or an idle query worker withdraws after its own accepted commit');
+          // A refusal leases nothing, so an idle poller of a worker that then
+          // withdraws, after its own accepted commit, loses no work: the
+          // published SDKs stop their workflow, activity and query pollers
+          // together at shutdown. The outcome counts above guard the work.
+          assert(recovered || spec.poll_capacity.allow_shutdown_after_commit.includes(kind) && withdrawal > index && committed,
+            'poll admission recovers with identical authority/options, or an idle worker withdraws after its own accepted commit');
         } else if (request.status === 503) {
           assert.equal(request.method, 'POST');
           assert(['/api/worker/workflow-tasks/poll', '/api/worker/activity-tasks/poll'].includes(request.path));

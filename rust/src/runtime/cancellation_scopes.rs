@@ -1270,15 +1270,7 @@ store_methods! {
         if !Self::claim_supports_cancellation(&task)? {
             return Ok(Err((StatusCode::CONFLICT, "active_claim_cancellation_not_supported")));
         }
-        let worker = Self::query("SELECT status,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
-            .bind(self.namespace.as_ref()).bind(owner).fetch_optional(&mut **tx).await?;
-        let fresh = match &worker {
-            Some(worker) => DB::string(worker, "status")? == "active"
-                && DB::optional_instant(worker, "last_heartbeat_at")?
-                    .is_some_and(|heartbeat| heartbeat >= now() - chrono::Duration::seconds(self.worker_stale_after_seconds)),
-            None => false,
-        };
-        if !fresh {
+        if !Self::lease_owner_fresh(tx, &self.namespace, owner, self.worker_stale_after_seconds).await? {
             return Ok(Err((StatusCode::CONFLICT, "stale_worker_registration")));
         }
         Ok(Ok((task, run)))
