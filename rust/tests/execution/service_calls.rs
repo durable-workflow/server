@@ -461,7 +461,7 @@ async fn a_caller_run_continues_as_new_and_its_call_stays_with_the_predecessor()
 // the predecessor when that run continues as new: Core moves only open calls
 // with the `workflow_run` binding (`LinkedServiceCallCloser`).
 #[tokio::test]
-async fn a_call_linked_through_an_activity_binding_stays_with_the_continued_run() {
+async fn a_call_linked_through_an_activity_binding_stays_with_the_predecessor_run() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());

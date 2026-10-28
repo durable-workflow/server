@@ -187,6 +187,18 @@ where
                 let error = Box::pin(Self::close_child_for_policy(tx, &child, command, &reason, depth)).await?;
                 let mut payload = json!({"child_instance_id": boundary.child_instance, "child_run_id": boundary.child_run,
                     "policy": policy, "reason": reason});
+                if error.is_none()
+                    && let Some(sequence) = DB::optional_number(&link, "sequence")?
+                {
+                    // `markChildCallClosedByParentPolicy`: the parent's open
+                    // call for this child is closed with the policy, whichever
+                    // run the child continued into.
+                    let at = now();
+                    Self::query("UPDATE workflow_child_calls SET status=$1,closed_reason=$2,closed_at=$3,updated_at=$4 WHERE parent_workflow_run_id=$5 AND sequence=$6 AND status IN ('scheduled','started')")
+                        .bind(command.closed()).bind(command.closed()).bind(DB::bind_time(at)).bind(DB::bind_time(at))
+                        .bind(&parent_run).bind(sequence)
+                        .execute(&mut **tx).await?;
+                }
                 let kind = match error {
                     None => "ParentClosePolicyApplied",
                     Some(error) => {

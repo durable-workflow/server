@@ -366,3 +366,48 @@ async fn a_policy_close_reaches_a_child_with_a_live_query() {
     runtime.close().await;
     database.remove().await;
 }
+
+// A child that continues as new after its parent closed still closes.
+// `createParentResumeTasks` resolves only an open parent run, before reading
+// the call, and the call still names the child's first run
+// (`markChildCallContinued`), so the closed parent takes no resolution and its
+// call stays as the parent left it.
+#[tokio::test]
+async fn a_child_continued_after_its_parent_closed_still_closes() {
+    for close in ["terminate", "complete"] {
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap();
+        let app = router(runtime.clone());
+        update_worker(&app, "parent-worker").await;
+        register(&app, "child-worker", json!(["child"]), json!([])).await;
+        let (parent, child_id, child_run) = parent_with_child(&app, "closed-first-parent", "abandon", "terminate").await;
+        close_parent(&app, &database, "closed-first-parent", "terminate").await;
+        let child = child_id.as_str().unwrap().to_owned();
+        let task = poll(&app, "child-worker", "workflow").await;
+        assert_eq!(task["run_id"], child_run, "{task}");
+        let (status, body) = finish_task(&app, &task, json!([{"type":"continue_as_new"}])).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let successor = poll(&app, "child-worker", "workflow").await;
+        assert_ne!(successor["run_id"], child_run, "{successor}");
+        let parent_before = run_history(&app, &json!("closed-first-parent"), &parent["run_id"]).await;
+
+        if close == "terminate" {
+            let (status, body) = request(&app, "POST", &format!("/api/workflows/{child}/terminate"),
+                json!({"reason":"after the parent"})).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+        } else {
+            let (status, body) = finish_task(&app, &successor,
+                json!([{"type":"complete_workflow","result":envelope(Payload::Long(2))}])).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+        let (_, described) = request(&app, "GET", &format!("/api/workflows/{child}"), Value::Null).await;
+        assert_eq!((described["run_id"].clone(), described["status"].clone()),
+            (successor["run_id"].clone(), json!(if close == "terminate" { "terminated" } else { "completed" })), "{described}");
+        assert_eq!(run_history(&app, &json!("closed-first-parent"), &parent["run_id"]).await, parent_before,
+            "{close}: the closed parent takes no resolution");
+        assert_eq!(count(&database, "SELECT COUNT(*) FROM workflow_child_calls WHERE status='started'".to_owned()).await, 1,
+            "{close}: the call stays as the parent left it");
+        runtime.close().await;
+        database.remove().await;
+    }
+}

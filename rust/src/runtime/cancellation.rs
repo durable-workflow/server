@@ -209,29 +209,23 @@ where
     /// is written. HTTP cancel and terminate and a parent-close policy share
     /// this rule.
     ///
-    /// PHP's close follows only `child_workflow` links, to resolve the parent
-    /// (`WorkflowStub::attemptCancel`, `attemptTerminate`). A
-    /// `continue_as_new` or `redrive` link names a closed predecessor and
-    /// needs nothing. Only a `request_cancellation` child still refuses: PHP
-    /// gives it a new cancellation origin (`ParentCloseCancellation::ensureOrigin`),
-    /// which native does not have yet. Live queries never hold a close: PHP's
-    /// query broker has no run-status check, so a query admitted before the
-    /// close is still leased and answered.
+    /// PHP's close reads no incoming link to decide whether it may close: it
+    /// follows `child_workflow` links only to resolve the parent, and never
+    /// reads `continue_as_new`, `redrive` or imported untyped links. Live
+    /// queries never hold a close either: PHP's query broker has no
+    /// run-status check, so a query admitted before the close is still leased
+    /// and answered. Only a `request_cancellation` child refuses: PHP gives it
+    /// a new cancellation origin (`ParentCloseCancellation::ensureOrigin`),
+    /// which native does not have yet.
     pub(super) async fn close_unavailable(
         connection: &mut DB::Connection,
         run_id: &str,
     ) -> Result<bool> {
-        let links = Self::scalar(
-            "SELECT COUNT(*) FROM workflow_links WHERE child_workflow_run_id=$1 AND link_type NOT IN ('child_workflow','continue_as_new','redrive')",
-        )
-        .bind(run_id)
-        .fetch_one(&mut *connection)
-        .await?;
         let cooperative_children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','terminated','failed') AND parent_close_policy='request_cancellation'")
             .bind(run_id)
             .fetch_one(&mut *connection)
             .await?;
-        Ok(links != 0 || cooperative_children != 0)
+        Ok(cooperative_children != 0)
     }
 
     pub(crate) async fn close_workflow(
