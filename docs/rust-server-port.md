@@ -44,6 +44,9 @@ Updated October 27, 2026.
     and moved to published 2.11.5 (#815); the SQLite maintenance pause stays
     for `service-calls` only
     ([checkpoint](rust-server-port-checkpoints/2026-10-27-reference-2115.md)).
+  - The parity reference moves to published 2.11.7 (#863), with native's
+    v1 projection history bytes in Core's canonical unit (#770)
+    ([checkpoint](rust-server-port-checkpoints/2026-10-29-reference-2117.md)).
   - [#814](https://github.com/durable-workflow/server/pull/814): the shared
     fixtures accept published PHP's typed `429 long_poll_capacity_exhausted`
     poll refusal, and retry a locked Composer install after a transient

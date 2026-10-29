@@ -32,7 +32,7 @@ test('each container-heavy fixture job pulls its pinned images first, with retri
     const pull = steps[1];
     assert.match(pull, /- name: Pull the pinned images, retrying registry errors\n/, name);
     assert.match(pull, /bash scripts\/ci\/pull-images\.sh \\\n/, name);
-    assert.match(pull, /"\$\(baseline php-2\.11\.5\)"/, name);
+    assert.match(pull, /"\$\(baseline php-2\.11\.7\)"/, name);
     for (const image of extra) assert.ok(pull.includes(image), `${name} pulls ${image}`);
     // Every Rust image the job runs is in its pull list, so a digest bump
     // cannot leave the pull behind.

@@ -4,7 +4,8 @@ import test from 'node:test';
 import {checkWaterlineImport} from '../../scripts/conformance/server-parity/waterline-import-contract.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/waterline-import.json', import.meta.url)));
-// The observation published Server 2.11.1 returned for this fixture.
+// The observation published Server 2.11.7 returned for this fixture (2.11.1
+// returned the same answers with the pre-#770 history sizes).
 const recorded = JSON.parse(readFileSync(
   new URL('../Fixtures/ServerParityExpected/waterline-import-observation.json', import.meta.url)));
 const id = 'pr1-waterline-import';
@@ -15,7 +16,7 @@ const observation = (change = () => {}) => {
 };
 const check = state => checkWaterlineImport(fixture, state, id);
 
-test('the published 2.11.1 recording satisfies the contract', () => {
+test('the published 2.11.7 recording satisfies the contract', () => {
   assert.deepStrictEqual(check(observation()), {scope: 'waterline_import'});
 });
 
