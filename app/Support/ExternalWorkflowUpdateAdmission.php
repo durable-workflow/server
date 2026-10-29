@@ -22,6 +22,7 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowUpdate;
+use Workflow\V2\Support\BridgeCommandIdentity;
 use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\StructuralLimits;
 use Workflow\V2\Support\UpdateCommandGate;
@@ -292,7 +293,11 @@ class ExternalWorkflowUpdateAdmission
      */
     private function duplicateForRequest(WorkflowInstance $instance, CommandContext $context): ?array
     {
-        $command = UpdateRequestIdentity::find($instance, $context->attributes()['context']);
+        $attributes = $context->attributes()['context'];
+        $bridge = BridgeCommandIdentity::fromContext($attributes);
+        $command = $bridge instanceof BridgeCommandIdentity
+            ? $bridge->find($instance, CommandType::Update)
+            : UpdateRequestIdentity::find($instance, $attributes);
         $update = $command instanceof WorkflowCommand
             ? WorkflowUpdate::query()->where('workflow_command_id', $command->id)->first()
             : null;

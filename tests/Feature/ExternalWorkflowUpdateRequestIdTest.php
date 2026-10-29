@@ -26,6 +26,50 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
         yield 'named' => ['retained-namespace'];
     }
 
+    public static function bridgeReceipts(): iterable
+    {
+        foreach (['default', 'retained-namespace'] as $namespace) {
+            foreach (['current', 'legacy', 'conflicting'] as $receipt) {
+                yield $namespace.' '.$receipt => [$namespace, $receipt];
+            }
+        }
+    }
+
+    #[DataProvider('bridgeReceipts')]
+    public function test_remote_bridge_redelivery_preserves_its_scoped_receipt(string $namespace, string $receipt): void
+    {
+        $this->startRemote('bridge-retained', $namespace);
+        $path = '/api/bridge-adapters/webhook/acme.crm:v1';
+        $event = [
+            'action' => 'update_workflow', 'idempotency_key' => 'u-2',
+            'target' => ['workflow_id' => 'bridge-retained', 'update_name' => 'add'], 'input' => [17],
+        ];
+        $first = $this->postJson($path, $event, [...$this->apiHeaders($namespace), 'X-Request-Id' => 'proxy-first'])
+            ->assertAccepted()->assertJsonPath('outcome', 'accepted');
+        $command = WorkflowCommand::query()->where('command_type', 'update')->sole();
+        $context = $command->context;
+        if ($receipt === 'legacy') {
+            $context['request']['request_id'] = 'legacy-proxy';
+            $context['server']['metadata']['request_id'] = 'u-2';
+            $command->update(['request_id' => null, 'context' => $context]);
+        } elseif ($receipt === 'conflicting') {
+            $context['server']['metadata']['idempotency_key'] = 'different-provider-event';
+            $command->update(['context' => $context]);
+        }
+        $before = $this->durableRows();
+        $redelivery = $this->postJson($path, [...$event, 'input' => [99]], [
+            ...$this->apiHeaders($namespace), 'X-Request-Id' => 'proxy-redelivery',
+        ]);
+        if ($receipt === 'conflicting') {
+            $redelivery->assertStatus(409)->assertJsonPath('reason', 'bridge_identity_conflict');
+        } else {
+            $redelivery->assertOk()->assertJsonPath('accepted', false)->assertJsonPath('outcome', 'duplicate')
+                ->assertJsonPath('control_plane_outcome', 'deduped_existing_command')
+                ->assertJsonPath('run_id', $first->json('run_id'));
+        }
+        $this->assertSame($before, $this->durableRows());
+    }
+
     #[DataProvider('namespaces')]
     public function test_request_id_reused_for_another_declared_name_returns_original_without_mutation(string $namespace): void
     {
