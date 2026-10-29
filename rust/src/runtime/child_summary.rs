@@ -1,4 +1,5 @@
-//! Sequential child liveness requires original typed identity and retained waits.
+//! Child liveness requires original typed identity and retained waits. A run
+//! may hold any number of open children, each under any parent-close policy.
 use super::{
     Result,
     active_summary::{ActiveSummary, SummaryWait},
@@ -33,13 +34,10 @@ impl ChildSummaryHistory {
             return false;
         };
         if event == "ChildWorkflowScheduled" {
-            if self.calls.len() >= 100
-                || self.calls.contains_key(&sequence)
-                || self
-                    .calls
-                    .values()
-                    .any(|child| child.status == "waiting" || child.id == identity.id)
-                || payload["parent_close_policy"] != "abandon"
+            // Any number of children may be open at once, and the parent-close
+            // policy only decides what happens when the parent closes.
+            if self.calls.contains_key(&sequence)
+                || self.calls.values().any(|child| child.id == identity.id)
                 || payload["cancellation_policy"] != "abandon"
                 || !payload["retry_policy"].is_null()
                 || !payload["timeout_policy"].is_null()
@@ -152,9 +150,9 @@ where
         history: &ChildSummaryHistory,
         summary: &mut ActiveSummary,
     ) -> Result<bool> {
-        let rows = Self::query("SELECT w.*,c.status AS call_status,c.resolved_child_run_id,c.resolved_child_instance_id,c.child_workflow_type,c.metadata AS call_metadata,l.id AS link_id,l.child_workflow_run_id AS link_run,l.child_workflow_instance_id AS link_instance FROM workflow_run_waits w LEFT JOIN workflow_child_calls c ON c.parent_workflow_run_id=w.workflow_run_id AND c.sequence=w.sequence LEFT JOIN workflow_links l ON l.parent_workflow_run_id=w.workflow_run_id AND l.sequence=w.sequence AND l.link_type='child_workflow' WHERE w.workflow_run_id=$1 AND w.kind='child' ORDER BY w.sequence LIMIT 101")
+        let rows = Self::query("SELECT w.*,c.status AS call_status,c.resolved_child_run_id,c.resolved_child_instance_id,c.child_workflow_type,c.metadata AS call_metadata,l.id AS link_id,l.child_workflow_run_id AS link_run,l.child_workflow_instance_id AS link_instance FROM workflow_run_waits w LEFT JOIN workflow_child_calls c ON c.parent_workflow_run_id=w.workflow_run_id AND c.sequence=w.sequence LEFT JOIN workflow_links l ON l.parent_workflow_run_id=w.workflow_run_id AND l.sequence=w.sequence AND l.link_type='child_workflow' WHERE w.workflow_run_id=$1 AND w.kind='child' ORDER BY w.sequence")
             .bind(run_id).fetch_all(&mut **tx).await?;
-        if rows.len() != history.calls.len() || rows.len() > 100 {
+        if rows.len() != history.calls.len() {
             return Ok(false);
         }
         for row in &rows {
@@ -171,7 +169,16 @@ where
         if rows.is_empty() {
             return Ok(true);
         }
-        // Other wait families retain their separately qualified precedence.
+        // An open timer wait describes the run ahead of open children, as
+        // PHP's run description does. Other wait families, and a resolved
+        // child beside a timer, retain their separately qualified precedence.
+        let all_open = rows.iter().all(|row| DB::string(row, "status").is_ok_and(|status| status == "open"));
+        if summary.wait.as_ref().is_some_and(|wait| wait.kind == "timer")
+            && all_open
+            && summary.task_type.as_deref().is_none_or(|kind| kind == "timer")
+        {
+            return Ok(true);
+        }
         if summary
             .wait
             .as_ref()

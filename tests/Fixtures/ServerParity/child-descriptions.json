@@ -1,0 +1,200 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "child-descriptions",
+  "review_state": "reviewed",
+  "contract": "A parent run's description while its children are open (published Server 2.11.5 WorkflowController::show with Workflow 2.15.1 RunWaitView), over raw worker HTTP on protocol 1.20 in a fresh namespace. Each case completes the parent's first workflow task with child and timer commands and records the description. A parent with two open children is described as waiting for a child; with an open child and an open timer, in either order, as waiting for the timer; and a child under parent_close_policy terminate is described like any other. Embedded applications have no worker protocol.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "continue transfers λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "continue transfers λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "child_descriptions": {
+    "workflow_type": "parity.v1.child_descriptions",
+    "child_type": "parity.v1.child_descriptions_child",
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "described_fields": [
+      "status",
+      "status_bucket",
+      "is_terminal",
+      "resume_step_sequence",
+      "recovery_kind",
+      "wait_kind",
+      "wait_reason"
+    ],
+    "cases": {
+      "one_child": [
+        {
+          "type": "start_child_workflow",
+          "workflow_type": "parity.v1.child_descriptions_child",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          }
+        }
+      ],
+      "two_children": [
+        {
+          "type": "start_child_workflow",
+          "workflow_type": "parity.v1.child_descriptions_child",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          }
+        },
+        {
+          "type": "start_child_workflow",
+          "workflow_type": "parity.v1.child_descriptions_child",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          }
+        }
+      ],
+      "child_then_timer": [
+        {
+          "type": "start_child_workflow",
+          "workflow_type": "parity.v1.child_descriptions_child",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          }
+        },
+        {
+          "type": "start_timer",
+          "delay_seconds": 3600
+        }
+      ],
+      "timer_then_child": [
+        {
+          "type": "start_timer",
+          "delay_seconds": 3600
+        },
+        {
+          "type": "start_child_workflow",
+          "workflow_type": "parity.v1.child_descriptions_child",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          }
+        }
+      ],
+      "terminating_child": [
+        {
+          "type": "start_child_workflow",
+          "workflow_type": "parity.v1.child_descriptions_child",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          },
+          "parent_close_policy": "terminate"
+        }
+      ]
+    },
+    "expected": {
+      "one_child": {
+        "completed": {
+          "status": 200,
+          "reason": null,
+          "run_status": "waiting"
+        },
+        "described": {
+          "status": "waiting",
+          "status_bucket": "running",
+          "is_terminal": false,
+          "resume_step_sequence": null,
+          "recovery_kind": null,
+          "wait_kind": "child",
+          "wait_reason": "Waiting for child workflow parity.v1.child_descriptions_child"
+        }
+      },
+      "two_children": {
+        "completed": {
+          "status": 200,
+          "reason": null,
+          "run_status": "waiting"
+        },
+        "described": {
+          "status": "waiting",
+          "status_bucket": "running",
+          "is_terminal": false,
+          "resume_step_sequence": null,
+          "recovery_kind": null,
+          "wait_kind": "child",
+          "wait_reason": "Waiting for child workflow parity.v1.child_descriptions_child"
+        }
+      },
+      "child_then_timer": {
+        "completed": {
+          "status": 200,
+          "reason": null,
+          "run_status": "waiting"
+        },
+        "described": {
+          "status": "waiting",
+          "status_bucket": "running",
+          "is_terminal": false,
+          "resume_step_sequence": null,
+          "recovery_kind": null,
+          "wait_kind": "timer",
+          "wait_reason": "Waiting for timer"
+        }
+      },
+      "timer_then_child": {
+        "completed": {
+          "status": 200,
+          "reason": null,
+          "run_status": "waiting"
+        },
+        "described": {
+          "status": "waiting",
+          "status_bucket": "running",
+          "is_terminal": false,
+          "resume_step_sequence": null,
+          "recovery_kind": null,
+          "wait_kind": "timer",
+          "wait_reason": "Waiting for timer"
+        }
+      },
+      "terminating_child": {
+        "completed": {
+          "status": 200,
+          "reason": null,
+          "run_status": "waiting"
+        },
+        "described": {
+          "status": "waiting",
+          "status_bucket": "running",
+          "is_terminal": false,
+          "resume_step_sequence": null,
+          "recovery_kind": null,
+          "wait_kind": "child",
+          "wait_reason": "Waiting for child workflow parity.v1.child_descriptions_child"
+        }
+      }
+    }
+  }
+}

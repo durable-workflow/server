@@ -18,6 +18,7 @@ import {checkContinueTransfers} from './continue-transfers-contract.mjs';
 import {checkLargeCommandBatches} from './large-command-batches-contract.mjs';
 import {checkManyUpdates} from './many-updates-contract.mjs';
 import {checkWorkerErrorBodies} from './worker-error-bodies-contract.mjs';
+import {checkChildDescriptions} from './child-descriptions-contract.mjs';
 import {checkStartSearchAttributes} from './start-search-attributes-contract.mjs';
 import {checkQueryArgumentRouting} from './query-arguments-contract.mjs';
 import {checkQueryContractArguments} from './query-contract-arguments-contract.mjs';
@@ -181,6 +182,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const largeCommandBatches = fixture.large_command_batches ? checkLargeCommandBatches(fixture, observation) : null;
   const manyUpdates = fixture.many_updates ? checkManyUpdates(fixture, observation) : null;
   const workerErrorBodies = fixture.worker_error_bodies ? checkWorkerErrorBodies(fixture, observation) : null;
+  const childDescriptions = fixture.child_descriptions ? checkChildDescriptions(fixture, observation) : null;
   const startSearchAttributes = fixture.start_search_attributes ? checkStartSearchAttributes(fixture, observation) : null;
   const queryArguments = fixture.query_argument_routing ? checkQueryArgumentRouting(fixture, observation) : null;
   const queryContractArguments = fixture.query_contract_arguments ? checkQueryContractArguments(fixture, observation) : null;
@@ -762,6 +764,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(largeCommandBatches ? {large_command_batches: largeCommandBatches} : {}),
     ...(manyUpdates ? {many_updates: manyUpdates} : {}),
     ...(workerErrorBodies ? {worker_error_bodies: workerErrorBodies} : {}),
+    ...(childDescriptions ? {child_descriptions: childDescriptions} : {}),
     ...(startSearchAttributes ? {start_search_attributes: startSearchAttributes} : {}),
     ...(queryArguments ? {query_argument_routing: queryArguments} : {}),
     ...(queryContractArguments ? {query_contract_arguments: queryContractArguments} : {}),

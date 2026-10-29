@@ -586,8 +586,18 @@ contract fixture before its correction.
   `many-updates` fixture records a run waiting for a signal through 65
   completed updates, then a 66th left accepted, against published 2.11.5
   ([checkpoint](rust-server-port-checkpoints/2026-10-29-many-updates.md)).
-  The child summary still stops at 100 children over a run's life; that
-  needs its own fixture.
+- **Descriptions with several open children** (October 29, closed).
+  Published PHP describes a parent by its open waits however many children
+  it holds: the first open child, or an open timer ahead of open children,
+  under any parent-close policy. Native's child summary allowed one waiting
+  child at a time, only the `abandon` parent-close policy, at most 100
+  children over a run's life, and no timer beside a child. Such a parent
+  was described with no wait. The `child-descriptions` fixture records five
+  cases against published 2.11.5
+  ([checkpoint](rust-server-port-checkpoints/2026-10-29-child-descriptions.md)).
+  A child with a cancellation policy other than `abandon`, a retry or
+  timeout policy, or beside an open activity is still described without
+  its wait, pending its own evidence.
 - **Trace context (Core 2.10, published in Server 2.11.1).** Core adds
   nullable `observability_context` columns on runs, commands and tasks.
   Native has no carrier: it accepts and ignores a top-level carrier on
