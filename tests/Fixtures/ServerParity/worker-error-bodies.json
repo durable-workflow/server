@@ -118,6 +118,19 @@
             }
           ]
         }
+      ],
+      "workflow_poll_duplicate_kinds": [
+        "POST",
+        "worker/workflow-tasks/poll",
+        {
+          "worker_id": "w",
+          "task_queue": "q",
+          "timeout_seconds": 61,
+          "task_kinds": [
+            "workflow",
+            "workflow"
+          ]
+        }
       ]
     },
     "expected": {
@@ -287,6 +300,37 @@
           "reason": "task_not_found",
           "task_id": "missing-task",
           "workflow_task_attempt": 1
+        }
+      },
+      "workflow_poll_duplicate_kinds": {
+        "status": 422,
+        "server_capabilities": true,
+        "body": {
+          "errors": {
+            "timeout_seconds": [
+              "The timeout seconds field must not be greater than 60."
+            ],
+            "task_kinds.0": [
+              "The task_kinds.0 field has a duplicate value."
+            ],
+            "task_kinds.1": [
+              "The task_kinds.1 field has a duplicate value."
+            ]
+          },
+          "message": "The timeout seconds field must not be greater than 60. (and 2 more errors)",
+          "protocol_version": "1.20",
+          "reason": "validation_failed",
+          "validation_errors": {
+            "timeout_seconds": [
+              "The timeout seconds field must not be greater than 60."
+            ],
+            "task_kinds.0": [
+              "The task_kinds.0 field has a duplicate value."
+            ],
+            "task_kinds.1": [
+              "The task_kinds.1 field has a duplicate value."
+            ]
+          }
         }
       }
     }

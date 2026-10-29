@@ -47,6 +47,9 @@ pub(crate) enum Rule {
     Regex(fn(&str) -> bool),
     /// `prohibited`: the attribute is missing, null or empty. Implicit.
     Prohibited,
+    /// `distinct` on a `x.*` attribute: no other item of the same array
+    /// holds the same value. Every duplicate fails, the first included.
+    Distinct,
 }
 
 pub(crate) type Rules = [(&'static str, &'static [Rule])];
@@ -226,6 +229,7 @@ fn message(rule: Rule, attribute: &str, rules: &[Rule], value: Option<&Value>) -
         },
         Rule::NotBlank | Rule::Pattern(_) | Rule::Regex(_) => format!("The {attribute} field format is invalid."),
         Rule::Prohibited => format!("The {attribute} field is prohibited."),
+        Rule::Distinct => format!("The {attribute} field has a duplicate value."),
         Rule::Date => format!("The {attribute} field must be a valid date."),
         Rule::Nullable | Rule::Sometimes => String::new(),
     }
@@ -268,7 +272,7 @@ fn passes(rule: Rule, data: &Value, value: Option<&Value>, rules: &[Rule]) -> bo
         Rule::Required => filled(value),
         Rule::Present => value.is_some(),
         Rule::RequiredWith(other) => !filled(lookup(data, other)) || filled(value),
-        Rule::Nullable | Rule::Sometimes => true,
+        Rule::Nullable | Rule::Sometimes | Rule::Distinct => true,
         Rule::NotBlank => value.and_then(Value::as_str).is_some_and(|text| text.chars().any(|character| !character.is_whitespace())),
         Rule::String => value.is_some_and(Value::is_string),
         Rule::Pattern(matches) => value.and_then(Value::as_str).is_some_and(matches),
@@ -349,6 +353,21 @@ fn checks(body: &Value, rules: &Rules) -> Vec<(String, bool, &'static [Rule])> {
 
 /// One attribute's messages. An implicit rule (required, required_with,
 /// present) stops at its first failure, as Laravel's does.
+/// Laravel's `validateDistinct` for an expanded `x.N` attribute: another
+/// item of `x` has the same value, compared as PHP compares them loosely
+/// for scalars (their string forms).
+fn duplicated(body: &Value, attribute: &str, value: Option<&Value>) -> bool {
+    let Some((parent, index)) = attribute.rsplit_once('.') else {
+        return false;
+    };
+    let (Some(Value::Array(items)), Some(own)) = (lookup(body, parent), value.and_then(php_string)) else {
+        return false;
+    };
+    items.iter().enumerate().any(|(position, item)| {
+        position.to_string() != index && php_string(item).is_some_and(|other| other == own)
+    })
+}
+
 fn attribute_errors(body: &Value, attribute: &str, expanded: bool, list: &[Rule]) -> Vec<String> {
     let value = lookup(body, attribute);
     if value.is_none() && list.iter().any(|rule| matches!(rule, Rule::Sometimes)) {
@@ -365,7 +384,8 @@ fn attribute_errors(body: &Value, attribute: &str, expanded: bool, list: &[Rule]
         if !implicit && skipped(value, nullable) {
             continue;
         }
-        if !passes(*rule, body, value, list) {
+        let failed = if matches!(rule, Rule::Distinct) { duplicated(body, attribute, value) } else { !passes(*rule, body, value, list) };
+        if failed {
             messages.push(message(*rule, &name, list, value));
             if implicit {
                 break;

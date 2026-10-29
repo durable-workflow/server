@@ -24,6 +24,14 @@ async fn poll_validation_failures_carry_laravels_messages_in_the_envelope() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(body["message"], "The poll request id field must not be greater than 255 characters. (and 3 more errors)");
     assert_eq!(body["errors"]["task_kinds"], json!(["The task kinds field must have at least 1 items."]));
+    // `distinct` is part of the same validation: duplicate kinds are reported
+    // beside the other fields' failures, every duplicate index included.
+    let (status, body) = request_protocol(&app, "POST", "/api/worker/workflow-tasks/poll", json!({"worker_id":"w","task_queue":"q",
+        "timeout_seconds":61,"task_kinds":["workflow","workflow"]}), "1.20").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["errors"], json!({"timeout_seconds":["The timeout seconds field must not be greater than 60."],
+        "task_kinds.0":["The task_kinds.0 field has a duplicate value."],"task_kinds.1":["The task_kinds.1 field has a duplicate value."]}));
+    assert_eq!(body["message"], "The timeout seconds field must not be greater than 60. (and 2 more errors)");
     let (status, body) = request_protocol(&app, "POST", "/api/worker/activity-tasks/poll",
         json!({"worker_id":"w","task_queue":"q","timeout_seconds":-1}), "1.20").await;
     assert_eq!((status, body["errors"].clone()), (StatusCode::UNPROCESSABLE_ENTITY,

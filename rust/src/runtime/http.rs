@@ -2096,8 +2096,7 @@ async fn deregister_fenced(
         }
     }
 }
-/// `WorkerController::pollWorkflowTasks`' request rules. Native checks
-/// `task_kinds.*` values and their distinctness when it reads them.
+/// `WorkerController::pollWorkflowTasks`' request rules.
 const WORKFLOW_POLL_RULES: &super::laravel_rules::Rules = &[
     ("worker_id", &[Rule::Required, Rule::String]),
     ("task_queue", &[Rule::Required, Rule::String]),
@@ -2107,7 +2106,7 @@ const WORKFLOW_POLL_RULES: &super::laravel_rules::Rules = &[
     ("history_page_size", &[Rule::Nullable, Rule::Integer, Rule::Min(1), Rule::Max(1000)]),
     ("accept_history_encoding", &[Rule::Nullable, Rule::String, Rule::Max(64)]),
     ("task_kinds", &[Rule::Nullable, Rule::Array, Rule::Min(1), Rule::Max(2)]),
-    ("task_kinds.*", &[Rule::String, Rule::In(&["workflow", "update_validation"])]),
+    ("task_kinds.*", &[Rule::String, Rule::Distinct, Rule::In(&["workflow", "update_validation"])]),
 ];
 
 /// `ActivityTaskController::poll`'s request rules.
