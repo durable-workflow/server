@@ -30,7 +30,7 @@ test('a successful probe keeps its retry note in the record and the recorder log
     const run = spawnSync(process.execPath, [runner, 'record', '--mode', 'http', '--url', 'http://127.0.0.1:9',
       '--target', 'php', '--output', output, '--runner-revision', '0'.repeat(40), '--fixture', fixture],
     {encoding: 'utf8', env: {...process.env, PATH: `${directory}${delimiter}${process.env.PATH}`}});
-    assert.match(run.stderr, new RegExp(`many-updates: ${note.replace(/[{}]/g, '\\$&')}`));
+    assert.ok(run.stderr.includes(`many-updates: ${note}`), `recorder stderr keeps the note:\n${run.stderr}`);
     assert.doesNotMatch(run.stderr, /private stderr text/);
     const record = JSON.parse(readFileSync(output, 'utf8'));
     assert.deepStrictEqual(record.cases[0].probe_notes, [note]);
