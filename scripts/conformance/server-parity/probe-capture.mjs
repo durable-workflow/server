@@ -29,3 +29,12 @@ export function captureProbe(command, args, {directory, env, timeout = 45000, pr
     rmSync(capture, {recursive: true, force: true});
   }
 }
+
+// The probe diagnostics a record keeps whatever the probe's exit status:
+// only lines of these exact, value-free shapes. Other stderr is not kept.
+const NOTE_SHAPES = [/^\{"many_updates_submit_retry":\{"index":\d{1,6},"attempt":\d,"status":\d{3}\}\}$/];
+
+export function probeNotes(stderr, limit = 20) {
+  return String(stderr ?? '').split('\n').map(line => line.trim())
+    .filter(line => NOTE_SHAPES.some(shape => shape.test(line))).slice(0, limit);
+}

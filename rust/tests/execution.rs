@@ -336,6 +336,8 @@ mod workflow_import_fences;
 
 #[path = "execution/large_command_batches.rs"]
 mod large_command_batches;
+#[path = "execution/many_updates.rs"]
+mod many_updates;
 
 #[path = "execution/query_argument_routing.rs"]
 mod query_argument_routing;

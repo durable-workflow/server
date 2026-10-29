@@ -51,3 +51,17 @@ test('stored workflow tasks are listed by counters and clocks, never payloads or
     ''].join('\n'));
   assert(!text.includes('payload-bytes') && !text.includes('error-text') && !text.includes('owner-name') && !text.includes('/not-a-request'));
 });
+
+test('labelled steps keep their request label and status, never their responses', () => {
+  const text = failureExcerpt([{fixture_id: 'signals-before-worker', outcome: 'product-fail', error: 'step statuses',
+    observation: {signals_before_worker: {steps: [
+      {request: 'POST /api/workflows', status: 201, response: {workflow_id: 'secret-run'}},
+      {request: 'POST /api/workflows/w/signal/s', status: 500, response: {message: 'Server Error', token: 'secret-token'}},
+      {request: 'not a label', status: 200}, {request: 'GET /api/x', status: '200'}]}}}]);
+  assert.equal(text, [
+    '== signals-before-worker (product-fail): step statuses',
+    'observation.signals_before_worker.steps[0] POST /api/workflows 201',
+    'observation.signals_before_worker.steps[1] POST /api/workflows/w/signal/s 500',
+    ''].join('\n'));
+  assert(!text.includes('secret-run') && !text.includes('secret-token') && !text.includes('Server Error'));
+});
