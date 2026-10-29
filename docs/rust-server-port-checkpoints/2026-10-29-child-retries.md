@@ -67,5 +67,5 @@
     delivery expects one link per call and refuses it with `409
     cancellation_delivery_shape_mismatch`. Security's review confirmed this
     from the source. A fix needs a PHP recording first: #873.
-  - Memos and search attributes inherited by child runs, retried or not
-    (a separate gap).
+  - Memos and search attributes inherited by child runs, retried or not:
+    the [child-visibility checkpoint](2026-10-29-child-visibility.md).

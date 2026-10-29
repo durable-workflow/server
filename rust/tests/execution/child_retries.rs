@@ -163,6 +163,7 @@ async fn a_child_deadline_or_backoff_too_far_away_is_refused_not_overflowed() {
         (json!({"execution_timeout_seconds": i64::MAX}), "invalid_child_timeout"),
         (json!({"run_timeout_seconds": i64::MAX}), "invalid_child_timeout"),
         (json!({"retry_policy": {"max_attempts": 2, "backoff_seconds": [1, i64::MAX]}}), "invalid_child_retry_policy"),
+        (json!({"retry_policy": {"max_attempts": 2, "backoff_seconds": {"first": i64::MAX}}}), "invalid_child_retry_policy"),
     ] {
         let (status, body) = finish_task(&app, &task, json!([child(options.clone())])).await;
         assert_eq!((status, &body["reason"]), (StatusCode::UNPROCESSABLE_ENTITY, &json!(reason)), "{options}: {body}");
@@ -170,6 +171,39 @@ async fn a_child_deadline_or_backoff_too_far_away_is_refused_not_overflowed() {
     // The task is still open and the runtime still serves it.
     let (status, body) = finish_task(&app, &task, json!([child(json!({"run_timeout_seconds": 60}))])).await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn a_child_and_its_retry_inherit_the_parents_memos_and_search_attributes() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let (status, body) = request(&app, "POST", "/api/search-attributes", json!({"name":"Region","type":"keyword"})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    register(&app, "worker", json!(["echo", "child"]), json!([])).await;
+    let (status, parent) = request(&app, "POST", "/api/workflows", json!({"workflow_id":"inheriting","workflow_type":"echo",
+        "task_queue":"test","input":envelope(Payload::Array(vec![])),"memo":{"team":"ops","count":3},
+        "search_attributes":{"Region":"eu"}})).await;
+    assert_eq!(status, StatusCode::CREATED, "{parent}");
+    let task = poll(&app, "worker", "workflow").await;
+    let (status, body) = finish_task(&app, &task, json!([child(json!({"retry_policy":{"max_attempts":2}}))])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let events = child_events(&run_history(&app, &json!("inheriting"), &parent["run_id"]).await);
+    let instance = events[0]["payload"]["child_workflow_instance_id"].as_str().unwrap().to_owned();
+    let expected = (json!({"count":3,"team":"ops"}), json!({"Region":"eu"}));
+    let (_, described) = request(&app, "GET", &format!("/api/workflows/{instance}"), Value::Null).await;
+    assert_eq!((described["memo"].clone(), described["search_attributes"].clone()), expected, "{described}");
+    let first = child_task(&app).await;
+    let (status, body) = finish_task(&app, &first, fail(false)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, described) = request(&app, "GET", &format!("/api/workflows/{instance}"), Value::Null).await;
+    assert_eq!(described["run_number"], 2, "{described}");
+    assert_eq!((described["memo"].clone(), described["search_attributes"].clone()), expected, "{described}");
+    let (_, listed) = request(&app, "GET", &format!("/api/workflows?query={}", "Region%20%3D%20%22eu%22"), Value::Null).await;
+    let ids: Vec<_> = listed["workflows"].as_array().unwrap().iter().map(|row| row["workflow_id"].clone()).collect();
+    assert!(ids.contains(&json!(instance)), "{listed}");
     runtime.close().await;
     database.remove().await;
 }
