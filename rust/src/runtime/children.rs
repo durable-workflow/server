@@ -69,8 +69,9 @@ pub(super) fn validate_child(command: &Value) -> Result<()> {
             return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_child_timeout"));
         }
     }
-    if let Some(backoff) = command["retry_policy"]["backoff_seconds"].as_array()
-        && backoff.iter().any(|entry| entry.as_i64().is_some_and(|seconds| super::child_retries::after(now, seconds).is_none()))
+    // PHP reads a backoff object's values as a list (`array_values`).
+    if let Some(mut backoff) = super::child_retries::list(&command["retry_policy"]["backoff_seconds"])
+        && backoff.any(|entry| entry.as_i64().is_some_and(|seconds| super::child_retries::after(now, seconds).is_none()))
     {
         return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_child_retry_policy"));
     }
@@ -312,6 +313,10 @@ where
             .bind(&child_run).bind(&child_instance).bind(namespace.as_deref()).bind(workflow_type).bind(workflow_type).bind(&arguments).bind(&queue).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(compatibility.as_deref())
             // Timeouts are at least one second; zero binds "no timeout".
             .bind(run_timeout.unwrap_or(0)).bind(DB::optional_time(execution_deadline)).bind(DB::optional_time(run_deadline)).execute(&mut **tx).await?;
+        // `inheritTypedVisibilityMetadata`: the child takes its parent's memos
+        // and search attributes.
+        let memos = Self::inheritable_memos(tx, &parent_run).await?;
+        Self::inherit_visibility(tx, memos, &parent_run, &child_run, &child_instance, started_at).await?;
         Self::query("INSERT INTO workflow_child_calls(parent_workflow_run_id,parent_workflow_instance_id,sequence,child_workflow_type,child_workflow_class,resolved_child_instance_id,resolved_child_run_id,parent_close_policy,cancellation_propagation,queue,status,scheduled_at,started_at,arguments,metadata,created_at,updated_at,retry_policy,timeout_policy) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,($9<>'abandon'),$10,'started',$11,$12,$13,$14,$15,$16,$17,$18)")
             .bind(&parent_run).bind(&parent_instance).bind(sequence).bind(workflow_type).bind(workflow_type).bind(&child_instance).bind(&child_run).bind(&policies.parent_close).bind(&policies.cancellation).bind(&queue).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at))
             .bind(DB::document(&json!({"payload":arguments}))).bind(DB::document(&json!({"child_call_id":call,"attempt_count":1,"cancellation_policy":policies.cancellation}))).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at))
@@ -609,6 +614,9 @@ where
             .bind(&retry_run).bind(run_number).bind(run_timeout.unwrap_or(0)).bind(DB::optional_time(execution_deadline)).bind(DB::optional_time(run_deadline))
             .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(&failed_run)
             .execute(&mut **tx).await?;
+        // The retry takes the failed run's memos and search attributes.
+        let memos = Self::inheritable_memos(tx, &failed_run).await?;
+        Self::inherit_visibility(tx, memos, &failed_run, &retry_run, &instance, at).await?;
         // Each placeholder appears once, in order, as MySQL's templates require.
         Self::query("UPDATE workflow_instances SET current_run_id=$1,run_count=CASE WHEN run_count>$2 THEN run_count ELSE $3 END,updated_at=$4 WHERE id=$5")
             .bind(&retry_run).bind(run_number).bind(run_number).bind(DB::bind_time(at)).bind(&instance).execute(&mut **tx).await?;

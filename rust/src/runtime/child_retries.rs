@@ -130,7 +130,7 @@ fn error_types(value: &Value) -> Vec<String> {
 }
 
 /// A PHP array's values: a list, or an object's values in order.
-fn list(value: &Value) -> Option<Box<dyn Iterator<Item = &Value> + '_>> {
+pub(super) fn list(value: &Value) -> Option<Box<dyn Iterator<Item = &Value> + '_>> {
     match value {
         Value::Array(entries) => Some(Box::new(entries.iter())),
         Value::Object(entries) => Some(Box::new(entries.values())),
