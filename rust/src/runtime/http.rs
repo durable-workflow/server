@@ -1,3 +1,4 @@
+use super::laravel_rules::Rule;
 use axum::{
     Extension, Json, Router,
     extract::{DefaultBodyLimit, Path, Query, Request, State},
@@ -655,6 +656,13 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
             return admission_error(request, worker, StatusCode::NOT_FOUND, body).await;
         }
         if namespace != "default" && !named_namespace_operation(request.method().as_str(), &path) {
+            // A request PHP has no route for gets PHP's 404 or 405 in any
+            // namespace; only an operation PHP serves is refused here.
+            if !matches!(super::route_fallback::answer(request.method().as_str(), &path),
+                super::route_fallback::Answer::NotImplemented)
+            {
+                return route_fallback(request.method().clone(), request.uri().clone()).await;
+            }
             return admission_error(request,worker,StatusCode::UNPROCESSABLE_ENTITY,
                 json!({"reason":"development_namespace_operation_unqualified","namespace":namespace,
                     "message":"This operation is not implemented for named namespaces in the unpublished execution slice."})).await;
@@ -2088,13 +2096,43 @@ async fn deregister_fenced(
         }
     }
 }
+/// `WorkerController::pollWorkflowTasks`' request rules.
+const WORKFLOW_POLL_RULES: &super::laravel_rules::Rules = &[
+    ("worker_id", &[Rule::Required, Rule::String]),
+    ("task_queue", &[Rule::Required, Rule::String]),
+    ("build_id", &[Rule::Nullable, Rule::String]),
+    ("poll_request_id", &[Rule::Nullable, Rule::String, Rule::Max(255)]),
+    ("timeout_seconds", &[Rule::Nullable, Rule::Integer, Rule::Min(0), Rule::Max(60)]),
+    ("history_page_size", &[Rule::Nullable, Rule::Integer, Rule::Min(1), Rule::Max(1000)]),
+    ("accept_history_encoding", &[Rule::Nullable, Rule::String, Rule::Max(64)]),
+    ("task_kinds", &[Rule::Nullable, Rule::Array, Rule::Min(1), Rule::Max(2)]),
+    ("task_kinds.*", &[Rule::String, Rule::Distinct, Rule::In(&["workflow", "update_validation"])]),
+];
+
+/// `ActivityTaskController::poll`'s request rules.
+const ACTIVITY_POLL_RULES: &super::laravel_rules::Rules = &[
+    ("worker_id", &[Rule::Required, Rule::String]),
+    ("task_queue", &[Rule::Required, Rule::String]),
+    ("build_id", &[Rule::Nullable, Rule::String]),
+    ("poll_request_id", &[Rule::Nullable, Rule::String, Rule::Max(255)]),
+    ("timeout_seconds", &[Rule::Nullable, Rule::Integer, Rule::Min(0), Rule::Max(60)]),
+];
+
+/// A poll's request rules, answered as PHP's worker plane answers a
+/// validation failure: in the worker envelope.
+fn poll_rules(body: &Value, rules: &super::laravel_rules::Rules) -> Result<()> {
+    super::laravel_rules::validate(&super::laravel_rules::normalize(body), rules).map_err(worker_refusal)
+}
+
 async fn poll_workflow(
     Extension(runtime): Extension<Runtime>,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
+    let protocol = request_protocol(&headers)?;
+    poll_rules(&body, WORKFLOW_POLL_RULES)?;
     runtime
-        .poll_workflow_tasks(body, request_protocol(&headers)?)
+        .poll_workflow_tasks(body, protocol)
         .await
         .map(Json)
         .map_err(worker_refusal)
@@ -2139,9 +2177,11 @@ async fn poll_activity(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
+    let protocol = request_protocol(&headers)?;
+    poll_rules(&body, ACTIVITY_POLL_RULES)?;
     let wait = runtime.worker_poll_wait();
     runtime
-        .poll_with_pages(body, "activity", request_protocol(&headers)?, Default::default(), wait)
+        .poll_with_pages(body, "activity", protocol, Default::default(), wait)
         .await
         .map(Json)
 }
@@ -2380,10 +2420,24 @@ async fn heartbeat_activity(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
+    let attempt = body["activity_attempt_id"].clone();
     runtime
         .heartbeat_activity(&task_id, body, request_protocol(&headers)?)
         .await
+        .map_err(|error| activity_not_found(error, &task_id, attempt))
         .map(Json)
+}
+
+/// `guardAttemptOwnership`'s answer for a task the namespace does not hold,
+/// in the worker envelope, as the fail and heartbeat routes give it.
+fn activity_not_found(error: super::RuntimeError, task_id: &str, attempt: Value) -> super::RuntimeError {
+    match error {
+        super::RuntimeError::Refused { status, reason: "task_not_found" } if status == StatusCode::NOT_FOUND => {
+            super::RuntimeError::Protocol { status, response: worker_response(json!({"task_id":task_id,
+                "activity_attempt_id":attempt,"error":"Activity task not found.","reason":"task_not_found"})) }
+        }
+        other => other,
+    }
 }
 
 async fn renew_activity_lease(
@@ -2470,7 +2524,12 @@ async fn fail_activity(
     Path(task_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    runtime.fail_activity(&task_id, body).await.map(|body| Json(worker_response(body)))
+    let attempt = body["activity_attempt_id"].clone();
+    runtime
+        .fail_activity(&task_id, body)
+        .await
+        .map_err(|error| activity_not_found(error, &task_id, attempt))
+        .map(|body| Json(worker_response(body)))
 }
 /// The query's command context, as PHP's controller builds it.
 fn query_context(request: &CommandRequest, body: &Value, workflow_id: &str, name: &str) -> Value {
