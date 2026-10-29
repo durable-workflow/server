@@ -45,6 +45,10 @@ function walk(value, path, out, limit) {
   }
   if (typeof value.method === 'string' && typeof value.path === 'string' && Object.hasOwn(value, 'status')) {
     out.push(line(path, value));
+  } else if (typeof value.request === 'string' && /^[A-Z]+ \S+$/.test(value.request) && Number.isInteger(value.status)) {
+    // Older probes record a step as {request: 'METHOD path', status, response};
+    // the label and status are kept, the response body is not.
+    out.push(`${path} ${value.request.slice(0, 200)} ${value.status}`);
   }
   const tasks = value.tables?.workflow_tasks?.rows;
   if (Array.isArray(tasks)) {

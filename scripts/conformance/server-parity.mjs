@@ -13,7 +13,7 @@ import {parseDatabaseResourceLimits} from './server-parity/database-resource-con
 import {checkSdkChildDirectionArtifacts, checkSdkChildDirectionPackages} from './server-parity/sdk-child-direction-contract.mjs';
 import {checkSdkTimerAuthorArtifacts, checkSdkTimerAuthorPackages} from './server-parity/sdk-timer-author-contract.mjs';
 import {checkSdkSignalDirectionArtifacts, checkSdkSignalDirectionPackages} from './server-parity/sdk-signal-direction-contract.mjs';
-import {captureProbe} from './server-parity/probe-capture.mjs';
+import {captureProbe, probeNotes} from './server-parity/probe-capture.mjs';
 import {selectFixturePaths} from './server-parity/fixture-selection.mjs';
 import {writeRecord} from './server-parity/record-file.mjs';
 import {checkCorrectedMarkerArtifacts, checkCorrectedMarkerPackages} from './server-parity/corrected-marker-contract.mjs';
@@ -105,10 +105,16 @@ try {
         for (const flag of ['url', 'application-root']) {
           if (values[flag]) arguments_.push(`--${flag}`, values[flag]);
         }
-        const probe = captureProbe('php', arguments_, {directory: dirname(resolve(values.output)), timeout: fixture.memo_replay ? fixture.memo_replay.overall_budget_seconds * 1000 + 5000 : fixture.corrected_markers ? fixture.corrected_markers.overall_budget_seconds * 1000 + 5000 : fixture.namespace_signal_pair || fixture.selected_run_signal_pair || fixture.cancellation_scopes ? 75000 : fixture.update_validation ? 90000 : fixture.worker_poll_fence ? fixture.worker_poll_fence.overall_budget_seconds * 1000 + 5000 : fixture.worker_sessions ? fixture.worker_sessions.overall_budget_seconds * 1000 + 5000 : fixture.worker_session_activities ? fixture.worker_session_activities.overall_budget_seconds * 1000 + 5000 : fixture.large_command_batches ? fixture.large_command_batches.overall_budget_seconds * 1000 + 5000 : 45000,
+        const probe = captureProbe('php', arguments_, {directory: dirname(resolve(values.output)), timeout: fixture.memo_replay ? fixture.memo_replay.overall_budget_seconds * 1000 + 5000 : fixture.corrected_markers ? fixture.corrected_markers.overall_budget_seconds * 1000 + 5000 : fixture.namespace_signal_pair || fixture.selected_run_signal_pair || fixture.cancellation_scopes ? 75000 : fixture.update_validation ? 90000 : fixture.worker_poll_fence ? fixture.worker_poll_fence.overall_budget_seconds * 1000 + 5000 : fixture.worker_sessions ? fixture.worker_sessions.overall_budget_seconds * 1000 + 5000 : fixture.worker_session_activities ? fixture.worker_session_activities.overall_budget_seconds * 1000 + 5000 : fixture.large_command_batches ? fixture.large_command_batches.overall_budget_seconds * 1000 + 5000 : fixture.many_updates ? fixture.many_updates.overall_budget_seconds * 1000 + 5000 : 45000,
           env: {...process.env, DW_PARITY_FAILURE_EVIDENCE_DIR: dirname(resolve(values.output))},
           preserveStdout: join(sourceDirectory, name)});
         const item = {fixture_id: fixture.id, fixture, outcome: 'runner-blocked'};
+        // Recognized diagnostics are kept even when the probe succeeds.
+        const notes = probeNotes(probe.stderr);
+        if (notes.length > 0) {
+          item.probe_notes = notes;
+          for (const note of notes) console.error(`${fixture.id}: ${note}`);
+        }
         originals.set(item, {fixture: path, observation: probe.stdoutPath});
         try {
           if (probe.error || probe.status !== 0) throw new Error(probe.error?.message ?? probe.stderr.trim());

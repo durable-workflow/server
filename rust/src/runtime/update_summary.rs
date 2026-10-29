@@ -54,8 +54,9 @@ impl UpdateSummaryHistory {
             return false;
         }
         if kind == "UpdateAccepted" {
-            if self.updates.len() >= 64
-                || self.updates.contains_key(id)
+            // Published PHP bounds only pending updates, not how many a
+            // run takes over its life, so every accepted update is kept.
+            if self.updates.contains_key(id)
                 // A run continued from a predecessor takes its pending update
                 // without an ordering state, ready for delivery.
                 || payload.get("ordering_state").is_some_and(|state| state != "ready")
@@ -132,9 +133,9 @@ where
         history: &UpdateSummaryHistory,
         summary: &mut ActiveSummary,
     ) -> Result<bool> {
-        let rows = Self::query("SELECT w.*,u.id AS update_id,u.workflow_command_id,u.workflow_instance_id AS update_instance,u.update_name,u.status AS update_status,u.command_sequence AS update_command_sequence,u.workflow_sequence,c.id AS matched_command_id,c.command_sequence AS matched_command_sequence FROM workflow_run_waits w LEFT JOIN workflow_updates u ON u.id=w.resume_source_id AND u.workflow_run_id=w.workflow_run_id LEFT JOIN workflow_commands c ON c.id=u.workflow_command_id AND c.workflow_run_id=w.workflow_run_id WHERE w.workflow_run_id=$1 AND w.kind='update' ORDER BY w.command_sequence,w.wait_id LIMIT 65")
+        let rows = Self::query("SELECT w.*,u.id AS update_id,u.workflow_command_id,u.workflow_instance_id AS update_instance,u.update_name,u.status AS update_status,u.command_sequence AS update_command_sequence,u.workflow_sequence,c.id AS matched_command_id,c.command_sequence AS matched_command_sequence FROM workflow_run_waits w LEFT JOIN workflow_updates u ON u.id=w.resume_source_id AND u.workflow_run_id=w.workflow_run_id LEFT JOIN workflow_commands c ON c.id=u.workflow_command_id AND c.workflow_run_id=w.workflow_run_id WHERE w.workflow_run_id=$1 AND w.kind='update' ORDER BY w.command_sequence,w.wait_id")
             .bind(run).fetch_all(&mut **tx).await?;
-        if rows.len() != history.updates.len() || rows.len() > 64 {
+        if rows.len() != history.updates.len() {
             return Ok(false);
         }
         let mut open = None;

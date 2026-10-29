@@ -16,6 +16,7 @@ import {checkActivityLeaseRenewal} from './activity-lease-renewal-contract.mjs';
 import {checkConcurrentWaits} from './concurrent-waits-contract.mjs';
 import {checkContinueTransfers} from './continue-transfers-contract.mjs';
 import {checkLargeCommandBatches} from './large-command-batches-contract.mjs';
+import {checkManyUpdates} from './many-updates-contract.mjs';
 import {checkStartSearchAttributes} from './start-search-attributes-contract.mjs';
 import {checkQueryArgumentRouting} from './query-arguments-contract.mjs';
 import {checkQueryContractArguments} from './query-contract-arguments-contract.mjs';
@@ -177,6 +178,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const concurrentWaits = fixture.concurrent_waits ? checkConcurrentWaits(fixture, observation) : null;
   const continueTransfers = fixture.continue_transfers ? checkContinueTransfers(fixture, observation) : null;
   const largeCommandBatches = fixture.large_command_batches ? checkLargeCommandBatches(fixture, observation) : null;
+  const manyUpdates = fixture.many_updates ? checkManyUpdates(fixture, observation) : null;
   const startSearchAttributes = fixture.start_search_attributes ? checkStartSearchAttributes(fixture, observation) : null;
   const queryArguments = fixture.query_argument_routing ? checkQueryArgumentRouting(fixture, observation) : null;
   const queryContractArguments = fixture.query_contract_arguments ? checkQueryContractArguments(fixture, observation) : null;
@@ -756,6 +758,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(concurrentWaits ? {concurrent_waits: concurrentWaits} : {}),
     ...(continueTransfers ? {continue_transfers: continueTransfers} : {}),
     ...(largeCommandBatches ? {large_command_batches: largeCommandBatches} : {}),
+    ...(manyUpdates ? {many_updates: manyUpdates} : {}),
     ...(startSearchAttributes ? {start_search_attributes: startSearchAttributes} : {}),
     ...(queryArguments ? {query_argument_routing: queryArguments} : {}),
     ...(queryContractArguments ? {query_contract_arguments: queryContractArguments} : {}),
