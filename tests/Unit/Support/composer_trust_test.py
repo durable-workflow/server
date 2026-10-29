@@ -421,6 +421,46 @@ echo installed
                 result, runs = self.retrying(1, failure, *arguments)
                 self.assertEqual((100, 1), (result.returncode, runs), result.stderr)
 
+    def building(self, failures: int) -> tuple[subprocess.CompletedProcess[str], int]:
+        """Runs a copy of the floor script whose image build fails `failures` times."""
+        work = Path(tempfile.mkdtemp(prefix="dw-brotli-floor-retry-"))
+        self.addCleanup(shutil.rmtree, work, ignore_errors=True)
+        (work / "bin").mkdir()
+        shutil.copy(FLOOR_SCRIPT, work / "brotli-safe-composer.sh")
+        base = re.search(r"^base=(\S+)$", FLOOR_SCRIPT.read_text(), re.MULTILINE).group(1)
+        count = work / "builds"
+        docker = work / "bin" / "docker"
+        docker.write_text(f"""#!/bin/sh
+case "$1 $2" in
+  "image inspect")
+    if [ "$3" = --format ]; then echo '{base}'; exit 0; fi
+    exit 1 ;;
+  "build --quiet")
+    cat > /dev/null
+    n=$(($(cat '{count}' 2>/dev/null || echo 0) + 1)); echo "$n" > '{count}'
+    if [ "$n" -le {failures} ]; then echo 'ERROR: unable to fetch the package index' >&2; exit 5; fi
+    exit 0 ;;
+  "run --rm") exit 0 ;;
+esac
+exit 64
+""")
+        (work / "bin" / "sleep").write_text("#!/bin/sh\nexit 0\n")
+        for stub in (docker, work / "bin" / "sleep"):
+            stub.chmod(0o755)
+        result = subprocess.run(["sh", str(work / "brotli-safe-composer.sh")], capture_output=True, text=True,
+                                env={**os.environ, "PATH": f"{work / 'bin'}:{os.environ['PATH']}"}, timeout=60)
+        return result, int(count.read_text())
+
+    def test_the_floor_build_retries_a_transient_failure_twice(self) -> None:
+        result, builds = self.building(2)
+        self.assertEqual((0, 3), (result.returncode, builds), result.stderr)
+        self.assertEqual("dw-composer-brotli-floor:2.10.3-da624c2c705d\n", result.stdout)
+        self.assertEqual(2, result.stderr.count("retrying"), result.stderr)
+
+        result, builds = self.building(3)
+        self.assertEqual((1, 3), (result.returncode, builds), "three attempts at most")
+        self.assertIn("failed 3 times", result.stderr)
+
     def test_the_floor_refuses_the_pinned_image_and_accepts_its_own(self) -> None:
         docker_or_skip(self)
         refused = subprocess.run(["sh", str(FLOOR_SCRIPT), "--check", PINNED_COMPOSER],
