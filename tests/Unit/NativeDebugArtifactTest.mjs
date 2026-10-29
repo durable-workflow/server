@@ -11,6 +11,12 @@ import {createArtifact, verifyArtifact} from '../../scripts/ci/native-debug-arti
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const compiler = 'rustc 1.99.0 (test fixture)';
 const digest = path => createHash('sha256').update(readFileSync(path)).digest('hex');
+const workflow = readFileSync(join(repository, '.github/workflows/server-parity.yml'), 'utf8');
+function workflowJob(id) {
+  const match = new RegExp(`\\n  ${id}:\\n([\\s\\S]*?)(?=\\n  [a-z0-9-]+:|$)`).exec(workflow);
+  assert.ok(match, `missing workflow job ${id}`);
+  return match[1];
+}
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'native-debug-artifact-'));
@@ -182,3 +188,132 @@ for (const failure of [false, true]) {
     if (!failure) verifyArtifact(join(root, 'bundle'), {root, env});
   });
 }
+
+test('the producer shares only three files with pinned actions and bounded retention', () => {
+  const producer = workflowJob('native-debug-build');
+  assert.match(producer, /needs: changes\n {4}if: \$\{\{ needs\.changes\.outputs\.run == 'true' \}\}/);
+  assert.match(producer, /persist-credentials: false/);
+  assert.match(producer, /artifact_name: \$\{\{ steps\.artifact\.outputs\.name \}\}/);
+  assert.match(producer, /producer_attempt: \$\{\{ steps\.artifact\.outputs\.attempt \}\}/);
+  assert.match(producer, /native-debug-build-%s-%s/);
+  assert.match(producer, /bash scripts\/ci\/native-debug-build\.sh native-debug-build/);
+  assert.match(producer, /node scripts\/ci\/native-debug-artifact\.mjs verify native-debug-build/);
+  assert.match(producer, /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/);
+  const paths = producer.match(/          path: \|\n((?: {12}.+\n)+)/g).at(-1);
+  assert.equal(paths, '          path: |\n            native-debug-build/server\n'
+    + '            native-debug-build/build.json\n            native-debug-build/SHA256SUMS\n');
+  assert.match(producer, /retention-days: 1\n {10}if-no-files-found: error/);
+  assert.doesNotMatch(producer, /cache\/save|contents: write|packages: write/);
+});
+
+test('all non-test consumers verify the same-run artifact before installing the executable', () => {
+  for (const id of ['mysql-execution', 'postgres-storage', 'execution-and-codec']) {
+    const block = workflowJob(id);
+    assert.match(block, /needs: \[published-sdk-adapters, native-debug-build\]/);
+    assert.match(block, /if: \$\{\{ !cancelled\(\) && needs\.published-sdk-adapters\.result == 'success' \}\}/);
+    const download = block.slice(block.indexOf("      - name: Fetch this run's native debug server"),
+      block.indexOf("      - name: Verify and install this run's native debug server"));
+    assert.match(download, /matrix\.part != 'native-tests' && matrix\.part != 'native-tests-b'/);
+    assert.match(download, /actions\/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c/);
+    assert.match(download, /name: \$\{\{ needs\.native-debug-build\.outputs\.artifact_name \}\}/);
+    assert.match(download, /digest-mismatch: error/);
+    assert.doesNotMatch(download, /continue-on-error|run-id:|repository:/);
+    assert.match(block, /NATIVE_BUILD_RUN_ATTEMPT: \$\{\{ needs\.native-debug-build\.outputs\.producer_attempt \}\}/);
+    const verify = block.indexOf('node scripts/ci/native-debug-artifact.mjs verify native-debug-build');
+    const install = block.indexOf('install -m 0755 native-debug-build/server rust-target/debug/durable-workflow-server');
+    assert.ok(verify > 0 && install > verify, id);
+  }
+});
+
+test('consumer preflight refuses a failed producer or missing identity before download', () => {
+  for (const id of ['mysql-execution', 'postgres-storage', 'execution-and-codec']) {
+    const block = workflowJob(id);
+    const guard = block.slice(block.indexOf('      - name: Require a successful native debug producer'),
+      block.indexOf("      - name: Fetch this run's native debug server"));
+    assert.match(guard, /matrix\.part != 'native-tests' && matrix\.part != 'native-tests-b'/);
+    assert.match(guard, /NATIVE_BUILD_RESULT: \$\{\{ needs\.native-debug-build\.result \}\}/);
+    const body = guard.match(/        run: \|\n((?: {10}[^\n]*\n)+)/)?.[1]
+      .split('\n').map(line => line.slice(10)).join('\n');
+    assert.ok(body);
+    const env = {...process.env, GITHUB_RUN_ID: '12345', GITHUB_RUN_ATTEMPT: '2',
+      NATIVE_BUILD_RESULT: 'success', NATIVE_BUILD_ARTIFACT: 'native-debug-build-12345-1',
+      NATIVE_BUILD_RUN_ATTEMPT: '1'};
+    const run = changes => spawnSync('bash', ['-c', body], {env: {...env, ...changes}, encoding: 'utf8'});
+    assert.equal(run({}).status, 0);
+    for (const changes of [{NATIVE_BUILD_RESULT: 'failure'}, {NATIVE_BUILD_RESULT: 'skipped'},
+      {NATIVE_BUILD_RESULT: 'cancelled'}, {NATIVE_BUILD_ARTIFACT: ''},
+      {NATIVE_BUILD_ARTIFACT: 'native-debug-build-99999-1'}, {NATIVE_BUILD_RUN_ATTEMPT: ''},
+      {NATIVE_BUILD_RUN_ATTEMPT: '3'}, {NATIVE_BUILD_RUN_ATTEMPT: '01'},
+      {NATIVE_BUILD_RUN_ATTEMPT: '10000000000'}]) {
+      assert.notEqual(run(changes).status, 0, `${id}: ${JSON.stringify(changes)}`);
+    }
+  }
+});
+
+function databaseCommand(id) {
+  const line = workflowJob(id).split('\n').find(value => value.trimStart().startsWith(
+    id === 'mysql-execution' ? "'case \"$DW_PARITY_PART\"" : "'if [ \"$DW_PARITY_PART\""));
+  assert.ok(line?.trim().endsWith("'"));
+  return line.trim().slice(1, -1);
+}
+
+function runDatabaseCommand(t, id, part, binary = true) {
+  const root = mkdtempSync(join(tmpdir(), 'native-debug-cargo-'));
+  t.after(() => rmSync(root, {recursive: true, force: true}));
+  mkdirSync(join(root, 'bin'));
+  mkdirSync(join(root, 'evidence'));
+  mkdirSync(join(root, 'target/debug'), {recursive: true});
+  if (binary) writeFileSync(join(root, 'target/debug/durable-workflow-server'), 'fixture\n', {mode: 0o755});
+  const log = join(root, 'cargo.jsonl');
+  writeFileSync(log, '');
+  writeFileSync(join(root, 'bin/cargo'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.CARGO_CALL_LOG, JSON.stringify(args) + '\\n');
+if(args.includes('--list')) console.log('case_a: test\\ncase_b: test');
+`, {mode: 0o755});
+  const script = databaseCommand(id).replaceAll('/evidence/', `${root}/evidence/`).replaceAll('/target/', `${root}/target/`);
+  const run = spawnSync('bash', ['-c', script], {encoding: 'utf8', env: {...process.env,
+    PATH: `${root}/bin:${process.env.PATH}`, CARGO_CALL_LOG: log, DW_PARITY_PART: part, DW_EXECUTION_SHARDS: '2'}});
+  const calls = readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+  return {...run, calls};
+}
+
+for (const part of ['native-tests', 'native-tests-b']) {
+  test(`MySQL ${part} retains the original Cargo tests, sharding and build`, t => {
+    const run = runDatabaseCommand(t, 'mysql-execution', part);
+    assert.equal(run.status, 0, run.stderr);
+    const flags = ['--locked', '--offline'];
+    const expected = part === 'native-tests' ? [
+      ['test', ...flags, '--lib', 'runtime::mysql::', '--', '--ignored', '--skip',
+        'runtime::mysql::tests::bootstrap_child', '--nocapture', '--test-threads=2'],
+    ] : [];
+    expected.push(['test', ...flags, '--test', 'execution', '--', '--list', '--format', 'terse'],
+      ['test', ...flags, '--test', 'execution', '--', '--exact', '--nocapture', '--test-threads=2',
+        part === 'native-tests' ? 'case_a' : 'case_b'], ['build', ...flags]);
+    assert.deepEqual(run.calls, expected);
+  });
+}
+
+test('PostgreSQL native tests retain qualification, execution and build commands', t => {
+  const run = runDatabaseCommand(t, 'postgres-storage', 'native-tests');
+  assert.equal(run.status, 0, run.stderr);
+  const flags = ['--locked', '--offline'];
+  assert.deepEqual(run.calls, [
+    ['test', ...flags, '--lib', 'runtime::postgres::tests::qualification_', '--', '--ignored', '--nocapture'],
+    ['test', ...flags, '--test', 'execution', '--', '--nocapture'], ['build', ...flags],
+  ]);
+});
+
+test('database corpus/profile parts never invoke Cargo and fail without their executable', t => {
+  for (const id of ['mysql-execution', 'postgres-storage']) {
+    for (const part of ['corpus', 'restarts', 'cohorts', 'sdk-directions', 'corrected-markers']) {
+      const present = runDatabaseCommand(t, id, part);
+      assert.equal(present.status, 0, `${id}/${part}: ${present.stderr}`);
+      assert.deepEqual(present.calls, []);
+      const missing = runDatabaseCommand(t, id, part, false);
+      assert.notEqual(missing.status, 0, `${id}/${part} must fail without the verified executable`);
+      assert.deepEqual(missing.calls, [], 'there must be no fallback build');
+    }
+  }
+});

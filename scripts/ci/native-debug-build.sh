@@ -47,5 +47,6 @@ if ! docker run --rm --init --name "$scope-build" --cidfile "$build_cid" \
   exit 1
 fi
 cp rust-target/debug/durable-workflow-server "$output/server"
+cat "$output.build.txt"
 compiler=$(sed -n '/^rustc [0-9]/{p;q;}' "$output.build.txt")
 node scripts/ci/native-debug-artifact.mjs create "$output" "$compiler" "$((SECONDS-started))"
