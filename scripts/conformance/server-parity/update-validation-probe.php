@@ -39,8 +39,8 @@ function finishHttpUpdateValidation(Client $client, array $fixture, string $work
     // A request that waits for a validator, sent from a child process. Like
     // the requests above, it retries only the documented lock-pressure
     // refusal, which committed nothing (lockPressureOperationRetryDelay);
-    // `seconds` is the answered attempt's own wait, and retries are reported
-    // on stderr.
+    // `seconds` includes the whole logical request: every attempt and its
+    // backoff. Retries are also reported on stderr.
     $background = static function (string $workflow, string $update, array $body) use ($url, $token): array {
         $child = <<<'PHP'
 [, $url, $token, $path, $body, $retryRule] = $argv;
@@ -51,8 +51,8 @@ $context = stream_context_create(['http' => ['method' => 'POST', 'header' => $he
     'ignore_errors' => true, 'timeout' => 60]]);
 $retries = [];
 $waited = 0.0;
+$started = hrtime(true);
 while (true) {
-    $started = microtime(true);
     $response = file_get_contents(rtrim($url, '/').'/api/'.$path, false, $context);
     preg_match('#^HTTP/\S+ (\d{3})#', $http_response_header[0] ?? '', $status);
     $status = (int) ($status[1] ?? 0);
@@ -68,7 +68,7 @@ while (true) {
 if ($retries !== []) {
     fwrite(STDERR, json_encode(['lock_pressure_update_retries' => ['path' => $path, 'delays' => $retries]]).PHP_EOL);
 }
-echo json_encode(['status' => $status, 'response' => $decoded, 'seconds' => microtime(true) - $started]);
+echo json_encode(['status' => $status, 'response' => $decoded, 'seconds' => (hrtime(true) - $started) / 1_000_000_000]);
 PHP;
         $process = proc_open([PHP_BINARY, '-r', $child, '--', $url, $token ?? '', "workflows/{$workflow}/update/{$update}",
             json_encode($body, JSON_THROW_ON_ERROR), __DIR__.'/lock-pressure-retry.php'],
