@@ -578,6 +578,16 @@ contract fixture before its correction.
   150 timers, 150 activities, a 150-member group and a 1,001-member group
   against published 2.11.5
   ([checkpoint](rust-server-port-checkpoints/2026-10-29-large-command-batches.md)).
+- **Descriptions after more than 64 updates** (October 29, closed).
+  Published PHP bounds only pending updates, not how many a run takes over
+  its life. The October 23 change removed native's 64-update admission cap,
+  but its update summary still gave up past 64 updates. A run that had
+  taken 65 was described with no wait. The bound is removed. The
+  `many-updates` fixture records a run waiting for a signal through 65
+  completed updates, then a 66th left accepted, against published 2.11.5
+  ([checkpoint](rust-server-port-checkpoints/2026-10-29-many-updates.md)).
+  The child summary still stops at 100 children over a run's life; that
+  needs its own fixture.
 - **Trace context (Core 2.10, published in Server 2.11.1).** Core adds
   nullable `observability_context` columns on runs, commands and tasks.
   Native has no carrier: it accepts and ignores a top-level carrier on
@@ -667,9 +677,6 @@ contract fixture before its correction.
   `none` driver or database runtime credentials, which published PHP does
   not. Without a tenant-bound administrator, native does not read a namespace
   route's target from a JSON body `name`.
-- **Described command previews.** Published PHP's run description gives
-  each command `payload_preview_omitted` and, for a cancel or terminate, its
-  decoded `reason`. Native's described commands carry neither.
 - **Command route names.** Published PHP records each request's route name in
   its command context, and its unnamed workflow routes get a name generated
   per deployment. Native records names only for the named schedule routes.

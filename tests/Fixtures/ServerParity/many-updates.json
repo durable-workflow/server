@@ -1,0 +1,98 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "many-updates",
+  "review_state": "reviewed",
+  "contract": "A run's description after more than 64 updates (published Server 2.11.5 WorkflowController describe with Workflow 2.15.1 RunWaitView), over raw worker HTTP on protocol 1.20 in a fresh namespace. Published PHP bounds only pending updates (DW_V2_LIMIT_PENDING_UPDATES, 500 by default), not how many a run takes over its life, and describes a run by its open waits. A run waiting for a signal takes 65 updates, each accepted and completed by its workflow task, and is still described as waiting for that signal. A 66th update left accepted is described as the run's open update. Embedded applications have no worker protocol.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "large command batches λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "large command batches λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "many_updates": {
+    "workflow_type": "parity.v1.many_updates",
+    "update": "set",
+    "signal": "finish",
+    "completed_updates": 65,
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "described_fields": [
+      "status",
+      "status_bucket",
+      "wait_kind",
+      "wait_reason",
+      "is_terminal",
+      "resume_step_sequence",
+      "recovery_kind"
+    ],
+    "expected": {
+      "opened": 200,
+      "before": {
+        "status": "waiting",
+        "status_bucket": "running",
+        "is_terminal": false,
+        "resume_step_sequence": null,
+        "recovery_kind": null,
+        "wait_kind": "signal",
+        "wait_reason": "Waiting for signal finish"
+      },
+      "updates": {
+        "202 accepted own_task 200 waiting": 65
+      },
+      "after": {
+        "status": "waiting",
+        "status_bucket": "running",
+        "is_terminal": false,
+        "resume_step_sequence": null,
+        "recovery_kind": null,
+        "wait_kind": "signal",
+        "wait_reason": "Waiting for signal finish"
+      },
+      "pending": {
+        "status": 202,
+        "update_status": "accepted",
+        "described": {
+          "status": "waiting",
+          "status_bucket": "running",
+          "is_terminal": false,
+          "resume_step_sequence": null,
+          "recovery_kind": null,
+          "wait_kind": "update",
+          "wait_reason": "Waiting for update set"
+        }
+      },
+      "events": {
+        "MessageCursorAdvanced": 65,
+        "SignalWaitOpened": 1,
+        "StartAccepted": 1,
+        "UpdateAccepted": 66,
+        "UpdateApplied": 65,
+        "UpdateCompleted": 65,
+        "WorkflowStarted": 1
+      }
+    },
+    "overall_budget_seconds": 180
+  }
+}
