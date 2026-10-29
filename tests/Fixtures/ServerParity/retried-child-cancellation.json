@@ -1,0 +1,247 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "retried-child-cancellation",
+  "review_state": "reviewed",
+  "contract": "A parent's cooperative cancellation delivered to a child it retried (published Server 2.11.7, Server #873), over raw worker HTTP on protocol 1.20 in a fresh namespace. A cooperative worker runs the parent and another worker the child. The child starts under a retry policy and the case's cancellation policy and its first run fails, so it is retried. The parent's cancellation request is admitted, delivered at the child boundary and completed as cancelled. Under abandon the retry keeps running; under try_cancel the parent records ChildCancellationRequested and the retry run, not the failed first run, records the cooperative cancellation request. IDs are labels. Embedded applications have no worker protocol.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "retried child cancellation λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "retried child cancellation λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "retried_child_cancellation": {
+    "workflow_type": "parity.v1.retried_child_cancellation",
+    "child_type": "parity.v1.retried_child_cancellation_child",
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "reason": "stop the retried child λ",
+    "event_fields": [
+      "sequence",
+      "workflow_link_id",
+      "child_call_id",
+      "child_workflow_run_id",
+      "child_run_number",
+      "retry_attempt",
+      "cancellation_policy",
+      "parent_close_policy",
+      "request_id",
+      "reason",
+      "call_kind",
+      "child_status"
+    ],
+    "cases": {
+      "abandoning": "abandon",
+      "try_cancelling": "try_cancel"
+    },
+    "expected": {
+      "abandoning": {
+        "child_start": {
+          "status": 200,
+          "reason": null,
+          "run_status": "waiting",
+          "outcome": "completed"
+        },
+        "child_failure": {
+          "status": 200,
+          "reason": null,
+          "run_status": "failed",
+          "outcome": "completed"
+        },
+        "request": {
+          "status": 202,
+          "reason": null,
+          "duplicate": false
+        },
+        "delivery": {
+          "status": 200,
+          "reason": null,
+          "run_status": null,
+          "outcome": null
+        },
+        "parent_completion": {
+          "status": 200,
+          "reason": null,
+          "run_status": "cancelled",
+          "outcome": "completed"
+        },
+        "parent_events": [
+          {
+            "event_type": "ChildWorkflowScheduled",
+            "sequence": 1,
+            "workflow_link_id": "{id:1}",
+            "child_call_id": "{id:1}",
+            "child_workflow_run_id": "{id:2}",
+            "cancellation_policy": "abandon",
+            "parent_close_policy": "abandon"
+          },
+          {
+            "event_type": "ChildRunStarted",
+            "sequence": 1,
+            "workflow_link_id": "{id:1}",
+            "child_call_id": "{id:1}",
+            "child_workflow_run_id": "{id:2}",
+            "child_run_number": 1,
+            "cancellation_policy": "abandon",
+            "parent_close_policy": "abandon"
+          },
+          {
+            "event_type": "ChildRunStarted",
+            "sequence": 1,
+            "workflow_link_id": "{id:3}",
+            "child_call_id": "{id:1}",
+            "child_workflow_run_id": "{id:4}",
+            "child_run_number": 2,
+            "retry_attempt": 2,
+            "parent_close_policy": "abandon"
+          },
+          {
+            "event_type": "CooperativeCancellationRequested",
+            "reason": "stop the retried child λ"
+          },
+          {
+            "event_type": "CooperativeCancellationDelivered",
+            "sequence": 1,
+            "call_kind": "child"
+          },
+          {
+            "event_type": "WorkflowCancelled",
+            "reason": "Cooperative cancellation completed."
+          }
+        ],
+        "child_runs": [
+          {
+            "run_id": "{id:2}",
+            "run_number": 1,
+            "status": "failed"
+          },
+          {
+            "run_id": "{id:4}",
+            "run_number": 2,
+            "status": "pending"
+          }
+        ],
+        "retry_events": [
+          "WorkflowStarted"
+        ]
+      },
+      "try_cancelling": {
+        "child_start": {
+          "status": 200,
+          "reason": null,
+          "run_status": "waiting",
+          "outcome": "completed"
+        },
+        "child_failure": {
+          "status": 200,
+          "reason": null,
+          "run_status": "failed",
+          "outcome": "completed"
+        },
+        "request": {
+          "status": 202,
+          "reason": null,
+          "duplicate": false
+        },
+        "delivery": {
+          "status": 200,
+          "reason": null,
+          "run_status": null,
+          "outcome": null
+        },
+        "parent_completion": {
+          "status": 200,
+          "reason": null,
+          "run_status": "cancelled",
+          "outcome": "completed"
+        },
+        "parent_events": [
+          {
+            "event_type": "ChildWorkflowScheduled",
+            "sequence": 1,
+            "workflow_link_id": "{id:1}",
+            "child_call_id": "{id:1}",
+            "child_workflow_run_id": "{id:2}",
+            "cancellation_policy": "try_cancel",
+            "parent_close_policy": "abandon"
+          },
+          {
+            "event_type": "ChildRunStarted",
+            "sequence": 1,
+            "workflow_link_id": "{id:1}",
+            "child_call_id": "{id:1}",
+            "child_workflow_run_id": "{id:2}",
+            "child_run_number": 1,
+            "cancellation_policy": "try_cancel",
+            "parent_close_policy": "abandon"
+          },
+          {
+            "event_type": "ChildRunStarted",
+            "sequence": 1,
+            "workflow_link_id": "{id:3}",
+            "child_call_id": "{id:1}",
+            "child_workflow_run_id": "{id:4}",
+            "child_run_number": 2,
+            "retry_attempt": 2,
+            "parent_close_policy": "abandon"
+          },
+          {
+            "event_type": "CooperativeCancellationRequested",
+            "reason": "stop the retried child λ"
+          },
+          {
+            "event_type": "ChildCancellationRequested",
+            "sequence": 1,
+            "child_workflow_run_id": "{id:4}"
+          },
+          {
+            "event_type": "CooperativeCancellationDelivered",
+            "sequence": 1,
+            "call_kind": "child"
+          },
+          {
+            "event_type": "WorkflowCancelled",
+            "reason": "Cooperative cancellation completed."
+          }
+        ],
+        "child_runs": [
+          {
+            "run_id": "{id:2}",
+            "run_number": 1,
+            "status": "failed"
+          },
+          {
+            "run_id": "{id:4}",
+            "run_number": 2,
+            "status": "pending"
+          }
+        ],
+        "retry_events": [
+          "WorkflowStarted",
+          "CooperativeCancellationRequested"
+        ]
+      }
+    }
+  }
+}
