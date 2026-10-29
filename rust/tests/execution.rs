@@ -354,6 +354,8 @@ mod start_search_attributes;
 mod worker_error_bodies;
 #[path = "execution/child_descriptions.rs"]
 mod child_descriptions;
+#[path = "execution/child_retries.rs"]
+mod child_retries;
 
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
@@ -1314,9 +1316,8 @@ async fn sequential_children_commit_original_links_results_and_one_parent_resump
             let refused = finish_task(&app_a, &parent_task, json!([cooperative])).await;
             assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
             assert_eq!(refused.1["reason"], "child_cancellation_policy_not_supported");
+            // Retry and timeout options are served (`child_retries`).
             for (field, option) in [
-                ("retry_policy", json!({"maximum_attempts":2})),
-                ("run_timeout_seconds", json!(10)),
                 ("queue", json!("")),
                 ("parallel_group_path", json!([])),
             ] {

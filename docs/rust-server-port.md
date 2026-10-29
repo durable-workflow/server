@@ -599,10 +599,24 @@ contract fixture before its correction.
   cases against published 2.11.5
   ([checkpoint](rust-server-port-checkpoints/2026-10-29-child-descriptions.md)).
   An open activity is likewise described ahead of open children
-  (October 29). A child with a retry or timeout policy, or a cancellation
-  policy other than `abandon` under a worker that declares cooperative
-  cancellation, is still described without its wait, pending its own
-  evidence.
+  (October 29). A child with a cancellation policy other than `abandon`
+  under a worker that declares cooperative cancellation is still described
+  without its wait, pending its own evidence.
+- **Child retry and timeout options** (October 29, closed). Published PHP
+  accepts `retry_policy`, `execution_timeout_seconds` and
+  `run_timeout_seconds` on `start_child_workflow`, records them on the call
+  and the child's runs, and retries a failed or timed-out child as a new run
+  of the same child instance while attempts remain and the failure is
+  retryable (`startChildRetryIfAvailable`). Native refused the three fields
+  with `unsupported_request_field`. It now records and retries the same
+  way, and describes a parent waiting on a retried child as waiting for it.
+  The `child-retries` fixture records seven cases against published 2.11.7
+  ([checkpoint](rust-server-port-checkpoints/2026-10-29-child-retries.md)).
+  Remaining, from reading the code rather than a recording: native's
+  cooperative cancellation delivery expects one link per call, so it
+  refuses one delivered to a retried child
+  (`cancellation_delivery_shape_mismatch`); and a retried child inherits no
+  memos or search attributes (below).
 - **Trace context (Core 2.10, published in Server 2.11.1).** Core adds
   nullable `observability_context` columns on runs, commands and tasks.
   Native has no carrier: it accepts and ignores a top-level carrier on
