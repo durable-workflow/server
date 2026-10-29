@@ -1,0 +1,550 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "query-contract-arguments",
+  "review_state": "reviewed",
+  "contract": "Query arguments matched to a durable query contract (published Server 2.11.5 WorkflowQueryTaskBroker::validateContractedQueryArguments with Workflow 2.15.1 WorkflowQueryContract::validatedArgumentsForRun), over raw HTTP on protocol 1.20 in a fresh namespace. The worker that starts the run declares state(string $prefix), greet(string $prefix = 'dflt'), plain without a parameter contract, arr(array $value), obj(object $value) and rest(mixed ...$value). A query the contract accepts is routed and the worker receives the normalized positional list encoded again: a named map {prefix: ok} and the list [ok] both reach state as [ok], an empty list reaches greet as [dflt], a named map reaches greet as [ok], and plain takes a list as given. A violation is refused before routing with 422 invalid_query_arguments, 'Workflow query [<name>] argument validation failed.' and validation_errors by argument: Unknown argument [other]., The prefix argument is required., The prefix argument must be of type string., The prefix argument cannot be null., Too many arguments were provided for query [state]., and for plain, Named arguments require a durable or loadable workflow query contract. Avro::fromDatum returns an empty map, or a map with a key PHP casts to an integer, as an AvroMapValue object: at the top level an empty map, {\"0\": \"ok\"} and a mixed-key map are refused before normalization with 'arguments must decode to an array.'; nested as {value: {}} it is refused by arr (The value argument must be of type array.) and routed whole as one argument by obj and by the variadic rest. A named variadic spreads a string-keyed map's values in wire order: {value: {z: 20, a: 10}} reaches rest as [20, 10]. A registered default the worker sends as JSON takes PHP's array shape: {\"0\": \"x\", \"1\": \"y\"} is a list and reaches the worker as [[\"x\", \"y\"]]. A default with an integer key outside a list ({\"0\": \"x\", \"k\": \"y\"} or {\"1\": \"x\"}) fails published PHP's Avro encoder with an uncaught 500; only that status is pinned, and native explains it as query_default_unencodable. Embedded applications have no worker protocol.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "query contract arguments λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "query contract arguments λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "query_contract_arguments": {
+    "workflow_type": "parity.v1.query_contract_arguments",
+    "queries": [
+      "state",
+      "greet",
+      "plain",
+      "arr",
+      "obj",
+      "rest",
+      "listdef",
+      "mixeddef",
+      "gapdef"
+    ],
+    "query_contracts": [
+      {
+        "name": "state",
+        "parameters": [
+          {
+            "name": "prefix",
+            "position": 0,
+            "type": "string",
+            "required": true,
+            "variadic": false,
+            "default_available": false,
+            "allows_null": false
+          }
+        ]
+      },
+      {
+        "name": "greet",
+        "parameters": [
+          {
+            "name": "prefix",
+            "position": 0,
+            "type": "string",
+            "required": false,
+            "variadic": false,
+            "default_available": true,
+            "allows_null": false,
+            "default": "dflt"
+          }
+        ]
+      },
+      {
+        "name": "arr",
+        "parameters": [
+          {
+            "name": "value",
+            "position": 0,
+            "type": "array",
+            "required": true,
+            "variadic": false,
+            "default_available": false,
+            "allows_null": false
+          }
+        ]
+      },
+      {
+        "name": "obj",
+        "parameters": [
+          {
+            "name": "value",
+            "position": 0,
+            "type": "object",
+            "required": true,
+            "variadic": false,
+            "default_available": false,
+            "allows_null": false
+          }
+        ]
+      },
+      {
+        "name": "rest",
+        "parameters": [
+          {
+            "name": "value",
+            "position": 0,
+            "type": "mixed",
+            "required": false,
+            "variadic": true,
+            "default_available": false,
+            "allows_null": false
+          }
+        ]
+      },
+      {
+        "name": "listdef",
+        "parameters": [
+          {
+            "name": "value",
+            "position": 0,
+            "type": "array",
+            "required": false,
+            "variadic": false,
+            "default_available": true,
+            "allows_null": false,
+            "default": {
+              "0": "x",
+              "1": "y"
+            }
+          }
+        ]
+      },
+      {
+        "name": "mixeddef",
+        "parameters": [
+          {
+            "name": "value",
+            "position": 0,
+            "type": "mixed",
+            "required": false,
+            "variadic": false,
+            "default_available": true,
+            "allows_null": false,
+            "default": {
+              "0": "x",
+              "k": "y"
+            }
+          }
+        ]
+      },
+      {
+        "name": "gapdef",
+        "parameters": [
+          {
+            "name": "value",
+            "position": 0,
+            "type": "mixed",
+            "required": false,
+            "variadic": false,
+            "default_available": true,
+            "allows_null": false,
+            "default": {
+              "1": "x"
+            }
+          }
+        ]
+      }
+    ],
+    "blobs": {
+      "named": "wwHioz3/VYAiNw4CDHByZWZpeAoEb2sA",
+      "positional": "wwHioz3/VYAiNwwCCgRvawA=",
+      "wrong_type": "wwHioz3/VYAiNwwCBAoA",
+      "too_many": "wwHioz3/VYAiNwwECgJhCgJiAA==",
+      "null": "wwHioz3/VYAiNwwCAAA=",
+      "empty": "wwHioz3/VYAiNwwA",
+      "unknown": "wwHioz3/VYAiNw4CCm90aGVyCgJ4AA==",
+      "default_filled": "wwHioz3/VYAiNwwCCghkZmx0AA==",
+      "named_extra": "wwHioz3/VYAiNw4EDHByZWZpeAoEb2sKb3RoZXIKAngA",
+      "empty_map": "wwHioz3/VYAiNw4A",
+      "numeric_map": "wwHioz3/VYAiNw4CAjAKBG9rAA==",
+      "mixed_map": "wwHioz3/VYAiNw4EAjAKAmEMcHJlZml4CgJiAA==",
+      "nested_empty": "wwHioz3/VYAiNw4CCnZhbHVlDgAA",
+      "one_empty_map": "wwHioz3/VYAiNwwCDgAA",
+      "unsorted_variadic": "wwHioz3/VYAiNw4CCnZhbHVlDgQCegQoAmEEFAAA",
+      "spread_in_order": "wwHioz3/VYAiNwwEBCgEFAA="
+    },
+    "cases": {
+      "named": [
+        "state",
+        "named",
+        true
+      ],
+      "positional": [
+        "state",
+        "positional",
+        true
+      ],
+      "named_extra": [
+        "state",
+        "named_extra",
+        false
+      ],
+      "unknown": [
+        "state",
+        "unknown",
+        false
+      ],
+      "wrong_type": [
+        "state",
+        "wrong_type",
+        false
+      ],
+      "too_many": [
+        "state",
+        "too_many",
+        false
+      ],
+      "null": [
+        "state",
+        "null",
+        false
+      ],
+      "missing": [
+        "state",
+        "empty",
+        false
+      ],
+      "default": [
+        "greet",
+        "empty",
+        true
+      ],
+      "default_named": [
+        "greet",
+        "named",
+        true
+      ],
+      "plain_named": [
+        "plain",
+        "named",
+        false
+      ],
+      "plain_list": [
+        "plain",
+        "too_many",
+        true
+      ],
+      "empty_map": [
+        "greet",
+        "empty_map",
+        false
+      ],
+      "numeric_map": [
+        "state",
+        "numeric_map",
+        false
+      ],
+      "mixed_map": [
+        "state",
+        "mixed_map",
+        false
+      ],
+      "nested_array": [
+        "arr",
+        "nested_empty",
+        false
+      ],
+      "nested_object": [
+        "obj",
+        "nested_empty",
+        true
+      ],
+      "nested_variadic": [
+        "rest",
+        "nested_empty",
+        true
+      ],
+      "unsorted_variadic": [
+        "rest",
+        "unsorted_variadic",
+        true
+      ],
+      "list_default": [
+        "listdef",
+        "empty",
+        true
+      ],
+      "mixed_default": [
+        "mixeddef",
+        "empty",
+        false
+      ],
+      "gap_default": [
+        "gapdef",
+        "empty",
+        false
+      ]
+    },
+    "expected": {
+      "named": {
+        "leased": true,
+        "query_arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCCgRvawA="
+        },
+        "answered": 200,
+        "client": {
+          "status": 200,
+          "reason": null
+        }
+      },
+      "positional": {
+        "leased": true,
+        "query_arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCCgRvawA="
+        },
+        "answered": 200,
+        "client": {
+          "status": 200,
+          "reason": null
+        }
+      },
+      "named_extra": {
+        "status": 422,
+        "reason": "invalid_query_arguments",
+        "message": "Workflow query [state] argument validation failed.",
+        "validation_errors": {
+          "other": [
+            "Unknown argument [other]."
+          ]
+        }
+      },
+      "unknown": {
+        "status": 422,
+        "reason": "invalid_query_arguments",
+        "message": "Workflow query [state] argument validation failed.",
+        "validation_errors": {
+          "prefix": [
+            "The prefix argument is required."
+          ],
+          "other": [
+            "Unknown argument [other]."
+          ]
+        }
+      },
+      "wrong_type": {
+        "status": 422,
+        "reason": "invalid_query_arguments",
+        "message": "Workflow query [state] argument validation failed.",
+        "validation_errors": {
+          "prefix": [
+            "The prefix argument must be of type string."
+          ]
+        }
+      },
+      "too_many": {
+        "status": 422,
+        "reason": "invalid_query_arguments",
+        "message": "Workflow query [state] argument validation failed.",
+        "validation_errors": {
+          "arguments": [
+            "Too many arguments were provided for query [state]."
+          ]
+        }
+      },
+      "null": {
+        "status": 422,
+        "reason": "invalid_query_arguments",
+        "message": "Workflow query [state] argument validation failed.",
+        "validation_errors": {
+          "prefix": [
+            "The prefix argument cannot be null."
+          ]
+        }
+      },
+      "missing": {
+        "status": 422,
+        "reason": "invalid_query_arguments",
+        "message": "Workflow query [state] argument validation failed.",
+        "validation_errors": {
+          "prefix": [
+            "The prefix argument is required."
+          ]
+        }
+      },
+      "default": {
+        "leased": true,
+        "query_arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCCghkZmx0AA=="
+        },
+        "answered": 200,
+        "client": {
+          "status": 200,
+          "reason": null
+        }
+      },
+      "default_named": {
+        "leased": true,
+        "query_arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCCgRvawA="
+        },
+        "answered": 200,
+        "client": {
+          "status": 200,
+          "reason": null
+        }
+      },
+      "plain_named": {
+        "status": 422,
+        "reason": "invalid_query_arguments",
+        "message": "Workflow query [plain] argument validation failed.",
+        "validation_errors": {
+          "arguments": [
+            "Named arguments require a durable or loadable workflow query contract."
+          ]
+        }
+      },
+      "plain_list": {
+        "leased": true,
+        "query_arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwECgJhCgJiAA=="
+        },
+        "answered": 200,
+        "client": {
+          "status": 200,
+          "reason": null
+        }
+      },
+      "empty_map": {
+        "status": 422,
+        "reason": "invalid_query_arguments",
+        "message": "Workflow query [greet] arguments must decode to an array.",
+        "validation_errors": {
+          "arguments": [
+            "Query arguments must decode to an array."
+          ]
+        }
+      },
+      "numeric_map": {
+        "status": 422,
+        "reason": "invalid_query_arguments",
+        "message": "Workflow query [state] arguments must decode to an array.",
+        "validation_errors": {
+          "arguments": [
+            "Query arguments must decode to an array."
+          ]
+        }
+      },
+      "mixed_map": {
+        "status": 422,
+        "reason": "invalid_query_arguments",
+        "message": "Workflow query [state] arguments must decode to an array.",
+        "validation_errors": {
+          "arguments": [
+            "Query arguments must decode to an array."
+          ]
+        }
+      },
+      "nested_array": {
+        "status": 422,
+        "reason": "invalid_query_arguments",
+        "message": "Workflow query [arr] argument validation failed.",
+        "validation_errors": {
+          "value": [
+            "The value argument must be of type array."
+          ]
+        }
+      },
+      "nested_object": {
+        "leased": true,
+        "query_arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCDgAA"
+        },
+        "answered": 200,
+        "client": {
+          "status": 200,
+          "reason": null
+        }
+      },
+      "nested_variadic": {
+        "leased": true,
+        "query_arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCDgAA"
+        },
+        "answered": 200,
+        "client": {
+          "status": 200,
+          "reason": null
+        }
+      },
+      "unsorted_variadic": {
+        "leased": true,
+        "query_arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwEBCgEFAA="
+        },
+        "answered": 200,
+        "client": {
+          "status": 200,
+          "reason": null
+        }
+      },
+      "list_default": {
+        "leased": true,
+        "query_arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCDAQKAngKAnkAAA=="
+        },
+        "answered": 200,
+        "client": {
+          "status": 200,
+          "reason": null
+        }
+      },
+      "mixed_default": {
+        "status": 500,
+        "reason": null,
+        "message": "Server Error",
+        "validation_errors": null
+      },
+      "gap_default": {
+        "status": 500,
+        "reason": null,
+        "message": "Server Error",
+        "validation_errors": null
+      },
+      "sent_defaults": {
+        "listdef": "{\"0\":\"x\",\"1\":\"y\"}",
+        "mixeddef": "{\"0\":\"x\",\"k\":\"y\"}",
+        "gapdef": "{\"1\":\"x\"}"
+      }
+    },
+    "object_defaults": [
+      "listdef",
+      "mixeddef",
+      "gapdef"
+    ]
+  }
+}

@@ -337,6 +337,9 @@ mod workflow_import_fences;
 #[path = "execution/query_argument_routing.rs"]
 mod query_argument_routing;
 
+#[path = "execution/query_contract_arguments.rs"]
+mod query_contract_arguments;
+
 #[path = "execution/close_inventory.rs"]
 mod close_inventory;
 
