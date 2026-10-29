@@ -595,9 +595,11 @@ contract fixture before its correction.
   was described with no wait. The `child-descriptions` fixture records five
   cases against published 2.11.5
   ([checkpoint](rust-server-port-checkpoints/2026-10-29-child-descriptions.md)).
-  A child with a cancellation policy other than `abandon`, a retry or
-  timeout policy, or beside an open activity is still described without
-  its wait, pending its own evidence.
+  An open activity is likewise described ahead of open children
+  (October 29). A child with a retry or timeout policy, or a cancellation
+  policy other than `abandon` under a worker that declares cooperative
+  cancellation, is still described without its wait, pending its own
+  evidence.
 - **Trace context (Core 2.10, published in Server 2.11.1).** Core adds
   nullable `observability_context` columns on runs, commands and tasks.
   Native has no carrier: it accepts and ignores a top-level carrier on

@@ -2,7 +2,7 @@
   "schema": "durable-workflow.server-parity-fixture/v1",
   "id": "child-descriptions",
   "review_state": "reviewed",
-  "contract": "A parent run's description while its children are open (published Server 2.11.5 WorkflowController::show with Workflow 2.15.1 RunWaitView), over raw worker HTTP on protocol 1.20 in a fresh namespace. Each case completes the parent's first workflow task with child and timer commands and records the description. A parent with two open children is described as waiting for a child; with an open child and an open timer, in either order, as waiting for the timer; and a child under parent_close_policy terminate is described like any other. Embedded applications have no worker protocol.",
+  "contract": "A parent run's description while its children are open (published Server 2.11.5 WorkflowController::show with Workflow 2.15.1 RunWaitView), over raw worker HTTP on protocol 1.20 in a fresh namespace. Each case completes the parent's first workflow task with child and timer commands and records the description. A parent with two open children is described as waiting for a child; with an open child and an open timer, in either order, as waiting for the timer; and a child under parent_close_policy terminate is described like any other. An open activity is likewise described ahead of open children, in either order. A child requesting cancellation_policy try_cancel from a worker that does not declare cooperative cancellation is refused 409 child_cancellation_policy_not_supported. Embedded applications have no worker protocol.",
   "workflow_type": "parity.v1.echo",
   "input": {
     "message": "continue transfers λ",
@@ -112,6 +112,53 @@
           },
           "parent_close_policy": "terminate"
         }
+      ],
+      "cancelling_child": [
+        {
+          "type": "start_child_workflow",
+          "workflow_type": "parity.v1.child_descriptions_child",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          },
+          "cancellation_policy": "try_cancel"
+        }
+      ],
+      "child_then_activity": [
+        {
+          "type": "start_child_workflow",
+          "workflow_type": "parity.v1.child_descriptions_child",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          }
+        },
+        {
+          "type": "schedule_activity",
+          "activity_type": "parity.v1.child_descriptions_activity",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          }
+        }
+      ],
+      "activity_then_child": [
+        {
+          "type": "schedule_activity",
+          "activity_type": "parity.v1.child_descriptions_activity",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          }
+        },
+        {
+          "type": "start_child_workflow",
+          "workflow_type": "parity.v1.child_descriptions_child",
+          "arguments": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          }
+        }
       ]
     },
     "expected": {
@@ -194,7 +241,56 @@
           "wait_kind": "child",
           "wait_reason": "Waiting for child workflow parity.v1.child_descriptions_child"
         }
+      },
+      "cancelling_child": {
+        "completed": {
+          "status": 409,
+          "reason": "child_cancellation_policy_not_supported",
+          "run_status": null
+        },
+        "described": {
+          "status": "pending",
+          "status_bucket": "running",
+          "is_terminal": false,
+          "resume_step_sequence": null,
+          "recovery_kind": null,
+          "wait_kind": "workflow-task",
+          "wait_reason": "Workflow task leased to worker"
+        }
+      },
+      "child_then_activity": {
+        "completed": {
+          "status": 200,
+          "reason": null,
+          "run_status": "waiting"
+        },
+        "described": {
+          "status": "waiting",
+          "status_bucket": "running",
+          "is_terminal": false,
+          "resume_step_sequence": null,
+          "recovery_kind": null,
+          "wait_kind": "activity",
+          "wait_reason": "Waiting for activity parity.v1.child_descriptions_activity"
+        }
+      },
+      "activity_then_child": {
+        "completed": {
+          "status": 200,
+          "reason": null,
+          "run_status": "waiting"
+        },
+        "described": {
+          "status": "waiting",
+          "status_bucket": "running",
+          "is_terminal": false,
+          "resume_step_sequence": null,
+          "recovery_kind": null,
+          "wait_kind": "activity",
+          "wait_reason": "Waiting for activity parity.v1.child_descriptions_activity"
+        }
       }
-    }
+    },
+    "activity_type": "parity.v1.child_descriptions_activity"
   }
 }

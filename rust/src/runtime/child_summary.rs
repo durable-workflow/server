@@ -169,13 +169,14 @@ where
         if rows.is_empty() {
             return Ok(true);
         }
-        // An open timer wait describes the run ahead of open children, as
-        // PHP's run description does. Other wait families, and a resolved
-        // child beside a timer, retain their separately qualified precedence.
+        // An open timer or activity wait describes the run ahead of open
+        // children, as PHP's run description does, whichever was scheduled
+        // first. Other wait families, and a resolved child beside them,
+        // retain their separately qualified precedence.
         let all_open = rows.iter().all(|row| DB::string(row, "status").is_ok_and(|status| status == "open"));
-        if summary.wait.as_ref().is_some_and(|wait| wait.kind == "timer")
+        if let Some(kind) = summary.wait.as_ref().map(|wait| wait.kind).filter(|kind| matches!(*kind, "timer" | "activity"))
             && all_open
-            && summary.task_type.as_deref().is_none_or(|kind| kind == "timer")
+            && summary.task_type.as_deref().is_none_or(|task| task == kind)
         {
             return Ok(true);
         }
