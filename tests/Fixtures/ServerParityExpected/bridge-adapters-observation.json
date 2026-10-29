@@ -113,7 +113,7 @@
       "outcome": "rejected",
       "reason": "unknown_target",
       "idempotency_key": "k-6",
-      "message": "Workflow instance [pr1-bridge-adapters] is reserved for durable type [parity.v1.echo] and cannot be reused for [parity.v1.bridge].",
+      "message": "Workflow instance [pr1-bridge-adapters] is unavailable.",
       "target": {
         "workflow_id": "pr1-bridge-adapters",
         "workflow_type": "parity.v1.bridge",
@@ -132,7 +132,7 @@
       "outcome": "rejected",
       "reason": "unknown_target",
       "idempotency_key": "k-7",
-      "message": "Workflow instance [pr1-bridge-adapters] cannot be reused with a different namespace.",
+      "message": "Workflow instance [pr1-bridge-adapters] is unavailable.",
       "target": {
         "workflow_id": "pr1-bridge-adapters",
         "workflow_type": "parity.v1.echo",
@@ -375,35 +375,32 @@
     }
   },
   "update": {
-    "status": 422,
+    "status": 202,
     "response": {
       "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
       "version": 1,
       "adapter": "acme.crm:v1",
       "action": "update_workflow",
-      "accepted": false,
-      "outcome": "rejected",
-      "reason": "workflow_definition_unavailable",
+      "accepted": true,
+      "outcome": "accepted",
       "idempotency_key": "u-2",
       "target": {
         "workflow_id": "pr1-bridge-adapters-bra-order",
         "update_name": "bump"
       },
       "workflow_id": "pr1-bridge-adapters-bra-order",
-      "run_id": "run-2",
-      "control_plane_outcome": "rejected_workflow_definition_unavailable"
+      "run_id": "run-2"
     }
   },
   "update_again": {
-    "status": 422,
+    "status": 200,
     "response": {
       "schema": "durable-workflow.v2.bridge-adapter-outcome.contract",
       "version": 1,
       "adapter": "acme.crm:v1",
       "action": "update_workflow",
       "accepted": false,
-      "outcome": "rejected",
-      "reason": "workflow_definition_unavailable",
+      "outcome": "duplicate",
       "idempotency_key": "u-2",
       "target": {
         "workflow_id": "pr1-bridge-adapters-bra-order",
@@ -411,7 +408,7 @@
       },
       "workflow_id": "pr1-bridge-adapters-bra-order",
       "run_id": "run-2",
-      "control_plane_outcome": "rejected_workflow_definition_unavailable"
+      "control_plane_outcome": "deduped_existing_command"
     }
   },
   "update_undeclared": {
@@ -442,8 +439,7 @@
     "SignalWaitOpened",
     "SignalReceived",
     "SignalReceived",
-    "UpdateRejected",
-    "UpdateRejected",
+    "UpdateAccepted",
     "UpdateRejected"
   ]
 }

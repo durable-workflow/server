@@ -4,38 +4,35 @@ import test from 'node:test';
 import {checkBridgeAdapters} from '../../scripts/conformance/server-parity/bridge-adapters-contract.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/bridge-adapters.json', import.meta.url)));
-// The observation published Server 2.11.1 returned for this fixture.
+// The observation published Server 2.11.7 returned for this fixture.
 const recorded = JSON.parse(readFileSync(
   new URL('../Fixtures/ServerParityExpected/bridge-adapters-observation.json', import.meta.url)));
 const id = 'pr1-bridge-adapters';
-const observation = (change = () => {}, base = recorded) => {
-  const state = structuredClone(base);
+const observation = (change = () => {}) => {
+  const state = structuredClone(recorded);
   change(state);
   return {mode: 'http', bridge_adapters: state};
 };
 const check = state => checkBridgeAdapters(fixture, state, id);
-// The intended answers: the bridge update admitted like the regular route,
-// and a foreign instance refused as unavailable.
-const intended = JSON.parse(JSON.stringify(fixture.bridge_adapters.expected).replaceAll('{id}', id));
 
-test('the published 2.11.1 recording satisfies the contract', () => {
+// Published 2.11.1 to 2.11.5 rejected the bridge update to an SDK-worker
+// workflow (Server #747) and named a foreign instance's type or namespace
+// (Server #777). Those answers are no longer accepted.
+const rejectedUpdate = answer => ({status: 422, response: {...answer.response, accepted: false, outcome: 'rejected',
+  reason: 'workflow_definition_unavailable', control_plane_outcome: 'rejected_workflow_definition_unavailable'}});
+const reservedType = `Workflow instance [${id}] is reserved for durable type [parity.v1.echo] and cannot be reused for [parity.v1.bridge].`;
+const otherNamespace = `Workflow instance [${id}] cannot be reused with a different namespace.`;
+
+test('the published 2.11.7 recording satisfies the contract', () => {
   assert.deepStrictEqual(check(observation()), {scope: 'bridge_adapters'});
 });
 
-test('the intended update acceptance and deduplication are accepted too', () => {
-  assert.deepStrictEqual(check(observation(() => {}, intended)), {scope: 'bridge_adapters'});
-  assert.equal(intended.update.status, 202);
-  assert.equal(intended.update_again.response.control_plane_outcome, 'deduped_existing_command');
-});
-
-test('the intended foreign-instance refusal is accepted with either update answer', () => {
-  const foreign = state => {
-    state.start_other_type = structuredClone(intended.start_other_type);
-    state.start_other_namespace = structuredClone(intended.start_other_namespace);
-  };
-  assert.deepStrictEqual(check(observation(foreign)), {scope: 'bridge_adapters'});
-  assert.equal(intended.start_other_type.response.message, `Workflow instance [${id}] is unavailable.`);
-  assert.doesNotMatch(JSON.stringify(intended.start_other_type), /parity\.v1\.echo/);
+test('the recording carries the intended update and foreign-instance answers', () => {
+  assert.equal(recorded.update.status, 202);
+  assert.equal(recorded.update_again.response.control_plane_outcome, 'deduped_existing_command');
+  for (const step of ['start_other_type', 'start_other_namespace']) {
+    assert.equal(recorded[step].response.message, `Workflow instance [${id}] is unavailable.`, step);
+  }
 });
 
 test('embedded applications are explicitly inapplicable', () => {
@@ -48,13 +45,20 @@ for (const [label, change, message] of [
   ['an unimplemented route', state => {
     state.start = {status: 501, response: {reason: 'rust_capability_not_implemented'}};
   }, /bridge adapters start/],
-  ['only part of the published update defect', state => {
-    state.update = structuredClone(intended.update);
-  }, /bridge adapters update_again|bridge adapters history_event_types/],
+  ['the published update rejection', state => {
+    state.update = rejectedUpdate(state.update);
+    state.update_again = rejectedUpdate(state.update_again);
+  }, /bridge adapters update/],
   ['an accepted update that is not deduplicated', state => {
-    Object.assign(state, structuredClone({update: intended.update, history_event_types: intended.history_event_types}));
-    state.update_again = structuredClone(intended.update);
+    state.update_again = structuredClone(state.update);
   }, /bridge adapters update_again/],
+  ['a foreign instance refused with its type named', state => {
+    state.start_other_type.response.message = reservedType;
+  }, /bridge adapters start_other_type/],
+  ['a foreign instance refused with the namespace difference', state => {
+    state.start_other_type.response.message = otherNamespace;
+    state.start_other_namespace.response.message = otherNamespace;
+  }, /bridge adapters start_other_type/],
   ['a derived workflow id from another digest', state => {
     state.start_derived.response.workflow_id = 'bridge-acme.crm:v1-0000';
   }, /bridge adapters start_derived/],
@@ -70,12 +74,6 @@ for (const [label, change, message] of [
   ['reject_duplicate treated as use_existing', state => {
     state.start_reject_duplicate = structuredClone(state.start_again);
   }, /bridge adapters start_reject_duplicate/],
-  ['only part of the published foreign-instance defect', state => {
-    state.start_other_type = structuredClone(intended.start_other_type);
-  }, /bridge adapters start_other_namespace/],
-  ['a foreign instance refused with its type named', state => {
-    state.start_other_namespace.response.message = state.start_other_type.response.message;
-  }, /bridge adapters start_other_type|bridge adapters start_other_namespace/],
   ['a missing step', state => {
     delete state.signal_bad_target;
   }, /bridge adapters signal_bad_target/],
