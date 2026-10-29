@@ -52,9 +52,20 @@
     recording found it.
 - **Tests.** `child_retries.rs` (native), and the snapshot, backoff and
   non-retryable rules in `child_retries.rs` unit tests.
+- **Bounds** (Security review). A child timeout or backoff entry too far
+  away for a timestamp is refused at admission with `422
+  invalid_child_timeout` or `invalid_child_retry_policy`, and every child
+  deadline is computed with checked arithmetic, so an extreme value cannot
+  overflow. PHP's Carbon wraps such a value instead; native refuses a timer
+  delay or activity backoff the same way.
+- **CI.** The first hosted run failed the MariaDB corpus: the retry read
+  `MAX(run_number)`, which MySQL returns unsigned, and repeated a
+  placeholder. Both are fixed. Locally, the fixture passes on MariaDB 10.11,
+  PostgreSQL 17 and SQLite.
 - **Not covered here.**
   - Cooperative cancellation delivered to a retried child: native's
-    delivery expects one link per call and refuses it. This is from reading
-    the code; it is not recorded against PHP.
+    delivery expects one link per call and refuses it with `409
+    cancellation_delivery_shape_mismatch`. Security's review confirmed this
+    from the source. A fix needs a PHP recording first: #873.
   - Memos and search attributes inherited by child runs, retried or not
     (a separate gap).

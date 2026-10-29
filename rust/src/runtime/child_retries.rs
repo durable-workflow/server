@@ -1,6 +1,9 @@
 //! A child's retry and timeout options (`ChildWorkflowRetryPolicy`): what
 //! a `start_child_workflow` command records, and whether a failed child run
 //! is retried as a new run of the same child instance.
+use super::{Result, refuse};
+use axum::http::StatusCode;
+use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 
 const SNAPSHOT_VERSION: i64 = 1;
@@ -39,6 +42,21 @@ pub(super) fn timeout_snapshot(execution: Option<i64>, run: Option<i64>) -> Opti
 /// A command's timeout, when it is an integer (`is_int`).
 pub(super) fn timeout(command: &Value, field: &str) -> Option<i64> {
     command[field].as_i64()
+}
+
+/// `at` plus a non-negative number of seconds, when the result is a
+/// timestamp.
+pub(super) fn after(at: DateTime<Utc>, seconds: i64) -> Option<DateTime<Utc>> {
+    (seconds >= 0).then_some(())?;
+    chrono::Duration::try_seconds(seconds).and_then(|delta| at.checked_add_signed(delta))
+}
+
+/// A child run's deadline for an optional timeout; one too far away is
+/// refused (`validate_child` refuses it first).
+pub(super) fn deadline(at: DateTime<Utc>, seconds: Option<i64>) -> Result<Option<DateTime<Utc>>> {
+    seconds
+        .map(|seconds| after(at, seconds).ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_child_timeout")))
+        .transpose()
 }
 
 pub(super) fn max_attempts(policy: &Value) -> i64 {
@@ -145,6 +163,16 @@ mod tests {
             timeout_snapshot(None, Some(5)),
             Some(json!({"snapshot_version": 1, "execution_timeout_seconds": null, "run_timeout_seconds": 5}))
         );
+    }
+
+    #[test]
+    fn a_deadline_too_far_away_is_refused_rather_than_overflowing() {
+        let at = chrono::Utc::now();
+        assert!(after(at, i64::MAX).is_none());
+        assert!(after(at, -1).is_none());
+        assert_eq!(after(at, 5), Some(at + chrono::Duration::seconds(5)));
+        assert!(deadline(at, Some(i64::MAX)).is_err());
+        assert_eq!(deadline(at, None).unwrap(), None);
     }
 
     #[test]

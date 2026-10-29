@@ -59,6 +59,21 @@ pub(super) fn validate_child(command: &Value) -> Result<()> {
     }
     policies(command)?;
     envelope(command, "arguments")?;
+    // A deadline or backoff too far away for a timestamp is refused, as a
+    // timer delay or an activity backoff is (PHP's Carbon wraps it).
+    let now = now();
+    for field in ["execution_timeout_seconds", "run_timeout_seconds"] {
+        if let Some(seconds) = super::child_retries::timeout(command, field)
+            && super::child_retries::after(now, seconds).is_none()
+        {
+            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_child_timeout"));
+        }
+    }
+    if let Some(backoff) = command["retry_policy"]["backoff_seconds"].as_array()
+        && backoff.iter().any(|entry| entry.as_i64().is_some_and(|seconds| super::child_retries::after(now, seconds).is_none()))
+    {
+        return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_child_retry_policy"));
+    }
     Ok(())
 }
 
@@ -287,8 +302,8 @@ where
         // its parent's.
         let execution_timeout = super::child_retries::timeout(command, "execution_timeout_seconds");
         let run_timeout = super::child_retries::timeout(command, "run_timeout_seconds");
-        let execution_deadline = execution_timeout.map(|seconds| started_at + chrono::Duration::seconds(seconds));
-        let run_deadline = run_timeout.map(|seconds| started_at + chrono::Duration::seconds(seconds));
+        let execution_deadline = super::child_retries::deadline(started_at, execution_timeout)?;
+        let run_deadline = super::child_retries::deadline(started_at, run_timeout)?;
         let retry_policy = super::child_retries::retry_snapshot(command);
         let timeout_policy = super::child_retries::timeout_snapshot(execution_timeout, run_timeout);
         Self::query("INSERT INTO workflow_instances(id,namespace,workflow_type,workflow_class,current_run_id,run_count,started_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,1,$6,$7,$8)")
@@ -575,7 +590,8 @@ where
         let run_timeout = timeout_policy["run_timeout_seconds"].as_i64();
         let at = now();
         let backoff = super::child_retries::backoff_seconds(&policy, attempts);
-        let available_at = at + chrono::Duration::seconds(backoff);
+        let available_at = super::child_retries::after(at, backoff)
+            .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_child_retry_policy"))?;
         let instance = DB::string(failed, "workflow_instance_id")?;
         // The latest run as a row: an aggregate of MySQL's unsigned column
         // does not decode as a signed integer.
@@ -583,9 +599,11 @@ where
             .bind(&instance).fetch_one(&mut **tx).await?;
         let run_number = DB::number(&latest, "run_number")? + 1;
         // The execution deadline spans every attempt; each run gets its own.
-        let execution_deadline = DB::optional_instant(failed, "execution_deadline_at")?
-            .or(execution_timeout.map(|seconds| at + chrono::Duration::seconds(seconds)));
-        let run_deadline = run_timeout.map(|seconds| at + chrono::Duration::seconds(seconds));
+        let execution_deadline = match DB::optional_instant(failed, "execution_deadline_at")? {
+            Some(deadline) => Some(deadline),
+            None => super::child_retries::deadline(at, execution_timeout)?,
+        };
+        let run_deadline = super::child_retries::deadline(at, run_timeout)?;
         let retry_run = id();
         Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,run_number,workflow_class,workflow_type,namespace,business_key,visibility_labels,status,compatibility,payload_codec,arguments,run_timeout_seconds,execution_deadline_at,run_deadline_at,connection,queue,started_at,last_progress_at,created_at,updated_at) SELECT $1,workflow_instance_id,$2,workflow_class,workflow_type,namespace,business_key,visibility_labels,'pending',compatibility,payload_codec,arguments,NULLIF($3,0),$4,$5,connection,queue,$6,$7,$8,$9 FROM workflow_runs WHERE id=$10")
             .bind(&retry_run).bind(run_number).bind(run_timeout.unwrap_or(0)).bind(DB::optional_time(execution_deadline)).bind(DB::optional_time(run_deadline))

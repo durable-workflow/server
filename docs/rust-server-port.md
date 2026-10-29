@@ -612,11 +612,12 @@ contract fixture before its correction.
   way, and describes a parent waiting on a retried child as waiting for it.
   The `child-retries` fixture records seven cases against published 2.11.7
   ([checkpoint](rust-server-port-checkpoints/2026-10-29-child-retries.md)).
-  Remaining, from reading the code rather than a recording: native's
-  cooperative cancellation delivery expects one link per call, so it
-  refuses one delivered to a retried child
-  (`cancellation_delivery_shape_mismatch`); and a retried child inherits no
-  memos or search attributes (below).
+  A child timeout or backoff too far away for a timestamp is refused
+  (`invalid_child_timeout`, `invalid_child_retry_policy`), as a timer delay
+  is. Remaining: native's cooperative cancellation delivery expects one
+  link per call, so it refuses one delivered to a retried child
+  (`cancellation_delivery_shape_mismatch`; #873, pending a PHP recording);
+  and a retried child inherits no memos or search attributes (below).
 - **Trace context (Core 2.10, published in Server 2.11.1).** Core adds
   nullable `observability_context` columns on runs, commands and tasks.
   Native has no carrier: it accepts and ignores a top-level carrier on
@@ -673,9 +674,9 @@ contract fixture before its correction.
   - A field for a feature native cannot run, such as `worker_session`, is
     refused with `unsupported_request_field`. Fields PHP ignores are dropped
     as PHP drops them.
-  - A timer delay, retry backoff or wait timeout too large for a timestamp
-    is refused on native. PHP accepts it, and wraps a timer's fire time into
-    the past, so the timer fires at once.
+  - A timer delay, retry backoff, child timeout or wait timeout too large
+    for a timestamp is refused on native. PHP accepts it, and wraps a
+    timer's fire time into the past, so the timer fires at once.
 - **Search attribute limits.** Over 100 attributes or 64 KB per run, PHP
   raises an uncaught `InvalidArgumentException` while applying the command.
   Native refuses the completion with `422 search_attribute_limit_exceeded`

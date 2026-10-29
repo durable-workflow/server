@@ -150,3 +150,26 @@ async fn a_timed_out_child_is_retried_and_its_last_timeout_fails_the_parent() {
     runtime.close().await;
     database.remove().await;
 }
+
+#[tokio::test]
+async fn a_child_deadline_or_backoff_too_far_away_is_refused_not_overflowed() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "worker", json!(["echo", "child"]), json!([])).await;
+    start(&app, "extreme").await;
+    let task = poll(&app, "worker", "workflow").await;
+    for (options, reason) in [
+        (json!({"execution_timeout_seconds": i64::MAX}), "invalid_child_timeout"),
+        (json!({"run_timeout_seconds": i64::MAX}), "invalid_child_timeout"),
+        (json!({"retry_policy": {"max_attempts": 2, "backoff_seconds": [1, i64::MAX]}}), "invalid_child_retry_policy"),
+    ] {
+        let (status, body) = finish_task(&app, &task, json!([child(options.clone())])).await;
+        assert_eq!((status, &body["reason"]), (StatusCode::UNPROCESSABLE_ENTITY, &json!(reason)), "{options}: {body}");
+    }
+    // The task is still open and the runtime still serves it.
+    let (status, body) = finish_task(&app, &task, json!([child(json!({"run_timeout_seconds": 60}))])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    runtime.close().await;
+    database.remove().await;
+}
