@@ -29,9 +29,15 @@ function finishHttpLargeCommandBatches(Client $admin, array $fixture, string $wo
         'Accept' => 'application/json', 'X-Namespace' => $namespace,
         'X-Durable-Workflow-Control-Plane-Version' => '2', 'X-Durable-Workflow-Protocol-Version' => '1.20',
     ]);
-    $raw = static function (string $method, string $path, ?array $body = null) use ($http, $headers): array {
+    // A string body is sent as written, so a JSON number past PHP's integer
+    // range reaches the server as the literal token.
+    $raw = static function (string $method, string $path, array|string|null $body = null) use ($http, $headers): array {
         $response = $http->request($method, $path, ['headers' => $headers,
-            ...($body === null ? [] : ['json' => $body === [] ? (object) [] : $body])]);
+            ...(match (true) {
+                $body === null => [],
+                is_string($body) => ['body' => $body, 'headers' => [...$headers, 'Content-Type' => 'application/json']],
+                default => ['json' => $body === [] ? (object) [] : $body],
+            })]);
 
         return ['status' => $response->getStatusCode(),
             'response' => json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR)];
@@ -76,8 +82,12 @@ function finishHttpLargeCommandBatches(Client $admin, array $fixture, string $wo
                 $commands[$index] += [...$entry, 'parallel_group_path' => [$entry]];
             }
         }
-        $completed = $raw('POST', 'worker/workflow-tasks/'.$task['task_id'].'/complete', ['lease_owner' => $task['lease_owner'],
-            'workflow_task_attempt' => $task['workflow_task_attempt'], 'commands' => $commands]);
+        // A case's `raw_commands` is the commands array as JSON text, spliced
+        // into the body unchanged.
+        $fence = ['lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt']];
+        $completed = $raw('POST', 'worker/workflow-tasks/'.$task['task_id'].'/complete', isset($shape['raw_commands'])
+            ? substr(json_encode($fence, JSON_THROW_ON_ERROR), 0, -1).',"commands":'.$shape['raw_commands'].'}'
+            : [...$fence, 'commands' => $commands]);
         $observed = ['completed' => ['status' => $completed['status'], 'outcome' => $completed['response']['outcome'] ?? null,
             'reason' => $completed['response']['reason'] ?? null, 'run_status' => $completed['response']['run_status'] ?? null,
             'message' => $completed['response']['message'] ?? null,

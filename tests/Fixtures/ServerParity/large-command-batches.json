@@ -2,7 +2,7 @@
   "schema": "durable-workflow.server-parity-fixture/v1",
   "id": "large-command-batches",
   "review_state": "reviewed",
-  "contract": "Workflow task completions with more than 100 commands (published Server 2.11.5 WorkerController::completeWorkflowTask with Workflow 2.15.1 WorkflowCommandNormalizer), over raw worker HTTP on protocol 1.20 in a fresh namespace. An external worker's completion has no command-count limit of its own; each command meets the run's structural limits instead. Completing a run's first workflow task with 150 start_timer commands, or 150 schedule_activity commands, is accepted (200 completed, run waiting) with a created task for each, records 150 TimerScheduled or ActivityScheduled events, and describes the run as waiting on its first timer or activity. An all group of 150 activities, each declaring the group with a one-entry parallel_group_path, is accepted the same way. A group declaring 1,001 members (above the default 1,000-command batch size that bounds a declared group) is refused 422 validation_failed before any guard, with an error on each command's parallel_group_path, and records nothing. Embedded applications have no worker protocol.",
+  "contract": "Workflow task completions with more than 100 commands (published Server 2.11.5 WorkerController::completeWorkflowTask with Workflow 2.15.1 WorkflowCommandNormalizer), over raw worker HTTP on protocol 1.20 in a fresh namespace. An external worker's completion has no command-count limit of its own; each command meets the run's structural limits instead. Completing a run's first workflow task with 150 start_timer commands, or 150 schedule_activity commands, is accepted (200 completed, run waiting) with a created task for each, records 150 TimerScheduled or ActivityScheduled events, and describes the run as waiting on its first timer or activity. An all group of 150 activities, each declaring the group with a one-entry parallel_group_path, is accepted the same way. A group declaring 1,001 members (above the default 1,000-command batch size that bounds a declared group) is refused 422 validation_failed before any guard, with an error on each command's parallel_group_path, and records nothing. A selection member whose range passes the 64-bit integer range (member size or group base 9223372036854775807), or whose numeric key is 9223372036854775808 (sent as a literal JSON integer), is refused by the same preflight with the group path message and records nothing. Embedded applications have no worker protocol.",
   "workflow_type": "parity.v1.echo",
   "input": {
     "message": "large command batches λ",
@@ -54,6 +54,21 @@
         "kind": "activities",
         "commands": 2,
         "group_size": 1001
+      },
+      "select_member_overflow": {
+        "kind": "activities",
+        "commands": 0,
+        "raw_commands": "[{\"type\":\"schedule_activity\",\"activity_type\":\"parity.v1.large_command_batches_activity\",\"arguments\":{\"codec\":\"avro\",\"blob\":\"wwHioz3/VYAiNwwA\"},\"parallel_group_id\":\"select-calls:1:2\",\"parallel_group_kind\":\"activity\",\"parallel_group_mode\":\"select\",\"parallel_group_base_sequence\":1,\"parallel_group_size\":2,\"parallel_group_index\":0,\"selection_member_key\":\"a\",\"selection_member_index\":0,\"selection_member_base_sequence\":1,\"selection_member_size\":9223372036854775807,\"selection_member_kind\":\"activity\",\"parallel_group_path\":[{\"parallel_group_id\":\"select-calls:1:2\",\"parallel_group_kind\":\"activity\",\"parallel_group_mode\":\"select\",\"parallel_group_base_sequence\":1,\"parallel_group_size\":2,\"parallel_group_index\":0,\"selection_member_key\":\"a\",\"selection_member_index\":0,\"selection_member_base_sequence\":1,\"selection_member_size\":9223372036854775807,\"selection_member_kind\":\"activity\"}]}]"
+      },
+      "select_base_overflow": {
+        "kind": "activities",
+        "commands": 0,
+        "raw_commands": "[{\"type\":\"schedule_activity\",\"activity_type\":\"parity.v1.large_command_batches_activity\",\"arguments\":{\"codec\":\"avro\",\"blob\":\"wwHioz3/VYAiNwwA\"},\"parallel_group_id\":\"select-calls:9223372036854775807:2\",\"parallel_group_kind\":\"activity\",\"parallel_group_mode\":\"select\",\"parallel_group_base_sequence\":9223372036854775807,\"parallel_group_size\":2,\"parallel_group_index\":0,\"selection_member_key\":\"a\",\"selection_member_index\":0,\"selection_member_base_sequence\":9223372036854775807,\"selection_member_size\":1,\"selection_member_kind\":\"activity\",\"parallel_group_path\":[{\"parallel_group_id\":\"select-calls:9223372036854775807:2\",\"parallel_group_kind\":\"activity\",\"parallel_group_mode\":\"select\",\"parallel_group_base_sequence\":9223372036854775807,\"parallel_group_size\":2,\"parallel_group_index\":0,\"selection_member_key\":\"a\",\"selection_member_index\":0,\"selection_member_base_sequence\":9223372036854775807,\"selection_member_size\":1,\"selection_member_kind\":\"activity\"}]}]"
+      },
+      "select_key_overflow": {
+        "kind": "activities",
+        "commands": 0,
+        "raw_commands": "[{\"type\":\"schedule_activity\",\"activity_type\":\"parity.v1.large_command_batches_activity\",\"arguments\":{\"codec\":\"avro\",\"blob\":\"wwHioz3/VYAiNwwA\"},\"parallel_group_id\":\"select-calls:1:2\",\"parallel_group_kind\":\"activity\",\"parallel_group_mode\":\"select\",\"parallel_group_base_sequence\":1,\"parallel_group_size\":2,\"parallel_group_index\":0,\"selection_member_key\":9223372036854775808,\"selection_member_index\":0,\"selection_member_base_sequence\":1,\"selection_member_size\":1,\"selection_member_kind\":\"activity\",\"parallel_group_path\":[{\"parallel_group_id\":\"select-calls:1:2\",\"parallel_group_kind\":\"activity\",\"parallel_group_mode\":\"select\",\"parallel_group_base_sequence\":1,\"parallel_group_size\":2,\"parallel_group_index\":0,\"selection_member_key\":9223372036854775808,\"selection_member_index\":0,\"selection_member_base_sequence\":1,\"selection_member_size\":1,\"selection_member_kind\":\"activity\"}]}]"
       }
     },
     "expected": {
@@ -149,6 +164,93 @@
               "Parallel workflow commands require complete top-level metadata and a non-empty group path."
             ],
             "commands.1.parallel_group_path": [
+              "Parallel workflow commands require complete top-level metadata and a non-empty group path."
+            ]
+          },
+          "created_tasks": 0
+        },
+        "described": {
+          "status": "pending",
+          "status_bucket": "running",
+          "is_terminal": false,
+          "resume_step_sequence": null,
+          "recovery_kind": null,
+          "wait_kind": "workflow-task",
+          "wait_reason": "Workflow task leased to worker"
+        },
+        "events": {
+          "StartAccepted": 1,
+          "WorkflowStarted": 1
+        },
+        "parallel_groups": []
+      },
+      "select_member_overflow": {
+        "completed": {
+          "status": 422,
+          "outcome": null,
+          "reason": "validation_failed",
+          "run_status": null,
+          "message": "Parallel workflow commands require complete top-level metadata and a non-empty group path.",
+          "errors": {
+            "commands.0.parallel_group_path": [
+              "Parallel workflow commands require complete top-level metadata and a non-empty group path."
+            ]
+          },
+          "created_tasks": 0
+        },
+        "described": {
+          "status": "pending",
+          "status_bucket": "running",
+          "is_terminal": false,
+          "resume_step_sequence": null,
+          "recovery_kind": null,
+          "wait_kind": "workflow-task",
+          "wait_reason": "Workflow task leased to worker"
+        },
+        "events": {
+          "StartAccepted": 1,
+          "WorkflowStarted": 1
+        },
+        "parallel_groups": []
+      },
+      "select_base_overflow": {
+        "completed": {
+          "status": 422,
+          "outcome": null,
+          "reason": "validation_failed",
+          "run_status": null,
+          "message": "Parallel workflow commands require complete top-level metadata and a non-empty group path.",
+          "errors": {
+            "commands.0.parallel_group_path": [
+              "Parallel workflow commands require complete top-level metadata and a non-empty group path."
+            ]
+          },
+          "created_tasks": 0
+        },
+        "described": {
+          "status": "pending",
+          "status_bucket": "running",
+          "is_terminal": false,
+          "resume_step_sequence": null,
+          "recovery_kind": null,
+          "wait_kind": "workflow-task",
+          "wait_reason": "Workflow task leased to worker"
+        },
+        "events": {
+          "StartAccepted": 1,
+          "WorkflowStarted": 1
+        },
+        "parallel_groups": []
+      },
+      "select_key_overflow": {
+        "completed": {
+          "status": 422,
+          "outcome": null,
+          "reason": "validation_failed",
+          "run_status": null,
+          "message": "Parallel workflow commands require complete top-level metadata and a non-empty group path.",
+          "errors": {
+            "commands.0.parallel_group_path": [
               "Parallel workflow commands require complete top-level metadata and a non-empty group path."
             ]
           },
