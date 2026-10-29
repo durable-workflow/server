@@ -68,8 +68,19 @@ function finishHttpManyUpdates(Client $admin, array $fixture, string $workflowId
             'workflow_task_attempt' => $task['workflow_task_attempt'], 'commands' => $commands]);
     $describe = static fn (): array => array_intersect_key($raw('GET', 'workflows/'.rawurlencode($id))['response'],
         array_flip($definition['described_fields']));
-    $submit = static fn (int $index): array => $raw('POST', 'workflows/'.rawurlencode($id).'/update/'.$update,
-        ['input' => [['v' => $index]], 'request_id' => 'many-'.$index, 'wait_for' => 'accepted']);
+    // On MySQL-family databases published PHP's update admission can deadlock
+    // against its own maintenance pass and answer an uncaught 500. The request
+    // id makes the same submission idempotent, so it is sent again.
+    $submit = static function (int $index) use ($raw, $id, $update): array {
+        for ($attempt = 1; ; $attempt++) {
+            $answer = $raw('POST', 'workflows/'.rawurlencode($id).'/update/'.$update,
+                ['input' => [['v' => $index]], 'request_id' => 'many-'.$index, 'wait_for' => 'accepted']);
+            if ($answer['status'] !== 500 || $attempt === 3) {
+                return $answer;
+            }
+            usleep(200000 * $attempt);
+        }
+    };
 
     $opened = $complete($poll(), [['type' => 'open_signal_wait', 'signal_name' => $definition['signal']]]);
     $state = ['applicable' => true, 'opened' => $opened['status'], 'before' => $describe()];
