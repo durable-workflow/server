@@ -26,7 +26,9 @@ const pulls = {
 
 test('each container-heavy fixture job pulls its pinned images first, with retries', () => {
   for (const [name, extra] of Object.entries(pulls)) {
-    const block = job(name);
+    const nativePin = workflow.match(/^  NATIVE_RUST_IMAGE: (mirror\.gcr\.io\/library\/rust@sha256:[0-9a-f]{64})$/m)?.[1];
+    assert.ok(nativePin, 'the shared native compiler must have an immutable pin');
+    const block = job(name).replaceAll('${NATIVE_RUST_IMAGE}', nativePin);
     const steps = block.split(/\n {6}(?=- (?:name|uses):)/).slice(1);
     assert.match(steps[0], /^- uses: actions\/checkout@/, name);
     const pull = steps[1];
