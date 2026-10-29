@@ -436,6 +436,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $largeCommandBatches = isset($fixture['large_command_batches']) ? finishHttpLargeCommandBatches($client, $fixture, $workflowId, $url) : null;
     $manyUpdates = isset($fixture['many_updates']) ? finishHttpManyUpdates($client, $fixture, $workflowId, $url) : null;
     $workerErrorBodies = isset($fixture['worker_error_bodies']) ? finishHttpWorkerErrorBodies($client, $fixture, $workflowId, $url) : null;
+    $childDescriptions = isset($fixture['child_descriptions']) ? finishHttpChildDescriptions($client, $fixture, $workflowId, $url) : null;
     $startSearchAttributes = isset($fixture['start_search_attributes']) ? finishHttpStartSearchAttributes($client, $fixture, $workflowId, $url) : null;
     $queryArgumentRouting = isset($fixture['query_argument_routing']) ? finishHttpQueryArgumentRouting($client, $fixture, $workflowId, $url) : null;
     $queryContractArguments = isset($fixture['query_contract_arguments']) ? finishHttpQueryContractArguments($client, $fixture, $workflowId, $url) : null;
@@ -570,6 +571,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'large_command_batches' => $largeCommandBatches,
         'many_updates' => $manyUpdates,
         'worker_error_bodies' => $workerErrorBodies,
+        'child_descriptions' => $childDescriptions,
         'start_search_attributes' => $startSearchAttributes,
         'query_argument_routing' => $queryArgumentRouting,
         'query_contract_arguments' => $queryContractArguments,
@@ -907,6 +909,7 @@ try {
     require __DIR__.'/large-command-batches-probe.php';
     require __DIR__.'/many-updates-probe.php';
     require __DIR__.'/worker-error-bodies-probe.php';
+    require __DIR__.'/child-descriptions-probe.php';
     require __DIR__.'/start-search-attributes-probe.php';
     require __DIR__.'/query-arguments-probe.php';
     require __DIR__.'/query-contract-arguments-probe.php';
@@ -1107,6 +1110,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['worker_error_bodies'])) {
         $observation['worker_error_bodies'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
+    }
+    if ($mode === 'embedded' && isset($fixture['child_descriptions'])) {
+        $observation['child_descriptions'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
     }
     if ($mode === 'embedded' && isset($fixture['start_search_attributes'])) {
         $observation['start_search_attributes'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_search_attribute_registry'];

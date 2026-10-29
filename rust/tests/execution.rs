@@ -352,6 +352,8 @@ mod close_inventory;
 mod start_search_attributes;
 #[path = "execution/worker_error_bodies.rs"]
 mod worker_error_bodies;
+#[path = "execution/child_descriptions.rs"]
+mod child_descriptions;
 
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
