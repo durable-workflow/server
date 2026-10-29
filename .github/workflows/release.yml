@@ -272,11 +272,29 @@ jobs:
           set -euo pipefail
           # GHSA-6q48-6c7w-9gw2: every published architecture's system, PHP,
           # Composer, Node and venv stores, checked offline in the image.
+          [[ "$RELEASE_IMAGE" =~ @sha256:[0-9a-f]{64}$ ]]
+          index_json="$(docker buildx imagetools inspect --raw "$RELEASE_IMAGE")"
           IFS=',' read -ra platforms <<<"$RELEASE_IMAGE_PLATFORMS"
+          platform_images=()
           for platform in "${platforms[@]}"; do
-            DOCKER_DEFAULT_PLATFORM="$platform" bash scripts/ci/pull-images.sh "$RELEASE_IMAGE"
+            child_digest="$(jq -er --arg platform "$platform" '
+              [.manifests[] | select(
+                (.platform.os + "/" + .platform.architecture) == $platform and
+                (.mediaType == "application/vnd.oci.image.manifest.v1+json" or
+                 .mediaType == "application/vnd.docker.distribution.manifest.v2+json"))]
+              | if length == 1 and (.[0].digest | test("^sha256:[0-9a-f]{64}$"))
+                then .[0].digest else error("Expected one image manifest for " + $platform) end
+            ' <<<"$index_json")"
+            platform_images+=("${RELEASE_IMAGE%@*}@${child_digest}")
+          done
+          # A single local index reference cannot hold two platform images on
+          # every Docker image store. Distinct verified child refs avoid that collision.
+          for i in "${!platforms[@]}"; do
+            platform="${platforms[$i]}"
+            platform_image="${platform_images[$i]}"
+            DOCKER_DEFAULT_PLATFORM="$platform" bash scripts/ci/pull-images.sh "$platform_image"
             docker run --rm --pull never --platform "$platform" --network none \
-              --entrypoint server-verify-trust "$RELEASE_IMAGE"
+              --entrypoint server-verify-trust "$platform_image"
           done
 
       - name: Verify bare image first-run readiness

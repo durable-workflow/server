@@ -18,6 +18,10 @@ final class ReleaseImageContinuationTest extends TestCase
 
     private const DIGEST = 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
 
+    private const AMD64 = 'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+
+    private const ARM64 = 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
+
     protected function setUp(): void
     {
         $this->directory = sys_get_temp_dir().'/release-continuation-'.bin2hex(random_bytes(8));
@@ -36,6 +40,12 @@ if [ "$1" = pull ]; then
         echo '500 Internal Server Error' >&2
         exit 1
     fi
+    store="$CALL_LOG-store-${3##*:}"
+    if [ -f "$store" ] && [ "$(cat "$store")" != "$DOCKER_DEFAULT_PLATFORM" ]; then
+        echo "cannot overwrite digest ${3##*@}" >&2
+        exit 1
+    fi
+    printf '%s\n' "$DOCKER_DEFAULT_PLATFORM" > "$store"
     exit 0
 fi
 if [ "$1" = run ]; then
@@ -50,6 +60,11 @@ test "$1" = buildx
 test "$2" = imagetools
 if [ "$3" = create ]; then exit 0; fi
 test "$3" = inspect
+if [ "$4" = --raw ]; then
+    test "$5" = "durableworkflow/server@$INDEX_DIGEST"
+    printf '%s\n' "$INDEX_JSON"
+    exit 0
+fi
 if [ "$4" = --format ]; then
     if [ "$STATE" = wrong_arm_config ]; then
         case "$5" in *linux/arm64*) printf '%s\n' "$BAD_METADATA"; exit 0 ;; esac
@@ -245,17 +260,7 @@ SH);
     #[DataProvider('trustPullOutcomes')]
     public function test_only_pulls_are_retried_and_trust_uses_the_cached_digest(string $state, int $status, int $pulls, int $runs): void
     {
-        $workflow = Yaml::parse(file_get_contents(dirname(__DIR__, 2).'/.github/workflows/release.yml'));
-        $steps = array_column($workflow['jobs']['publish']['steps'], null, 'name');
-        $step = $steps['Verify published image trust stores'];
-        $script = $this->directory.'/trust.sh';
-        file_put_contents($script, $step['run']);
-        $result = $this->runProcess(['bash', $script], [
-            'STATE' => $state, 'RELEASE_IMAGE_PLATFORMS' => 'linux/amd64,linux/arm64',
-            'RELEASE_IMAGE' => 'durableworkflow/server@'.self::DIGEST,
-            'DW_PULL_ATTEMPTS' => $step['env']['DW_PULL_ATTEMPTS'] ?? '3',
-            'DW_PULL_BACKOFF_SECONDS' => '0',
-        ]);
+        $result = $this->runTrustStep(['STATE' => $state]);
         self::assertSame($status, $result['status'], $result['text']);
         self::assertSame($pulls, substr_count($result['calls'], 'pull --quiet'));
         self::assertSame($runs, substr_count($result['calls'], 'run --rm'));
@@ -267,6 +272,79 @@ SH);
             self::assertSame(3, (int) file_get_contents($this->directory.'/calls-amd64'));
             self::assertSame(3, (int) file_get_contents($this->directory.'/calls-arm64'));
         }
+    }
+
+    public function test_mock_reproduces_the_same_index_cross_platform_overwrite(): void
+    {
+        $result = $this->runProcess(['bash', '-c', <<<'SH'
+set -e
+DOCKER_DEFAULT_PLATFORM=linux/amd64 docker pull --quiet "$RELEASE_IMAGE"
+DOCKER_DEFAULT_PLATFORM=linux/arm64 docker pull --quiet "$RELEASE_IMAGE"
+SH], ['RELEASE_IMAGE' => 'durableworkflow/server@'.self::DIGEST]);
+        self::assertSame(1, $result['status']);
+        self::assertStringContainsString('cannot overwrite digest '.self::DIGEST, $result['text']);
+    }
+
+    public function test_trust_runs_both_verified_children_without_overwriting_the_local_index(): void
+    {
+        $result = $this->runTrustStep();
+        self::assertSame(0, $result['status'], $result['text']);
+        self::assertStringContainsString('buildx imagetools inspect --raw durableworkflow/server@'.self::DIGEST, $result['calls']);
+        foreach (['linux/amd64' => self::AMD64, 'linux/arm64' => self::ARM64] as $platform => $digest) {
+            self::assertStringContainsString('pull --quiet durableworkflow/server@'.$digest, $result['calls']);
+            self::assertStringContainsString('run --rm --pull never --platform '.$platform.' --network none --entrypoint server-verify-trust durableworkflow/server@'.$digest, $result['calls']);
+        }
+        self::assertStringNotContainsString('pull --quiet durableworkflow/server@'.self::DIGEST, $result['calls']);
+        self::assertSame(2, substr_count($result['calls'], 'pull --quiet'));
+        self::assertSame(2, substr_count($result['calls'], 'run --rm'));
+    }
+
+    public static function invalidTrustIndexes(): iterable
+    {
+        $amd64 = ['mediaType' => 'application/vnd.oci.image.manifest.v1+json', 'digest' => self::AMD64,
+            'platform' => ['os' => 'linux', 'architecture' => 'amd64']];
+        $arm64 = ['mediaType' => 'application/vnd.oci.image.manifest.v1+json', 'digest' => self::ARM64,
+            'platform' => ['os' => 'linux', 'architecture' => 'arm64']];
+        yield 'missing amd64' => [[$arm64]];
+        yield 'missing arm64' => [[$amd64]];
+        yield 'wrong operating system' => [[$amd64, array_replace($arm64, ['platform' => ['os' => 'windows', 'architecture' => 'arm64']])]];
+        yield 'wrong architecture' => [[$amd64, array_replace($arm64, ['platform' => ['os' => 'linux', 'architecture' => 's390x']])]];
+        yield 'foreign attestation is not an arm64 child' => [[$amd64, array_replace($arm64, ['platform' => ['os' => 'unknown', 'architecture' => 'unknown']])]];
+        yield 'ambiguous platform' => [[$amd64, $arm64, $arm64]];
+        yield 'invalid child digest' => [[$amd64, array_replace($arm64, ['digest' => 'latest'])]];
+        yield 'nested index is not a platform image' => [[$amd64, array_replace($arm64, ['mediaType' => 'application/vnd.oci.image.index.v1+json'])]];
+    }
+
+    #[DataProvider('invalidTrustIndexes')]
+    public function test_unverified_platform_selection_fails_before_any_pull_or_trust(array $manifests): void
+    {
+        $result = $this->runTrustStep(['INDEX_JSON' => json_encode(['manifests' => $manifests], JSON_THROW_ON_ERROR)]);
+        self::assertNotSame(0, $result['status']);
+        self::assertStringNotContainsString('pull --quiet', $result['calls']);
+        self::assertStringNotContainsString('run --rm', $result['calls']);
+    }
+
+    public function test_mutable_trust_reference_fails_before_registry_or_container_access(): void
+    {
+        $result = $this->runTrustStep(['RELEASE_IMAGE' => 'durableworkflow/server:latest']);
+        self::assertSame(1, $result['status']);
+        self::assertSame('', $result['calls']);
+    }
+
+    private function runTrustStep(array $environment = []): array
+    {
+        $workflow = Yaml::parse(file_get_contents(dirname(__DIR__, 2).'/.github/workflows/release.yml'));
+        $steps = array_column($workflow['jobs']['publish']['steps'], null, 'name');
+        $step = $steps['Verify published image trust stores'];
+        $script = $this->directory.'/trust.sh';
+        file_put_contents($script, $step['run']);
+
+        return $this->runProcess(['bash', $script], array_replace([
+            'RELEASE_IMAGE_PLATFORMS' => 'linux/amd64,linux/arm64',
+            'RELEASE_IMAGE' => 'durableworkflow/server@'.self::DIGEST,
+            'DW_PULL_ATTEMPTS' => $step['env']['DW_PULL_ATTEMPTS'] ?? '3',
+            'DW_PULL_BACKOFF_SECONDS' => '0',
+        ], $environment));
     }
 
     private function context(array $overrides = []): array
@@ -311,6 +389,12 @@ SH);
             'PATH' => $this->directory.':'.getenv('PATH'), 'DOCKER' => $this->directory.'/docker',
             'GITHUB_OUTPUT' => $this->directory.'/output', 'CALL_LOG' => $this->directory.'/calls',
             'STATE' => 'valid', 'INDEX_DIGEST' => self::DIGEST,
+            'INDEX_JSON' => json_encode(['schemaVersion' => 2, 'manifests' => [
+                ['mediaType' => 'application/vnd.oci.image.manifest.v1+json', 'digest' => self::AMD64,
+                    'platform' => ['os' => 'linux', 'architecture' => 'amd64']],
+                ['mediaType' => 'application/vnd.oci.image.manifest.v1+json', 'digest' => self::ARM64,
+                    'platform' => ['os' => 'linux', 'architecture' => 'arm64']],
+            ]], JSON_THROW_ON_ERROR),
             'METADATA' => json_encode(['config' => ['Labels' => $labels]], JSON_THROW_ON_ERROR),
             'BAD_METADATA' => json_encode(['config' => ['Labels' => $badLabels]], JSON_THROW_ON_ERROR),
         ], $environment);
