@@ -14,6 +14,11 @@ on:
       release_commit:
         description: 'Full source commit for the existing immutable release tag'
         required: true
+      existing_image_digest:
+        description: 'Continue verification of this existing sha256 index without rebuilding images'
+        required: false
+        default: ''
+        type: string
 permissions:
   contents: read
 
@@ -104,6 +109,8 @@ jobs:
         id: release_publish
         env:
           INPUT_TAG: ${{ github.event.inputs.tag }}
+          INPUT_RELEASE_COMMIT: ${{ inputs.release_commit }}
+          INPUT_EXISTING_IMAGE_DIGEST: ${{ inputs.existing_image_digest }}
           SOURCE_RELEASE_VERSION: ${{ steps.source_release.outputs.version }}
           DOCKERHUB_IMAGE: ${{ env.DOCKERHUB_IMAGE }}
           GHCR_IMAGE: ${{ env.GHCR_IMAGE }}
@@ -179,6 +186,7 @@ jobs:
 
       - name: Resolve shared release image cache
         id: cache
+        if: ${{ steps.release_publish.outputs.verification_only != 'true' }}
         env:
           RELEASE_IMAGE_CACHE_ROOT: release-source
           RELEASE_SOURCE_COMMIT: ${{ steps.release_source.outputs.commit }}
@@ -188,16 +196,19 @@ jobs:
         run: node scripts/ci/resolve-release-image-cache.mjs
 
       - name: Refuse replacement of published release images
+        if: ${{ steps.release_publish.outputs.verification_only != 'true' }}
         env:
           RELEASE_TAG: ${{ steps.release_publish.outputs.tag }}
         run: sh scripts/ci/guard-unpublished-release-images.sh
 
       - name: Start exact image build timer
         id: build_started
+        if: ${{ steps.release_publish.outputs.verification_only != 'true' }}
         run: printf 'epoch_seconds=%s\n' "$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Build and push exact image tags
         id: build
+        if: ${{ steps.release_publish.outputs.verification_only != 'true' }}
         # Bound cold multi-architecture extension and application builds.
         timeout-minutes: 120
         continue-on-error: true
@@ -239,9 +250,11 @@ jobs:
           DOCKER_BUILD_OUTCOME: ${{ steps.build.outcome || 'skipped' }}
           BUILT_IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
           BUILT_IMAGE_METADATA: ${{ steps.build.outputs.metadata }}
+          RELEASE_IMAGE_VERIFICATION_ONLY: ${{ steps.release_publish.outputs.verification_only }}
+          EXPECTED_IMAGE_DIGEST: ${{ steps.release_publish.outputs.existing_image_digest }}
           RELEASE_COMMIT: ${{ steps.release_source.outputs.commit }}
-          RELEASE_RUN_ID: ${{ github.run_id }}
-          RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
+          RELEASE_RUN_ID: ${{ steps.release_publish.outputs.verification_only != 'true' && github.run_id || '' }}
+          RELEASE_RUN_ATTEMPT: ${{ steps.release_publish.outputs.verification_only != 'true' && github.run_attempt || '' }}
           WORKFLOW_PACKAGE_SOURCE: ${{ steps.workflow.outputs.source }}
           WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.ref }}
           WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
@@ -250,15 +263,19 @@ jobs:
       - name: Verify published image trust stores
         id: trust_stores
         if: ${{ always() && success() && steps.exact.outputs.exact_publish_outcome == 'success' }}
+        timeout-minutes: 10
         env:
-          RELEASE_IMAGE: ${{ env.DOCKERHUB_IMAGE }}:${{ steps.release_publish.outputs.tag }}
+          RELEASE_IMAGE: ${{ env.DOCKERHUB_IMAGE }}@${{ steps.exact.outputs.image_digest }}
+          DW_PULL_ATTEMPTS: "3"
+          DW_PULL_BACKOFF_SECONDS: "2"
         run: |
           set -euo pipefail
           # GHSA-6q48-6c7w-9gw2: every published architecture's system, PHP,
           # Composer, Node and venv stores, checked offline in the image.
           IFS=',' read -ra platforms <<<"$RELEASE_IMAGE_PLATFORMS"
           for platform in "${platforms[@]}"; do
-            docker run --rm --pull always --platform "$platform" --network none \
+            DOCKER_DEFAULT_PLATFORM="$platform" bash scripts/ci/pull-images.sh "$RELEASE_IMAGE"
+            docker run --rm --pull never --platform "$platform" --network none \
               --entrypoint server-verify-trust "$RELEASE_IMAGE"
           done
 
@@ -266,7 +283,7 @@ jobs:
         id: first_run_readiness
         if: ${{ always() && success() && steps.exact.outputs.exact_publish_outcome == 'success' }}
         env:
-          DW_SERVER_IMAGE: ${{ env.DOCKERHUB_IMAGE }}:${{ steps.release_publish.outputs.tag }}
+          DW_SERVER_IMAGE: ${{ env.DOCKERHUB_IMAGE }}@${{ steps.exact.outputs.image_digest }}
           DW_FIRST_RUN_SCOPE: release-first-run-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         working-directory: release-source
         run: scripts/smoke-published-first-run.sh
@@ -275,7 +292,7 @@ jobs:
         id: source_free_compose
         if: ${{ always() && success() && steps.first_run_readiness.outcome == 'success' }}
         env:
-          DW_SERVER_IMAGE: ${{ env.DOCKERHUB_IMAGE }}:${{ steps.release_publish.outputs.tag }}
+          DW_SERVER_IMAGE: ${{ env.DOCKERHUB_IMAGE }}@${{ steps.exact.outputs.image_digest }}
           DW_SERVER_PLATFORM: linux/amd64
           DW_PUBLISHED_COMPOSE_PROFILE: local
           DW_PUBLISHED_COMPOSE_PROJECT: release-compose-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
@@ -337,7 +354,7 @@ jobs:
         if: ${{ always() && success() && steps.exact.outputs.exact_publish_outcome == 'success' }}
         env:
           RELEASE_TAG: ${{ steps.release_publish.outputs.tag }}
-          SERVER_IMAGE: ${{ env.DOCKERHUB_IMAGE }}:${{ steps.release_publish.outputs.tag }}
+          SERVER_IMAGE: ${{ env.DOCKERHUB_IMAGE }}@${{ steps.exact.outputs.image_digest }}
           WORKFLOW_PACKAGE_SOURCE: ${{ steps.workflow.outputs.source }}
           WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.ref }}
           WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
@@ -356,6 +373,25 @@ jobs:
             "${RELEASE_PROTOCOL_CATALOG_SCOPE}-bootstrap" >/dev/null 2>&1 || true
           docker volume rm -f "${RELEASE_PROTOCOL_CATALOG_SCOPE}-database" \
             >/dev/null 2>&1 || true
+
+      - name: Recheck immutable release identities before promotion
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_publish.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.release_source.outputs.commit }}
+          RELEASE_IMAGE_VERIFICATION_ONLY: "true"
+          EXPECTED_IMAGE_DIGEST: ${{ steps.exact.outputs.image_digest }}
+          DOCKER_BUILD_OUTCOME: skipped
+          DOCKERHUB_IMAGE: ${{ env.DOCKERHUB_IMAGE }}
+          GHCR_IMAGE: ${{ env.GHCR_IMAGE }}
+          RELEASE_RUN_ID: ${{ steps.release_publish.outputs.verification_only != 'true' && github.run_id || '' }}
+          RELEASE_RUN_ATTEMPT: ${{ steps.release_publish.outputs.verification_only != 'true' && github.run_attempt || '' }}
+          WORKFLOW_PACKAGE_SOURCE: ${{ steps.workflow.outputs.source }}
+          WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.ref }}
+          WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
+        run: |
+          scripts/ci/verify-release-tag-source.sh
+          scripts/ci/verify-release-exact-images.sh
 
       - name: Resolve rolling image aliases
         id: rolling
@@ -380,6 +416,7 @@ jobs:
           DOCKERHUB_IMAGE: ${{ env.DOCKERHUB_IMAGE }}
           GHCR_IMAGE: ${{ env.GHCR_IMAGE }}
           ROLLING_SHOULD_PROMOTE: ${{ steps.rolling.outputs.rolling_should_promote }}
+          VERIFIED_IMAGE_DIGEST: ${{ steps.exact.outputs.image_digest }}
           RELEASE_IMAGE_TAG_SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}.git
         run: scripts/ci/promote-release-image-rolling-tags.sh
 
@@ -445,6 +482,7 @@ jobs:
     needs: publish
     if: >-
       always() &&
+      needs.publish.result == 'success' &&
       needs.publish.outputs.exact_publish_outcome == 'success' &&
       needs.publish.outputs.published_database_tls_outcome == 'success' &&
       github.repository == 'durable-workflow/server' &&

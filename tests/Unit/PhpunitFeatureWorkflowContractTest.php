@@ -156,6 +156,9 @@ class PhpunitFeatureWorkflowContractTest extends TestCase
         $restore = $this->step('Restore the source-free PHP tool images');
         $prepare = $this->step('Prepare the source-free PHP tool images');
         $save = $this->step('Save qualified source-free PHP tools from main');
+        $this->assertStringContainsString('server-php-tools-v2-', $key['run']);
+        $this->assertStringContainsString('apt-get install -y --no-install-recommends git jq', $prepare['run']);
+        $this->assertStringContainsString('git --version && jq --version', $prepare['run']);
         $execution = $this->step('Run feature, Nexus, and regression corpus suites');
 
         $this->assertStringContainsString('$(date -u +%Y%m%d)', $key['run']);
