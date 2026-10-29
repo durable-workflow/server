@@ -577,8 +577,11 @@ where
         let backoff = super::child_retries::backoff_seconds(&policy, attempts);
         let available_at = at + chrono::Duration::seconds(backoff);
         let instance = DB::string(failed, "workflow_instance_id")?;
-        let run_number = Self::scalar("SELECT COALESCE(MAX(run_number),0) FROM workflow_runs WHERE workflow_instance_id=$1")
-            .bind(&instance).fetch_one(&mut **tx).await? + 1;
+        // The latest run as a row: an aggregate of MySQL's unsigned column
+        // does not decode as a signed integer.
+        let latest = Self::query("SELECT run_number FROM workflow_runs WHERE workflow_instance_id=$1 ORDER BY run_number DESC LIMIT 1")
+            .bind(&instance).fetch_one(&mut **tx).await?;
+        let run_number = DB::number(&latest, "run_number")? + 1;
         // The execution deadline spans every attempt; each run gets its own.
         let execution_deadline = DB::optional_instant(failed, "execution_deadline_at")?
             .or(execution_timeout.map(|seconds| at + chrono::Duration::seconds(seconds)));
@@ -588,8 +591,9 @@ where
             .bind(&retry_run).bind(run_number).bind(run_timeout.unwrap_or(0)).bind(DB::optional_time(execution_deadline)).bind(DB::optional_time(run_deadline))
             .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(&failed_run)
             .execute(&mut **tx).await?;
-        Self::query("UPDATE workflow_instances SET current_run_id=$1,run_count=CASE WHEN run_count>$2 THEN run_count ELSE $2 END,updated_at=$3 WHERE id=$4")
-            .bind(&retry_run).bind(run_number).bind(DB::bind_time(at)).bind(&instance).execute(&mut **tx).await?;
+        // Each placeholder appears once, in order, as MySQL's templates require.
+        Self::query("UPDATE workflow_instances SET current_run_id=$1,run_count=CASE WHEN run_count>$2 THEN run_count ELSE $3 END,updated_at=$4 WHERE id=$5")
+            .bind(&retry_run).bind(run_number).bind(run_number).bind(DB::bind_time(at)).bind(&instance).execute(&mut **tx).await?;
         let parent_close = DB::optional_string(link, "parent_close_policy")?.unwrap_or_else(|| "abandon".into());
         let retry_link = id();
         Self::query("INSERT INTO workflow_links(id,link_type,sequence,parent_workflow_instance_id,parent_workflow_run_id,child_workflow_instance_id,child_workflow_run_id,is_primary_parent,parent_close_policy,created_at,updated_at) VALUES ($1,'child_workflow',$2,$3,$4,$5,$6,TRUE,$7,$8,$9)")
