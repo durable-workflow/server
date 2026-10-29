@@ -354,17 +354,17 @@ fn checks(body: &Value, rules: &Rules) -> Vec<(String, bool, &'static [Rule])> {
 /// One attribute's messages. An implicit rule (required, required_with,
 /// present) stops at its first failure, as Laravel's does.
 /// Laravel's `validateDistinct` for an expanded `x.N` attribute: another
-/// item of `x` has the same value, compared as PHP compares them loosely
-/// for scalars (their string forms).
+/// item of `x` equals this one under PHP's loose `==`, as the unqualified
+/// rule's `in_array` compares them.
 fn duplicated(body: &Value, attribute: &str, value: Option<&Value>) -> bool {
     let Some((parent, index)) = attribute.rsplit_once('.') else {
         return false;
     };
-    let (Some(Value::Array(items)), Some(own)) = (lookup(body, parent), value.and_then(php_string)) else {
+    let (Some(Value::Array(items)), Some(own)) = (lookup(body, parent), value) else {
         return false;
     };
     items.iter().enumerate().any(|(position, item)| {
-        position.to_string() != index && php_string(item).is_some_and(|other| other == own)
+        position.to_string() != index && super::php_value::loose_eq(own, item)
     })
 }
 

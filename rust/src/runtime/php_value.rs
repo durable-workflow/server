@@ -578,6 +578,59 @@ pub(super) fn numeric(text: &str) -> Option<f64> {
     trimmed.parse::<f64>().ok()
 }
 
+/// PHP 8's `==` between two decoded JSON values, as `in_array` uses it by
+/// default: a boolean compares by truthiness, null equals the empty and the
+/// zero values, numbers and numeric strings compare as numbers, other
+/// strings compare exactly, and arrays compare key by key.
+pub(crate) fn loose_eq(left: &serde_json::Value, right: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    fn truthy(value: &Value) -> bool {
+        match value {
+            Value::Null => false,
+            Value::Bool(flag) => *flag,
+            Value::Number(number) => number.as_f64().is_some_and(|number| number != 0.0),
+            Value::String(text) => !text.is_empty() && text != "0",
+            Value::Array(items) => !items.is_empty(),
+            Value::Object(fields) => !fields.is_empty(),
+        }
+    }
+    fn number_text(number: &serde_json::Number) -> String {
+        match number.as_i64() {
+            Some(whole) => whole.to_string(),
+            None => float(number.as_f64().unwrap_or_default(), false),
+        }
+    }
+    fn entries(value: &Value) -> Option<Vec<(String, &Value)>> {
+        match value {
+            Value::Array(items) => Some(items.iter().enumerate().map(|(index, item)| (index.to_string(), item)).collect()),
+            Value::Object(fields) => Some(fields.iter().map(|(key, item)| (key.clone(), item)).collect()),
+            _ => None,
+        }
+    }
+    match (left, right) {
+        (Value::Bool(flag), other) | (other, Value::Bool(flag)) => *flag == truthy(other),
+        (Value::Null, other) | (other, Value::Null) => !truthy(other) && !matches!(other, Value::String(text) if text == "0"),
+        (Value::Number(a), Value::Number(b)) => match (a.as_i64(), b.as_i64()) {
+            (Some(a), Some(b)) => a == b,
+            _ => a.as_f64() == b.as_f64(),
+        },
+        (Value::Number(number), Value::String(text)) | (Value::String(text), Value::Number(number)) => match numeric(text) {
+            Some(parsed) => number.as_f64() == Some(parsed),
+            None => number_text(number) == *text,
+        },
+        (Value::String(a), Value::String(b)) => match (numeric(a), numeric(b)) {
+            (Some(a), Some(b)) => a == b,
+            _ => a == b,
+        },
+        (Value::Array(_) | Value::Object(_), Value::Array(_) | Value::Object(_)) => {
+            let (a, b) = (entries(left).unwrap_or_default(), entries(right).unwrap_or_default());
+            a.len() == b.len()
+                && a.iter().all(|(key, item)| b.iter().any(|(other, value)| other == key && loose_eq(item, value)))
+        }
+        _ => false,
+    }
+}
+
 /// PHP's `(int)` cast of a numeric string.
 pub(super) fn int_cast(text: &str) -> Option<i64> {
     let value = numeric(text)?;
@@ -602,6 +655,23 @@ pub(super) fn int_cast(text: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn loose_eq_follows_php_8() {
+        use serde_json::json;
+        for (a, b, equal) in [
+            (json!(true), json!("workflow"), true), (json!(true), json!(""), false), (json!(false), json!("0"), true),
+            (json!(null), json!(""), true), (json!(null), json!(0), true), (json!(null), json!("0"), false), (json!(null), json!([]), true),
+            (json!(1), json!("1"), true), (json!(1), json!("01"), true), (json!(1), json!("1e0"), true), (json!(0), json!("a"), false),
+            (json!("1"), json!("01"), true), (json!("abc"), json!("ABC"), false), (json!("1e3"), json!("1000"), true),
+            (json!(1.5), json!(1.5), true), (json!(1), json!(1.0), true),
+            (json!([1, 2]), json!(["1", "2"]), true), (json!([1, 2]), json!([2, 1]), false), (json!({"a": 1}), json!({"a": "1"}), true),
+            (json!("workflow"), json!("update_validation"), false), (json!([]), json!(0), false),
+        ] {
+            assert_eq!(loose_eq(&a, &b), equal, "{a} == {b}");
+            assert_eq!(loose_eq(&b, &a), equal, "{b} == {a}");
+        }
+    }
+
     use super::*;
 
     fn decode(text: &str) -> Php {

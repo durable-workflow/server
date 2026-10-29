@@ -131,6 +131,18 @@
             "workflow"
           ]
         }
+      ],
+      "workflow_poll_loose_duplicate_kinds": [
+        "POST",
+        "worker/workflow-tasks/poll",
+        {
+          "worker_id": "w",
+          "task_queue": "q",
+          "task_kinds": [
+            "workflow",
+            true
+          ]
+        }
       ]
     },
     "expected": {
@@ -329,6 +341,35 @@
             ],
             "task_kinds.1": [
               "The task_kinds.1 field has a duplicate value."
+            ]
+          }
+        }
+      },
+      "workflow_poll_loose_duplicate_kinds": {
+        "status": 422,
+        "server_capabilities": true,
+        "body": {
+          "errors": {
+            "task_kinds.0": [
+              "The task_kinds.0 field has a duplicate value."
+            ],
+            "task_kinds.1": [
+              "The task_kinds.1 field must be a string.",
+              "The task_kinds.1 field has a duplicate value.",
+              "The selected task_kinds.1 is invalid."
+            ]
+          },
+          "message": "The task_kinds.0 field has a duplicate value. (and 3 more errors)",
+          "protocol_version": "1.20",
+          "reason": "validation_failed",
+          "validation_errors": {
+            "task_kinds.0": [
+              "The task_kinds.0 field has a duplicate value."
+            ],
+            "task_kinds.1": [
+              "The task_kinds.1 field must be a string.",
+              "The task_kinds.1 field has a duplicate value.",
+              "The selected task_kinds.1 is invalid."
             ]
           }
         }
