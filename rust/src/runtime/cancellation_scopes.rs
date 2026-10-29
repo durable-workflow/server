@@ -34,8 +34,7 @@ const DELIVERY_SCHEMA: &str = "durable-workflow.cancellation-scope-delivery/v1";
 const SCOPED_CONTEXT_SCHEMA: &str = "durable-workflow.scoped-cancellation-context/v1";
 const ACTIVITY_SCOPE_SCHEMA: &str = "durable-workflow.activity-scope-cancellation/v1";
 const TIMER_SCOPE_SCHEMA: &str = "durable-workflow.scoped-timer-cancellation/v1";
-/// PHP's default `command_batch_size` structural limit.
-const SPAN_LIMIT: i64 = 1000;
+use super::memo_limits::COMMAND_BATCH_SIZE as SPAN_LIMIT;
 /// The command types whose `cancellation_scope_id` records membership.
 const MEMBER_COMMANDS: &[&str] = &["schedule_activity", "start_timer", "start_child_workflow", "open_signal_wait", "open_condition_wait"];
 /// The command types the admission guard lets carry a scope.

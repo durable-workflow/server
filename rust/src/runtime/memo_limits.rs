@@ -80,6 +80,12 @@ fn configured(suffix: &str, default: usize, invalid: &'static str) -> Result<Opt
     Ok(limit_or(primary.as_deref(), legacy.as_deref(), default))
 }
 
+/// `StructuralLimits::commandBatchSizeLimit`
+/// (DW_V2_LIMIT_COMMAND_BATCH_SIZE). For an external worker, published PHP
+/// uses it only to bound a parallel group's declared size and a cancellation
+/// span. Native refuses to start unless it keeps this default.
+pub(super) const COMMAND_BATCH_SIZE: i64 = 1000;
+
 /// `StructuralLimits`' per-run signal and update ceilings and its
 /// single-payload byte ceiling. `None` is a disabled check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

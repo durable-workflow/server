@@ -97,7 +97,7 @@ impl ExternalWaitHistory {
         ) else {
             return false;
         };
-        if self.open.len() >= 100 || self.open.contains_key(id) {
+        if self.open.contains_key(id) {
             return false;
         }
         self.open.insert(
@@ -146,7 +146,6 @@ impl ExternalWaitHistory {
                 || wait.sequence != sequence
                 || wait.timeout != Some(delay)
                 || wait.timer.is_some()
-                || self.timers.len() >= 100
                 || self.timers.contains_key(timer_id)
                 || super::wait_timeouts::wait_fields(payload) != wait.identity
             {
@@ -224,9 +223,9 @@ where
         history: &ExternalWaitHistory,
         summary: &mut ActiveSummary,
     ) -> Result<bool> {
-        let rows = Self::query("SELECT w.*,t.id AS signal_timer_id,t.status AS signal_timer_status,t.sequence AS signal_timer_sequence,t.delay_seconds AS signal_timer_delay,t.fire_at AS signal_timer_fire_at,q.id AS signal_task_id,q.task_type AS signal_task_type,q.payload AS signal_task_payload FROM workflow_run_waits w LEFT JOIN workflow_run_timers t ON t.id=w.resume_source_id AND t.workflow_run_id=w.workflow_run_id AND w.resume_source_kind='timer' LEFT JOIN workflow_tasks q ON q.id=w.task_id AND q.workflow_run_id=w.workflow_run_id WHERE w.workflow_run_id=$1 AND (w.status='open' OR (w.status='resolved' AND w.source_status='timed_out')) AND w.kind IN ('condition','signal') ORDER BY w.sequence,w.wait_id LIMIT 101")
+        let rows = Self::query("SELECT w.*,t.id AS signal_timer_id,t.status AS signal_timer_status,t.sequence AS signal_timer_sequence,t.delay_seconds AS signal_timer_delay,t.fire_at AS signal_timer_fire_at,q.id AS signal_task_id,q.task_type AS signal_task_type,q.payload AS signal_task_payload FROM workflow_run_waits w LEFT JOIN workflow_run_timers t ON t.id=w.resume_source_id AND t.workflow_run_id=w.workflow_run_id AND w.resume_source_kind='timer' LEFT JOIN workflow_tasks q ON q.id=w.task_id AND q.workflow_run_id=w.workflow_run_id WHERE w.workflow_run_id=$1 AND (w.status='open' OR (w.status='resolved' AND w.source_status='timed_out')) AND w.kind IN ('condition','signal') ORDER BY w.sequence,w.wait_id")
             .bind(run_id).fetch_all(&mut **tx).await?;
-        if rows.len() != history.open.len() || rows.len() > 100 {
+        if rows.len() != history.open.len() {
             return Ok(false);
         }
         let mut condition = None;

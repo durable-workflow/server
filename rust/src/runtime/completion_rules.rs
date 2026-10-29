@@ -13,7 +13,7 @@
 //! integers, so `"7"` is a valid delay.
 use super::laravel_validation::{Rule, default_message, integer, passes, present};
 use super::Result;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 #[derive(Clone, Copy)]
 enum Check {
@@ -407,12 +407,63 @@ pub(super) fn checked(body: Value) -> Result<Value> {
             }
         }
     }
+    // `WorkflowCommandNormalizer::preflightParallelMetadata`, which PHP
+    // runs here, before the controller's scopes and any ownership guard.
+    if let Some(commands) = body["commands"].as_array_mut() {
+        commands.iter_mut().for_each(parallel_integers);
+        if let Some(error) = super::laravel_validation::failure_messages(parallel_preflight(commands)) {
+            return Err(error);
+        }
+    }
     if let Some(commands) = body["commands"].as_array()
         && let Some(error) = super::laravel_validation::failure_messages(controller_scopes(commands))
     {
         return Err(error);
     }
     Ok(body)
+}
+
+/// `PARALLEL_METADATA_INTEGER_FIELDS`.
+const PARALLEL_INTEGER_FIELDS: &[&str] = &["parallel_group_base_sequence", "parallel_group_size", "parallel_group_index",
+    "selection_member_index", "selection_member_base_sequence", "selection_member_size"];
+
+/// `normalizeParallelMetadataIntegerFields`: a digit string becomes an
+/// integer, at the top level and in each path entry.
+fn parallel_integers(command: &mut Value) {
+    let normalize = |fields: &mut serde_json::Map<String, Value>| {
+        for field in PARALLEL_INTEGER_FIELDS {
+            if let Some(value) = fields.get_mut(*field) {
+                whole(value);
+            }
+        }
+    };
+    let Some(fields) = command.as_object_mut() else {
+        return;
+    };
+    normalize(fields);
+    if let Some(Value::Array(path)) = fields.get_mut("parallel_group_path") {
+        path.iter_mut().filter_map(Value::as_object_mut).for_each(normalize);
+    }
+}
+
+/// `preflightParallelMetadata`'s errors across the batch: parallel fields on
+/// a command that is not a parallel leaf, and a leaf's invalid metadata.
+fn parallel_preflight(commands: &[Value]) -> Vec<(String, Vec<String>)> {
+    let mut found = Vec::new();
+    for (index, command) in commands.iter().enumerate() {
+        let Some(kind) = command.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+        if PARALLEL_LEAVES.contains(&kind) {
+            found.extend(parallel_metadata_error(index, kind, command));
+            continue;
+        }
+        for field in PARALLEL_FIELDS.iter().filter(|field| has_value(command, field)) {
+            found.push((format!("commands.{index}.{field}"),
+                vec![format!("{field} is only supported for activity, timer, and child-workflow scheduling commands.")]));
+        }
+    }
+    found
 }
 
 fn has_value(command: &Value, field: &str) -> bool {
@@ -600,6 +651,91 @@ pub(super) fn normalizer_checks(index: usize, command: &Value) -> Result<()> {
         Some(error) => Err(error),
         None => Ok(()),
     }
+}
+
+/// `WorkflowCommandNormalizer::optionalParallelMetadata`'s refusal for a
+/// leaf command: incomplete top-level metadata or path, an invalid path
+/// entry, or an innermost entry that differs from the top level.
+fn parallel_metadata_error(index: usize, kind: &str, command: &Value) -> Option<(String, Vec<String>)> {
+    let leaf = match kind {
+        "schedule_activity" => "activity",
+        "start_timer" => "timer",
+        "start_child_workflow" => "child",
+        "open_condition_wait" => "condition",
+        "open_signal_wait" => "signal",
+        _ => return None,
+    };
+    if !PARALLEL_FIELDS.iter().any(|field| command.get(*field).is_some()) {
+        return None;
+    }
+    let refuse = |field: String, message: &str| Some((field, vec![message.to_owned()]));
+    let top = parallel_entry(command, leaf);
+    let path = command.get("parallel_group_path").and_then(Value::as_array).filter(|path| !path.is_empty());
+    let (Some(top), Some(path)) = (top, path) else {
+        return refuse(format!("commands.{index}.parallel_group_path"),
+            "Parallel workflow commands require complete top-level metadata and a non-empty group path.");
+    };
+    let mut innermost = None;
+    for (position, entry) in path.iter().enumerate() {
+        innermost = parallel_entry(entry, leaf);
+        if innermost.is_none() {
+            return refuse(format!("commands.{index}.parallel_group_path.{position}"),
+                "Each parallel group path entry must contain valid identity, kind, base, size, and index fields.");
+        }
+    }
+    (innermost != Some(top)).then(|| (format!("commands.{index}.parallel_group_path"),
+        vec!["The innermost parallel group path entry must match the top-level parallel metadata.".to_owned()]))
+}
+
+/// `parallelMetadataEntry`: the entry's normalized fields, or `None` when
+/// PHP refuses it. A group's size is bounded by the command batch size.
+fn parallel_entry(value: &Value, leaf: &str) -> Option<Vec<(&'static str, Value)>> {
+    let text = |field: &str| value.get(field).and_then(Value::as_str);
+    let int = |field: &str| value.get(field).filter(|value| value.is_i64() || value.is_u64()).and_then(Value::as_i64);
+    let id = text("parallel_group_id").filter(|id| !id.is_empty())?;
+    let kind = text("parallel_group_kind").filter(|kind| *kind == leaf || *kind == "mixed")?;
+    let base = int("parallel_group_base_sequence").filter(|base| *base >= 1)?;
+    let size = int("parallel_group_size").filter(|size| (1..=super::memo_limits::COMMAND_BATCH_SIZE).contains(size))?;
+    let index = int("parallel_group_index").filter(|index| (0..size).contains(index))?;
+    let mode = match value.get("parallel_group_mode") {
+        None | Some(Value::Null) => "all",
+        Some(mode) => mode.as_str().filter(|mode| matches!(*mode, "all" | "select"))?,
+    };
+    let prefix = match (mode, kind) {
+        ("select", _) => "select-calls",
+        (_, "activity") => "parallel-activities",
+        (_, "child") => "parallel-children",
+        (_, "timer") => "parallel-timers",
+        _ => "parallel-calls",
+    };
+    if id != format!("{prefix}:{base}:{size}") {
+        return None;
+    }
+    let mut entry = vec![("parallel_group_id", json!(id)), ("parallel_group_kind", json!(kind))];
+    if mode == "select" {
+        // `validSelectionKey`: a non-empty string or a non-negative PHP
+        // integer; a larger JSON number decodes to a float in PHP.
+        let key = value.get("selection_member_key")
+            .filter(|key| key.as_str().is_some_and(|key| !key.is_empty()) || key.as_i64().is_some_and(|key| key >= 0))?;
+        let member_index = int("selection_member_index").filter(|index| *index >= 0)?;
+        // PHP's sums past the integer range become floats that fail these
+        // bounds; checked sums refuse them the same way.
+        let end = base.checked_add(size)?;
+        let member_base = int("selection_member_base_sequence").filter(|member| (base..end).contains(member))?;
+        let member_size = int("selection_member_size")
+            .filter(|member| *member >= 1 && member_base.checked_add(*member).is_some_and(|last| last <= end))?;
+        let member_kind = text("selection_member_kind")
+            .filter(|kind| matches!(*kind, "activity" | "child" | "timer" | "signal" | "condition" | "group"))?;
+        entry.extend([("parallel_group_mode", json!("select")), ("parallel_group_base_sequence", json!(base)),
+            ("parallel_group_size", json!(size)), ("parallel_group_index", json!(index)),
+            ("selection_member_key", key.clone()), ("selection_member_index", json!(member_index)),
+            ("selection_member_base_sequence", json!(member_base)), ("selection_member_size", json!(member_size)),
+            ("selection_member_kind", json!(member_kind))]);
+    } else {
+        entry.extend([("parallel_group_base_sequence", json!(base)), ("parallel_group_size", json!(size)),
+            ("parallel_group_index", json!(index))]);
+    }
+    Some(entry)
 }
 
 /// The payload fields whose bare string PHP's normalizer takes as the blob

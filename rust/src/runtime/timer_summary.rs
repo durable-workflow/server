@@ -44,7 +44,7 @@ impl TimerSummaryHistory {
         ) else {
             return false;
         };
-        if kind != "TimerScheduled" || self.open.len() >= 100 || self.open.contains_key(id) {
+        if kind != "TimerScheduled" || self.open.contains_key(id) {
             return false;
         }
         self.open.insert(
@@ -81,9 +81,9 @@ where
         history: &TimerSummaryHistory,
         summary: &mut ActiveSummary,
     ) -> Result<bool> {
-        let rows = Self::query("SELECT w.*,t.id AS timer_id,t.sequence AS timer_sequence,t.status AS timer_status,t.delay_seconds,t.fire_at,q.id AS matched_task_id,q.task_type AS matched_task_type,q.payload AS matched_task_payload FROM workflow_run_waits w LEFT JOIN workflow_run_timers t ON t.id=w.resume_source_id AND t.workflow_run_id=w.workflow_run_id LEFT JOIN workflow_tasks q ON q.id=w.task_id AND q.workflow_run_id=w.workflow_run_id WHERE w.workflow_run_id=$1 AND w.kind='timer' AND w.status='open' ORDER BY w.sequence,w.deadline_at,w.opened_at,w.resume_source_id LIMIT 101")
+        let rows = Self::query("SELECT w.*,t.id AS timer_id,t.sequence AS timer_sequence,t.status AS timer_status,t.delay_seconds,t.fire_at,q.id AS matched_task_id,q.task_type AS matched_task_type,q.payload AS matched_task_payload FROM workflow_run_waits w LEFT JOIN workflow_run_timers t ON t.id=w.resume_source_id AND t.workflow_run_id=w.workflow_run_id LEFT JOIN workflow_tasks q ON q.id=w.task_id AND q.workflow_run_id=w.workflow_run_id WHERE w.workflow_run_id=$1 AND w.kind='timer' AND w.status='open' ORDER BY w.sequence,w.deadline_at,w.opened_at,w.resume_source_id")
             .bind(run_id).fetch_all(&mut **tx).await?;
-        if rows.len() != history.open.len() || rows.len() > 100 {
+        if rows.len() != history.open.len() {
             return Ok(false);
         }
         let mut selected_timer_task = false;
