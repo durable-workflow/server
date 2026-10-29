@@ -51,24 +51,24 @@ Updated October 27, 2026.
     fixtures accept published PHP's typed `429 long_poll_capacity_exhausted`
     poll refusal, and retry a locked Composer install after a transient
     download failure (the two #813 merge-group failures).
-  - Native's v1 projection byte meter in Core's canonical unit (#770) is
-    prepared on `rust-325-wip/canonical-history-bytes`. It lands with the
-    first reference that carries #812, because `waterline-import` records
-    `history_size_bytes` from the reference.
+  - `bridge-adapters` compares exactly: published 2.11.7 accepts and
+    deduplicates the bridge update (#747) and refuses a foreign instance as
+    unavailable (#777), so the published-defect answers of 2.11.1 to 2.11.5
+    are no longer accepted.
 - **Still refused at takeover:** workflow-to-workflow messages
   (`workflow_messages`, written only by embedded PHP workflows) and external
   payload references. PHP keeps references in about 30 table and column
   locations in their URI form, so taking them over is its own project; the
   recommendation is that the release candidate keeps refusing them.
-- **Shared Server fixtures.** Native, embedded and published PHP 2.11.5 are
+- **Shared Server fixtures.** Native, embedded and published PHP 2.11.7 are
   compared on SQLite, MySQL 8.0, MariaDB 10.11 and PostgreSQL 17. Where the
   published reference itself misbehaves, an explicit boundary separates it
   from native, and the PHP owner has an issue for each case. Recent ones:
-  - #777, a bridge start for an instance another namespace holds: 2.11.1
-    to 2.11.4 name that namespace's type, 2.11.5 the namespace difference;
-    #811 (after 2.11.5) answers "unavailable";
-  - #747, a bridge update to an SDK-worker workflow;
   - #794, workflow-bound Nexus handlers.
+
+  Answered as intended by 2.11.7, so `bridge-adapters` compares exactly:
+  #747 (a bridge update to an SDK-worker workflow) and #777 (a bridge start
+  for an instance another namespace holds).
 
   Closed by 2.11.5: Workflow #931 (`service-calls` repeats a key from
   another caller again, now refused 403), and the SQLite maintenance pause
