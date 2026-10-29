@@ -713,11 +713,17 @@ fn parallel_entry(value: &Value, leaf: &str) -> Option<Vec<(&'static str, Value)
     }
     let mut entry = vec![("parallel_group_id", json!(id)), ("parallel_group_kind", json!(kind))];
     if mode == "select" {
+        // `validSelectionKey`: a non-empty string or a non-negative PHP
+        // integer; a larger JSON number decodes to a float in PHP.
         let key = value.get("selection_member_key")
-            .filter(|key| key.as_str().is_some_and(|key| !key.is_empty()) || key.as_u64().is_some())?;
+            .filter(|key| key.as_str().is_some_and(|key| !key.is_empty()) || key.as_i64().is_some_and(|key| key >= 0))?;
         let member_index = int("selection_member_index").filter(|index| *index >= 0)?;
-        let member_base = int("selection_member_base_sequence").filter(|member| (base..base + size).contains(member))?;
-        let member_size = int("selection_member_size").filter(|member| *member >= 1 && member_base + member <= base + size)?;
+        // PHP's sums past the integer range become floats that fail these
+        // bounds; checked sums refuse them the same way.
+        let end = base.checked_add(size)?;
+        let member_base = int("selection_member_base_sequence").filter(|member| (base..end).contains(member))?;
+        let member_size = int("selection_member_size")
+            .filter(|member| *member >= 1 && member_base.checked_add(*member).is_some_and(|last| last <= end))?;
         let member_kind = text("selection_member_kind")
             .filter(|kind| matches!(*kind, "activity" | "child" | "timer" | "signal" | "condition" | "group"))?;
         entry.extend([("parallel_group_mode", json!("select")), ("parallel_group_base_sequence", json!(base)),

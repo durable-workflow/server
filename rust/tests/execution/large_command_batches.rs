@@ -80,3 +80,42 @@ async fn a_parallel_group_may_hold_up_to_the_command_batch_size() {
     runtime.close().await;
     database.remove().await;
 }
+
+fn select_member(base: i64, member_size: i64, key: Value) -> Value {
+    let entry = json!({"parallel_group_id":format!("select-calls:{base}:2"),"parallel_group_kind":"activity",
+        "parallel_group_mode":"select","parallel_group_base_sequence":base,"parallel_group_size":2,"parallel_group_index":0,
+        "selection_member_key":key,"selection_member_index":0,"selection_member_base_sequence":base,
+        "selection_member_size":member_size,"selection_member_kind":"activity"});
+    let mut command = json!({"type":"schedule_activity","activity_type":"activity-echo","arguments":envelope(Payload::Array(vec![]))});
+    command.as_object_mut().unwrap().extend(entry.as_object().unwrap().clone());
+    command["parallel_group_path"] = json!([entry]);
+    command
+}
+
+// PHP's preflight refuses a selection member whose range passes the integer
+// range (its sums become floats) and a numeric member key above it (a float
+// after JSON decoding), with the group path message.
+#[tokio::test]
+async fn select_metadata_past_the_integer_range_is_refused_by_the_preflight() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "worker", json!(["echo"]), json!(["activity-echo"])).await;
+    start(&app, "select-extremes").await;
+    let task = poll(&app, "worker", "workflow").await;
+    let message = "Parallel workflow commands require complete top-level metadata and a non-empty group path.";
+    for command in [
+        select_member(1, i64::MAX, json!("a")),
+        select_member(i64::MAX, 1, json!("a")),
+        select_member(1, 1, json!(9_223_372_036_854_775_808_u64)),
+    ] {
+        let (status, body) = finish_task(&app, &task, json!([command])).await;
+        assert_eq!((status, body["reason"].clone()), (StatusCode::UNPROCESSABLE_ENTITY, json!("validation_failed")), "{body}");
+        assert_eq!(body["errors"], json!({"commands.0.parallel_group_path":[message]}), "{body}");
+    }
+    // The same member with an ordinary range and key passes the preflight.
+    let (_, body) = finish_task(&app, &task, json!([select_member(1, 1, json!(9_223_372_036_854_775_807_i64))])).await;
+    assert_ne!(body["reason"], "validation_failed", "{body}");
+    runtime.close().await;
+    database.remove().await;
+}

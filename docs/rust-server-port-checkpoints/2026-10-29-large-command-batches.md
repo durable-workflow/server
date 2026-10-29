@@ -54,7 +54,12 @@
     cancellation and cancellation scope checks. A valid group that native
     does not run (for example a child group) is still refused later with
     `development_parallel_group_unqualified`.
+  - **Integer range (from review).** PHP's member-range sums past the
+    integer range become floats that fail its bounds, and a numeric member
+    key above it decodes to a float. Native uses checked sums and the signed
+    64-bit range for numeric keys; the earlier native sum overflowed.
 - **Tests.** `large_command_batches.rs` (150 timers and 150 activities
   accepted, the run described as waiting on its wait; a 150-member group
-  accepted and a 1,001-member group refused on both commands). Both fail on
-  the previous source.
+  accepted and a 1,001-member group refused on both commands; a select
+  member past the integer range and a key above it refused by the
+  preflight). All fail on the previous source.
