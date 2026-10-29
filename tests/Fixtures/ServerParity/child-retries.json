@@ -1,0 +1,1317 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "child-retries",
+  "review_state": "reviewed",
+  "contract": "A child's retry and timeout options (published Server 2.11.7 with Workflow 2.15.7 ChildWorkflowRetryPolicy and the bridge's startChildRetryIfAvailable), over raw worker HTTP on protocol 1.20 in a fresh namespace. Each case starts a parent with one start_child_workflow command carrying retry_policy, execution_timeout_seconds or run_timeout_seconds, then fails, completes or late-completes the child's runs. The call, ChildWorkflowScheduled, ChildRunStarted and the child's WorkflowStarted record a retry snapshot and a timeout snapshot; a policy with no known key records nothing. A failed or timed-out child run is retried as a new run of the same child instance under a new link while the policy has attempts left and the failure is retryable; the retry keeps the call and the execution deadline, takes a new run deadline, and waits out the backoff, and the parent stays waiting for the child. A failure marked non-retryable or of a type the policy names, or the last attempt's failure, fails the parent's call. IDs are labels in order of first appearance and deadlines are recorded by presence. Embedded applications have no worker protocol.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "child retries λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "child retries λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "child_retries": {
+    "workflow_type": "parity.v1.child_retries",
+    "child_type": "parity.v1.child_retries_child",
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "described_fields": [
+      "status",
+      "status_bucket",
+      "is_terminal",
+      "resume_step_sequence",
+      "recovery_kind",
+      "wait_kind",
+      "wait_reason"
+    ],
+    "event_fields": [
+      "sequence",
+      "workflow_link_id",
+      "child_call_id",
+      "child_workflow_instance_id",
+      "child_workflow_run_id",
+      "child_workflow_type",
+      "child_run_number",
+      "parent_close_policy",
+      "cancellation_policy",
+      "retry_attempt",
+      "retry_of_child_workflow_run_id",
+      "retry_backoff_seconds",
+      "retry_policy",
+      "timeout_policy",
+      "execution_timeout_seconds",
+      "run_timeout_seconds",
+      "execution_deadline_at",
+      "run_deadline_at",
+      "child_status",
+      "closed_reason",
+      "failure_id",
+      "failure_category",
+      "exception_type",
+      "exception_class",
+      "message"
+    ],
+    "started_fields": [
+      "workflow_type",
+      "workflow_instance_id",
+      "workflow_run_id",
+      "parent_workflow_instance_id",
+      "parent_workflow_run_id",
+      "parent_sequence",
+      "workflow_link_id",
+      "child_call_id",
+      "retry_attempt",
+      "retry_of_child_workflow_run_id",
+      "retry_policy",
+      "timeout_policy",
+      "execution_timeout_seconds",
+      "run_timeout_seconds",
+      "execution_deadline_at",
+      "run_deadline_at"
+    ],
+    "cases": {
+      "retry_then_complete": {
+        "options": {
+          "retry_policy": {
+            "max_attempts": 3,
+            "backoff_seconds": [
+              1
+            ]
+          },
+          "execution_timeout_seconds": 600,
+          "run_timeout_seconds": 300
+        },
+        "retry_wait_seconds": 1.5,
+        "attempts": [
+          {
+            "fail": {
+              "message": "attempt failed",
+              "exception_type": "Boom",
+              "exception_class": "Boom"
+            }
+          },
+          {
+            "complete": true
+          }
+        ]
+      },
+      "attempts_exhausted": {
+        "options": {
+          "retry_policy": {
+            "max_attempts": 2
+          }
+        },
+        "attempts": [
+          {
+            "fail": {
+              "message": "attempt failed",
+              "exception_type": "Boom",
+              "exception_class": "Boom"
+            }
+          },
+          {
+            "fail": {
+              "message": "attempt failed",
+              "exception_type": "Boom",
+              "exception_class": "Boom"
+            }
+          }
+        ]
+      },
+      "non_retryable_type": {
+        "options": {
+          "retry_policy": {
+            "max_attempts": 3,
+            "non_retryable_error_types": [
+              "Fatal"
+            ]
+          }
+        },
+        "attempts": [
+          {
+            "fail": {
+              "message": "fatal attempt",
+              "exception_type": "Fatal",
+              "exception_class": "FatalError"
+            }
+          }
+        ]
+      },
+      "non_retryable_flag": {
+        "options": {
+          "retry_policy": {
+            "max_attempts": 3
+          }
+        },
+        "attempts": [
+          {
+            "fail": {
+              "message": "final attempt",
+              "exception_type": "Boom",
+              "exception_class": "Boom",
+              "non_retryable": true
+            }
+          }
+        ]
+      },
+      "empty_policy": {
+        "options": {
+          "retry_policy": {}
+        },
+        "attempts": [
+          {
+            "fail": {
+              "message": "attempt failed",
+              "exception_type": "Boom",
+              "exception_class": "Boom"
+            }
+          }
+        ]
+      },
+      "timeouts_only": {
+        "options": {
+          "execution_timeout_seconds": 600,
+          "run_timeout_seconds": 300
+        },
+        "attempts": [
+          {
+            "complete": true
+          }
+        ]
+      },
+      "run_timeout_retried": {
+        "options": {
+          "retry_policy": {
+            "max_attempts": 2
+          },
+          "run_timeout_seconds": 1
+        },
+        "attempts": [
+          {
+            "late_seconds": 1.5
+          },
+          {
+            "late_seconds": 1.5
+          }
+        ]
+      }
+    },
+    "expected": {
+      "retry_then_complete": {
+        "start": {
+          "status": 200,
+          "reason": null,
+          "run_status": "waiting",
+          "outcome": "completed",
+          "recorded": true
+        },
+        "attempts": [
+          {
+            "run_id": "{id:1}",
+            "answer": {
+              "status": 200,
+              "reason": null,
+              "run_status": "failed",
+              "outcome": "completed",
+              "recorded": true
+            }
+          },
+          {
+            "run_id": "{id:2}",
+            "answer": {
+              "status": 200,
+              "reason": null,
+              "run_status": "completed",
+              "outcome": "completed",
+              "recorded": true
+            }
+          }
+        ],
+        "described_during_retry": {
+          "status": "waiting",
+          "status_bucket": "running",
+          "is_terminal": false,
+          "resume_step_sequence": null,
+          "recovery_kind": null,
+          "wait_kind": "child",
+          "wait_reason": "Waiting for child workflow parity.v1.child_retries_child"
+        },
+        "parent_events": [
+          {
+            "event_type": "ChildWorkflowScheduled",
+            "sequence": 1,
+            "workflow_link_id": "{id:3}",
+            "child_call_id": "{id:3}",
+            "child_workflow_instance_id": "{id:4}",
+            "child_workflow_run_id": "{id:1}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": {
+              "snapshot_version": 1,
+              "max_attempts": 3,
+              "backoff_seconds": [
+                1
+              ],
+              "non_retryable_error_types": []
+            },
+            "timeout_policy": {
+              "snapshot_version": 1,
+              "execution_timeout_seconds": 600,
+              "run_timeout_seconds": 300
+            }
+          },
+          {
+            "event_type": "ChildRunStarted",
+            "sequence": 1,
+            "workflow_link_id": "{id:3}",
+            "child_call_id": "{id:3}",
+            "child_workflow_instance_id": "{id:4}",
+            "child_workflow_run_id": "{id:1}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "child_run_number": 1,
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": {
+              "snapshot_version": 1,
+              "max_attempts": 3,
+              "backoff_seconds": [
+                1
+              ],
+              "non_retryable_error_types": []
+            },
+            "timeout_policy": {
+              "snapshot_version": 1,
+              "execution_timeout_seconds": 600,
+              "run_timeout_seconds": 300
+            },
+            "execution_timeout_seconds": 600,
+            "run_timeout_seconds": 300,
+            "execution_deadline_at": "{deadline}",
+            "run_deadline_at": "{deadline}"
+          },
+          {
+            "event_type": "ChildRunStarted",
+            "sequence": 1,
+            "workflow_link_id": "{id:5}",
+            "child_call_id": "{id:3}",
+            "child_workflow_instance_id": "{id:4}",
+            "child_workflow_run_id": "{id:2}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "child_run_number": 2,
+            "parent_close_policy": "abandon",
+            "retry_attempt": 2,
+            "retry_of_child_workflow_run_id": "{id:1}",
+            "retry_backoff_seconds": 1,
+            "retry_policy": {
+              "snapshot_version": 1,
+              "max_attempts": 3,
+              "backoff_seconds": [
+                1
+              ],
+              "non_retryable_error_types": []
+            },
+            "timeout_policy": {
+              "snapshot_version": 1,
+              "execution_timeout_seconds": 600,
+              "run_timeout_seconds": 300
+            },
+            "execution_timeout_seconds": 600,
+            "run_timeout_seconds": 300,
+            "execution_deadline_at": "{deadline}",
+            "run_deadline_at": "{deadline}"
+          },
+          {
+            "event_type": "ChildRunCompleted",
+            "sequence": 1,
+            "workflow_link_id": "{id:5}",
+            "child_call_id": "{id:3}",
+            "child_workflow_instance_id": "{id:4}",
+            "child_workflow_run_id": "{id:2}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "child_run_number": 2,
+            "child_status": "completed",
+            "closed_reason": "completed"
+          }
+        ],
+        "retry_deadlines": [
+          {
+            "execution_deadline_same": true,
+            "run_deadline_not_earlier": true
+          }
+        ],
+        "child_runs": [
+          {
+            "run_id": "{id:1}",
+            "run_number": 1,
+            "status": "failed",
+            "is_current_run": false
+          },
+          {
+            "run_id": "{id:2}",
+            "run_number": 2,
+            "status": "completed",
+            "is_current_run": true
+          }
+        ],
+        "child_started": [
+          {
+            "workflow_type": "parity.v1.child_retries_child",
+            "workflow_instance_id": "{id:4}",
+            "workflow_run_id": "{id:1}",
+            "parent_workflow_instance_id": "{id:6}",
+            "parent_workflow_run_id": "{id:7}",
+            "parent_sequence": 1,
+            "workflow_link_id": "{id:3}",
+            "child_call_id": "{id:3}",
+            "retry_policy": {
+              "snapshot_version": 1,
+              "max_attempts": 3,
+              "backoff_seconds": [
+                1
+              ],
+              "non_retryable_error_types": []
+            },
+            "timeout_policy": {
+              "snapshot_version": 1,
+              "execution_timeout_seconds": 600,
+              "run_timeout_seconds": 300
+            },
+            "execution_timeout_seconds": 600,
+            "run_timeout_seconds": 300,
+            "execution_deadline_at": "{deadline}",
+            "run_deadline_at": "{deadline}"
+          },
+          {
+            "workflow_type": "parity.v1.child_retries_child",
+            "workflow_instance_id": "{id:4}",
+            "workflow_run_id": "{id:2}",
+            "parent_workflow_instance_id": "{id:6}",
+            "parent_workflow_run_id": "{id:7}",
+            "parent_sequence": 1,
+            "workflow_link_id": "{id:5}",
+            "child_call_id": "{id:3}",
+            "retry_attempt": 2,
+            "retry_of_child_workflow_run_id": "{id:1}",
+            "retry_policy": {
+              "snapshot_version": 1,
+              "max_attempts": 3,
+              "backoff_seconds": [
+                1
+              ],
+              "non_retryable_error_types": []
+            },
+            "timeout_policy": {
+              "snapshot_version": 1,
+              "execution_timeout_seconds": 600,
+              "run_timeout_seconds": 300
+            },
+            "execution_timeout_seconds": 600,
+            "run_timeout_seconds": 300,
+            "execution_deadline_at": "{deadline}",
+            "run_deadline_at": "{deadline}"
+          }
+        ],
+        "parent_resumed": {
+          "status": 200,
+          "reason": null,
+          "run_status": "completed",
+          "outcome": "completed",
+          "recorded": true
+        }
+      },
+      "attempts_exhausted": {
+        "start": {
+          "status": 200,
+          "reason": null,
+          "run_status": "waiting",
+          "outcome": "completed",
+          "recorded": true
+        },
+        "attempts": [
+          {
+            "run_id": "{id:1}",
+            "answer": {
+              "status": 200,
+              "reason": null,
+              "run_status": "failed",
+              "outcome": "completed",
+              "recorded": true
+            }
+          },
+          {
+            "run_id": "{id:2}",
+            "answer": {
+              "status": 200,
+              "reason": null,
+              "run_status": "failed",
+              "outcome": "completed",
+              "recorded": true
+            }
+          }
+        ],
+        "described_during_retry": {
+          "status": "waiting",
+          "status_bucket": "running",
+          "is_terminal": false,
+          "resume_step_sequence": null,
+          "recovery_kind": null,
+          "wait_kind": "child",
+          "wait_reason": "Waiting for child workflow parity.v1.child_retries_child"
+        },
+        "parent_events": [
+          {
+            "event_type": "ChildWorkflowScheduled",
+            "sequence": 1,
+            "workflow_link_id": "{id:3}",
+            "child_call_id": "{id:3}",
+            "child_workflow_instance_id": "{id:4}",
+            "child_workflow_run_id": "{id:1}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": {
+              "snapshot_version": 1,
+              "max_attempts": 2,
+              "backoff_seconds": [],
+              "non_retryable_error_types": []
+            },
+            "timeout_policy": null
+          },
+          {
+            "event_type": "ChildRunStarted",
+            "sequence": 1,
+            "workflow_link_id": "{id:3}",
+            "child_call_id": "{id:3}",
+            "child_workflow_instance_id": "{id:4}",
+            "child_workflow_run_id": "{id:1}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "child_run_number": 1,
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": {
+              "snapshot_version": 1,
+              "max_attempts": 2,
+              "backoff_seconds": [],
+              "non_retryable_error_types": []
+            },
+            "timeout_policy": null,
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": null,
+            "execution_deadline_at": null,
+            "run_deadline_at": null
+          },
+          {
+            "event_type": "ChildRunStarted",
+            "sequence": 1,
+            "workflow_link_id": "{id:5}",
+            "child_call_id": "{id:3}",
+            "child_workflow_instance_id": "{id:4}",
+            "child_workflow_run_id": "{id:2}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "child_run_number": 2,
+            "parent_close_policy": "abandon",
+            "retry_attempt": 2,
+            "retry_of_child_workflow_run_id": "{id:1}",
+            "retry_backoff_seconds": 0,
+            "retry_policy": {
+              "snapshot_version": 1,
+              "max_attempts": 2,
+              "backoff_seconds": [],
+              "non_retryable_error_types": []
+            }
+          },
+          {
+            "event_type": "ChildRunFailed",
+            "sequence": 1,
+            "workflow_link_id": "{id:5}",
+            "child_call_id": "{id:3}",
+            "child_workflow_instance_id": "{id:4}",
+            "child_workflow_run_id": "{id:2}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "child_run_number": 2,
+            "child_status": "failed",
+            "closed_reason": "failed",
+            "failure_id": "{id:6}",
+            "failure_category": "application",
+            "exception_type": "Boom",
+            "exception_class": "Boom",
+            "message": "attempt failed"
+          }
+        ],
+        "retry_deadlines": [
+          {
+            "execution_deadline_same": true,
+            "run_deadline_not_earlier": true
+          }
+        ],
+        "child_runs": [
+          {
+            "run_id": "{id:1}",
+            "run_number": 1,
+            "status": "failed",
+            "is_current_run": false
+          },
+          {
+            "run_id": "{id:2}",
+            "run_number": 2,
+            "status": "failed",
+            "is_current_run": true
+          }
+        ],
+        "child_started": [
+          {
+            "workflow_type": "parity.v1.child_retries_child",
+            "workflow_instance_id": "{id:4}",
+            "workflow_run_id": "{id:1}",
+            "parent_workflow_instance_id": "{id:7}",
+            "parent_workflow_run_id": "{id:8}",
+            "parent_sequence": 1,
+            "workflow_link_id": "{id:3}",
+            "child_call_id": "{id:3}",
+            "retry_policy": {
+              "snapshot_version": 1,
+              "max_attempts": 2,
+              "backoff_seconds": [],
+              "non_retryable_error_types": []
+            },
+            "timeout_policy": null,
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": null,
+            "execution_deadline_at": null,
+            "run_deadline_at": null
+          },
+          {
+            "workflow_type": "parity.v1.child_retries_child",
+            "workflow_instance_id": "{id:4}",
+            "workflow_run_id": "{id:2}",
+            "parent_workflow_instance_id": "{id:7}",
+            "parent_workflow_run_id": "{id:8}",
+            "parent_sequence": 1,
+            "workflow_link_id": "{id:5}",
+            "child_call_id": "{id:3}",
+            "retry_attempt": 2,
+            "retry_of_child_workflow_run_id": "{id:1}",
+            "retry_policy": {
+              "snapshot_version": 1,
+              "max_attempts": 2,
+              "backoff_seconds": [],
+              "non_retryable_error_types": []
+            },
+            "timeout_policy": null,
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": null,
+            "execution_deadline_at": null,
+            "run_deadline_at": null
+          }
+        ],
+        "parent_resumed": {
+          "status": 200,
+          "reason": null,
+          "run_status": "completed",
+          "outcome": "completed",
+          "recorded": true
+        }
+      },
+      "non_retryable_type": {
+        "start": {
+          "status": 200,
+          "reason": null,
+          "run_status": "waiting",
+          "outcome": "completed",
+          "recorded": true
+        },
+        "attempts": [
+          {
+            "run_id": "{id:1}",
+            "answer": {
+              "status": 200,
+              "reason": null,
+              "run_status": "failed",
+              "outcome": "completed",
+              "recorded": true
+            }
+          }
+        ],
+        "parent_events": [
+          {
+            "event_type": "ChildWorkflowScheduled",
+            "sequence": 1,
+            "workflow_link_id": "{id:2}",
+            "child_call_id": "{id:2}",
+            "child_workflow_instance_id": "{id:3}",
+            "child_workflow_run_id": "{id:1}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": {
+              "snapshot_version": 1,
+              "max_attempts": 3,
+              "backoff_seconds": [],
+              "non_retryable_error_types": [
+                "Fatal"
+              ]
+            },
+            "timeout_policy": null
+          },
+          {
+            "event_type": "ChildRunStarted",
+            "sequence": 1,
+            "workflow_link_id": "{id:2}",
+            "child_call_id": "{id:2}",
+            "child_workflow_instance_id": "{id:3}",
+            "child_workflow_run_id": "{id:1}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "child_run_number": 1,
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": {
+              "snapshot_version": 1,
+              "max_attempts": 3,
+              "backoff_seconds": [],
+              "non_retryable_error_types": [
+                "Fatal"
+              ]
+            },
+            "timeout_policy": null,
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": null,
+            "execution_deadline_at": null,
+            "run_deadline_at": null
+          },
+          {
+            "event_type": "ChildRunFailed",
+            "sequence": 1,
+            "workflow_link_id": "{id:2}",
+            "child_call_id": "{id:2}",
+            "child_workflow_instance_id": "{id:3}",
+            "child_workflow_run_id": "{id:1}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "child_run_number": 1,
+            "child_status": "failed",
+            "closed_reason": "failed",
+            "failure_id": "{id:4}",
+            "failure_category": "application",
+            "exception_type": "Fatal",
+            "exception_class": "FatalError",
+            "message": "fatal attempt"
+          }
+        ],
+        "retry_deadlines": [],
+        "child_runs": [
+          {
+            "run_id": "{id:1}",
+            "run_number": 1,
+            "status": "failed",
+            "is_current_run": true
+          }
+        ],
+        "child_started": [
+          {
+            "workflow_type": "parity.v1.child_retries_child",
+            "workflow_instance_id": "{id:3}",
+            "workflow_run_id": "{id:1}",
+            "parent_workflow_instance_id": "{id:5}",
+            "parent_workflow_run_id": "{id:6}",
+            "parent_sequence": 1,
+            "workflow_link_id": "{id:2}",
+            "child_call_id": "{id:2}",
+            "retry_policy": {
+              "snapshot_version": 1,
+              "max_attempts": 3,
+              "backoff_seconds": [],
+              "non_retryable_error_types": [
+                "Fatal"
+              ]
+            },
+            "timeout_policy": null,
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": null,
+            "execution_deadline_at": null,
+            "run_deadline_at": null
+          }
+        ],
+        "parent_resumed": {
+          "status": 200,
+          "reason": null,
+          "run_status": "completed",
+          "outcome": "completed",
+          "recorded": true
+        }
+      },
+      "non_retryable_flag": {
+        "start": {
+          "status": 200,
+          "reason": null,
+          "run_status": "waiting",
+          "outcome": "completed",
+          "recorded": true
+        },
+        "attempts": [
+          {
+            "run_id": "{id:1}",
+            "answer": {
+              "status": 200,
+              "reason": null,
+              "run_status": "failed",
+              "outcome": "completed",
+              "recorded": true
+            }
+          }
+        ],
+        "parent_events": [
+          {
+            "event_type": "ChildWorkflowScheduled",
+            "sequence": 1,
+            "workflow_link_id": "{id:2}",
+            "child_call_id": "{id:2}",
+            "child_workflow_instance_id": "{id:3}",
+            "child_workflow_run_id": "{id:1}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": {
+              "snapshot_version": 1,
+              "max_attempts": 3,
+              "backoff_seconds": [],
+              "non_retryable_error_types": []
+            },
+            "timeout_policy": null
+          },
+          {
+            "event_type": "ChildRunStarted",
+            "sequence": 1,
+            "workflow_link_id": "{id:2}",
+            "child_call_id": "{id:2}",
+            "child_workflow_instance_id": "{id:3}",
+            "child_workflow_run_id": "{id:1}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "child_run_number": 1,
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": {
+              "snapshot_version": 1,
+              "max_attempts": 3,
+              "backoff_seconds": [],
+              "non_retryable_error_types": []
+            },
+            "timeout_policy": null,
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": null,
+            "execution_deadline_at": null,
+            "run_deadline_at": null
+          },
+          {
+            "event_type": "ChildRunFailed",
+            "sequence": 1,
+            "workflow_link_id": "{id:2}",
+            "child_call_id": "{id:2}",
+            "child_workflow_instance_id": "{id:3}",
+            "child_workflow_run_id": "{id:1}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "child_run_number": 1,
+            "child_status": "failed",
+            "closed_reason": "failed",
+            "failure_id": "{id:4}",
+            "failure_category": "application",
+            "exception_type": "Boom",
+            "exception_class": "Boom",
+            "message": "final attempt"
+          }
+        ],
+        "retry_deadlines": [],
+        "child_runs": [
+          {
+            "run_id": "{id:1}",
+            "run_number": 1,
+            "status": "failed",
+            "is_current_run": true
+          }
+        ],
+        "child_started": [
+          {
+            "workflow_type": "parity.v1.child_retries_child",
+            "workflow_instance_id": "{id:3}",
+            "workflow_run_id": "{id:1}",
+            "parent_workflow_instance_id": "{id:5}",
+            "parent_workflow_run_id": "{id:6}",
+            "parent_sequence": 1,
+            "workflow_link_id": "{id:2}",
+            "child_call_id": "{id:2}",
+            "retry_policy": {
+              "snapshot_version": 1,
+              "max_attempts": 3,
+              "backoff_seconds": [],
+              "non_retryable_error_types": []
+            },
+            "timeout_policy": null,
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": null,
+            "execution_deadline_at": null,
+            "run_deadline_at": null
+          }
+        ],
+        "parent_resumed": {
+          "status": 200,
+          "reason": null,
+          "run_status": "completed",
+          "outcome": "completed",
+          "recorded": true
+        }
+      },
+      "empty_policy": {
+        "start": {
+          "status": 200,
+          "reason": null,
+          "run_status": "waiting",
+          "outcome": "completed",
+          "recorded": true
+        },
+        "attempts": [
+          {
+            "run_id": "{id:1}",
+            "answer": {
+              "status": 200,
+              "reason": null,
+              "run_status": "failed",
+              "outcome": "completed",
+              "recorded": true
+            }
+          }
+        ],
+        "parent_events": [
+          {
+            "event_type": "ChildWorkflowScheduled",
+            "sequence": 1,
+            "workflow_link_id": "{id:2}",
+            "child_call_id": "{id:2}",
+            "child_workflow_instance_id": "{id:3}",
+            "child_workflow_run_id": "{id:1}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": null,
+            "timeout_policy": null
+          },
+          {
+            "event_type": "ChildRunStarted",
+            "sequence": 1,
+            "workflow_link_id": "{id:2}",
+            "child_call_id": "{id:2}",
+            "child_workflow_instance_id": "{id:3}",
+            "child_workflow_run_id": "{id:1}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "child_run_number": 1,
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": null,
+            "timeout_policy": null,
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": null,
+            "execution_deadline_at": null,
+            "run_deadline_at": null
+          },
+          {
+            "event_type": "ChildRunFailed",
+            "sequence": 1,
+            "workflow_link_id": "{id:2}",
+            "child_call_id": "{id:2}",
+            "child_workflow_instance_id": "{id:3}",
+            "child_workflow_run_id": "{id:1}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "child_run_number": 1,
+            "child_status": "failed",
+            "closed_reason": "failed",
+            "failure_id": "{id:4}",
+            "failure_category": "application",
+            "exception_type": "Boom",
+            "exception_class": "Boom",
+            "message": "attempt failed"
+          }
+        ],
+        "retry_deadlines": [],
+        "child_runs": [
+          {
+            "run_id": "{id:1}",
+            "run_number": 1,
+            "status": "failed",
+            "is_current_run": true
+          }
+        ],
+        "child_started": [
+          {
+            "workflow_type": "parity.v1.child_retries_child",
+            "workflow_instance_id": "{id:3}",
+            "workflow_run_id": "{id:1}",
+            "parent_workflow_instance_id": "{id:5}",
+            "parent_workflow_run_id": "{id:6}",
+            "parent_sequence": 1,
+            "workflow_link_id": "{id:2}",
+            "child_call_id": "{id:2}",
+            "retry_policy": null,
+            "timeout_policy": null,
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": null,
+            "execution_deadline_at": null,
+            "run_deadline_at": null
+          }
+        ],
+        "parent_resumed": {
+          "status": 200,
+          "reason": null,
+          "run_status": "completed",
+          "outcome": "completed",
+          "recorded": true
+        }
+      },
+      "timeouts_only": {
+        "start": {
+          "status": 200,
+          "reason": null,
+          "run_status": "waiting",
+          "outcome": "completed",
+          "recorded": true
+        },
+        "attempts": [
+          {
+            "run_id": "{id:1}",
+            "answer": {
+              "status": 200,
+              "reason": null,
+              "run_status": "completed",
+              "outcome": "completed",
+              "recorded": true
+            }
+          }
+        ],
+        "parent_events": [
+          {
+            "event_type": "ChildWorkflowScheduled",
+            "sequence": 1,
+            "workflow_link_id": "{id:2}",
+            "child_call_id": "{id:2}",
+            "child_workflow_instance_id": "{id:3}",
+            "child_workflow_run_id": "{id:1}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": null,
+            "timeout_policy": {
+              "snapshot_version": 1,
+              "execution_timeout_seconds": 600,
+              "run_timeout_seconds": 300
+            }
+          },
+          {
+            "event_type": "ChildRunStarted",
+            "sequence": 1,
+            "workflow_link_id": "{id:2}",
+            "child_call_id": "{id:2}",
+            "child_workflow_instance_id": "{id:3}",
+            "child_workflow_run_id": "{id:1}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "child_run_number": 1,
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": null,
+            "timeout_policy": {
+              "snapshot_version": 1,
+              "execution_timeout_seconds": 600,
+              "run_timeout_seconds": 300
+            },
+            "execution_timeout_seconds": 600,
+            "run_timeout_seconds": 300,
+            "execution_deadline_at": "{deadline}",
+            "run_deadline_at": "{deadline}"
+          },
+          {
+            "event_type": "ChildRunCompleted",
+            "sequence": 1,
+            "workflow_link_id": "{id:2}",
+            "child_call_id": "{id:2}",
+            "child_workflow_instance_id": "{id:3}",
+            "child_workflow_run_id": "{id:1}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "child_run_number": 1,
+            "child_status": "completed",
+            "closed_reason": "completed"
+          }
+        ],
+        "retry_deadlines": [],
+        "child_runs": [
+          {
+            "run_id": "{id:1}",
+            "run_number": 1,
+            "status": "completed",
+            "is_current_run": true
+          }
+        ],
+        "child_started": [
+          {
+            "workflow_type": "parity.v1.child_retries_child",
+            "workflow_instance_id": "{id:3}",
+            "workflow_run_id": "{id:1}",
+            "parent_workflow_instance_id": "{id:4}",
+            "parent_workflow_run_id": "{id:5}",
+            "parent_sequence": 1,
+            "workflow_link_id": "{id:2}",
+            "child_call_id": "{id:2}",
+            "retry_policy": null,
+            "timeout_policy": {
+              "snapshot_version": 1,
+              "execution_timeout_seconds": 600,
+              "run_timeout_seconds": 300
+            },
+            "execution_timeout_seconds": 600,
+            "run_timeout_seconds": 300,
+            "execution_deadline_at": "{deadline}",
+            "run_deadline_at": "{deadline}"
+          }
+        ],
+        "parent_resumed": {
+          "status": 200,
+          "reason": null,
+          "run_status": "completed",
+          "outcome": "completed",
+          "recorded": true
+        }
+      },
+      "run_timeout_retried": {
+        "start": {
+          "status": 200,
+          "reason": null,
+          "run_status": "waiting",
+          "outcome": "completed",
+          "recorded": true
+        },
+        "attempts": [
+          {
+            "run_id": "{id:1}",
+            "answer": {
+              "status": 409,
+              "reason": "run_timed_out",
+              "run_status": "failed",
+              "outcome": "completed",
+              "recorded": false
+            }
+          },
+          {
+            "run_id": "{id:2}",
+            "answer": {
+              "status": 409,
+              "reason": "run_timed_out",
+              "run_status": "failed",
+              "outcome": "completed",
+              "recorded": false
+            }
+          }
+        ],
+        "described_during_retry": {
+          "status": "waiting",
+          "status_bucket": "running",
+          "is_terminal": false,
+          "resume_step_sequence": null,
+          "recovery_kind": null,
+          "wait_kind": "child",
+          "wait_reason": "Waiting for child workflow parity.v1.child_retries_child"
+        },
+        "parent_events": [
+          {
+            "event_type": "ChildWorkflowScheduled",
+            "sequence": 1,
+            "workflow_link_id": "{id:3}",
+            "child_call_id": "{id:3}",
+            "child_workflow_instance_id": "{id:4}",
+            "child_workflow_run_id": "{id:1}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": {
+              "snapshot_version": 1,
+              "max_attempts": 2,
+              "backoff_seconds": [],
+              "non_retryable_error_types": []
+            },
+            "timeout_policy": {
+              "snapshot_version": 1,
+              "execution_timeout_seconds": null,
+              "run_timeout_seconds": 1
+            }
+          },
+          {
+            "event_type": "ChildRunStarted",
+            "sequence": 1,
+            "workflow_link_id": "{id:3}",
+            "child_call_id": "{id:3}",
+            "child_workflow_instance_id": "{id:4}",
+            "child_workflow_run_id": "{id:1}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "child_run_number": 1,
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": {
+              "snapshot_version": 1,
+              "max_attempts": 2,
+              "backoff_seconds": [],
+              "non_retryable_error_types": []
+            },
+            "timeout_policy": {
+              "snapshot_version": 1,
+              "execution_timeout_seconds": null,
+              "run_timeout_seconds": 1
+            },
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": 1,
+            "execution_deadline_at": null,
+            "run_deadline_at": "{deadline}"
+          },
+          {
+            "event_type": "ChildRunStarted",
+            "sequence": 1,
+            "workflow_link_id": "{id:5}",
+            "child_call_id": "{id:3}",
+            "child_workflow_instance_id": "{id:4}",
+            "child_workflow_run_id": "{id:2}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "child_run_number": 2,
+            "parent_close_policy": "abandon",
+            "retry_attempt": 2,
+            "retry_of_child_workflow_run_id": "{id:1}",
+            "retry_backoff_seconds": 0,
+            "retry_policy": {
+              "snapshot_version": 1,
+              "max_attempts": 2,
+              "backoff_seconds": [],
+              "non_retryable_error_types": []
+            },
+            "timeout_policy": {
+              "snapshot_version": 1,
+              "execution_timeout_seconds": null,
+              "run_timeout_seconds": 1
+            },
+            "run_timeout_seconds": 1,
+            "run_deadline_at": "{deadline}"
+          },
+          {
+            "event_type": "ChildRunFailed",
+            "sequence": 1,
+            "workflow_link_id": "{id:5}",
+            "child_call_id": "{id:3}",
+            "child_workflow_instance_id": "{id:4}",
+            "child_workflow_run_id": "{id:2}",
+            "child_workflow_type": "parity.v1.child_retries_child",
+            "child_run_number": 2,
+            "child_status": "failed",
+            "closed_reason": "timed_out",
+            "failure_id": "{id:6}",
+            "failure_category": "timeout",
+            "exception_class": "Workflow\\V2\\Exceptions\\WorkflowTimeoutException",
+            "message": "Workflow run deadline expired at {time}."
+          }
+        ],
+        "retry_deadlines": [
+          {
+            "execution_deadline_same": true,
+            "run_deadline_not_earlier": true
+          }
+        ],
+        "child_runs": [
+          {
+            "run_id": "{id:1}",
+            "run_number": 1,
+            "status": "failed",
+            "is_current_run": false
+          },
+          {
+            "run_id": "{id:2}",
+            "run_number": 2,
+            "status": "failed",
+            "is_current_run": true
+          }
+        ],
+        "child_started": [
+          {
+            "workflow_type": "parity.v1.child_retries_child",
+            "workflow_instance_id": "{id:4}",
+            "workflow_run_id": "{id:1}",
+            "parent_workflow_instance_id": "{id:7}",
+            "parent_workflow_run_id": "{id:8}",
+            "parent_sequence": 1,
+            "workflow_link_id": "{id:3}",
+            "child_call_id": "{id:3}",
+            "retry_policy": {
+              "snapshot_version": 1,
+              "max_attempts": 2,
+              "backoff_seconds": [],
+              "non_retryable_error_types": []
+            },
+            "timeout_policy": {
+              "snapshot_version": 1,
+              "execution_timeout_seconds": null,
+              "run_timeout_seconds": 1
+            },
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": 1,
+            "execution_deadline_at": null,
+            "run_deadline_at": "{deadline}"
+          },
+          {
+            "workflow_type": "parity.v1.child_retries_child",
+            "workflow_instance_id": "{id:4}",
+            "workflow_run_id": "{id:2}",
+            "parent_workflow_instance_id": "{id:7}",
+            "parent_workflow_run_id": "{id:8}",
+            "parent_sequence": 1,
+            "workflow_link_id": "{id:5}",
+            "child_call_id": "{id:3}",
+            "retry_attempt": 2,
+            "retry_of_child_workflow_run_id": "{id:1}",
+            "retry_policy": {
+              "snapshot_version": 1,
+              "max_attempts": 2,
+              "backoff_seconds": [],
+              "non_retryable_error_types": []
+            },
+            "timeout_policy": {
+              "snapshot_version": 1,
+              "execution_timeout_seconds": null,
+              "run_timeout_seconds": 1
+            },
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": 1,
+            "execution_deadline_at": null,
+            "run_deadline_at": "{deadline}"
+          }
+        ],
+        "parent_resumed": {
+          "status": 200,
+          "reason": null,
+          "run_status": "completed",
+          "outcome": "completed",
+          "recorded": true
+        }
+      }
+    }
+  }
+}
