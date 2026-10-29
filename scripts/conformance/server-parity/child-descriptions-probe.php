@@ -41,7 +41,7 @@ function finishHttpChildDescriptions(Client $admin, array $fixture, string $work
         $worker = $id.'-worker';
         $registered = $raw('POST', 'worker/register', ['worker_id' => $worker, 'task_queue' => $queue, 'runtime' => 'php',
             'sdk_version' => 'raw-http', 'supported_workflow_types' => [$definition['workflow_type'], $definition['child_type']],
-            'supported_activity_types' => [],
+            'supported_activity_types' => [$definition['activity_type']],
             'capability_manifest' => array_fill_keys(['local_activities', 'worker_sessions', 'sticky_execution'],
                 ['supported' => false, 'minimum_protocol_version' => '1.18', 'reason' => 'raw_http'])]);
         $started = $raw('POST', 'workflows', ['workflow_id' => $id, 'workflow_type' => $definition['workflow_type'],

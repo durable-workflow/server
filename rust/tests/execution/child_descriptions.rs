@@ -18,17 +18,21 @@ async fn a_parent_is_described_by_its_waits_with_several_children() {
     let timer = json!({"type":"start_timer","delay_seconds":3600});
     let child_wait = (json!("child"), json!("Waiting for child workflow echo"));
     let timer_wait = (json!("timer"), json!("Waiting for timer"));
+    let activity = json!({"type":"schedule_activity","activity_type":"echo-activity","arguments":envelope(Payload::Array(vec![]))});
+    let activity_wait = (json!("activity"), json!("Waiting for activity echo-activity"));
     for (id, commands, expected) in [
         ("one-child", json!([child(None)]), child_wait.clone()),
         ("two-children", json!([child(None), child(None)]), child_wait.clone()),
         ("child-then-timer", json!([child(None), timer.clone()]), timer_wait.clone()),
         ("timer-then-child", json!([timer.clone(), child(None)]), timer_wait.clone()),
         ("terminating-child", json!([child(Some("terminate"))]), child_wait.clone()),
+        ("child-then-activity", json!([child(None), activity.clone()]), activity_wait.clone()),
+        ("activity-then-child", json!([activity.clone(), child(None)]), activity_wait.clone()),
     ] {
         let database = TestDatabase::new().await;
         let runtime = database.open().await.unwrap();
         let app = router(runtime.clone());
-        register(&app, "worker", json!(["echo"]), json!([])).await;
+        register(&app, "worker", json!(["echo"]), json!(["echo-activity"])).await;
         start(&app, id).await;
         let task = poll(&app, "worker", "workflow").await;
         let (status, body) = finish_task(&app, &task, commands).await;

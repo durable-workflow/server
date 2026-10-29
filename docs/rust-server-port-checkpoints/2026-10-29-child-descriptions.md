@@ -28,3 +28,16 @@
   activity, are still described without their wait, pending evidence.
 - **Tests.** `child_descriptions.rs`. On the previous source, two children
   and a child beside a timer were described with a null wait.
+
+## Follow-up: activities and cancellation policies
+
+- **Contract** (published 2.11.5): an open activity is described ahead of
+  open children in either order, as a timer is. A child requesting
+  `cancellation_policy: try_cancel` from a worker that does not declare
+  cooperative cancellation is refused `409
+  child_cancellation_policy_not_supported`; native refuses it the same way.
+- **Fixture.** `child-descriptions` gains three cases: `cancelling_child`,
+  `child_then_activity` and `activity_then_child`.
+- **Native.** An already chosen activity wait, like a timer wait, stays the
+  run's wait while every child is open. On the previous source a child
+  beside an activity was described with a null wait.
