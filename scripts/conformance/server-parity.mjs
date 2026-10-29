@@ -148,6 +148,10 @@ try {
           record.outcome = item.outcome;
           record.finished_at = new Date().toISOString();
           writeRecord(values.output, record, originals);
+          // The artifact summary keeps this outline, not the record, so a
+          // blocked probe still names its fixture and error.
+          writeFileSync(values.output.replace(/\.json$/, '') + '.failure-excerpt.txt',
+            failureExcerpt(record.cases.filter(entry => entry.outcome !== 'pass')));
           throw error;
         }
         record.cases.push(item);
