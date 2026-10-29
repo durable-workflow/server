@@ -68,7 +68,7 @@ impl Runtime {
     pub(super) async fn prepare_command_payloads(&self, body: &Value) -> Result<PreparedCommands> {
         let commands = body["commands"]
             .as_array()
-            .filter(|commands| !commands.is_empty() && commands.len() <= 100)
+            .filter(|commands| !commands.is_empty())
             .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_commands"))?;
         let selected: Vec<_> = commands
             .iter()

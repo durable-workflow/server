@@ -334,6 +334,9 @@ mod worker_sessions;
 #[path = "execution/workflow_import_fences.rs"]
 mod workflow_import_fences;
 
+#[path = "execution/large_command_batches.rs"]
+mod large_command_batches;
+
 #[path = "execution/query_argument_routing.rs"]
 mod query_argument_routing;
 
@@ -2463,6 +2466,10 @@ async fn updates_have_no_lifetime_cap_and_preserve_accepted_work_after_wait_time
     open_update_wait(&app, "update-worker").await;
     let path = "/api/workflows/bounded-updates/update/set";
     for index in 0..64 {
+        // Keep the worker active: on a loaded host the loop can outlast
+        // its staleness window, and a stale lease owner's task is refused.
+        let (status, beat) = request(&app, "POST", "/api/worker/heartbeat", json!({"worker_id":"update-worker"})).await;
+        assert_eq!(status, StatusCode::OK, "{beat}");
         // PHP's shortest completion wait is one second; one update waits it
         // out and the rest return at acceptance.
         let mut body = json!({"input":envelope(Payload::Array(vec![Payload::Long(index)])),

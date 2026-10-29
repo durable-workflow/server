@@ -2803,9 +2803,11 @@ where
         checkpoint: Option<&super::scope_checkpoint::Checkpoint>,
     ) -> Result<Value> {
         let transition_codec_for_streams = transition_codec.clone();
+        // `commands` is required and non-empty, with no count limit of its
+        // own: each command meets the run's structural limits instead.
         let commands = body["commands"]
             .as_array()
-            .filter(|c| !c.is_empty() && c.len() <= 100)
+            .filter(|c| !c.is_empty())
             .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_commands"))?;
         super::workflow_failures::validate_batch(commands)?;
         // Validate the entire batch before mutation. Unknown commands and

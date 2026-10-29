@@ -13,7 +13,7 @@ const PARTS = ['native-tests', 'corpus', 'restarts', 'cohorts', 'sdk-directions'
 const SHARED_NODES = 'Start the published PHP and native nodes the corpus parts share';
 const EVERY_PART = [/^actions\/checkout@/, /^Pull the pinned images, retrying registry errors$/, /^Fetch /,
   /^Restore native Cargo dependencies from trusted main$/, /^Discard restored native workspace outputs before rebuilding$/,
-  /^Create TLS fixture certificates$/, /^Bootstrap independent /, /^Collect /, /^Summarize /, /^Retain /];
+  /^Create TLS fixture certificates$/, /^Bootstrap published /, /^Collect /, /^Summarize /, /^Retain /];
 
 function job(name) {
   const start = workflow.indexOf(`\n  ${name}:\n`);
@@ -119,10 +119,10 @@ for (const [name, key] of [['mysql-execution', 'Compare three runtimes'], ['post
 }
 
 test('the database bootstraps run the native suites only in the native-tests parts', () => {
-  const postgres = steps(job('postgres-storage')).find(step => step.name.startsWith('Bootstrap independent '));
+  const postgres = steps(job('postgres-storage')).find(step => step.name.startsWith('Bootstrap published '));
   assert.match(postgres.text, /-e DW_PARITY_PART \\\n/);
   assert.match(postgres.text, /'if \[ "\$DW_PARITY_PART" = native-tests \]; then cargo test [^']* --test execution [^']*; fi && cargo build --locked --offline'/);
-  const mysql = steps(job('mysql-execution')).find(step => step.name.startsWith('Bootstrap independent '));
+  const mysql = steps(job('mysql-execution')).find(step => step.name.startsWith('Bootstrap published '));
   assert.match(mysql.text, /-e DW_PARITY_PART -e DW_EXECUTION_SHARDS \\\n/);
   // native-tests runs the database suite and the first half of the execution
   // tests; native-tests-b, where a label has it, runs the second half.
@@ -148,7 +148,7 @@ test('the MySQL 8 labels split their execution tests into two parts, every test 
   }
   assert.ok(entries.filter(entry => !sharded.includes(entry.label)).every(entry => !entry.execution_shards && !entry.part));
   // The selection the bootstrap runs: list, sort bytewise, deal round-robin.
-  const bootstrap = steps(block).find(step => step.name.startsWith('Bootstrap independent ')).text;
+  const bootstrap = steps(block).find(step => step.name.startsWith('Bootstrap published ')).text;
   const selection = /cargo test --locked --offline --test execution -- --list --format terse \| sed -n "s\/: test\\\$\/\/p" \| LC_ALL=C sort \| awk -v count="\$DW_EXECUTION_SHARDS" -v shard="\$shard" "([^"]+)" > \/evidence\/execution-shard\$suffix\.txt && test -s \/evidence\/execution-shard\$suffix\.txt && /.exec(bootstrap);
   assert.ok(selection, 'the execution tests are selected by the listed round-robin');
   const names = Array.from({length: 489}, (_, index) => `suite::test_${String(index).padStart(3, '0')}`);

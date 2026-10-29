@@ -433,6 +433,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $activityLeaseRenewal = isset($fixture['activity_lease_renewal']) ? finishHttpActivityLeaseRenewal($client, $fixture, $workflowId, $url) : null;
     $concurrentWaits = isset($fixture['concurrent_waits']) ? finishHttpConcurrentWaits($client, $fixture, $workflowId, $url) : null;
     $continueTransfers = isset($fixture['continue_transfers']) ? finishHttpContinueTransfers($client, $fixture, $workflowId, $url) : null;
+    $largeCommandBatches = isset($fixture['large_command_batches']) ? finishHttpLargeCommandBatches($client, $fixture, $workflowId, $url) : null;
     $startSearchAttributes = isset($fixture['start_search_attributes']) ? finishHttpStartSearchAttributes($client, $fixture, $workflowId, $url) : null;
     $queryArgumentRouting = isset($fixture['query_argument_routing']) ? finishHttpQueryArgumentRouting($client, $fixture, $workflowId, $url) : null;
     $queryContractArguments = isset($fixture['query_contract_arguments']) ? finishHttpQueryContractArguments($client, $fixture, $workflowId, $url) : null;
@@ -564,6 +565,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'activity_lease_renewal' => $activityLeaseRenewal,
         'concurrent_waits' => $concurrentWaits,
         'continue_transfers' => $continueTransfers,
+        'large_command_batches' => $largeCommandBatches,
         'start_search_attributes' => $startSearchAttributes,
         'query_argument_routing' => $queryArgumentRouting,
         'query_contract_arguments' => $queryContractArguments,
@@ -898,6 +900,7 @@ try {
     require __DIR__.'/activity-lease-renewal-probe.php';
     require __DIR__.'/concurrent-waits-probe.php';
     require __DIR__.'/continue-transfers-probe.php';
+    require __DIR__.'/large-command-batches-probe.php';
     require __DIR__.'/start-search-attributes-probe.php';
     require __DIR__.'/query-arguments-probe.php';
     require __DIR__.'/query-contract-arguments-probe.php';
@@ -1089,6 +1092,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['continue_transfers'])) {
         $observation['continue_transfers'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
+    }
+    if ($mode === 'embedded' && isset($fixture['large_command_batches'])) {
+        $observation['large_command_batches'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
     }
     if ($mode === 'embedded' && isset($fixture['start_search_attributes'])) {
         $observation['start_search_attributes'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_search_attribute_registry'];

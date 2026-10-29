@@ -18,7 +18,7 @@ fn entry(value: &Value, leaf: &str) -> Result<Value> {
         .ok_or_else(invalid)?;
     let size = value["parallel_group_size"]
         .as_i64()
-        .filter(|size| (1..=100).contains(size))
+        .filter(|size| (1..=super::memo_limits::COMMAND_BATCH_SIZE).contains(size))
         .ok_or_else(invalid)?;
     let index = value["parallel_group_index"]
         .as_i64()

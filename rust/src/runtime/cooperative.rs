@@ -102,8 +102,7 @@ pub(super) async fn encode_command(value: Value, semaphore: Arc<Semaphore>) -> R
     })?
 }
 
-/// PHP's default `command_batch_size` structural limit.
-const PARALLEL_SPAN_LIMIT: i64 = 1000;
+use super::memo_limits::COMMAND_BATCH_SIZE as PARALLEL_SPAN_LIMIT;
 
 /// The reasons `CooperativeCancellationDelivery::validate` returns.
 /// `DefaultWorkflowTaskBridge::deliverCancellation` answers each with its
