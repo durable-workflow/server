@@ -74,9 +74,12 @@ async fn a_parallel_group_may_hold_up_to_the_command_batch_size() {
     assert_eq!(body["created_task_ids"].as_array().map(Vec::len), Some(150));
     let (_, described) = request(&app, "GET", "/api/workflows/group-of-150", Value::Null).await;
     assert_eq!((described["status"].clone(), described["wait_kind"].clone()), (json!("waiting"), json!("activity")), "{described}");
+    // Every member records the group, read through the history API so the
+    // check is the same on each database.
     let run = started["run_id"].as_str().unwrap();
-    assert_eq!(task_retry::rows(&database, Box::leak(format!(
-        "SELECT COUNT(*) FROM workflow_history_events WHERE workflow_run_id='{run}' AND event_type='ActivityScheduled' AND payload LIKE '%parallel-activities:1:150%'").into_boxed_str())).await, 150);
+    let (_, history) = request(&app, "GET", &format!("/api/workflows/group-of-150/runs/{run}/history?page_size=1000"), Value::Null).await;
+    assert_eq!(history["events"].as_array().unwrap().iter().filter(|event| event["event_type"] == "ActivityScheduled"
+        && event["payload"]["parallel_group_id"] == "parallel-activities:1:150").count(), 150, "{history}");
     runtime.close().await;
     database.remove().await;
 }
