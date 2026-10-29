@@ -1546,6 +1546,16 @@ impl Runtime {
         protocol: Option<&str>,
         checkpoint: Option<&super::scope_checkpoint::Checkpoint>,
     ) -> Result<Value> {
+        // A task the namespace does not hold is answered before any payload
+        // is read or fetched, as PHP's guards run before its normalizer.
+        let held = match &*self.storage {
+            Storage::Sqlite(store) => store.task_held(task_id).await?,
+            Storage::Postgres(store) => store.task_held(task_id).await?,
+            Storage::MySql(store) => store.task_held(task_id).await?,
+        };
+        if !held {
+            return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
+        }
         self.check_command_payloads(&body).await?;
         let external = self.prepare_command_payloads(&body).await?;
         let body = super::completion_rules::canonical_payloads(body)?;
