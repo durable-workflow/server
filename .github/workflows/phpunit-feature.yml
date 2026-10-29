@@ -179,7 +179,7 @@ jobs:
 
       - name: Key the source-free PHP tool images
         id: php_tools_key
-        run: echo "key=server-php-tools-v1-${{ runner.os }}-${{ runner.arch }}-$(date -u +%Y%m%d)-${{ hashFiles('Dockerfile', 'Dockerfile.dockerignore', '.dockerignore', 'docker/**') }}" >> "$GITHUB_OUTPUT"
+        run: echo "key=server-php-tools-v2-${{ runner.os }}-${{ runner.arch }}-$(date -u +%Y%m%d)-${{ hashFiles('Dockerfile', 'Dockerfile.dockerignore', '.dockerignore', 'docker/**') }}" >> "$GITHUB_OUTPUT"
 
       - name: Restore the source-free PHP tool images
         id: php_tools_cache
@@ -201,7 +201,7 @@ jobs:
             docker build -t durable-workflow-server-corpus-validator - <<'DOCKERFILE'
           FROM durable-workflow-server-phpunit-base
           RUN apt-get update \
-              && apt-get install -y --no-install-recommends git \
+              && apt-get install -y --no-install-recommends git jq \
               && rm -rf /var/lib/apt/lists/* \
               && server-verify-trust final
           DOCKERFILE
@@ -215,6 +215,8 @@ jobs:
           docker run --rm --network none --entrypoint server-verify-trust durable-workflow-server-phpunit-base
           docker run --rm --network none --entrypoint server-verify-trust durable-workflow-server-corpus-validator final
           docker run --rm --network none --entrypoint server-verify-brotli durable-workflow-server-corpus-validator
+          docker run --rm --network none --entrypoint sh durable-workflow-server-corpus-validator \
+            -c 'git --version && jq --version'
 
       # Cache writes precede the dependency checkout and all application code.
       # These images contain only toolchains, qualified by the checks above.
