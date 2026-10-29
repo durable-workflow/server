@@ -3939,6 +3939,17 @@ where
         self.wake.notify_waiters();
         Ok(())
     }
+    /// Whether the namespace holds the task: PHP's ownership guard looks it
+    /// up before the command normalizer reads any payload.
+    pub(super) async fn task_held(&self, task_id: &str) -> Result<bool> {
+        Ok(Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE id=$1 AND namespace=$2")
+            .bind(task_id)
+            .bind(self.namespace.as_ref())
+            .fetch_one(&self.pool)
+            .await?
+            > 0)
+    }
+
     pub(super) async fn task_row(
         &self,
         tx: &mut Transaction<'_, DB>,

@@ -666,11 +666,6 @@ contract fixture before its correction.
 - **A repeated identical activity result.** Published PHP answers a repeat
   of the result that finished an activity task with `409 stale_attempt`.
   Native returns its earlier idempotent receipt (`200`, `already_completed`).
-- **Worker-plane error bodies.** Published PHP adds `protocol_version` to
-  every worker-plane response, including validation failures, and answers an
-  unknown activity task with `task_id`, `activity_attempt_id`, `error` and
-  `reason`. Native's worker-plane errors carry only Laravel's validation
-  fields or `message` and `reason`.
 - **Authentication beyond role tokens and runtime credentials.** Native
   refuses principal tokens (`DW_PRINCIPAL_TOKENS`), custom providers and the
   signature driver at startup. It still requires `DW_AUTH_TOKEN` with the

@@ -1,0 +1,294 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "worker-error-bodies",
+  "review_state": "reviewed",
+  "contract": "Worker-plane error bodies (published Server 2.11.5 bootstrap/app.php exception rendering with WorkerProtocol::json, WorkerController::pollWorkflowTasks and ActivityTaskController poll, fail and heartbeat), over raw worker HTTP on protocol 1.20 in a fresh namespace. A workflow or activity poll that fails its request rules answers 422 validation_failed with Laravel's messages in errors and validation_errors, in the worker envelope (protocol_version and server_capabilities). Completing, failing or heartbeating an activity task the namespace does not hold answers 404 task_not_found with the task id, attempt id and 'Activity task not found.' in the envelope. Completing a workflow task the namespace does not hold answers 404 task_not_found with 'Workflow task not found.' before any command payload is read. An unknown worker route answers 404 not_found and a wrong method 405 method_not_allowed, both in the envelope. Embedded applications have no worker protocol.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "continue transfers λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "continue transfers λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "worker_error_bodies": {
+    "requests": {
+      "workflow_poll_empty": [
+        "POST",
+        "worker/workflow-tasks/poll",
+        {}
+      ],
+      "workflow_poll_out_of_range": [
+        "POST",
+        "worker/workflow-tasks/poll",
+        {
+          "worker_id": "w",
+          "task_queue": "q",
+          "timeout_seconds": 61,
+          "history_page_size": 0,
+          "poll_request_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+          "task_kinds": []
+        }
+      ],
+      "activity_poll_empty": [
+        "POST",
+        "worker/activity-tasks/poll",
+        {}
+      ],
+      "activity_poll_out_of_range": [
+        "POST",
+        "worker/activity-tasks/poll",
+        {
+          "worker_id": "w",
+          "task_queue": "q",
+          "timeout_seconds": -1
+        }
+      ],
+      "activity_complete_unknown": [
+        "POST",
+        "worker/activity-tasks/missing-task/complete",
+        {
+          "activity_attempt_id": "missing-attempt",
+          "lease_owner": "missing-worker",
+          "result": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwA"
+          }
+        }
+      ],
+      "activity_fail_unknown": [
+        "POST",
+        "worker/activity-tasks/missing-task/fail",
+        {
+          "activity_attempt_id": "missing-attempt",
+          "lease_owner": "missing-worker",
+          "failure": {
+            "message": "missing"
+          }
+        }
+      ],
+      "activity_heartbeat_unknown": [
+        "POST",
+        "worker/activity-tasks/missing-task/heartbeat",
+        {
+          "activity_attempt_id": "missing-attempt",
+          "lease_owner": "missing-worker"
+        }
+      ],
+      "route_not_found": [
+        "GET",
+        "worker/nothing-here",
+        null
+      ],
+      "method_not_allowed": [
+        "GET",
+        "worker/workflow-tasks/poll",
+        null
+      ],
+      "workflow_complete_unknown": [
+        "POST",
+        "worker/workflow-tasks/missing-task/complete",
+        {
+          "lease_owner": "missing-worker",
+          "workflow_task_attempt": 1,
+          "commands": [
+            {
+              "type": "complete_workflow"
+            }
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "workflow_poll_empty": {
+        "status": 422,
+        "server_capabilities": true,
+        "body": {
+          "errors": {
+            "worker_id": [
+              "The worker id field is required."
+            ],
+            "task_queue": [
+              "The task queue field is required."
+            ]
+          },
+          "message": "The worker id field is required. (and 1 more error)",
+          "protocol_version": "1.20",
+          "reason": "validation_failed",
+          "validation_errors": {
+            "worker_id": [
+              "The worker id field is required."
+            ],
+            "task_queue": [
+              "The task queue field is required."
+            ]
+          }
+        }
+      },
+      "workflow_poll_out_of_range": {
+        "status": 422,
+        "server_capabilities": true,
+        "body": {
+          "errors": {
+            "poll_request_id": [
+              "The poll request id field must not be greater than 255 characters."
+            ],
+            "timeout_seconds": [
+              "The timeout seconds field must not be greater than 60."
+            ],
+            "history_page_size": [
+              "The history page size field must be at least 1."
+            ],
+            "task_kinds": [
+              "The task kinds field must have at least 1 items."
+            ]
+          },
+          "message": "The poll request id field must not be greater than 255 characters. (and 3 more errors)",
+          "protocol_version": "1.20",
+          "reason": "validation_failed",
+          "validation_errors": {
+            "poll_request_id": [
+              "The poll request id field must not be greater than 255 characters."
+            ],
+            "timeout_seconds": [
+              "The timeout seconds field must not be greater than 60."
+            ],
+            "history_page_size": [
+              "The history page size field must be at least 1."
+            ],
+            "task_kinds": [
+              "The task kinds field must have at least 1 items."
+            ]
+          }
+        }
+      },
+      "activity_poll_empty": {
+        "status": 422,
+        "server_capabilities": true,
+        "body": {
+          "errors": {
+            "worker_id": [
+              "The worker id field is required."
+            ],
+            "task_queue": [
+              "The task queue field is required."
+            ]
+          },
+          "message": "The worker id field is required. (and 1 more error)",
+          "protocol_version": "1.20",
+          "reason": "validation_failed",
+          "validation_errors": {
+            "worker_id": [
+              "The worker id field is required."
+            ],
+            "task_queue": [
+              "The task queue field is required."
+            ]
+          }
+        }
+      },
+      "activity_poll_out_of_range": {
+        "status": 422,
+        "server_capabilities": true,
+        "body": {
+          "errors": {
+            "timeout_seconds": [
+              "The timeout seconds field must be at least 0."
+            ]
+          },
+          "message": "The timeout seconds field must be at least 0.",
+          "protocol_version": "1.20",
+          "reason": "validation_failed",
+          "validation_errors": {
+            "timeout_seconds": [
+              "The timeout seconds field must be at least 0."
+            ]
+          }
+        }
+      },
+      "activity_complete_unknown": {
+        "status": 404,
+        "server_capabilities": true,
+        "body": {
+          "activity_attempt_id": "missing-attempt",
+          "error": "Activity task not found.",
+          "protocol_version": "1.20",
+          "reason": "task_not_found",
+          "task_id": "missing-task"
+        }
+      },
+      "activity_fail_unknown": {
+        "status": 404,
+        "server_capabilities": true,
+        "body": {
+          "activity_attempt_id": "missing-attempt",
+          "error": "Activity task not found.",
+          "protocol_version": "1.20",
+          "reason": "task_not_found",
+          "task_id": "missing-task"
+        }
+      },
+      "activity_heartbeat_unknown": {
+        "status": 404,
+        "server_capabilities": true,
+        "body": {
+          "activity_attempt_id": "missing-attempt",
+          "error": "Activity task not found.",
+          "protocol_version": "1.20",
+          "reason": "task_not_found",
+          "task_id": "missing-task"
+        }
+      },
+      "route_not_found": {
+        "status": 404,
+        "server_capabilities": true,
+        "body": {
+          "message": "The route api/worker/nothing-here could not be found.",
+          "protocol_version": "1.20",
+          "reason": "not_found"
+        }
+      },
+      "method_not_allowed": {
+        "status": 405,
+        "server_capabilities": true,
+        "body": {
+          "message": "The GET method is not supported for route api/worker/workflow-tasks/poll. Supported methods: POST.",
+          "protocol_version": "1.20",
+          "reason": "method_not_allowed"
+        }
+      },
+      "workflow_complete_unknown": {
+        "status": 404,
+        "server_capabilities": true,
+        "body": {
+          "error": "Workflow task not found.",
+          "protocol_version": "1.20",
+          "reason": "task_not_found",
+          "task_id": "missing-task",
+          "workflow_task_attempt": 1
+        }
+      }
+    }
+  }
+}
