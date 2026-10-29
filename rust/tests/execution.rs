@@ -334,6 +334,9 @@ mod worker_sessions;
 #[path = "execution/workflow_import_fences.rs"]
 mod workflow_import_fences;
 
+#[path = "execution/large_command_batches.rs"]
+mod large_command_batches;
+
 #[path = "execution/query_argument_routing.rs"]
 mod query_argument_routing;
 

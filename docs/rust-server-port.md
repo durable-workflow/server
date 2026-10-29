@@ -303,9 +303,12 @@ contract fixture before its correction.
   of the Workflow package's `DW_V2_LIMIT_*` limits: the memo size, the
   command batch size as a bound on parallel group metadata, the pending
   signal and update counts with their payload size at intake, and the
-  payload size of an activity's result. Native enforces all but the command
-  batch size, and still caps parallel groups at 100 members and a run at 64
-  updates over its lifetime. #612 tracks the rest
+  payload size of an activity's result. Native enforces all four; the
+  command batch size is fixed at its default of 1,000, since native refuses
+  to start with another value. A completion itself has no command-count
+  limit in either (October 29: native's 100-command and 100-member group
+  caps are removed; the 64-update lifetime cap went on October 23). #612
+  tracks the rest
   ([checkpoint](rust-server-port-checkpoints/2026-10-23-structural-limits.md)).
 - **Completion budget, ahead of published PHP.** Native applies Phase A of
   [Workflow #930](https://github.com/durable-workflow/workflow/issues/930)
@@ -561,6 +564,20 @@ contract fixture before its correction.
   fixture records twenty-two cases against
   published 2.11.5
   ([checkpoint](rust-server-port-checkpoints/2026-10-28-query-contract-arguments.md)).
+- **Completions with more than 100 commands** (October 29, closed).
+  Published PHP accepts any non-empty workflow task completion from an
+  external worker; each command meets the run's structural limits (pending
+  activities and timers) instead. Native refused more than 100 commands
+  with `invalid_commands`. Its timer, activity and external-wait summaries
+  also stopped at 100 open waits, so a run with more than 100 was described
+  without its wait. Native also capped a parallel group at 100 members,
+  where PHP bounds it by the command batch size (1,000). It refused an
+  invalid group as `development_parallel_group_unqualified`, where PHP's
+  preflight answers `validation_failed` with an error on each command. All
+  of these are removed or ported. The `large-command-batches` fixture records
+  150 timers, 150 activities, a 150-member group and a 1,001-member group
+  against published 2.11.5
+  ([checkpoint](rust-server-port-checkpoints/2026-10-29-large-command-batches.md)).
 - **Trace context (Core 2.10, published in Server 2.11.1).** Core adds
   nullable `observability_context` columns on runs, commands and tasks.
   Native has no carrier: it accepts and ignores a top-level carrier on
