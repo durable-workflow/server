@@ -112,3 +112,26 @@ async fn an_unknown_workflow_task_is_answered_before_its_payloads_are_read() {
     runtime.close().await;
     database.remove().await;
 }
+
+// Every request of the worker-error-bodies fixture, answered as published
+// 2.11.5 answered it there (`server_capabilities` reduced to its presence).
+#[tokio::test]
+async fn the_fixture_requests_are_answered_as_published_php_answered_them() {
+    let fixture: Value = serde_json::from_str(include_str!("../../../tests/Fixtures/ServerParity/worker-error-bodies.json")).unwrap();
+    let definition = &fixture["worker_error_bodies"];
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    for (name, request) in definition["requests"].as_object().unwrap() {
+        let (method, path, body) = (request[0].as_str().unwrap(), request[1].as_str().unwrap(), request[2].clone());
+        let (status, mut answer) = request_protocol(&app, method, &format!("/api/{path}"), body, "1.20").await;
+        let capabilities = answer["server_capabilities"].is_object();
+        answer.as_object_mut().unwrap().remove("server_capabilities");
+        let expected = &definition["expected"][name];
+        assert_eq!((status.as_u16(), capabilities), (expected["status"].as_u64().unwrap() as u16, expected["server_capabilities"] == true),
+            "{name}: {answer}");
+        assert_eq!(answer, expected["body"], "{name}");
+    }
+    runtime.close().await;
+    database.remove().await;
+}

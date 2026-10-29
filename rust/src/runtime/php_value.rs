@@ -578,10 +578,54 @@ pub(super) fn numeric(text: &str) -> Option<f64> {
     trimmed.parse::<f64>().ok()
 }
 
+/// A numeric string as PHP's `is_numeric_string_ex` reads it: an integer
+/// that fits, or a double, with `oflow` set (+1 or -1) for an integer-syntax
+/// string beyond the 64-bit range.
+#[derive(Clone, Copy)]
+enum NumericString {
+    Long(i64),
+    Double { value: f64, oflow: i8 },
+}
+
+fn numeric_string(text: &str) -> Option<NumericString> {
+    let value = numeric(text)?;
+    let trimmed = text.trim_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']);
+    let integer_syntax = !trimmed.contains(['.', 'e', 'E']);
+    if integer_syntax {
+        if let Ok(whole) = trimmed.parse::<i64>() {
+            return Some(NumericString::Long(whole));
+        }
+        return Some(NumericString::Double { value, oflow: if trimmed.starts_with('-') { -1 } else { 1 } });
+    }
+    Some(NumericString::Double { value, oflow: 0 })
+}
+
+/// PHP 8's `zendi_smart_str_equals`: numeric strings compare as numbers,
+/// except that two integers overflowing to the same side, or two equal
+/// infinities, compare as text; any other pair compares as text.
+fn smart_str_equals(left: &str, right: &str) -> bool {
+    let (Some(a), Some(b)) = (numeric_string(left), numeric_string(right)) else {
+        return left == right;
+    };
+    match (a, b) {
+        (NumericString::Long(a), NumericString::Long(b)) => a == b,
+        (NumericString::Double { value: a, oflow: oa }, NumericString::Double { value: b, oflow: ob }) => {
+            if (oa != 0 && oa == ob && a - b == 0.0) || (a == b && !a.is_finite()) {
+                left == right
+            } else {
+                a == b
+            }
+        }
+        (NumericString::Long(whole), NumericString::Double { value, oflow })
+        | (NumericString::Double { value, oflow }, NumericString::Long(whole)) => oflow == 0 && whole as f64 == value,
+    }
+}
+
 /// PHP 8's `==` between two decoded JSON values, as `in_array` uses it by
 /// default: a boolean compares by truthiness, null equals the empty and the
-/// zero values, numbers and numeric strings compare as numbers, other
-/// strings compare exactly, and arrays compare key by key.
+/// zero values, an integer against a numeric string compares as integers
+/// when the string is one, numeric strings compare as `smart_str_equals`
+/// does, other strings compare exactly, and arrays compare key by key.
 pub(crate) fn loose_eq(left: &serde_json::Value, right: &serde_json::Value) -> bool {
     use serde_json::Value;
     fn truthy(value: &Value) -> bool {
@@ -592,12 +636,6 @@ pub(crate) fn loose_eq(left: &serde_json::Value, right: &serde_json::Value) -> b
             Value::String(text) => !text.is_empty() && text != "0",
             Value::Array(items) => !items.is_empty(),
             Value::Object(fields) => !fields.is_empty(),
-        }
-    }
-    fn number_text(number: &serde_json::Number) -> String {
-        match number.as_i64() {
-            Some(whole) => whole.to_string(),
-            None => float(number.as_f64().unwrap_or_default(), false),
         }
     }
     fn entries(value: &Value) -> Option<Vec<(String, &Value)>> {
@@ -614,14 +652,20 @@ pub(crate) fn loose_eq(left: &serde_json::Value, right: &serde_json::Value) -> b
             (Some(a), Some(b)) => a == b,
             _ => a.as_f64() == b.as_f64(),
         },
-        (Value::Number(number), Value::String(text)) | (Value::String(text), Value::Number(number)) => match numeric(text) {
-            Some(parsed) => number.as_f64() == Some(parsed),
-            None => number_text(number) == *text,
-        },
-        (Value::String(a), Value::String(b)) => match (numeric(a), numeric(b)) {
-            (Some(a), Some(b)) => a == b,
-            _ => a == b,
-        },
+        // `compare_longs_to_string` and `compare_doubles_to_string`.
+        (Value::Number(number), Value::String(text)) | (Value::String(text), Value::Number(number)) => {
+            match (number.as_i64(), numeric_string(text)) {
+                (Some(whole), Some(NumericString::Long(other))) => whole == other,
+                (Some(whole), Some(NumericString::Double { value, .. })) => whole as f64 == value,
+                (None, Some(NumericString::Long(other))) => number.as_f64() == Some(other as f64),
+                (None, Some(NumericString::Double { value, .. })) => number.as_f64() == Some(value),
+                (_, None) => match number.as_i64() {
+                    Some(whole) => whole.to_string() == *text,
+                    None => float(number.as_f64().unwrap_or_default(), false) == *text,
+                },
+            }
+        }
+        (Value::String(a), Value::String(b)) => smart_str_equals(a, b),
         (Value::Array(_) | Value::Object(_), Value::Array(_) | Value::Object(_)) => {
             let (a, b) = (entries(left).unwrap_or_default(), entries(right).unwrap_or_default());
             a.len() == b.len()
@@ -666,6 +710,11 @@ mod tests {
             (json!(1.5), json!(1.5), true), (json!(1), json!(1.0), true),
             (json!([1, 2]), json!(["1", "2"]), true), (json!([1, 2]), json!([2, 1]), false), (json!({"a": 1}), json!({"a": "1"}), true),
             (json!("workflow"), json!("update_validation"), false), (json!([]), json!(0), false),
+            (json!("9007199254740992"), json!("9007199254740993"), false), (json!(9007199254740992_i64), json!("9007199254740993"), false),
+            (json!("9223372036854775808"), json!("9223372036854775809"), false),
+            (json!("18446744073709551615"), json!("18446744073709551616"), false), (json!("1e9999"), json!("2e9999"), false),
+            (json!("9007199254740992e0"), json!("9007199254740993e0"), true), (json!("9223372036854775808"), json!("9223372036854775808"), true),
+            (json!("10"), json!("1e1"), true), (json!(" 1"), json!("1"), true),
         ] {
             assert_eq!(loose_eq(&a, &b), equal, "{a} == {b}");
             assert_eq!(loose_eq(&b, &a), equal, "{b} == {a}");

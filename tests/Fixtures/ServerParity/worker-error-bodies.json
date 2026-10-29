@@ -143,6 +143,109 @@
             true
           ]
         }
+      ],
+      "workflow_poll_associative_kinds": [
+        "POST",
+        "worker/workflow-tasks/poll",
+        {
+          "worker_id": "w",
+          "task_queue": "q",
+          "timeout_seconds": 61,
+          "task_kinds": {
+            "a": "workflow",
+            "b": "workflow"
+          }
+        }
+      ],
+      "workflow_poll_nested_kinds": [
+        "POST",
+        "worker/workflow-tasks/poll",
+        {
+          "worker_id": "w",
+          "task_queue": "q",
+          "timeout_seconds": 61,
+          "task_kinds": [
+            [
+              "workflow"
+            ],
+            [
+              "workflow"
+            ]
+          ]
+        }
+      ],
+      "workflow_poll_empty_nested_kinds": [
+        "POST",
+        "worker/workflow-tasks/poll",
+        {
+          "worker_id": "w",
+          "task_queue": "q",
+          "timeout_seconds": 61,
+          "task_kinds": [
+            [],
+            []
+          ]
+        }
+      ],
+      "workflow_poll_large_integer_kinds": [
+        "POST",
+        "worker/workflow-tasks/poll",
+        {
+          "worker_id": "w",
+          "task_queue": "q",
+          "task_kinds": [
+            "9007199254740992",
+            "9007199254740993"
+          ]
+        }
+      ],
+      "workflow_poll_integer_string_kinds": [
+        "POST",
+        "worker/workflow-tasks/poll",
+        {
+          "worker_id": "w",
+          "task_queue": "q",
+          "task_kinds": [
+            9007199254740992,
+            "9007199254740993"
+          ]
+        }
+      ],
+      "workflow_poll_overflow_kinds": [
+        "POST",
+        "worker/workflow-tasks/poll",
+        {
+          "worker_id": "w",
+          "task_queue": "q",
+          "task_kinds": [
+            "9223372036854775808",
+            "9223372036854775809"
+          ]
+        }
+      ],
+      "workflow_poll_infinite_kinds": [
+        "POST",
+        "worker/workflow-tasks/poll",
+        {
+          "worker_id": "w",
+          "task_queue": "q",
+          "task_kinds": [
+            "1e9999",
+            "2e9999"
+          ]
+        }
+      ],
+      "workflow_poll_rounded_kinds": [
+        "POST",
+        "worker/workflow-tasks/poll",
+        {
+          "worker_id": "w",
+          "task_queue": "q",
+          "task_kinds": [
+            "9007199254740992e0",
+            "9007199254740993e0"
+          ]
+        }
       ]
     },
     "expected": {
@@ -368,6 +471,242 @@
             ],
             "task_kinds.1": [
               "The task_kinds.1 field must be a string.",
+              "The task_kinds.1 field has a duplicate value.",
+              "The selected task_kinds.1 is invalid."
+            ]
+          }
+        }
+      },
+      "workflow_poll_associative_kinds": {
+        "status": 422,
+        "server_capabilities": true,
+        "body": {
+          "errors": {
+            "timeout_seconds": [
+              "The timeout seconds field must not be greater than 60."
+            ],
+            "task_kinds.a": [
+              "The task_kinds.a field has a duplicate value."
+            ],
+            "task_kinds.b": [
+              "The task_kinds.b field has a duplicate value."
+            ]
+          },
+          "message": "The timeout seconds field must not be greater than 60. (and 2 more errors)",
+          "protocol_version": "1.20",
+          "reason": "validation_failed",
+          "validation_errors": {
+            "timeout_seconds": [
+              "The timeout seconds field must not be greater than 60."
+            ],
+            "task_kinds.a": [
+              "The task_kinds.a field has a duplicate value."
+            ],
+            "task_kinds.b": [
+              "The task_kinds.b field has a duplicate value."
+            ]
+          }
+        }
+      },
+      "workflow_poll_nested_kinds": {
+        "status": 422,
+        "server_capabilities": true,
+        "body": {
+          "errors": {
+            "timeout_seconds": [
+              "The timeout seconds field must not be greater than 60."
+            ],
+            "task_kinds.0": [
+              "The task_kinds.0 field must be a string.",
+              "The selected task_kinds.0 is invalid."
+            ],
+            "task_kinds.1": [
+              "The task_kinds.1 field must be a string.",
+              "The selected task_kinds.1 is invalid."
+            ]
+          },
+          "message": "The timeout seconds field must not be greater than 60. (and 4 more errors)",
+          "protocol_version": "1.20",
+          "reason": "validation_failed",
+          "validation_errors": {
+            "timeout_seconds": [
+              "The timeout seconds field must not be greater than 60."
+            ],
+            "task_kinds.0": [
+              "The task_kinds.0 field must be a string.",
+              "The selected task_kinds.0 is invalid."
+            ],
+            "task_kinds.1": [
+              "The task_kinds.1 field must be a string.",
+              "The selected task_kinds.1 is invalid."
+            ]
+          }
+        }
+      },
+      "workflow_poll_empty_nested_kinds": {
+        "status": 422,
+        "server_capabilities": true,
+        "body": {
+          "errors": {
+            "timeout_seconds": [
+              "The timeout seconds field must not be greater than 60."
+            ],
+            "task_kinds.0": [
+              "The task_kinds.0 field must be a string.",
+              "The task_kinds.0 field has a duplicate value.",
+              "The selected task_kinds.0 is invalid."
+            ],
+            "task_kinds.1": [
+              "The task_kinds.1 field must be a string.",
+              "The task_kinds.1 field has a duplicate value.",
+              "The selected task_kinds.1 is invalid."
+            ]
+          },
+          "message": "The timeout seconds field must not be greater than 60. (and 6 more errors)",
+          "protocol_version": "1.20",
+          "reason": "validation_failed",
+          "validation_errors": {
+            "timeout_seconds": [
+              "The timeout seconds field must not be greater than 60."
+            ],
+            "task_kinds.0": [
+              "The task_kinds.0 field must be a string.",
+              "The task_kinds.0 field has a duplicate value.",
+              "The selected task_kinds.0 is invalid."
+            ],
+            "task_kinds.1": [
+              "The task_kinds.1 field must be a string.",
+              "The task_kinds.1 field has a duplicate value.",
+              "The selected task_kinds.1 is invalid."
+            ]
+          }
+        }
+      },
+      "workflow_poll_large_integer_kinds": {
+        "status": 422,
+        "server_capabilities": true,
+        "body": {
+          "errors": {
+            "task_kinds.0": [
+              "The selected task_kinds.0 is invalid."
+            ],
+            "task_kinds.1": [
+              "The selected task_kinds.1 is invalid."
+            ]
+          },
+          "message": "The selected task_kinds.0 is invalid. (and 1 more error)",
+          "protocol_version": "1.20",
+          "reason": "validation_failed",
+          "validation_errors": {
+            "task_kinds.0": [
+              "The selected task_kinds.0 is invalid."
+            ],
+            "task_kinds.1": [
+              "The selected task_kinds.1 is invalid."
+            ]
+          }
+        }
+      },
+      "workflow_poll_integer_string_kinds": {
+        "status": 422,
+        "server_capabilities": true,
+        "body": {
+          "errors": {
+            "task_kinds.0": [
+              "The task_kinds.0 field must be a string.",
+              "The selected task_kinds.0 is invalid."
+            ],
+            "task_kinds.1": [
+              "The selected task_kinds.1 is invalid."
+            ]
+          },
+          "message": "The task_kinds.0 field must be a string. (and 2 more errors)",
+          "protocol_version": "1.20",
+          "reason": "validation_failed",
+          "validation_errors": {
+            "task_kinds.0": [
+              "The task_kinds.0 field must be a string.",
+              "The selected task_kinds.0 is invalid."
+            ],
+            "task_kinds.1": [
+              "The selected task_kinds.1 is invalid."
+            ]
+          }
+        }
+      },
+      "workflow_poll_overflow_kinds": {
+        "status": 422,
+        "server_capabilities": true,
+        "body": {
+          "errors": {
+            "task_kinds.0": [
+              "The selected task_kinds.0 is invalid."
+            ],
+            "task_kinds.1": [
+              "The selected task_kinds.1 is invalid."
+            ]
+          },
+          "message": "The selected task_kinds.0 is invalid. (and 1 more error)",
+          "protocol_version": "1.20",
+          "reason": "validation_failed",
+          "validation_errors": {
+            "task_kinds.0": [
+              "The selected task_kinds.0 is invalid."
+            ],
+            "task_kinds.1": [
+              "The selected task_kinds.1 is invalid."
+            ]
+          }
+        }
+      },
+      "workflow_poll_infinite_kinds": {
+        "status": 422,
+        "server_capabilities": true,
+        "body": {
+          "errors": {
+            "task_kinds.0": [
+              "The selected task_kinds.0 is invalid."
+            ],
+            "task_kinds.1": [
+              "The selected task_kinds.1 is invalid."
+            ]
+          },
+          "message": "The selected task_kinds.0 is invalid. (and 1 more error)",
+          "protocol_version": "1.20",
+          "reason": "validation_failed",
+          "validation_errors": {
+            "task_kinds.0": [
+              "The selected task_kinds.0 is invalid."
+            ],
+            "task_kinds.1": [
+              "The selected task_kinds.1 is invalid."
+            ]
+          }
+        }
+      },
+      "workflow_poll_rounded_kinds": {
+        "status": 422,
+        "server_capabilities": true,
+        "body": {
+          "errors": {
+            "task_kinds.0": [
+              "The task_kinds.0 field has a duplicate value.",
+              "The selected task_kinds.0 is invalid."
+            ],
+            "task_kinds.1": [
+              "The task_kinds.1 field has a duplicate value.",
+              "The selected task_kinds.1 is invalid."
+            ]
+          },
+          "message": "The task_kinds.0 field has a duplicate value. (and 3 more errors)",
+          "protocol_version": "1.20",
+          "reason": "validation_failed",
+          "validation_errors": {
+            "task_kinds.0": [
+              "The task_kinds.0 field has a duplicate value.",
+              "The selected task_kinds.0 is invalid."
+            ],
+            "task_kinds.1": [
               "The task_kinds.1 field has a duplicate value.",
               "The selected task_kinds.1 is invalid."
             ]

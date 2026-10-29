@@ -33,7 +33,13 @@
     with `task_id`, `workflow_task_attempt` and "Workflow task not found."
     The ownership guard runs before the command normalizer reads payloads.
 - **Fixture.** `worker-error-bodies`, raw worker HTTP on protocol 1.20 in a
-  fresh namespace: ten requests. The probe records each status and body,
+  fresh namespace: twenty requests. Ten of them probe `distinct` on
+  `task_kinds.*` (from review). It runs in the same pass as the other rules,
+  and compares candidates as Laravel takes them (`Arr::dot`: list or
+  associative items, scalars and empty arrays, not non-empty nested arrays)
+  with PHP 8's loose `==`. That includes `zendi_smart_str_equals` for numeric
+  strings: integers that fit compare exactly, and integers overflowing to the
+  same side, or equal infinities, compare as text. The probe records each status and body,
   with `server_capabilities` reduced to whether it is present.
 - **Native.** `http.rs` validates both polls with the published rules before
   reading them (native's task-kinds reader still checks distinct values),
@@ -45,4 +51,6 @@
   are still refused that way. A workflow task completion or checkpoint now
   looks the task up before checking or fetching any command payload.
 - **Tests.** `worker_error_bodies.rs` fails on the previous source and
-  passes now.
+  passes now. Its last test replays every fixture request against native
+  and compares PHP's recorded answers. `php_value::loose_eq` has its own
+  unit test.

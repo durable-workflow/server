@@ -353,18 +353,30 @@ fn checks(body: &Value, rules: &Rules) -> Vec<(String, bool, &'static [Rule])> {
 
 /// One attribute's messages. An implicit rule (required, required_with,
 /// present) stops at its first failure, as Laravel's does.
-/// Laravel's `validateDistinct` for an expanded `x.N` attribute: another
-/// item of `x` equals this one under PHP's loose `==`, as the unqualified
-/// rule's `in_array` compares them.
+/// Laravel's `validateDistinct` for an expanded `x.K` attribute. The
+/// candidates are `getDistinctValues`: the other items of `x`, list or
+/// associative, that `Arr::dot` leaves at that depth (scalars, null and
+/// empty arrays; a non-empty nested array is flattened past it). This
+/// item is a duplicate when one of them equals it under PHP's loose `==`.
 fn duplicated(body: &Value, attribute: &str, value: Option<&Value>) -> bool {
-    let Some((parent, index)) = attribute.rsplit_once('.') else {
+    let Some((parent, key)) = attribute.rsplit_once('.') else {
         return false;
     };
-    let (Some(Value::Array(items)), Some(own)) = (lookup(body, parent), value) else {
+    let Some(own) = value else {
         return false;
     };
-    items.iter().enumerate().any(|(position, item)| {
-        position.to_string() != index && super::php_value::loose_eq(own, item)
+    let siblings: Vec<(String, &Value)> = match lookup(body, parent) {
+        Some(Value::Array(items)) => items.iter().enumerate().map(|(index, item)| (index.to_string(), item)).collect(),
+        Some(Value::Object(fields)) => fields.iter().map(|(name, item)| (name.clone(), item)).collect(),
+        _ => return false,
+    };
+    siblings.into_iter().any(|(other, item)| {
+        let flattened = match item {
+            Value::Array(items) => !items.is_empty(),
+            Value::Object(fields) => !fields.is_empty(),
+            _ => false,
+        };
+        other != key && !flattened && super::php_value::loose_eq(own, item)
     })
 }
 
