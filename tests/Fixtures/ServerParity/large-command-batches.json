@@ -280,6 +280,7 @@
       "is_terminal",
       "resume_step_sequence",
       "recovery_kind"
-    ]
+    ],
+    "overall_budget_seconds": 150
   }
 }
