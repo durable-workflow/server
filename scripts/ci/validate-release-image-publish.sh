@@ -6,6 +6,8 @@ dockerhub_image="${DOCKERHUB_IMAGE:-durableworkflow/server}"
 ghcr_image="${GHCR_IMAGE:-ghcr.io/durable-workflow/server}"
 release_tag=""
 missing_credentials=""
+existing_image_digest="${INPUT_EXISTING_IMAGE_DIGEST:-}"
+verification_only=false
 
 fail() {
     title="$1"
@@ -79,6 +81,19 @@ if [ -n "$source_release_version" ]; then
     fi
 fi
 
+if [ -n "$existing_image_digest" ]; then
+    if [ "${GITHUB_EVENT_NAME:-}" != workflow_dispatch ] || [ "${GITHUB_REF:-}" != refs/heads/main ]; then
+        fail "Invalid release continuation context" "Existing image verification requires workflow_dispatch from main."
+    fi
+    if ! printf '%s' "$existing_image_digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+        fail "Invalid existing image digest" "Existing image verification requires an exact lowercase sha256 index digest."
+    fi
+    if ! printf '%s' "${INPUT_RELEASE_COMMIT:-}" | grep -Eq '^[0-9a-f]{40}$'; then
+        fail "Invalid release continuation source" "Existing image verification requires the full lowercase source commit for the immutable tag."
+    fi
+    verification_only=true
+fi
+
 if [ -z "${DOCKERHUB_USERNAME:-}" ]; then
     append_missing_credential "DOCKERHUB_USERNAME"
 fi
@@ -98,6 +113,8 @@ fi
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
     {
         printf 'tag=%s\n' "$release_tag"
+        printf 'verification_only=%s\n' "$verification_only"
+        printf 'existing_image_digest=%s\n' "$existing_image_digest"
         if is_semver_tag "$release_tag"; then
             printf 'is_semver=true\n'
         else

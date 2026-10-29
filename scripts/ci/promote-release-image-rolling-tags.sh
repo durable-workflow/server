@@ -7,6 +7,7 @@ dockerhub_image="${DOCKERHUB_IMAGE:-durableworkflow/server}"
 ghcr_image="${GHCR_IMAGE:-ghcr.io/durable-workflow/server}"
 docker_bin="${DOCKER:-docker}"
 tag_source_url="${RELEASE_IMAGE_TAG_SOURCE_URL:-}"
+verified_image_digest="${VERIFIED_IMAGE_DIGEST:-}"
 
 fail() {
     printf '::error title=%s::%s\n' "$1" "$2" >&2
@@ -82,6 +83,10 @@ if ! is_stable_semver_tag "$release_tag"; then
     fail "Stable semver tag required" "Rolling image aliases can only be promoted from stable semver tags; got '${release_tag}'."
 fi
 
+if [ -n "$verified_image_digest" ] && ! printf '%s' "$verified_image_digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+    fail "Invalid verified image digest" "Rolling aliases require an exact lowercase sha256 digest when VERIFIED_IMAGE_DIGEST is supplied."
+fi
+
 major="${release_tag%%.*}"
 minor_patch="${release_tag#*.}"
 minor="${minor_patch%%.*}"
@@ -102,12 +107,16 @@ fi
 
 promote_image() {
     image="$1"
+    source_ref="${image}:${release_tag}"
+    if [ -n "$verified_image_digest" ]; then
+        source_ref="${image}@${verified_image_digest}"
+    fi
 
     "$docker_bin" buildx imagetools create \
         --tag "${image}:${minor_alias}" \
         --tag "${image}:${major_alias}" \
         --tag "${image}:latest" \
-        "${image}:${release_tag}"
+        "$source_ref"
 }
 
 promote_image "$dockerhub_image"

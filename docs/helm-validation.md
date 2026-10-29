@@ -29,6 +29,15 @@ TLS probes on the verified digest. It does not rebuild or replace an image.
 Both release paths require the TLS gate to pass before publishing the matching
 chart.
 
+If exact images were uploaded but verification failed before the GitHub Release
+was created, dispatch the protected `Release` workflow from `main` with `tag`,
+the full `release_commit`, and `existing_image_digest` from the original upload.
+This explicit continuation skips image build and push. It verifies both
+registries and architectures against that index and source, then runs all normal
+trust-store, first-run, Compose, database TLS and protocol checks before the
+existing alias, GitHub Release and chart steps. The images retain their original
+publisher provenance. Do not rerun the image producer or replace immutable tags.
+
 For a local repeat, set `TLS_TEST_MODE=published`, `TLS_TEST_IMAGE` to an
 immutable `repository@sha256:...` reference, and unique `TLS_TEST_PROJECT` and
 `TLS_TEST_ROOT` values, then run `scripts/ci/qualify-database-tls.sh`. The

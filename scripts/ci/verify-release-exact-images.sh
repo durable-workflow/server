@@ -9,6 +9,7 @@ docker_bin="${DOCKER:-docker}"
 build_outcome="${DOCKER_BUILD_OUTCOME:-}"
 built_image_digest="${BUILT_IMAGE_DIGEST:-}"
 built_image_metadata="${BUILT_IMAGE_METADATA:-}"
+requested_image_digest="${EXPECTED_IMAGE_DIGEST:-}"
 release_commit="${RELEASE_COMMIT:-}"
 run_id="${RELEASE_RUN_ID:-}"
 run_attempt="${RELEASE_RUN_ATTEMPT:-}"
@@ -136,6 +137,19 @@ case "$verification_only" in
         ;;
 esac
 
+if [ -n "$requested_image_digest" ]; then
+    if [ "$verification_only" != true ] || ! printf '%s' "$requested_image_digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+        fail "Invalid release continuation digest" "An expected existing-image digest requires verification-only mode and an exact lowercase sha256 index." "exact_continuation_digest_invalid"
+    fi
+    if [ "${build_outcome:-skipped}" != skipped ] || [ -n "$built_image_digest" ] || [ -n "$built_image_metadata" ]; then
+        fail "Release continuation must not build images" "Existing immutable-image continuation requires the producer to be skipped with no new build metadata." "exact_continuation_producer_ran"
+    fi
+    if [ -z "$workflow_package_source" ] || [ -z "$workflow_package_ref" ] \
+        || ! printf '%s' "$workflow_package_commit" | grep -Eq '^[0-9a-f]{40}$'; then
+        fail "Release continuation package authority missing" "Existing immutable-image continuation requires the complete locked Workflow source, version and commit." "exact_continuation_package_authority_missing"
+    fi
+fi
+
 if ! printf '%s' "$release_tag" | grep -Eq '^[0-9A-Za-z._-]+$'; then
     fail "Invalid exact release image tag" "Release image tag '${release_tag}' contains characters that are not safe for Docker tags." "exact_release_tag_invalid"
 fi
@@ -190,6 +204,9 @@ if [ -n "$direct_build_digest" ]; then
 else
     expected_image_digest="$metadata_build_digest"
 fi
+if [ -n "$requested_image_digest" ]; then
+    expected_image_digest="$requested_image_digest"
+fi
 
 if [ -z "$expected_image_digest" ]; then
     if [ "$verify_published_metadata" != "true" ]; then
@@ -234,6 +251,9 @@ inspect_ref() {
     fi
 
     if [ -n "$expected_image_digest" ] && [ "$expected_image_digest" != "$digest" ]; then
+        if [ -n "$requested_image_digest" ]; then
+            fail "Exact release continuation digest mismatch" "Published exact image manifest ${ref} has digest ${digest}, but continuation requires ${expected_image_digest}." "exact_continuation_digest_mismatch"
+        fi
         fail "Exact release image build digest mismatch" "Published exact image manifest ${ref} has digest ${digest}, but this release build produced ${expected_image_digest}." "exact_manifest_build_digest_mismatch"
     fi
 
