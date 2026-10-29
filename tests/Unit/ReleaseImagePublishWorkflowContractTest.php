@@ -454,7 +454,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertLessThan($trust, $exact);
         $this->assertLessThan($firstRun, $trust);
         $this->assertStringContainsString('--platform "$platform" --network none', $release);
-        $this->assertStringContainsString('--entrypoint server-verify-trust "$RELEASE_IMAGE"', $release);
+        $this->assertStringContainsString('--entrypoint server-verify-trust "$platform_image"', $release);
 
         foreach ([
             'count /etc/ssl/certs/ca-certificates.crt',
