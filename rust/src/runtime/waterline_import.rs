@@ -609,20 +609,22 @@ fn events(source: &PhpArray, logs: &[PhpArray], signals: &[PhpArray], exceptions
             recorded_at,
             payload,
         };
-        let size = object(vec![
-            ("event_type", text(event.event_type)),
-            ("recorded_at", optional(json_time(event.recorded_at))),
-            ("payload", event.payload.clone()),
-            ("sequence", Php::Int(event.sequence)),
-            ("id", text(&event.id)),
-        ]).encode(Flags { unescaped_slashes: true, ..Flags::default() }).len();
-        bytes = bytes.checked_add(size).unwrap_or(usize::MAX);
+        bytes = bytes.checked_add(event_bytes(&event)).unwrap_or(usize::MAX);
         if let Some(error) = exceeded(limits, 0, bytes) {
             return Err((error, index + 1));
         }
         built.push(event);
     }
     Ok((built, bytes))
+}
+
+/// Core's history-transaction byte unit, `HistoryBudget::sizeOfEvent`: the
+/// event type's bytes plus its payload as `json_encode` with
+/// `JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE` writes it (Server #770).
+/// The event's id, sequence and time are not counted.
+fn event_bytes(event: &Event) -> usize {
+    event.event_type.len()
+        + event.payload.encode(Flags { unescaped_slashes: true, unescaped_unicode: true, ..Flags::default() }).len()
 }
 
 /// `report`: the projection report, with the first error's reason, message
@@ -1352,13 +1354,7 @@ mod tests {
         let (outcome, start) = events_built(|| normalize_bounded("src-1", source, None, &limited(None, None)));
         let Outcome::Valid(all) = outcome else { panic!("valid") };
         assert_eq!(start, all.events.len());
-        let first = |count: usize| all.events[..count].iter().map(|event| object(vec![
-            ("event_type", text(event.event_type)),
-            ("recorded_at", optional(json_time(event.recorded_at))),
-            ("payload", event.payload.clone()),
-            ("sequence", Php::Int(event.sequence)),
-            ("id", text(&event.id)),
-        ]).encode(Flags { unescaped_slashes: true, ..Flags::default() }).len()).sum::<usize>();
+        let first = |count: usize| all.events[..count].iter().map(event_bytes).sum::<usize>();
         let (outcome, built) = events_built(|| normalize_bounded("src-1", source, None, &limited(None, Some(first(4)))));
         assert!(matches!(outcome, Outcome::TooLarge { built: 5, .. }));
         assert_eq!(built, 5);
@@ -1367,7 +1363,8 @@ mod tests {
     #[test]
     fn events_and_history_size_follow_php() {
         // PHP 2.11.1: LegacyV1Projection::normalize('src-1', bare source, 'ns-1')
-        // printed these event encodings (json_encode, JSON_UNESCAPED_SLASHES).
+        // printed these event encodings (json_encode, JSON_UNESCAPED_SLASHES),
+        // which fix the events' ids and payloads.
         let source = super::super::php_value::decode(br#"{"operator_id":"v1:4501","engine_source":"v1","class":"App\\Workflows\\Legacy\\Bare","status":"completed"}"#)
             .unwrap();
         let Outcome::Valid(normalized) = normalize("src-1", source.array().unwrap(), Some("ns-1")) else { panic!("valid") };
@@ -1380,7 +1377,11 @@ mod tests {
         ]).encode(Flags { unescaped_slashes: true, ..Flags::default() })).collect();
         assert_eq!(encoded[0].len(), 1374, "{}", encoded[0]);
         assert_eq!(encoded[1].len(), 496, "{}", encoded[1]);
-        assert_eq!(normalized.history_size_bytes, 1870);
+        // Server #812's LegacyV1Projection::normalize on Core 2.15's
+        // HistoryBudget::sizeOfEvent counted 1280 and 402 bytes for these
+        // events: their types and payloads, not their ids, sequences or times.
+        assert_eq!(normalized.events.iter().map(event_bytes).collect::<Vec<_>>(), [1280, 402]);
+        assert_eq!(normalized.history_size_bytes, 1682);
         assert_eq!(normalized.workflow_id, "v1:src-1:c8c25815a3332910ba072598");
         assert_eq!(normalized.run_id, "b0ee56b2b89080ea9181490e2f");
         assert_eq!(normalized.events[0].id, "9730c0bb4149e0a120cc8a8d7e");
