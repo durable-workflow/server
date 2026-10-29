@@ -38,9 +38,21 @@ if test "${1:-}" = --check; then
 fi
 
 if ! docker image inspect "$image" > /dev/null 2>&1; then
-    printf 'FROM %s\nLABEL dw.composer.base="%s"\nRUN apk add --no-cache --upgrade "%s" && apk info -e "%s"\n' \
+    # Fetching Alpine's package index fails now and then on CI runners; the
+    # build is retried twice before the failure is reported.
+    attempt=1
+    until printf 'FROM %s\nLABEL dw.composer.base="%s"\nRUN apk add --no-cache --upgrade "%s" && apk info -e "%s"\n' \
         "$base" "$base" "$floor" "$floor" \
         | docker build --quiet --tag "$image" - > /dev/null
+    do
+        if test "$attempt" -ge 3; then
+            echo "Building $image failed $attempt times" >&2
+            exit 1
+        fi
+        echo "Building $image failed (attempt $attempt); retrying" >&2
+        sleep $((attempt * 10))
+        attempt=$((attempt + 1))
+    done
 fi
 # The derived image must still be the pinned one plus the fixed decoder.
 parent=$(docker image inspect --format '{{index .Config.Labels "dw.composer.base"}}' "$image")

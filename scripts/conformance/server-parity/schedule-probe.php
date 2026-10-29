@@ -63,7 +63,9 @@ function prepareHttpSchedule(Client $client, array $fixture, string $scheduleId,
     } else {
         // The separate installed schedule:evaluate role fires the original
         // occurrence. This probe never moves a deadline or writes target rows.
-        $deadline = microtime(true) + 10;
+        // Each pass of that role boots the application twice, which can take
+        // several seconds on a loaded CI runner.
+        $deadline = microtime(true) + 25;
         do {
             $history = parityScheduleHistory($client, $scheduleId);
             $trigger = parityScheduleTrigger($history);
@@ -73,7 +75,7 @@ function prepareHttpSchedule(Client $client, array $fixture, string $scheduleId,
                 break;
             }
             if (microtime(true) >= $deadline) {
-                throw new RuntimeException('The installed scheduler did not fire the original occurrence within ten seconds.');
+                throw new RuntimeException('The installed scheduler did not fire the original occurrence within 25 seconds.');
             }
             usleep(50000);
         } while (true);
