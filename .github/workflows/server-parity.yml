@@ -65,6 +65,7 @@ on:
       - tests/Unit/ServerParityManyUpdatesContractTest.mjs
       - tests/Unit/ServerParityWorkerErrorBodiesContractTest.mjs
       - tests/Unit/ServerParityChildDescriptionsContractTest.mjs
+      - tests/Unit/ServerParityChildRetriesContractTest.mjs
       - tests/Unit/ServerParityStartSearchAttributesContractTest.mjs
       - tests/Unit/ServerParityQueryArgumentsContractTest.mjs
       - tests/Unit/ServerParityQueryContractArgumentsContractTest.mjs
@@ -125,6 +126,9 @@ permissions:
   contents: read
 
 env:
+  # Share the actual compiler pin with dependency cache keys. Fixture,
+  # comparator and job-list edits must not invalidate native dependencies.
+  NATIVE_RUST_IMAGE: mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
   DW_PARITY_MEMO_FIXTURE_ID: memo-activity-replay
   DW_PARITY_MEMO_PYTHON: '1'
   DW_PARITY_MEMO_RUST: '1'
@@ -442,7 +446,7 @@ jobs:
               "tests/Fixtures/ServerParityBaselines/$1.json"
           }
           bash scripts/ci/pull-images.sh \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             "$MYSQL_IMAGE" \
             "$(baseline php-2.11.7)" \
             "$(baseline php-2.5.14)" \
@@ -501,8 +505,8 @@ jobs:
             -v "$PWD/mysql-tls:/tls" --entrypoint openssl "$image" req -x509 -newkey rsa:2048 \
             -nodes -sha256 -days 1 -keyout /tls/untrusted.key -out /tls/untrusted.crt -subj /CN=untrusted-development-ca \
             >> parity-evidence/tls-certificate-generation.txt 2>&1
-      # Exact dependency keys include the pinned compiler, build flags and
-      # vendored crates. Server outputs are discarded before rebuilding.
+      # Exact dependency keys include the actual compiler pin, Cargo configuration
+      # and vendored crates. Server outputs are discarded before rebuilding.
       - name: Restore native Cargo dependencies from trusted main
         id: native_cargo
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -511,7 +515,7 @@ jobs:
             cargo-home/registry
             cargo-home/git
             rust-target
-          key: native-cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock', 'rust/Cargo.toml', 'rust/vendor/**', 'rust/.cargo/**', '.github/workflows/server-parity.yml') }}
+          key: native-cargo-deps-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.NATIVE_RUST_IMAGE }}-${{ hashFiles('rust/Cargo.lock', 'rust/Cargo.toml', 'rust/vendor/**', 'rust/.cargo/**') }}
       - name: Fetch locked Rust dependencies
         # A registry or network failure belongs to this step, not to the
         # offline native builds and tests that follow.
@@ -521,7 +525,7 @@ jobs:
           docker run --rm --user="$(id -u):$(id -g)" --cpus=2 --memory=2g --memory-swap=2g \
             -e CARGO_HOME=/cargo -e CARGO_NET_RETRY=10 \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -w /source/rust \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             cargo fetch --locked
       - name: Discard restored native workspace outputs before rebuilding
         run: |
@@ -530,7 +534,7 @@ jobs:
           docker run --rm --init --user="$(id -u):$(id -g)" --network=none --cpus=2 --memory=2g --memory-swap=2g \
             -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" -w /source/rust \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 cargo clean --locked --offline --package durable-workflow-server
+            "${NATIVE_RUST_IMAGE}" cargo clean --locked --offline --package durable-workflow-server
       - name: Bootstrap published PHP and native MySQL databases and run the native tests
         run: |
           set -euo pipefail
@@ -579,19 +583,19 @@ jobs:
             -e DW_EXECUTION_MYSQL_URL=mysql://root:parity-disposable-password@parity-mysql:3306/php_ref \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
             -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 -c \
+            "${NATIVE_RUST_IMAGE}" -c \
             'case "$DW_PARITY_PART" in native-tests) shard=1 suffix= ;; native-tests-b) shard=2 suffix=-b ;; *) shard= ;; esac; if [ "$DW_PARITY_PART" = native-tests ]; then cargo test --locked --offline --lib runtime::mysql:: -- --ignored --skip runtime::mysql::tests::bootstrap_child --nocapture --test-threads=2 > /evidence/mysql-tests.txt || exit 1; fi; if [ -n "$shard" ]; then cargo test --locked --offline --test execution -- --list --format terse | sed -n "s/: test\$//p" | LC_ALL=C sort | awk -v count="$DW_EXECUTION_SHARDS" -v shard="$shard" "(NR - 1) % count == shard - 1" > /evidence/execution-shard$suffix.txt && test -s /evidence/execution-shard$suffix.txt && cargo test --locked --offline --test execution -- --exact --nocapture --test-threads=2 $(cat /evidence/execution-shard$suffix.txt) > /evidence/mysql-execution-tests$suffix.txt || exit 1; fi; cargo build --locked --offline'
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD/rust-target:/target:ro" --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             schema-bootstrap > parity-evidence/native-bootstrap.json
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD/rust-target:/target:ro" --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             schema-check > parity-evidence/native-check.json
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
             -e DB_HOST=parity-mysql -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
@@ -651,14 +655,14 @@ jobs:
             -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD/rust-target:/target:ro" --tmpfs /state --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+            "${NATIVE_RUST_IMAGE}"
           docker run -d --name "$RESOURCE_SCOPE-native-b" --network "$RESOURCE_SCOPE" --network-alias=parity-native-b \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
             -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token -e DW_BIND_ADDRESS=0.0.0.0:8080 \
             -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD/rust-target:/target:ro" --tmpfs /state --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+            "${NATIVE_RUST_IMAGE}"
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
@@ -777,7 +781,7 @@ jobs:
             -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD/rust-target:/target:ro" --tmpfs /state --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+            "${NATIVE_RUST_IMAGE}"
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
@@ -811,7 +815,7 @@ jobs:
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=php_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD/rust-target:/target:ro" --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             schema-bootstrap > parity-evidence/php-native-refusal.txt 2>&1; then
             exit 1
           fi
@@ -849,7 +853,7 @@ jobs:
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref_b \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD/rust-target:/target:ro" --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             schema-bootstrap > parity-evidence/sdk-native-b-bootstrap.json
           for node in a b; do
             database=native_ref
@@ -860,7 +864,7 @@ jobs:
               -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE="$database" \
               -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
               -v "$PWD/rust-target:/target:ro" --tmpfs /state --entrypoint /target/debug/durable-workflow-server \
-              mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+              "${NATIVE_RUST_IMAGE}"
           done
           # Literal node URLs keep each probe's target a fixed container name.
           for url in http://parity-native-a:8080 http://parity-native-b:8080; do
@@ -892,7 +896,7 @@ jobs:
             -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD/rust-target:/target:ro" --tmpfs /state --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+            "${NATIVE_RUST_IMAGE}"
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
@@ -976,7 +980,7 @@ jobs:
             -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD/rust-target:/target:ro" --tmpfs /state --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+            "${NATIVE_RUST_IMAGE}"
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
@@ -1026,7 +1030,7 @@ jobs:
             -e DB_SSLMODE=verify_identity -e DB_SSLROOTCERT=/tls/ca.crt \
             -v "$PWD/mysql-tls/ca.crt:/tls/ca.crt:ro" -v "$PWD/rust-target:/target:ro" \
             --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             schema-check > parity-evidence/tls-trusted.json
           if docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
@@ -1034,7 +1038,7 @@ jobs:
             -e DB_SSLMODE=verify_identity -e DB_SSLROOTCERT=/tls/untrusted.crt \
             -v "$PWD/mysql-tls/untrusted.crt:/tls/untrusted.crt:ro" -v "$PWD/rust-target:/target:ro" \
             --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             schema-check > parity-evidence/tls-untrusted.txt 2>&1; then
             exit 1
           fi
@@ -1044,7 +1048,7 @@ jobs:
             -e DB_SSLMODE=verify_identity -e DB_SSLROOTCERT=/tls/ca.crt \
             -v "$PWD/mysql-tls/ca.crt:/tls/ca.crt:ro" -v "$PWD/rust-target:/target:ro" \
             --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             schema-check > parity-evidence/tls-wrong-hostname.txt 2>&1; then
             exit 1
           fi
@@ -1147,7 +1151,7 @@ jobs:
               "tests/Fixtures/ServerParityBaselines/$1.json"
           }
           bash scripts/ci/pull-images.sh \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             "$POSTGRES_IMAGE" \
             "$(baseline php-2.11.7)" \
             "$(baseline php-2.5.14)" \
@@ -1182,8 +1186,8 @@ jobs:
           name: corrected-marker-adapters
           path: corrected-marker-adapters
           digest-mismatch: error
-      # Exact dependency keys include the pinned compiler, build flags and
-      # vendored crates. Server outputs are discarded before rebuilding.
+      # Exact dependency keys include the actual compiler pin, Cargo configuration
+      # and vendored crates. Server outputs are discarded before rebuilding.
       - name: Restore native Cargo dependencies from trusted main
         id: native_cargo
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -1192,7 +1196,7 @@ jobs:
             cargo-home/registry
             cargo-home/git
             rust-target
-          key: native-cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock', 'rust/Cargo.toml', 'rust/vendor/**', 'rust/.cargo/**', '.github/workflows/server-parity.yml') }}
+          key: native-cargo-deps-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.NATIVE_RUST_IMAGE }}-${{ hashFiles('rust/Cargo.lock', 'rust/Cargo.toml', 'rust/vendor/**', 'rust/.cargo/**') }}
       - name: Fetch locked Rust dependencies
         # A registry or network failure belongs to this step, not to the
         # offline native builds and tests that follow.
@@ -1202,7 +1206,7 @@ jobs:
           docker run --rm --user="$(id -u):$(id -g)" --cpus=2 --memory=2g --memory-swap=2g \
             -e CARGO_HOME=/cargo -e CARGO_NET_RETRY=10 \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -w /source/rust \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             cargo fetch --locked
       - name: Discard restored native workspace outputs before rebuilding
         run: |
@@ -1211,7 +1215,7 @@ jobs:
           docker run --rm --init --user="$(id -u):$(id -g)" --network=none --cpus=2 --memory=2g --memory-swap=2g \
             -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" -w /source/rust \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 cargo clean --locked --offline --package durable-workflow-server
+            "${NATIVE_RUST_IMAGE}" cargo clean --locked --offline --package durable-workflow-server
       - name: Bootstrap published PHP and native PostgreSQL databases and run the native tests
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
@@ -1259,19 +1263,19 @@ jobs:
             -e DW_EXECUTION_POSTGRES_URL=postgres://parity:parity-disposable-password@parity-pg:5432/php_ref \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
             -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 -c \
+            "${NATIVE_RUST_IMAGE}" -c \
             'if [ "$DW_PARITY_PART" = native-tests ]; then cargo test --locked --offline --lib runtime::postgres::tests::qualification_ -- --ignored --nocapture > /evidence/postgres-tests.txt && cargo test --locked --offline --test execution -- --nocapture > /evidence/postgres-execution-tests.txt; fi && cargo build --locked --offline'
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD/rust-target:/target:ro" --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             schema-bootstrap > parity-evidence/native-bootstrap.json
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD/rust-target:/target:ro" --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             schema-check > parity-evidence/native-check.json
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
             -e DB_HOST=parity-pg -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
@@ -1332,14 +1336,14 @@ jobs:
             -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD/rust-target:/target:ro" --tmpfs /state --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+            "${NATIVE_RUST_IMAGE}"
           docker run -d --name "$RESOURCE_SCOPE-native-b" --network "$RESOURCE_SCOPE" --network-alias=parity-native-b \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
             -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token -e DW_BIND_ADDRESS=0.0.0.0:8080 \
             -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD/rust-target:/target:ro" --tmpfs /state --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+            "${NATIVE_RUST_IMAGE}"
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
@@ -1462,7 +1466,7 @@ jobs:
             -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD/rust-target:/target:ro" --tmpfs /state --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+            "${NATIVE_RUST_IMAGE}"
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
@@ -1496,7 +1500,7 @@ jobs:
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=php_ref \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD/rust-target:/target:ro" --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             schema-bootstrap > parity-evidence/php-native-refusal.txt 2>&1; then
             exit 1
           fi
@@ -1533,7 +1537,7 @@ jobs:
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref_b \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD/rust-target:/target:ro" --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             schema-bootstrap > parity-evidence/sdk-native-b-bootstrap.json
           for node in a b; do
             database=native_ref
@@ -1544,7 +1548,7 @@ jobs:
               -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE="$database" \
               -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
               -v "$PWD/rust-target:/target:ro" --tmpfs /state --entrypoint /target/debug/durable-workflow-server \
-              mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+              "${NATIVE_RUST_IMAGE}"
           done
           # Literal node URLs keep each probe's target a fixed container name.
           for url in http://parity-native-a:8080 http://parity-native-b:8080; do
@@ -1576,7 +1580,7 @@ jobs:
             -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD/rust-target:/target:ro" --tmpfs /state --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+            "${NATIVE_RUST_IMAGE}"
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
@@ -1662,7 +1666,7 @@ jobs:
             -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD/rust-target:/target:ro" --tmpfs /state --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+            "${NATIVE_RUST_IMAGE}"
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
@@ -1754,7 +1758,7 @@ jobs:
             -e DB_SSLMODE=verify-full -e DB_SSLROOTCERT=/tls/ca.crt \
             -v "$PWD/pg-state/ca.crt:/tls/ca.crt:ro" -v "$PWD/rust-target:/target:ro" \
             --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             schema-check > parity-evidence/tls-trusted.json
           if docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
@@ -1762,7 +1766,7 @@ jobs:
             -e DB_SSLMODE=verify-full -e DB_SSLROOTCERT=/tls/untrusted.crt \
             -v "$PWD/pg-state/untrusted.crt:/tls/untrusted.crt:ro" -v "$PWD/rust-target:/target:ro" \
             --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             schema-check > parity-evidence/tls-untrusted.txt 2>&1; then
             exit 1
           fi
@@ -1772,7 +1776,7 @@ jobs:
             -e DB_SSLMODE=verify-full -e DB_SSLROOTCERT=/tls/ca.crt \
             -v "$PWD/pg-state/ca.crt:/tls/ca.crt:ro" -v "$PWD/rust-target:/target:ro" \
             --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             schema-check > parity-evidence/tls-wrong-hostname.txt 2>&1; then
             exit 1
           fi
@@ -1867,7 +1871,7 @@ jobs:
               "tests/Fixtures/ServerParityBaselines/$1.json"
           }
           bash scripts/ci/pull-images.sh \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             "$(baseline php-2.11.7)" \
             "$(baseline php-2.5.14)" \
             composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee
@@ -1901,8 +1905,8 @@ jobs:
           name: corrected-marker-adapters
           path: corrected-marker-adapters
           digest-mismatch: error
-      # Exact dependency keys include the pinned compiler, build flags and
-      # vendored crates. Server outputs are discarded before rebuilding.
+      # Exact dependency keys include the actual compiler pin, Cargo configuration
+      # and vendored crates. Server outputs are discarded before rebuilding.
       - name: Restore native Cargo dependencies from trusted main
         id: native_cargo
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -1911,7 +1915,7 @@ jobs:
             cargo-home/registry
             cargo-home/git
             rust-target
-          key: native-cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock', 'rust/Cargo.toml', 'rust/vendor/**', 'rust/.cargo/**', '.github/workflows/server-parity.yml') }}
+          key: native-cargo-deps-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.NATIVE_RUST_IMAGE }}-${{ hashFiles('rust/Cargo.lock', 'rust/Cargo.toml', 'rust/vendor/**', 'rust/.cargo/**') }}
       - name: Fetch locked Rust dependencies
         # A registry or network failure belongs to this step, not to the
         # offline native builds and tests that follow.
@@ -1921,7 +1925,7 @@ jobs:
           docker run --rm --user="$(id -u):$(id -g)" --cpus=2 --memory=2g --memory-swap=2g \
             -e CARGO_HOME=/cargo -e CARGO_NET_RETRY=10 \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -w /source/rust \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             cargo fetch --locked
       - name: Discard restored native workspace outputs before rebuilding
         run: |
@@ -1930,7 +1934,7 @@ jobs:
           docker run --rm --init --user="$(id -u):$(id -g)" --network=none --cpus=2 --memory=2g --memory-swap=2g \
             -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" -w /source/rust \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 cargo clean --locked --offline --package durable-workflow-server
+            "${NATIVE_RUST_IMAGE}" cargo clean --locked --offline --package durable-workflow-server
       - name: Build the native server
         if: ${{ matrix.part != 'native-tests' }}
         run: |
@@ -1939,7 +1943,7 @@ jobs:
           docker run --rm --user="$(id -u):$(id -g)" --cpus=2 --memory=6g --memory-swap=6g \
             -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" -w /source/rust \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             cargo build --locked --offline
       - name: Execute official Rust codec and cross-decode with published PHP
         if: ${{ matrix.part == 'native-tests' }}
@@ -1957,7 +1961,7 @@ jobs:
             -e DW_UPGRADE_TEST_WRITABLE=/evidence -e DW_UPGRADE_TEST_READONLY=/source/parity-evidence \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
             -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 -c \
+            "${NATIVE_RUST_IMAGE}" -c \
             'cargo test --locked --offline --all-targets > /evidence/rust-tests.txt && cargo build --locked --offline && cargo run --locked --offline --example codec-fixtures -- ../tests/Fixtures/ServerParity/Codec/v1.json > /evidence/rust-codec.json'
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.7.json)
           docker run --rm --user="$(id -u):$(id -g)" --network=none --entrypoint php \
@@ -1968,7 +1972,7 @@ jobs:
             -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
             -v "$PWD/parity-evidence:/evidence" -w /source/rust \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             cargo run --locked --offline --example codec-fixtures -- \
             ../tests/Fixtures/ServerParity/Codec/v1.json /evidence/php-codec.json > parity-evidence/cross-decode.json
       - name: Start the published PHP and native nodes the corpus parts share
@@ -1992,7 +1996,7 @@ jobs:
           bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
-            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityRunnerBlockedExcerptTest.mjs tests/Unit/ServerParityProbeNotesTest.mjs tests/Unit/ServerParitySdkDirectionLanesTest.mjs tests/Unit/ServerParityCodecDeadlineCellsTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityFailureLocationTest.mjs tests/Unit/ServerParityFailureExcerptTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs tests/Unit/ServerParityConcurrentWaitsContractTest.mjs tests/Unit/ServerParityContinueTransfersContractTest.mjs tests/Unit/ServerParityChildDescriptionsContractTest.mjs tests/Unit/ServerParityWorkerErrorBodiesContractTest.mjs tests/Unit/ServerParityLargeCommandBatchesContractTest.mjs tests/Unit/ServerParityManyUpdatesContractTest.mjs tests/Unit/ServerParityStartSearchAttributesContractTest.mjs tests/Unit/ServerParityQueryArgumentsContractTest.mjs tests/Unit/ServerParityQueryContractArgumentsContractTest.mjs tests/Unit/ServerParityParentCloseCancellationContractTest.mjs tests/Unit/ServerParityRecordLocalActivityContractTest.mjs tests/Unit/ServerParityActivityCancellationAckContractTest.mjs tests/Unit/ServerParityServiceCatalogContractTest.mjs tests/Unit/ServerParityServiceEndpointsContractTest.mjs tests/Unit/ServerParityServiceCallsContractTest.mjs tests/Unit/ServerParityWorkflowImportContractTest.mjs tests/Unit/ServerParityWaterlineImportContractTest.mjs tests/Unit/ServerParitySystemMetricsContractTest.mjs tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs tests/Unit/ServerParityPrometheusMetricsContractTest.mjs tests/Unit/ServerParityPayloadCleanupContractTest.mjs tests/Unit/ServerParityRepairPassContractTest.mjs tests/Unit/ServerParityClusterInfoContractTest.mjs tests/Unit/ServerParityNamespaceDeleteContractTest.mjs tests/Unit/ServerParityMessageStreamsContractTest.mjs tests/Unit/ServerParityCancellationScopesContractTest.mjs tests/Unit/ServerParityWorkflowPollRequestContractTest.mjs tests/Unit/ServerParityUpdateValidationContractTest.mjs tests/Unit/ServerParityFixtureSelectionTest.mjs tests/Unit/ServerParityUpdateValidationRetryTest.mjs tests/Unit/ServerParityUpdateValidationTimingTest.mjs tests/Unit/ServerParityKilledAuthorPollTest.mjs tests/Unit/ServerParityImagePullTest.mjs tests/Unit/ServerParityAdapterCacheTest.mjs tests/Unit/ServerParityWorkerSessionsContractTest.mjs tests/Unit/ServerParityWorkerSessionActivitiesContractTest.mjs tests/Unit/ServerParityNexusOperationsContractTest.mjs tests/Unit/ServerParityBridgeAdaptersContractTest.mjs tests/Unit/ServerParityWorkflowStreamWritesContractTest.mjs > parity-evidence/comparator-tests.txt
+            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityRunnerBlockedExcerptTest.mjs tests/Unit/ServerParityProbeNotesTest.mjs tests/Unit/ServerParitySdkDirectionLanesTest.mjs tests/Unit/ServerParityCodecDeadlineCellsTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityFailureLocationTest.mjs tests/Unit/ServerParityFailureExcerptTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs tests/Unit/ServerParityConcurrentWaitsContractTest.mjs tests/Unit/ServerParityContinueTransfersContractTest.mjs tests/Unit/ServerParityChildDescriptionsContractTest.mjs tests/Unit/ServerParityChildRetriesContractTest.mjs tests/Unit/ServerParityWorkerErrorBodiesContractTest.mjs tests/Unit/ServerParityLargeCommandBatchesContractTest.mjs tests/Unit/ServerParityManyUpdatesContractTest.mjs tests/Unit/ServerParityStartSearchAttributesContractTest.mjs tests/Unit/ServerParityQueryArgumentsContractTest.mjs tests/Unit/ServerParityQueryContractArgumentsContractTest.mjs tests/Unit/ServerParityParentCloseCancellationContractTest.mjs tests/Unit/ServerParityRecordLocalActivityContractTest.mjs tests/Unit/ServerParityActivityCancellationAckContractTest.mjs tests/Unit/ServerParityServiceCatalogContractTest.mjs tests/Unit/ServerParityServiceEndpointsContractTest.mjs tests/Unit/ServerParityServiceCallsContractTest.mjs tests/Unit/ServerParityWorkflowImportContractTest.mjs tests/Unit/ServerParityWaterlineImportContractTest.mjs tests/Unit/ServerParitySystemMetricsContractTest.mjs tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs tests/Unit/ServerParityPrometheusMetricsContractTest.mjs tests/Unit/ServerParityPayloadCleanupContractTest.mjs tests/Unit/ServerParityRepairPassContractTest.mjs tests/Unit/ServerParityClusterInfoContractTest.mjs tests/Unit/ServerParityNamespaceDeleteContractTest.mjs tests/Unit/ServerParityMessageStreamsContractTest.mjs tests/Unit/ServerParityCancellationScopesContractTest.mjs tests/Unit/ServerParityWorkflowPollRequestContractTest.mjs tests/Unit/ServerParityUpdateValidationContractTest.mjs tests/Unit/ServerParityFixtureSelectionTest.mjs tests/Unit/ServerParityUpdateValidationRetryTest.mjs tests/Unit/ServerParityUpdateValidationTimingTest.mjs tests/Unit/ServerParityKilledAuthorPollTest.mjs tests/Unit/ServerParityImagePullTest.mjs tests/Unit/ServerParityAdapterCacheTest.mjs tests/Unit/ServerParityWorkerSessionsContractTest.mjs tests/Unit/ServerParityWorkerSessionActivitiesContractTest.mjs tests/Unit/ServerParityNexusOperationsContractTest.mjs tests/Unit/ServerParityBridgeAdaptersContractTest.mjs tests/Unit/ServerParityWorkflowStreamWritesContractTest.mjs > parity-evidence/comparator-tests.txt
           docker run --rm --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
             --network=none --entrypoint node -v "$PWD:/source:ro" -w /source \
             "$image" --test tests/Unit/ServerParityCodecDeadlineLoadTest.mjs > parity-evidence/codec-load-tests.txt
@@ -2006,7 +2010,7 @@ jobs:
             -e DB_DATABASE=/state/rust.sqlite -e DW_BIND_ADDRESS=0.0.0.0:8080 \
             -v "$PWD/rust-target:/target:ro" -v "$PWD/parity-state:/state" \
             --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+            "${NATIVE_RUST_IMAGE}"
           for target in php embedded; do
             docker run --rm --user=1000:1000 --entrypoint php \
               -v "$PWD/parity-state:/state" -e DB_CONNECTION=sqlite -e DB_DATABASE="/state/$target.sqlite" \
@@ -2162,7 +2166,7 @@ jobs:
             -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token -e DB_DATABASE=/state/php.sqlite \
             -v "$PWD/rust-target:/target:ro" -v "$PWD/parity-state:/state" \
             --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            "${NATIVE_RUST_IMAGE}" \
             > parity-evidence/php-native-refusal.log 2>&1; then
             exit 1
           fi
@@ -2185,7 +2189,7 @@ jobs:
             -e DB_DATABASE=/state/rust.sqlite -e DW_BIND_ADDRESS=0.0.0.0:8080 \
             -v "$PWD/rust-target:/target:ro" -v "$PWD/parity-state:/state" \
             --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+            "${NATIVE_RUST_IMAGE}"
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --entrypoint curl --network "$RESOURCE_SCOPE" "$image" \
@@ -2232,7 +2236,7 @@ jobs:
               -e DB_DATABASE="/state/$node.sqlite" -e DW_BIND_ADDRESS=0.0.0.0:8080 \
               -v "$PWD/rust-target:/target:ro" -v "$PWD/parity-state:/state" \
               --entrypoint /target/debug/durable-workflow-server \
-              mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+              "${NATIVE_RUST_IMAGE}"
           done
           # Literal node URLs keep each probe's target a fixed container name.
           for url in http://parity-rust:8080 http://parity-rust-b:8080; do
@@ -2271,7 +2275,7 @@ jobs:
             -e DB_DATABASE=/state/rust.sqlite -e DW_BIND_ADDRESS=0.0.0.0:8080 \
             -v "$PWD/rust-target:/target:ro" -v "$PWD/parity-state:/state" \
             --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+            "${NATIVE_RUST_IMAGE}"
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
@@ -2374,7 +2378,7 @@ jobs:
             -e DB_DATABASE=/state/rust.sqlite -e DW_BIND_ADDRESS=0.0.0.0:8080 \
             -v "$PWD/rust-target:/target:ro" -v "$PWD/parity-state:/state" \
             --entrypoint /target/debug/durable-workflow-server \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+            "${NATIVE_RUST_IMAGE}"
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
@@ -2499,7 +2503,7 @@ jobs:
           docker run --rm --init --user="$(id -u):$(id -g)" --network=none --cpus=2 --memory=2g --memory-swap=2g \
             -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" -w /source/rust \
-            mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 cargo clean --locked --offline --package durable-workflow-server
+            "${NATIVE_RUST_IMAGE}" cargo clean --locked --offline --package durable-workflow-server
       - name: Save native Cargo dependencies from successful main native tests
         if: ${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.part == 'native-tests' && steps.native_cargo.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -2508,7 +2512,7 @@ jobs:
             cargo-home/registry
             cargo-home/git
             rust-target
-          key: native-cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock', 'rust/Cargo.toml', 'rust/vendor/**', 'rust/.cargo/**', '.github/workflows/server-parity.yml') }}
+          key: native-cargo-deps-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.NATIVE_RUST_IMAGE }}-${{ hashFiles('rust/Cargo.lock', 'rust/Cargo.toml', 'rust/vendor/**', 'rust/.cargo/**') }}
 
 
   # The one Shared Server fixtures result. It always runs, including after a

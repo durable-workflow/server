@@ -51,24 +51,24 @@ Updated October 27, 2026.
     fixtures accept published PHP's typed `429 long_poll_capacity_exhausted`
     poll refusal, and retry a locked Composer install after a transient
     download failure (the two #813 merge-group failures).
-  - Native's v1 projection byte meter in Core's canonical unit (#770) is
-    prepared on `rust-325-wip/canonical-history-bytes`. It lands with the
-    first reference that carries #812, because `waterline-import` records
-    `history_size_bytes` from the reference.
+  - `bridge-adapters` compares exactly: published 2.11.7 accepts and
+    deduplicates the bridge update (#747) and refuses a foreign instance as
+    unavailable (#777), so the published-defect answers of 2.11.1 to 2.11.5
+    are no longer accepted.
 - **Still refused at takeover:** workflow-to-workflow messages
   (`workflow_messages`, written only by embedded PHP workflows) and external
   payload references. PHP keeps references in about 30 table and column
   locations in their URI form, so taking them over is its own project; the
   recommendation is that the release candidate keeps refusing them.
-- **Shared Server fixtures.** Native, embedded and published PHP 2.11.5 are
+- **Shared Server fixtures.** Native, embedded and published PHP 2.11.7 are
   compared on SQLite, MySQL 8.0, MariaDB 10.11 and PostgreSQL 17. Where the
   published reference itself misbehaves, an explicit boundary separates it
   from native, and the PHP owner has an issue for each case. Recent ones:
-  - #777, a bridge start for an instance another namespace holds: 2.11.1
-    to 2.11.4 name that namespace's type, 2.11.5 the namespace difference;
-    #811 (after 2.11.5) answers "unavailable";
-  - #747, a bridge update to an SDK-worker workflow;
   - #794, workflow-bound Nexus handlers.
+
+  Answered as intended by 2.11.7, so `bridge-adapters` compares exactly:
+  #747 (a bridge update to an SDK-worker workflow) and #777 (a bridge start
+  for an instance another namespace holds).
 
   Closed by 2.11.5: Workflow #931 (`service-calls` repeats a key from
   another caller again, now refused 403), and the SQLite maintenance pause
@@ -599,10 +599,25 @@ contract fixture before its correction.
   cases against published 2.11.5
   ([checkpoint](rust-server-port-checkpoints/2026-10-29-child-descriptions.md)).
   An open activity is likewise described ahead of open children
-  (October 29). A child with a retry or timeout policy, or a cancellation
-  policy other than `abandon` under a worker that declares cooperative
-  cancellation, is still described without its wait, pending its own
-  evidence.
+  (October 29). A child with a cancellation policy other than `abandon`
+  under a worker that declares cooperative cancellation is still described
+  without its wait, pending its own evidence.
+- **Child retry and timeout options** (October 29, closed). Published PHP
+  accepts `retry_policy`, `execution_timeout_seconds` and
+  `run_timeout_seconds` on `start_child_workflow`, records them on the call
+  and the child's runs, and retries a failed or timed-out child as a new run
+  of the same child instance while attempts remain and the failure is
+  retryable (`startChildRetryIfAvailable`). Native refused the three fields
+  with `unsupported_request_field`. It now records and retries the same
+  way, and describes a parent waiting on a retried child as waiting for it.
+  The `child-retries` fixture records seven cases against published 2.11.7
+  ([checkpoint](rust-server-port-checkpoints/2026-10-29-child-retries.md)).
+  A child timeout or backoff too far away for a timestamp is refused
+  (`invalid_child_timeout`, `invalid_child_retry_policy`), as a timer delay
+  is. Remaining: native's cooperative cancellation delivery expects one
+  link per call, so it refuses one delivered to a retried child
+  (`cancellation_delivery_shape_mismatch`; #873, pending a PHP recording);
+  and a retried child inherits no memos or search attributes (below).
 - **Trace context (Core 2.10, published in Server 2.11.1).** Core adds
   nullable `observability_context` columns on runs, commands and tasks.
   Native has no carrier: it accepts and ignores a top-level carrier on
@@ -659,9 +674,9 @@ contract fixture before its correction.
   - A field for a feature native cannot run, such as `worker_session`, is
     refused with `unsupported_request_field`. Fields PHP ignores are dropped
     as PHP drops them.
-  - A timer delay, retry backoff or wait timeout too large for a timestamp
-    is refused on native. PHP accepts it, and wraps a timer's fire time into
-    the past, so the timer fires at once.
+  - A timer delay, retry backoff, child timeout or wait timeout too large
+    for a timestamp is refused on native. PHP accepts it, and wraps a
+    timer's fire time into the past, so the timer fires at once.
 - **Search attribute limits.** Over 100 attributes or 64 KB per run, PHP
   raises an uncaught `InvalidArgumentException` while applying the command.
   Native refuses the completion with `422 search_attribute_limit_exceeded`

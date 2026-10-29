@@ -42,6 +42,7 @@ mod cancellation;
 mod cancellation_cascade;
 mod cancellation_scopes;
 mod scope_checkpoint;
+mod child_retries;
 mod child_summary;
 mod child_cancellation;
 mod children;
