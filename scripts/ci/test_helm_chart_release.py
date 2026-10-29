@@ -92,6 +92,7 @@ def evaluate_recovery_condition(
     expression = job_condition(workflow_source(workflow), job)
     replacements = {
         "needs.verify.result": context.get("verify_result", "success"),
+        "needs.publish.result": context.get("publish_result", "success"),
         "needs.publish.outputs.exact_publish_outcome": context.get(
             "exact_publish_outcome", ""
         ),
@@ -802,7 +803,7 @@ esac
             "needs.publish.outputs.exact_publish_outcome == 'success'",
             chart_job,
         )
-        self.assertNotIn("needs.publish.result == 'success'", chart_job)
+        self.assertIn("needs.publish.result == 'success'", chart_job)
         self.assertIn("github.repository == 'durable-workflow/server'", chart_job)
         self.assertIn("github.ref == 'refs/heads/main'", chart_job)
         self.assertIn("startsWith(github.ref, 'refs/tags/')", chart_job)
@@ -815,7 +816,24 @@ esac
         self.assertIn("source_ref: ${{ github.sha }}", protected_publish)
         self.assertIn("allow_missing_image: true", protected_publish)
 
-    def test_partial_release_and_verification_only_recovery_publish_the_chart(
+    def test_chart_publication_requires_the_whole_image_job_to_succeed(self) -> None:
+        for result in ("success", "failure", "cancelled", "skipped", ""):
+            with self.subTest(publish_result=result):
+                self.assertEqual(
+                    result == "success",
+                    evaluate_recovery_condition(
+                        "release.yml",
+                        "publish-chart",
+                        publish_result=result,
+                        exact_publish_outcome="success",
+                        database_tls_outcome="success",
+                        repository="durable-workflow/server",
+                        event_name="workflow_dispatch",
+                        ref="refs/heads/main",
+                    ),
+                )
+
+    def test_successful_release_and_verification_only_recovery_publish_the_chart(
         self,
     ) -> None:
         recovery = workflow_source("published-release-recovery.yml")
@@ -832,7 +850,7 @@ esac
                 event_name="workflow_dispatch",
                 ref="refs/heads/main",
             ),
-            "a later docs failure must not hide the successful immutable image output",
+            "a fully successful image publish can publish its matching chart",
         )
         self.assertFalse(
             evaluate_recovery_condition(
