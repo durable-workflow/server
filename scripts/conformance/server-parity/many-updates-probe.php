@@ -68,19 +68,8 @@ function finishHttpManyUpdates(Client $admin, array $fixture, string $workflowId
             'workflow_task_attempt' => $task['workflow_task_attempt'], 'commands' => $commands]);
     $describe = static fn (): array => array_intersect_key($raw('GET', 'workflows/'.rawurlencode($id))['response'],
         array_flip($definition['described_fields']));
-    // On MySQL-family databases published PHP's update admission can deadlock
-    // against its own maintenance pass and answer an uncaught 500. The request
-    // id makes the same submission idempotent, so it is sent again.
-    $submit = static function (int $index) use ($raw, $id, $update): array {
-        for ($attempt = 1; ; $attempt++) {
-            $answer = $raw('POST', 'workflows/'.rawurlencode($id).'/update/'.$update,
-                ['input' => [['v' => $index]], 'request_id' => 'many-'.$index, 'wait_for' => 'accepted']);
-            if ($answer['status'] !== 500 || $attempt === 3) {
-                return $answer;
-            }
-            usleep(200000 * $attempt);
-        }
-    };
+    $submit = static fn (int $index): array => manyUpdatesSubmit($raw, 'workflows/'.rawurlencode($id).'/update/'.$update,
+        ['input' => [['v' => $index]], 'request_id' => 'many-'.$index, 'wait_for' => 'accepted'], $index);
 
     $opened = $complete($poll(), [['type' => 'open_signal_wait', 'signal_name' => $definition['signal']]]);
     $state = ['applicable' => true, 'opened' => $opened['status'], 'before' => $describe()];
@@ -126,4 +115,30 @@ function finishHttpManyUpdates(Client $admin, array $fixture, string $workflowId
     }
 
     return $state;
+}
+
+/**
+ * Sends one update submission. On MySQL-family databases published PHP's
+ * update admission can deadlock against its own maintenance pass and answer
+ * an uncaught 500. The body carries a request id, so the identical
+ * submission is sent again, at most three times in all. Each retry is noted
+ * on stderr by index, attempt and status only; a third 500 is returned.
+ *
+ * @param callable(string, string, array<string, mixed>): array{status: int, response: mixed} $raw
+ * @param array<string, mixed> $body
+ * @param (callable(int): void)|null $sleep
+ * @return array{status: int, response: mixed}
+ */
+function manyUpdatesSubmit(callable $raw, string $path, array $body, int $index, ?callable $sleep = null): array
+{
+    $sleep ??= static fn (int $microseconds) => usleep($microseconds);
+    for ($attempt = 1; ; $attempt++) {
+        $answer = $raw('POST', $path, $body);
+        if ($answer['status'] !== 500 || $attempt === 3) {
+            return $answer;
+        }
+        fwrite(STDERR, json_encode(['many_updates_submit_retry' => ['index' => $index, 'attempt' => $attempt,
+            'status' => $answer['status']]], JSON_THROW_ON_ERROR).PHP_EOL);
+        $sleep(200000 * $attempt);
+    }
 }
