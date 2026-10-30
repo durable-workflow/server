@@ -356,6 +356,8 @@ mod worker_error_bodies;
 mod child_descriptions;
 #[path = "execution/child_retries.rs"]
 mod child_retries;
+#[path = "execution/activity_result_repeats.rs"]
+mod activity_result_repeats;
 
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
@@ -4616,18 +4618,16 @@ async fn reported_activity_failure_commits_one_persistent_retry_and_fences_old_o
             .len(),
         4
     );
+    // One of two identical concurrent failures records the outcome; the
+    // other finds the attempt closed and gets PHP's stale-attempt receipt.
     let (one, two) = tokio::join!(
         request(&app_a, "POST", &fail_path, fail.clone()),
         request(&app_b, "POST", &fail_path, fail.clone())
     );
-    assert_eq!(one.0, StatusCode::OK, "{}", one.1);
-    assert_eq!(two.0, StatusCode::OK, "{}", two.1);
-    assert_ne!(one.1["recorded"], two.1["recorded"]);
-    let receipt = if one.1["recorded"] == true {
-        one.1
-    } else {
-        two.1
-    };
+    let (receipt, stale) = if one.0 == StatusCode::OK { (one, two) } else { (two, one) };
+    assert_eq!((receipt.0, &receipt.1["recorded"]), (StatusCode::OK, &json!(true)), "{}", receipt.1);
+    assert_eq!((stale.0, &stale.1["reason"]), (StatusCode::CONFLICT, &json!("stale_attempt")), "{}", stale.1);
+    let receipt = receipt.1;
     let original = run_history(&app_b, &started["workflow_id"], &started["run_id"]).await;
     assert_eq!(original.as_array().unwrap().len(), 5);
     let retry = &original[4]["payload"];
@@ -4861,18 +4861,16 @@ async fn terminal_activity_failures_resume_once_and_preserve_original_failure() 
             request(&app_b, "POST", &path, wrong).await.0,
             StatusCode::CONFLICT
         );
+        // One of two identical concurrent failures records the outcome; the
+        // other gets PHP's stale-attempt receipt.
         let (one, two) = tokio::join!(
             request(&app_a, "POST", &path, body.clone()),
             request(&app_b, "POST", &path, body.clone())
         );
-        assert_eq!(one.0, StatusCode::OK, "{}", one.1);
-        assert_eq!(two.0, StatusCode::OK, "{}", two.1);
-        assert_ne!(one.1["recorded"], two.1["recorded"]);
-        let receipt = if one.1["recorded"] == true {
-            one.1
-        } else {
-            two.1
-        };
+        let (receipt, stale) = if one.0 == StatusCode::OK { (one, two) } else { (two, one) };
+        assert_eq!((receipt.0, &receipt.1["recorded"]), (StatusCode::OK, &json!(true)), "{}", receipt.1);
+        assert_eq!((stale.0, &stale.1["reason"]), (StatusCode::CONFLICT, &json!("stale_attempt")), "{}", stale.1);
+        let receipt = receipt.1;
         let original = run_history(&app_b, &started["workflow_id"], &started["run_id"]).await;
         let terminal = &original.as_array().unwrap().last().unwrap()["payload"];
         assert_eq!(

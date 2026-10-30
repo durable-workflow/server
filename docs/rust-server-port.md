@@ -698,9 +698,17 @@ contract fixture before its correction.
   passed when its separate timeout command has not yet closed the attempt.
   Native refuses it with the deadline's timeout reason, because its own
   timeout pass runs in every server process.
-- **A repeated identical activity result.** Published PHP answers a repeat
-  of the result that finished an activity task with `409 stale_attempt`.
-  Native returns its earlier idempotent receipt (`200`, `already_completed`).
+- **A repeated identical activity result** (October 30, closed). Published
+  PHP answers every repeat of the result that finished an activity attempt
+  with its stale-attempt receipt (`409 stale_attempt`, recorded false),
+  identical or not, on either route, before and after the workflow consumed
+  it. Native returned its earlier idempotent receipt (`200`,
+  `already_completed`) for an identical repeat. It now answers as PHP does.
+  The published PHP 2.2.6 and Rust 3.4.1 SDKs read a repeated completion's
+  receipt as their own committed completion; Python 2.5.0 logs it and moves
+  on. The `activity-result-repeats` fixture records both routes against
+  published 2.11.7
+  ([checkpoint](rust-server-port-checkpoints/2026-10-30-activity-result-repeats.md)).
 - **Authentication beyond role tokens and runtime credentials.** Native
   refuses principal tokens (`DW_PRINCIPAL_TOKENS`), custom providers and the
   signature driver at startup. It still requires `DW_AUTH_TOKEN` with the

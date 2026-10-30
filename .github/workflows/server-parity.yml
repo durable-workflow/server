@@ -69,6 +69,7 @@ on:
       - tests/Unit/ServerParityChildRetriesContractTest.mjs
       - tests/Unit/ServerParityChildVisibilityContractTest.mjs
       - tests/Unit/ServerParityRetriedChildCancellationContractTest.mjs
+      - tests/Unit/ServerParityActivityResultRepeatsContractTest.mjs
       - tests/Unit/ServerParityStartSearchAttributesContractTest.mjs
       - tests/Unit/ServerParityQueryArgumentsContractTest.mjs
       - tests/Unit/ServerParityQueryContractArgumentsContractTest.mjs
@@ -2173,6 +2174,7 @@ jobs:
               tests/Unit/ServerParityChildRetriesContractTest.mjs \
               tests/Unit/ServerParityChildVisibilityContractTest.mjs \
               tests/Unit/ServerParityRetriedChildCancellationContractTest.mjs \
+              tests/Unit/ServerParityActivityResultRepeatsContractTest.mjs \
               tests/Unit/ServerParityWorkerErrorBodiesContractTest.mjs \
               tests/Unit/ServerParityLargeCommandBatchesContractTest.mjs \
               tests/Unit/ServerParityManyUpdatesContractTest.mjs \

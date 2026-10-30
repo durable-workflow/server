@@ -1,0 +1,195 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "activity-result-repeats",
+  "review_state": "reviewed",
+  "contract": "Repeats of the result that finished an activity attempt (published Server 2.11.7 ActivityTaskController with Workflow 2.15.7), over raw worker HTTP on protocol 1.20 in a fresh namespace. After a completion or a non-retryable failure finishes the attempt, the same result again, a different result, the other route, and the same result after the workflow consumed it are each refused 409 stale_attempt, recorded false, with nothing added to history. A repeated completion's receipt names the lease owner and the attempt, activity and task statuses, which published SDKs read as their own committed completion; a repeated failure's receipt carries none of them. IDs are labels. Embedded applications have no worker protocol.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "activity result repeats λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "activity result repeats λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "activity_result_repeats": {
+    "workflow_type": "parity.v1.activity_result_repeats",
+    "activity_type": "parity.v1.activity_result_repeats_activity",
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "other_blob": "wwHioz3/VYAiNwoIZG9uZQ==",
+    "cases": {
+      "completed": "complete",
+      "failed": "fail"
+    },
+    "expected": {
+      "completed": {
+        "first": {
+          "status": 200,
+          "body": {
+            "activity_attempt_id": "{attempt}",
+            "next_task_id": "{next_task}",
+            "outcome": "completed",
+            "reason": null,
+            "recorded": true,
+            "task_id": "{task}"
+          }
+        },
+        "repeat_identical": {
+          "status": 409,
+          "body": {
+            "activity_attempt_id": "{attempt}",
+            "activity_status": "completed",
+            "attempt_status": "completed",
+            "lease_owner": "{owner}",
+            "next_task_id": null,
+            "outcome": "completed",
+            "reason": "stale_attempt",
+            "recorded": false,
+            "task_id": "{task}",
+            "task_status": "completed"
+          }
+        },
+        "repeat_different": {
+          "status": 409,
+          "body": {
+            "activity_attempt_id": "{attempt}",
+            "activity_status": "completed",
+            "attempt_status": "completed",
+            "lease_owner": "{owner}",
+            "next_task_id": null,
+            "outcome": "completed",
+            "reason": "stale_attempt",
+            "recorded": false,
+            "task_id": "{task}",
+            "task_status": "completed"
+          }
+        },
+        "repeat_other_route": {
+          "status": 409,
+          "body": {
+            "activity_attempt_id": "{attempt}",
+            "next_task_id": null,
+            "outcome": "failed",
+            "reason": "stale_attempt",
+            "recorded": false,
+            "task_id": "{task}"
+          }
+        },
+        "workflow_closed": 200,
+        "repeat_after_close": {
+          "status": 409,
+          "body": {
+            "activity_attempt_id": "{attempt}",
+            "activity_status": "completed",
+            "attempt_status": "completed",
+            "lease_owner": "{owner}",
+            "next_task_id": null,
+            "outcome": "completed",
+            "reason": "stale_attempt",
+            "recorded": false,
+            "task_id": "{task}",
+            "task_status": "completed"
+          }
+        },
+        "events": [
+          "StartAccepted",
+          "WorkflowStarted",
+          "ActivityScheduled",
+          "ActivityStarted",
+          "ActivityCompleted",
+          "WorkflowCompleted"
+        ]
+      },
+      "failed": {
+        "first": {
+          "status": 200,
+          "body": {
+            "activity_attempt_id": "{attempt}",
+            "next_task_id": "{next_task}",
+            "outcome": "failed",
+            "reason": null,
+            "recorded": true,
+            "task_id": "{task}"
+          }
+        },
+        "repeat_identical": {
+          "status": 409,
+          "body": {
+            "activity_attempt_id": "{attempt}",
+            "next_task_id": null,
+            "outcome": "failed",
+            "reason": "stale_attempt",
+            "recorded": false,
+            "task_id": "{task}"
+          }
+        },
+        "repeat_different": {
+          "status": 409,
+          "body": {
+            "activity_attempt_id": "{attempt}",
+            "next_task_id": null,
+            "outcome": "failed",
+            "reason": "stale_attempt",
+            "recorded": false,
+            "task_id": "{task}"
+          }
+        },
+        "repeat_other_route": {
+          "status": 409,
+          "body": {
+            "activity_attempt_id": "{attempt}",
+            "activity_status": "failed",
+            "attempt_status": "failed",
+            "lease_owner": "{owner}",
+            "next_task_id": null,
+            "outcome": "completed",
+            "reason": "stale_attempt",
+            "recorded": false,
+            "task_id": "{task}",
+            "task_status": "completed"
+          }
+        },
+        "workflow_closed": 200,
+        "repeat_after_close": {
+          "status": 409,
+          "body": {
+            "activity_attempt_id": "{attempt}",
+            "next_task_id": null,
+            "outcome": "failed",
+            "reason": "stale_attempt",
+            "recorded": false,
+            "task_id": "{task}"
+          }
+        },
+        "events": [
+          "StartAccepted",
+          "WorkflowStarted",
+          "ActivityScheduled",
+          "ActivityStarted",
+          "ActivityFailed",
+          "WorkflowCompleted"
+        ]
+      }
+    }
+  }
+}

@@ -82,8 +82,11 @@ $task = $activity['activity_task'];
 $completion = ['activity_attempt_id' => $task['activity_attempt_id'], 'lease_owner' => $task['lease_owner'], 'result' => $result];
 $completed = $expect($request('POST', '/api/worker/activity-tasks/'.$task['task_id'].'/complete', $completion), 200, 'original activity completion');
 $check(($completed['outcome'] ?? null) === 'completed' && ($completed['recorded'] ?? null) === true, 'Original activity completion was not recorded');
-$replayed = $expect($request('POST', '/api/worker/activity-tasks/'.$task['task_id'].'/complete', $completion), 200, 'activity completion replay');
-$check(($replayed['recorded'] ?? null) === false, 'A replayed activity completion was recorded twice');
+// A replay of that completion gets published PHP's stale-attempt receipt,
+// which the published SDKs read as their own committed completion.
+$replayed = $expect($request('POST', '/api/worker/activity-tasks/'.$task['task_id'].'/complete', $completion), 409, 'activity completion replay');
+$check(($replayed['recorded'] ?? null) === false && ($replayed['reason'] ?? null) === 'stale_attempt'
+    && ($replayed['attempt_status'] ?? null) === 'completed', 'A replayed activity completion was recorded twice');
 
 // Each original workflow then gets one workflow task: the activity's and the
 // signal's at once, the timer's at its deadline and the lease's when PHP's
