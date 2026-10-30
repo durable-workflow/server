@@ -90,6 +90,8 @@ Updated October 27, 2026.
   `501 rust_capability_not_implemented` must match
   [`unserved-php-routes.v2.11.1.txt`](../rust/tests/fixtures/unserved-php-routes.v2.11.1.txt).
 - **Remaining for the release candidate:**
+  - (Takeover of the latest published PHP release, 2.11.7, is covered:
+    its layout is 2.11.3's.)
   - the scope question with the operator: prepared local activities,
     workflow-bound Nexus handlers and external payload takeover;
   - publishing the native image (General runs the release);
@@ -635,7 +637,12 @@ contract fixture before its correction.
   idempotency digest, completed dispatches and the stream reclaim deadline,
   and refuses while a dispatch is pending
   ([checkpoint](rust-server-port-checkpoints/2026-10-26-php-2113-takeover.md)).
-  The parity reference is still 2.11.1. Core 2.14's new behavior (full
+  Published 2.11.4, 2.11.5 and 2.11.7 add no migration and have the same
+  layout, so takeover recognizes their databases as `php-2.11.3`; a
+  `php2117` cohort backs up, takes over and resumes a published 2.11.7
+  source on SQLite, PostgreSQL, MySQL and MariaDB
+  ([checkpoint](rust-server-port-checkpoints/2026-10-30-php-2117-takeover.md)).
+  The parity reference was still 2.11.1 then. Core 2.14's new behavior (full
   failure-message storage, service-call scheduling and idempotency scope)
   is native work for the move to 2.11.3.
 - **Stop signal in the published image.** The published Server image declares
