@@ -2201,6 +2201,7 @@ jobs:
               tests/Unit/ServerParityFixtureSelectionTest.mjs \
               tests/Unit/ServerParityUpdateValidationRetryTest.mjs \
               tests/Unit/ServerParityUpdateValidationTimingTest.mjs \
+              tests/Unit/ServerParityUpdateValidationProcessTest.mjs \
               tests/Unit/ServerParityKilledAuthorPollTest.mjs \
               tests/Unit/ServerParityImagePullTest.mjs \
               tests/Unit/ServerParityAdapterCacheTest.mjs \

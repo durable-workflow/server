@@ -38,7 +38,8 @@ async function request(t, replies) {
   let closed;
   t.after(async () => {
     if (child && child.exitCode === null && child.signalCode === null) child.kill();
-    if (closed) await closed;
+    // The request reports spawn errors; cleanup must still release the server.
+    if (closed) await closed.catch(() => undefined);
     for (const timer of timers) clearTimeout(timer);
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
