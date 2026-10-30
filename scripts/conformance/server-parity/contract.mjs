@@ -23,6 +23,7 @@ import {checkChildRetries} from './child-retries-contract.mjs';
 import {checkActivityLateOutcomes} from './activity-late-outcomes-contract.mjs';
 import {checkChildVisibility} from './child-visibility-contract.mjs';
 import {checkRetriedChildCancellation} from './retried-child-cancellation-contract.mjs';
+import {checkParallelCancellation} from './parallel-cancellation-contract.mjs';
 import {checkActivityResultRepeats} from './activity-result-repeats-contract.mjs';
 import {checkStartSearchAttributes} from './start-search-attributes-contract.mjs';
 import {checkQueryArgumentRouting} from './query-arguments-contract.mjs';
@@ -192,6 +193,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const activityLateOutcomes = fixture.activity_late_outcomes ? checkActivityLateOutcomes(fixture, observation) : null;
   const childVisibility = fixture.child_visibility ? checkChildVisibility(fixture, observation) : null;
   const retriedChildCancellation = fixture.retried_child_cancellation ? checkRetriedChildCancellation(fixture, observation) : null;
+  const parallelCancellation = fixture.parallel_cancellation ? checkParallelCancellation(fixture, observation) : null;
   const activityResultRepeats = fixture.activity_result_repeats ? checkActivityResultRepeats(fixture, observation) : null;
   const startSearchAttributes = fixture.start_search_attributes ? checkStartSearchAttributes(fixture, observation) : null;
   const queryArguments = fixture.query_argument_routing ? checkQueryArgumentRouting(fixture, observation) : null;
@@ -779,6 +781,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(activityLateOutcomes ? {activity_late_outcomes: activityLateOutcomes} : {}),
     ...(childVisibility ? {child_visibility: childVisibility} : {}),
     ...(retriedChildCancellation ? {retried_child_cancellation: retriedChildCancellation} : {}),
+    ...(parallelCancellation ? {parallel_cancellation: parallelCancellation} : {}),
     ...(activityResultRepeats ? {activity_result_repeats: activityResultRepeats} : {}),
     ...(startSearchAttributes ? {start_search_attributes: startSearchAttributes} : {}),
     ...(queryArguments ? {query_argument_routing: queryArguments} : {}),

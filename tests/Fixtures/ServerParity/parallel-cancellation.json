@@ -1,0 +1,370 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "parallel-cancellation",
+  "review_state": "reviewed",
+  "contract": "A run's cooperative cancellation delivered at a parallel group with activity members and at a selection handle (published Server 2.11.7, Workflow CooperativeCancellationDelivery::parallelEligibility and WorkflowExecutor::deliverPortableCancellation), over raw worker HTTP on protocol 1.20 in a fresh namespace with a cooperative worker. Each case completes the run's first task with a group, claims the first activity, requests the run's cancellation, delivers it and completes the run. A parallel group of activities, and a mixed group of an activity and a timer, take one parallel delivery whose span names the group; each member is cancelled by its kind, in sequence order (ActivityCancelled, TimerCancelled). A span that does not name the group is a shape mismatch. A selection group of an activity and a timer takes a selection_handle delivery at the next sequence naming its operation range, which cancels both members and records the operation range. The claimed activity's next heartbeat is told to cancel. Embedded applications have no worker protocol.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "parallel cancellation λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "parallel cancellation λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "parallel_cancellation": {
+    "workflow_type": "parity.v1.parallel_cancellation",
+    "activity_type": "parity.v1.parallel_cancellation_activity",
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "reason": "stop the group λ",
+    "event_fields": [
+      "sequence",
+      "call_kind",
+      "sequence_span",
+      "operation_sequence",
+      "operation_sequence_span",
+      "reason"
+    ],
+    "cases": {
+      "activities": {
+        "members": [
+          {
+            "kind": "activity",
+            "group": {
+              "parallel_group_id": "parallel-activities:1:2",
+              "parallel_group_kind": "activity",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 0
+            }
+          },
+          {
+            "kind": "activity",
+            "group": {
+              "parallel_group_id": "parallel-activities:1:2",
+              "parallel_group_kind": "activity",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 1
+            }
+          }
+        ],
+        "boundary": {
+          "sequence": 1,
+          "call_kind": "parallel",
+          "sequence_span": 2
+        }
+      },
+      "mixed": {
+        "members": [
+          {
+            "kind": "activity",
+            "group": {
+              "parallel_group_id": "parallel-calls:1:2",
+              "parallel_group_kind": "mixed",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 0
+            }
+          },
+          {
+            "kind": "timer",
+            "group": {
+              "parallel_group_id": "parallel-calls:1:2",
+              "parallel_group_kind": "mixed",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 1
+            }
+          }
+        ],
+        "refused_boundary": {
+          "sequence": 1,
+          "call_kind": "parallel",
+          "sequence_span": 1
+        },
+        "boundary": {
+          "sequence": 1,
+          "call_kind": "parallel",
+          "sequence_span": 2
+        }
+      },
+      "selection": {
+        "members": [
+          {
+            "kind": "activity",
+            "group": {
+              "parallel_group_id": "select-calls:1:2",
+              "parallel_group_kind": "mixed",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 0,
+              "parallel_group_mode": "select",
+              "selection_member_key": "activity",
+              "selection_member_index": 0,
+              "selection_member_base_sequence": 1,
+              "selection_member_size": 1,
+              "selection_member_kind": "activity"
+            }
+          },
+          {
+            "kind": "timer",
+            "group": {
+              "parallel_group_id": "select-calls:1:2",
+              "parallel_group_kind": "mixed",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 1,
+              "parallel_group_mode": "select",
+              "selection_member_key": "timer",
+              "selection_member_index": 1,
+              "selection_member_base_sequence": 2,
+              "selection_member_size": 1,
+              "selection_member_kind": "timer"
+            }
+          }
+        ],
+        "boundary": {
+          "sequence": 3,
+          "call_kind": "selection_handle",
+          "operation_sequence": 1,
+          "operation_sequence_span": 2
+        }
+      }
+    },
+    "expected": {
+      "activities": {
+        "schedule": {
+          "status": 200,
+          "reason": null,
+          "run_status": "waiting"
+        },
+        "request": {
+          "status": 202,
+          "reason": null
+        },
+        "delivery": {
+          "status": 200,
+          "delivered": true,
+          "sequence": 1,
+          "call_kind": "parallel",
+          "sequence_span": 2,
+          "operation_sequence": null,
+          "operation_sequence_span": 1,
+          "reason": null
+        },
+        "completion": {
+          "status": 200,
+          "reason": null,
+          "run_status": "cancelled"
+        },
+        "activity_heartbeat": {
+          "status": 200,
+          "cancel_requested": true,
+          "reason": "run_cancelled"
+        },
+        "events": [
+          {
+            "event_type": "ActivityScheduled",
+            "sequence": 1
+          },
+          {
+            "event_type": "ActivityScheduled",
+            "sequence": 2
+          },
+          {
+            "event_type": "ActivityStarted",
+            "sequence": 1
+          },
+          {
+            "event_type": "CooperativeCancellationRequested",
+            "reason": "stop the group λ"
+          },
+          {
+            "event_type": "ActivityCancelled",
+            "sequence": 1
+          },
+          {
+            "event_type": "ActivityCancelled",
+            "sequence": 2
+          },
+          {
+            "event_type": "CooperativeCancellationDelivered",
+            "sequence": 1,
+            "call_kind": "parallel",
+            "sequence_span": 2
+          },
+          {
+            "event_type": "WorkflowCancelled",
+            "reason": "Cooperative cancellation completed."
+          }
+        ]
+      },
+      "mixed": {
+        "schedule": {
+          "status": 200,
+          "reason": null,
+          "run_status": "waiting"
+        },
+        "request": {
+          "status": 202,
+          "reason": null
+        },
+        "refused_delivery": {
+          "status": 409,
+          "delivered": false,
+          "sequence": null,
+          "call_kind": null,
+          "sequence_span": null,
+          "operation_sequence": null,
+          "operation_sequence_span": null,
+          "reason": "cancellation_delivery_shape_mismatch"
+        },
+        "delivery": {
+          "status": 200,
+          "delivered": true,
+          "sequence": 1,
+          "call_kind": "parallel",
+          "sequence_span": 2,
+          "operation_sequence": null,
+          "operation_sequence_span": 1,
+          "reason": null
+        },
+        "completion": {
+          "status": 200,
+          "reason": null,
+          "run_status": "cancelled"
+        },
+        "activity_heartbeat": {
+          "status": 200,
+          "cancel_requested": true,
+          "reason": "run_cancelled"
+        },
+        "events": [
+          {
+            "event_type": "ActivityScheduled",
+            "sequence": 1
+          },
+          {
+            "event_type": "TimerScheduled",
+            "sequence": 2
+          },
+          {
+            "event_type": "ActivityStarted",
+            "sequence": 1
+          },
+          {
+            "event_type": "CooperativeCancellationRequested",
+            "reason": "stop the group λ"
+          },
+          {
+            "event_type": "ActivityCancelled",
+            "sequence": 1
+          },
+          {
+            "event_type": "TimerCancelled",
+            "sequence": 2
+          },
+          {
+            "event_type": "CooperativeCancellationDelivered",
+            "sequence": 1,
+            "call_kind": "parallel",
+            "sequence_span": 2
+          },
+          {
+            "event_type": "WorkflowCancelled",
+            "reason": "Cooperative cancellation completed."
+          }
+        ]
+      },
+      "selection": {
+        "schedule": {
+          "status": 200,
+          "reason": null,
+          "run_status": "waiting"
+        },
+        "request": {
+          "status": 202,
+          "reason": null
+        },
+        "delivery": {
+          "status": 200,
+          "delivered": true,
+          "sequence": 3,
+          "call_kind": "selection_handle",
+          "sequence_span": 1,
+          "operation_sequence": 1,
+          "operation_sequence_span": 2,
+          "reason": null
+        },
+        "completion": {
+          "status": 200,
+          "reason": null,
+          "run_status": "cancelled"
+        },
+        "activity_heartbeat": {
+          "status": 200,
+          "cancel_requested": true,
+          "reason": "run_cancelled"
+        },
+        "events": [
+          {
+            "event_type": "ActivityScheduled",
+            "sequence": 1
+          },
+          {
+            "event_type": "TimerScheduled",
+            "sequence": 2
+          },
+          {
+            "event_type": "ActivityStarted",
+            "sequence": 1
+          },
+          {
+            "event_type": "CooperativeCancellationRequested",
+            "reason": "stop the group λ"
+          },
+          {
+            "event_type": "ActivityCancelled",
+            "sequence": 1
+          },
+          {
+            "event_type": "TimerCancelled",
+            "sequence": 2
+          },
+          {
+            "event_type": "CooperativeCancellationDelivered",
+            "sequence": 3,
+            "call_kind": "selection_handle",
+            "operation_sequence": 1,
+            "operation_sequence_span": 2
+          },
+          {
+            "event_type": "WorkflowCancelled",
+            "reason": "Cooperative cancellation completed."
+          }
+        ]
+      }
+    }
+  }
+}

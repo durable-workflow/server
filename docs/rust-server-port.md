@@ -701,9 +701,12 @@ contract fixture before its correction.
 - **Cooperative cancellation boundaries.** Published PHP delivers a run's
   cancellation at an activity, local activity, timer, condition, signal,
   child, parallel or selection-handle boundary. Native delivers it at an
-  activity, a timer, a condition or signal wait, a child (retried or not)
-  and a parallel group whose members are all timers. It refuses the other boundaries, including
-  parallel groups with other member kinds, with
+  activity, a timer, a condition or signal wait, a child (retried or not), a
+  parallel group of activity and timer members, and a selection handle over
+  such members (October 30,
+  [checkpoint](rust-server-port-checkpoints/2026-10-30-parallel-cancellation.md)).
+  Native authors no prepared local activity, and no parallel group of
+  children or waits, so it refuses those boundaries with
   `422 cancellation_delivery_boundary_not_available`.
 - **Activity results after a deadline** (October 30, closed; the entry
   was stale). Published 2.11.7 refuses an activity completion or failure
