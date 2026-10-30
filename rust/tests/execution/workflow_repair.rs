@@ -66,3 +66,96 @@ async fn repair_follows_the_run_summary_like_php() {
     assert!(rejected["command_id"].is_string());
     assert_eq!(repairs(&app, &overdue).await.len(), 2, "two accepted repairs, no event for the rejection");
 }
+
+// Published PHP's repair command recovers a run whose task was lost
+// (`TaskRepair::createMissingTask`): a missing workflow, activity or timer
+// task is created again, counting one repair, and the run is described by
+// its wait again. Recorded against published Server 2.11.7 with the task row
+// deleted from its SQLite database.
+#[tokio::test]
+async fn repair_creates_a_missing_workflow_activity_or_timer_task_like_php() {
+    let activity = json!({"type":"schedule_activity","activity_type":"act","arguments":envelope(Payload::Array(vec![]))});
+    let timer = json!({"type":"start_timer","delay_seconds":3600});
+    for (id, command, kind, wait_kind) in [
+        ("missing-workflow", None, "workflow", "workflow-task"),
+        ("missing-activity", Some(activity), "activity", "activity"),
+        ("missing-timer", Some(timer), "timer", "timer"),
+    ] {
+        // Each case in its own database, so one case's repaired task is not
+        // claimed by the next.
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap();
+        runtime.set_maintenance_repair(false);
+        let app = router(runtime.clone());
+        register(&app, "worker", json!(["echo"]), json!(["act"])).await;
+        let started = start(&app, id).await;
+        if let Some(command) = command {
+            let task = poll(&app, "worker", "workflow").await;
+            assert_eq!(finish_task(&app, &task, json!([command])).await.0, StatusCode::OK, "{id}");
+        }
+        let run = started["run_id"].as_str().unwrap();
+        database.execute(sqlx::AssertSqlSafe(format!("DELETE FROM workflow_tasks WHERE workflow_run_id='{run}' AND status IN ('ready','leased')"))).await;
+        let (status, repaired) = repair(&app, id).await;
+        assert_eq!((status, repaired["outcome"].clone()), (StatusCode::OK, json!("repair_dispatched")), "{id}: {repaired}");
+        let event = &repairs(&app, &started).await[0]["payload"];
+        assert_eq!((event["liveness_state"].clone(), event["task_type"].clone()), (json!("repair_needed"), json!(kind)), "{id}: {event}");
+        assert_eq!(event["task"]["repair_count"], 1, "{id}: {event}");
+        let (_, described) = request(&app, "GET", &format!("/api/workflows/{id}"), Value::Null).await;
+        assert_eq!(described["wait_kind"], wait_kind, "{id}: {described}");
+        // The recreated workflow or activity task is claimed again.
+        if kind != "timer" {
+            let claimed = poll(&app, "worker", kind).await;
+            assert_eq!(claimed["workflow_id"], id, "{id}: {claimed}");
+        }
+        runtime.close().await;
+        database.remove().await;
+    }
+}
+
+// An expired lease on a running activity is settled by its retry policy, as
+// `ActivityTimeoutEnforcer::enforceLeaseExpiry` settles it, exactly once:
+// the attempt expires and the retry, or the workflow task that sees the
+// failure, follows. Native's timer ticker settles expired activity leases
+// every 250 ms whatever the maintenance setting, so it or the repair command
+// settles this one, whichever runs first (as the repair pass test allows).
+// When the command settles it, the next task is the repaired task; when the
+// ticker did, the command finds nothing to repair, as PHP's command does
+// after its repair loop.
+#[tokio::test]
+async fn repair_settles_an_expired_activity_lease_by_its_retry_policy_like_php() {
+    for (id, attempts, kind, settled) in [("lease-retry", 2, "activity", "ActivityRetryScheduled"), ("lease-final", 1, "workflow", "ActivityFailed")] {
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap();
+        runtime.set_maintenance_repair(false);
+        let app = router(runtime.clone());
+        register(&app, "worker", json!(["echo"]), json!(["act"])).await;
+        let started = start(&app, id).await;
+        let task = poll(&app, "worker", "workflow").await;
+        let command = json!({"type":"schedule_activity","activity_type":"act","arguments":envelope(Payload::Array(vec![])),
+            "retry_policy":{"max_attempts":attempts}});
+        assert_eq!(finish_task(&app, &task, json!([command])).await.0, StatusCode::OK, "{id}");
+        let leased = poll(&app, "worker", "activity").await;
+        assert_eq!(leased["workflow_id"], id, "{leased}");
+        let run = started["run_id"].as_str().unwrap();
+        database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_tasks SET lease_expires_at='{OLD}' WHERE workflow_run_id='{run}' AND task_type='activity'"))).await;
+        let (status, repaired) = repair(&app, id).await;
+        assert_eq!(status, StatusCode::OK, "{id}: {repaired}");
+        let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+        let kinds: Vec<_> = history.as_array().unwrap().iter().map(|event| event["event_type"].as_str().unwrap().to_owned()).collect();
+        assert_eq!(kinds.iter().filter(|kind| **kind == settled).count(), 1, "{id}: settled once: {kinds:?}");
+        let event = &repairs(&app, &started).await[0]["payload"];
+        match repaired["outcome"].as_str() {
+            Some("repair_dispatched") => {
+                assert_eq!(kinds[kinds.len() - 2..], [settled.to_owned(), "RepairRequested".to_owned()], "{id}: {kinds:?}");
+                assert_eq!(event["task_type"], kind, "{id}: {event}");
+            }
+            Some("repair_not_needed") => assert!(event["task_id"].is_null(), "{id}: {event}"),
+            other => panic!("{id}: unexpected repair outcome {other:?}: {repaired}"),
+        }
+        // Either way the next task is ready for a worker.
+        let next = poll(&app, "worker", kind).await;
+        assert_eq!(next["workflow_id"], id, "{id}: {next}");
+        runtime.close().await;
+        database.remove().await;
+    }
+}

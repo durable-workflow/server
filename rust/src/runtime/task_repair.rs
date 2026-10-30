@@ -83,6 +83,14 @@ where
     Ok((millis("available_at")?, millis("created_at")?, DB::string(task, "id")?))
 }
 
+/// What `createMissingTask` did for a run that has no recoverable task.
+pub(super) enum Missing {
+    /// A new ready task, by id.
+    Created(String),
+    /// Native cannot create this kind of task yet; nothing was changed.
+    Unported(String),
+}
+
 fn unqualified() -> RuntimeError {
     refuse(StatusCode::UNPROCESSABLE_ENTITY, "development_workflow_task_repair_unqualified")
 }
@@ -178,7 +186,7 @@ where
         }
         // PHP projects the run, then repairs only what its summary says needs it.
         Self::project_run_summary(&mut tx, &run_id).await?;
-        let summary = Self::query("SELECT liveness_state,wait_kind FROM workflow_run_summaries WHERE id=$1")
+        let summary = Self::query("SELECT liveness_state,wait_kind,resume_source_kind,resume_source_id FROM workflow_run_summaries WHERE id=$1")
             .bind(&run_id)
             .fetch_optional(&mut *tx)
             .await?;
@@ -186,10 +194,9 @@ where
             summary.as_ref().map(|row| DB::optional_string(row, name)).transpose().map(Option::flatten)
         };
         let (liveness, wait_kind) = (field("liveness_state")?, field("wait_kind")?);
-        let task = if liveness.as_deref() == Some("repair_needed") {
-            Some(Self::recover_task(&mut tx, &run_id).await?)
-        } else {
-            None
+        let task = match &summary {
+            Some(summary) if liveness.as_deref() == Some("repair_needed") => Self::recover_task(&mut tx, &run, summary).await?,
+            _ => None,
         };
         let task_type = task.as_ref().map(|task| DB::string(task, "task_type")).transpose()?;
         let identity = task.as_ref().map(|task| DB::string(task, "id")).transpose()?.zip(task_type);
@@ -207,14 +214,17 @@ where
         Ok((StatusCode::OK, response))
     }
 
-    /// `TaskRepair::repairRun` for an existing task: a ready task due for
-    /// redispatch counts one more repair, and a workflow task whose lease
-    /// expired returns to ready. Creating a missing task, and recovering an
-    /// expired activity lease, are not ported.
-    async fn recover_task(tx: &mut Transaction<'_, DB>, run_id: &str) -> Result<DB::Row> {
+    /// `TaskRepair::repairRun`: the run's recoverable task is recovered (an
+    /// overdue ready task counts one more repair, an expired workflow lease
+    /// returns to ready, and a running activity's expired lease is settled by
+    /// its retry policy, as `ActivityTimeoutEnforcer::enforceLeaseExpiry`
+    /// settles it); without one, the missing task is created. Returns the task
+    /// the repair dispatches, if any.
+    async fn recover_task(tx: &mut Transaction<'_, DB>, run: &DB::Row, summary: &DB::Row) -> Result<Option<DB::Row>> {
+        let run_id = DB::string(run, "id")?;
         let at = now();
         let tasks = Self::query("SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND status IN ('ready','leased')")
-            .bind(run_id)
+            .bind(&run_id)
             .fetch_all(&mut **tx)
             .await?;
         let mut recoverable = Vec::new();
@@ -224,23 +234,166 @@ where
             }
         }
         recoverable.sort_by(|left, right| left.0.cmp(&right.0));
-        let (_, task) = recoverable.into_iter().next().ok_or_else(unqualified)?;
-        let task_id = DB::string(&task, "id")?;
-        let repair_count = DB::number(&task, "repair_count")?
-            .checked_add(1)
-            .filter(|count| *count <= DB::REPAIR_COUNTER_MAX)
-            .ok_or_else(|| refuse(StatusCode::CONFLICT, "repair_count_exhausted"))?;
-        if DB::string(&task, "status")? == "leased" {
-            if DB::string(&task, "task_type")? != "workflow" {
-                return Err(unqualified());
+        let task_id = match recoverable.into_iter().next() {
+            Some((_, task)) => {
+                let task_id = DB::string(&task, "id")?;
+                match Self::recover_task_row(tx, run, &task, at).await? {
+                    super::repair_pass::Recovered::Task => task_id,
+                    super::repair_pass::Recovered::Nothing => return Ok(None),
+                    super::repair_pass::Recovered::Unported(_) => return Err(unqualified()),
+                    super::repair_pass::Recovered::ExpireLease => {
+                        match Self::settle_lost_lease(tx, &task_id, super::activity_deadlines::LeaseLoss::Expired).await? {
+                            // The enforcer's `next_task`: the retry, or the
+                            // workflow task that sees the failure.
+                            super::activity_deadlines::Enforcement::Enforced { .. } => {
+                                match Self::query("SELECT id FROM workflow_tasks WHERE workflow_run_id=$1 AND status='ready' ORDER BY created_at DESC,id DESC LIMIT 1")
+                                    .bind(&run_id).fetch_optional(&mut **tx).await?
+                                {
+                                    Some(row) => DB::string(&row, "id")?,
+                                    None => return Ok(None),
+                                }
+                            }
+                            super::activity_deadlines::Enforcement::Skipped(_) => return Ok(None),
+                        }
+                    }
+                }
             }
-            Self::query("UPDATE workflow_tasks SET status='ready',leased_at=NULL,lease_owner=NULL,lease_expires_at=NULL,repair_count=$1,repair_available_at=NULL,last_error=NULL,updated_at=$2 WHERE id=$3")
-                .bind(repair_count).bind(DB::bind_time(at)).bind(&task_id).execute(&mut **tx).await?;
-        } else {
-            Self::query("UPDATE workflow_tasks SET repair_count=$1,repair_available_at=NULL,last_error=NULL,updated_at=$2 WHERE id=$3")
-                .bind(repair_count).bind(DB::bind_time(at)).bind(&task_id).execute(&mut **tx).await?;
+            None => match Self::create_missing_task(tx, run, summary).await? {
+                Missing::Created(task_id) => task_id,
+                Missing::Unported(_) => return Err(unqualified()),
+            },
+        };
+        tx.summary_changed(&run_id);
+        Ok(Some(Self::query("SELECT * FROM workflow_tasks WHERE id=$1").bind(&task_id).fetch_one(&mut **tx).await?))
+    }
+
+    /// `TaskRepair::createMissingTask` for a run whose summary needs repair:
+    /// - waiting on an activity, the pending execution's activity task, with
+    ///   its latest retry's fields and availability;
+    /// - waiting on a timer, the pending timer's task, available at its fire
+    ///   time;
+    /// - otherwise, or when that execution or timer is gone, a workflow task
+    ///   with `forMissingWorkflowTask`'s empty payload.
+    ///
+    /// Each counts one repair. Native does not create the missing task of an
+    /// update, signal or child wait (their `forMissing…Task` payloads), or of
+    /// a condition or signal wait's timeout timer, yet.
+    pub(super) async fn create_missing_task(tx: &mut Transaction<'_, DB>, run: &DB::Row, summary: &DB::Row) -> Result<Missing> {
+        let run_id = DB::string(run, "id")?;
+        let wait_kind = DB::optional_string(summary, "wait_kind")?.unwrap_or_default();
+        let resume_kind = DB::optional_string(summary, "resume_source_kind")?;
+        let resume_id = DB::optional_string(summary, "resume_source_id")?.filter(|id| !id.trim().is_empty());
+        if matches!(wait_kind.as_str(), "update" | "signal" | "child")
+            || (wait_kind == "condition" && resume_kind.as_deref() == Some("timer"))
+        {
+            return Ok(Missing::Unported(format!(
+                "Native does not yet create a missing task for a run waiting on {wait_kind}."
+            )));
         }
-        Ok(Self::query("SELECT * FROM workflow_tasks WHERE id=$1").bind(&task_id).fetch_one(&mut **tx).await?)
+        let run_queue = DB::string(run, "queue")?;
+        if wait_kind == "activity"
+            && let Some(execution) = Self::pending_execution(tx, &run_id, resume_id.as_deref()).await?
+        {
+            let execution_id = DB::string(&execution, "id")?;
+            let mut payload = json!({"activity_execution_id": execution_id});
+            let mut available = None;
+            // `latestRetryScheduledEvent`: the retry that left this execution
+            // pending carries its task's fields and availability.
+            for row in Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='ActivityRetryScheduled' ORDER BY sequence DESC")
+                .bind(&run_id).fetch_all(&mut **tx).await?
+            {
+                let retry = DB::document_row(&row, "payload")?;
+                if retry["activity_execution_id"] != execution_id.as_str() {
+                    continue;
+                }
+                for key in ["retry_of_task_id", "retry_after_attempt_id", "retry_after_attempt", "retry_backoff_seconds", "max_attempts", "retry_policy"] {
+                    if let Some(value) = retry.get(key) {
+                        payload[key] = value.clone();
+                    }
+                }
+                available = retry["retry_available_at"].as_str().and_then(|at| DateTime::parse_from_rfc3339(at).ok()).map(|at| at.with_timezone(&Utc));
+                break;
+            }
+            if payload.get("retry_after_attempt").is_some() && payload.get("retry_policy").is_none()
+                && let Some(policy) = DB::optional_document_row(&execution, "retry_policy")?.filter(Value::is_object)
+            {
+                payload["retry_policy"] = policy;
+            }
+            let queue = DB::optional_string(&execution, "queue")?.unwrap_or(run_queue);
+            let task_id = Self::create_task_dispatched(tx, &run_id, &queue, "activity", payload, false).await?;
+            Self::query("UPDATE workflow_tasks SET repair_count=1,attempt_count=$1,available_at=$2 WHERE id=$3")
+                .bind(DB::number(&execution, "attempt_count")?.max(0)).bind(DB::bind_time(available.unwrap_or_else(now)))
+                .bind(&task_id).execute(&mut **tx).await?;
+            Self::retarget_wait(tx, &run_id, "activity", &execution_id, &task_id).await?;
+            return Ok(Missing::Created(task_id));
+        }
+        if wait_kind == "timer"
+            && let Some(timer) = Self::pending_timer(tx, &run_id, resume_id.as_deref()).await?
+        {
+            let timer_id = DB::string(&timer, "id")?;
+            let task_id = Self::create_task_dispatched(tx, &run_id, &run_queue, "timer", json!({"timer_id": timer_id}), false).await?;
+            let fire_at = DB::optional_instant(&timer, "fire_at")?.unwrap_or_else(now);
+            Self::query("UPDATE workflow_tasks SET repair_count=1,available_at=$1 WHERE id=$2")
+                .bind(DB::bind_time(fire_at)).bind(&task_id).execute(&mut **tx).await?;
+            Self::retarget_wait(tx, &run_id, "timer", &timer_id, &task_id).await?;
+            return Ok(Missing::Created(task_id));
+        }
+        let task_id = Self::create_task_dispatched(tx, &run_id, &run_queue, "workflow", json!({}), false).await?;
+        Self::query("UPDATE workflow_tasks SET repair_count=1 WHERE id=$1").bind(&task_id).execute(&mut **tx).await?;
+        Ok(Missing::Created(task_id))
+    }
+
+    /// The run's open wait on that activity or timer is backed by the new task,
+    /// as PHP's projection reads it from the task the repair created.
+    async fn retarget_wait(tx: &mut Transaction<'_, DB>, run_id: &str, kind: &str, source_id: &str, task_id: &str) -> Result<()> {
+        Self::query("UPDATE workflow_run_waits SET task_backed=TRUE,task_id=$1,task_type=$2,task_status='ready',updated_at=$3 WHERE workflow_run_id=$4 AND kind=$5 AND resume_source_id=$6 AND status='open'")
+            .bind(task_id).bind(kind).bind(DB::bind_time(now())).bind(run_id).bind(kind).bind(source_id)
+            .execute(&mut **tx).await?;
+        Ok(())
+    }
+
+    /// `ActivityRecovery::pendingExecutionForSummary`: the summary's activity
+    /// when it is pending, else the run's first pending activity.
+    async fn pending_execution(tx: &mut Transaction<'_, DB>, run_id: &str, resume_id: Option<&str>) -> Result<Option<DB::Row>> {
+        if let Some(resume_id) = resume_id
+            && let Some(execution) = Self::query("SELECT * FROM activity_executions WHERE id=$1 AND workflow_run_id=$2 AND status='pending'")
+                .bind(resume_id).bind(run_id).fetch_optional(&mut **tx).await?
+        {
+            return Ok(Some(execution));
+        }
+        Ok(Self::query("SELECT * FROM activity_executions WHERE workflow_run_id=$1 AND status='pending' ORDER BY sequence,id LIMIT 1")
+            .bind(run_id).fetch_optional(&mut **tx).await?)
+    }
+
+    /// `restorePendingTimerFromSummary`: the summary's timer when it is
+    /// pending, else the run's first pending timer that is not a condition or
+    /// signal wait's timeout.
+    async fn pending_timer(tx: &mut Transaction<'_, DB>, run_id: &str, resume_id: Option<&str>) -> Result<Option<DB::Row>> {
+        if let Some(resume_id) = resume_id
+            && let Some(timer) = Self::query("SELECT * FROM workflow_run_timers WHERE id=$1 AND workflow_run_id=$2 AND status='pending'")
+                .bind(resume_id).bind(run_id).fetch_optional(&mut **tx).await?
+        {
+            return Ok(Some(timer));
+        }
+        let mut timeouts = Vec::new();
+        for row in Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='TimerScheduled'")
+            .bind(run_id).fetch_all(&mut **tx).await?
+        {
+            let payload = DB::document_row(&row, "payload")?;
+            if matches!(payload["timer_kind"].as_str(), Some("condition_timeout" | "signal_timeout"))
+                && let Some(id) = payload["timer_id"].as_str()
+            {
+                timeouts.push(id.to_owned());
+            }
+        }
+        for timer in Self::query("SELECT * FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending' ORDER BY sequence,id")
+            .bind(run_id).fetch_all(&mut **tx).await?
+        {
+            if !timeouts.contains(&DB::string(&timer, "id")?) {
+                return Ok(Some(timer));
+            }
+        }
+        Ok(None)
     }
 
     /// Explicit recovery of a worker-reported version-range blockage.
