@@ -113,9 +113,14 @@ async fn repair_creates_a_missing_workflow_activity_or_timer_task_like_php() {
 }
 
 // An expired lease on a running activity is settled by its retry policy, as
-// `ActivityTimeoutEnforcer::enforceLeaseExpiry` settles it: the attempt
-// expires and the retry, or the workflow task that sees the failure, is the
-// repaired task.
+// `ActivityTimeoutEnforcer::enforceLeaseExpiry` settles it, exactly once:
+// the attempt expires and the retry, or the workflow task that sees the
+// failure, follows. Native's timer ticker settles expired activity leases
+// every 250 ms whatever the maintenance setting, so it or the repair command
+// settles this one, whichever runs first (as the repair pass test allows).
+// When the command settles it, the next task is the repaired task; when the
+// ticker did, the command finds nothing to repair, as PHP's command does
+// after its repair loop.
 #[tokio::test]
 async fn repair_settles_an_expired_activity_lease_by_its_retry_policy_like_php() {
     for (id, attempts, kind, settled) in [("lease-retry", 2, "activity", "ActivityRetryScheduled"), ("lease-final", 1, "workflow", "ActivityFailed")] {
@@ -134,12 +139,22 @@ async fn repair_settles_an_expired_activity_lease_by_its_retry_policy_like_php()
         let run = started["run_id"].as_str().unwrap();
         database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_tasks SET lease_expires_at='{OLD}' WHERE workflow_run_id='{run}' AND task_type='activity'"))).await;
         let (status, repaired) = repair(&app, id).await;
-        assert_eq!((status, repaired["outcome"].clone()), (StatusCode::OK, json!("repair_dispatched")), "{id}: {repaired}");
+        assert_eq!(status, StatusCode::OK, "{id}: {repaired}");
         let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
         let kinds: Vec<_> = history.as_array().unwrap().iter().map(|event| event["event_type"].as_str().unwrap().to_owned()).collect();
-        assert_eq!(kinds[kinds.len() - 2..], [settled.to_owned(), "RepairRequested".to_owned()], "{id}: {kinds:?}");
+        assert_eq!(kinds.iter().filter(|kind| **kind == settled).count(), 1, "{id}: settled once: {kinds:?}");
         let event = &repairs(&app, &started).await[0]["payload"];
-        assert_eq!(event["task_type"], kind, "{id}: {event}");
+        match repaired["outcome"].as_str() {
+            Some("repair_dispatched") => {
+                assert_eq!(kinds[kinds.len() - 2..], [settled.to_owned(), "RepairRequested".to_owned()], "{id}: {kinds:?}");
+                assert_eq!(event["task_type"], kind, "{id}: {event}");
+            }
+            Some("repair_not_needed") => assert!(event["task_id"].is_null(), "{id}: {event}"),
+            other => panic!("{id}: unexpected repair outcome {other:?}: {repaired}"),
+        }
+        // Either way the next task is ready for a worker.
+        let next = poll(&app, "worker", kind).await;
+        assert_eq!(next["workflow_id"], id, "{id}: {next}");
         runtime.close().await;
         database.remove().await;
     }
