@@ -130,8 +130,9 @@ async fn run_observation_projects_actual_activity_retry_and_terminal_transitions
             observe(&app, namespace, &path).await.1["current_waits"]["returned_count"],
             0
         );
+        // A repeated terminal result is stale, as in published PHP.
         let duplicate = namespaces::scoped(&app, namespace, "POST", &terminal_path, terminal).await;
-        assert_eq!(duplicate.0, StatusCode::OK, "{}", duplicate.1);
+        assert_eq!((duplicate.0, &duplicate.1["reason"]), (StatusCode::CONFLICT, &json!("stale_attempt")), "{}", duplicate.1);
         assert_eq!(
             observe(&app, namespace, &path).await.1["current_waits"]["returned_count"],
             0

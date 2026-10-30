@@ -3675,11 +3675,10 @@ where
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
         Self::cancelled_activity_outcome(&mut tx, &task, &body).await?;
-        if Self::duplicate_receipt(&task, &body)? {
-            return Ok(
-                json!({"task_id": task_id, "activity_attempt_id": attempt_id, "outcome": "completed", "recorded": false, "reason": "already_completed"}),
-            );
-        }
+        // A repeat of the result that finished the attempt, identical or not,
+        // gets published PHP's stale-attempt receipt below: the attempt is no
+        // longer running. The published SDKs read that receipt, with its
+        // completed statuses, as their own committed completion.
         let attempt =
             Self::query("SELECT * FROM activity_attempts WHERE id=$1 AND workflow_task_id=$2")
                 .bind(attempt_id)

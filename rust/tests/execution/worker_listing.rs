@@ -372,10 +372,12 @@ async fn a_replacement_registration_releases_the_activity_lease_at_once() {
         json!({"task_id":original["task_id"],"activity_attempt_id":original["activity_attempt_id"],
         "outcome":"failed","recorded":false,"reason":"stale_attempt","next_task_id":null,"protocol_version":"1.20"})
     );
-    // The replacement's own repeated result keeps its idempotent receipt.
+    // The replacement's own repeated result is stale too, as in published
+    // PHP; the receipt names its owner and the closed statuses.
     let (status, again) = request(&app, "POST", &path, complete(&replacement)).await;
-    assert_eq!(status, StatusCode::OK, "{again}");
-    assert_eq!(again["reason"], "already_completed");
+    assert_eq!(status, StatusCode::CONFLICT, "{again}");
+    assert_eq!((again["reason"].clone(), again["recorded"].clone(), again["attempt_status"].clone()),
+        (json!("stale_attempt"), json!(false), json!("completed")), "{again}");
     let history = run_history(&app, &json!("replaced-peer"), &started["run_id"]).await;
     let started_attempts: Vec<_> = history
         .as_array()

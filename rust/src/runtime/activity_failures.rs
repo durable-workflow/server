@@ -412,11 +412,8 @@ where
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
         Self::cancelled_activity_outcome(&mut tx, &task, &body).await?;
-        if Self::duplicate_receipt(&task, &body)? {
-            return Ok(
-                json!({"task_id":task_id,"activity_attempt_id":attempt_id,"outcome":reported,"recorded":false,"reason":"already_completed"}),
-            );
-        }
+        // A repeat of the failure that finished the attempt is stale, as in
+        // published PHP (see `complete_activity`).
         let attempt =
             Self::query("SELECT * FROM activity_attempts WHERE id=$1 AND workflow_task_id=$2")
                 .bind(attempt_id)
