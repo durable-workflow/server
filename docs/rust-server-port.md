@@ -90,7 +90,6 @@ Updated October 27, 2026.
   `501 rust_capability_not_implemented` must match
   [`unserved-php-routes.v2.11.1.txt`](../rust/tests/fixtures/unserved-php-routes.v2.11.1.txt).
 - **Remaining for the release candidate:**
-  - landing the 2.11.5 reference move;
   - the scope question with the operator: prepared local activities,
     workflow-bound Nexus handlers and external payload takeover;
   - publishing the native image (General runs the release);
@@ -614,9 +613,12 @@ contract fixture before its correction.
   ([checkpoint](rust-server-port-checkpoints/2026-10-29-child-retries.md)).
   A child timeout or backoff too far away for a timestamp is refused
   (`invalid_child_timeout`, `invalid_child_retry_policy`), as a timer delay
-  is. Remaining: native's cooperative cancellation delivery expects one
-  link per call, so it refuses one delivered to a retried child
-  (`cancellation_delivery_shape_mismatch`; #873, pending a PHP recording).
+  is. A parent's cooperative cancellation reaches a retried child (#873):
+  the request is admitted, and the delivery follows the call to its current
+  run and link, so under `try_cancel` the retry run, not the failed first
+  run, is asked to cancel. The `retried-child-cancellation` fixture records
+  both policies against published 2.11.7
+  ([checkpoint](rust-server-port-checkpoints/2026-10-29-retried-child-cancellation.md)).
 - **Trace context (Core 2.10, published in Server 2.11.1).** Core adds
   nullable `observability_context` columns on runs, commands and tasks.
   Native has no carrier: it accepts and ignores a top-level carrier on
@@ -686,9 +688,9 @@ contract fixture before its correction.
   and PHP's message, and records nothing.
 - **Cooperative cancellation boundaries.** Published PHP delivers a run's
   cancellation at an activity, local activity, timer, condition, signal,
-  child, parallel or selection-handle boundary. Native delivers it at a
-  timer, a condition or signal wait, a child and a parallel group whose
-  members are all timers. It refuses the other boundaries, including
+  child, parallel or selection-handle boundary. Native delivers it at an
+  activity, a timer, a condition or signal wait, a child (retried or not)
+  and a parallel group whose members are all timers. It refuses the other boundaries, including
   parallel groups with other member kinds, with
   `422 cancellation_delivery_boundary_not_available`.
 - **Activity results after a deadline, before its timeout runs.** Published

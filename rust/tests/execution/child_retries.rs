@@ -207,3 +207,57 @@ async fn a_child_and_its_retry_inherit_the_parents_memos_and_search_attributes()
     runtime.close().await;
     database.remove().await;
 }
+
+// #873: published PHP admits and delivers a parent's cooperative cancellation
+// to a child it retried. The delivery follows the call to its current run.
+#[tokio::test]
+async fn a_parents_cooperative_cancellation_reaches_a_retried_child() {
+    for policy in ["abandon", "try_cancel"] {
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap();
+        let app = router(runtime.clone());
+        let registered = request_protocol(&app, "POST", "/api/worker/register", json!({"worker_id":"cleanup-worker",
+            "task_queue":"test","runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":[],
+            "capabilities":["cooperative_cancellation"]}), "1.20").await;
+        assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+        register(&app, "child-worker", json!(["child"]), json!([])).await;
+        let parent = start(&app, "cooperative-retried").await;
+        let task = cooperative_poll(&app, "workflow").await;
+        // A child cancellation policy needs a cooperative claim on protocol 1.20.
+        let (status, body) = request_protocol(&app, "POST", &format!("/api/worker/workflow-tasks/{}/complete",
+            task["task_id"].as_str().unwrap()), completion(&task, json!([child(json!({"retry_policy":{"max_attempts":2},
+            "cancellation_policy":policy}))])), "1.20").await;
+        assert_eq!(status, StatusCode::OK, "{policy}: {body}");
+        let first = poll(&app, "child-worker", "workflow").await;
+        let (status, body) = finish_task(&app, &first, fail(false)).await;
+        assert_eq!(status, StatusCode::OK, "{policy}: {body}");
+        let requested = request(&app, "POST", "/api/workflows/cooperative-retried/request-cancellation",
+            json!({"reason":"stop the retried child","cleanup_timeout_seconds":30})).await;
+        assert_eq!(requested.0, StatusCode::ACCEPTED, "{policy}: {}", requested.1);
+        let pending = requested.1["cancellation_request"].clone();
+        let root = cooperative_poll(&app, "workflow").await;
+        let delivered = request_protocol(&app, "POST", &format!("/api/worker/workflow-tasks/{}/deliver-cancellation",
+            root["task_id"].as_str().unwrap()), json!({"lease_owner":root["lease_owner"],
+            "workflow_task_attempt":root["workflow_task_attempt"],"request_id":pending["request_id"],"sequence":1,
+            "call_kind":"child"}), "1.20").await;
+        assert_eq!(delivered.0, StatusCode::OK, "{policy}: {}", delivered.1);
+        let (status, body) = finish_task(&app, &root, json!([{"type":"complete_workflow","result":envelope(Payload::Null)}])).await;
+        assert_eq!((status, &body["run_status"]), (StatusCode::OK, &json!("cancelled")), "{policy}: {body}");
+        let events = run_history(&app, &parent["workflow_id"], &parent["run_id"]).await;
+        let kinds: Vec<_> = events.as_array().unwrap().iter().map(|event| event["event_type"].as_str().unwrap().to_owned())
+            .filter(|kind| kind.starts_with("Child") || kind.contains("Cancel")).collect();
+        let mut expected = vec!["ChildWorkflowScheduled", "ChildRunStarted", "ChildRunStarted", "CooperativeCancellationRequested"];
+        if policy == "try_cancel" {
+            expected.push("ChildCancellationRequested");
+        }
+        expected.extend(["CooperativeCancellationDelivered", "WorkflowCancelled"]);
+        assert_eq!(kinds, expected, "{policy}");
+        // The retry run, not the failed first run, takes a requested child cancellation.
+        let retry = child_events(&events)[2]["payload"].clone();
+        let retry_history = run_history(&app, &retry["child_workflow_instance_id"], &retry["child_workflow_run_id"]).await;
+        let requested_child = retry_history.as_array().unwrap().iter().any(|event| event["event_type"] == "CooperativeCancellationRequested");
+        assert_eq!(requested_child, policy == "try_cancel", "{policy}: {retry_history}");
+        runtime.close().await;
+        database.remove().await;
+    }
+}

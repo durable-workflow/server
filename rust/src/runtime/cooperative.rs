@@ -717,20 +717,40 @@ where
         request_sequence: i64,
     ) -> Result<super::child_cancellation::ChildBoundary> {
         let mismatch = || refuse(StatusCode::CONFLICT, "cancellation_delivery_shape_mismatch");
+        // One link per attempt of the call: a retried child
+        // (`startChildRetryIfAvailable`) adds a link per retry, and the call
+        // names the current attempt's run.
         let links = Self::query(
-            "SELECT * FROM workflow_links WHERE parent_workflow_run_id=$1 AND sequence=$2 LIMIT 2",
+            "SELECT * FROM workflow_links WHERE parent_workflow_run_id=$1 AND sequence=$2 ORDER BY id LIMIT 101",
         )
         .bind(run_id)
         .bind(sequence)
         .fetch_all(&mut **tx)
         .await?;
-        let link = links
-            .first()
-            .filter(|_| links.len() == 1)
-            .ok_or_else(mismatch)?;
-        let (parent_close, cancellation) = Self::child_link_policies(tx, link).await?.ok_or_else(mismatch)?;
-        let call = Self::query("SELECT child_workflow_type,child_workflow_class FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND sequence=$2")
+        if links.is_empty() || links.len() > 100 {
+            return Err(mismatch());
+        }
+        let call = Self::query("SELECT child_workflow_type,child_workflow_class,resolved_child_run_id,metadata FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND sequence=$2")
             .bind(run_id).bind(sequence).fetch_one(&mut **tx).await?;
+        let metadata = DB::document_row(&call, "metadata")?;
+        let call_id = metadata["child_call_id"].as_str().map(str::to_owned).ok_or_else(mismatch)?;
+        let retried = metadata["attempt_count"].as_i64().is_some_and(|attempts| attempts > 1);
+        if links.len() > 1 && !retried {
+            return Err(mismatch());
+        }
+        let current_run = DB::optional_string(&call, "resolved_child_run_id")?.ok_or_else(mismatch)?;
+        let mut current = None;
+        let mut first = None;
+        for link in &links {
+            if DB::string(link, "child_workflow_run_id")? == current_run {
+                current = Some(link);
+            }
+            if DB::string(link, "id")? == call_id {
+                first = Some(link);
+            }
+        }
+        let (current, first) = (current.ok_or_else(mismatch)?, first.ok_or_else(mismatch)?);
+        let (parent_close, cancellation) = Self::child_link_policies(tx, current).await?.ok_or_else(mismatch)?;
         let events = Self::query("SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ChildWorkflowScheduled','ChildRunStarted','ChildRunCompleted','ChildRunFailed','ChildRunCancelled','ChildRunTerminated') ORDER BY sequence LIMIT 1001")
             .bind(run_id).fetch_all(&mut **tx).await?;
         if events.len() > 1000 {
@@ -740,7 +760,7 @@ where
             ));
         }
         let mut scheduled = false;
-        let mut started = false;
+        let mut started_links: Vec<String> = Vec::new();
         let mut resolved_before_request = false;
         for event in events {
             let payload = DB::document_row(&event, "payload")?;
@@ -749,8 +769,26 @@ where
             }
             let kind = DB::string(&event, "event_type")?;
             if matches!(kind.as_str(), "ChildWorkflowScheduled" | "ChildRunStarted") {
-                if payload["workflow_link_id"] != DB::string(link, "id")?
-                    || payload["child_call_id"] != DB::string(link, "id")?
+                // The call's first event names the first link; each started
+                // event names its own attempt's link and run.
+                let link = if kind == "ChildWorkflowScheduled" {
+                    first
+                } else {
+                    let named = payload["workflow_link_id"].as_str().unwrap_or_default();
+                    let mut found = None;
+                    for link in &links {
+                        if DB::string(link, "id")? == named {
+                            found = Some(link);
+                        }
+                    }
+                    found.ok_or_else(mismatch)?
+                };
+                let link_id = DB::string(link, "id")?;
+                // PHP records a retry's `ChildRunStarted` without the call's
+                // cancellation policy.
+                let retry = kind == "ChildRunStarted" && payload["retry_attempt"].is_i64();
+                if payload["workflow_link_id"] != link_id.as_str()
+                    || payload["child_call_id"] != call_id.as_str()
                     || payload["child_workflow_instance_id"]
                         != DB::string(link, "child_workflow_instance_id")?
                     || payload["child_workflow_run_id"]
@@ -758,7 +796,8 @@ where
                     || payload["child_workflow_type"] != DB::string(&call, "child_workflow_type")?
                     || payload["child_workflow_class"] != DB::string(&call, "child_workflow_class")?
                     || payload["parent_close_policy"] != parent_close.as_str()
-                    || payload["cancellation_policy"] != cancellation.as_str()
+                    || (payload["cancellation_policy"] != cancellation.as_str()
+                        && !(retry && payload.get("cancellation_policy").is_none()))
                     || payload.get("child_workflow").is_some()
                 {
                     return Err(mismatch());
@@ -772,20 +811,22 @@ where
                         "cancellation_delivery_requires_scope",
                     ));
                 }
-                let seen = if kind == "ChildWorkflowScheduled" {
-                    &mut scheduled
+                if kind == "ChildWorkflowScheduled" {
+                    if scheduled {
+                        return Err(mismatch());
+                    }
+                    scheduled = true;
                 } else {
-                    &mut started
-                };
-                if *seen {
-                    return Err(mismatch());
+                    if started_links.contains(&link_id) {
+                        return Err(mismatch());
+                    }
+                    started_links.push(link_id);
                 }
-                *seen = true;
             } else if DB::number(&event, "sequence")? < request_sequence {
                 resolved_before_request = true;
             }
         }
-        if !scheduled || !started {
+        if !scheduled || !started_links.contains(&DB::string(current, "id")?) {
             return Err(mismatch());
         }
         if resolved_before_request {
@@ -795,8 +836,8 @@ where
             ));
         }
         Ok(super::child_cancellation::ChildBoundary {
-            child_instance: DB::string(link, "child_workflow_instance_id")?,
-            child_run: DB::string(link, "child_workflow_run_id")?,
+            child_instance: DB::string(current, "child_workflow_instance_id")?,
+            child_run: DB::string(current, "child_workflow_run_id")?,
             policy: cancellation,
         })
     }

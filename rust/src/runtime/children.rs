@@ -197,14 +197,19 @@ where
         };
         let metadata = DB::document_row(call, "metadata")?;
         let cancellation = metadata["cancellation_policy"].as_str().unwrap_or("abandon").to_owned();
+        // A retried call (`markChildCallRetryStarted`) has a link per attempt:
+        // the first under the call's id, each retry under its own, and the
+        // call names the latest attempt's run.
+        let retried = metadata["attempt_count"].as_i64().is_some_and(|attempts| attempts > 1);
         let consistent = DB::string(call, "parent_workflow_instance_id")?
             == DB::string(link, "parent_workflow_instance_id")?
             && DB::optional_string(call, "resolved_child_instance_id")?
                 == Some(DB::string(link, "child_workflow_instance_id")?)
-            && DB::optional_string(call, "resolved_child_run_id")?
-                == Some(DB::string(link, "child_workflow_run_id")?)
+            && (retried
+                || DB::optional_string(call, "resolved_child_run_id")?
+                    == Some(DB::string(link, "child_workflow_run_id")?))
             && DB::optional_string(call, "parent_close_policy")?.as_deref() == Some(parent_close.as_str())
-            && metadata["child_call_id"] == DB::string(link, "id")?
+            && (retried || metadata["child_call_id"] == DB::string(link, "id")?)
             && matches!(
                 DB::string(call, "status")?.as_str(),
                 "started" | "completed" | "failed" | "cancelled"

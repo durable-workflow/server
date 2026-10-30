@@ -439,6 +439,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $childDescriptions = isset($fixture['child_descriptions']) ? finishHttpChildDescriptions($client, $fixture, $workflowId, $url) : null;
     $childRetries = isset($fixture['child_retries']) ? finishHttpChildRetries($client, $fixture, $workflowId, $url) : null;
     $childVisibility = isset($fixture['child_visibility']) ? finishHttpChildVisibility($client, $fixture, $workflowId, $url) : null;
+    $retriedChildCancellation = isset($fixture['retried_child_cancellation']) ? finishHttpRetriedChildCancellation($client, $fixture, $workflowId, $url) : null;
     $startSearchAttributes = isset($fixture['start_search_attributes']) ? finishHttpStartSearchAttributes($client, $fixture, $workflowId, $url) : null;
     $queryArgumentRouting = isset($fixture['query_argument_routing']) ? finishHttpQueryArgumentRouting($client, $fixture, $workflowId, $url) : null;
     $queryContractArguments = isset($fixture['query_contract_arguments']) ? finishHttpQueryContractArguments($client, $fixture, $workflowId, $url) : null;
@@ -576,6 +577,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'child_descriptions' => $childDescriptions,
         'child_retries' => $childRetries,
         'child_visibility' => $childVisibility,
+        'retried_child_cancellation' => $retriedChildCancellation,
         'start_search_attributes' => $startSearchAttributes,
         'query_argument_routing' => $queryArgumentRouting,
         'query_contract_arguments' => $queryContractArguments,
@@ -916,6 +918,7 @@ try {
     require __DIR__.'/child-descriptions-probe.php';
     require __DIR__.'/child-retries-probe.php';
     require __DIR__.'/child-visibility-probe.php';
+    require __DIR__.'/retried-child-cancellation-probe.php';
     require __DIR__.'/start-search-attributes-probe.php';
     require __DIR__.'/query-arguments-probe.php';
     require __DIR__.'/query-contract-arguments-probe.php';
@@ -1125,6 +1128,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['child_visibility'])) {
         $observation['child_visibility'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
+    }
+    if ($mode === 'embedded' && isset($fixture['retried_child_cancellation'])) {
+        $observation['retried_child_cancellation'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
     }
     if ($mode === 'embedded' && isset($fixture['start_search_attributes'])) {
         $observation['start_search_attributes'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_search_attribute_registry'];
