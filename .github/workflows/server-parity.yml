@@ -21,6 +21,7 @@ on:
       - scripts/ci/pull-images.sh
       - scripts/ci/patched-pip.sh
       - scripts/ci/sdk-adapter-cache-key.sh
+      - tests/Unit/NativeDebugArtifactTest.mjs
       - config/dw-contract.php
       - tests/Fixtures/ActivityMetadataProjection/**
       - tests/Fixtures/CodecRegression/**
@@ -65,6 +66,8 @@ on:
       - tests/Unit/ServerParityManyUpdatesContractTest.mjs
       - tests/Unit/ServerParityWorkerErrorBodiesContractTest.mjs
       - tests/Unit/ServerParityChildDescriptionsContractTest.mjs
+      - tests/Unit/ServerParityChildRetriesContractTest.mjs
+      - tests/Unit/ServerParityChildVisibilityContractTest.mjs
       - tests/Unit/ServerParityStartSearchAttributesContractTest.mjs
       - tests/Unit/ServerParityQueryArgumentsContractTest.mjs
       - tests/Unit/ServerParityQueryContractArgumentsContractTest.mjs
@@ -92,6 +95,7 @@ on:
       - tests/Unit/ServerParityUpdateValidationContractTest.mjs
       - tests/Unit/ServerParityFixtureSelectionTest.mjs
       - tests/Unit/ServerParityUpdateValidationRetryTest.mjs
+      - tests/Unit/ServerParityUpdateValidationTimingTest.mjs
       - tests/Unit/ServerParityKilledAuthorPollTest.mjs
       - tests/Unit/ServerParityImagePullTest.mjs
       - tests/Unit/ServerParityAdapterCacheTest.mjs
@@ -153,6 +157,66 @@ jobs:
           MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
         run: bash scripts/conformance/server-parity/changes.sh >> "$GITHUB_OUTPUT"
+
+  # Only the server executable is shared. Native test parts retain their
+  # Cargo builds, full test commands and the trusted-main dependency writer.
+  native-debug-build:
+    needs: changes
+    if: ${{ needs.changes.outputs.run == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      RESOURCE_SCOPE: dw-native-debug-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+    outputs:
+      artifact_name: ${{ steps.artifact.outputs.name }}
+      producer_attempt: ${{ steps.artifact.outputs.attempt }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Pull the pinned compiler, retrying registry errors
+        run: bash scripts/ci/pull-images.sh "${NATIVE_RUST_IMAGE}"
+      - name: Validate native debug artifact and cleanup controls
+        run: node --test tests/Unit/NativeDebugArtifactTest.mjs
+      - name: Bind the artifact name to this producer attempt
+        id: artifact
+        run: |
+          printf 'name=native-debug-build-%s-%s\nattempt=%s\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Restore native Cargo dependencies from trusted main
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            cargo-home/registry
+            cargo-home/git
+            rust-target
+          key: native-cargo-deps-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.NATIVE_RUST_IMAGE }}-${{ hashFiles('rust/Cargo.lock', 'rust/Cargo.toml', 'rust/vendor/**', 'rust/.cargo/**') }}
+      - name: Fetch locked Rust dependencies
+        run: |
+          set -euo pipefail
+          mkdir -p cargo-home
+          docker run --rm --init --user="$(id -u):$(id -g)" --cpus=2 --memory=2g --memory-swap=2g \
+            -e CARGO_HOME=/cargo -e CARGO_NET_RETRY=10 \
+            -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -w /source/rust \
+            "${NATIVE_RUST_IMAGE}" cargo fetch --locked
+      - name: Build one run-bound native debug server
+        run: bash scripts/ci/native-debug-build.sh native-debug-build
+      - name: Verify the thin artifact before sharing
+        run: node scripts/ci/native-debug-artifact.mjs verify native-debug-build
+      - name: Share this attempt's server without compiler caches
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: |
+            native-debug-build/server
+            native-debug-build/build.json
+            native-debug-build/SHA256SUMS
+          retention-days: 1
+          if-no-files-found: error
+      - name: Retire the owned debug build containers
+        if: always()
+        run: |
+          docker rm -f "$RESOURCE_SCOPE-clean" "$RESOURCE_SCOPE-build" >/dev/null 2>&1 || true
 
   published-sdk-adapters:
     needs: changes
@@ -378,7 +442,8 @@ jobs:
     # Named explicitly so the added native-tests-b combinations read like the
     # others instead of listing every matrix value.
     name: mysql-execution (${{ matrix.label }}, ${{ matrix.part }})
-    needs: published-sdk-adapters
+    needs: [published-sdk-adapters, native-debug-build]
+    if: ${{ !cancelled() && needs.published-sdk-adapters.result == 'success' }}
     runs-on: ubuntu-latest
     # Each part takes about 20 to 35 minutes; the fixture step runs every
     # later profile before failing, and scenario budgets stay fixed.
@@ -533,6 +598,34 @@ jobs:
             -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" -w /source/rust \
             "${NATIVE_RUST_IMAGE}" cargo clean --locked --offline --package durable-workflow-server
+      - name: Require a successful native debug producer
+        if: ${{ matrix.part != 'native-tests' && matrix.part != 'native-tests-b' }}
+        env:
+          NATIVE_BUILD_RESULT: ${{ needs.native-debug-build.result }}
+          NATIVE_BUILD_ARTIFACT: ${{ needs.native-debug-build.outputs.artifact_name }}
+          NATIVE_BUILD_RUN_ATTEMPT: ${{ needs.native-debug-build.outputs.producer_attempt }}
+        run: |
+          set -euo pipefail
+          test "$NATIVE_BUILD_RESULT" = success
+          [[ "$NATIVE_BUILD_RUN_ATTEMPT" =~ ^[1-9][0-9]{0,9}$ ]]
+          (( NATIVE_BUILD_RUN_ATTEMPT <= GITHUB_RUN_ATTEMPT ))
+          test "$NATIVE_BUILD_ARTIFACT" = "native-debug-build-$GITHUB_RUN_ID-$NATIVE_BUILD_RUN_ATTEMPT"
+      - name: Fetch this run's native debug server
+        if: ${{ matrix.part != 'native-tests' && matrix.part != 'native-tests-b' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ needs.native-debug-build.outputs.artifact_name }}
+          path: native-debug-build
+          digest-mismatch: error
+      - name: Verify and install this run's native debug server
+        if: ${{ matrix.part != 'native-tests' && matrix.part != 'native-tests-b' }}
+        env:
+          NATIVE_BUILD_RUN_ATTEMPT: ${{ needs.native-debug-build.outputs.producer_attempt }}
+        run: |
+          set -euo pipefail
+          mkdir -p parity-evidence rust-target/debug
+          node scripts/ci/native-debug-artifact.mjs verify native-debug-build > parity-evidence/native-debug-build.json
+          install -m 0755 native-debug-build/server rust-target/debug/durable-workflow-server
       - name: Bootstrap published PHP and native MySQL databases and run the native tests
         run: |
           set -euo pipefail
@@ -582,7 +675,7 @@ jobs:
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
             -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
             "${NATIVE_RUST_IMAGE}" -c \
-            'case "$DW_PARITY_PART" in native-tests) shard=1 suffix= ;; native-tests-b) shard=2 suffix=-b ;; *) shard= ;; esac; if [ "$DW_PARITY_PART" = native-tests ]; then cargo test --locked --offline --lib runtime::mysql:: -- --ignored --skip runtime::mysql::tests::bootstrap_child --nocapture --test-threads=2 > /evidence/mysql-tests.txt || exit 1; fi; if [ -n "$shard" ]; then cargo test --locked --offline --test execution -- --list --format terse | sed -n "s/: test\$//p" | LC_ALL=C sort | awk -v count="$DW_EXECUTION_SHARDS" -v shard="$shard" "(NR - 1) % count == shard - 1" > /evidence/execution-shard$suffix.txt && test -s /evidence/execution-shard$suffix.txt && cargo test --locked --offline --test execution -- --exact --nocapture --test-threads=2 $(cat /evidence/execution-shard$suffix.txt) > /evidence/mysql-execution-tests$suffix.txt || exit 1; fi; cargo build --locked --offline'
+            'case "$DW_PARITY_PART" in native-tests) shard=1 suffix= ;; native-tests-b) shard=2 suffix=-b ;; *) shard= ;; esac; if [ "$DW_PARITY_PART" = native-tests ]; then cargo test --locked --offline --lib runtime::mysql:: -- --ignored --skip runtime::mysql::tests::bootstrap_child --nocapture --test-threads=2 > /evidence/mysql-tests.txt || exit 1; fi; if [ -n "$shard" ]; then cargo test --locked --offline --test execution -- --list --format terse | sed -n "s/: test\$//p" | LC_ALL=C sort | awk -v count="$DW_EXECUTION_SHARDS" -v shard="$shard" "(NR - 1) % count == shard - 1" > /evidence/execution-shard$suffix.txt && test -s /evidence/execution-shard$suffix.txt && cargo test --locked --offline --test execution -- --exact --nocapture --test-threads=2 $(cat /evidence/execution-shard$suffix.txt) > /evidence/mysql-execution-tests$suffix.txt || exit 1; fi; case "$DW_PARITY_PART" in native-tests|native-tests-b) cargo build --locked --offline ;; *) test -x /target/debug/durable-workflow-server ;; esac'
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
@@ -1113,7 +1206,8 @@ jobs:
           retention-days: 1
 
   postgres-storage:
-    needs: published-sdk-adapters
+    needs: [published-sdk-adapters, native-debug-build]
+    if: ${{ !cancelled() && needs.published-sdk-adapters.result == 'success' }}
     runs-on: ubuntu-latest
     # Each part takes about 20 to 35 minutes; the fixture step runs every
     # later profile before failing, and scenario budgets stay fixed.
@@ -1214,6 +1308,34 @@ jobs:
             -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" -w /source/rust \
             "${NATIVE_RUST_IMAGE}" cargo clean --locked --offline --package durable-workflow-server
+      - name: Require a successful native debug producer
+        if: ${{ matrix.part != 'native-tests' && matrix.part != 'native-tests-b' }}
+        env:
+          NATIVE_BUILD_RESULT: ${{ needs.native-debug-build.result }}
+          NATIVE_BUILD_ARTIFACT: ${{ needs.native-debug-build.outputs.artifact_name }}
+          NATIVE_BUILD_RUN_ATTEMPT: ${{ needs.native-debug-build.outputs.producer_attempt }}
+        run: |
+          set -euo pipefail
+          test "$NATIVE_BUILD_RESULT" = success
+          [[ "$NATIVE_BUILD_RUN_ATTEMPT" =~ ^[1-9][0-9]{0,9}$ ]]
+          (( NATIVE_BUILD_RUN_ATTEMPT <= GITHUB_RUN_ATTEMPT ))
+          test "$NATIVE_BUILD_ARTIFACT" = "native-debug-build-$GITHUB_RUN_ID-$NATIVE_BUILD_RUN_ATTEMPT"
+      - name: Fetch this run's native debug server
+        if: ${{ matrix.part != 'native-tests' && matrix.part != 'native-tests-b' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ needs.native-debug-build.outputs.artifact_name }}
+          path: native-debug-build
+          digest-mismatch: error
+      - name: Verify and install this run's native debug server
+        if: ${{ matrix.part != 'native-tests' && matrix.part != 'native-tests-b' }}
+        env:
+          NATIVE_BUILD_RUN_ATTEMPT: ${{ needs.native-debug-build.outputs.producer_attempt }}
+        run: |
+          set -euo pipefail
+          mkdir -p parity-evidence rust-target/debug
+          node scripts/ci/native-debug-artifact.mjs verify native-debug-build > parity-evidence/native-debug-build.json
+          install -m 0755 native-debug-build/server rust-target/debug/durable-workflow-server
       - name: Bootstrap published PHP and native PostgreSQL databases and run the native tests
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
@@ -1262,7 +1384,7 @@ jobs:
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
             -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
             "${NATIVE_RUST_IMAGE}" -c \
-            'if [ "$DW_PARITY_PART" = native-tests ]; then cargo test --locked --offline --lib runtime::postgres::tests::qualification_ -- --ignored --nocapture > /evidence/postgres-tests.txt && cargo test --locked --offline --test execution -- --nocapture > /evidence/postgres-execution-tests.txt; fi && cargo build --locked --offline'
+            'if [ "$DW_PARITY_PART" = native-tests ]; then cargo test --locked --offline --lib runtime::postgres::tests::qualification_ -- --ignored --nocapture > /evidence/postgres-tests.txt && cargo test --locked --offline --test execution -- --nocapture > /evidence/postgres-execution-tests.txt; fi && if [ "$DW_PARITY_PART" = native-tests ]; then cargo build --locked --offline; else test -x /target/debug/durable-workflow-server; fi'
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
@@ -1841,7 +1963,8 @@ jobs:
           retention-days: 1
 
   execution-and-codec:
-    needs: published-sdk-adapters
+    needs: [published-sdk-adapters, native-debug-build]
+    if: ${{ !cancelled() && needs.published-sdk-adapters.result == 'success' }}
     runs-on: ubuntu-latest
     # Each part takes about 20 to 35 minutes; the fixture step runs every
     # later profile before failing, and scenario budgets stay fixed.
@@ -1851,8 +1974,8 @@ jobs:
       # Six parts on separate runners: the native suites and codec, the
       # shared corpus, its profiles and restart cases, the published-SDK
       # direction profiles, the corrected marker cohort, and the other
-      # cohorts. Every part builds the same native server; no part depends on
-      # another.
+      # cohorts. Non-test parts use this run's verified debug server artifact;
+      # native-tests still builds and tests from source.
       matrix:
         part: [native-tests, corpus, restarts, cohorts, sdk-directions, corrected-markers]
     env:
@@ -1933,16 +2056,34 @@ jobs:
             -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" -w /source/rust \
             "${NATIVE_RUST_IMAGE}" cargo clean --locked --offline --package durable-workflow-server
-      - name: Build the native server
-        if: ${{ matrix.part != 'native-tests' }}
+      - name: Require a successful native debug producer
+        if: ${{ matrix.part != 'native-tests' && matrix.part != 'native-tests-b' }}
+        env:
+          NATIVE_BUILD_RESULT: ${{ needs.native-debug-build.result }}
+          NATIVE_BUILD_ARTIFACT: ${{ needs.native-debug-build.outputs.artifact_name }}
+          NATIVE_BUILD_RUN_ATTEMPT: ${{ needs.native-debug-build.outputs.producer_attempt }}
         run: |
           set -euo pipefail
-          mkdir -p cargo-home rust-target parity-evidence
-          docker run --rm --user="$(id -u):$(id -g)" --cpus=2 --memory=6g --memory-swap=6g \
-            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
-            -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" -w /source/rust \
-            "${NATIVE_RUST_IMAGE}" \
-            cargo build --locked --offline
+          test "$NATIVE_BUILD_RESULT" = success
+          [[ "$NATIVE_BUILD_RUN_ATTEMPT" =~ ^[1-9][0-9]{0,9}$ ]]
+          (( NATIVE_BUILD_RUN_ATTEMPT <= GITHUB_RUN_ATTEMPT ))
+          test "$NATIVE_BUILD_ARTIFACT" = "native-debug-build-$GITHUB_RUN_ID-$NATIVE_BUILD_RUN_ATTEMPT"
+      - name: Fetch this run's native debug server
+        if: ${{ matrix.part != 'native-tests' && matrix.part != 'native-tests-b' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ needs.native-debug-build.outputs.artifact_name }}
+          path: native-debug-build
+          digest-mismatch: error
+      - name: Verify and install this run's native debug server
+        if: ${{ matrix.part != 'native-tests' && matrix.part != 'native-tests-b' }}
+        env:
+          NATIVE_BUILD_RUN_ATTEMPT: ${{ needs.native-debug-build.outputs.producer_attempt }}
+        run: |
+          set -euo pipefail
+          mkdir -p parity-evidence rust-target/debug
+          node scripts/ci/native-debug-artifact.mjs verify native-debug-build > parity-evidence/native-debug-build.json
+          install -m 0755 native-debug-build/server rust-target/debug/durable-workflow-server
       - name: Execute official Rust codec and cross-decode with published PHP
         if: ${{ matrix.part == 'native-tests' }}
         run: |
@@ -1994,7 +2135,78 @@ jobs:
           bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
-            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityRunnerBlockedExcerptTest.mjs tests/Unit/ServerParityProbeNotesTest.mjs tests/Unit/ServerParitySdkDirectionLanesTest.mjs tests/Unit/ServerParityCodecDeadlineCellsTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParitySearchAttributeContractTest.mjs tests/Unit/ServerParityWorkerListingContractTest.mjs tests/Unit/ServerParityWorkerReplacementContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs tests/Unit/ServerParityFailureLocationTest.mjs tests/Unit/ServerParityFailureExcerptTest.mjs tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs tests/Unit/ServerParityStorageTestContractTest.mjs tests/Unit/ServerParitySchedulePoliciesContractTest.mjs tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs tests/Unit/ServerParityScheduleCatalogContractTest.mjs tests/Unit/ServerParityOperatorMetricsContractTest.mjs tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs tests/Unit/ServerParityConcurrentWaitsContractTest.mjs tests/Unit/ServerParityContinueTransfersContractTest.mjs tests/Unit/ServerParityChildDescriptionsContractTest.mjs tests/Unit/ServerParityWorkerErrorBodiesContractTest.mjs tests/Unit/ServerParityLargeCommandBatchesContractTest.mjs tests/Unit/ServerParityManyUpdatesContractTest.mjs tests/Unit/ServerParityStartSearchAttributesContractTest.mjs tests/Unit/ServerParityQueryArgumentsContractTest.mjs tests/Unit/ServerParityQueryContractArgumentsContractTest.mjs tests/Unit/ServerParityParentCloseCancellationContractTest.mjs tests/Unit/ServerParityRecordLocalActivityContractTest.mjs tests/Unit/ServerParityActivityCancellationAckContractTest.mjs tests/Unit/ServerParityServiceCatalogContractTest.mjs tests/Unit/ServerParityServiceEndpointsContractTest.mjs tests/Unit/ServerParityServiceCallsContractTest.mjs tests/Unit/ServerParityWorkflowImportContractTest.mjs tests/Unit/ServerParityWaterlineImportContractTest.mjs tests/Unit/ServerParitySystemMetricsContractTest.mjs tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs tests/Unit/ServerParityPrometheusMetricsContractTest.mjs tests/Unit/ServerParityPayloadCleanupContractTest.mjs tests/Unit/ServerParityRepairPassContractTest.mjs tests/Unit/ServerParityClusterInfoContractTest.mjs tests/Unit/ServerParityNamespaceDeleteContractTest.mjs tests/Unit/ServerParityMessageStreamsContractTest.mjs tests/Unit/ServerParityCancellationScopesContractTest.mjs tests/Unit/ServerParityWorkflowPollRequestContractTest.mjs tests/Unit/ServerParityUpdateValidationContractTest.mjs tests/Unit/ServerParityFixtureSelectionTest.mjs tests/Unit/ServerParityUpdateValidationRetryTest.mjs tests/Unit/ServerParityKilledAuthorPollTest.mjs tests/Unit/ServerParityImagePullTest.mjs tests/Unit/ServerParityAdapterCacheTest.mjs tests/Unit/ServerParityWorkerSessionsContractTest.mjs tests/Unit/ServerParityWorkerSessionActivitiesContractTest.mjs tests/Unit/ServerParityNexusOperationsContractTest.mjs tests/Unit/ServerParityBridgeAdaptersContractTest.mjs tests/Unit/ServerParityWorkflowStreamWritesContractTest.mjs > parity-evidence/comparator-tests.txt
+            "$image" --test \
+              tests/Unit/ServerParityRunnerTest.mjs \
+              tests/Unit/ServerParityRunnerBlockedExcerptTest.mjs \
+              tests/Unit/ServerParityProbeNotesTest.mjs \
+              tests/Unit/ServerParitySdkDirectionLanesTest.mjs \
+              tests/Unit/ServerParityCodecDeadlineCellsTest.mjs \
+              tests/Unit/ServerParityCooperativeContractTest.mjs \
+              tests/Unit/ServerParityChildCancellationContractTest.mjs \
+              tests/Unit/ServerParityScheduleContractTest.mjs \
+              tests/Unit/ServerParityVisibilityContractTest.mjs \
+              tests/Unit/ServerParityAdmissionContractTest.mjs \
+              tests/Unit/ServerParityRoleTokenContractTest.mjs \
+              tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs \
+              tests/Unit/ServerParitySearchAttributeContractTest.mjs \
+              tests/Unit/ServerParityWorkerListingContractTest.mjs \
+              tests/Unit/ServerParityWorkerReplacementContractTest.mjs \
+              tests/Unit/ServerParityPatchDeploymentContractTest.mjs \
+              tests/Unit/ServerParityWaitingHistoryContractTest.mjs \
+              tests/Unit/ServerParityTaskRetryContractTest.mjs \
+              tests/Unit/ServerParityPublishedPatchContractTest.mjs \
+              tests/Unit/ServerParityPublishedPatchTransportTest.mjs \
+              tests/Unit/ServerParityRecordFileTest.mjs \
+              tests/Unit/ServerParityFailureLocationTest.mjs \
+              tests/Unit/ServerParityFailureExcerptTest.mjs \
+              tests/Unit/ServerParityLateWorkflowCompletionContractTest.mjs \
+              tests/Unit/ServerParityStorageTestContractTest.mjs \
+              tests/Unit/ServerParitySchedulePoliciesContractTest.mjs \
+              tests/Unit/ServerParitySignalsBeforeWorkerContractTest.mjs \
+              tests/Unit/ServerParityScheduleCatalogContractTest.mjs \
+              tests/Unit/ServerParityOperatorMetricsContractTest.mjs \
+              tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs \
+              tests/Unit/ServerParityConcurrentWaitsContractTest.mjs \
+              tests/Unit/ServerParityContinueTransfersContractTest.mjs \
+              tests/Unit/ServerParityChildDescriptionsContractTest.mjs \
+              tests/Unit/ServerParityChildRetriesContractTest.mjs \
+              tests/Unit/ServerParityChildVisibilityContractTest.mjs \
+              tests/Unit/ServerParityWorkerErrorBodiesContractTest.mjs \
+              tests/Unit/ServerParityLargeCommandBatchesContractTest.mjs \
+              tests/Unit/ServerParityManyUpdatesContractTest.mjs \
+              tests/Unit/ServerParityStartSearchAttributesContractTest.mjs \
+              tests/Unit/ServerParityQueryArgumentsContractTest.mjs \
+              tests/Unit/ServerParityQueryContractArgumentsContractTest.mjs \
+              tests/Unit/ServerParityParentCloseCancellationContractTest.mjs \
+              tests/Unit/ServerParityRecordLocalActivityContractTest.mjs \
+              tests/Unit/ServerParityActivityCancellationAckContractTest.mjs \
+              tests/Unit/ServerParityServiceCatalogContractTest.mjs \
+              tests/Unit/ServerParityServiceEndpointsContractTest.mjs \
+              tests/Unit/ServerParityServiceCallsContractTest.mjs \
+              tests/Unit/ServerParityWorkflowImportContractTest.mjs \
+              tests/Unit/ServerParityWaterlineImportContractTest.mjs \
+              tests/Unit/ServerParitySystemMetricsContractTest.mjs \
+              tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs \
+              tests/Unit/ServerParityPrometheusMetricsContractTest.mjs \
+              tests/Unit/ServerParityPayloadCleanupContractTest.mjs \
+              tests/Unit/ServerParityRepairPassContractTest.mjs \
+              tests/Unit/ServerParityClusterInfoContractTest.mjs \
+              tests/Unit/ServerParityNamespaceDeleteContractTest.mjs \
+              tests/Unit/ServerParityMessageStreamsContractTest.mjs \
+              tests/Unit/ServerParityCancellationScopesContractTest.mjs \
+              tests/Unit/ServerParityWorkflowPollRequestContractTest.mjs \
+              tests/Unit/ServerParityUpdateValidationContractTest.mjs \
+              tests/Unit/ServerParityFixtureSelectionTest.mjs \
+              tests/Unit/ServerParityUpdateValidationRetryTest.mjs \
+              tests/Unit/ServerParityUpdateValidationTimingTest.mjs \
+              tests/Unit/ServerParityKilledAuthorPollTest.mjs \
+              tests/Unit/ServerParityImagePullTest.mjs \
+              tests/Unit/ServerParityAdapterCacheTest.mjs \
+              tests/Unit/ServerParityWorkerSessionsContractTest.mjs \
+              tests/Unit/ServerParityWorkerSessionActivitiesContractTest.mjs \
+              tests/Unit/ServerParityNexusOperationsContractTest.mjs \
+              tests/Unit/ServerParityBridgeAdaptersContractTest.mjs \
+              tests/Unit/ServerParityWorkflowStreamWritesContractTest.mjs > parity-evidence/comparator-tests.txt
           docker run --rm --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
             --network=none --entrypoint node -v "$PWD:/source:ro" -w /source \
             "$image" --test tests/Unit/ServerParityCodecDeadlineLoadTest.mjs > parity-evidence/codec-load-tests.txt
@@ -2523,6 +2735,7 @@ jobs:
       - changes
       - published-sdk-adapters
       - codec-native-build
+      - native-debug-build
       - codec-deadline-health
       - mysql-execution
       - postgres-storage

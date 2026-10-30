@@ -599,10 +599,24 @@ contract fixture before its correction.
   cases against published 2.11.5
   ([checkpoint](rust-server-port-checkpoints/2026-10-29-child-descriptions.md)).
   An open activity is likewise described ahead of open children
-  (October 29). A child with a retry or timeout policy, or a cancellation
-  policy other than `abandon` under a worker that declares cooperative
-  cancellation, is still described without its wait, pending its own
-  evidence.
+  (October 29). A child with a cancellation policy other than `abandon`
+  under a worker that declares cooperative cancellation is still described
+  without its wait, pending its own evidence.
+- **Child retry and timeout options** (October 29, closed). Published PHP
+  accepts `retry_policy`, `execution_timeout_seconds` and
+  `run_timeout_seconds` on `start_child_workflow`, records them on the call
+  and the child's runs, and retries a failed or timed-out child as a new run
+  of the same child instance while attempts remain and the failure is
+  retryable (`startChildRetryIfAvailable`). Native refused the three fields
+  with `unsupported_request_field`. It now records and retries the same
+  way, and describes a parent waiting on a retried child as waiting for it.
+  The `child-retries` fixture records seven cases against published 2.11.7
+  ([checkpoint](rust-server-port-checkpoints/2026-10-29-child-retries.md)).
+  A child timeout or backoff too far away for a timestamp is refused
+  (`invalid_child_timeout`, `invalid_child_retry_policy`), as a timer delay
+  is. Remaining: native's cooperative cancellation delivery expects one
+  link per call, so it refuses one delivered to a retried child
+  (`cancellation_delivery_shape_mismatch`; #873, pending a PHP recording).
 - **Trace context (Core 2.10, published in Server 2.11.1).** Core adds
   nullable `observability_context` columns on runs, commands and tasks.
   Native has no carrier: it accepts and ignores a top-level carrier on
@@ -639,10 +653,14 @@ contract fixture before its correction.
 - **Visibility query key order.** When one command or query has several
   errors, native reports them in sorted key order rather than request order.
   The same holds for several invalid search attributes on one start.
-- **Inherited memos and search attributes on child runs.** Published PHP
-  copies the parent's memos and search attributes to a child run and to a
-  retried child (`inheritTypedVisibilityMetadata`). Native copies both only
-  on continue-as-new.
+- **Inherited memos and search attributes on child runs** (October 29,
+  closed). Published PHP copies the parent's memos and search attributes to
+  a child run, and the failed run's to a retried child
+  (`inheritTypedVisibilityMetadata`). Native copied both only on
+  continue-as-new; the same copy now runs for a child's first run and a
+  retry. The `child-visibility` fixture records it against published
+  2.11.7
+  ([checkpoint](rust-server-port-checkpoints/2026-10-29-child-visibility.md)).
 - **Search attribute datetime forms.** `Carbon::parse` accepts relative and
   free-form dates. Native accepts RFC 3339, and a date or date and time
   without an offset read as UTC, and refuses other forms as PHP refuses an
@@ -659,9 +677,9 @@ contract fixture before its correction.
   - A field for a feature native cannot run, such as `worker_session`, is
     refused with `unsupported_request_field`. Fields PHP ignores are dropped
     as PHP drops them.
-  - A timer delay, retry backoff or wait timeout too large for a timestamp
-    is refused on native. PHP accepts it, and wraps a timer's fire time into
-    the past, so the timer fires at once.
+  - A timer delay, retry backoff, child timeout or wait timeout too large
+    for a timestamp is refused on native. PHP accepts it, and wraps a
+    timer's fire time into the past, so the timer fires at once.
 - **Search attribute limits.** Over 100 attributes or 64 KB per run, PHP
   raises an uncaught `InvalidArgumentException` while applying the command.
   Native refuses the completion with `422 search_attribute_limit_exceeded`

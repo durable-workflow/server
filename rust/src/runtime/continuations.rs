@@ -10,6 +10,7 @@ use super::{
     wire,
 };
 use axum::http::StatusCode;
+use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
@@ -28,6 +29,9 @@ pub(super) fn validate(command: &Value) -> Result<()> {
     }
     Ok(())
 }
+
+/// A memo key, its stored value and its current portable value.
+pub(super) type InheritedMemo = (String, Value, Option<Value>);
 
 impl<DB: Backend> Store<DB>
 where
@@ -85,6 +89,51 @@ where
         Ok(json!({"workflow_id":workflow,"run_count":runs.len(),"runs":runs}))
     }
 
+    /// The memos `MemoUpsertService::inheritFromParent` copies from a run:
+    /// each key and value, with its portable value when that is current.
+    pub(super) async fn inheritable_memos(tx: &mut Transaction<'_, DB>, from: &str) -> Result<Vec<InheritedMemo>> {
+        let rows = Self::query(DB::MEMO_READ).bind(from).fetch_all(&mut **tx).await?;
+        if rows.len() > super::memos::MAX_ENTRIES {
+            return Err(refuse(StatusCode::CONFLICT, "workflow_memo_validation_failed"));
+        }
+        let mut memos = Vec::with_capacity(rows.len());
+        for memo in rows {
+            let portable = if DB::optional_number(&memo, "portable_value_sequence")?
+                == Some(DB::number(&memo, "upserted_at_sequence")?)
+            {
+                DB::optional_document_row(&memo, "portable_value")?
+                    .filter(|value| value.is_object() || value.is_array())
+            } else {
+                None
+            };
+            memos.push((DB::string(&memo, "key")?, DB::document_row(&memo, "value")?, portable));
+        }
+        Ok(memos)
+    }
+
+    /// `inheritTypedVisibilityMetadata`: a new run takes these memos and
+    /// the source run's search attributes, as inherited at sequence 1.
+    /// Continue-as-new, a child's first run and a retried child's run do.
+    pub(super) async fn inherit_visibility(
+        tx: &mut Transaction<'_, DB>,
+        memos: Vec<InheritedMemo>,
+        from: &str,
+        to: &str,
+        instance: &str,
+        at: DateTime<Utc>,
+    ) -> Result<()> {
+        for (key, projection, portable) in memos {
+            Self::query(DB::MEMO_INHERIT_INSERT)
+                .bind(to).bind(instance).bind(key).bind(DB::document(&projection))
+                .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(portable.as_ref().map(DB::document))
+                .execute(&mut **tx).await?;
+        }
+        Self::query(DB::SEARCH_ATTRIBUTE_INHERIT)
+            .bind(to).bind(instance).bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(from)
+            .execute(&mut **tx).await?;
+        Ok(())
+    }
+
     pub(super) async fn continue_run(
         &self,
         tx: &mut Transaction<'_, DB>,
@@ -123,32 +172,7 @@ where
         // resolves no call to that binding, and takeover refuses an open one.
         // A call linked to this run through an `activity_execution` binding
         // stays with the predecessor, as in Core.
-        let rows = Self::query(DB::MEMO_READ)
-            .bind(&old)
-            .fetch_all(&mut **tx)
-            .await?;
-        if rows.len() > super::memos::MAX_ENTRIES {
-            return Err(refuse(
-                StatusCode::CONFLICT,
-                "workflow_memo_validation_failed",
-            ));
-        }
-        let mut memos = Vec::with_capacity(rows.len());
-        for memo in rows {
-            let portable = if DB::optional_number(&memo, "portable_value_sequence")?
-                == Some(DB::number(&memo, "upserted_at_sequence")?)
-            {
-                DB::optional_document_row(&memo, "portable_value")?
-                    .filter(|value| value.is_object() || value.is_array())
-            } else {
-                None
-            };
-            memos.push((
-                DB::string(&memo, "key")?,
-                DB::document_row(&memo, "value")?,
-                portable,
-            ));
-        }
+        let memos = Self::inheritable_memos(tx, &old).await?;
         // Validate the selected typed authority off the executor before any
         // successor mutation. Stale portable bytes retain the legacy fallback.
         super::memos::read_stored(self.memo_codec.clone(), memos.clone()).await?;
@@ -191,27 +215,7 @@ where
             .bind(DB::bind_time(started)).bind(DB::bind_time(started))
             .bind(DB::bind_time(started)).bind(DB::bind_time(started)).bind(&old)
             .execute(&mut **tx).await?;
-        for (key, projection, portable) in memos {
-            Self::query(DB::MEMO_INHERIT_INSERT)
-                .bind(&next)
-                .bind(&workflow)
-                .bind(key)
-                .bind(DB::document(&projection))
-                .bind(DB::bind_time(started))
-                .bind(DB::bind_time(started))
-                .bind(portable.as_ref().map(DB::document))
-                .execute(&mut **tx)
-                .await?;
-        }
-        // `SearchAttributeUpsertService::inheritFromParent` at sequence 1.
-        Self::query(DB::SEARCH_ATTRIBUTE_INHERIT)
-            .bind(&next)
-            .bind(&workflow)
-            .bind(DB::bind_time(started))
-            .bind(DB::bind_time(started))
-            .bind(&old)
-            .execute(&mut **tx)
-            .await?;
+        Self::inherit_visibility(tx, memos, &old, &next, &workflow, started).await?;
         Self::query("UPDATE workflow_instances SET current_run_id=$1,run_count=$2,workflow_class=$3,updated_at=$4 WHERE id=$5")
             .bind(&next).bind(number).bind(&class).bind(DB::bind_time(started)).bind(&workflow).execute(&mut **tx).await?;
         Self::query("INSERT INTO workflow_links(id,link_type,sequence,parent_workflow_instance_id,parent_workflow_run_id,child_workflow_instance_id,child_workflow_run_id,is_primary_parent,parent_close_policy,created_at,updated_at) VALUES ($1,'continue_as_new',$2,$3,$4,$5,$6,TRUE,'abandon',$7,$8)")

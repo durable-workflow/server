@@ -1,6 +1,8 @@
 //! Sequential child outcomes and abandoned-parent cleanup retain the original call.
-//! Retry, parallel groups and parent-close actions remain
-//! unqualified and are refused at admission rather than silently discarded.
+//! A retried child keeps the call under a new link (`child_retries`).
+//! Parallel child groups remain unqualified and are refused at admission
+//! rather than silently discarded.
+use super::schedule_storage::iso8601;
 use super::transaction::Transaction;
 use super::{
     Result,
@@ -38,6 +40,9 @@ pub(super) fn validate_child(command: &Value) -> Result<()> {
             "queue",
             "parent_close_policy",
             "cancellation_policy",
+            "retry_policy",
+            "execution_timeout_seconds",
+            "run_timeout_seconds",
         ],
     )?;
     if text(command, "workflow_type")?.len() > 191
@@ -54,6 +59,22 @@ pub(super) fn validate_child(command: &Value) -> Result<()> {
     }
     policies(command)?;
     envelope(command, "arguments")?;
+    // A deadline or backoff too far away for a timestamp is refused, as a
+    // timer delay or an activity backoff is (PHP's Carbon wraps it).
+    let now = now();
+    for field in ["execution_timeout_seconds", "run_timeout_seconds"] {
+        if let Some(seconds) = super::child_retries::timeout(command, field)
+            && super::child_retries::after(now, seconds).is_none()
+        {
+            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_child_timeout"));
+        }
+    }
+    // PHP reads a backoff object's values as a list (`array_values`).
+    if let Some(mut backoff) = super::child_retries::list(&command["retry_policy"]["backoff_seconds"])
+        && backoff.any(|entry| entry.as_i64().is_some_and(|seconds| super::child_retries::after(now, seconds).is_none()))
+    {
+        return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_child_retry_policy"));
+    }
     Ok(())
 }
 
@@ -277,18 +298,32 @@ where
         // `ChildCallService`: a child keeps its parent's build pin. A child of
         // an unpinned parent is unpinned too (checked against published 2.11.1).
         let compatibility = DB::optional_string(parent, "compatibility")?.filter(|build| !build.trim().is_empty());
-        // PHP children without explicit timeout options have nullable budgets
-        // and deadlines. Do not invent parent defaults for these runs.
+        // `applyStartChildWorkflow`: each deadline follows its own timeout.
+        // A child without timeout options has no budget or deadline, whatever
+        // its parent's.
+        let execution_timeout = super::child_retries::timeout(command, "execution_timeout_seconds");
+        let run_timeout = super::child_retries::timeout(command, "run_timeout_seconds");
+        let execution_deadline = super::child_retries::deadline(started_at, execution_timeout)?;
+        let run_deadline = super::child_retries::deadline(started_at, run_timeout)?;
+        let retry_policy = super::child_retries::retry_snapshot(command);
+        let timeout_policy = super::child_retries::timeout_snapshot(execution_timeout, run_timeout);
         Self::query("INSERT INTO workflow_instances(id,namespace,workflow_type,workflow_class,current_run_id,run_count,started_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,1,$6,$7,$8)")
             .bind(&child_instance).bind(namespace.as_deref()).bind(workflow_type).bind(workflow_type).bind(&child_run).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
-        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,namespace,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,started_at,created_at,updated_at,last_progress_at,compatibility) VALUES ($1,$2,$3,$4,$5,1,'pending','avro',$6,$7,$8,$9,$10,$11,$12)")
-            .bind(&child_run).bind(&child_instance).bind(namespace.as_deref()).bind(workflow_type).bind(workflow_type).bind(&arguments).bind(&queue).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(compatibility.as_deref()).execute(&mut **tx).await?;
-        Self::query("INSERT INTO workflow_child_calls(parent_workflow_run_id,parent_workflow_instance_id,sequence,child_workflow_type,child_workflow_class,resolved_child_instance_id,resolved_child_run_id,parent_close_policy,cancellation_propagation,queue,status,scheduled_at,started_at,arguments,metadata,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,($9<>'abandon'),$10,'started',$11,$12,$13,$14,$15,$16)")
+        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,namespace,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,started_at,created_at,updated_at,last_progress_at,compatibility,run_timeout_seconds,execution_deadline_at,run_deadline_at) VALUES ($1,$2,$3,$4,$5,1,'pending','avro',$6,$7,$8,$9,$10,$11,$12,NULLIF($13,0),$14,$15)")
+            .bind(&child_run).bind(&child_instance).bind(namespace.as_deref()).bind(workflow_type).bind(workflow_type).bind(&arguments).bind(&queue).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(compatibility.as_deref())
+            // Timeouts are at least one second; zero binds "no timeout".
+            .bind(run_timeout.unwrap_or(0)).bind(DB::optional_time(execution_deadline)).bind(DB::optional_time(run_deadline)).execute(&mut **tx).await?;
+        // `inheritTypedVisibilityMetadata`: the child takes its parent's memos
+        // and search attributes.
+        let memos = Self::inheritable_memos(tx, &parent_run).await?;
+        Self::inherit_visibility(tx, memos, &parent_run, &child_run, &child_instance, started_at).await?;
+        Self::query("INSERT INTO workflow_child_calls(parent_workflow_run_id,parent_workflow_instance_id,sequence,child_workflow_type,child_workflow_class,resolved_child_instance_id,resolved_child_run_id,parent_close_policy,cancellation_propagation,queue,status,scheduled_at,started_at,arguments,metadata,created_at,updated_at,retry_policy,timeout_policy) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,($9<>'abandon'),$10,'started',$11,$12,$13,$14,$15,$16,$17,$18)")
             .bind(&parent_run).bind(&parent_instance).bind(sequence).bind(workflow_type).bind(workflow_type).bind(&child_instance).bind(&child_run).bind(&policies.parent_close).bind(&policies.cancellation).bind(&queue).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at))
-            .bind(DB::document(&json!({"payload":arguments}))).bind(DB::document(&json!({"child_call_id":call,"attempt_count":1,"cancellation_policy":policies.cancellation}))).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
+            .bind(DB::document(&json!({"payload":arguments}))).bind(DB::document(&json!({"child_call_id":call,"attempt_count":1,"cancellation_policy":policies.cancellation}))).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at))
+            .bind(retry_policy.as_ref().map(DB::document)).bind(timeout_policy.as_ref().map(DB::document)).execute(&mut **tx).await?;
         Self::query("INSERT INTO workflow_links(id,link_type,sequence,parent_workflow_instance_id,parent_workflow_run_id,child_workflow_instance_id,child_workflow_run_id,is_primary_parent,parent_close_policy,created_at,updated_at) VALUES ($1,'child_workflow',$2,$3,$4,$5,$6,TRUE,$7,$8,$9)")
             .bind(&call).bind(sequence).bind(&parent_instance).bind(&parent_run).bind(&child_instance).bind(&child_run).bind(&policies.parent_close).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
-        let scheduled = json!({"sequence":sequence,"workflow_link_id":call,"child_call_id":call,"child_workflow_instance_id":child_instance,"child_workflow_run_id":child_run,"child_workflow_class":workflow_type,"child_workflow_type":workflow_type,"parent_close_policy":policies.parent_close,"cancellation_policy":policies.cancellation,"retry_policy":null,"timeout_policy":null});
+        let scheduled = json!({"sequence":sequence,"workflow_link_id":call,"child_call_id":call,"child_workflow_instance_id":child_instance,"child_workflow_run_id":child_run,"child_workflow_class":workflow_type,"child_workflow_type":workflow_type,"parent_close_policy":policies.parent_close,"cancellation_policy":policies.cancellation,"retry_policy":retry_policy,"timeout_policy":timeout_policy});
         Self::append(
             tx,
             &parent_run,
@@ -298,15 +333,12 @@ where
             None,
         )
         .await?;
+        let deadlines = json!({"execution_timeout_seconds":execution_timeout,"run_timeout_seconds":run_timeout,
+            "execution_deadline_at":execution_deadline.map(iso8601),"run_deadline_at":run_deadline.map(iso8601)});
         let mut started = scheduled;
         started["child_run_number"] = json!(1);
-        for field in [
-            "execution_timeout_seconds",
-            "run_timeout_seconds",
-            "execution_deadline_at",
-            "run_deadline_at",
-        ] {
-            started[field] = Value::Null;
+        for (field, value) in deadlines.as_object().expect("an object") {
+            started[field] = value.clone();
         }
         Self::append(
             tx,
@@ -317,7 +349,10 @@ where
             None,
         )
         .await?;
-        let mut child_started = json!({"workflow_class":workflow_type,"workflow_type":workflow_type,"workflow_instance_id":child_instance,"workflow_run_id":child_run,"parent_workflow_instance_id":parent_instance,"parent_workflow_run_id":parent_run,"parent_sequence":sequence,"workflow_link_id":call,"child_call_id":call,"retry_policy":null,"timeout_policy":null,"execution_timeout_seconds":null,"run_timeout_seconds":null,"execution_deadline_at":null,"run_deadline_at":null});
+        let mut child_started = json!({"workflow_class":workflow_type,"workflow_type":workflow_type,"workflow_instance_id":child_instance,"workflow_run_id":child_run,"parent_workflow_instance_id":parent_instance,"parent_workflow_run_id":parent_run,"parent_sequence":sequence,"workflow_link_id":call,"child_call_id":call,"retry_policy":retry_policy,"timeout_policy":timeout_policy});
+        for (field, value) in deadlines.as_object().expect("an object") {
+            child_started[field] = value.clone();
+        }
         Self::attach_workflow_contract(tx, &queue, workflow_type, None, &mut child_started).await?;
         Self::append(tx, &child_run, "WorkflowStarted", child_started, None, None).await?;
         let child_task = Self::create_task(tx, &child_run, &queue, "workflow", json!({})).await?;
@@ -390,7 +425,10 @@ where
         // event names the continue-as-new link and the original call, and the
         // parent's link to it is a new one (`applyContinueAsNew`).
         let continued = original["continued_from_run_id"].is_string();
-        let call_id = if continued {
+        // A retried child keeps its first call too; its own link is new
+        // (`startChildRetryIfAvailable`).
+        let retried = original["retry_of_child_workflow_run_id"].is_string();
+        let call_id = if continued || retried {
             original["child_call_id"].as_str().map(str::to_owned).ok_or_else(|| refuse(StatusCode::CONFLICT, "child_call_mismatch"))?
         } else {
             link_id.clone()
@@ -399,7 +437,7 @@ where
             || original["parent_workflow_instance_id"]
                 != DB::string(link, "parent_workflow_instance_id")?
             || original["parent_sequence"] != sequence
-            || (!continued && original["workflow_link_id"] != call_id)
+            || (!continued && original["workflow_link_id"] != link_id)
             || original["child_call_id"] != call_id
             || original["workflow_instance_id"] != DB::string(child, "workflow_instance_id")?
             || original["workflow_run_id"] != child_run
@@ -426,6 +464,13 @@ where
         {
             return Err(refuse(StatusCode::CONFLICT, "child_call_mismatch"));
         }
+        // `dispatchParentResumeTasksForRun`: a failed child is retried, when
+        // its policy allows, before the parent sees it fail.
+        if matches!(resolution, ChildResolution::Failed(_))
+            && Self::start_child_retry(tx, &parent, link, call, child, sequence, &call_id).await?
+        {
+            return Ok(());
+        }
         let (status, event_type) = match resolution {
             ChildResolution::Completed(_) => ("completed", "ChildRunCompleted"),
             ChildResolution::Cancelled(_) => ("cancelled", "ChildRunCancelled"),
@@ -442,7 +487,13 @@ where
                 .await?;
         }
         let parent_resume = Self::child_parent_resume(tx, &parent).await?;
-        let mut payload = json!({"sequence":sequence,"workflow_link_id":link_id,"child_call_id":call_id,"child_workflow_instance_id":DB::string(child,"workflow_instance_id")?,"child_workflow_run_id":child_run,"child_workflow_class":DB::string(child,"workflow_class")?,"child_workflow_type":DB::string(child,"workflow_type")?,"child_run_number":DB::number(child,"run_number")?,"child_status":status,"closed_reason":status,"closed_at":closed_at});
+        // The event names the child run's closed reason: a run that timed
+        // out failed with `timed_out`. The call keeps its status.
+        let closed_reason = match resolution {
+            ChildResolution::Failed(failure) if failure["timeout_kind"].is_string() => "timed_out",
+            _ => status,
+        };
+        let mut payload = json!({"sequence":sequence,"workflow_link_id":link_id,"child_call_id":call_id,"child_workflow_instance_id":DB::string(child,"workflow_instance_id")?,"child_workflow_run_id":child_run,"child_workflow_class":DB::string(child,"workflow_class")?,"child_workflow_type":DB::string(child,"workflow_type")?,"child_run_number":DB::number(child,"run_number")?,"child_status":status,"closed_reason":closed_reason,"closed_at":closed_at});
         match resolution {
             ChildResolution::Completed(output) => {
                 payload["output"] = wire(output);
@@ -481,5 +532,145 @@ where
         Self::query("UPDATE workflow_run_waits SET task_backed=TRUE,task_id=$1,task_type='workflow',task_status=$2 WHERE workflow_run_id=$3 AND wait_id=$4 AND kind='child' AND status IN ('resolved','cancelled')")
             .bind(task_id).bind(task_status).bind(&parent_run).bind(format!("child:{call_id}")).execute(&mut **tx).await?;
         Ok(())
+    }
+    /// `startChildRetryIfAvailable`: when the call's retry policy has
+    /// attempts left and the failure is retryable, the child instance starts
+    /// a new run after the policy's backoff, and the parent keeps waiting on
+    /// the same call. Returns whether a retry started.
+    async fn start_child_retry(
+        tx: &mut Transaction<'_, DB>,
+        parent: &DB::Row,
+        link: &DB::Row,
+        call: &DB::Row,
+        failed: &DB::Row,
+        sequence: i64,
+        call_id: &str,
+    ) -> Result<bool> {
+        let parent_run = DB::string(parent, "id")?;
+        let failed_run = DB::string(failed, "id")?;
+        // The policy the parent recorded when it scheduled the call, or the
+        // call's own when that event is in an earlier run.
+        let mut scheduled = Value::Null;
+        for row in Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='ChildWorkflowScheduled' ORDER BY sequence")
+            .bind(&parent_run).fetch_all(&mut **tx).await?
+        {
+            let payload = DB::document_row(&row, "payload")?;
+            if payload["sequence"] == sequence {
+                scheduled = payload;
+                break;
+            }
+        }
+        let policy = if scheduled["retry_policy"].is_object() || scheduled["retry_policy"].is_array() {
+            scheduled["retry_policy"].clone()
+        } else {
+            DB::optional_document_row(call, "retry_policy")?
+                .filter(|policy| policy.is_object() || policy.is_array())
+                .unwrap_or(Value::Null)
+        };
+        if policy.is_null() {
+            return Ok(false);
+        }
+        let attempts = Self::scalar("SELECT COUNT(*) FROM workflow_links WHERE parent_workflow_run_id=$1 AND sequence=$2 AND link_type='child_workflow'")
+            .bind(&parent_run).bind(sequence).fetch_one(&mut **tx).await?;
+        if attempts >= super::child_retries::max_attempts(&policy) {
+            return Ok(false);
+        }
+        let failure = Self::query("SELECT CASE WHEN non_retryable THEN 1 ELSE 0 END AS non_retryable_flag,exception_class FROM workflow_failures WHERE workflow_run_id=$1 ORDER BY created_at,id LIMIT 1")
+            .bind(&failed_run).fetch_optional(&mut **tx).await?;
+        let failure = match failure {
+            Some(row) => Some((DB::number(&row, "non_retryable_flag")? != 0, DB::optional_string(&row, "exception_class")?)),
+            None => None,
+        };
+        let failed_event = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowFailed' ORDER BY sequence DESC LIMIT 1")
+            .bind(&failed_run).fetch_optional(&mut **tx).await?;
+        let failed_event = match failed_event {
+            Some(row) => Some(DB::document_row(&row, "payload")?),
+            None => None,
+        };
+        if super::child_retries::non_retryable(&policy, failure, failed_event.as_ref()) {
+            return Ok(false);
+        }
+        let timeout_policy = if scheduled["timeout_policy"].is_object() { scheduled["timeout_policy"].clone() } else { Value::Null };
+        let execution_timeout = timeout_policy["execution_timeout_seconds"].as_i64();
+        let run_timeout = timeout_policy["run_timeout_seconds"].as_i64();
+        let at = now();
+        let backoff = super::child_retries::backoff_seconds(&policy, attempts);
+        let available_at = super::child_retries::after(at, backoff)
+            .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_child_retry_policy"))?;
+        let instance = DB::string(failed, "workflow_instance_id")?;
+        // The latest run as a row: an aggregate of MySQL's unsigned column
+        // does not decode as a signed integer.
+        let latest = Self::query("SELECT run_number FROM workflow_runs WHERE workflow_instance_id=$1 ORDER BY run_number DESC LIMIT 1")
+            .bind(&instance).fetch_one(&mut **tx).await?;
+        let run_number = DB::number(&latest, "run_number")? + 1;
+        // The execution deadline spans every attempt; each run gets its own.
+        let execution_deadline = match DB::optional_instant(failed, "execution_deadline_at")? {
+            Some(deadline) => Some(deadline),
+            None => super::child_retries::deadline(at, execution_timeout)?,
+        };
+        let run_deadline = super::child_retries::deadline(at, run_timeout)?;
+        let retry_run = id();
+        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,run_number,workflow_class,workflow_type,namespace,business_key,visibility_labels,status,compatibility,payload_codec,arguments,run_timeout_seconds,execution_deadline_at,run_deadline_at,connection,queue,started_at,last_progress_at,created_at,updated_at) SELECT $1,workflow_instance_id,$2,workflow_class,workflow_type,namespace,business_key,visibility_labels,'pending',compatibility,payload_codec,arguments,NULLIF($3,0),$4,$5,connection,queue,$6,$7,$8,$9 FROM workflow_runs WHERE id=$10")
+            .bind(&retry_run).bind(run_number).bind(run_timeout.unwrap_or(0)).bind(DB::optional_time(execution_deadline)).bind(DB::optional_time(run_deadline))
+            .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(&failed_run)
+            .execute(&mut **tx).await?;
+        // The retry takes the failed run's memos and search attributes.
+        let memos = Self::inheritable_memos(tx, &failed_run).await?;
+        Self::inherit_visibility(tx, memos, &failed_run, &retry_run, &instance, at).await?;
+        // Each placeholder appears once, in order, as MySQL's templates require.
+        Self::query("UPDATE workflow_instances SET current_run_id=$1,run_count=CASE WHEN run_count>$2 THEN run_count ELSE $3 END,updated_at=$4 WHERE id=$5")
+            .bind(&retry_run).bind(run_number).bind(run_number).bind(DB::bind_time(at)).bind(&instance).execute(&mut **tx).await?;
+        let parent_close = DB::optional_string(link, "parent_close_policy")?.unwrap_or_else(|| "abandon".into());
+        let retry_link = id();
+        Self::query("INSERT INTO workflow_links(id,link_type,sequence,parent_workflow_instance_id,parent_workflow_run_id,child_workflow_instance_id,child_workflow_run_id,is_primary_parent,parent_close_policy,created_at,updated_at) VALUES ($1,'child_workflow',$2,$3,$4,$5,$6,TRUE,$7,$8,$9)")
+            .bind(&retry_link).bind(sequence).bind(DB::string(parent, "workflow_instance_id")?).bind(&parent_run).bind(&instance).bind(&retry_run)
+            .bind(&parent_close).bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut **tx).await?;
+        let workflow_type = DB::string(failed, "workflow_type")?;
+        let workflow_class = DB::string(failed, "workflow_class")?;
+        let deadlines = json!({"execution_timeout_seconds":execution_timeout,"run_timeout_seconds":run_timeout,
+            "execution_deadline_at":execution_deadline.map(iso8601),"run_deadline_at":run_deadline.map(iso8601)});
+        let retry = json!({"retry_attempt":attempts + 1,"retry_of_child_workflow_run_id":failed_run});
+        let mut started = json!({"sequence":sequence,"workflow_link_id":retry_link,"child_call_id":call_id,
+            "child_workflow_instance_id":instance,"child_workflow_run_id":retry_run,"child_workflow_class":workflow_class,
+            "child_workflow_type":workflow_type,"child_run_number":run_number,"parent_close_policy":parent_close,
+            "retry_backoff_seconds":backoff,"retry_policy":policy,"timeout_policy":timeout_policy});
+        for source in [&retry, &deadlines] {
+            for (field, value) in source.as_object().expect("an object") {
+                started[field] = value.clone();
+            }
+        }
+        // PHP records the parent's event without its null fields.
+        if let Some(fields) = started.as_object_mut() {
+            fields.retain(|_, value| !value.is_null());
+        }
+        Self::append(tx, &parent_run, "ChildRunStarted", started, None, None).await?;
+        let mut child_started = json!({"workflow_class":workflow_class,"workflow_type":workflow_type,"workflow_instance_id":instance,
+            "workflow_run_id":retry_run,"parent_workflow_instance_id":DB::string(parent, "workflow_instance_id")?,
+            "parent_workflow_run_id":parent_run,"parent_sequence":sequence,"workflow_link_id":retry_link,"child_call_id":call_id,
+            "retry_policy":policy,"timeout_policy":timeout_policy});
+        for source in [&retry, &deadlines] {
+            for (field, value) in source.as_object().expect("an object") {
+                child_started[field] = value.clone();
+            }
+        }
+        let queue = DB::string(failed, "queue")?;
+        Self::attach_workflow_contract(tx, &queue, &workflow_type, None, &mut child_started).await?;
+        Self::append(tx, &retry_run, "WorkflowStarted", child_started, None, None).await?;
+        let task = Self::create_task(tx, &retry_run, &queue, "workflow", json!({})).await?;
+        if backoff > 0 {
+            Self::query("UPDATE workflow_tasks SET available_at=$1 WHERE id=$2")
+                .bind(DB::bind_time(available_at)).bind(&task).execute(&mut **tx).await?;
+        }
+        // `markChildCallRetryStarted`.
+        let mut metadata = DB::optional_document_row(call, "metadata")?.filter(Value::is_object).unwrap_or_else(|| json!({}));
+        metadata["child_call_id"] = json!(call_id);
+        metadata["attempt_count"] = json!(attempts + 1);
+        metadata["last_retry_of_child_workflow_run_id"] = json!(failed_run);
+        metadata["last_retry_backoff_seconds"] = json!(backoff);
+        Self::query("UPDATE workflow_child_calls SET resolved_child_instance_id=$1,resolved_child_run_id=$2,status='started',started_at=$3,metadata=$4,updated_at=$5 WHERE id=$6")
+            .bind(&instance).bind(&retry_run).bind(DB::bind_time(at)).bind(DB::document(&metadata)).bind(DB::bind_time(at))
+            .bind(DB::number(call, "id")?).execute(&mut **tx).await?;
+        tx.summary_changed(&parent_run);
+        Ok(true)
     }
 }
