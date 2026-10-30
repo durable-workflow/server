@@ -572,8 +572,53 @@ impl Compiled {
         keys
     }
 
-    pub(super) fn matches(&self, run: &RunFields, attributes: &BTreeMap<String, Typed>) -> bool {
-        self.0.iter().any(|group| group.iter().all(|check| check.matches(run, attributes)))
+    /// Whether the run matches. `key` gives the comparison key of a text
+    /// value: the value itself on SQLite and PostgreSQL, whose equality is
+    /// exact, and its collation key on MySQL (`utf8mb4_unicode_ci`).
+    pub(super) fn matches(&self, run: &RunFields, attributes: &BTreeMap<String, Typed>, key: &dyn Fn(&str) -> String) -> bool {
+        self.0.iter().any(|group| group.iter().all(|check| check.matches(run, attributes, key)))
+    }
+
+    /// The text values the query compares against, which need collation keys.
+    pub(super) fn text_literals(&self) -> Vec<String> {
+        let mut texts = Vec::new();
+        for check in self.0.iter().flatten() {
+            let values = match check {
+                Check::Column { values, .. } => values,
+                Check::Attribute { kind, values, .. } if matches!(*kind, "keyword" | "text") => values,
+                _ => continue,
+            };
+            texts.extend(values.iter().filter_map(|value| match value {
+                Coerced::Text(text) => Some(text.clone()),
+                _ => None,
+            }));
+        }
+        texts
+    }
+
+    /// The run's text columns the query compares, which need collation keys.
+    pub(super) fn run_texts(&self, run: &RunFields) -> Vec<String> {
+        let mut texts = Vec::new();
+        for check in self.0.iter().flatten() {
+            if let Check::Column { column, .. } = check {
+                match column {
+                    Column::WorkflowType => texts.push(run.workflow_type.clone()),
+                    Column::WorkflowId => texts.push(run.workflow_id.clone()),
+                    Column::RunId => texts.push(run.run_id.clone()),
+                    Column::TaskQueue => texts.push(run.queue.clone()),
+                    Column::Compatibility => texts.extend(run.compatibility.clone()),
+                    Column::StartedAt | Column::ClosedAt => {}
+                }
+            }
+        }
+        texts
+    }
+
+    /// Whether the query compares the attribute key as text.
+    pub(super) fn compares_text(&self, attribute: &str) -> bool {
+        self.0.iter().flatten().any(|check| {
+            matches!(check, Check::Attribute { key, kind, .. } if key == attribute && matches!(*kind, "keyword" | "text"))
+        })
     }
 }
 
@@ -607,8 +652,16 @@ fn membership(found: bool, operator: &str) -> bool {
     if operator == "NOT IN" { !found } else { found }
 }
 
+/// The value compared under the backend's text collation.
+fn collated(value: &Coerced, key: &dyn Fn(&str) -> String) -> Coerced {
+    match value {
+        Coerced::Text(text) => Coerced::Text(key(text)),
+        other => other.clone(),
+    }
+}
+
 impl Check {
-    fn matches(&self, run: &RunFields, attributes: &BTreeMap<String, Typed>) -> bool {
+    fn matches(&self, run: &RunFields, attributes: &BTreeMap<String, Typed>, fold: &dyn Fn(&str) -> String) -> bool {
         match self {
             Self::Status { bucket, value, equal } => {
                 let stored = if *bucket { &run.status_bucket } else { &run.status };
@@ -616,7 +669,8 @@ impl Check {
             }
             Self::Column { column, operator, values } => {
                 let text = |text: &str| -> bool {
-                    let candidate = Coerced::Text(text.to_owned());
+                    let candidate = Coerced::Text(fold(text));
+                    let values: Vec<Coerced> = values.iter().map(|value| collated(value, fold)).collect();
                     match *operator {
                         "IN" | "NOT IN" => membership(values.contains(&candidate), operator),
                         _ => values.first().is_some_and(|value| compare(&candidate, operator, value)),
@@ -644,9 +698,14 @@ impl Check {
             Self::Attribute { key, kind, operator, values } => {
                 // `whereHas`: the run needs a row for the key whose value matches.
                 let Some(row) = attributes.get(key) else { return false };
+                let collated_values: Vec<Coerced>;
+                let mut values = values;
                 let candidates: Vec<Coerced> = match (*kind, row) {
-                    ("keyword", Typed::Keyword(text)) => vec![Coerced::Text(text.clone())],
-                    ("text", Typed::String(text) | Typed::Keyword(text)) => vec![Coerced::Text(text.clone())],
+                    ("keyword", Typed::Keyword(text)) | ("text", Typed::String(text) | Typed::Keyword(text)) => {
+                        collated_values = values.iter().map(|value| collated(value, fold)).collect();
+                        values = &collated_values;
+                        vec![Coerced::Text(fold(text))]
+                    }
                     ("int", Typed::Int(number)) => vec![Coerced::Int(*number)],
                     ("double", Typed::Float(number)) => vec![Coerced::Float(*number)],
                     ("double", Typed::Int(number)) => vec![Coerced::Float(*number as f64)],
@@ -692,6 +751,10 @@ mod tests {
             .into_iter()
             .map(|(name, kind)| (name.to_owned(), kind.to_owned()))
             .collect()
+    }
+
+    fn exact(text: &str) -> String {
+        text.to_owned()
     }
 
     fn compiled(query: &str) -> Result<Compiled, String> {
@@ -751,7 +814,7 @@ mod tests {
             "StartTime < \"2026-10-09\"",
         ] {
             let compiled = compiled(query).unwrap_or_else(|error| panic!("{query}: {error}"));
-            assert!(compiled.matches(&run(), &attributes()), "{query}");
+            assert!(compiled.matches(&run(), &attributes(), &exact), "{query}");
         }
         for query in [
             "SearchKeyword = \"missing\"",
@@ -762,10 +825,26 @@ mod tests {
             "Status = completed",
         ] {
             let compiled = compiled(query).unwrap_or_else(|error| panic!("{query}: {error}"));
-            assert!(!compiled.matches(&run(), &attributes()), "{query}");
+            assert!(!compiled.matches(&run(), &attributes(), &exact), "{query}");
         }
         // A run without the attribute never matches, not even `!=`.
-        assert!(!compiled("SearchKeyword != \"x\"").unwrap().matches(&run(), &BTreeMap::new()));
+        assert!(!compiled("SearchKeyword != \"x\"").unwrap().matches(&run(), &BTreeMap::new(), &exact));
+    }
+
+    #[test]
+    fn text_compares_by_the_backend_s_collation_key() {
+        // A stand-in for MySQL's utf8mb4_unicode_ci key: case-insensitive.
+        let folded = |text: &str| text.trim_end_matches(' ').to_lowercase();
+        for query in ["SearchKeyword = \"界界\"", "WorkflowType = \"SAMPLE\"", "SearchText IN ('TWO WORDS')"] {
+            let compiled = compiled(query).unwrap();
+            assert!(!compiled.matches(&run(), &attributes(), &exact) || query.contains('界'), "{query} exact");
+            assert!(compiled.matches(&run(), &attributes(), &folded), "{query} folded");
+        }
+        let compiled = compiled("WorkflowType = \"SAMPLE\" AND SearchKeyword = \"x\"").unwrap();
+        assert_eq!(compiled.text_literals(), vec!["SAMPLE".to_owned(), "x".to_owned()]);
+        assert_eq!(compiled.run_texts(&run()), vec![run().workflow_type]);
+        assert!(compiled.compares_text("SearchKeyword"));
+        assert!(!compiled.compares_text("SearchCount"));
     }
 
     #[test]
