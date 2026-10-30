@@ -67,6 +67,7 @@ on:
       - tests/Unit/ServerParityWorkerErrorBodiesContractTest.mjs
       - tests/Unit/ServerParityChildDescriptionsContractTest.mjs
       - tests/Unit/ServerParityChildRetriesContractTest.mjs
+      - tests/Unit/ServerParityActivityLateOutcomesContractTest.mjs
       - tests/Unit/ServerParityChildVisibilityContractTest.mjs
       - tests/Unit/ServerParityRetriedChildCancellationContractTest.mjs
       - tests/Unit/ServerParityActivityResultRepeatsContractTest.mjs
@@ -2204,6 +2205,7 @@ jobs:
               tests/Unit/ServerParityContinueTransfersContractTest.mjs \
               tests/Unit/ServerParityChildDescriptionsContractTest.mjs \
               tests/Unit/ServerParityChildRetriesContractTest.mjs \
+              tests/Unit/ServerParityActivityLateOutcomesContractTest.mjs \
               tests/Unit/ServerParityChildVisibilityContractTest.mjs \
               tests/Unit/ServerParityRetriedChildCancellationContractTest.mjs \
               tests/Unit/ServerParityActivityResultRepeatsContractTest.mjs \

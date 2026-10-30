@@ -20,6 +20,7 @@ import {checkManyUpdates} from './many-updates-contract.mjs';
 import {checkWorkerErrorBodies} from './worker-error-bodies-contract.mjs';
 import {checkChildDescriptions} from './child-descriptions-contract.mjs';
 import {checkChildRetries} from './child-retries-contract.mjs';
+import {checkActivityLateOutcomes} from './activity-late-outcomes-contract.mjs';
 import {checkChildVisibility} from './child-visibility-contract.mjs';
 import {checkRetriedChildCancellation} from './retried-child-cancellation-contract.mjs';
 import {checkActivityResultRepeats} from './activity-result-repeats-contract.mjs';
@@ -188,6 +189,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const workerErrorBodies = fixture.worker_error_bodies ? checkWorkerErrorBodies(fixture, observation) : null;
   const childDescriptions = fixture.child_descriptions ? checkChildDescriptions(fixture, observation) : null;
   const childRetries = fixture.child_retries ? checkChildRetries(fixture, observation) : null;
+  const activityLateOutcomes = fixture.activity_late_outcomes ? checkActivityLateOutcomes(fixture, observation) : null;
   const childVisibility = fixture.child_visibility ? checkChildVisibility(fixture, observation) : null;
   const retriedChildCancellation = fixture.retried_child_cancellation ? checkRetriedChildCancellation(fixture, observation) : null;
   const activityResultRepeats = fixture.activity_result_repeats ? checkActivityResultRepeats(fixture, observation) : null;
@@ -774,6 +776,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(workerErrorBodies ? {worker_error_bodies: workerErrorBodies} : {}),
     ...(childDescriptions ? {child_descriptions: childDescriptions} : {}),
     ...(childRetries ? {child_retries: childRetries} : {}),
+    ...(activityLateOutcomes ? {activity_late_outcomes: activityLateOutcomes} : {}),
     ...(childVisibility ? {child_visibility: childVisibility} : {}),
     ...(retriedChildCancellation ? {retried_child_cancellation: retriedChildCancellation} : {}),
     ...(activityResultRepeats ? {activity_result_repeats: activityResultRepeats} : {}),

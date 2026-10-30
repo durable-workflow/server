@@ -700,11 +700,18 @@ contract fixture before its correction.
   and a parallel group whose members are all timers. It refuses the other boundaries, including
   parallel groups with other member kinds, with
   `422 cancellation_delivery_boundary_not_available`.
-- **Activity results after a deadline, before its timeout runs.** Published
-  PHP records a completion that arrives after an activity deadline has
-  passed when its separate timeout command has not yet closed the attempt.
-  Native refuses it with the deadline's timeout reason, because its own
-  timeout pass runs in every server process.
+- **Activity results after a deadline** (October 30, closed; the entry
+  was stale). Published 2.11.7 refuses an activity completion or failure
+  that arrives after the attempt's start-to-close, schedule-to-close or
+  heartbeat deadline, and records nothing, as native does. Before the
+  timeout sweep closes the attempt, it answers `409` with the deadline's
+  timeout reason. After the sweep it answers `409 stale_attempt`. With
+  its maintenance loop stopped, it still refuses with the timeout reason.
+  The `activity-late-outcomes` fixture accepts either refusal, because
+  which one a run sees races the sweep on both servers. It checks that
+  nothing is recorded and that exactly one `ActivityTimedOut` of the
+  deadline's kind follows
+  ([checkpoint](rust-server-port-checkpoints/2026-10-30-activity-late-outcomes.md)).
 - **A repeated identical activity result** (October 30, closed). Published
   PHP answers every repeat of the result that finished an activity attempt
   with its stale-attempt receipt (`409 stale_attempt`, recorded false),
