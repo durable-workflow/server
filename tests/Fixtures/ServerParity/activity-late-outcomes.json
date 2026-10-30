@@ -1,0 +1,134 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "activity-late-outcomes",
+  "review_state": "reviewed",
+  "contract": "An activity outcome that arrives after the attempt's deadline (published Server 2.11.7), over raw worker HTTP on protocol 1.20 in a fresh namespace. Each case schedules one activity with a two-second start-to-close, schedule-to-close or heartbeat deadline, claims it, and completes or fails it 3.5 seconds later. The outcome is refused 409 and records nothing: with the deadline's own timeout reason while the timeout sweep has not yet closed the attempt, or stale_attempt once it has. Which one a run sees is a race with the sweep on both servers, so the contract accepts either and nothing else. The sweep then records exactly one ActivityTimedOut of the deadline's kind, and the parent resumes. Embedded applications have no worker protocol.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "activity late outcomes λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "activity late outcomes λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "activity_late_outcomes": {
+    "workflow_type": "parity.v1.activity_late_outcomes",
+    "activity_type": "parity.v1.activity_late_outcomes_activity",
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "late_by_seconds": 3.5,
+    "cases": {
+      "start_to_close_complete": {
+        "timeouts": {
+          "start_to_close_timeout": 2
+        },
+        "route": "complete",
+        "timeout_reason": "start_to_close_timeout"
+      },
+      "start_to_close_fail": {
+        "timeouts": {
+          "start_to_close_timeout": 2
+        },
+        "route": "fail",
+        "timeout_reason": "start_to_close_timeout"
+      },
+      "schedule_to_close_complete": {
+        "timeouts": {
+          "schedule_to_close_timeout": 2
+        },
+        "route": "complete",
+        "timeout_reason": "schedule_to_close_timeout"
+      },
+      "heartbeat_complete": {
+        "timeouts": {
+          "heartbeat_timeout": 2,
+          "start_to_close_timeout": 60
+        },
+        "route": "complete",
+        "timeout_reason": "heartbeat_timeout"
+      }
+    },
+    "refusals": [
+      "after_timeout",
+      "deadline_reason"
+    ],
+    "expected": {
+      "start_to_close_complete": {
+        "answer": {
+          "status": 409,
+          "recorded": false,
+          "refusal": "{refusal}"
+        },
+        "activity_events": [
+          "ActivityScheduled",
+          "ActivityStarted",
+          "ActivityTimedOut"
+        ],
+        "timeout_kind": "start_to_close",
+        "parent_closed": 200
+      },
+      "start_to_close_fail": {
+        "answer": {
+          "status": 409,
+          "recorded": false,
+          "refusal": "{refusal}"
+        },
+        "activity_events": [
+          "ActivityScheduled",
+          "ActivityStarted",
+          "ActivityTimedOut"
+        ],
+        "timeout_kind": "start_to_close",
+        "parent_closed": 200
+      },
+      "schedule_to_close_complete": {
+        "answer": {
+          "status": 409,
+          "recorded": false,
+          "refusal": "{refusal}"
+        },
+        "activity_events": [
+          "ActivityScheduled",
+          "ActivityStarted",
+          "ActivityTimedOut"
+        ],
+        "timeout_kind": "schedule_to_close",
+        "parent_closed": 200
+      },
+      "heartbeat_complete": {
+        "answer": {
+          "status": 409,
+          "recorded": false,
+          "refusal": "{refusal}"
+        },
+        "activity_events": [
+          "ActivityScheduled",
+          "ActivityStarted",
+          "ActivityTimedOut"
+        ],
+        "timeout_kind": "heartbeat",
+        "parent_closed": 200
+      }
+    }
+  }
+}

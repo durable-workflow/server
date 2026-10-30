@@ -438,6 +438,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $workerErrorBodies = isset($fixture['worker_error_bodies']) ? finishHttpWorkerErrorBodies($client, $fixture, $workflowId, $url) : null;
     $childDescriptions = isset($fixture['child_descriptions']) ? finishHttpChildDescriptions($client, $fixture, $workflowId, $url) : null;
     $childRetries = isset($fixture['child_retries']) ? finishHttpChildRetries($client, $fixture, $workflowId, $url) : null;
+    $activityLateOutcomes = isset($fixture['activity_late_outcomes']) ? finishHttpActivityLateOutcomes($client, $fixture, $workflowId, $url) : null;
     $childVisibility = isset($fixture['child_visibility']) ? finishHttpChildVisibility($client, $fixture, $workflowId, $url) : null;
     $retriedChildCancellation = isset($fixture['retried_child_cancellation']) ? finishHttpRetriedChildCancellation($client, $fixture, $workflowId, $url) : null;
     $activityResultRepeats = isset($fixture['activity_result_repeats']) ? finishHttpActivityResultRepeats($client, $fixture, $workflowId, $url) : null;
@@ -577,6 +578,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'worker_error_bodies' => $workerErrorBodies,
         'child_descriptions' => $childDescriptions,
         'child_retries' => $childRetries,
+        'activity_late_outcomes' => $activityLateOutcomes,
         'child_visibility' => $childVisibility,
         'retried_child_cancellation' => $retriedChildCancellation,
         'activity_result_repeats' => $activityResultRepeats,
@@ -919,6 +921,7 @@ try {
     require __DIR__.'/worker-error-bodies-probe.php';
     require __DIR__.'/child-descriptions-probe.php';
     require __DIR__.'/child-retries-probe.php';
+    require __DIR__.'/activity-late-outcomes-probe.php';
     require __DIR__.'/child-visibility-probe.php';
     require __DIR__.'/retried-child-cancellation-probe.php';
     require __DIR__.'/activity-result-repeats-probe.php';
@@ -1128,6 +1131,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['child_retries'])) {
         $observation['child_retries'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
+    }
+    if ($mode === 'embedded' && isset($fixture['activity_late_outcomes'])) {
+        $observation['activity_late_outcomes'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
     }
     if ($mode === 'embedded' && isset($fixture['child_visibility'])) {
         $observation['child_visibility'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
