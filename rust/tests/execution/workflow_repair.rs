@@ -86,7 +86,7 @@ async fn repair_creates_a_missing_workflow_activity_or_timer_task_like_php() {
         let database = TestDatabase::new().await;
         let runtime = database.open().await.unwrap();
         runtime.set_maintenance_repair(false);
-        let app = router(runtime);
+        let app = router(runtime.clone());
         register(&app, "worker", json!(["echo"]), json!(["act"])).await;
         let started = start(&app, id).await;
         if let Some(command) = command {
@@ -107,6 +107,7 @@ async fn repair_creates_a_missing_workflow_activity_or_timer_task_like_php() {
             let claimed = poll(&app, "worker", kind).await;
             assert_eq!(claimed["workflow_id"], id, "{id}: {claimed}");
         }
+        runtime.close().await;
         database.remove().await;
     }
 }
@@ -121,7 +122,7 @@ async fn repair_settles_an_expired_activity_lease_by_its_retry_policy_like_php()
         let database = TestDatabase::new().await;
         let runtime = database.open().await.unwrap();
         runtime.set_maintenance_repair(false);
-        let app = router(runtime);
+        let app = router(runtime.clone());
         register(&app, "worker", json!(["echo"]), json!(["act"])).await;
         let started = start(&app, id).await;
         let task = poll(&app, "worker", "workflow").await;
@@ -139,6 +140,7 @@ async fn repair_settles_an_expired_activity_lease_by_its_retry_policy_like_php()
         assert_eq!(kinds[kinds.len() - 2..], [settled.to_owned(), "RepairRequested".to_owned()], "{id}: {kinds:?}");
         let event = &repairs(&app, &started).await[0]["payload"];
         assert_eq!(event["task_type"], kind, "{id}: {event}");
+        runtime.close().await;
         database.remove().await;
     }
 }
