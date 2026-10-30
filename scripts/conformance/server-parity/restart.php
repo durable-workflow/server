@@ -12,6 +12,27 @@ use DurableWorkflow\Worker\Replayer;
 require __DIR__.'/vendor/autoload.php';
 require __DIR__.'/lock-pressure-transport.php';
 
+/**
+ * A repeat of the result that finished an activity attempt gets published
+ * PHP's stale-attempt receipt (409, recorded false), which the published SDKs
+ * read as their own committed outcome. Returns that receipt.
+ */
+function staleActivityRepeat(callable $send): array
+{
+    try {
+        $send();
+    } catch (ServerException $exception) {
+        $details = is_array($exception->details) ? $exception->details : [];
+        assertRestart($exception->status === 409 && ($details['reason'] ?? null) === 'stale_attempt'
+            && ($details['recorded'] ?? null) === false, 'A repeated activity result was not refused as stale.');
+
+        return $details;
+    }
+    assertRestart(false, 'A repeated activity result was accepted again.');
+
+    return [];
+}
+
 function assertRestart(bool $condition, string $message): void
 {
     if (! $condition) {
@@ -311,8 +332,8 @@ assertRestart($client->pollWorkflowTask('restart-cancel-new', 'restart-cancel-v1
 $retry = $receipt['retry'];
 $firstRetryClaim = $retry['first_claim'];
 assertRestart(sameRestartValue($retry['history'], $client->workflowHistory($retry['workflow_id'], $retry['run_id'])['events']), 'Acknowledged retry history changed across process loss.');
-$failureDuplicate = $client->failActivityTask($firstRetryClaim['task_id'], $firstRetryClaim['activity_attempt_id'],
-    $firstRetryClaim['lease_owner'], 'restart retry λ', 'RuntimeException');
+$failureDuplicate = staleActivityRepeat(fn () => $client->failActivityTask($firstRetryClaim['task_id'], $firstRetryClaim['activity_attempt_id'],
+    $firstRetryClaim['lease_owner'], 'restart retry λ', 'RuntimeException'));
 assertRestart($failureDuplicate['recorded'] === false, 'Acknowledged pre-kill failure created another retry.');
 $refuseOldRetryResult = function () use ($client, $firstRetryClaim, $value): void {
     $refused = false;
@@ -327,8 +348,8 @@ $refuseOldRetryResult();
 $terminal = $receipt['terminal'];
 $terminalActivity = $terminal['activity'];
 assertRestart(sameRestartValue($terminal['history'], $client->workflowHistory($terminal['workflow_id'], $terminal['run_id'])['events']), 'Original acknowledged terminal failure changed after the kill.');
-$terminalFailureDuplicate = $client->failActivityTask($terminalActivity['task_id'], $terminalActivity['activity_attempt_id'],
-    $terminalActivity['lease_owner'], 'restart terminal λ', 'RuntimeException', nonRetryable: true);
+$terminalFailureDuplicate = staleActivityRepeat(fn () => $client->failActivityTask($terminalActivity['task_id'], $terminalActivity['activity_attempt_id'],
+    $terminalActivity['lease_owner'], 'restart terminal λ', 'RuntimeException', nonRetryable: true));
 assertRestart($terminalFailureDuplicate['recorded'] === false, 'Pre-kill terminal failure created another outcome or parent resume.');
 $refuseOldTerminalResult = function () use ($client, $terminalActivity, $value): void {
     $refused = false;
@@ -400,7 +421,7 @@ assertRestart((new DateTimeImmutable($retryHistory[5]['payload']['task']['availa
     === (new DateTimeImmutable($retry['history'][4]['payload']['retry_available_at']))->format('U.u'), 'Recovered retry recomputed its original backoff deadline.');
 assertRestart(new DateTimeImmutable($retryHistory[5]['payload']['task']['leased_at']) >= new DateTimeImmutable($retry['history'][4]['payload']['retry_available_at']), 'Recovered retry claimed before its original deadline.');
 assertRestart($retryHistory[5]['payload']['activity']['arguments'] === $retry['history'][2]['payload']['activity']['arguments'], 'Recovered retry changed original argument bytes.');
-$retryDuplicate = $client->completeActivityTask($retryClaim['task_id'], $retryClaim['activity_attempt_id'], $retryClaim['lease_owner'], $retryResult);
+$retryDuplicate = staleActivityRepeat(fn () => $client->completeActivityTask($retryClaim['task_id'], $retryClaim['activity_attempt_id'], $retryClaim['lease_owner'], $retryResult));
 assertRestart($retryDuplicate['recorded'] === false
     && sameRestartValue($retryHistory, $client->workflowHistory($retry['workflow_id'], $retry['run_id'])['events']), 'Recovered retry completion created another outcome.');
 $refuseOldRetryResult();
