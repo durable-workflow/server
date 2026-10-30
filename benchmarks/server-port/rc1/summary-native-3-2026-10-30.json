@@ -1,0 +1,912 @@
+{
+  "identity": {
+    "implementation": "native-image",
+    "compose_project": "dw-port-native-image-20261030t184931",
+    "profile": "benchmarks/server-port/rc1/matched.json",
+    "profile_sha256": "567a4ead768385ffcb1becaeebdd1dca2bdefdc3282c2c42eafe57cd358b893f",
+    "source_revision": "03a3e7b7c02281ee8ff58fb53180e428e866ad39",
+    "native_binary_sha256": "",
+    "native_image": "ghcr.io/durable-workflow/server-native@sha256:43718810bb9d1657aefe5fa157dfdd894c8f2a6d3e7edd6449a2ae3d0add6c86",
+    "smoke": false,
+    "idle_only": false,
+    "machine": {
+      "kernel": "6.8.0-146-generic",
+      "logical_cpus": 6,
+      "physical_memory_bytes": 16763072512,
+      "cpu_model": "Intel Core Processor (Broadwell, no TSX, IBRS)",
+      "docker": "27.5.1",
+      "cgroup_driver": "cgroupfs",
+      "docker_storage_driver": "overlay2",
+      "docker_root_filesystem": ""
+    }
+  },
+  "windows": {
+    "setup": {
+      "seconds": 5.1,
+      "health": {
+        "replies": 7,
+        "failures": 0,
+        "slowest_ok_seconds": 0.023
+      },
+      "cpu_core_seconds": {
+        "mysql": 0.908361,
+        "native-image-server": 0.422782,
+        "probe": 0.0,
+        "sdk-worker": 0.0
+      },
+      "max_memory_bytes": {
+        "mysql": 530370560,
+        "native-image-server": 4726784,
+        "probe": 16670720,
+        "sdk-worker": 18780160
+      },
+      "max_runtime_memory_bytes": 4726784,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "offered_rate_per_second": 0.25,
+      "planned_starts": 2,
+      "accepted_starts": 2,
+      "skipped_offer_slots": 0,
+      "late_starts_over_one_slot": 0,
+      "completed_by_observation_deadline": 2,
+      "pending_at_deadline": 0,
+      "closed_during_offer_window": 2,
+      "latency_p50_seconds": 0.2524588108062744,
+      "latency_p95_seconds": 0.4375569820404053,
+      "latency_p99_seconds": 0.4375569820404053,
+      "poll_errors": 0,
+      "errors": 0,
+      "runtime_core_seconds_per_workflow": 0.2114,
+      "mysql_core_seconds_per_workflow": 0.4542
+    },
+    "warmup": {
+      "seconds": 60.2,
+      "health": {
+        "replies": 89,
+        "failures": 0,
+        "slowest_ok_seconds": 0.294
+      },
+      "cpu_core_seconds": {
+        "mysql": 12.23339,
+        "native-image-server": 6.343928,
+        "probe": 0.381201,
+        "sdk-worker": 0.572722
+      },
+      "max_memory_bytes": {
+        "mysql": 548671488,
+        "native-image-server": 7958528,
+        "probe": 16953344,
+        "sdk-worker": 20676608
+      },
+      "max_runtime_memory_bytes": 7958528,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "offered_rate_per_second": 0.25,
+      "planned_starts": 15,
+      "accepted_starts": 15,
+      "skipped_offer_slots": 0,
+      "late_starts_over_one_slot": 0,
+      "completed_by_observation_deadline": 15,
+      "pending_at_deadline": 0,
+      "closed_during_offer_window": 15,
+      "latency_p50_seconds": 0.29265904426574707,
+      "latency_p95_seconds": 0.4496908187866211,
+      "latency_p99_seconds": 0.4496908187866211,
+      "poll_errors": 0,
+      "errors": 0,
+      "runtime_core_seconds_per_workflow": 0.4229,
+      "mysql_core_seconds_per_workflow": 0.8156
+    },
+    "low-before-1": {
+      "seconds": 119.3,
+      "health": {
+        "replies": 178,
+        "failures": 0,
+        "slowest_ok_seconds": 0.109
+      },
+      "cpu_core_seconds": {
+        "mysql": 21.81589,
+        "native-image-server": 10.976067,
+        "probe": 0.435531,
+        "sdk-worker": 1.032227
+      },
+      "max_memory_bytes": {
+        "mysql": 565084160,
+        "native-image-server": 7024640,
+        "probe": 16699392,
+        "sdk-worker": 22343680
+      },
+      "max_runtime_memory_bytes": 7024640,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "offered_rate_per_second": 0.25,
+      "planned_starts": 30,
+      "accepted_starts": 30,
+      "skipped_offer_slots": 0,
+      "late_starts_over_one_slot": 0,
+      "completed_by_observation_deadline": 30,
+      "pending_at_deadline": 0,
+      "closed_during_offer_window": 30,
+      "latency_p50_seconds": 0.26427197456359863,
+      "latency_p95_seconds": 0.3262310028076172,
+      "latency_p99_seconds": 0.3682289123535156,
+      "poll_errors": 0,
+      "errors": 0,
+      "runtime_core_seconds_per_workflow": 0.3659,
+      "mysql_core_seconds_per_workflow": 0.7272
+    },
+    "low-before-2": {
+      "seconds": 120.3,
+      "health": {
+        "replies": 180,
+        "failures": 0,
+        "slowest_ok_seconds": 0.116
+      },
+      "cpu_core_seconds": {
+        "mysql": 22.693146,
+        "native-image-server": 11.474261,
+        "probe": -0.070936,
+        "sdk-worker": 1.126062
+      },
+      "max_memory_bytes": {
+        "mysql": 581246976,
+        "native-image-server": 7319552,
+        "probe": 16695296,
+        "sdk-worker": 25468928
+      },
+      "max_runtime_memory_bytes": 7319552,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "offered_rate_per_second": 0.25,
+      "planned_starts": 30,
+      "accepted_starts": 30,
+      "skipped_offer_slots": 0,
+      "late_starts_over_one_slot": 0,
+      "completed_by_observation_deadline": 30,
+      "pending_at_deadline": 0,
+      "closed_during_offer_window": 30,
+      "latency_p50_seconds": 0.2820899486541748,
+      "latency_p95_seconds": 0.3512229919433594,
+      "latency_p99_seconds": 0.36809301376342773,
+      "poll_errors": 0,
+      "errors": 0,
+      "runtime_core_seconds_per_workflow": 0.3825,
+      "mysql_core_seconds_per_workflow": 0.7564
+    },
+    "low-before-3": {
+      "seconds": 119.8,
+      "health": {
+        "replies": 176,
+        "failures": 0,
+        "slowest_ok_seconds": 0.193
+      },
+      "cpu_core_seconds": {
+        "mysql": 23.970076,
+        "native-image-server": 12.145089,
+        "probe": 0.12083,
+        "sdk-worker": 1.119173
+      },
+      "max_memory_bytes": {
+        "mysql": 597217280,
+        "native-image-server": 7737344,
+        "probe": 18223104,
+        "sdk-worker": 27955200
+      },
+      "max_runtime_memory_bytes": 7737344,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "offered_rate_per_second": 0.25,
+      "planned_starts": 30,
+      "accepted_starts": 30,
+      "skipped_offer_slots": 0,
+      "late_starts_over_one_slot": 0,
+      "completed_by_observation_deadline": 30,
+      "pending_at_deadline": 0,
+      "closed_during_offer_window": 30,
+      "latency_p50_seconds": 0.2851440906524658,
+      "latency_p95_seconds": 0.4220738410949707,
+      "latency_p99_seconds": 0.9131450653076172,
+      "poll_errors": 0,
+      "errors": 0,
+      "runtime_core_seconds_per_workflow": 0.4048,
+      "mysql_core_seconds_per_workflow": 0.799
+    },
+    "rate-0.5-1": {
+      "seconds": 119.6,
+      "health": {
+        "replies": 176,
+        "failures": 0,
+        "slowest_ok_seconds": 0.114
+      },
+      "cpu_core_seconds": {
+        "mysql": 30.976204,
+        "native-image-server": 15.168927,
+        "probe": 0.111801,
+        "sdk-worker": 1.706373
+      },
+      "max_memory_bytes": {
+        "mysql": 626573312,
+        "native-image-server": 7819264,
+        "probe": 16699392,
+        "sdk-worker": 31731712
+      },
+      "max_runtime_memory_bytes": 7819264,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "offered_rate_per_second": 0.5,
+      "planned_starts": 60,
+      "accepted_starts": 60,
+      "skipped_offer_slots": 0,
+      "late_starts_over_one_slot": 0,
+      "completed_by_observation_deadline": 60,
+      "pending_at_deadline": 0,
+      "closed_during_offer_window": 60,
+      "latency_p50_seconds": 0.2648179531097412,
+      "latency_p95_seconds": 0.3629779815673828,
+      "latency_p99_seconds": 0.4188239574432373,
+      "poll_errors": 0,
+      "errors": 0,
+      "runtime_core_seconds_per_workflow": 0.2528,
+      "mysql_core_seconds_per_workflow": 0.5163
+    },
+    "rate-0.5-2": {
+      "seconds": 119.9,
+      "health": {
+        "replies": 178,
+        "failures": 0,
+        "slowest_ok_seconds": 0.11
+      },
+      "cpu_core_seconds": {
+        "mysql": 33.322164,
+        "native-image-server": 16.294135,
+        "probe": 0.012644,
+        "sdk-worker": 1.824324
+      },
+      "max_memory_bytes": {
+        "mysql": 655663104,
+        "native-image-server": 7303168,
+        "probe": 18247680,
+        "sdk-worker": 35549184
+      },
+      "max_runtime_memory_bytes": 7303168,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "offered_rate_per_second": 0.5,
+      "planned_starts": 60,
+      "accepted_starts": 60,
+      "skipped_offer_slots": 0,
+      "late_starts_over_one_slot": 0,
+      "completed_by_observation_deadline": 60,
+      "pending_at_deadline": 0,
+      "closed_during_offer_window": 60,
+      "latency_p50_seconds": 0.27853989601135254,
+      "latency_p95_seconds": 0.35549378395080566,
+      "latency_p99_seconds": 0.8145270347595215,
+      "poll_errors": 0,
+      "errors": 0,
+      "runtime_core_seconds_per_workflow": 0.2716,
+      "mysql_core_seconds_per_workflow": 0.5554
+    },
+    "rate-0.5-3": {
+      "seconds": 119.8,
+      "health": {
+        "replies": 174,
+        "failures": 0,
+        "slowest_ok_seconds": 0.119
+      },
+      "cpu_core_seconds": {
+        "mysql": 34.350145,
+        "native-image-server": 17.02698,
+        "probe": 0.043543,
+        "sdk-worker": 1.876645
+      },
+      "max_memory_bytes": {
+        "mysql": 683106304,
+        "native-image-server": 8220672,
+        "probe": 18460672,
+        "sdk-worker": 37019648
+      },
+      "max_runtime_memory_bytes": 8220672,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "offered_rate_per_second": 0.5,
+      "planned_starts": 60,
+      "accepted_starts": 60,
+      "skipped_offer_slots": 0,
+      "late_starts_over_one_slot": 0,
+      "completed_by_observation_deadline": 60,
+      "pending_at_deadline": 0,
+      "closed_during_offer_window": 60,
+      "latency_p50_seconds": 0.2874441146850586,
+      "latency_p95_seconds": 0.46161508560180664,
+      "latency_p99_seconds": 0.565457820892334,
+      "poll_errors": 0,
+      "errors": 0,
+      "runtime_core_seconds_per_workflow": 0.2838,
+      "mysql_core_seconds_per_workflow": 0.5725
+    },
+    "rate-1-1": {
+      "seconds": 121.2,
+      "health": {
+        "replies": 179,
+        "failures": 0,
+        "slowest_ok_seconds": 0.122
+      },
+      "cpu_core_seconds": {
+        "mysql": 50.136024,
+        "native-image-server": 24.460988,
+        "probe": 0.381801,
+        "sdk-worker": 3.141737
+      },
+      "max_memory_bytes": {
+        "mysql": 737705984,
+        "native-image-server": 8015872,
+        "probe": 16961536,
+        "sdk-worker": 38244352
+      },
+      "max_runtime_memory_bytes": 8015872,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "offered_rate_per_second": 1,
+      "planned_starts": 120,
+      "accepted_starts": 120,
+      "skipped_offer_slots": 0,
+      "late_starts_over_one_slot": 0,
+      "completed_by_observation_deadline": 120,
+      "pending_at_deadline": 0,
+      "closed_during_offer_window": 120,
+      "latency_p50_seconds": 0.2691690921783447,
+      "latency_p95_seconds": 0.33419203758239746,
+      "latency_p99_seconds": 0.36517906188964844,
+      "poll_errors": 0,
+      "errors": 0,
+      "runtime_core_seconds_per_workflow": 0.2038,
+      "mysql_core_seconds_per_workflow": 0.4178
+    },
+    "rate-1-2": {
+      "seconds": 121.7,
+      "health": {
+        "replies": 176,
+        "failures": 0,
+        "slowest_ok_seconds": 0.123
+      },
+      "cpu_core_seconds": {
+        "mysql": 54.256019,
+        "native-image-server": 26.586601,
+        "probe": 0.183204,
+        "sdk-worker": 3.280609
+      },
+      "max_memory_bytes": {
+        "mysql": 792424448,
+        "native-image-server": 8249344,
+        "probe": 16953344,
+        "sdk-worker": 39047168
+      },
+      "max_runtime_memory_bytes": 8249344,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "offered_rate_per_second": 1,
+      "planned_starts": 120,
+      "accepted_starts": 120,
+      "skipped_offer_slots": 0,
+      "late_starts_over_one_slot": 0,
+      "completed_by_observation_deadline": 120,
+      "pending_at_deadline": 0,
+      "closed_during_offer_window": 120,
+      "latency_p50_seconds": 0.2924158573150635,
+      "latency_p95_seconds": 0.39650607109069824,
+      "latency_p99_seconds": 0.5436220169067383,
+      "poll_errors": 0,
+      "errors": 0,
+      "runtime_core_seconds_per_workflow": 0.2216,
+      "mysql_core_seconds_per_workflow": 0.4521
+    },
+    "rate-1-3": {
+      "seconds": 122.3,
+      "health": {
+        "replies": 180,
+        "failures": 0,
+        "slowest_ok_seconds": 0.278
+      },
+      "cpu_core_seconds": {
+        "mysql": 52.061044,
+        "native-image-server": 25.488881,
+        "probe": -1.787817,
+        "sdk-worker": 3.210082
+      },
+      "max_memory_bytes": {
+        "mysql": 829947904,
+        "native-image-server": 8118272,
+        "probe": 17711104,
+        "sdk-worker": 38223872
+      },
+      "max_runtime_memory_bytes": 8118272,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "offered_rate_per_second": 1,
+      "planned_starts": 120,
+      "accepted_starts": 120,
+      "skipped_offer_slots": 0,
+      "late_starts_over_one_slot": 0,
+      "completed_by_observation_deadline": 120,
+      "pending_at_deadline": 0,
+      "closed_during_offer_window": 120,
+      "latency_p50_seconds": 0.2703859806060791,
+      "latency_p95_seconds": 0.36342811584472656,
+      "latency_p99_seconds": 0.457442045211792,
+      "poll_errors": 0,
+      "errors": 0,
+      "runtime_core_seconds_per_workflow": 0.2124,
+      "mysql_core_seconds_per_workflow": 0.4338
+    },
+    "low-after-1": {
+      "seconds": 119.6,
+      "health": {
+        "replies": 174,
+        "failures": 0,
+        "slowest_ok_seconds": 0.19
+      },
+      "cpu_core_seconds": {
+        "mysql": 26.865155,
+        "native-image-server": 12.993078,
+        "probe": 1.011183,
+        "sdk-worker": 1.258991
+      },
+      "max_memory_bytes": {
+        "mysql": 839340032,
+        "native-image-server": 8122368,
+        "probe": 16691200,
+        "sdk-worker": 39788544
+      },
+      "max_runtime_memory_bytes": 8122368,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "offered_rate_per_second": 0.25,
+      "planned_starts": 30,
+      "accepted_starts": 30,
+      "skipped_offer_slots": 0,
+      "late_starts_over_one_slot": 0,
+      "completed_by_observation_deadline": 30,
+      "pending_at_deadline": 0,
+      "closed_during_offer_window": 30,
+      "latency_p50_seconds": 0.2947092056274414,
+      "latency_p95_seconds": 0.7395081520080566,
+      "latency_p99_seconds": 0.7824540138244629,
+      "poll_errors": 0,
+      "errors": 0,
+      "runtime_core_seconds_per_workflow": 0.4331,
+      "mysql_core_seconds_per_workflow": 0.8955
+    },
+    "low-after-2": {
+      "seconds": 120.3,
+      "health": {
+        "replies": 178,
+        "failures": 0,
+        "slowest_ok_seconds": 0.11
+      },
+      "cpu_core_seconds": {
+        "mysql": 24.940178,
+        "native-image-server": 12.095336,
+        "probe": -0.035517,
+        "sdk-worker": 1.204977
+      },
+      "max_memory_bytes": {
+        "mysql": 849235968,
+        "native-image-server": 7708672,
+        "probe": 16691200,
+        "sdk-worker": 38625280
+      },
+      "max_runtime_memory_bytes": 7708672,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "offered_rate_per_second": 0.25,
+      "planned_starts": 30,
+      "accepted_starts": 30,
+      "skipped_offer_slots": 0,
+      "late_starts_over_one_slot": 0,
+      "completed_by_observation_deadline": 30,
+      "pending_at_deadline": 0,
+      "closed_during_offer_window": 30,
+      "latency_p50_seconds": 0.2977161407470703,
+      "latency_p95_seconds": 0.36864590644836426,
+      "latency_p99_seconds": 0.37868404388427734,
+      "poll_errors": 0,
+      "errors": 0,
+      "runtime_core_seconds_per_workflow": 0.4032,
+      "mysql_core_seconds_per_workflow": 0.8313
+    },
+    "low-after-3": {
+      "seconds": 119.8,
+      "health": {
+        "replies": 176,
+        "failures": 0,
+        "slowest_ok_seconds": 0.116
+      },
+      "cpu_core_seconds": {
+        "mysql": 24.695741,
+        "native-image-server": 12.023657,
+        "probe": 0.012206,
+        "sdk-worker": 1.177376
+      },
+      "max_memory_bytes": {
+        "mysql": 855625728,
+        "native-image-server": 7938048,
+        "probe": 16736256,
+        "sdk-worker": 40144896
+      },
+      "max_runtime_memory_bytes": 7938048,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "offered_rate_per_second": 0.25,
+      "planned_starts": 30,
+      "accepted_starts": 30,
+      "skipped_offer_slots": 0,
+      "late_starts_over_one_slot": 0,
+      "completed_by_observation_deadline": 30,
+      "pending_at_deadline": 0,
+      "closed_during_offer_window": 30,
+      "latency_p50_seconds": 0.2837071418762207,
+      "latency_p95_seconds": 0.4066789150238037,
+      "latency_p99_seconds": 0.5056419372558594,
+      "poll_errors": 0,
+      "errors": 0,
+      "runtime_core_seconds_per_workflow": 0.4008,
+      "mysql_core_seconds_per_workflow": 0.8232
+    }
+  },
+  "idle": {
+    "idle-6-1": {
+      "seconds": 11.7,
+      "health": {
+        "replies": 18,
+        "failures": 0,
+        "slowest_ok_seconds": 0.213
+      },
+      "cpu_core_seconds": {
+        "mysql": 2.259207,
+        "native-image-server": 1.114475,
+        "probe": -0.987872,
+        "sdk-worker": null
+      },
+      "max_memory_bytes": {
+        "mysql": 857718784,
+        "native-image-server": 6451200,
+        "probe": 31264768,
+        "sdk-worker": 0
+      },
+      "max_runtime_memory_bytes": 6451200,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "requested_polls": 6,
+      "all_registered": true,
+      "cleanup_errors": 0,
+      "outcomes": {
+        "empty": 6
+      }
+    },
+    "idle-6-2": {
+      "seconds": 11.5,
+      "health": {
+        "replies": 16,
+        "failures": 0,
+        "slowest_ok_seconds": 0.103
+      },
+      "cpu_core_seconds": {
+        "mysql": 2.265455,
+        "native-image-server": 1.029974,
+        "probe": 0.0,
+        "sdk-worker": null
+      },
+      "max_memory_bytes": {
+        "mysql": 855224320,
+        "native-image-server": 6459392,
+        "probe": 31412224,
+        "sdk-worker": 0
+      },
+      "max_runtime_memory_bytes": 6459392,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "requested_polls": 6,
+      "all_registered": true,
+      "cleanup_errors": 0,
+      "outcomes": {
+        "empty": 6
+      }
+    },
+    "idle-6-3": {
+      "seconds": 11.6,
+      "health": {
+        "replies": 16,
+        "failures": 0,
+        "slowest_ok_seconds": 0.017
+      },
+      "cpu_core_seconds": {
+        "mysql": 2.249254,
+        "native-image-server": 1.109155,
+        "probe": 0.0,
+        "sdk-worker": null
+      },
+      "max_memory_bytes": {
+        "mysql": 855560192,
+        "native-image-server": 6635520,
+        "probe": 31608832,
+        "sdk-worker": 0
+      },
+      "max_runtime_memory_bytes": 6635520,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "requested_polls": 6,
+      "all_registered": true,
+      "cleanup_errors": 0,
+      "outcomes": {
+        "empty": 6
+      }
+    },
+    "idle-12-1": {
+      "seconds": 11.9,
+      "health": {
+        "replies": 17,
+        "failures": 0,
+        "slowest_ok_seconds": 0.105
+      },
+      "cpu_core_seconds": {
+        "mysql": 2.889853,
+        "native-image-server": 1.415807,
+        "probe": 0.67154,
+        "sdk-worker": null
+      },
+      "max_memory_bytes": {
+        "mysql": 856031232,
+        "native-image-server": 6713344,
+        "probe": 46624768,
+        "sdk-worker": 0
+      },
+      "max_runtime_memory_bytes": 6713344,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "requested_polls": 12,
+      "all_registered": true,
+      "cleanup_errors": 0,
+      "outcomes": {
+        "empty": 12
+      }
+    },
+    "idle-12-2": {
+      "seconds": 11.8,
+      "health": {
+        "replies": 18,
+        "failures": 0,
+        "slowest_ok_seconds": 0.016
+      },
+      "cpu_core_seconds": {
+        "mysql": 2.627323,
+        "native-image-server": 1.373659,
+        "probe": 0.028714,
+        "sdk-worker": null
+      },
+      "max_memory_bytes": {
+        "mysql": 855552000,
+        "native-image-server": 7802880,
+        "probe": 46723072,
+        "sdk-worker": 0
+      },
+      "max_runtime_memory_bytes": 7802880,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "requested_polls": 12,
+      "all_registered": true,
+      "cleanup_errors": 0,
+      "outcomes": {
+        "empty": 12
+      }
+    },
+    "idle-12-3": {
+      "seconds": 12.2,
+      "health": {
+        "replies": 18,
+        "failures": 0,
+        "slowest_ok_seconds": 0.104
+      },
+      "cpu_core_seconds": {
+        "mysql": 2.945827,
+        "native-image-server": 1.534472,
+        "probe": 0.124939,
+        "sdk-worker": null
+      },
+      "max_memory_bytes": {
+        "mysql": 856178688,
+        "native-image-server": 6909952,
+        "probe": 47857664,
+        "sdk-worker": 0
+      },
+      "max_runtime_memory_bytes": 6909952,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "requested_polls": 12,
+      "all_registered": true,
+      "cleanup_errors": 0,
+      "outcomes": {
+        "empty": 12
+      }
+    },
+    "idle-24-1": {
+      "seconds": 12.7,
+      "health": {
+        "replies": 18,
+        "failures": 0,
+        "slowest_ok_seconds": 0.029
+      },
+      "cpu_core_seconds": {
+        "mysql": 4.544368,
+        "native-image-server": 2.280513,
+        "probe": 0.291698,
+        "sdk-worker": null
+      },
+      "max_memory_bytes": {
+        "mysql": 856371200,
+        "native-image-server": 7352320,
+        "probe": 70180864,
+        "sdk-worker": 0
+      },
+      "max_runtime_memory_bytes": 7352320,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "requested_polls": 24,
+      "all_registered": true,
+      "cleanup_errors": 0,
+      "outcomes": {
+        "empty": 24
+      }
+    },
+    "idle-24-2": {
+      "seconds": 12.7,
+      "health": {
+        "replies": 20,
+        "failures": 0,
+        "slowest_ok_seconds": 0.196
+      },
+      "cpu_core_seconds": {
+        "mysql": 4.278324,
+        "native-image-server": 2.220256,
+        "probe": -0.074133,
+        "sdk-worker": null
+      },
+      "max_memory_bytes": {
+        "mysql": 856272896,
+        "native-image-server": 8523776,
+        "probe": 73289728,
+        "sdk-worker": 0
+      },
+      "max_runtime_memory_bytes": 8523776,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "requested_polls": 24,
+      "all_registered": true,
+      "cleanup_errors": 0,
+      "outcomes": {
+        "empty": 24
+      }
+    },
+    "idle-24-3": {
+      "seconds": 12.4,
+      "health": {
+        "replies": 19,
+        "failures": 0,
+        "slowest_ok_seconds": 0.082
+      },
+      "cpu_core_seconds": {
+        "mysql": 4.242902,
+        "native-image-server": 2.142702,
+        "probe": -0.131072,
+        "sdk-worker": null
+      },
+      "max_memory_bytes": {
+        "mysql": 856711168,
+        "native-image-server": 7557120,
+        "probe": 64466944,
+        "sdk-worker": 0
+      },
+      "max_runtime_memory_bytes": 7557120,
+      "oom_kills": {
+        "mysql": 0,
+        "native-image-server": 0,
+        "probe": 0,
+        "sdk-worker": 0
+      },
+      "requested_polls": 24,
+      "all_registered": true,
+      "cleanup_errors": 0,
+      "outcomes": {
+        "empty": 24
+      }
+    }
+  }
+}

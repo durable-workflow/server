@@ -93,6 +93,9 @@ dc() { docker compose -p "$project" -f "$compose" "$@"; }
 probe() { dc run --rm --no-deps probe "$@"; }
 
 cgroup_driver=$(docker info --format '{{.CgroupDriver}}')
+# The daemon's socket, for the stats fallback when its cgroups are not visible.
+docker_socket=""
+case "${DOCKER_HOST:-unix:///var/run/docker.sock}" in unix://*) docker_socket=${DOCKER_HOST:-unix:///var/run/docker.sock}; docker_socket=${docker_socket#unix://} ;; esac
 jq -n --arg impl "$impl" --arg project "$project" --arg profile "$profile" \
   --arg profile_sha "$(sha256sum "$profile" | cut -d ' ' -f1)" \
   --arg source "$(git -C "$DW_PORT_SOURCE_ROOT" rev-parse HEAD)" --arg binary "$binary_sha" --arg native_image "$native_image" \
@@ -149,13 +152,25 @@ sample() {
     now=$(date -u +%s.%N)
     for id in "${!names[@]}"; do
       dir=$(cgroup_dir "$id")
-      [[ -r $dir/cpu.stat ]] || continue
       name=${names[$id]}
-      # A probe container can exit between the check and the reads. Skip it
-      # instead of letting errexit end the sampler for the rest of the run.
-      usage=$(awk '/^usage_usec/ {print $2}' "$dir/cpu.stat" 2>/dev/null) || continue
-      memory=$(cat "$dir/memory.current" 2>/dev/null) || continue
-      oom=$(awk '/^oom_kill/ {print $2}' "$dir/memory.events" 2>/dev/null) || continue
+      if [[ -r $dir/cpu.stat ]]; then
+        # A probe container can exit between the check and the reads. Skip it
+        # instead of letting errexit end the sampler for the rest of the run.
+        usage=$(awk '/^usage_usec/ {print $2}' "$dir/cpu.stat" 2>/dev/null) || continue
+        memory=$(cat "$dir/memory.current" 2>/dev/null) || continue
+        oom=$(awk '/^oom_kill/ {print $2}' "$dir/memory.events" 2>/dev/null) || continue
+      elif [[ -n $docker_socket ]]; then
+        # The daemon's cgroups are not visible here (another PID and cgroup
+        # namespace, as on a dev host with its own daemon). Read the same
+        # cumulative CPU and current cgroup memory from the daemon's stats.
+        stats=$(curl -s --max-time 1 --unix-socket "$docker_socket" \
+          "http://localhost/containers/$id/stats?stream=false&one-shot=true" 2>/dev/null) || continue
+        read -r usage memory oom < <(jq -r '[((.cpu_stats.cpu_usage.total_usage // empty) / 1000 | floor),
+          (.memory_stats.usage // empty), (.memory_stats.stats.oom_kill // 0)] | @tsv' <<<"$stats" 2>/dev/null) || continue
+        [[ -n ${usage:-} && -n ${memory:-} ]] || continue
+      else
+        continue
+      fi
       printf '%s\t%s\t%s\t%s\t%s\n' "$now" "$name" "$usage" "$memory" "$oom"
     done >> "$out/samples.tsv"
     sleep 1

@@ -1,0 +1,188 @@
+{
+  "identity": {
+    "implementation": "native-image",
+    "compose_project": "dw-port-native-image-20261030t180434",
+    "profile": "benchmarks/server-port/rc1/matched.json",
+    "profile_sha256": "567a4ead768385ffcb1becaeebdd1dca2bdefdc3282c2c42eafe57cd358b893f",
+    "source_revision": "03a3e7b7c02281ee8ff58fb53180e428e866ad39",
+    "native_binary_sha256": "",
+    "native_image": "ghcr.io/durable-workflow/server-native@sha256:43718810bb9d1657aefe5fa157dfdd894c8f2a6d3e7edd6449a2ae3d0add6c86",
+    "smoke": false,
+    "idle_only": true,
+    "machine": {
+      "kernel": "6.8.0-146-generic",
+      "logical_cpus": 6,
+      "physical_memory_bytes": 16763072512,
+      "cpu_model": "Intel Core Processor (Broadwell, no TSX, IBRS)",
+      "docker": "27.5.1",
+      "cgroup_driver": "cgroupfs",
+      "docker_storage_driver": "overlay2",
+      "docker_root_filesystem": ""
+    }
+  },
+  "windows": {},
+  "idle": {
+    "idle-6-1": {
+      "seconds": 11.6,
+      "health": {
+        "replies": 17,
+        "failures": 0,
+        "slowest_ok_seconds": 0.047
+      },
+      "cpu_core_seconds": {},
+      "max_memory_bytes": {},
+      "max_runtime_memory_bytes": null,
+      "oom_kills": {},
+      "requested_polls": 6,
+      "all_registered": true,
+      "cleanup_errors": 0,
+      "outcomes": {
+        "empty": 6
+      }
+    },
+    "idle-6-2": {
+      "seconds": 11.5,
+      "health": {
+        "replies": 16,
+        "failures": 0,
+        "slowest_ok_seconds": 0.104
+      },
+      "cpu_core_seconds": {},
+      "max_memory_bytes": {},
+      "max_runtime_memory_bytes": null,
+      "oom_kills": {},
+      "requested_polls": 6,
+      "all_registered": true,
+      "cleanup_errors": 0,
+      "outcomes": {
+        "empty": 6
+      }
+    },
+    "idle-6-3": {
+      "seconds": 11.5,
+      "health": {
+        "replies": 18,
+        "failures": 0,
+        "slowest_ok_seconds": 0.103
+      },
+      "cpu_core_seconds": {},
+      "max_memory_bytes": {},
+      "max_runtime_memory_bytes": null,
+      "oom_kills": {},
+      "requested_polls": 6,
+      "all_registered": true,
+      "cleanup_errors": 0,
+      "outcomes": {
+        "empty": 6
+      }
+    },
+    "idle-12-1": {
+      "seconds": 12.0,
+      "health": {
+        "replies": 18,
+        "failures": 0,
+        "slowest_ok_seconds": 0.019
+      },
+      "cpu_core_seconds": {},
+      "max_memory_bytes": {},
+      "max_runtime_memory_bytes": null,
+      "oom_kills": {},
+      "requested_polls": 12,
+      "all_registered": true,
+      "cleanup_errors": 0,
+      "outcomes": {
+        "empty": 12
+      }
+    },
+    "idle-12-2": {
+      "seconds": 11.9,
+      "health": {
+        "replies": 18,
+        "failures": 0,
+        "slowest_ok_seconds": 0.092
+      },
+      "cpu_core_seconds": {},
+      "max_memory_bytes": {},
+      "max_runtime_memory_bytes": null,
+      "oom_kills": {},
+      "requested_polls": 12,
+      "all_registered": true,
+      "cleanup_errors": 0,
+      "outcomes": {
+        "empty": 12
+      }
+    },
+    "idle-12-3": {
+      "seconds": 12.1,
+      "health": {
+        "replies": 18,
+        "failures": 0,
+        "slowest_ok_seconds": 0.107
+      },
+      "cpu_core_seconds": {},
+      "max_memory_bytes": {},
+      "max_runtime_memory_bytes": null,
+      "oom_kills": {},
+      "requested_polls": 12,
+      "all_registered": true,
+      "cleanup_errors": 0,
+      "outcomes": {
+        "empty": 12
+      }
+    },
+    "idle-24-1": {
+      "seconds": 12.7,
+      "health": {
+        "replies": 20,
+        "failures": 0,
+        "slowest_ok_seconds": 0.105
+      },
+      "cpu_core_seconds": {},
+      "max_memory_bytes": {},
+      "max_runtime_memory_bytes": null,
+      "oom_kills": {},
+      "requested_polls": 24,
+      "all_registered": true,
+      "cleanup_errors": 0,
+      "outcomes": {
+        "empty": 24
+      }
+    },
+    "idle-24-2": {
+      "seconds": 12.6,
+      "health": {
+        "replies": 18,
+        "failures": 0,
+        "slowest_ok_seconds": 0.105
+      },
+      "cpu_core_seconds": {},
+      "max_memory_bytes": {},
+      "max_runtime_memory_bytes": null,
+      "oom_kills": {},
+      "requested_polls": 24,
+      "all_registered": true,
+      "cleanup_errors": 0,
+      "outcomes": {
+        "empty": 24
+      }
+    },
+    "idle-24-3": {
+      "seconds": 12.6,
+      "health": {
+        "replies": 18,
+        "failures": 0,
+        "slowest_ok_seconds": 0.103
+      },
+      "cpu_core_seconds": {},
+      "max_memory_bytes": {},
+      "max_runtime_memory_bytes": null,
+      "oom_kills": {},
+      "requested_polls": 24,
+      "all_registered": true,
+      "cleanup_errors": 0,
+      "outcomes": {
+        "empty": 24
+      }
+    }
+  }
+}

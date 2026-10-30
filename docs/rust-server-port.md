@@ -94,8 +94,13 @@ Updated October 27, 2026.
     its layout is 2.11.3's.)
   - the scope question with the operator: prepared local activities,
     workflow-bound Nexus handlers and external payload takeover;
-  - publishing the native image (General runs the release);
-  - differential and performance qualification of the published image.
+  - publishing the native image to Docker Hub (release candidate 1,
+    `ghcr.io/durable-workflow/server-native:3.0.0-rc.1`, is on GHCR);
+  - differential qualification of the published image. (Matched
+    performance against the recorded PHP baseline is met on one host for
+    release candidate 1: throughput, memory and idle long polls, with about a
+    twelfth of PHP's runtime CPU per workflow;
+    [observations](../benchmarks/server-port/rc1/observations-2026-10-30.md).)
 
 ## API surface still missing
 
