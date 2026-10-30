@@ -40,8 +40,11 @@ backup.
 
 ## Running it with the native image
 
-The native release-candidate image (`durableworkflow/server-native`, also
-`ghcr.io/durable-workflow/server-native`) carries every command below. It
+The native image (`ghcr.io/durable-workflow/server-native`, and
+`durableworkflow/server-native` on Docker Hub for a final release) carries
+every command below. Release candidates (`X.Y.Z-rc.N`) are published to GHCR
+only; the first is `3.0.0-rc.1`, index
+`sha256:43718810bb9d1657aefe5fa157dfdd894c8f2a6d3e7edd6449a2ae3d0add6c86`. It
 reads the same `DB_*` settings as the PHP image. Every command needs
 `DW_RUST_EXPERIMENTAL=1`: native is opt-in until it is declared qualified.
 
@@ -61,7 +64,7 @@ digest cannot, so the image that inspected the source is the one that takes
 it over and serves it. Keep the reference with the backup.
 
 ```sh
-export IMAGE=durableworkflow/server-native@sha256:<index digest from the release receipt>
+export IMAGE=ghcr.io/durable-workflow/server-native@sha256:<index digest from the release receipt>
 docker pull "$IMAGE"
 ```
 
