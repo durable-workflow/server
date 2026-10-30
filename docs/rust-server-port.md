@@ -301,13 +301,22 @@ contract fixture before its correction.
   is a contract decision, recorded in
   [Server #690](https://github.com/durable-workflow/server/issues/690)
   (`tests/execution/update_routing.rs`).
-- **Repair of a run without a recoverable task.** Published PHP's repair
-  command creates a run's missing task, and settles an expired activity-task
-  lease through the activity's retry policy. Native's repair command refuses
-  both with `development_workflow_task_repair_unqualified`. Native's
-  scheduler and the repair pass settle expired activity leases as PHP's
-  repair loop does, so such a lease rarely remains for the command
-  ([checkpoint](rust-server-port-checkpoints/2026-10-23-activity-lease-expiry.md)).
+- **Repair of a run without a recoverable task** (October 30, mostly
+  closed). Published PHP's repair command creates a run's missing task and
+  settles an expired activity-task lease through the activity's retry
+  policy. Native's repair command and repair pass now do too:
+  - a missing workflow task is recreated;
+  - a missing activity task is recreated for the pending execution, with
+    its latest retry's fields;
+  - a missing timer task is recreated, available at the fire time;
+  - an expired activity lease is settled by the activity's retry policy.
+
+  Native's scheduler usually settles such a lease first, as PHP's repair
+  loop does
+  ([checkpoint](rust-server-port-checkpoints/2026-10-30-repair-missing-tasks.md)).
+  Still refused with `development_workflow_task_repair_unqualified`: the
+  missing task of an update, signal or child wait, or of a condition or
+  signal wait's timeout timer.
 - **Structural limits.** For external workers, published PHP enforces four
   of the Workflow package's `DW_V2_LIMIT_*` limits: the memo size, the
   command batch size as a bound on parallel group metadata, the pending

@@ -14,10 +14,11 @@
 //! An expired lease on a running activity is settled by its retry policy,
 //! as `ActivityTimeoutEnforcer::enforceLeaseExpiry` settles it.
 //!
-//! A recovery native does not perform yet is reported as its candidate's
-//! failure, so the pass answers 207 rather than claiming a repair: a missing
-//! task for a run waiting on an activity, a timer, an update, a signal or a
-//! child.
+//! A missing task is created as `TaskRepair::createMissingTask` creates it
+//! (`task_repair::create_missing_task`). A recovery native does not perform
+//! yet is reported as its candidate's failure, so the pass answers 207 rather
+//! than claiming a repair: a missing task for a run waiting on an update, a
+//! signal or a child, or on a condition or signal wait's timeout timer.
 use super::Result;
 use super::laravel_validation::{Rule, failure_messages, rule_errors};
 use super::operator_metrics::{REDISPATCH_AFTER_SECONDS, scope_rows, whole_second};
@@ -315,7 +316,7 @@ fn round_robin(mut buckets: Vec<VecDeque<String>>, limit: usize) -> Vec<String> 
 }
 
 /// What one candidate's recovery did.
-enum Recovered {
+pub(super) enum Recovered {
     /// A task is ready and was marked dispatched.
     Task,
     /// The candidate needed nothing, or a closed run's task was settled.
@@ -600,7 +601,7 @@ store_methods! {
     }
 
     /// `TaskRepair::recoverExistingTask` for a task that needs recovery.
-    async fn recover_task_row(tx: &mut Transaction<'_, DB>, run: &DB::Row, task: &DB::Row, at: DateTime<Utc>) -> Result<Recovered> {
+    pub(super) async fn recover_task_row(tx: &mut Transaction<'_, DB>, run: &DB::Row, task: &DB::Row, at: DateTime<Utc>) -> Result<Recovered> {
         let task_id = DB::string(task, "id")?;
         let task_type = DB::string(task, "task_type")?;
         let run_status = DB::string(run, "status")?;
@@ -723,7 +724,7 @@ store_methods! {
             return Ok(Recovered::Nothing);
         };
         Self::project_run_summary(&mut tx, run_id).await?;
-        let Some(summary) = Self::query("SELECT liveness_state,next_task_id,wait_kind,resume_source_kind FROM workflow_run_summaries WHERE id=$1")
+        let Some(summary) = Self::query("SELECT liveness_state,next_task_id,wait_kind,resume_source_kind,resume_source_id FROM workflow_run_summaries WHERE id=$1")
             .bind(run_id)
             .fetch_optional(&mut *tx)
             .await?
@@ -756,23 +757,10 @@ store_methods! {
                 let task_id = DB::string(&task, "id")?;
                 (Self::recover_task_row(&mut tx, &run, &task, at).await?, task_id)
             }
-            None => {
-                let wait_kind = DB::optional_string(&summary, "wait_kind")?.unwrap_or_default();
-                let timer_resume = DB::optional_string(&summary, "resume_source_kind")?.as_deref() == Some("timer");
-                if matches!(wait_kind.as_str(), "activity" | "timer" | "update" | "signal" | "child")
-                    || (wait_kind == "condition" && timer_resume)
-                {
-                    return Ok(Recovered::Unported(format!(
-                        "Native does not yet create a missing task for a run waiting on {wait_kind}."
-                    )));
-                }
-                // `createMissingTask`'s workflow task, with
-                // `forMissingWorkflowTask`'s empty payload.
-                let queue = DB::string(&run, "queue")?;
-                let task_id = Self::create_task_dispatched(&mut tx, run_id, &queue, "workflow", json!({}), false).await?;
-                Self::query("UPDATE workflow_tasks SET repair_count=1 WHERE id=$1").bind(&task_id).execute(&mut *tx).await?;
-                (Recovered::Task, task_id)
-            }
+            None => match Self::create_missing_task(&mut tx, &run, &summary).await? {
+                super::task_repair::Missing::Created(task_id) => (Recovered::Task, task_id),
+                super::task_repair::Missing::Unported(message) => return Ok(Recovered::Unported(message)),
+            },
         };
         match recovered {
             Recovered::Unported(_) => return Ok(recovered),
