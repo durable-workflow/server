@@ -163,6 +163,8 @@ jobs:
     if: ${{ needs.changes.outputs.run == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      RESOURCE_SCOPE: dw-native-debug-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     outputs:
       artifact_name: ${{ steps.artifact.outputs.name }}
       producer_attempt: ${{ steps.artifact.outputs.attempt }}
@@ -212,15 +214,7 @@ jobs:
       - name: Retire the owned debug build containers
         if: always()
         run: |
-          for receipt in native-debug-build.clean.cid native-debug-build.build.cid; do
-            if test -s "$receipt"; then
-              read -r container < "$receipt" || true
-              if [[ "$container" =~ ^[a-f0-9]{64}$ ]]; then
-                docker rm -f "$container" >/dev/null 2>&1 || true
-              fi
-            fi
-            rm -f -- "$receipt"
-          done
+          docker rm -f "$RESOURCE_SCOPE-clean" "$RESOURCE_SCOPE-build" >/dev/null 2>&1 || true
 
   published-sdk-adapters:
     needs: changes

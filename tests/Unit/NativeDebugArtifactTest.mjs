@@ -35,6 +35,7 @@ function fixture(t) {
   git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture');
   const env = {...process.env, GITHUB_SHA: git('rev-parse', 'HEAD'), GITHUB_REPOSITORY: 'fixture/server',
     GITHUB_RUN_ID: '12345', GITHUB_RUN_ATTEMPT: '1', GITHUB_JOB: 'native-debug-build',
+    RESOURCE_SCOPE: 'dw-native-debug-12345-1-native-debug-build',
     NATIVE_RUST_IMAGE: `mirror.gcr.io/library/rust@sha256:${'a'.repeat(64)}`, RUNNER_OS: 'Linux', RUNNER_ARCH: 'X64'};
   delete env.NATIVE_BUILD_RUN_ATTEMPT;
   const directory = join(root, 'artifact');
@@ -140,6 +141,10 @@ test('identity preflight and existing-output guard refuse before any container s
   assert.notEqual(badIdentity.status, 0);
   assert.match(badIdentity.stderr, /workflow checkout/);
   assert.equal(existsSync(log), false);
+  const badScope = spawnSync('bash', ['scripts/ci/native-debug-build.sh', 'other'],
+    {cwd: root, env: {...commandEnv, RESOURCE_SCOPE: 'another-job-scope'}, encoding: 'utf8'});
+  assert.notEqual(badScope.status, 0);
+  assert.equal(existsSync(log), false);
 });
 
 function fakeDocker(root) {
@@ -147,12 +152,9 @@ function fakeDocker(root) {
   mkdirSync(bin);
   writeFileSync(join(bin, 'docker'), `#!/usr/bin/env node
 import('node:fs').then(async fs => {
-  const {createHash} = await import('node:crypto');
   const args = process.argv.slice(2);
   fs.appendFileSync(process.env.FAKE_DOCKER_LOG, JSON.stringify(args) + '\\n');
   if (args[0] !== 'run') return;
-  const cid = createHash('sha256').update(args.join(' ')).digest('hex');
-  fs.writeFileSync(args[args.indexOf('--cidfile') + 1], cid + '\\n');
   if (!args.some(arg => arg.includes('cargo build'))) return;
   if (process.env.FAKE_BUILD_FAIL) process.exit(23);
   const target = args.find(arg => arg.endsWith(':/target')).slice(0, -8);
@@ -165,7 +167,7 @@ import('node:fs').then(async fs => {
 }
 
 for (const failure of [false, true]) {
-  test(`the build helper ${failure ? 'cleans its own failed build' : 'exports only the thin artifact'}`, t => {
+  test(`the build helper ${failure ? 'uses scoped ephemeral containers on failure' : 'exports only the thin artifact'}`, t => {
     const {root, env} = fixture(t);
     const bin = fakeDocker(root);
     const log = join(root, 'docker-calls.jsonl');
@@ -177,14 +179,16 @@ for (const failure of [false, true]) {
     const builds = calls.filter(args => args[0] === 'run');
     assert.equal(builds.length, 2);
     for (const args of builds) {
-      assert.ok(args.includes('--init') && args.includes('--network=none'));
+      assert.ok(args.includes('--rm') && args.includes('--init') && args.includes('--network=none'));
       assert.ok(args.includes('--cpus=2') && args.includes(env.NATIVE_RUST_IMAGE));
       assert.ok(args.includes(`--user=${process.getuid()}:${process.getgid()}`));
     }
     assert.deepEqual(builds[0].slice(-6), ['cargo', 'clean', '--locked', '--offline', '--package', 'durable-workflow-server']);
     assert.ok(builds[1].some(arg => arg.includes('cargo build --locked --offline --bin durable-workflow-server')));
     assert.ok(builds[1].includes('--memory=6g') && builds[1].includes('--memory-swap=6g'));
-    assert.equal(calls.filter(args => args[0] === 'rm' && /^[a-f0-9]{64}$/.test(args.at(-1))).length, 2);
+    assert.deepEqual(builds.map(args => args[args.indexOf('--name') + 1]),
+      [`${env.RESOURCE_SCOPE}-clean`, `${env.RESOURCE_SCOPE}-build`]);
+    assert.equal(calls.some(args => args[0] === 'rm'), false, 'cleanup belongs to the workflow always-step');
     if (!failure) verifyArtifact(join(root, 'bundle'), {root, env});
   });
 }
@@ -193,6 +197,7 @@ test('the producer shares only three files with pinned actions and bounded reten
   const producer = workflowJob('native-debug-build');
   assert.match(producer, /needs: changes\n {4}if: \$\{\{ needs\.changes\.outputs\.run == 'true' \}\}/);
   assert.match(producer, /persist-credentials: false/);
+  assert.match(producer, /RESOURCE_SCOPE: dw-native-debug-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}-\$\{\{ github\.job \}\}/);
   assert.match(producer, /artifact_name: \$\{\{ steps\.artifact\.outputs\.name \}\}/);
   assert.match(producer, /producer_attempt: \$\{\{ steps\.artifact\.outputs\.attempt \}\}/);
   assert.match(producer, /native-debug-build-%s-%s/);
@@ -204,6 +209,7 @@ test('the producer shares only three files with pinned actions and bounded reten
     + '            native-debug-build/build.json\n            native-debug-build/SHA256SUMS\n');
   assert.match(producer, /retention-days: 1\n {10}if-no-files-found: error/);
   assert.doesNotMatch(producer, /cache\/save|contents: write|packages: write/);
+  assert.match(producer, /- name: Retire the owned debug build containers\n {8}if: always\(\)\n {8}run: \|\n {10}docker rm -f "\$RESOURCE_SCOPE-clean" "\$RESOURCE_SCOPE-build"/);
 });
 
 test('all non-test consumers verify the same-run artifact before installing the executable', () => {
