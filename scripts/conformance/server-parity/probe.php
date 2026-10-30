@@ -440,6 +440,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $childRetries = isset($fixture['child_retries']) ? finishHttpChildRetries($client, $fixture, $workflowId, $url) : null;
     $activityLateOutcomes = isset($fixture['activity_late_outcomes']) ? finishHttpActivityLateOutcomes($client, $fixture, $workflowId, $url) : null;
     $childVisibility = isset($fixture['child_visibility']) ? finishHttpChildVisibility($client, $fixture, $workflowId, $url) : null;
+    $deepJsonBodies = isset($fixture['deep_json_bodies']) ? finishHttpDeepJsonBodies($client, $fixture, $workflowId, $url) : null;
     $retriedChildCancellation = isset($fixture['retried_child_cancellation']) ? finishHttpRetriedChildCancellation($client, $fixture, $workflowId, $url) : null;
     $activityResultRepeats = isset($fixture['activity_result_repeats']) ? finishHttpActivityResultRepeats($client, $fixture, $workflowId, $url) : null;
     $startSearchAttributes = isset($fixture['start_search_attributes']) ? finishHttpStartSearchAttributes($client, $fixture, $workflowId, $url) : null;
@@ -580,6 +581,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'child_retries' => $childRetries,
         'activity_late_outcomes' => $activityLateOutcomes,
         'child_visibility' => $childVisibility,
+        'deep_json_bodies' => $deepJsonBodies,
         'retried_child_cancellation' => $retriedChildCancellation,
         'activity_result_repeats' => $activityResultRepeats,
         'start_search_attributes' => $startSearchAttributes,
@@ -923,6 +925,7 @@ try {
     require __DIR__.'/child-retries-probe.php';
     require __DIR__.'/activity-late-outcomes-probe.php';
     require __DIR__.'/child-visibility-probe.php';
+    require __DIR__.'/deep-json-bodies-probe.php';
     require __DIR__.'/retried-child-cancellation-probe.php';
     require __DIR__.'/activity-result-repeats-probe.php';
     require __DIR__.'/start-search-attributes-probe.php';
@@ -1137,6 +1140,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['child_visibility'])) {
         $observation['child_visibility'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
+    }
+    if ($mode === 'embedded' && isset($fixture['deep_json_bodies'])) {
+        $observation['deep_json_bodies'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_request_bodies'];
     }
     if ($mode === 'embedded' && isset($fixture['retried_child_cancellation'])) {
         $observation['retried_child_cancellation'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];

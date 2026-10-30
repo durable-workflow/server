@@ -32,7 +32,7 @@ async fn body(request: Body) -> Result<Value> {
     if bytes.is_empty() {
         return Ok(json!([]));
     }
-    let value: Value = serde_json::from_slice(&bytes)
+    let value: Value = super::json_body::from_slice(&bytes)
         .map_err(|_| refuse(StatusCode::BAD_REQUEST, "invalid_json"))?;
     Ok(if value.is_null() { json!([]) } else { value })
 }

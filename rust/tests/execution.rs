@@ -356,6 +356,8 @@ mod worker_error_bodies;
 mod child_descriptions;
 #[path = "execution/child_retries.rs"]
 mod child_retries;
+#[path = "execution/deep_json_bodies.rs"]
+mod deep_json_bodies;
 #[path = "execution/activity_result_repeats.rs"]
 mod activity_result_repeats;
 

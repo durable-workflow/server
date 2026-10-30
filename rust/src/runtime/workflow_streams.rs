@@ -28,8 +28,9 @@ use super::{
     refuse,
     store::{Store, now},
 };
+use super::json_body::Json;
 use axum::{
-    Extension, Json,
+    Extension,
     extract::{Path, Query},
     http::StatusCode,
 };

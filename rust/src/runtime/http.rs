@@ -1,6 +1,7 @@
 use super::laravel_rules::Rule;
+use super::json_body::Json;
 use axum::{
-    Extension, Json, Router,
+    Extension, Router,
     extract::{DefaultBodyLimit, Path, Query, Request, State},
     body::Body,
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
@@ -701,7 +702,7 @@ async fn typed_refusal_envelope(response: Response, route: Option<Request>, work
     let Ok(bytes) = axum::body::to_bytes(body, 64 * 1024).await else {
         return (status, Json(json!({"reason":"external_payload_unavailable"}))).into_response();
     };
-    let Ok(body) = serde_json::from_slice::<Value>(&bytes) else {
+    let Ok(body) = super::json_body::from_slice::<Value>(&bytes) else {
         return Response::from_parts(parts, Body::from(bytes));
     };
     let mut response = admission_error(route.unwrap_or_else(|| Request::new(Body::empty())), worker, status, body).await;
@@ -1194,7 +1195,7 @@ async fn bridge_webhook(
     Path(adapter): Path<String>,
     body: axum::body::Bytes,
 ) -> Result<(StatusCode, Json<Value>)> {
-    let body = serde_json::from_slice::<Value>(&body).ok().filter(Value::is_object).unwrap_or_else(|| json!({}));
+    let body = super::json_body::from_slice::<Value>(&body).ok().filter(Value::is_object).unwrap_or_else(|| json!({}));
     let (status, answer) = super::bridge_adapters::webhook(&runtime, &command, &adapter, body).await?;
     Ok((status, Json(answer)))
 }
@@ -1806,7 +1807,7 @@ async fn close_worker_session(
     let mut fields = if body.is_empty() {
         json!({})
     } else {
-        serde_json::from_slice::<Value>(&body).ok().filter(Value::is_object).unwrap_or_else(|| json!({}))
+        super::json_body::from_slice::<Value>(&body).ok().filter(Value::is_object).unwrap_or_else(|| json!({}))
     };
     if let Some(worker_id) = query.get("worker_id")
         && fields.get("worker_id").is_none()
@@ -1895,7 +1896,7 @@ fn request_json(body: &[u8]) -> Result<Value> {
     if body.trim_ascii().is_empty() {
         return Ok(Value::Null);
     }
-    serde_json::from_slice(body).map_err(|_| super::RuntimeError::Protocol {
+    super::json_body::from_slice(body).map_err(|_| super::RuntimeError::Protocol {
         status: StatusCode::BAD_REQUEST,
         response: json!({"message": "Request bodies must contain valid JSON.", "reason": "malformed_json",
             "json_error": "Syntax error"}),

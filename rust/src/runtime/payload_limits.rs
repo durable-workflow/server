@@ -73,13 +73,13 @@ fn json_media_type(content_type: Option<&str>) -> bool {
 }
 
 /// PHP's `json_last_error_msg()` after `json_decode` of the body, or `None`
-/// for valid JSON. PHP nests up to 512 levels.
+/// for valid JSON. PHP's default depth, 512, admits 511 levels of nesting.
 fn json_error(bytes: &[u8]) -> Option<&'static str> {
     // Skipping a value leaves escapes and UTF-8 unchecked, so decode it.
     let error = serde_json::from_slice::<Value>(bytes).err()?;
     let message = error.to_string();
     Some(if message.contains("recursion limit exceeded") {
-        if depth(bytes) <= 512 {
+        if depth(bytes) <= super::json_body::PHP_MAX_DEPTH {
             return None;
         }
         "Maximum stack depth exceeded"
@@ -95,7 +95,7 @@ fn json_error(bytes: &[u8]) -> Option<&'static str> {
 }
 
 /// The deepest array or object nesting, outside strings.
-fn depth(bytes: &[u8]) -> usize {
+pub(super) fn depth(bytes: &[u8]) -> usize {
     let (mut current, mut deepest, mut in_string, mut escaped) = (0usize, 0usize, false, false);
     for &byte in bytes {
         if in_string {
@@ -138,6 +138,9 @@ mod tests {
         // PHP accepts nesting serde_json's default limit refuses.
         let nested = |levels: usize| format!("{}{}", "[".repeat(levels), "]".repeat(levels)).into_bytes();
         assert_eq!(json_error(&nested(200)), None);
+        // PHP's default depth, 512, admits 511 levels and refuses 512.
+        assert_eq!(json_error(&nested(511)), None);
+        assert_eq!(json_error(&nested(512)), Some("Maximum stack depth exceeded"));
         assert_eq!(json_error(&nested(600)), Some("Maximum stack depth exceeded"));
     }
 
