@@ -454,10 +454,15 @@ contract fixture before its correction.
   consumed lose their payloads once a retained later run's cursor checkpoint
   covers them, and the instance's last retained run, once terminal, takes the
   instance's streams with it.
-- **Deeply nested JSON bodies.** Published PHP decodes JSON up to 512 levels
-  deep. Native checks every body as PHP does before any route, but its
-  handlers parse with serde_json's 128-level limit. A body nested 129 to 512
-  levels deep passes the check and is then refused with a plain-text 400.
+- **Deeply nested JSON bodies** (October 30, closed). Published PHP's
+  `json_decode` reads bodies nested up to 511 levels (its default depth of
+  512) and refuses deeper ones with `400 malformed_json`. Native's handlers
+  parsed with serde_json's 128-level limit, so a body nested 129 to 511
+  levels was refused with a plain-text 400; and its pre-route check admitted
+  one level too many. Request bodies are now read to 511 levels, bounded by
+  that check. The `deep-json-bodies` fixture records it against published
+  2.11.7
+  ([checkpoint](rust-server-port-checkpoints/2026-10-30-deep-json-bodies.md)).
 - **Python worker shutdown after a late synchronous query handler (not yet
   diagnosed).** In the SQLite query-authority cohort on #515's run
   39431491496, the published Python SDK 2.5.15 client in `late-handler-sync`

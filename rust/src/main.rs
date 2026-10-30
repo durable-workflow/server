@@ -218,8 +218,24 @@ fn validate_auth_configuration() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[tokio::main(worker_threads = 2)]
-async fn main() -> Result<(), Box<dyn Error>> {
+/// Stack for each runtime thread, workers and blocking threads alike. A
+/// request body may nest 511 levels, as PHP's `json_decode` allows, and its
+/// handlers walk it recursively; the Avro encoder (`apache-avro`) is the
+/// deepest user, about 80 KiB per level in a debug build. The stack is
+/// reserved address space, not committed memory, so resident memory does not
+/// grow with it.
+const THREAD_STACK_BYTES: usize = 64 * 1024 * 1024;
+
+fn main() -> Result<(), Box<dyn Error>> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_stack_size(THREAD_STACK_BYTES)
+        .enable_all()
+        .build()?
+        .block_on(run())
+}
+
+async fn run() -> Result<(), Box<dyn Error>> {
     if env::var("DW_RUST_EXPERIMENTAL").as_deref() != Ok("1") {
         return Err("Rust development runtime requires DW_RUST_EXPERIMENTAL=1; it is not a qualified replacement".into());
     }

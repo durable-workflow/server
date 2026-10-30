@@ -1,0 +1,102 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "deep-json-bodies",
+  "review_state": "reviewed",
+  "contract": "Request bodies nested as deep as published Server 2.11.7's json_decode reads them, over raw HTTP in a fresh namespace. PHP's default depth of 512 admits 511 levels of nesting. A workflow start and a search attribute definition whose bodies nest 128, 129 and 511 levels are answered normally (the start 201, the definition refused by validation); at 512 levels each is refused 400 malformed_json. Embedded applications have no HTTP request bodies.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "deep json bodies λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "deep json bodies λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "deep_json_bodies": {
+    "workflow_type": "parity.v1.deep_json_bodies",
+    "levels": [
+      128,
+      129,
+      511,
+      512
+    ],
+    "expected": {
+      "start_128": {
+        "status": 201,
+        "json": true,
+        "reason": null,
+        "message": null,
+        "json_error": null
+      },
+      "definition_128": {
+        "status": 422,
+        "json": true,
+        "reason": "validation_failed",
+        "message": "The name field must be a string. (and 1 more error)",
+        "json_error": null
+      },
+      "start_129": {
+        "status": 201,
+        "json": true,
+        "reason": null,
+        "message": null,
+        "json_error": null
+      },
+      "definition_129": {
+        "status": 422,
+        "json": true,
+        "reason": "validation_failed",
+        "message": "The name field must be a string. (and 1 more error)",
+        "json_error": null
+      },
+      "start_511": {
+        "status": 201,
+        "json": true,
+        "reason": null,
+        "message": null,
+        "json_error": null
+      },
+      "definition_511": {
+        "status": 422,
+        "json": true,
+        "reason": "validation_failed",
+        "message": "The name field must be a string. (and 1 more error)",
+        "json_error": null
+      },
+      "start_512": {
+        "status": 400,
+        "json": true,
+        "reason": "malformed_json",
+        "message": "Request bodies must contain valid JSON.",
+        "json_error": "Maximum stack depth exceeded"
+      },
+      "definition_512": {
+        "status": 400,
+        "json": true,
+        "reason": "malformed_json",
+        "message": "Request bodies must contain valid JSON.",
+        "json_error": "Maximum stack depth exceeded"
+      }
+    }
+  }
+}

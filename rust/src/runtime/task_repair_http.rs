@@ -12,7 +12,7 @@ pub(super) async fn request(request: Request, workflow_id: &str) -> Result<(Valu
     let payload = if bytes.is_empty() {
         json!({})
     } else {
-        serde_json::from_slice(&bytes)
+        super::json_body::from_slice(&bytes)
             .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"))?
     };
     let metadata = payload["request_id"]

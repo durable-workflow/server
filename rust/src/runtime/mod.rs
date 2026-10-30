@@ -89,6 +89,7 @@ mod operator_dashboard;
 mod operator_metrics;
 mod payload_cleanup;
 mod payload_discovery;
+mod json_body;
 mod payload_limits;
 mod php_value;
 #[cfg(debug_assertions)]
