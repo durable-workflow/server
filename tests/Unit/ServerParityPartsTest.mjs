@@ -1,8 +1,8 @@
 // Each Shared Server fixtures database job runs in six parts on separate
 // runners. Every step either prepares the part (and so runs in every part) or
-// belongs to exactly one part, so no check runs twice or not at all. The one
-// exception starts the published PHP and native nodes that the corpus and
-// restarts parts each need, and runs in exactly those two.
+// belongs to exactly one part, so no check runs twice or not at all. Shared
+// node preparation belongs to corpus/restarts; debug artifact preparation
+// belongs to the five non-native-test parts.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -11,6 +11,9 @@ import {spawnSync} from 'node:child_process';
 const workflow = readFileSync('.github/workflows/server-parity.yml', 'utf8');
 const PARTS = ['native-tests', 'corpus', 'restarts', 'cohorts', 'sdk-directions', 'corrected-markers'];
 const SHARED_NODES = 'Start the published PHP and native nodes the corpus parts share';
+const NON_NATIVE_PARTS = PARTS.filter(part => part !== 'native-tests');
+const NATIVE_DEBUG_PREP = new Set(['Require a successful native debug producer',
+  "Fetch this run's native debug server", "Verify and install this run's native debug server"]);
 const EVERY_PART = [/^actions\/checkout@/, /^Pull the pinned images, retrying registry errors$/, /^Fetch /,
   /^Restore native Cargo dependencies from trusted main$/, /^Discard restored native workspace outputs before rebuilding$/,
   /^Create TLS fixture certificates$/, /^Bootstrap published /, /^Collect /, /^Summarize /, /^Retain /];
@@ -34,6 +37,10 @@ function steps(block) {
 
 // The parts a step runs in, read from its condition.
 function partsOf(step) {
+  if (NATIVE_DEBUG_PREP.has(step.name)) {
+    assert.equal(step.condition, "${{ matrix.part != 'native-tests' && matrix.part != 'native-tests-b' }}", step.name);
+    return NON_NATIVE_PARTS;
+  }
   if (EVERY_PART.some(pattern => pattern.test(step.name))) return PARTS;
   const either = /^\$\{\{ matrix\.part == '([a-z-]+)' \|\| matrix\.part == '([a-z-]+)' \}\}$/.exec(step.condition ?? '');
   if (either) return [either[1], either[2]];
@@ -58,7 +65,10 @@ for (const [name, key] of [['mysql-execution', 'Compare three runtimes'], ['post
         assert.ok(EVERY_PART.some(pattern => pattern.test(step.name)), `${name}: "${step.name}" must belong to one part`);
       } else if (step.name === SHARED_NODES) {
         assert.deepEqual(parts, ['corpus', 'restarts'], `${name}: the shared nodes start for exactly the corpus parts`);
-      } else if (step.name !== 'Build the native server') {
+      } else if (NATIVE_DEBUG_PREP.has(step.name)) {
+        assert.deepEqual(parts, ['corpus', 'restarts', 'cohorts', 'sdk-directions', 'corrected-markers'],
+          `${name}: debug preparation runs in exactly the five non-native-test parts`);
+      } else {
         assert.equal(parts.length, 1, `${name}: "${step.name}"`);
       }
     }
@@ -121,12 +131,12 @@ for (const [name, key] of [['mysql-execution', 'Compare three runtimes'], ['post
 test('the database bootstraps run the native suites only in the native-tests parts', () => {
   const postgres = steps(job('postgres-storage')).find(step => step.name.startsWith('Bootstrap published '));
   assert.match(postgres.text, /-e DW_PARITY_PART \\\n/);
-  assert.match(postgres.text, /'if \[ "\$DW_PARITY_PART" = native-tests \]; then cargo test [^']* --test execution [^']*; fi && cargo build --locked --offline'/);
+  assert.match(postgres.text, /'if \[ "\$DW_PARITY_PART" = native-tests \]; then cargo test [^']* --test execution [^']*; fi && if \[ "\$DW_PARITY_PART" = native-tests \]; then cargo build --locked --offline; else test -x \/target\/debug\/durable-workflow-server; fi'/);
   const mysql = steps(job('mysql-execution')).find(step => step.name.startsWith('Bootstrap published '));
   assert.match(mysql.text, /-e DW_PARITY_PART -e DW_EXECUTION_SHARDS \\\n/);
   // native-tests runs the database suite and the first half of the execution
   // tests; native-tests-b, where a label has it, runs the second half.
-  assert.match(mysql.text, /'case "\$DW_PARITY_PART" in native-tests\) shard=1 suffix= ;; native-tests-b\) shard=2 suffix=-b ;; \*\) shard= ;; esac; if \[ "\$DW_PARITY_PART" = native-tests \]; then cargo test [^']*runtime::mysql::[^']* > \/evidence\/mysql-tests\.txt \|\| exit 1; fi; if \[ -n "\$shard" \]; then [^']*cargo test --locked --offline --test execution -- --exact --nocapture --test-threads=2 \$\(cat \/evidence\/execution-shard\$suffix\.txt\) > \/evidence\/mysql-execution-tests\$suffix\.txt \|\| exit 1; fi; cargo build --locked --offline'/);
+  assert.match(mysql.text, /'case "\$DW_PARITY_PART" in native-tests\) shard=1 suffix= ;; native-tests-b\) shard=2 suffix=-b ;; \*\) shard= ;; esac; if \[ "\$DW_PARITY_PART" = native-tests \]; then cargo test [^']*runtime::mysql::[^']* > \/evidence\/mysql-tests\.txt \|\| exit 1; fi; if \[ -n "\$shard" \]; then [^']*cargo test --locked --offline --test execution -- --exact --nocapture --test-threads=2 \$\(cat \/evidence\/execution-shard\$suffix\.txt\) > \/evidence\/mysql-execution-tests\$suffix\.txt \|\| exit 1; fi; case "\$DW_PARITY_PART" in native-tests\|native-tests-b\) cargo build --locked --offline ;; \*\) test -x \/target\/debug\/durable-workflow-server ;; esac'/);
 });
 
 test('the MySQL 8 labels split their execution tests into two parts, every test in exactly one', () => {

@@ -131,22 +131,29 @@ test('the fixture jobs run only through the classifier and the result waits for 
   assert.match(blocks.changes, /run: \$\{\{ steps\.classify\.outputs\.run \}\}/);
   assert.match(blocks.changes, /run: bash scripts\/conformance\/server-parity\/changes\.sh >> "\$GITHUB_OUTPUT"$/m);
   // The root fixture jobs run only through the classifier.
-  const roots = ['published-sdk-adapters', 'codec-native-build'];
+  const roots = ['published-sdk-adapters', 'codec-native-build', 'native-debug-build'];
   for (const id of roots) {
     assert.match(blocks[id], /^ {4}needs: changes\n {4}if: \$\{\{ needs\.changes\.outputs\.run == 'true' \}\}$/m, id);
   }
   const fixtureJobs = ids.filter(id => id !== 'changes' && id !== 'result');
   for (const id of fixtureJobs.filter(id => !roots.includes(id))) {
     // A skipped root skips these jobs; no job-level condition may override
-    // that. Every one waits for the SDK adapters, and only deadline health
-    // also waits for the optimized native build.
-    const expected = id === 'codec-deadline-health' ? '[published-sdk-adapters, codec-native-build]' : 'published-sdk-adapters';
+    // that. Deadline health uses the optimized artifact; matrix jobs also
+    // wait for this run's verified debug server.
+    const expected = id === 'codec-deadline-health'
+      ? '[published-sdk-adapters, codec-native-build]' : '[published-sdk-adapters, native-debug-build]';
     assert.ok(blocks[id].split('\n').includes(`    needs: ${expected}`), `${id} needs ${expected}`);
-    assert.doesNotMatch(blocks[id], /^ {4}if:/m, id);
+    if (id === 'codec-deadline-health') {
+      assert.doesNotMatch(blocks[id], /^ {4}if:/m, id);
+    } else {
+      // A failed debug producer cannot suppress independent native tests.
+      // SDK success still requires a successful, run=true classifier.
+      assert.match(blocks[id], /^ {4}if: \$\{\{ !cancelled\(\) && needs\.published-sdk-adapters\.result == 'success' \}\}$/m, id);
+    }
   }
   // Every job other than the classifier and the result is a gated fixture job.
-  assert.deepEqual(fixtureJobs.sort(), ['codec-deadline-health', 'codec-native-build', 'execution-and-codec',
-    'mysql-execution', 'postgres-storage', 'published-sdk-adapters']);
+  assert.deepEqual(fixtureJobs.sort(), ['codec-deadline-health', 'codec-native-build', 'native-debug-build', 'execution-and-codec',
+    'mysql-execution', 'postgres-storage', 'published-sdk-adapters'].sort());
   const result = blocks.result;
   assert.equal(ids.at(-1), 'result');
   assert.match(result, /^ {4}name: Shared Server fixtures result$/m);
@@ -168,6 +175,7 @@ const fixture = (result, run) => ({
   changes: {result: 'success', outputs: run === undefined ? {} : {run}},
   'published-sdk-adapters': {result, outputs: {}},
   'codec-native-build': {result, outputs: {}},
+  'native-debug-build': {result, outputs: {}},
   'codec-deadline-health': {result, outputs: {}},
   'mysql-execution': {result, outputs: {}},
   'postgres-storage': {result, outputs: {}},
@@ -187,6 +195,7 @@ test('the result passes when no input changed and every fixture job was skipped'
 });
 
 for (const [label, needs, reason] of [
+  ['a failed debug artifact producer', {...fixture('success', 'true'), 'native-debug-build': {result: 'failure', outputs: {}}}, /must be success when run=true: native-debug-build=failure\./],
   ['a failed fixture job', {...fixture('success', 'true'), 'mysql-execution': {result: 'failure', outputs: {}}}, /must be success when run=true: mysql-execution=failure\./],
   ['a cancelled fixture job', {...fixture('success', 'true'), 'execution-and-codec': {result: 'cancelled', outputs: {}}}, /must be success when run=true: execution-and-codec=cancelled\./],
   ['a skipped fixture job when inputs changed', {...fixture('success', 'true'), 'postgres-storage': {result: 'skipped', outputs: {}}}, /must be success when run=true: postgres-storage=skipped\./],
