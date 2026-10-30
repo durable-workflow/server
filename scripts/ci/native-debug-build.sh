@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Share the current run's debug server only. Native test builds keep their own path.
 set -euo pipefail
-test "$#" = 1 || exit 2
-root=$(git rev-parse --show-toplevel)
+[[ $# -eq 1 ]] || exit 2
+root=$(/usr/bin/git rev-parse --show-toplevel)
 cd "$root"
 image=${NATIVE_RUST_IMAGE:?NATIVE_RUST_IMAGE must be the pinned workflow compiler}
 node scripts/ci/native-debug-artifact.mjs identity >/dev/null
 : "${RESOURCE_SCOPE:?RESOURCE_SCOPE must be unique to this workflow job}"
-test "$RESOURCE_SCOPE" = "dw-native-debug-${GITHUB_RUN_ID:?}-${GITHUB_RUN_ATTEMPT:?}-${GITHUB_JOB:?}"
+[[ "$RESOURCE_SCOPE" == "dw-native-debug-${GITHUB_RUN_ID:?}-${GITHUB_RUN_ATTEMPT:?}-${GITHUB_JOB:?}" ]]
 output=$(realpath -m "$1")
 case "$output" in "$root"/*) ;; *) echo 'native debug output must be inside this checkout' >&2; exit 2 ;; esac
-test ! -e "$output"
+[[ ! -e "$output" ]]
 mkdir -p "$output" cargo-home rust-target
 started=$SECONDS
 docker run --rm --init --name "$RESOURCE_SCOPE-clean" \

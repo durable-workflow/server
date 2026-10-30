@@ -29,7 +29,7 @@ function fixture(t) {
   for (const name of ['native-debug-artifact.mjs', 'native-debug-build.sh']) {
     copyFileSync(join(repository, 'scripts/ci', name), join(root, 'scripts/ci', name));
   }
-  const git = (...args) => execFileSync('git', args, {cwd: root, encoding: 'utf8'}).trim();
+  const git = (...args) => execFileSync('/usr/bin/git', args, {cwd: root, encoding: 'utf8'}).trim();
   git('init', '-q');
   git('add', '.');
   git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture');
@@ -52,6 +52,18 @@ test('a consumer accepts only the bound binary and identity files', t => {
   assert.equal(actual.build_duration_seconds, 7);
   assert.equal(actual.profile, 'dev');
   assert.equal(actual.locked, true);
+});
+
+test('PATH cannot replace the Git executable used for artifact identity', t => {
+  const {root, directory, env} = fixture(t);
+  const bin = join(root, 'fake-git');
+  const marker = join(root, 'hijacked');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'git'), '#!/bin/sh\necho hijacked > "$GIT_HIJACK_MARKER"\nexit 99\n', {mode: 0o755});
+  const run = spawnSync(process.execPath, ['scripts/ci/native-debug-artifact.mjs', 'verify', directory],
+    {cwd: root, env: {...env, PATH: `${bin}:${env.PATH}`, GIT_HIJACK_MARKER: marker}, encoding: 'utf8'});
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(existsSync(marker), false);
 });
 
 for (const [name, key, value] of [

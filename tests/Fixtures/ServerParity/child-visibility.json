@@ -1,0 +1,115 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "child-visibility",
+  "review_state": "reviewed",
+  "contract": "A child run's memos and search attributes (published Server 2.11.7 with Workflow 2.15.7 inheritTypedVisibilityMetadata), over raw worker HTTP on protocol 1.20 in a fresh namespace with one registered keyword attribute. A parent started with a memo and a search attribute starts one child under a retry policy. The child's first run, and the run that retries it after a failure, carry the parent's memo and search attribute in their descriptions and run list, and a visibility query for the attribute finds the child. Embedded applications have no worker protocol.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "child visibility λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "child visibility λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "child_visibility": {
+    "workflow_type": "parity.v1.child_visibility",
+    "child_type": "parity.v1.child_visibility_child",
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "definitions": [
+      [
+        "Region",
+        "keyword"
+      ]
+    ],
+    "memo": {
+      "team": "ops λ",
+      "count": 3
+    },
+    "search_attributes": {
+      "Region": "eu"
+    },
+    "query": "Region = \"eu\"",
+    "expected": {
+      "child": {
+        "run_number": 1,
+        "memo": {
+          "count": 3,
+          "team": "ops λ"
+        },
+        "search_attributes": {
+          "Region": "eu"
+        }
+      },
+      "retry": {
+        "run_number": 2,
+        "memo": {
+          "count": 3,
+          "team": "ops λ"
+        },
+        "search_attributes": {
+          "Region": "eu"
+        }
+      },
+      "runs": [
+        {
+          "run_number": 1,
+          "memo": {
+            "count": 3,
+            "team": "ops λ"
+          }
+        },
+        {
+          "run_number": 2,
+          "memo": {
+            "count": 3,
+            "team": "ops λ"
+          }
+        }
+      ],
+      "listed": [
+        {
+          "workflow": "child",
+          "status": "failed",
+          "search_attributes": {
+            "Region": "eu"
+          }
+        },
+        {
+          "workflow": "child",
+          "status": "pending",
+          "search_attributes": {
+            "Region": "eu"
+          }
+        },
+        {
+          "workflow": "parent",
+          "status": "waiting",
+          "search_attributes": {
+            "Region": "eu"
+          }
+        }
+      ]
+    }
+  }
+}

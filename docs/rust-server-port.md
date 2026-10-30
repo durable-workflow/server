@@ -616,8 +616,7 @@ contract fixture before its correction.
   (`invalid_child_timeout`, `invalid_child_retry_policy`), as a timer delay
   is. Remaining: native's cooperative cancellation delivery expects one
   link per call, so it refuses one delivered to a retried child
-  (`cancellation_delivery_shape_mismatch`; #873, pending a PHP recording);
-  and a retried child inherits no memos or search attributes (below).
+  (`cancellation_delivery_shape_mismatch`; #873, pending a PHP recording).
 - **Trace context (Core 2.10, published in Server 2.11.1).** Core adds
   nullable `observability_context` columns on runs, commands and tasks.
   Native has no carrier: it accepts and ignores a top-level carrier on
@@ -654,10 +653,14 @@ contract fixture before its correction.
 - **Visibility query key order.** When one command or query has several
   errors, native reports them in sorted key order rather than request order.
   The same holds for several invalid search attributes on one start.
-- **Inherited memos and search attributes on child runs.** Published PHP
-  copies the parent's memos and search attributes to a child run and to a
-  retried child (`inheritTypedVisibilityMetadata`). Native copies both only
-  on continue-as-new.
+- **Inherited memos and search attributes on child runs** (October 29,
+  closed). Published PHP copies the parent's memos and search attributes to
+  a child run, and the failed run's to a retried child
+  (`inheritTypedVisibilityMetadata`). Native copied both only on
+  continue-as-new; the same copy now runs for a child's first run and a
+  retry. The `child-visibility` fixture records it against published
+  2.11.7
+  ([checkpoint](rust-server-port-checkpoints/2026-10-29-child-visibility.md)).
 - **Search attribute datetime forms.** `Carbon::parse` accepts relative and
   free-form dates. Native accepts RFC 3339, and a date or date and time
   without an offset read as UTC, and refuses other forms as PHP refuses an

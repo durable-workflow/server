@@ -6,7 +6,7 @@ import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const digest = value => createHash('sha256').update(value).digest('hex');
-const git = (root, ...args) => execFileSync('git', args, {cwd: root, encoding: 'utf8'}).trim();
+const git = (root, ...args) => execFileSync('/usr/bin/git', args, {cwd: root, encoding: 'utf8'}).trim();
 const required = (env, key, pattern) => {
   const value = env[key];
   assert.equal(typeof value, 'string', `${key} is required`);
@@ -20,9 +20,9 @@ function identity(root, env, consumer) {
     'native debug source does not match the workflow checkout');
   assert.equal(git(root, 'status', '--porcelain', '--untracked-files=all', '--', 'rust'), '',
     'native debug source must match the committed native tree');
-  const attempt = required(env, 'GITHUB_RUN_ATTEMPT', /^[1-9][0-9]{0,9}$/);
+  const attempt = required(env, 'GITHUB_RUN_ATTEMPT', /^[1-9]\d{0,9}$/);
   const producerAttempt = consumer && env.NATIVE_BUILD_RUN_ATTEMPT !== undefined
-    ? required(env, 'NATIVE_BUILD_RUN_ATTEMPT', /^[1-9][0-9]{0,9}$/) : attempt;
+    ? required(env, 'NATIVE_BUILD_RUN_ATTEMPT', /^[1-9]\d{0,9}$/) : attempt;
   assert.ok(Number(producerAttempt) <= Number(attempt), 'native debug producer attempt is in the future');
   return {
     source_revision,
@@ -30,7 +30,7 @@ function identity(root, env, consumer) {
     cargo_lock_sha256: digest(readFileSync(resolve(root, 'rust/Cargo.lock'))),
     compiler_image: required(env, 'NATIVE_RUST_IMAGE', /^mirror\.gcr\.io\/library\/rust@sha256:[a-f0-9]{64}$/),
     repository: required(env, 'GITHUB_REPOSITORY', /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
-    github_run_id: required(env, 'GITHUB_RUN_ID', /^[1-9][0-9]{0,19}$/),
+    github_run_id: required(env, 'GITHUB_RUN_ID', /^[1-9]\d{0,19}$/),
     github_run_attempt: producerAttempt,
     runner_os: required(env, 'RUNNER_OS', /^Linux$/),
     runner_arch: required(env, 'RUNNER_ARCH', /^(X64|ARM64)$/),
@@ -52,7 +52,7 @@ function checksums(directory) {
 }
 
 export function createArtifact(directory, compiler, seconds, {root = process.cwd(), env = process.env} = {}) {
-  assert.match(compiler, /^rustc [0-9]+\.[0-9]+\.[0-9]+[^\r\n]{0,200}$/,
+  assert.match(compiler, /^rustc \d+\.\d+\.\d+[^\r\n]{0,200}$/,
     'native debug artifact needs the actual compiler version');
   assert.ok(Number.isSafeInteger(seconds) && seconds >= 0, 'invalid native debug build duration');
   const record = {
@@ -75,7 +75,7 @@ export function verifyArtifact(directory, {root = process.cwd(), env = process.e
   for (const [key, value] of Object.entries(expected)) {
     assert.deepEqual(record[key], value, `native debug artifact ${key} does not match this job`);
   }
-  assert.match(record.compiler, /^rustc [0-9]+\.[0-9]+\.[0-9]+[^\r\n]{0,200}$/,
+  assert.match(record.compiler, /^rustc \d+\.\d+\.\d+[^\r\n]{0,200}$/,
     'invalid native debug compiler version');
   assert.ok(Number.isSafeInteger(record.build_duration_seconds) && record.build_duration_seconds >= 0,
     'invalid native debug build duration');
@@ -91,10 +91,16 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const [action, directory, compiler, seconds, ...extra] = process.argv.slice(2);
     assert.ok(extra.length === 0 && (directory || action === 'identity'),
       'usage: native-debug-artifact.mjs identity | create DIR COMPILER SECONDS | verify DIR');
-    const record = action === 'identity' && directory === undefined ? identity(process.cwd(), process.env, false)
-      : action === 'create' ? createArtifact(directory, compiler, Number(seconds))
-      : action === 'verify' && compiler === undefined ? verifyArtifact(directory) : null;
-    assert.ok(record, 'unknown native debug artifact operation');
+    let record;
+    if (action === 'identity' && directory === undefined) {
+      record = identity(process.cwd(), process.env, false);
+    } else if (action === 'create') {
+      record = createArtifact(directory, compiler, Number(seconds));
+    } else if (action === 'verify' && compiler === undefined) {
+      record = verifyArtifact(directory);
+    } else {
+      assert.fail('unknown native debug artifact operation');
+    }
     process.stdout.write(`${JSON.stringify(record)}\n`);
   } catch (error) {
     process.stderr.write(`Native debug artifact refused: ${error.message}\n`);
