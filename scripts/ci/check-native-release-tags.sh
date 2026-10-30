@@ -4,7 +4,8 @@
 # - the PHP Release workflow's push-tag filter matches no native- tag, so a
 #   native tag starts no PHP release, and still matches plain versions;
 # - the tag verifier accepts native- only when asked for it;
-# - the native publisher accepts only native- tags.
+# - the native publisher accepts only native- tags, and lets only a release
+#   candidate (-rc.N) skip Docker Hub.
 # Each script is stopped at its input checks, before any API or registry call.
 set -euo pipefail
 fail() { printf 'Native release tag check failed: %s\n' "$1" >&2; exit 1; }
@@ -55,7 +56,12 @@ expect "may only be empty or native-" RELEASE_TAG=x-2.12.0 RELEASE_TAG_PREFIX=x-
 
 publish=scripts/ci/native-release-publish.sh
 images=(GHCR_IMAGE=ghcr.io/example/native DOCKERHUB_IMAGE=example/native)
-expect "must be native-<exact release version>" RELEASE_TAG=2.12.0-rc.1 "${images[@]}" bash "$publish"
-# No digests stops the publisher right after the native tag is accepted.
-expect "exact smoked digest" RELEASE_TAG=native-2.12.0-rc.1 "${images[@]}" bash "$publish"
+expect "must be native-<exact release version>" RELEASE_TAG=2.12.0-rc.1 "${images[@]}" PUBLISH_DOCKERHUB=true bash "$publish"
+# No digests stops the publisher right after the tag and registries are accepted.
+expect "exact smoked digest" RELEASE_TAG=native-2.12.0-rc.1 "${images[@]}" PUBLISH_DOCKERHUB=true bash "$publish"
+expect "exact smoked digest" RELEASE_TAG=native-2.12.0-rc.1 "${images[@]}" PUBLISH_DOCKERHUB=false bash "$publish"
+expect "exact smoked digest" RELEASE_TAG=native-3.0.0 "${images[@]}" PUBLISH_DOCKERHUB=true bash "$publish"
+# Only a release candidate may skip Docker Hub, and the choice must be explicit.
+expect "only a release candidate (-rc.N) may skip Docker Hub" RELEASE_TAG=native-3.0.0 "${images[@]}" PUBLISH_DOCKERHUB=false bash "$publish"
+expect "PUBLISH_DOCKERHUB must be true or false" RELEASE_TAG=native-2.12.0-rc.1 "${images[@]}" bash "$publish"
 printf 'Native release tags: %d release.yml pattern(s) checked; verifier and publisher accept native- only as intended.\n' "${#patterns[@]}"
