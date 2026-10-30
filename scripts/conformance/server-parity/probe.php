@@ -441,6 +441,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $activityLateOutcomes = isset($fixture['activity_late_outcomes']) ? finishHttpActivityLateOutcomes($client, $fixture, $workflowId, $url) : null;
     $childVisibility = isset($fixture['child_visibility']) ? finishHttpChildVisibility($client, $fixture, $workflowId, $url) : null;
     $retriedChildCancellation = isset($fixture['retried_child_cancellation']) ? finishHttpRetriedChildCancellation($client, $fixture, $workflowId, $url) : null;
+    $parallelCancellation = isset($fixture['parallel_cancellation']) ? finishHttpParallelCancellation($client, $fixture, $workflowId, $url) : null;
     $activityResultRepeats = isset($fixture['activity_result_repeats']) ? finishHttpActivityResultRepeats($client, $fixture, $workflowId, $url) : null;
     $startSearchAttributes = isset($fixture['start_search_attributes']) ? finishHttpStartSearchAttributes($client, $fixture, $workflowId, $url) : null;
     $queryArgumentRouting = isset($fixture['query_argument_routing']) ? finishHttpQueryArgumentRouting($client, $fixture, $workflowId, $url) : null;
@@ -581,6 +582,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'activity_late_outcomes' => $activityLateOutcomes,
         'child_visibility' => $childVisibility,
         'retried_child_cancellation' => $retriedChildCancellation,
+        'parallel_cancellation' => $parallelCancellation,
         'activity_result_repeats' => $activityResultRepeats,
         'start_search_attributes' => $startSearchAttributes,
         'query_argument_routing' => $queryArgumentRouting,
@@ -924,6 +926,7 @@ try {
     require __DIR__.'/activity-late-outcomes-probe.php';
     require __DIR__.'/child-visibility-probe.php';
     require __DIR__.'/retried-child-cancellation-probe.php';
+    require __DIR__.'/parallel-cancellation-probe.php';
     require __DIR__.'/activity-result-repeats-probe.php';
     require __DIR__.'/start-search-attributes-probe.php';
     require __DIR__.'/query-arguments-probe.php';
@@ -1140,6 +1143,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['retried_child_cancellation'])) {
         $observation['retried_child_cancellation'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
+    }
+    if ($mode === 'embedded' && isset($fixture['parallel_cancellation'])) {
+        $observation['parallel_cancellation'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
     }
     if ($mode === 'embedded' && isset($fixture['activity_result_repeats'])) {
         $observation['activity_result_repeats'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
