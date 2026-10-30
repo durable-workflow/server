@@ -441,6 +441,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $activityLateOutcomes = isset($fixture['activity_late_outcomes']) ? finishHttpActivityLateOutcomes($client, $fixture, $workflowId, $url) : null;
     $childVisibility = isset($fixture['child_visibility']) ? finishHttpChildVisibility($client, $fixture, $workflowId, $url) : null;
     $deepJsonBodies = isset($fixture['deep_json_bodies']) ? finishHttpDeepJsonBodies($client, $fixture, $workflowId, $url) : null;
+    $visibilityCollation = isset($fixture['visibility_collation']) ? finishHttpVisibilityCollation($client, $fixture, $workflowId, $url) : null;
     $retriedChildCancellation = isset($fixture['retried_child_cancellation']) ? finishHttpRetriedChildCancellation($client, $fixture, $workflowId, $url) : null;
     $parallelCancellation = isset($fixture['parallel_cancellation']) ? finishHttpParallelCancellation($client, $fixture, $workflowId, $url) : null;
     $activityResultRepeats = isset($fixture['activity_result_repeats']) ? finishHttpActivityResultRepeats($client, $fixture, $workflowId, $url) : null;
@@ -583,6 +584,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'activity_late_outcomes' => $activityLateOutcomes,
         'child_visibility' => $childVisibility,
         'deep_json_bodies' => $deepJsonBodies,
+        'visibility_collation' => $visibilityCollation,
         'retried_child_cancellation' => $retriedChildCancellation,
         'parallel_cancellation' => $parallelCancellation,
         'activity_result_repeats' => $activityResultRepeats,
@@ -928,6 +930,7 @@ try {
     require __DIR__.'/activity-late-outcomes-probe.php';
     require __DIR__.'/child-visibility-probe.php';
     require __DIR__.'/deep-json-bodies-probe.php';
+    require __DIR__.'/visibility-collation-probe.php';
     require __DIR__.'/retried-child-cancellation-probe.php';
     require __DIR__.'/parallel-cancellation-probe.php';
     require __DIR__.'/activity-result-repeats-probe.php';
@@ -1146,6 +1149,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['deep_json_bodies'])) {
         $observation['deep_json_bodies'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_request_bodies'];
+    }
+    if ($mode === 'embedded' && isset($fixture['visibility_collation'])) {
+        $observation['visibility_collation'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_list_queries'];
     }
     if ($mode === 'embedded' && isset($fixture['retried_child_cancellation'])) {
         $observation['retried_child_cancellation'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];

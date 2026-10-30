@@ -675,9 +675,16 @@ contract fixture before its correction.
   evaluates candidate runs in list order, 500 at a time, until it has the
   requested page. A query that matches few runs in a large namespace reads
   every run of that namespace.
-- **Visibility query text comparisons.** PHP compares keyword and text
-  values with the database collation, which is case-insensitive in the
-  published MySQL schema. Native compares them exactly on every backend.
+- **Visibility query text comparisons** (October 30, closed). PHP compares
+  text in a structured list query with the database collation: exactly on
+  SQLite and PostgreSQL, and under the published MySQL schema's
+  `utf8mb4_unicode_ci`, which ignores case, accents and trailing spaces, for
+  attributes and run columns alike. Text fields accept only `=`, `!=` and
+  `IN`. Native compared exactly on every backend; on MySQL and MariaDB it
+  now compares each text by its collation key (`WEIGHT_STRING` of the value
+  without trailing spaces). The `visibility-collation` fixture records both
+  collations against published 2.11.7
+  ([checkpoint](rust-server-port-checkpoints/2026-10-30-visibility-collation.md)).
 - **Visibility query key order.** When one command or query has several
   errors, native reports them in sorted key order rather than request order.
   The same holds for several invalid search attributes on one start.
