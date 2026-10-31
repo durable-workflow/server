@@ -21,6 +21,15 @@ Eligibility:
 - Redacted bundles are not importable as server-managed state.
 - Terminal runs require `history_complete=true`.
 
+Signing keys:
+
+- Supply `signing_key` in the JSON request body alongside `bundle`, or use the
+  configured `workflows.v2.history_export.signing_key`.
+- A query-string `signing_key`, including case variants and array forms, returns
+  `422 signing_key_in_query`. The response does not repeat the value. URLs may
+  be retained in access logs, tracing and client history, so keep keys out of
+  the URL.
+
 Source of truth:
 
 - `history_events` are copied as the authoritative replay/audit log.
