@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
@@ -20,6 +21,68 @@ class EmbeddedV2ImportControllerTest extends TestCase
 {
     use RefreshDatabase;
     use ServerTestHelpers;
+
+    #[DataProvider('querySigningKeys')]
+    public function test_it_rejects_signing_keys_in_the_url_without_repeating_them(string $query): void
+    {
+        $this->createNamespace('default');
+        $bundle = $this->completedBundle();
+        $this->clearWorkflowState();
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/import/embedded-v2?'.$query, [
+                'bundle' => $bundle,
+                'signing_key' => 'fixture-json-signing-key',
+            ]);
+
+        $response->assertUnprocessable()
+            ->assertJsonPath('reason', 'signing_key_in_query');
+        $this->assertStringNotContainsString('fixture-url-signing-key', $response->getContent());
+        $this->assertDatabaseCount('workflow_runs', 0);
+        $this->assertDatabaseCount('workflow_instances', 0);
+    }
+
+    public static function querySigningKeys(): iterable
+    {
+        yield 'canonical' => ['signing_key=fixture-url-signing-key'];
+        yield 'uppercase' => ['SIGNING_KEY=fixture-url-signing-key'];
+        yield 'mixed case' => ['Signing_Key=fixture-url-signing-key'];
+        yield 'array' => ['signing_key[]=fixture-url-signing-key'];
+        yield 'named array' => ['signing_key[nested]=fixture-url-signing-key'];
+        yield 'encoded' => ['%73igning%5fkey=fixture-url-signing-key'];
+        yield 'dot normalized by PHP' => ['signing.key=fixture-url-signing-key'];
+        yield 'space normalized by PHP' => ['signing+key=fixture-url-signing-key'];
+        yield 'empty' => ['signing_key='];
+        yield 'bare' => ['signing_key'];
+    }
+
+    #[DataProvider('signingKeySources')]
+    public function test_signed_imports_keep_body_and_configured_key_support(string $source): void
+    {
+        $this->createNamespace('default');
+        $key = 'fixture-valid-import-signing-key';
+        config(['workflows.v2.history_export.signing_key' => $key]);
+        $bundle = $this->completedBundle();
+        $this->assertSame('hmac-sha256', $bundle['integrity']['signature_algorithm']);
+        $this->clearWorkflowState();
+        $body = ['bundle' => $bundle, 'require_signature' => true];
+        if ($source === 'body') {
+            config(['workflows.v2.history_export.signing_key' => null]);
+            $body['signing_key'] = $key;
+        }
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/import/embedded-v2', $body)
+            ->assertCreated()
+            ->assertJsonPath('status', 'imported');
+        $this->assertDatabaseCount('workflow_runs', 1);
+    }
+
+    public static function signingKeySources(): iterable
+    {
+        yield 'JSON body' => ['body'];
+        yield 'server configuration' => ['config'];
+    }
 
     public function test_cluster_info_advertises_embedded_v2_import_contract_when_available(): void
     {
@@ -80,7 +143,7 @@ class EmbeddedV2ImportControllerTest extends TestCase
     private function completedBundle(): array
     {
         $instance = WorkflowInstance::query()->create([
-            'id' => 'server-embedded-import-' . Str::lower((string) Str::ulid()),
+            'id' => 'server-embedded-import-'.Str::lower((string) Str::ulid()),
             'workflow_class' => 'App\\Workflows\\ServerEmbeddedImportWorkflow',
             'workflow_type' => 'orders.import',
             'namespace' => 'embedded-source',

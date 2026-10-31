@@ -16,6 +16,13 @@ class EmbeddedV2ImportController
             return $response;
         }
 
+        if (array_key_exists('signing_key', array_change_key_case($request->query->all(), CASE_LOWER))) {
+            return ControlPlaneProtocol::jsonForRequest($request, [
+                'message' => 'Provide signing_key in the JSON body or server configuration.',
+                'reason' => 'signing_key_in_query',
+            ], 422);
+        }
+
         if (! class_exists(self::IMPORTER)) {
             return ControlPlaneProtocol::jsonForRequest($request, [
                 'message' => 'Embedded v2 import is not available in the installed workflow package.',
@@ -37,9 +44,9 @@ class EmbeddedV2ImportController
         $report = $importer::import($bundle, [
             'dry_run' => (bool) $request->boolean('dry_run'),
             'namespace' => $this->namespace($request),
-            'import_id' => $this->stringInput($request, 'import_id'),
+            'import_id' => $this->stringValue($request->input('import_id')),
             'require_signature' => (bool) $request->boolean('require_signature'),
-            'signing_key' => $this->stringInput($request, 'signing_key'),
+            'signing_key' => $this->stringValue($request->json('signing_key')),
         ]);
 
         return ControlPlaneProtocol::jsonForRequest(
@@ -58,10 +65,8 @@ class EmbeddedV2ImportController
             : null;
     }
 
-    private function stringInput(Request $request, string $key): ?string
+    private function stringValue(mixed $value): ?string
     {
-        $value = $request->input($key);
-
         if (! is_string($value)) {
             return null;
         }
@@ -72,7 +77,7 @@ class EmbeddedV2ImportController
     }
 
     /**
-     * @param array<string, mixed> $report
+     * @param  array<string, mixed>  $report
      */
     private function statusCode(array $report): int
     {
