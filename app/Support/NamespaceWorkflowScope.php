@@ -75,7 +75,7 @@ class NamespaceWorkflowScope
                 ->whereColumn('workflow_runs.workflow_instance_id', 'workflow_run_summaries.workflow_instance_id'));
     }
 
-    private static function ownedRunQuery(Builder $query, string $namespace): Builder
+    public static function ownedRunQuery(Builder $query, string $namespace): Builder
     {
         return NamespaceIdentity::constrain($query, $namespace)
             ->whereHas('instance', static fn (Builder $instance) => NamespaceIdentity::constrain($instance, $namespace));
@@ -83,14 +83,13 @@ class NamespaceWorkflowScope
 
     public static function taskQuery(string $namespace): Builder
     {
-        return WorkflowTask::query()
-            ->where('workflow_tasks.namespace', $namespace);
+        return NamespaceIdentity::constrain(WorkflowTask::query(), $namespace)
+            ->whereHas('run', static fn (Builder $run) => self::ownedRunQuery($run, $namespace));
     }
 
     public static function task(string $namespace, string $taskId): ?WorkflowTask
     {
-        return WorkflowTask::query()
-            ->where('namespace', $namespace)
+        return self::taskQuery($namespace)
             ->whereKey($taskId)
             ->first();
     }
@@ -106,7 +105,7 @@ class NamespaceWorkflowScope
             return null;
         }
 
-        $run = WorkflowRun::query()->where('namespace', $namespace)
+        $run = self::ownedRunQuery(WorkflowRun::query(), $namespace)
             ->whereKey($runId)->lockForUpdate()->first();
         if (! $run instanceof WorkflowRun) {
             return null;

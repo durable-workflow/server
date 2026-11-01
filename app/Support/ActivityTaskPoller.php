@@ -12,6 +12,7 @@ use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\DefaultActivityTaskBridge;
 use Workflow\V2\Support\TaskFairnessKey;
 use Workflow\V2\Support\TaskFairnessScheduler;
 use Workflow\V2\Support\TaskFairnessState;
@@ -895,6 +896,14 @@ final class ActivityTaskPoller
                 ): ?array {
                     if ($workerPollFence !== [] && ! WorkerPollFence::isCurrentForUpdate($workerPollFence)) {
                         throw new ActivityTaskClaimRolledBack;
+                    }
+
+                    // Revalidate legacy task ownership before the ID-only
+                    // package claim can write a lease or activity attempt.
+                    // Custom bridges may keep their tasks outside this table.
+                    if (($this->bridge instanceof DefaultActivityTaskBridge || WorkflowTask::query()->whereKey($taskId)->exists())
+                        && NamespaceWorkflowScope::lockTaskForMutation($namespace, $taskId) === null) {
+                        return null;
                     }
 
                     $this->pollLeaseBindings->ensureUnbound(
