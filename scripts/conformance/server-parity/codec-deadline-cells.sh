@@ -19,7 +19,8 @@ actors_stopped() {
   local name state
   for name in "$@"; do
     if ! state=$(docker inspect --format '{{.State.Running}}' "$name" 2>&1); then
-      if [[ "$state" == *"No such object"* || "$state" == *"No such container"* ]]; then
+      # The Docker CLI on the Ubuntu 26 runner image prints these in lower case.
+      if [[ "${state,,}" == *"no such object"* || "${state,,}" == *"no such container"* ]]; then
         continue
       fi
       echo "::error::Could not confirm that $name stopped: $state" >&2
