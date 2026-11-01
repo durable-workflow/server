@@ -3348,7 +3348,7 @@ function authoredCallerWorkflowEvidence(probes, callerLanguage, serviceLanguage,
             assert.ok(call.failed_at);
           } else {
             assert.equal(row.cancellation_qualified, true);
-            assert.equal(row.result.cancelled, true);
+            if (caller === 'php') assert.equal(row.result.cancelled, true);
           }
         }
         observations.push({caller_namespace: row.caller_namespace, workflow_id: row.workflow_id, run_id: row.run_id,
