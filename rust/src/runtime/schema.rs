@@ -11,14 +11,14 @@ use tokio::sync::OnceCell;
 
 use super::{Result, refuse};
 
-pub(super) const VERSION: i64 = 7;
+pub(super) const VERSION: i64 = 8;
 
 fn migrator() -> &'static Migrator {
     static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
     MIGRATOR.get_or_init(|| {
         Migrator::with_migrations(vec![Migration::new(
             VERSION,
-            "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines and service admission counters".into(),
+            "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions".into(),
             MigrationType::Simple,
             concat!(
                 include_str!("../../migrations/sqlite/0003_full_schema.sql"),
@@ -29,7 +29,9 @@ fn migrator() -> &'static Migrator {
                 "\n",
                 include_str!("../../migrations/sqlite/0006_stream_reclaims.sql"),
                 "\n",
-                include_str!("../../migrations/sqlite/0007_service_calls.sql")
+                include_str!("../../migrations/sqlite/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0008_external_payload_deletions.sql")
             )
             .into_sql_str(),
             false,
@@ -51,7 +53,9 @@ pub(super) fn native_relations_sql() -> Result<String> {
                 "\n",
                 include_str!("../../migrations/sqlite/0006_stream_reclaims.sql"),
                 "\n",
-                include_str!("../../migrations/sqlite/0007_service_calls.sql")
+                include_str!("../../migrations/sqlite/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0008_external_payload_deletions.sql")
         ),
     )
 }

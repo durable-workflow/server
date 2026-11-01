@@ -92,6 +92,7 @@ mod nexus_operations;
 mod operator_dashboard;
 mod operator_metrics;
 mod payload_cleanup;
+mod payload_deletions;
 mod payload_discovery;
 mod json_body;
 mod payload_limits;

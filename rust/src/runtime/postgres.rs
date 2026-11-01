@@ -13,7 +13,7 @@ use sqlx::{
 
 use super::{Result, refuse};
 
-pub const VERSION: i64 = 7;
+pub const VERSION: i64 = 8;
 pub const CATALOG_QUERY: &str = include_str!("postgres-catalog.sql");
 type Catalog = Vec<(String, String, Json<Value>)>;
 
@@ -22,7 +22,7 @@ fn migrator() -> &'static Migrator {
     MIGRATOR.get_or_init(|| {
         let mut migrations = Migrator::with_migrations(vec![Migration::new(
             VERSION,
-            "full frozen PHP PostgreSQL schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines and service admission counters".into(),
+            "full frozen PHP PostgreSQL schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions".into(),
             MigrationType::Simple,
             concat!(
                 include_str!("../../migrations/postgres/0003_full_schema.sql"),
@@ -33,7 +33,9 @@ fn migrator() -> &'static Migrator {
                 "\n",
                 include_str!("../../migrations/postgres/0006_stream_reclaims.sql"),
                 "\n",
-                include_str!("../../migrations/postgres/0007_service_calls.sql")
+                include_str!("../../migrations/postgres/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0008_external_payload_deletions.sql")
             )
             .into_sql_str(),
             false,
@@ -65,7 +67,9 @@ pub(super) fn native_relations_sql() -> Result<String> {
                 "\n",
                 include_str!("../../migrations/postgres/0006_stream_reclaims.sql"),
                 "\n",
-                include_str!("../../migrations/postgres/0007_service_calls.sql")
+                include_str!("../../migrations/postgres/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0008_external_payload_deletions.sql")
         ),
     )
 }
@@ -99,7 +103,7 @@ pub(super) async fn php_source_catalog(connection: &mut PgConnection) -> Result<
         ));
     }
     let native: Catalog =
-        serde_json::from_str(include_str!("../../migrations/postgres/0007_catalog.json"))?;
+        serde_json::from_str(include_str!("../../migrations/postgres/0008_catalog.json"))?;
     let expected: Catalog = native
         .into_iter()
         .filter(|(kind, name, _)| {
@@ -198,7 +202,7 @@ pub(super) async fn verify(connection: &mut PgConnection) -> Result<()> {
     // from SQL text. It retains types, precision, defaults, indexes, foreign
     // keys and sequence ownership while excluding live rows/sequence values.
     let expected: Catalog =
-        serde_json::from_str(include_str!("../../migrations/postgres/0007_catalog.json"))?;
+        serde_json::from_str(include_str!("../../migrations/postgres/0008_catalog.json"))?;
     let actual = catalog(connection).await?;
     if actual != expected {
         return Err(refuse(
@@ -410,7 +414,7 @@ mod tests {
     #[test]
     fn compiled_catalog_preserves_long_object_identities_and_int64_limits() {
         let rows: Catalog =
-            serde_json::from_str(include_str!("../../migrations/postgres/0007_catalog.json"))
+            serde_json::from_str(include_str!("../../migrations/postgres/0008_catalog.json"))
                 .unwrap();
         let identities: std::collections::BTreeSet<_> =
             rows.iter().map(|(kind, name, _)| (kind, name)).collect();

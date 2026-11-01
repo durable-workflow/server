@@ -60,10 +60,12 @@ struct Report {
 store_methods! {
     /// `externalPayloadCleanupStatus`: the namespace's cleanup metrics.
     pub(crate) async fn payload_cleanup_status(&self, config: &super::operator_metrics::MetricsConfig) -> Result<Value> {
-        Ok(json!({"namespace": self.namespace.as_ref(), "cleanup": self.external_payload_cleanup_metrics(config).await?}))
+        Ok(json!({"namespace": self.namespace.as_ref(), "cleanup": self.external_payload_cleanup_metrics(config).await?,
+            "retention_cleanup": self.payload_deletion_status(self.namespace.as_ref()).await?}))
     }
 
-    /// The pass's report; the caller answers 207 when it blocked anything.
+    /// The pass's report; the caller answers 207 when it blocked anything or
+    /// a committed retention deletion is still pending.
     pub(crate) async fn payload_cleanup_pass(
         &self,
         limit: i64,
@@ -72,6 +74,9 @@ store_methods! {
     ) -> Result<Value> {
         let limit = limit.clamp(1, MAX_BATCH_SIZE);
         let cutoff = now();
+        // Committed retention deletions left pending, at most `limit` more.
+        self.retry_payload_deletions(self.namespace.as_ref(), limit).await?;
+        self.retry_orphaned_payload_deletions(limit).await?;
         self.completion_budget_cleanup(limit, cutoff, retention_seconds.max(1)).await?;
         let candidates = Self::query("SELECT id FROM runtime_external_payloads WHERE namespace=$1 AND retained_at IS NULL AND expires_at IS NOT NULL AND expires_at<=$2 ORDER BY expires_at,id LIMIT $3")
             .bind(self.namespace.as_ref())
@@ -112,6 +117,7 @@ store_methods! {
             "blocked": report.blocked, "storage_driver_failures": report.storage_driver_failures,
             "backlog": backlog, "scan_limit": limit,
             "scan_pressure": backlog > 0 && candidates.len() as i64 >= limit,
+            "retention_cleanup": self.payload_deletion_status(self.namespace.as_ref()).await?,
         }))
     }
 

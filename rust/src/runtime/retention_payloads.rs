@@ -1,5 +1,5 @@
-//! A pruned run's external payloads, as published PHP's
-//! `ExternalPayloadRetentionCleanup::deleteForRun` deletes them inside the
+//! A pruned run's external payloads, as published PHP 2.11.8's
+//! `ExternalPayloadRetentionCleanup::deleteForRun` releases them in the
 //! prune's transaction (Server #325).
 //!
 //! Native stores a reference as `dw-native-external-payload-v1:` and the
@@ -14,15 +14,15 @@
 //! skipped with `external_payload_storage_driver_unavailable`. Each object is
 //! asked again under its object lock, in lock order, after the run's rows
 //! are deleted: a reference still held keeps it; otherwise this namespace's
-//! registration goes, and the object too when no other namespace registers
-//! it (`deleteRegisteredUri`). Each object asked and not held counts as
-//! deleted, as PHP counts it.
+//! registration goes, and when no other namespace registers the object its
+//! deletion is recorded (`deleteRegisteredUri`, `stage`). Each object asked
+//! and not held counts as deleted, as PHP counts it.
 //!
-//! A failed delete (an active online-backup hold, a storage error, or an
-//! object outside the current root) fails the prune with PHP's message. The
-//! transaction rolls back, so the run, its registration and any object not
-//! yet deleted stay for a later pass. Objects go after the run's rows, before
-//! the commit, so a failed row delete cannot strand deleted objects.
+//! No object is deleted before the prune commits: the caller settles the
+//! recorded deletions afterwards (`payload_deletions`). A refused recording
+//! (an active online-backup hold) fails the prune with PHP's message; the
+//! transaction rolls back, so the run, its registrations and every object stay
+//! for a later pass.
 use super::Result;
 use super::external_registry::{object_bucket, uri_hash};
 use super::external_resolution::STORED_PREFIX;
@@ -42,6 +42,8 @@ pub(super) struct Target {
 pub(super) struct Plan {
     targets: Vec<Target>,
     local: Option<LocalStorage>,
+    /// The namespace's storage policy, saved with each recorded deletion.
+    policy: Value,
 }
 
 /// A whole column value holding native's stored reference; `None` for any
@@ -87,7 +89,7 @@ store_methods! {
             }
         }
         if deletable.is_empty() {
-            return Ok(Ok(Plan { targets: Vec::new(), local: None }));
+            return Ok(Ok(Plan { targets: Vec::new(), local: None, policy: Value::Null }));
         }
         let policy = Self::query("SELECT external_payload_storage FROM workflow_namespaces WHERE name=$1")
             .bind(self.namespace.as_ref())
@@ -122,21 +124,23 @@ store_methods! {
         targets.sort_by(|left, right| {
             (object_bucket(&left.uri), &left.uri).cmp(&(object_bucket(&right.uri), &right.uri))
         });
-        Ok(Ok(Plan { targets, local: Some(local) }))
+        Ok(Ok(Plan { targets, local: Some(local), policy }))
     }
 
     /// `deleteReferences` over the plan, after the run's rows are deleted:
-    /// the objects deleted. An error leaves the prune to roll back.
+    /// the objects released and the deletions recorded for the caller to
+    /// settle once the prune commits. An error leaves the prune to roll back.
     pub(super) async fn delete_retention_payloads(
         &self,
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
         plan: Plan,
-    ) -> Result<i64> {
+    ) -> Result<(i64, Vec<String>)> {
         let mut deleted = 0;
-        let Some(local) = plan.local else {
-            return Ok(0);
-        };
+        let mut staged = Vec::new();
+        if plan.local.is_none() {
+            return Ok((0, staged));
+        }
         for target in plan.targets {
             Self::payload_object_lock(tx, &target.uri).await?;
             if Self::payload_retained(tx, run_id, &target.reference, Some(&target.uri)).await? {
@@ -155,20 +159,14 @@ store_methods! {
             // `deleteRegisteredUri`: the object goes when nothing else
             // registers it; this namespace's registration goes either way.
             if owners.is_empty() || (own.is_some() && owners.len() == 1) {
-                if local.uri_for(&target.reference).ok().as_deref() != Some(target.uri.as_str()) {
-                    return Err(retention_payload_failure());
-                }
-                if Self::backup_hold_active(tx).await? {
-                    return Err(retention_payload_failure());
-                }
-                local.delete(&target.reference).await.map_err(|_| retention_payload_failure())?;
+                staged.push(Self::stage_payload_deletion(tx, self.namespace.as_ref(), &target.uri, &plan.policy).await?);
             }
             if let Some(id) = own {
                 Self::query("DELETE FROM runtime_external_payloads WHERE id=$1").bind(&id).execute(&mut **tx).await?;
             }
             deleted += 1;
         }
-        Ok(deleted)
+        Ok((deleted, staged))
     }
 
     /// `isReferencedByRetainedRun`: whether a retained run holds this
@@ -206,11 +204,6 @@ store_methods! {
         }
         Ok(false)
     }
-}
-
-/// The prune reports any failure as `retention::PAYLOAD_CLEANUP_FAILED`.
-fn retention_payload_failure() -> super::RuntimeError {
-    super::refuse(axum::http::StatusCode::SERVICE_UNAVAILABLE, "external_payload_unavailable")
 }
 
 #[cfg(test)]

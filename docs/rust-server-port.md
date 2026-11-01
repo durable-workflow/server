@@ -136,7 +136,9 @@ any other unknown path or method answers PHP's own 404 or 405
   answered PHP
   ([checkpoint](rust-server-port-checkpoints/2026-10-23-waterline-service-mode.md));
   namespace delete, with the
-  `namespace-delete` fixture. The JSON
+  `namespace-delete` fixture, and its external payloads, with the
+  `namespace-delete-payloads` fixture
+  ([checkpoint](rust-server-port-checkpoints/2026-11-01-committed-payload-deletion.md)). The JSON
   `GET|POST /api/system/metrics` is served with the `system-metrics`
   fixture: namespace failure, durable-state and payload counts are exact;
   native enforces no admission, durable-state or payload quota, so limits
@@ -482,13 +484,22 @@ contract fixture before its correction.
 - **Retention of runs with external payloads** (November 1,
   [checkpoint](rust-server-port-checkpoints/2026-11-01-retention-external-payloads.md)).
   A pruned run's external payloads now go with it, as published PHP's
-  `ExternalPayloadRetentionCleanup::deleteForRun` deletes them: a payload no
+  `ExternalPayloadRetentionCleanup::deleteForRun` releases them: a payload no
   retained run holds loses its registration, and its object too when no
   other namespace registers it, counted in `external_payloads_deleted`.
   Without enabled local storage such a run is skipped with
-  `external_payload_storage_driver_unavailable`; a failed delete fails the
-  prune with PHP's message and keeps the run, registration and object. The
-  `retention-external-payloads` fixture records it against published 2.11.7.
+  `external_payload_storage_driver_unavailable`. Since November 1 the object
+  is deleted only after the prune commits, as published 2.11.8 deletes it
+  (Server #789, #911;
+  [checkpoint](rust-server-port-checkpoints/2026-11-01-committed-payload-deletion.md)):
+  the prune records the deletion in `dw_external_payload_deletions` (schema
+  version 8), so a prune that fails later keeps the run, its registrations
+  and every object. A provider failure after the commit leaves the deletion
+  pending, reported as `external_payload_cleanup` on the retention pass and
+  `retention_cleanup` on the payload cleanup routes, and retried by the next
+  pass. An online-backup hold still fails the prune before it commits. The
+  `retention-external-payloads` fixture records it against published 2.11.7
+  and passes unchanged against 2.11.8.
   A run holding a reference native cannot settle (PHP's stored format from a
   workflow import, an envelope, or one on an inbound or durable stream) is
   still skipped with `external_payload_cleanup_unavailable`. Since November 1,

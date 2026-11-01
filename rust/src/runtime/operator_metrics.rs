@@ -1256,6 +1256,7 @@ where
         let failed = report["failed"].as_i64().is_some_and(|failed| failed > 0);
         let mut fields = policy.fields(self.namespace.as_ref());
         fields.extend(report);
+        fields.insert("external_payload_cleanup".into(), self.payload_deletion_status(self.namespace.as_ref()).await?);
         Ok((Value::Object(fields), failed))
     }
 
@@ -1324,6 +1325,8 @@ where
         limit: i64,
         run_ids: Vec<String>,
     ) -> Result<serde_json::Map<String, Value>> {
+        // `runPass` first retries committed deletions left pending.
+        self.retry_payload_deletions(self.namespace.as_ref(), limit).await?;
         let run_ids = if run_ids.is_empty() { self.expired_run_ids(policy, limit).await? } else { run_ids };
         let mut outcomes = Vec::with_capacity(run_ids.len());
         for run_id in run_ids {
@@ -1425,7 +1428,7 @@ where
         for (key, value) in retention::STREAM_COUNTS.into_iter().zip([streams_deleted, items_deleted, items_compacted]) {
             deleted.insert(key.into(), json!(value));
         }
-        let Ok(external_payloads) = self.delete_retention_payloads(&mut tx, run_id, payloads).await else {
+        let Ok((external_payloads, staged)) = self.delete_retention_payloads(&mut tx, run_id, payloads).await else {
             return Ok(Error(retention::PAYLOAD_CLEANUP_FAILED.into()));
         };
         // The run's history is gone; no cached read of it may survive.
@@ -1436,6 +1439,8 @@ where
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
+        // The prune has committed; only now may provider objects go.
+        self.settle_payload_deletions(&staged).await;
         Ok(Pruned(deleted, external_payloads))
     }
 

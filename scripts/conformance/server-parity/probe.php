@@ -475,6 +475,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $clusterInfo = isset($fixture['cluster_info']) ? finishHttpClusterInfo($client, $fixture, $workflowId, $url) : null;
     $repairPass = isset($fixture['repair_pass']) ? finishHttpRepairPass($client, $fixture, $workflowId, $url) : null;
     $namespaceDelete = isset($fixture['namespace_delete']) ? finishHttpNamespaceDelete($client, $fixture, $workflowId, $queue, $url) : null;
+    $namespaceDeletePayloads = isset($fixture['namespace_delete_payloads']) ? finishHttpNamespaceDeletePayloads($client, $fixture, $workflowId, $url) : null;
     $updateValidation = isset($fixture['update_validation']) ? finishHttpUpdateValidation($client, $fixture, $workflowId, $url) : null;
     $messageStreams = isset($fixture['message_streams']) ? finishHttpMessageStreams($client, $fixture, $workflowId, $url) : null;
     $workflowStreamWrites = isset($fixture['workflow_stream_writes']) ? finishHttpWorkflowStreamWrites($client, $fixture, $workflowId, $url) : null;
@@ -621,6 +622,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'cluster_info' => $clusterInfo,
         'repair_pass' => $repairPass,
         'namespace_delete' => $namespaceDelete,
+        'namespace_delete_payloads' => $namespaceDeletePayloads,
         'update_validation' => $updateValidation,
         'message_streams' => $messageStreams,
         'workflow_stream_writes' => $workflowStreamWrites,
@@ -971,6 +973,7 @@ try {
     require __DIR__.'/cluster-info-probe.php';
     require __DIR__.'/repair-pass-probe.php';
     require __DIR__.'/namespace-delete-probe.php';
+    require __DIR__.'/namespace-delete-payloads-probe.php';
     require __DIR__.'/update-validation-probe.php';
     require __DIR__.'/message-streams-probe.php';
     require __DIR__.'/workflow-stream-writes-probe.php';
@@ -1263,6 +1266,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['namespace_delete'])) {
         $observation['namespace_delete'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_namespaces'];
+    }
+    if ($mode === 'embedded' && isset($fixture['namespace_delete_payloads'])) {
+        $observation['namespace_delete_payloads'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_namespaces'];
     }
     if ($mode === 'embedded' && isset($fixture['update_validation'])) {
         $observation['update_validation'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_update_validation'];
