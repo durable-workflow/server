@@ -2691,6 +2691,22 @@ where
         Self::workflow_task_guard(&mut tx, &task, &body, self.worker_stale_after_seconds).await?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
+        // Server #794: a failure or history wait reported after the run's
+        // deadline closes the run as timed out, and the worker gets the same
+        // receipt a completion would (outcome `completed`, `run_status`
+        // `failed`, reason `run_timed_out`): PHP SDK 3.6.1 recognises that
+        // receipt and exits on any other refusal. Published 2.11.8
+        // acknowledged the wait and left the run waiting.
+        if [DB::optional_instant(&run, "execution_deadline_at")?, DB::optional_instant(&run, "run_deadline_at")?]
+            .into_iter()
+            .flatten()
+            .any(|deadline| deadline <= now())
+        {
+            let response = Self::time_out_run(&mut tx, &run, &task, &body["workflow_task_attempt"]).await?;
+            tx.commit().await?;
+            self.wake.notify_waiters();
+            return Err(super::RuntimeError::Protocol { status: StatusCode::CONFLICT, response });
+        }
         let mut payload = DB::document_row(&task, "payload")?;
         // Published PHP retries a failed task as it is, with any signal or
         // update it carries. A waiting acknowledgement of a signal task

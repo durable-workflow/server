@@ -466,6 +466,26 @@ contract fixture before its correction.
   task, oldest first, as PHP does behind a leased task. PHP's merge is
   reported as
   [server#902](https://github.com/durable-workflow/server/issues/902).
+- **A failure or history wait reported after the run's deadline**
+  (November 1, decided: native differs from published 2.11.8 on purpose).
+  Published 2.11.8 acknowledges a `WorkflowTaskWaitingForHistory` failure
+  after the run or execution deadline and leaves the run `waiting`, so a
+  deadline probe never closes it
+  ([server#794 finding](https://github.com/durable-workflow/server/issues/794#issuecomment-6562291610)).
+  Native closes the run when a workflow task failure, waiting or not, is
+  reported after either deadline, through the same timeout a completion
+  uses, as General's correction does (server `c2b18fad` and its follow-up
+  on #794, not yet published). The worker gets the completion's receipt
+  for a timed-out run: `409`, `outcome` `completed`, `recorded` false,
+  `run_status` `failed`, `reason` `run_timed_out`, with the original
+  `task_id`, `workflow_task_attempt` and `run_id`. PHP SDK 3.6.1 recognises
+  that receipt and exits on any other refusal. The run gets one
+  `WorkflowTimedOut` with the deadline's `timeout_kind`, and no workflow
+  task stays open. A stale attempt still changes nothing, and a replay adds
+  no second timeout
+  (`run_deadlines::reports_after_a_deadline_time_out_the_run_with_the_completion_receipt`).
+  Record a parity fixture once a PHP release with the correction is
+  published.
 - **Timer firing under the CPU deadline profile on slower hosts.** In local
   MySQL 8.0 cells, where eight dense readers saturate the one-CPU database and
   the one-CPU native server, one of six runs fired the three-second timer
