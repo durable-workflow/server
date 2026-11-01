@@ -122,10 +122,15 @@ class TargetAddressTest(unittest.TestCase):
             env = {"DW_PORT_SOURCE_ROOT": directory, "DW_PORT_SDK_ROOT": directory}
             for url in ("http://203.0.113.10:8080", "http://10.99.0.2:8080;id;#", "http://0.0.0.0:8080",
                         "http://10.0.0.5:9000", "http://127.0.0.1:8080", "http://10.0.0.256:8080",
-                        "http://172.32.0.1:8080", "http://10.0.0.5:8080/api"):
+                        "http://172.32.0.1:8080", "http://10.0.0.5:8080/api", "http://010.0.0.1:8080",
+                        "http://10.00.0.1:8080", "http://192.168.001.4:8080"):
                 result = self.run_script([str(DRIVER), str(PROFILE), f"{directory}/out", url], env)
                 self.assertEqual(result.returncode, 2, url)
                 self.assertIn("private (RFC 1918)", result.stderr, url)
+            standin = {**env, "DW_SMALL_STAND_IN": "1"}
+            for url in ("http://0127.0.0.1:8080", "http://127.0.0.01:8080"):
+                result = self.run_script([str(DRIVER), str(PROFILE), f"{directory}/out", url], standin)
+                self.assertEqual(result.returncode, 2, url)
             # A private address passes the check; this empty source tree then
             # stops at the profile's input hashes, before any Docker call.
             for url in ("http://10.99.0.2:8080", "http://172.16.4.2:8080", "http://192.168.1.4:8080"):
@@ -136,10 +141,16 @@ class TargetAddressTest(unittest.TestCase):
 
     def test_target_accepts_only_a_private_bind_address(self):
         with tempfile.TemporaryDirectory() as directory:
-            for bind in ("0.0.0.0", "203.0.113.10", "127.0.0.1", "10.0.0.5;id", "172.32.0.1", ""):
+            for bind in ("0.0.0.0", "203.0.113.10", "127.0.0.1", "10.0.0.5;id", "172.32.0.1", "010.0.0.1",
+                         "172.016.0.1", ""):
                 result = self.run_script([str(TARGET), "up", str(PROFILE), f"{directory}/out", "native-sqlite"],
                                          {"DW_SMALL_TARGET_BIND": bind})
                 self.assertEqual(result.returncode, 2 if bind else 1, bind)
+            # Noncanonical loopback stays refused even in a stand-in.
+            for bind in ("0127.0.0.1", "127.0.0.01"):
+                result = self.run_script([str(TARGET), "up", str(PROFILE), f"{directory}/out", "native-sqlite"],
+                                         {"DW_SMALL_TARGET_BIND": bind, "DW_SMALL_STAND_IN": "1"})
+                self.assertEqual(result.returncode, 2, bind)
             # Loopback only in an explicit stand-in; a profile without image
             # digests then stops before any Docker call.
             profile = pathlib.Path(directory) / "profile.json"

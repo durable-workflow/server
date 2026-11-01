@@ -24,7 +24,13 @@ case "$smoke" in ""|--smoke) ;; *) echo "Unknown option $smoke." >&2; exit 2 ;; 
 private_ipv4() {
   local ip=$1 a b octet
   [[ $ip =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
-  for octet in "${BASH_REMATCH[@]:1}"; do (( 10#$octet <= 255 )) || return 1; done
+  # Canonical dotted decimal only: a multi-digit octet with a leading zero
+  # (010.0.0.1) reads as octal to common socket parsers and can name a
+  # public address.
+  for octet in "${BASH_REMATCH[@]:1}"; do
+    [[ $octet == 0 || $octet != 0* ]] || return 1
+    (( 10#$octet <= 255 )) || return 1
+  done
   a=$((10#${BASH_REMATCH[1]})) b=$((10#${BASH_REMATCH[2]}))
   if (( a == 10 )) || (( a == 172 && b >= 16 && b <= 31 )) || (( a == 192 && b == 168 )); then return 0; fi
   [[ ${DW_SMALL_STAND_IN:-} == 1 ]] && (( a == 127 ))
