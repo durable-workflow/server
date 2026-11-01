@@ -444,6 +444,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $clusterCapabilities = isset($fixture['cluster_capabilities']) ? finishHttpClusterCapabilities($client, $fixture, $workflowId, $url) : null;
     $deepJsonBodies = isset($fixture['deep_json_bodies']) ? finishHttpDeepJsonBodies($client, $fixture, $workflowId, $url) : null;
     $visibilityCollation = isset($fixture['visibility_collation']) ? finishHttpVisibilityCollation($client, $fixture, $workflowId, $url) : null;
+    $searchAttributeDatetimes = isset($fixture['search_attribute_datetimes']) ? finishHttpSearchAttributeDatetimes($client, $fixture, $workflowId, $url) : null;
     $retriedChildCancellation = isset($fixture['retried_child_cancellation']) ? finishHttpRetriedChildCancellation($client, $fixture, $workflowId, $url) : null;
     $parallelCancellation = isset($fixture['parallel_cancellation']) ? finishHttpParallelCancellation($client, $fixture, $workflowId, $url) : null;
     $activityResultRepeats = isset($fixture['activity_result_repeats']) ? finishHttpActivityResultRepeats($client, $fixture, $workflowId, $url) : null;
@@ -590,6 +591,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'cluster_capabilities' => $clusterCapabilities,
         'deep_json_bodies' => $deepJsonBodies,
         'visibility_collation' => $visibilityCollation,
+        'search_attribute_datetimes' => $searchAttributeDatetimes,
         'retried_child_cancellation' => $retriedChildCancellation,
         'parallel_cancellation' => $parallelCancellation,
         'activity_result_repeats' => $activityResultRepeats,
@@ -939,6 +941,7 @@ try {
     require __DIR__.'/cluster-capabilities-probe.php';
     require __DIR__.'/deep-json-bodies-probe.php';
     require __DIR__.'/visibility-collation-probe.php';
+    require __DIR__.'/search-attribute-datetimes-probe.php';
     require __DIR__.'/retried-child-cancellation-probe.php';
     require __DIR__.'/parallel-cancellation-probe.php';
     require __DIR__.'/activity-result-repeats-probe.php';
@@ -1167,6 +1170,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['visibility_collation'])) {
         $observation['visibility_collation'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_list_queries'];
+    }
+    if ($mode === 'embedded' && isset($fixture['search_attribute_datetimes'])) {
+        $observation['search_attribute_datetimes'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
     }
     if ($mode === 'embedded' && isset($fixture['retried_child_cancellation'])) {
         $observation['retried_child_cancellation'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
