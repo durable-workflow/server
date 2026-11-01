@@ -82,7 +82,7 @@
         {
           "type": "bootstrap",
           "line": "uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust",
-          "distance": 28
+          "distance": 29
         }
       ]
     },
