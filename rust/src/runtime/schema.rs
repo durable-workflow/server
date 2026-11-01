@@ -39,6 +39,125 @@ fn migrator() -> &'static Migrator {
     })
 }
 
+/// The cumulative bootstrap an earlier native version recorded, byte for
+/// byte, so `schema-upgrade` recognises that version by its checksum. The
+/// step files themselves never change once released.
+fn earlier_migration(version: i64) -> Option<&'static Migration> {
+    static V7: OnceLock<Migration> = OnceLock::new();
+    match version {
+        7 => Some(V7.get_or_init(|| {
+            Migration::new(
+                7,
+                "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines and service admission counters".into(),
+                MigrationType::Simple,
+                concat!(
+                    include_str!("../../migrations/sqlite/0003_full_schema.sql"),
+                    "\n",
+                    include_str!("../../migrations/sqlite/0004_worker_incarnations.sql"),
+                    "\n",
+                    include_str!("../../migrations/sqlite/0005_worker_session_holders.sql"),
+                    "\n",
+                    include_str!("../../migrations/sqlite/0006_stream_reclaims.sql"),
+                    "\n",
+                    include_str!("../../migrations/sqlite/0007_service_calls.sql")
+                )
+                .into_sql_str(),
+                false,
+            )
+        })),
+        _ => None,
+    }
+}
+
+/// The step file that moves a native database from `version` to the next.
+/// Each ends by moving the ownership marker to its own version.
+fn step(version: i64) -> Option<&'static str> {
+    match version {
+        7 => Some(include_str!("../../migrations/sqlite/0008_external_payload_deletions.sql")),
+        _ => None,
+    }
+}
+
+async fn earlier_catalog(migration: &'static Migration) -> Result<Catalog> {
+    let mut reference =
+        SqliteConnection::connect_with(&SqliteConnectOptions::new().in_memory(true)).await?;
+    let result = async {
+        Migrator::with_migrations(vec![migration.clone()])
+            .run(&mut reference)
+            .await?;
+        catalog(&mut reference).await
+    }
+    .await;
+    reference.close().await?;
+    result
+}
+
+/// Recognises a native database without changing it: `None` for this
+/// version, verified; the earlier version and its recorded migration for one
+/// `upgrade` can move, after checking that version's marker, ledger and
+/// catalog exactly. Anything else is refused.
+pub(super) async fn recognise(connection: &mut SqliteConnection) -> Result<Option<(i64, &'static Migration)>> {
+    use super::schema_upgrade::{DEVELOPMENT_ENGINE, marker_refusal};
+    let markers: Vec<(String, i64)> = sqlx::query_as("SELECT engine,version FROM dw_server_schema")
+        .fetch_all(&mut *connection)
+        .await?;
+    let [(engine, from)] = markers.as_slice() else {
+        return Err(refuse(StatusCode::CONFLICT, "unsupported_rust_schema"));
+    };
+    let from = *from;
+    if engine == DEVELOPMENT_ENGINE && from == VERSION {
+        verify(connection).await?;
+        return Ok(None);
+    }
+    let Some(earlier) = earlier_migration(from).filter(|_| engine == DEVELOPMENT_ENGINE) else {
+        return Err(marker_refusal(engine, from, VERSION));
+    };
+    let applied: Vec<(i64, bool, Vec<u8>)> =
+        sqlx::query_as("SELECT version,success,checksum FROM _sqlx_migrations ORDER BY version")
+            .fetch_all(&mut *connection)
+            .await?;
+    if applied != [(from, true, earlier.checksum.to_vec())] {
+        return Err(refuse(
+            StatusCode::CONFLICT,
+            "native_migration_history_mismatch",
+        ));
+    }
+    if catalog(connection).await? != earlier_catalog(earlier).await? {
+        return Err(refuse(
+            StatusCode::CONFLICT,
+            "native_schema_catalog_mismatch",
+        ));
+    }
+    Ok(Some((from, earlier)))
+}
+
+/// Move a native database from an earlier version to this one. The caller
+/// holds `BEGIN IMMEDIATE`, so the recheck, the steps, the recorded
+/// migration and the marker commit together or not at all. Returns the
+/// version found.
+pub(super) async fn upgrade(connection: &mut SqliteConnection) -> Result<i64> {
+    let Some((from, _)) = recognise(connection).await? else {
+        return Ok(VERSION);
+    };
+    for version in from..VERSION {
+        let sql = step(version).ok_or(refuse(StatusCode::CONFLICT, "unsupported_rust_schema"))?;
+        sqlx::raw_sql(sql).execute(&mut *connection).await?;
+    }
+    let migration = self::migration();
+    sqlx::query("DELETE FROM _sqlx_migrations WHERE version=$1")
+        .bind(from)
+        .execute(&mut *connection)
+        .await?;
+    sqlx::query("INSERT INTO _sqlx_migrations(version,description,success,checksum,execution_time) VALUES ($1,$2,TRUE,$3,0)")
+        .bind(migration.version)
+        .bind(migration.description.as_ref())
+        .bind(migration.checksum.as_ref())
+        .execute(&mut *connection)
+        .await?;
+    verify(connection).await?;
+    Ok(from)
+}
+
 /// The native relations, indexes and ownership marker that a fresh
 /// bootstrap adds after the frozen PHP layout. Takeover applies them to a
 /// converted PHP database instead of running the whole migration.
@@ -141,7 +260,10 @@ pub(super) async fn verify(connection: &mut SqliteConnection) -> Result<()> {
         .fetch_all(&mut *connection)
         .await?;
     if markers != [("rust-development".to_owned(), VERSION)] {
-        return Err(refuse(StatusCode::CONFLICT, "unsupported_rust_schema"));
+        return Err(match markers.as_slice() {
+            [(engine, version)] => super::schema_upgrade::marker_refusal(engine, *version, VERSION),
+            _ => refuse(StatusCode::CONFLICT, "unsupported_rust_schema"),
+        });
     }
     verify_history(connection).await?;
     verify_catalog(connection).await?;
@@ -491,5 +613,204 @@ mod tests {
             connection.close().await.unwrap();
             assert_read_only_refusal(&path).await;
         }
+    }
+
+    /// A database exactly as release candidates 1 and 2 bootstrapped it:
+    /// schema version 7, its cumulative migration and its marker.
+    async fn version_7_database(path: &Path) {
+        version_7_database_in(path, SqliteJournalMode::Wal).await;
+    }
+
+    async fn version_7_database_in(path: &Path, mode: SqliteJournalMode) {
+        let mut connection = SqliteConnection::connect_with(
+            &SqliteConnectOptions::new()
+                .filename(path)
+                .create_if_missing(true)
+                .journal_mode(mode),
+        )
+        .await
+        .unwrap();
+        let mut tx = connection.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        Migrator::with_migrations(vec![earlier_migration(7).unwrap().clone()])
+            .run(&mut tx)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO workflow_namespaces(name,description) VALUES ('kept','seeded at version 7')")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        connection.close().await.unwrap();
+    }
+
+    async fn reason<T>(result: Result<T>) -> &'static str {
+        match result {
+            Err(super::super::RuntimeError::Refused { reason, .. }) => reason,
+            Err(error) => panic!("unexpected error {error}"),
+            Ok(_) => panic!("refusal expected"),
+        }
+    }
+
+    async fn raw(path: &Path, sql: &'static str) {
+        let mut connection =
+            SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(path))
+                .await
+                .unwrap();
+        sqlx::raw_sql(sql).execute(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+    }
+
+    #[test]
+    fn released_step_files_keep_the_checksum_their_release_recorded() {
+        // Release candidates 1 and 2 recorded this checksum for version 7.
+        // Editing 0003-0007 would make their databases unrecognisable.
+        let hex: String = earlier_migration(7)
+            .unwrap()
+            .checksum
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(hex, include_str!("../../migrations/sqlite/0007_checksum.txt").trim());
+    }
+
+    #[tokio::test]
+    async fn schema_upgrade_moves_version_7_to_a_fresh_current_schema() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("v7.sqlite");
+        version_7_database(&path).await;
+        let database = path.to_str().unwrap();
+
+        // Startup names the next step instead of opening an earlier version.
+        assert_eq!(
+            reason(super::super::sqlite::open(database).await).await,
+            "native_schema_upgrade_required"
+        );
+
+        let report = super::super::schema_upgrade::upgrade_sqlite(database).await.unwrap();
+        assert_eq!(report["from_schema_version"], 7);
+        assert_eq!(report["schema_version"], VERSION);
+        assert_eq!(report["status"], "upgraded");
+
+        // The upgraded database is what a fresh bootstrap produces: verify
+        // compares marker, migration ledger and catalog, and opening it runs
+        // the same checks. Rows written at version 7 are kept.
+        let pool = super::super::sqlite::open(database).await.unwrap();
+        let fresh_path = directory.path().join("fresh.sqlite");
+        let fresh = super::super::sqlite::open(fresh_path.to_str().unwrap()).await.unwrap();
+        let mut upgraded = pool.acquire().await.unwrap();
+        let mut reference = fresh.acquire().await.unwrap();
+        assert_eq!(catalog(&mut upgraded).await.unwrap(), catalog(&mut reference).await.unwrap());
+        let ledger = |connection| {
+            sqlx::query_as::<_, (i64, String, bool, Vec<u8>)>(
+                "SELECT version,description,success,checksum FROM _sqlx_migrations",
+            )
+            .fetch_all(connection)
+        };
+        assert_eq!(ledger(&mut *upgraded).await.unwrap(), ledger(&mut *reference).await.unwrap());
+        let kept: String = sqlx::query_scalar("SELECT description FROM workflow_namespaces WHERE name='kept'")
+            .fetch_one(&mut *upgraded)
+            .await
+            .unwrap();
+        assert_eq!(kept, "seeded at version 7");
+        drop((upgraded, reference));
+        pool.close().await;
+        fresh.close().await;
+
+        // A rerun on the current version only verifies.
+        let again = super::super::schema_upgrade::upgrade_sqlite(database).await.unwrap();
+        assert_eq!(again["from_schema_version"], VERSION);
+        assert_eq!(again["status"], "current");
+    }
+
+    #[tokio::test]
+    async fn schema_upgrade_refuses_without_writing_what_it_cannot_recognise() {
+        let directory = tempfile::tempdir().unwrap();
+        for (mutation, expected) in [
+            // An edited earlier catalog is not version 7 as released.
+            ("ALTER TABLE workflow_namespaces ADD COLUMN unexpected TEXT", "native_schema_catalog_mismatch"),
+            ("UPDATE _sqlx_migrations SET checksum=X'00'", "native_migration_history_mismatch"),
+            ("UPDATE dw_server_schema SET version=9", "native_schema_newer_than_binary"),
+            ("UPDATE dw_server_schema SET version=5", "unsupported_rust_schema"),
+            ("UPDATE dw_server_schema SET engine='php'", "unsupported_rust_schema"),
+        ] {
+            let path = directory.path().join(format!("refused-{}.sqlite", ulid::Ulid::new()));
+            version_7_database(&path).await;
+            raw(&path, mutation).await;
+            let database = path.to_str().unwrap();
+            assert_eq!(
+                reason(super::super::schema_upgrade::upgrade_sqlite(database).await).await,
+                expected,
+                "{mutation}"
+            );
+            // Nothing changed: still no version 8 table, ledger or marker.
+            let mut connection =
+                SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path).read_only(true))
+                    .await
+                    .unwrap();
+            let added: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='dw_external_payload_deletions')",
+            )
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+            assert!(!added, "{mutation}");
+            let versions: Vec<i64> = sqlx::query_scalar("SELECT version FROM _sqlx_migrations")
+                .fetch_all(&mut connection)
+                .await
+                .unwrap();
+            assert_eq!(versions, [7], "{mutation}");
+            connection.close().await.unwrap();
+        }
+        let missing = directory.path().join("missing.sqlite");
+        assert_eq!(
+            reason(super::super::schema_upgrade::upgrade_sqlite(missing.to_str().unwrap()).await).await,
+            "native_schema_not_initialized"
+        );
+        assert!(!missing.exists());
+    }
+
+    /// The journal mode and the exact bytes of a closed database file.
+    async fn journal_and_bytes(path: &Path) -> (String, Vec<u8>) {
+        let mut connection =
+            SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(path).read_only(true))
+                .await
+                .unwrap();
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode").fetch_one(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+        (mode, std::fs::read(path).unwrap())
+    }
+
+    #[tokio::test]
+    async fn schema_upgrade_leaves_a_refused_or_current_database_as_it_was() {
+        let directory = tempfile::tempdir().unwrap();
+        // A refused database, in rollback-journal mode, keeps its mode and bytes.
+        let refused = directory.path().join("refused.sqlite");
+        version_7_database_in(&refused, SqliteJournalMode::Delete).await;
+        raw(&refused, "UPDATE dw_server_schema SET engine='php'").await;
+        let before = journal_and_bytes(&refused).await;
+        assert_eq!(before.0, "delete");
+        assert_eq!(
+            reason(super::super::schema_upgrade::upgrade_sqlite(refused.to_str().unwrap()).await).await,
+            "unsupported_rust_schema"
+        );
+        assert_eq!(journal_and_bytes(&refused).await, before, "a refusal changes nothing");
+        assert!(!directory.path().join("refused.sqlite-wal").exists());
+
+        // A current database restored in rollback-journal mode is only verified.
+        let current = directory.path().join("current.sqlite");
+        super::super::sqlite::open(current.to_str().unwrap()).await.unwrap().close().await;
+        raw(&current, "PRAGMA journal_mode=DELETE").await;
+        let before = journal_and_bytes(&current).await;
+        assert_eq!(before.0, "delete");
+        let report = super::super::schema_upgrade::upgrade_sqlite(current.to_str().unwrap()).await.unwrap();
+        assert_eq!(report["status"], "current");
+        assert_eq!(journal_and_bytes(&current).await, before, "a current database is only read");
+
+        // An upgrade keeps the file's journal mode.
+        let upgraded = directory.path().join("upgraded.sqlite");
+        version_7_database_in(&upgraded, SqliteJournalMode::Delete).await;
+        let report = super::super::schema_upgrade::upgrade_sqlite(upgraded.to_str().unwrap()).await.unwrap();
+        assert_eq!(report["status"], "upgraded");
+        assert_eq!(journal_and_bytes(&upgraded).await.0, "delete");
     }
 }

@@ -134,6 +134,7 @@ mod schedule_list;
 mod schedule_storage;
 mod schedules;
 mod schema;
+pub mod schema_upgrade;
 mod search_attribute_upserts;
 mod search_attributes;
 mod selection_summary;

@@ -264,6 +264,17 @@
       ]
     },
     {
+      "path": "benchmarks/server-port/small-host/README.md",
+      "line": "bash scripts/ci/run-composer.sh --rm -v \"$DW_PORT_SDK_ROOT:/app\" -w /app -- \\",
+      "count": 1,
+      "confinement": "Documentation of the run-composer.sh recipe.",
+      "guards": [
+        {
+          "type": "documentation"
+        }
+      ]
+    },
+    {
       "path": "benchmarks/server-port/v1/README.md",
       "line": "bash scripts/ci/run-composer.sh --rm -v \"$PWD:/source\" -w /source -- \\",
       "count": 1,

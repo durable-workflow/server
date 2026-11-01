@@ -244,6 +244,41 @@ collection blocks, duplicate map keys, recursion/allocation limits and streaming
 external payloads require the existing negative corpus before enabling HTTP
 datum decoding or qualifying ingress.
 
+## Native schema upgrades
+
+A native database records its schema version in the `dw_server_schema`
+marker and one SQLx migration, the cumulative bootstrap of that version.
+A server never upgrades its schema at startup. Started on an earlier native
+version it refuses with `native_schema_upgrade_required`; on a later one,
+with `native_schema_newer_than_binary`, so an older binary cannot write to a
+schema it does not know.
+
+To move to a release with a newer schema, stop every native node, back up
+the database, then run the new image's `schema-upgrade` once with the same
+`DB_*` settings and `DW_RUST_EXPERIMENTAL=1`, as with `upgrade-takeover`:
+
+```sh
+docker run --rm -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=pgsql -e DB_HOST \
+  -e DB_DATABASE -e DB_USERNAME -e DB_PASSWORD "$IMAGE" schema-upgrade
+```
+
+It works on SQLite, PostgreSQL, MySQL and MariaDB. It accepts only an earlier
+version this binary knows, recognised exactly: marker, recorded migration
+checksum and captured catalog. It then runs each later step file in order and
+records this version's migration in place of the earlier one, so the result
+is verified exactly as a fresh bootstrap is. A current database is only
+verified (`"status":"current"`). SQLite and PostgreSQL upgrade in one
+transaction, PostgreSQL under the bootstrap advisory lock. MySQL and MariaDB
+commit DDL on their own: under the bootstrap named lock, the marker first
+moves to `rust-upgrading`, which every node refuses
+(`native_schema_upgrade_incomplete`), and running `schema-upgrade` again
+resumes an interrupted upgrade. Anything else is refused before any change.
+There is no downgrade: restore the backup to go back.
+
+Upgradable versions: 7 (`3.0.0-rc.1`, `3.0.0-rc.2`) to 8. Released step
+files never change; `0007_checksum.txt` pins the version 7 migration each
+backend recorded.
+
 ## First HTTP execution slice
 
 Build with `cargo build --locked` in the same container/mount setup. Run the

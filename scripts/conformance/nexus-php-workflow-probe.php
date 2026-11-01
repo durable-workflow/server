@@ -6,8 +6,11 @@ require '/tmp/dw-php/vendor/autoload.php';
 
 use DurableWorkflow\Client;
 use DurableWorkflow\Exception\ServiceOperationFailed;
+use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\WorkflowContext;
+use GuzzleHttp\Client as HttpClient;
+use GuzzleHttp\TransferStats;
 
 $input = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
 
@@ -18,7 +21,26 @@ if (($argv[2] ?? null) === 'worker') {
         'installed_sdk_version' => Composer\InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
         'namespace' => $namespace,
     ], JSON_THROW_ON_ERROR));
-    $client = new Client('http://server:8080', namespace: $namespace, workerToken: $input['worker_token'] ?? $input['token']);
+    $http = new HttpClient(['http_errors' => false, 'on_stats' => static function (TransferStats $stats): void {
+        $response = $stats->getResponse();
+        if ($response === null || $response->getStatusCode() < 400 || !$response->getBody()->isSeekable()) {
+            return;
+        }
+        $stream = $response->getBody();
+        $position = $stream->tell();
+        try {
+            $body = json_decode((string) $stream, true);
+        } finally {
+            $stream->seek($position);
+        }
+        error_log(json_encode([
+            'event' => 'worker_http_refusal', 'status' => $response->getStatusCode(),
+            'path' => $stats->getRequest()->getUri()->getPath(),
+            'reason' => $body['reason'] ?? null, 'limit' => $body['limit'] ?? null,
+        ], JSON_THROW_ON_ERROR));
+    }]);
+    $client = new Client('http://server:8080', namespace: $namespace,
+        workerToken: $input['worker_token'] ?? $input['token'], transport: new Psr18Transport($http));
     $worker = ($input['scenario'] ?? null) === 'caller_cancelled'
         ? new Worker($client, 'nexus-php-caller', enableCooperativeCancellation: true)
         : Worker::create($client, 'nexus-php-caller');
@@ -86,7 +108,7 @@ if (($argv[2] ?? null) === 'worker') {
 $observations = [];
 foreach (['shared', 'tenant-a'] as $namespace) {
     $startedAt = microtime(true);
-    $logPath = '/tmp/nexus-php-caller-'.$namespace.'.log';
+    $logPath = '/tmp/nexus-php-caller-'.$namespace.'-'.getmypid().'.log';
     $worker = proc_open([PHP_BINARY, __FILE__, $argv[1], 'worker', $namespace], [
         0 => ['file', '/dev/null', 'r'],
         1 => ['file', $logPath, 'a'],
