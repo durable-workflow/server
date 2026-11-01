@@ -38,6 +38,12 @@ jobs:
     name: Build and push Docker image
     runs-on: ubuntu-latest
     environment: dockerhub
+    # The rolling-alias lock the native release's alias job also holds, so a
+    # PHP and a native release never move rolling tags at the same time.
+    # cancel-in-progress is false: a running job is never cancelled.
+    concurrency:
+      group: durable-workflow-server-rolling-aliases
+      cancel-in-progress: false
     if: >-
       (github.event_name == 'workflow_dispatch' &&
        github.ref == 'refs/heads/main') ||
@@ -435,7 +441,8 @@ jobs:
           GHCR_IMAGE: ${{ env.GHCR_IMAGE }}
           ROLLING_SHOULD_PROMOTE: ${{ steps.rolling.outputs.rolling_should_promote }}
           VERIFIED_IMAGE_DIGEST: ${{ steps.exact.outputs.image_digest }}
-          RELEASE_IMAGE_TAG_SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}.git
+          # The resolver's one checked inventory, taken under the lock.
+          RELEASE_IMAGE_KNOWN_TAGS: ${{ steps.rolling.outputs.release_inventory }}
         run: scripts/ci/promote-release-image-rolling-tags.sh
 
       - name: Write release image publish evidence

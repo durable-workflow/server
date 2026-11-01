@@ -153,6 +153,8 @@ fi
 
 write_output "rolling_eligible" "true"
 write_output "latest_alias" "$latest_alias"
+# The promoter decides from this same inventory instead of reading tags again.
+write_multiline_output "release_inventory" "$release_inventory"
 write_output "major_alias" "$major_alias"
 write_output "minor_alias" "$minor_alias"
 write_multiline_output "rolling_refs" "$rolling_refs"

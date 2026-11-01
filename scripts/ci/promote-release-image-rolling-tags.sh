@@ -102,26 +102,29 @@ minor="${minor_patch%%.*}"
 minor_alias="${major}.${minor}"
 major_alias="$major"
 
-# One tag inventory, read once with its status checked, decides both the PHP
-# ordering and whether a native release owns latest. A failed lookup stops
-# here, before any registry write.
-release_inventory=""
-if [ -n "${RELEASE_IMAGE_KNOWN_TAGS:-}" ] || [ -n "$tag_source_url" ]; then
-    if ! release_inventory="$(collect_release_tags)"; then
-        exit 1
-    fi
+# One tag inventory decides both the PHP ordering and whether a native
+# release owns latest. The release workflow passes the resolver's inventory
+# (taken once, under the shared rolling-alias lock) as
+# RELEASE_IMAGE_KNOWN_TAGS, so nothing is read again here. Without an
+# inventory, or when a lookup fails, nothing is written.
+if [ -z "${RELEASE_IMAGE_KNOWN_TAGS:-}" ] && [ -z "$tag_source_url" ]; then
+    fail "Release tag inventory required" "Rolling aliases need the release tag inventory (RELEASE_IMAGE_KNOWN_TAGS or RELEASE_IMAGE_TAG_SOURCE_URL); no alias was changed."
+fi
+if ! release_inventory="$(collect_release_tags)"; then
+    exit 1
+fi
+if [ -z "$release_inventory" ]; then
+    fail "Release tag inventory empty" "The release tag inventory is empty; no alias was changed."
 fi
 
-if [ -n "${RELEASE_IMAGE_KNOWN_TAGS:-}" ] || [ -n "$tag_source_url" ]; then
-    latest_tag="$(latest_known_stable_tag)"
+latest_tag="$(latest_known_stable_tag)"
 
-    if [ "$latest_tag" != "$release_tag" ]; then
-        write_output "rolling_should_promote" "false"
-        write_output "artifact_status" "superseded"
-        write_output "superseded_by" "$latest_tag"
-        printf 'Release image tag %s was superseded by %s before alias promotion; rolling aliases were not changed.\n' "$release_tag" "$latest_tag"
-        exit 0
-    fi
+if [ "$latest_tag" != "$release_tag" ]; then
+    write_output "rolling_should_promote" "false"
+    write_output "artifact_status" "superseded"
+    write_output "superseded_by" "$latest_tag"
+    printf 'Release image tag %s was superseded by %s before alias promotion; rolling aliases were not changed.\n' "$release_tag" "$latest_tag"
+    exit 0
 fi
 
 latest_alias="true"

@@ -161,4 +161,55 @@ for script in promote-release-image-rolling-tags.sh resolve-release-image-rollin
   test ! -s "$scratch/calls" || fail "$script wrote to a registry after a failed tag lookup."
 done
 rm -f "$scratch/git"
+
+# One inventory for the PHP stage, taken once under the shared lock: the
+# first lookup answers 2.11.9 and native-3.0.0, every later one fails (73).
+cat > "$scratch/git" <<'FAKE'
+#!/usr/bin/env bash
+count=$(( $(cat "$GIT_COUNT" 2>/dev/null || echo 0) + 1 )); echo "$count" > "$GIT_COUNT"
+(( count == 1 )) || { echo "fatal: lookup failed" >&2; exit 73; }
+printf '%s\trefs/tags/%s\n' 1111 2.11.8 2222 2.11.9 3333 native-3.0.0
+FAKE
+chmod +x "$scratch/git"
+php_stage() { # $1: how the promoter gets tags (inventory|lookup) -> promoter exit status
+  : > "$scratch/calls"; : > "$scratch/out"; echo 0 > "$scratch/git-count"
+  local base=(env -i PATH="$scratch:$PATH" DOCKER="$scratch/docker" CALL_LOG="$scratch/calls" GIT_COUNT="$scratch/git-count"
+    RELEASE_TAG=2.11.9 VERIFIED_IMAGE_DIGEST="$index" RELEASE_IMAGE_TAG_SOURCE_URL=https://example.invalid/server.git)
+  "${base[@]}" GITHUB_OUTPUT="$scratch/out" sh scripts/ci/resolve-release-image-rolling-tags.sh >/dev/null 2>&1 \
+    || fail "the resolver's single lookup must succeed."
+  inventory=$(sed -n '/^release_inventory<</,/^__release_image_release_inventory__$/p' "$scratch/out" | sed '1d;$d')
+  grep -qx native-3.0.0 <<<"$inventory" || fail "the resolver must hand its inventory to the promoter."
+  local status=0
+  if [[ "$1" == inventory ]]; then
+    "${base[@]}" RELEASE_IMAGE_KNOWN_TAGS="$inventory" sh scripts/ci/promote-release-image-rolling-tags.sh >/dev/null 2>&1 || status=$?
+  else
+    "${base[@]}" sh scripts/ci/promote-release-image-rolling-tags.sh >/dev/null 2>&1 || status=$?
+  fi
+  printf '%s\n' "$status"
+}
+test "$(php_stage lookup)" != 0 || fail "a promoter whose second lookup fails must exit nonzero."
+test ! -s "$scratch/calls" || fail "a promoter whose second lookup fails wrote to a registry."
+test "$(php_stage inventory)" = 0 || fail "the promoter must succeed from the resolver's inventory."
+test "$(cat "$scratch/git-count")" = 1 || fail "the PHP stage must read the tags exactly once."
+grep -q -- '--tag durableworkflow/server:2.11 --tag durableworkflow/server:2 ' "$scratch/calls" \
+  || fail "the PHP release must still move 2 and 2.11."
+grep -q ':latest' "$scratch/calls" && fail "the PHP release moved latest past native-3.0.0."
+# Without any inventory the promoter writes nothing.
+: > "$scratch/calls"
+if env -i PATH="$PATH" DOCKER="$scratch/docker" CALL_LOG="$scratch/calls" RELEASE_TAG=2.11.9 \
+  VERIFIED_IMAGE_DIGEST="$index" sh scripts/ci/promote-release-image-rolling-tags.sh >/dev/null 2>&1; then
+  fail "the promoter must refuse without a tag inventory."
+fi
+test ! -s "$scratch/calls" || fail "the promoter wrote without a tag inventory."
+rm -f "$scratch/git" "$scratch/git-count"
+# Both workflows hold the one rolling-alias lock, and the PHP promoter takes
+# the resolver's inventory rather than reading the tags again.
+for workflow in .github/workflows/release.yml .github/workflows/native-release.yml; do
+  test "$(grep -c '^      group: durable-workflow-server-rolling-aliases$' "$workflow")" = 1 \
+    || fail "$workflow must hold the durable-workflow-server-rolling-aliases lock in one job."
+done
+grep -q 'RELEASE_IMAGE_KNOWN_TAGS: ${{ steps.rolling.outputs.release_inventory }}' .github/workflows/release.yml \
+  || fail "the PHP promoter must use the resolver's inventory."
+awk '/- name: Promote rolling image aliases/,/run: scripts\/ci\/promote-release-image-rolling-tags.sh/' .github/workflows/release.yml \
+  | grep -q RELEASE_IMAGE_TAG_SOURCE_URL && fail "the PHP promoter must not read the tags again."
 printf 'Native release tags: %d release.yml pattern(s) checked; verifier, publisher and rolling tags behave as intended.\n' "${#patterns[@]}"
