@@ -1164,16 +1164,14 @@ class WorkerController
 
     private function releaseLeasedWorkflowTasksForReplacedWorker(string $namespace, string $workerId): void
     {
-        WorkflowRun::query()
-            ->where('namespace', $namespace)
+        NamespaceWorkflowScope::ownedRunQuery(WorkflowRun::query(), $namespace)
             ->where('sticky_worker_id', $workerId)
             ->update([
                 'sticky_worker_id' => null,
                 'sticky_until' => null,
             ]);
 
-        WorkflowTask::query()
-            ->where('namespace', $namespace)
+        NamespaceWorkflowScope::taskQuery($namespace)
             ->where('sticky_worker_id', $workerId)
             ->update([
                 'sticky_worker_id' => null,
@@ -1182,8 +1180,7 @@ class WorkerController
                 'sticky_claimed_at' => now(),
             ]);
 
-        WorkflowTask::query()
-            ->where('namespace', $namespace)
+        NamespaceWorkflowScope::taskQuery($namespace)
             ->where('task_type', TaskType::Workflow->value)
             ->where('status', TaskStatus::Leased->value)
             ->where('lease_owner', $workerId)
@@ -1201,8 +1198,7 @@ class WorkerController
 
     private function releaseLeasedActivityTasksForReplacedWorker(string $namespace, string $workerId): void
     {
-        WorkflowTask::query()
-            ->where('namespace', $namespace)
+        NamespaceWorkflowScope::taskQuery($namespace)
             ->where('task_type', TaskType::Activity->value)
             ->where('status', TaskStatus::Leased->value)
             ->where('lease_owner', $workerId)
@@ -1232,7 +1228,9 @@ class WorkerController
         }
 
         /** @var ActivityExecution|null $execution */
-        $execution = ActivityExecution::query()->find($executionId);
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $task->workflow_run_id)
+            ->find($executionId);
 
         if (! $execution instanceof ActivityExecution) {
             return;
@@ -1242,6 +1240,7 @@ class WorkerController
         $attempt = ActivityAttempt::query()
             ->where('workflow_task_id', $task->id)
             ->where('activity_execution_id', $execution->id)
+            ->where('workflow_run_id', $task->workflow_run_id)
             ->where('lease_owner', $workerId)
             ->where('status', ActivityAttemptStatus::Running->value)
             ->latest('attempt_number')

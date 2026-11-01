@@ -1073,7 +1073,7 @@ final class WorkflowTaskPoller
                 // Request admission takes the same run lock before inspecting
                 // leases. Either it observes this claim's immutable proof, or
                 // this claim observes the newly accepted request.
-                $run = WorkflowRun::query()->where('namespace', $namespace)
+                $run = NamespaceWorkflowScope::ownedRunQuery(WorkflowRun::query(), $namespace)
                     ->lockForUpdate()->find($runId);
 
                 if (! $run instanceof WorkflowRun) {
@@ -1627,9 +1627,8 @@ final class WorkflowTaskPoller
             return;
         }
 
-        $updated = WorkflowTask::query()
+        $updated = NamespaceWorkflowScope::taskQuery($namespace)
             ->whereKey($taskId)
-            ->where('namespace', $namespace)
             ->where('task_type', TaskType::Workflow->value)
             ->where(function ($query): void {
                 $query->whereNull('compatibility')
@@ -2339,7 +2338,7 @@ final class WorkflowTaskPoller
             ->where('worker_id', $workerId)
             ->first();
 
-        $run = WorkflowRun::query()->where('namespace', $namespace)->find($runId);
+        $run = NamespaceWorkflowScope::ownedRunQuery(WorkflowRun::query(), $namespace)->find($runId);
         if (! $worker instanceof WorkerRegistration || ! $run instanceof WorkflowRun
             || ! WorkflowReplayEligibility::allows($worker, $run, $protocolVersion)) {
             return false;
