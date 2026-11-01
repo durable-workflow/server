@@ -776,6 +776,9 @@ ${payloadMount}    command: ["server-bootstrap"]
     environment: &server_environment
       APP_ENV: local
       APP_DEBUG: "false"
+      # The external fixture carries 4 MiB arguments and an 8 MiB result.
+      # Keep its logical payload ceiling distinct from the 2 MiB offload threshold.
+      DW_V2_LIMIT_PAYLOAD_SIZE_BYTES: "16777216"
       DB_CONNECTION: mysql
       DB_HOST: mysql
       DB_PORT: 3306
