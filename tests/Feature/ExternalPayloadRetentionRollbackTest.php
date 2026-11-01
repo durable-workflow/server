@@ -28,6 +28,10 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSchedule;
+use Workflow\V2\Models\WorkflowScheduleHistoryEvent;
+use Workflow\V2\Models\WorkflowServiceCall;
+use Workflow\V2\Models\WorkflowServiceCallDispatch;
+use Workflow\V2\Models\WorkflowServiceOperation;
 
 final class ExternalPayloadRetentionRollbackTest extends TestCase
 {
@@ -310,6 +314,97 @@ final class ExternalPayloadRetentionRollbackTest extends TestCase
         $this->assertSame(1, $this->readableObjects());
         $this->assertDatabaseCount('runtime_external_payload_deletions', 0);
         $this->assertDatabaseHas('runtime_external_payloads', ['namespace' => 'other', 'storage_uri' => $uri]);
+    }
+
+    public static function retainedOwners(): array
+    {
+        $cases = [];
+        foreach (['instance_memo', 'instance_visibility', 'schedule_history', 'operation_binding', 'dispatch_snapshot'] as $owner) {
+            foreach ([false, true] as $pending) {
+                $cases[$owner.($pending ? '_retry' : '_prune')] = [$owner, $pending];
+            }
+        }
+
+        return $cases;
+    }
+
+    #[DataProvider('retainedOwners')]
+    public function test_retained_metadata_owns_bytes_before_pruning_and_during_pending_retry(string $owner, bool $pending): void
+    {
+        $this->createNamespace('other');
+        WorkflowNamespace::query()->where('name', 'other')->update(['external_payload_storage' => [
+            'driver' => 'local', 'enabled' => true, 'config' => ['uri' => 'file://'.$this->directory],
+        ]]);
+        $uri = array_key_first($this->objects);
+        $reference = [
+            'schema' => 'durable-workflow.v2.external-payload-reference.v1',
+            'uri' => $uri, 'codec' => 'avro', 'size_bytes' => strlen($this->objects[$uri]),
+            'sha256' => hash('sha256', $this->objects[$uri]),
+        ];
+        if ($pending) {
+            $this->provider->unavailable = true;
+            $this->prune()->assertOk()->assertJsonPath('external_payload_cleanup.pending', 2);
+            $this->provider->unavailable = false;
+        }
+        $keeper = match ($owner) {
+            'instance_memo', 'instance_visibility' => WorkflowInstance::query()->create([
+                'namespace' => 'other', 'workflow_class' => 'RetainedWorkflow', 'workflow_type' => 'synthetic.retained',
+                $owner === 'instance_memo' ? 'memo' : 'visibility_labels' => ['payload' => $reference],
+            ]),
+            'schedule_history' => WorkflowScheduleHistoryEvent::query()->create([
+                'namespace' => 'other', 'workflow_schedule_id' => (string) Str::ulid(),
+                'schedule_id' => 'before-first-run', 'sequence' => 1, 'event_type' => 'ScheduleCreated',
+                'workflow_run_id' => null, 'payload' => ['memo' => $reference],
+            ]),
+            'operation_binding' => WorkflowServiceOperation::query()->create([
+                'namespace' => 'other', 'workflow_service_endpoint_id' => (string) Str::ulid(),
+                'workflow_service_id' => (string) Str::ulid(), 'operation_name' => 'retained',
+                'operation_mode' => 'async', 'handler_binding_kind' => 'start_workflow',
+                'handler_binding' => ['arguments' => ['payload_blob' => $reference]],
+            ]),
+            'dispatch_snapshot' => $this->createRetainedDispatch($reference),
+        };
+        if ($pending) {
+            app(RuntimeExternalPayloadDeletions::class)->retryPending('default', 10);
+        } else {
+            $this->prune()->assertOk()->assertJsonPath('pruned', 1)
+                ->assertJsonPath('external_payload_cleanup.pending', 0);
+        }
+        $this->assertNotNull($this->run->fresh()->details_pruned_at);
+        $this->assertNotNull($keeper->fresh());
+        $this->assertSame($this->objects[$uri], $this->provider->get($uri));
+        $this->assertSame(1, $this->readableObjects());
+        $this->assertDatabaseCount('runtime_external_payload_deletions', 0);
+
+        // Namespace cleanup consumes the same inventory, including dispatch's
+        // target ownership through the call rather than the caller namespace.
+        $this->deleteJson('/api/namespaces/other', [], $this->apiHeaders())
+            ->assertOk()->assertJsonPath('external_payload_cleanup.pending', 0);
+        $this->assertNull($keeper->fresh());
+        if (! $pending) {
+            // The pre-prune case kept the original registration as another
+            // independent owner. Removing the foreign namespace cannot revoke it.
+            $this->assertDatabaseHas('runtime_external_payloads', ['namespace' => 'default', 'storage_uri' => $uri]);
+            $this->assertSame($this->objects[$uri], $this->provider->get($uri));
+            $this->deleteJson('/api/namespaces/default', [], $this->apiHeaders())
+                ->assertOk()->assertJsonPath('external_payload_cleanup.pending', 0);
+        }
+        $this->assertSame(0, $this->readableObjects());
+        $this->assertDatabaseCount('runtime_external_payload_deletions', 0);
+    }
+
+    private function createRetainedDispatch(array $reference): WorkflowServiceCallDispatch
+    {
+        $call = WorkflowServiceCall::query()->create([
+            'namespace' => 'other', 'target_namespace' => 'other', 'caller_namespace' => 'default',
+            'endpoint_name' => 'retained', 'service_name' => 'retained', 'operation_name' => 'retained',
+            'status' => 'accepted', 'operation_mode' => 'async',
+        ]);
+
+        return WorkflowServiceCallDispatch::query()->create([
+            'service_call_id' => $call->id, 'state' => 'pending', 'available_at' => now(),
+            'dispatch_options' => ['accepted_handler_binding' => ['arguments' => ['payload_blob' => $reference]]],
+        ]);
     }
 
     public function test_lost_cleanup_acknowledgement_is_retried_without_restoring_pruned_references(): void
