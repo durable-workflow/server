@@ -405,7 +405,7 @@ mod tests {
         let pairs = worker_fingerprints(Some(json!({" Order ":" a ","7":"x"," 8":"y","Blank":" ","Number":1})));
         assert_eq!(
             pairs,
-            vec![("8".to_owned(), "y".to_owned()), ("Order".to_owned(), "a".to_owned())]
+            vec![("Order".to_owned(), "a".to_owned()), ("8".to_owned(), "y".to_owned())]
         );
         assert!(worker_fingerprints(Some(json!(["a", "b"]))).is_empty());
         assert!(worker_fingerprints(None).is_empty());

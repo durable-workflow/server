@@ -130,8 +130,8 @@ impl CommandRequest {
 
     /// `WorkflowCommandContextFactory::requestMetadata`.
     fn request_metadata(&self, payload: &Value, route_name: Option<&str>) -> Value {
-        // Laravel fingerprints its normalized input with keys sorted.
-        let payload = php_arrays(&normalize(payload));
+        // Laravel fingerprints its normalized input with keys sorted (`ksort`).
+        let payload = php_arrays(&super::json_order::sorted_keys(&normalize(payload)));
         let mut headers = Map::new();
         if let Some(value) = &self.request_id {
             headers.insert("x_request_id".into(), json!(value));

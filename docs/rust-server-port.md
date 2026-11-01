@@ -795,18 +795,17 @@ contract fixture before its correction.
 - **Command route names.** Published PHP records each request's route name in
   its command context, and its unnamed workflow routes get a name generated
   per deployment. Native records names only for the named schedule routes.
-- **Registered default key order.** A worker registers query parameter
-  defaults as JSON. PHP keeps each object's keys in the registered order,
-  and a default map reaches the worker in that order. Native's JSON objects
-  keep keys sorted (`serde_json` without `preserve_order`), so:
-  - a named default map such as `{"z": 20, "a": 10}` reaches the worker in
-    sorted order;
-  - `{"1": "a", "0": "b"}` becomes a list on native, where PHP's array is
-    not a list and its encoder fails with a 500.
-
-  Both need registered-order JSON in native contracts and a fixture case
-  each; this remains open #325 parity work
-  ([checkpoint](rust-server-port-checkpoints/2026-10-28-query-contract-arguments.md)).
+- **Registered default key order** (November 1, closed). Published PHP
+  keeps a registered query default's keys in the order its database stores
+  them, so a default map reaches the worker in that order, and
+  `{"1": "a", "0": "b"}` is not a list and fails PHP's encoder with a 500.
+  Native's JSON objects now keep document order (`serde_json` with
+  `preserve_order`), and a default is a list only when its keys are 0 to n-1
+  in stored order. SQLite and a Postgres `json` column keep the registered
+  order; a MySQL `json` column orders keys by length, then bytes, for both
+  servers. The `query-contract-arguments` fixture records three more cases
+  against published 2.11.7, with a contract that holds on every backend
+  ([checkpoint](rust-server-port-checkpoints/2026-11-01-registered-default-order.md)).
 
 ## Contract and verification inventory
 

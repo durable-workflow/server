@@ -17,7 +17,9 @@ require_once __DIR__.'/held-request.php';
 // one query with a fixed Avro blob. A query the contract accepts is routed:
 // the probe holds the client query, leases the task as the worker and
 // records the arguments blob the worker receives. A refused query records
-// the server's answer.
+// the server's answer. A case marked `either` is held as a routed one, since
+// whether a server routes it depends on the key order its database keeps
+// (a MySQL `json` column keeps keys by length, then bytes).
 function finishHttpQueryContractArguments(Client $admin, array $fixture, string $workflowId, string $url): array
 {
     $definition = $fixture['query_contract_arguments'];
@@ -77,7 +79,7 @@ function finishHttpQueryContractArguments(Client $admin, array $fixture, string 
     foreach ($definition['cases'] as $case => [$query, $blob, $routed]) {
         $path = '/api/workflows/'.rawurlencode($id).'/query/'.$query;
         $body = ['input' => ['codec' => 'avro', 'blob' => $definition['blobs'][$blob]]];
-        if (! $routed) {
+        if ($routed === false) {
             $answer = $raw('POST', ltrim(substr($path, strlen('/api/')), '/'), $body);
             $state[$case] = ['status' => $answer['status'], 'reason' => $answer['response']['reason'] ?? null,
                 'message' => $answer['response']['message'] ?? null,
@@ -88,6 +90,11 @@ function finishHttpQueryContractArguments(Client $admin, array $fixture, string 
         $pending = startHeldRequest($url, $headers, $path, $body, 0.0);
         $leased = null;
         for ($attempt = 0; $attempt < 10 && $leased === null; $attempt++) {
+            // A case that a server either routes or refuses stops polling
+            // once the server has answered the client.
+            if ($routed === 'either' && ! proc_get_status($pending[0])['running']) {
+                break;
+            }
             $polled = $raw('POST', 'worker/query-tasks/poll', ['worker_id' => $worker, 'task_queue' => $queue,
                 'timeout_seconds' => 2]);
             $leased = $polled['response']['task'] ?? null;

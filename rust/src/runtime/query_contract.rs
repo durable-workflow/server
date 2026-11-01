@@ -294,13 +294,14 @@ fn matches_type(value: &Value, kind: &str) -> bool {
 
 /// A registered JSON default as the Avro value PHP's serializer encodes, or
 /// `None` where it cannot. PHP decodes the registration into arrays whose
-/// canonical integer keys are integers. A list (keys 0 to n-1, including an
-/// empty object) is an Avro array; an array with only string keys is a map;
-/// an integer key in any other array fails PHP's encoder.
-///
-/// Native's JSON objects keep their keys sorted, not in the registered
-/// order, so integer keys are read in numeric order and a map's entries in
-/// key order.
+/// canonical integer keys are integers, in the order the registration stored
+/// them. A list (keys 0 to n-1 in that order, including an empty object) is
+/// an Avro array; an array with only string keys is a map, in stored order;
+/// an integer key in any other array fails PHP's encoder, so
+/// `{"1": "a", "0": "b"}` is not a list. Native's JSON objects keep their
+/// keys in document order (`serde_json` with `preserve_order`), as PHP's
+/// arrays do. A MySQL `json` column stores keys by length, then bytes, for
+/// both servers.
 fn from_json(value: &Json) -> Option<Value> {
     Some(match value {
         Json::Null => Value::Null,
@@ -313,8 +314,7 @@ fn from_json(value: &Json) -> Option<Value> {
                 .map(|(key, value)| integer_key(key).then(|| (key.parse::<i64>().ok().map(|key| (key, value)))).flatten())
                 .collect();
             match integers {
-                Some(mut items) => {
-                    items.sort_by_key(|(key, _)| *key);
+                Some(items) => {
                     if !items.iter().enumerate().all(|(position, (key, _))| i64::try_from(position) == Ok(*key)) {
                         return None;
                     }
@@ -361,8 +361,14 @@ mod tests {
         assert_eq!(filled(Json::Object(eleven)), Ok(vec![strings(&expected.iter().map(String::as_str).collect::<Vec<_>>())]));
         assert_eq!(filled(json!({})), Ok(vec![Value::Array(vec![])]));
         assert_eq!(filled(json!({"a":{"0":1}})), Ok(vec![Value::Map(vec![("a".into(), Value::Array(vec![Value::Long(1)]))])]));
-        // An integer key outside a list fails PHP's encoder, nested or not.
-        for default in [json!({"0":"x","k":"y"}), json!({"1":"x"}), json!({"a":{"1":"x"}}), json!([{"0":"x","2":"y"}])] {
+        // A map keeps its registered key order, as PHP's array does.
+        let registered = |text: &str| serde_json::from_str::<Json>(text).unwrap();
+        assert_eq!(filled(registered(r#"{"z":20,"a":10}"#)),
+            Ok(vec![Value::Map(vec![("z".into(), Value::Long(20)), ("a".into(), Value::Long(10))])]));
+        // An integer key outside a list fails PHP's encoder, nested or not:
+        // keys 0 to n-1 out of order are not a list.
+        for default in [json!({"0":"x","k":"y"}), json!({"1":"x"}), json!({"a":{"1":"x"}}), json!([{"0":"x","2":"y"}]),
+            registered(r#"{"1":"a","0":"b"}"#)] {
             assert_eq!(filled(default.clone()), Err(Refusal::UnencodableDefault("value".into())), "{default}");
         }
         // Violations answer before the encoder runs.

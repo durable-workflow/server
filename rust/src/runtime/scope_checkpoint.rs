@@ -86,9 +86,11 @@ fn excluded(command: &Value) -> bool {
     )
 }
 
-/// The prefix's identity for retries: SHA-256 over its commands' JSON.
+/// The prefix's identity for retries: SHA-256 over its commands' JSON, with
+/// keys sorted so that a retry's key order does not change it.
 fn fingerprint(commands: &[Value]) -> Result<String> {
-    let encoded = serde_json::to_vec(commands).map_err(|_| super::refuse(StatusCode::CONFLICT, INVALID_COMMANDS))?;
+    let encoded = serde_json::to_vec(&super::json_order::sorted_keys(&Value::Array(commands.to_vec())))
+        .map_err(|_| super::refuse(StatusCode::CONFLICT, INVALID_COMMANDS))?;
     Ok(super::bundle_verifier::hex(&Sha256::digest(&encoded)))
 }
 
