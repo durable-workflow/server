@@ -4009,6 +4009,14 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
       }),
     ];
   } finally {
+    for (const [language, suffix] of [['php', '-php-workflow-service'], ['python', '-python-sdk-service']]) {
+      const containerName = started.find(name => name.endsWith(suffix));
+      if (!containerName) continue;
+      const log = spawnSync('docker', ['exec', containerName, 'cat', `/tmp/nexus-${language}-service-worker.log`],
+        {encoding: 'utf8', timeout: 3000, maxBuffer: 8 * 1024 * 1024});
+      fs.writeFileSync(path.join(resultDir, `nexus-${language}-final-service-worker.log`),
+        `exit_status=${log.status}\n${log.stdout || ''}\n${log.stderr || ''}`);
+    }
     for (const containerName of started) {
       dockerStop(containerName, path.join(resultDir, `${containerName}-stop.log`));
     }

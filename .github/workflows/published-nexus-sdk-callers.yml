@@ -187,7 +187,7 @@ jobs:
             if (retainedBytes + bytes > 2 * 1024 * 1024) { omittedReports.push({name, bytes}); continue; }
             fs.copyFileSync(file, path.join(retained, name)); retainedBytes += bytes;
           }
-          for (const name of fs.readdirSync(root).filter(name => /-(external|authorization)\.log$|-uncaught-failure-probe\.log$/.test(name))) {
+          for (const name of fs.readdirSync(root).filter(name => /-(external|authorization)\.log$|-uncaught-failure-probe\.log$|-service-worker\.log$/.test(name))) {
             const bytes = fs.readFileSync(path.join(root, name));
             fs.writeFileSync(path.join(retained, name), Buffer.concat([bytes.subarray(0, 1200),
               Buffer.from('\n[bounded diagnostic tail]\n'), bytes.subarray(Math.max(1200, bytes.length - 4000))]));
