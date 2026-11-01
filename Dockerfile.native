@@ -1,6 +1,7 @@
-# Durable Workflow native (Rust) server, published as a release candidate
-# (Server #325). It is opt-in: the server refuses to start without
-# DW_RUST_EXPERIMENTAL=1. The published PHP image remains the default.
+# Durable Workflow native (Rust) server (Server #325), published from a
+# native-<version> tag as durableworkflow/server 3.x. A release build (its
+# version passed as DW_SERVER_VERSION) starts as is; a development build
+# without a release version refuses to start without DW_RUST_EXPERIMENTAL=1.
 #
 # The same image runs the takeover commands an operator uses to move a
 # stopped, backed-up PHP database to native: upgrade-inspect,

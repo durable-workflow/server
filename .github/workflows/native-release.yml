@@ -15,8 +15,10 @@ name: Native release candidate
 # decision, November 1), with the repository's Docker Hub credentials. A
 # native version is a major version above every PHP release, and the
 # publish job refuses a tag either registry already has, so it never
-# replaces a PHP image. It moves no rolling tag such as latest. It runs
-# only from main, in the dockerhub-native Environment.
+# replaces a PHP image. A final release then moves X.Y, X and latest
+# forward to its index (operator decision, November 1); a candidate moves
+# none, and the PHP Release workflow leaves latest to a newer native
+# release. It runs only from main, in the dockerhub-native Environment.
 #
 # A release candidate (a version with a -rc.N suffix) publishes to GHCR only
 # (operator decision, October 30). Any other version publishes to both
@@ -311,3 +313,13 @@ jobs:
           subject-name: index.docker.io/${{ env.DOCKERHUB_IMAGE }}
           subject-digest: ${{ steps.index.outputs.digest }}
           push-to-registry: true
+
+      # A final release (never a candidate) moves X.Y, X and latest forward to
+      # the attested index; an older release leaves each alias where it is.
+      - name: Move the rolling tags of a final release
+        if: needs.plan.outputs.dockerhub == 'true'
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          INDEX_DIGEST: ${{ steps.index.outputs.digest }}
+          RELEASE_IMAGE_TAG_SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}.git
+        run: bash scripts/ci/native-release-rolling-tags.sh

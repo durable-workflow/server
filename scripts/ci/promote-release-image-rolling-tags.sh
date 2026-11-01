@@ -59,6 +59,15 @@ collect_release_tags() {
     printf '%s\n' "$raw_tags" | normalize_tag_lines
 }
 
+# Native final releases (native-X.Y.Z git tags, Server #325) own latest once
+# one is above this PHP release; a PHP release then keeps its own X and X.Y
+# aliases and leaves latest alone, so latest never moves back to PHP.
+native_final_owns_latest() {
+    native_latest="$(collect_release_tags | sed -n 's/^native-\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p' | sort -u -V | tail -n 1)"
+    [ -n "$native_latest" ] || return 1
+    [ "$(printf '%s\n%s\n' "$native_latest" "$release_tag" | sort -V | tail -n 1)" != "$release_tag" ]
+}
+
 latest_known_stable_tag() {
     {
         collect_release_tags
@@ -105,6 +114,11 @@ if [ -n "${RELEASE_IMAGE_KNOWN_TAGS:-}" ] || [ -n "$tag_source_url" ]; then
     fi
 fi
 
+latest_alias="true"
+if native_final_owns_latest; then
+    latest_alias="false"
+fi
+
 promote_image() {
     image="$1"
     source_ref="${image}:${release_tag}"
@@ -112,11 +126,18 @@ promote_image() {
         source_ref="${image}@${verified_image_digest}"
     fi
 
-    "$docker_bin" buildx imagetools create \
-        --tag "${image}:${minor_alias}" \
-        --tag "${image}:${major_alias}" \
-        --tag "${image}:latest" \
-        "$source_ref"
+    if [ "$latest_alias" = "true" ]; then
+        "$docker_bin" buildx imagetools create \
+            --tag "${image}:${minor_alias}" \
+            --tag "${image}:${major_alias}" \
+            --tag "${image}:latest" \
+            "$source_ref"
+    else
+        "$docker_bin" buildx imagetools create \
+            --tag "${image}:${minor_alias}" \
+            --tag "${image}:${major_alias}" \
+            "$source_ref"
+    fi
 }
 
 promote_image "$dockerhub_image"
@@ -125,6 +146,12 @@ promote_image "$ghcr_image"
 write_output "rolling_should_promote" "true"
 write_output "artifact_status" "current"
 write_output "superseded_by" ""
+write_output "latest_alias" "$latest_alias"
 
-printf 'Promoted rolling image aliases %s, %s, and latest from exact tag %s for %s and %s.\n' \
-    "$minor_alias" "$major_alias" "$release_tag" "$dockerhub_image" "$ghcr_image"
+if [ "$latest_alias" = "true" ]; then
+    printf 'Promoted rolling image aliases %s, %s, and latest from exact tag %s for %s and %s.\n' \
+        "$minor_alias" "$major_alias" "$release_tag" "$dockerhub_image" "$ghcr_image"
+else
+    printf 'Promoted rolling image aliases %s and %s from exact tag %s for %s and %s; native release %s owns latest.\n' \
+        "$minor_alias" "$major_alias" "$release_tag" "$dockerhub_image" "$ghcr_image" "$native_latest"
+fi

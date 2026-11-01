@@ -21,6 +21,8 @@ rolling_promote_outcome="${ROLLING_PROMOTE_OUTCOME:-skipped}"
 rolling_status="${ROLLING_ARTIFACT_STATUS:-}"
 rolling_should_promote="${ROLLING_SHOULD_PROMOTE:-false}"
 superseded_by="${ROLLING_SUPERSEDED_BY:-}"
+# false when a native final release owns latest (Server #325).
+latest_alias="${ROLLING_LATEST_ALIAS:-true}"
 image_digest="${IMAGE_DIGEST:-}"
 release_commit="${RELEASE_COMMIT:-}"
 run_id="${RELEASE_RUN_ID:-}"
@@ -182,13 +184,21 @@ if is_stable_semver_tag "$release_tag"; then
     minor_alias="${major}.${minor}"
     major_alias="$major"
 
-    rolling_refs="$(printf '%s:%s\n%s:%s\n%s:%s\n%s:%s\n%s:%s\n%s:%s' \
-        "$dockerhub_image" "$minor_alias" \
-        "$dockerhub_image" "$major_alias" \
-        "$dockerhub_image" "latest" \
-        "$ghcr_image" "$minor_alias" \
-        "$ghcr_image" "$major_alias" \
-        "$ghcr_image" "latest")"
+    if [ "$latest_alias" = "false" ]; then
+        rolling_refs="$(printf '%s:%s\n%s:%s\n%s:%s\n%s:%s' \
+            "$dockerhub_image" "$minor_alias" \
+            "$dockerhub_image" "$major_alias" \
+            "$ghcr_image" "$minor_alias" \
+            "$ghcr_image" "$major_alias")"
+    else
+        rolling_refs="$(printf '%s:%s\n%s:%s\n%s:%s\n%s:%s\n%s:%s\n%s:%s' \
+            "$dockerhub_image" "$minor_alias" \
+            "$dockerhub_image" "$major_alias" \
+            "$dockerhub_image" "latest" \
+            "$ghcr_image" "$minor_alias" \
+            "$ghcr_image" "$major_alias" \
+            "$ghcr_image" "latest")"
+    fi
 fi
 
 if ! is_stable_semver_tag "$release_tag"; then

@@ -42,14 +42,16 @@ backup.
 
 The native image carries every command below. Native releases from 3.0.0
 publish to the same repositories as PHP, `ghcr.io/durable-workflow/server`
-and `durableworkflow/server` on Docker Hub, as major version 3; they move no
-rolling tag such as `latest`. Release candidates (`X.Y.Z-rc.N`) are
-published to GHCR only. The first two candidates were published as
+and `durableworkflow/server` on Docker Hub, as major version 3. A final
+release moves `3.Y`, `3` and `latest` forward to itself; a PHP 2.x release
+after it moves only `2` and `2.Y`. Release candidates (`X.Y.Z-rc.N`) are
+published to GHCR only and move no rolling tag. The first two candidates were published as
 `ghcr.io/durable-workflow/server-native`; the current one is `3.0.0-rc.2`,
 index
 `sha256:f54e89d775dbf7c6074f37836c6bb0b25f94869d23711b0706e9547c3edecb29`. It
-reads the same `DB_*` settings as the PHP image. Every command needs
-`DW_RUST_EXPERIMENTAL=1`: native is opt-in until it is declared qualified.
+reads the same `DB_*` settings as the PHP image. A published image (a
+release candidate or final release) needs no opt-in; only a development
+build without a release version requires `DW_RUST_EXPERIMENTAL=1`.
 
 The inspection, the fingerprints and the takeover must all name the same
 stopped source. Native refuses a fingerprint that does not match the source
@@ -77,7 +79,7 @@ docker pull "$IMAGE"
    qualified `source_layout`.
 
    ```sh
-   source="-e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=pgsql -e DB_HOST=db -e DB_PORT=5432 \
+   source="-e DB_CONNECTION=pgsql -e DB_HOST=db -e DB_PORT=5432 \
      -e DB_DATABASE=workflow -e DB_USERNAME=workflow -e DB_PASSWORD"
    queues="-e DW_RUST_UPGRADE_QUEUE_CONNECTION=database \
      -e DW_RUST_UPGRADE_QUEUE_DEFAULT_CONNECTION=database -e DW_RUST_UPGRADE_QUEUE_DEFAULT_QUEUE=default"

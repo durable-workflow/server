@@ -235,9 +235,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         .block_on(run())
 }
 
+/// A release build carries the version of its `native-` tag, built in as
+/// `DW_SERVER_VERSION`, and starts without the opt-in. A development build
+/// (no release version) still requires `DW_RUST_EXPERIMENTAL=1`, so an
+/// untagged source build is never mistaken for a qualified release.
+fn release_build() -> bool {
+    option_env!("DW_SERVER_VERSION").is_some_and(|version| !version.is_empty())
+}
+
 async fn run() -> Result<(), Box<dyn Error>> {
-    if env::var("DW_RUST_EXPERIMENTAL").as_deref() != Ok("1") {
-        return Err("Rust development runtime requires DW_RUST_EXPERIMENTAL=1; it is not a qualified replacement".into());
+    if !release_build() && env::var("DW_RUST_EXPERIMENTAL").as_deref() != Ok("1") {
+        return Err("Rust development build requires DW_RUST_EXPERIMENTAL=1; release builds do not".into());
     }
     if let Some(command) = env::args().nth(1) {
         if env::args().count() != 2

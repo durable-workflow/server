@@ -18,8 +18,9 @@ The toolchain is pinned in `rust-toolchain.toml`; dependency resolution is in
 Development/test debug information is disabled to bound artifact size. This
 does not select release optimization or remove the later profiling requirement.
 
-The HTTP executable requires `DW_RUST_EXPERIMENTAL=1` and nonempty
-`DW_AUTH_TOKEN`. With no role tokens, the legacy credential keeps compatibility
+The HTTP executable requires nonempty `DW_AUTH_TOKEN`. A development build
+(no release version built in as `DW_SERVER_VERSION`) also requires
+`DW_RUST_EXPERIMENTAL=1`; a release build from a `native-` tag does not. With no role tokens, the legacy credential keeps compatibility
 access. Configuring any `DW_WORKER_TOKEN`, `DW_OPERATOR_TOKEN` or
 `DW_ADMIN_TOKEN` disables that bypass: the legacy credential becomes admin,
 and task polling/completion requires the worker role. Roles are exact membership;
@@ -174,7 +175,7 @@ bounded lease-recovery check, not full failure or performance qualification.
 The same limited HTTP state machine also has a typed SQLx MySQL adapter.
 Use `DB_CONNECTION=mysql` (or `mariadb`), `DB_DATABASE`, `DB_USERNAME`, and the
 usual `DB_HOST`, `DB_PORT` and `DB_PASSWORD`; the port defaults to 3306.
-`DW_RUST_EXPERIMENTAL=1` remains required. `DB_URL` takes precedence over these
+A development build still requires `DW_RUST_EXPERIMENTAL=1`. `DB_URL` takes precedence over these
 fields and uses SQLx's MySQL URL options. The database must already exist.
 
 `schema-bootstrap` admits an empty database, this exact completed native

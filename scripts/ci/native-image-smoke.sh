@@ -52,11 +52,18 @@ jq -e '.User=="1000:1000" and .StopSignal=="SIGTERM" and (.ExposedPorts|has("808
   and (.Env|index("DW_RUST_MAINTENANCE_LOOP=1")!=null)
   and ([.Env[]|select(startswith("DW_RUST_EXPERIMENTAL="))]|length)==0' <<<"$config" >/dev/null
 
-# Without the opt-in the server does not start.
-status=0
-refusal=$(docker run --rm --platform "$platform" -e DW_AUTH_TOKEN=$token "$image" 2>&1) || status=$?
-test "$status" != 0
-grep -q 'requires DW_RUST_EXPERIMENTAL=1' <<<"$refusal"
+# A release build (labelled with its native- tag, its version built in)
+# starts without the opt-in; a development build refuses to start without
+# DW_RUST_EXPERIMENTAL=1.
+release_tag=$(docker image inspect --format '{{index .Config.Labels "dev.durable-workflow.release.tag"}}' "$image")
+optin=()
+if [[ -z "$release_tag" || "$release_tag" == "<no value>" ]]; then
+  status=0
+  refusal=$(docker run --rm --platform "$platform" -e DW_AUTH_TOKEN=$token "$image" 2>&1) || status=$?
+  test "$status" != 0
+  grep -q 'requires DW_RUST_EXPERIMENTAL=1' <<<"$refusal"
+  optin=(-e DW_RUST_EXPERIMENTAL=1)
+fi
 
 # GET <path> from <host> port 8080 inside the job's network, with the bearer
 # token when a third argument is given; prints the body and fails on any
@@ -94,7 +101,7 @@ wait_ready() {
 serve() {
   local backend=$1; shift
   docker run -d --platform "$platform" --name "$RESOURCE_SCOPE-native-$backend" --network "$RESOURCE_SCOPE" \
-    -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=$token "$@" "$image" >/dev/null
+    "${optin[@]}" -e DW_AUTH_TOKEN=$token "$@" "$image" >/dev/null
   wait_ready "$RESOURCE_SCOPE-native-$backend"
   local info
   info=$(get "$RESOURCE_SCOPE-native-$backend" /api/cluster/info "$token")
@@ -125,7 +132,7 @@ results+=("$(serve mysql -e DB_CONNECTION=mysql -e DB_HOST="$RESOURCE_SCOPE-mysq
 # The takeover commands are present and refuse a source that does not exist,
 # without creating it in the mounted state directory.
 status=0
-missing=$(docker run --rm --platform "$platform" -v "$state:/app/database" -e DW_RUST_EXPERIMENTAL=1 \
+missing=$(docker run --rm --platform "$platform" -v "$state:/app/database" "${optin[@]}" \
   -e DB_CONNECTION=sqlite -e DB_DATABASE=/app/database/missing.sqlite "$image" upgrade-inspect 2>&1) || status=$?
 test "$status" != 0
 grep -qx 'upgrade_inspection_unavailable' <<<"$missing"

@@ -463,6 +463,7 @@ jobs:
             ${{ steps.promote_rolling.outputs.rolling_should_promote
             || steps.rolling.outputs.rolling_should_promote || 'false' }}
           ROLLING_SUPERSEDED_BY: ${{ steps.promote_rolling.outputs.superseded_by || steps.rolling.outputs.superseded_by }}
+          ROLLING_LATEST_ALIAS: ${{ steps.promote_rolling.outputs.latest_alias || steps.rolling.outputs.latest_alias || 'true' }}
           IMAGE_DIGEST: ${{ steps.exact.outputs.image_digest || steps.build.outputs.digest }}
           RELEASE_COMMIT: ${{ steps.release_source.outputs.commit }}
           RELEASE_RUN_ID: ${{ github.run_id }}
