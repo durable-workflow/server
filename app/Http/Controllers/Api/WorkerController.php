@@ -3765,6 +3765,19 @@ class WorkerController
                 return $outcome;
             }
 
+            if ($outcome['reason'] === 'run_timed_out') {
+                return WorkerProtocol::json([
+                    'task_id' => $taskId,
+                    'workflow_task_attempt' => (int) $validated['workflow_task_attempt'],
+                    'outcome' => 'completed',
+                    'recorded' => false,
+                    'run_id' => $outcome['run_id'],
+                    'run_status' => $outcome['run_status'],
+                    'created_task_ids' => [],
+                    'reason' => 'run_timed_out',
+                ], 409);
+            }
+
             return WorkerProtocol::json([
                 'task_id' => $taskId,
                 'workflow_task_attempt' => (int) $validated['workflow_task_attempt'],
@@ -3976,7 +3989,8 @@ class WorkerController
             // A deadline probe may have no new history. Close the expired run
             // through Core before acknowledging the worker's wait.
             if ($deadlineExpired && app(WorkflowExecutor::class)->timeoutIfDeadlineExpired($run, $task)) {
-                return ['recorded' => false, 'reason' => 'run_timed_out', 'next_task_id' => null];
+                return ['recorded' => false, 'reason' => 'run_timed_out', 'next_task_id' => null,
+                    'run_id' => $run->id, 'run_status' => $run->status->value];
             }
 
             if ($this->workflowTaskResumesSignal($task)) {
@@ -3989,6 +4003,8 @@ class WorkerController
                             ? $bridgeOutcome['reason']
                             : 'workflow_bridge_completion_failed',
                         'next_task_id' => null,
+                        'run_id' => $bridgeOutcome['workflow_run_id'] ?? null,
+                        'run_status' => $bridgeOutcome['run_status'] ?? null,
                     ];
                 }
 

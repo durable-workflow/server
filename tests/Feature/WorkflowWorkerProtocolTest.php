@@ -3731,14 +3731,18 @@ class WorkflowWorkerProtocolTest extends TestCase
             $closed = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
                 ->where('event_type', HistoryEventType::WorkflowTimedOut->value)->count();
             if (! $expired) {
-                $response->assertOk()->assertJsonPath('recorded', true);
+                $response->assertOk()->assertJsonPath('recorded', true)->assertJsonPath('outcome', 'waiting_for_history')
+                    ->assertJsonMissingPath('run_id')->assertJsonMissingPath('run_status');
                 $this->assertSame('waiting', $run->status->value);
                 $this->assertSame(0, $closed);
 
                 return;
             }
 
-            $response->assertStatus(409)->assertJsonPath('recorded', false)->assertJsonPath('reason', 'run_timed_out');
+            $response->assertStatus(409)->assertJsonPath('recorded', false)->assertJsonPath('reason', 'run_timed_out')
+                ->assertJsonPath('outcome', 'completed')->assertJsonPath('run_id', $runId)->assertJsonPath('run_status', 'failed')
+                ->assertJsonPath('task_id', $task['task_id'])->assertJsonPath('workflow_task_attempt', $task['workflow_task_attempt'])
+                ->assertJsonPath('created_task_ids', []);
             $this->assertSame('failed', $run->status->value);
             $this->assertSame('timed_out', $run->closed_reason);
             $this->assertSame(1, $closed);
