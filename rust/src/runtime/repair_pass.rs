@@ -15,10 +15,9 @@
 //! as `ActivityTimeoutEnforcer::enforceLeaseExpiry` settles it.
 //!
 //! A missing task is created as `TaskRepair::createMissingTask` creates it
-//! (`task_repair::create_missing_task`). A recovery native does not perform
-//! yet is reported as its candidate's failure, so the pass answers 207 rather
-//! than claiming a repair: a missing task for a run waiting on an update, a
-//! signal or a child, or on a condition or signal wait's timeout timer.
+//! (`task_repair::create_missing_task`). A candidate whose recovery fails is
+//! reported as a failure, so the pass answers 207 rather than claiming a
+//! repair.
 use super::Result;
 use super::laravel_validation::{Rule, failure_messages, rule_errors};
 use super::operator_metrics::{REDISPATCH_AFTER_SECONDS, scope_rows, whole_second};
@@ -321,8 +320,6 @@ pub(super) enum Recovered {
     Task,
     /// The candidate needed nothing, or a closed run's task was settled.
     Nothing,
-    /// Native cannot perform this recovery yet; nothing was changed.
-    Unported(String),
     /// A running activity lost its lease: its retry policy settles it.
     ExpireLease,
 }
@@ -483,7 +480,6 @@ store_methods! {
                     continue;
                 }
                 Ok(Recovered::Nothing | Recovered::ExpireLease) => continue,
-                Ok(Recovered::Unported(message)) => message,
                 Err(error) => error.to_string(),
             };
             self.record_task_error(task_id, &message).await;
@@ -497,7 +493,6 @@ store_methods! {
                     continue;
                 }
                 Ok(Recovered::Nothing | Recovered::ExpireLease) => continue,
-                Ok(Recovered::Unported(message)) => message,
                 Err(error) => error.to_string(),
             };
             record_failure(&mut report, "missing_run_failures", "run_id", run_id, message);
@@ -585,7 +580,6 @@ store_methods! {
         }
         let recovered = Self::recover_task_row(&mut tx, &run, &task, at).await?;
         match recovered {
-            Recovered::Unported(_) => return Ok(recovered),
             Recovered::ExpireLease => {
                 drop(tx);
                 return self.settle_lease(task_id).await;
@@ -724,7 +718,7 @@ store_methods! {
             return Ok(Recovered::Nothing);
         };
         Self::project_run_summary(&mut tx, run_id).await?;
-        let Some(summary) = Self::query("SELECT liveness_state,next_task_id,wait_kind,resume_source_kind,resume_source_id FROM workflow_run_summaries WHERE id=$1")
+        let Some(summary) = Self::query("SELECT liveness_state,next_task_id,wait_kind,open_wait_id,resume_source_kind,resume_source_id FROM workflow_run_summaries WHERE id=$1")
             .bind(run_id)
             .fetch_optional(&mut *tx)
             .await?
@@ -757,13 +751,9 @@ store_methods! {
                 let task_id = DB::string(&task, "id")?;
                 (Self::recover_task_row(&mut tx, &run, &task, at).await?, task_id)
             }
-            None => match Self::create_missing_task(&mut tx, &run, &summary).await? {
-                super::task_repair::Missing::Created(task_id) => (Recovered::Task, task_id),
-                super::task_repair::Missing::Unported(message) => return Ok(Recovered::Unported(message)),
-            },
+            None => (Recovered::Task, Self::create_missing_task(&mut tx, &run, &summary).await?),
         };
         match recovered {
-            Recovered::Unported(_) => return Ok(recovered),
             Recovered::ExpireLease => {
                 drop(tx);
                 return self.settle_lease(&task_id).await;

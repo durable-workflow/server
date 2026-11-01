@@ -140,8 +140,8 @@ any other unknown path or method answers PHP's own 404 or 405
   `prometheus-metrics` fixture, with PHP's default limit of 100 series per
   family. External payload cleanup and its pass are served with the
   `payload-cleanup` fixture. The task repair pass is served with the
-  `repair-pass` fixture; a recovery native does not perform yet is
-  reported as its candidate's failure, with 207.
+  `repair-pass` fixture; a candidate whose recovery fails is reported as
+  a failure, with 207.
 - **Worker protocol features.**
   - Prepared local activities (prepare, checkpoint, group checkpoint,
     recover, heartbeat, control, outcome and cancellation acknowledgement)
@@ -313,22 +313,29 @@ contract fixture before its correction.
   is a contract decision, recorded in
   [Server #690](https://github.com/durable-workflow/server/issues/690)
   (`tests/execution/update_routing.rs`).
-- **Repair of a run without a recoverable task** (October 30, mostly
-  closed). Published PHP's repair command creates a run's missing task and
-  settles an expired activity-task lease through the activity's retry
-  policy. Native's repair command and repair pass now do too:
+- **Repair of a run without a recoverable task** (October 30 and
+  November 1, closed). Published PHP's repair command creates a run's
+  missing task and settles an expired activity-task lease through the
+  activity's retry policy. Native's repair command and repair pass now do
+  too:
   - a missing workflow task is recreated;
   - a missing activity task is recreated for the pending execution, with
     its latest retry's fields;
   - a missing timer task is recreated, available at the fire time;
-  - an expired activity lease is settled by the activity's retry policy.
+  - an expired activity lease is settled by the activity's retry policy;
+  - a received signal, an accepted update or a resolved child gets the
+    workflow task that resumes the run from it;
+  - a condition or signal wait's pending timeout gets its timer task
+    again, available at the deadline, and a fired timeout gets the
+    workflow task that applies it.
 
   Native's scheduler usually settles such a lease first, as PHP's repair
   loop does
-  ([checkpoint](rust-server-port-checkpoints/2026-10-30-repair-missing-tasks.md)).
-  Still refused with `development_workflow_task_repair_unqualified`: the
-  missing task of an update, signal or child wait, or of a condition or
-  signal wait's timeout timer.
+  ([checkpoint](rust-server-port-checkpoints/2026-10-30-repair-missing-tasks.md),
+  [wait tasks](rust-server-port-checkpoints/2026-11-01-repair-missing-wait-tasks.md)).
+  A run with a received signal and no open task is now projected as PHP
+  projects it: waiting to apply the signal, and needing repair. Native no
+  longer refuses a repair with `development_workflow_task_repair_unqualified`.
 - **Structural limits.** For external workers, published PHP enforces four
   of the Workflow package's `DW_V2_LIMIT_*` limits: the memo size, the
   command batch size as a bound on parallel group metadata, the pending
@@ -423,12 +430,17 @@ contract fixture before its correction.
   Signals still create no resume while the parent
   waits on a child, because only signal and condition waits count as open
   waits.
-- **Update delivery into a ready task.** Published PHP admits an update
-  whenever its run is active and merges it into the run's ready workflow
-  task, if one exists (`ExternalWorkflowUpdateAdmission::wakeWorkflowTask`).
-  Native gives each update its own task once the run has no open workflow
-  task. The Rust SDK treats a task carrying `workflow_update_id` as an update
-  task, so a merged first task would not replay the workflow.
+- **Update delivery into a ready task** (November 1, decided: native
+  keeps its behavior). Published PHP merges an accepted update into the
+  run's ready workflow task (`ExternalWorkflowUpdateAdmission::wakeWorkflowTask`).
+  An update accepted before the first poll therefore gives the empty start
+  task a `workflow_update_id`, and the published Rust, Python and PHP SDKs
+  run such a task as update-only, so the workflow body waits for repair. A
+  later update also overwrites an earlier one on the same ready task. Native
+  delivers each update in its own task once the run has no open workflow
+  task, oldest first, as PHP does behind a leased task. PHP's merge is
+  reported as
+  [server#902](https://github.com/durable-workflow/server/issues/902).
 - **Timer firing under the CPU deadline profile on slower hosts.** In local
   MySQL 8.0 cells, where eight dense readers saturate the one-CPU database and
   the one-CPU native server, one of six runs fired the three-second timer
